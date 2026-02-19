@@ -72,6 +72,7 @@ static JSClassDef ngx_js_location_class = {
  * Magic values for ngx_js_location_get / ngx_js_location_set:
  *   0 — path    (r/o: location name/pattern)
  *   1 — root    (r/w)
+ *   2 — handler (w/o: JS function name, installs ngx_js_content_handler)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -139,6 +140,34 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         clcf->root.len     = len;
         clcf->root_lengths = NULL;  /* mark as literal (no variables) */
         return JS_UNDEFINED;
+
+    case 2: /* handler — install a JS content handler for this location */
+    {
+        ngx_js_loc_conf_t  *jlcf;
+
+        cstr = JS_ToCString(ctx, val);
+        if (!cstr) {
+            return JS_EXCEPTION;
+        }
+
+        len  = ngx_strlen(cstr);
+        data = ngx_pnalloc(cycle->pool, len + 1);
+        if (data == NULL) {
+            JS_FreeCString(ctx, cstr);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        ngx_memcpy(data, cstr, len + 1);
+        JS_FreeCString(ctx, cstr);
+
+        jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+        jlcf->handler.data = data;
+        jlcf->handler.len  = len;
+
+        /* Wire up the content handler pointer */
+        clcf->handler = ngx_js_content_handler;
+        return JS_UNDEFINED;
+    }
     }
 
     return JS_UNDEFINED;
@@ -146,8 +175,9 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 
 
 static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("path", ngx_js_location_get, NULL,                0),
-    JS_CGETSET_MAGIC_DEF("root", ngx_js_location_get, ngx_js_location_set, 1),
+    JS_CGETSET_MAGIC_DEF("path",    ngx_js_location_get, NULL,                0),
+    JS_CGETSET_MAGIC_DEF("root",    ngx_js_location_get, ngx_js_location_set, 1),
+    JS_CGETSET_MAGIC_DEF("handler", NULL,                ngx_js_location_set, 2),
 };
 
 
@@ -478,6 +508,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     if (JS_NewClass(rt, ngx_js_server_class_id,   &ngx_js_server_class)   < 0
      || JS_NewClass(rt, ngx_js_location_class_id, &ngx_js_location_class) < 0)
     {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_request_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 

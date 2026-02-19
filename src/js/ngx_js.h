@@ -34,7 +34,17 @@ typedef struct {
 } ngx_js_worker_t;
 
 
+/*
+ * Per-location JS handler config owned by ngx_js_http_module.
+ * handler.data == NULL means no JS handler is set for this location.
+ */
+typedef struct {
+    ngx_str_t  handler;   /* JS function name, NUL-terminated */
+} ngx_js_loc_conf_t;
+
+
 extern ngx_module_t  ngx_js_module;
+extern ngx_module_t  ngx_js_http_module;
 
 
 /* COM initialisation — installs nginx.* into ctx's global object */
@@ -42,6 +52,13 @@ ngx_int_t  ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle);
 
 /* Log a pending JS exception to the NGINX error log, then clear it */
 void       ngx_js_log_exception(JSContext *ctx, ngx_log_t *log);
+
+/* Register NginxRequest class in rt (called once per new runtime) */
+ngx_int_t  ngx_js_request_register_class(JSRuntime *rt);
+
+/* Content-phase handler; installed in clcf->handler by the JS setter */
+struct ngx_http_request_s;
+ngx_int_t  ngx_js_content_handler(struct ngx_http_request_s *r);
 
 
 #endif /* _NGX_JS_H_INCLUDED_ */

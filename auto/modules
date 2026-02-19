@@ -1433,6 +1433,19 @@ if [ $USE_QUICKJS = YES ]; then
     . auto/module
 fi
 
+if [ $USE_QUICKJS = YES ]; then
+    ngx_module_type=HTTP
+    ngx_module_name=ngx_js_http_module
+    ngx_module_incs="src/js src/http src/http/modules"
+    ngx_module_deps="src/js/ngx_js.h src/js/ngx_js_com.h"
+    ngx_module_srcs="src/js/ngx_js_http_module.c"
+    ngx_module_libs=
+    ngx_module_link=YES
+    ngx_module_order=
+
+    . auto/module
+fi
+
 modules="$CORE_MODULES $EVENT_MODULES"
 
 
