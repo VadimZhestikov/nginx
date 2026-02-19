@@ -1,0 +1,116 @@
+ just a question: suppose javascript in nginx worker misbehaved (in sence of memory comsumption or cpu consumption). The question is: how we can safely re-run nginx worker then?
+
+● This is a good question that touches both nginx architecture and our specific design.
+
+  Good news: our COW fork design already handles this cleanly.
+
+  When a worker is killed, the OS reclaims all its private COW pages — including all JS heap allocations made during request handling. The master's original JSRuntime is completely unaffected.
+  Forking a new worker from the master gives a fresh, clean JS state. So the "kill and refork" path nginx already uses is safe.
+
+  Two remaining problems to address proactively:
+
+  1. Memory runaway — a JS request handler leaks or allocates excessively.
+
+  Solution: call JS_SetMemoryLimit(w->rt, limit) in init_process (per-worker, after fork). When the limit is exceeded, QuickJS throws an OOM exception rather than crashing. The handler catches it and
+   returns a 500. Worker stays alive and continues serving other requests.
+
+  2. CPU runaway — infinite loop or pathologically slow JS.
+
+  Solution: JS_SetInterruptHandler(rt, handler, opaque). QuickJS polls this callback periodically during bytecode execution. The handler checks a flag set by an ngx_event_t timer; if the flag is set,
+   it returns 1 to abort execution with an exception. Again, handler catches it, returns 503, worker survives.
+
+  If the worker is truly unrecoverable (handler doesn't catch, worker crashes or hangs):
+  - nginx master already monitors workers via waitpid and a heartbeat check
+  - worker_shutdown_timeout forces SIGKILL if a worker ignores SIGQUIT
+  - Master reforits a clean worker automatically
+
+  Summary of what we should add:
+
+  ┌─────────────────────────┬────────────────────────────────┬──────────────────────────────────┐
+  │         Problem         │           Mechanism            │              Where               │
+  ├─────────────────────────┼────────────────────────────────┼──────────────────────────────────┤
+  │ Memory leak/overuse     │ JS_SetMemoryLimit              │ init_process                     │
+  ├─────────────────────────┼────────────────────────────────┼──────────────────────────────────┤
+  │ Infinite loop / slow JS │ JS_SetInterruptHandler + timer │ init_process + per-request timer │
+  ├─────────────────────────┼────────────────────────────────┼──────────────────────────────────┤
+  │ Worker crash/hang       │ nginx built-in (already works) │ master process                   │
+  └─────────────────────────┴────────────────────────────────┴──────────────────────────────────┘
+
+  The memory limit is the most important one to add — it's a one-liner and prevents a single bad request from exhausting system memory before nginx's process-level monitoring kicks in.
+
+
+ let's set memory limit and make it readable/writable (configurable/reconfigurable) form javascript loaded by js_source
+
+● Done. Committed as d8489ad93.
+
+  Summary of what was implemented:
+
+  - nginx.workerMemoryLimit — a plain writable JS property (number, default 0)
+  - Set it from js_source before workers start:
+  nginx.workerMemoryLimit = 64 * 1024 * 1024;  // 64 MB headroom
+  - After all scripts run in init_conf, the value is read and cached in jcf->worker_memory_limit
+  - In init_process after fork, JS_ComputeMemoryUsage measures the inherited baseline, then JS_SetMemoryLimit(baseline + cap) is applied — so the cap only limits new allocations by request handlers,
+  not the shared COM objects
+  - On OOM, QuickJS throws an exception; handlers can catch it and return a clean 503; the worker stays alive
+
+
+
+● Committed as c5ab5dab1.
+
+  Summary of what was implemented:
+
+  nginx.workerRequestTimeout = ms — set from js_source. How it works:
+
+  1. No signals, no threads. QuickJS's built-in interrupt mechanism polls a callback every ~100 bytecodes during normal execution
+  2. clock_gettime(CLOCK_MONOTONIC) is called inside the interrupt handler — it reads wall time directly without needing the nginx event loop to be running, so it fires even inside a tight for(;;)
+  loop
+  3. Deadline lifecycle: set before JS_Call, active through the microtask drain (JS_ExecutePendingJob), cleared on all exit paths including promise-pending (async suspend), exceptions, and normal
+  completion
+  4. On timeout: QuickJS throws InternalError: interrupted → logged + 500 → worker continues normally
+
+✻ Crunched for 4m 56s
+
+
+////////////////////////////// make reconfigurable from nginx workers
+
+● All 8 tests pass. Here's what was done:
+
+  C changes:
+  - ngx_js_module.c init_conf: Removed the workerRequestTimeout caching block — only workerMemoryLimit is cached since it's needed before the JS context is accessible in workers
+  - ngx_js_module.c init_process: Removed the conditional if (jcf->worker_request_timeout > 0) — the interrupt handler is now always installed; it's a no-op when request_deadline_ms == 0
+  - ngx_js_http_module.c ngx_js_content_handler: Replaced the jcf->worker_request_timeout read with a live JS_GetPropertyStr(ctx, nginx_obj, "workerRequestTimeout") call on each request
+
+  Test changes (t/js_worker_request_timeout.t):
+  - js_source sets timeout to 2000 ms (was 200 — chosen to be non-trivially short but not a concern during config)
+  - /set-short/ handler sets nginx.workerRequestTimeout = 50 at runtime and returns "50"
+  - /read/ after /set-short/ confirms the new value is visible (returns "50")
+  - /loop/ now fires the 50 ms timeout (set by the previous request handler), confirming the dynamic change took effect
+
+✻ Churned for 4m 53s
+
+
+
+● All 16 tests pass. Here's a summary of what changed:
+
+  ngx_js.h:
+  - Removed worker_memory_limit from ngx_js_conf_t — no longer cached at config time
+  - Added baseline_malloc_size to ngx_js_worker_t — measured once at fork, used to compute absolute limit from cap
+
+  ngx_js_module.c init_conf:
+  - Removed the entire workerMemoryLimit/workerRequestTimeout caching block — neither value is cached anymore
+
+  ngx_js_module.c init_process:
+  - Replaced JS_SetMemoryLimit call with a JS_ComputeMemoryUsage that stores w->baseline_malloc_size
+
+  ngx_js_http_module.c content handler:
+  - Combined both property reads into a single nginx object lookup (one JS_GetGlobalObject + one JS_GetPropertyStr("nginx") per request)
+  - workerMemoryLimit > 0 → JS_SetMemoryLimit(rt, baseline + cap); = 0 → JS_SetMemoryLimit(rt, SIZE_MAX) (unlimited)
+  - workerRequestTimeout read unchanged, just now in the same block
+
+  t/js_worker_memory_limit.t:
+  - Added /set-tight/ handler that sets nginx.workerMemoryLimit = 1 * 1024 * 1024 at runtime
+  - Test sequence verifies: initial 64 MB → handler sets 1 MB → next request sees 1 MB → OOM fires → worker alive → value unchanged
+
+✻ Cooked for 3m 13s
+
+

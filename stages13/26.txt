@@ -1,0 +1,10 @@
+  Stage 26 proposal — r.upstream (upstream response metadata)
+
+  After a subrequest that was proxied upstream, r.upstream provides read access to the upstream response metadata: status (upstream HTTP status), responseTime (ms), addr (upstream peer address),
+  bytesReceived (body bytes).
+
+  For non-proxied requests r.upstream returns null.
+
+  This bridges the gap between subrequest results (Stage 20 only gives status+body) and the underlying upstream details.
+
+  Shall I proceed?

@@ -2,6 +2,8 @@
 # Copyright (C) Igor Sysoev
 # Copyright (C) Nginx, Inc.
 
+USE_QUICKJS=NO
+QUICKJS=NONE
 
 help=no
 
@@ -260,7 +262,7 @@ $0: warning: the \"--with-ipv6\" option is deprecated"
         --with-http_secure_link_module)  HTTP_SECURE_LINK=YES       ;;
         --with-http_degradation_module)  HTTP_DEGRADATION=YES       ;;
         --with-http_slice_module)        HTTP_SLICE=YES             ;;
-
+        --with-quickjs=*)                QUICKJS="$value"; USE_QUICKJS=YES ;;
         --without-http_charset_module)   HTTP_CHARSET=NO            ;;
         --without-http_gzip_module)      HTTP_GZIP=NO               ;;
         --without-http_ssi_module)       HTTP_SSI=NO                ;;
@@ -424,6 +426,7 @@ done
 
 NGX_CONFIGURE="$opt"
 
+  --with-quickjs=DIR                 set path to QuickJS library sources
 
 if [ $help = yes ]; then
 

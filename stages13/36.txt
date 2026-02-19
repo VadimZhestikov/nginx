@@ -1,0 +1,47 @@
+Now Stage 36 — r.fetch(url, opts) — full outbound HTTP fetch using nginx's upstream module. This is the most complex stage. Let me plan the approach.
+
+  The simplest viable implementation uses nginx's HTTP proxy subrequest pattern: create a synthetic internal location on the fly that proxies to the given URL, then issue a subrequest to it. But
+  creating dynamic locations at request time is not possible in nginx.
+
+  The alternative: use ngx_http_upstream directly — allocate an upstream, configure the request, pipe the response back. This is essentially what proxy_pass does. This is complex but self-contained.
+
+  Another option: use a pre-configured proxy location approach where r.fetch works only for URLs matching a location the user already set up with proxy_pass. But that defeats the purpose.
+
+  Realistic approach for Stage 36: Use nginx's ngx_http_upstream API directly. The key steps:
+  1. Resolve the URL (parse host, port, path)
+  2. Create an upstream connection to the resolved address
+  3. Format and send an HTTP/1.1 request
+  4. Parse the response headers and body
+  5. Resolve the Promise with {status, headers, body}
+
+  This requires implementing a custom upstream module inline. It's non-trivial but has been done in nginx modules like ngx_http_lua_module.
+
+  A simpler path: implement r.fetch as a thin wrapper that issues a TCP connection using nginx's event system, sends raw HTTP, and reads back the response. This avoids the full upstream
+  infrastructure but also avoids proxy_cache, keepalive, etc.
+
+  Given the complexity, let me implement a practical but simpler version: r.fetch creates a subrequest to a special internal path, and the user must have a proxy_pass location pointing to external
+  servers. This is less magical but matches nginx's architecture.
+
+  Actually, let me implement the proper approach: a lightweight outbound HTTP client using ngx_http_upstream. Let me check what infrastructure is available:
+
+
+
+
+● All 88 tests pass (1107 assertions).
+
+● Stage 36 (r.fetch(url[, opts])) is complete. Here's a summary:
+
+  Implementation: r.fetch uses nginx's ngx_peer_connection_t + ngx_event_connect_peer to make a raw outbound TCP connection, bypassing the ngx_http_upstream module's proxy/forwarding machinery
+  entirely. This avoids the fundamental issue where ngx_http_upstream_send_response would forward the upstream response to the nginx client.
+
+  How it works:
+  1. URL parsed into scheme (http only), IPv4 host, port, path+query
+  2. ngx_event_connect_peer establishes a non-blocking TCP connection
+  3. ngx_js_fetch_write_handler sends the HTTP/1.1 request
+  4. ngx_js_fetch_read_handler collects the response into a growing pool buffer
+  5. A simple inline HTTP/1.1 parser extracts status code, headers (as a JS object), and body
+  6. Promise resolves to {status, headers, body}; a 0ms timer defers microtask drain + ngx_js_async_check so the resumed JS coroutine runs cleanly after all event-handler stack frames unwind
+
+  opts: method, headers, body
+  Limitation: IPv4 addresses only (no DNS resolution)
+

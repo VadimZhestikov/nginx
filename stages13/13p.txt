@@ -1,0 +1,18 @@
+● Stage 13o done. 697 tests passing.
+
+  ---
+  Stage 13p proposal — secure_link (ngx_http_secure_link_module)
+
+  Optional (--with-http_secure_link_module). Signs/verifies URLs. Exposes location.secureLink:
+
+  ┌──────────┬────────┬──────────────────────────────┐
+  │ Property │  Type  │          Directive           │
+  ├──────────┼────────┼──────────────────────────────┤
+  │ secret   │ string │ secure_link_secret           │
+  ├──────────┼────────┼──────────────────────────────┤
+  │ variable │ string │ secure_link (expression)     │
+  ├──────────┼────────┼──────────────────────────────┤
+  │ md5      │ string │ secure_link_md5 (expression) │
+  └──────────┴────────┴──────────────────────────────┘
+
+  Small struct, all ngx_http_complex_value_t * + one ngx_str_t. Shall I proceed with Stage 13p (secure_link)?

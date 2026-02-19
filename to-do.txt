@@ -1,0 +1,247 @@
+-- todo:
+    -- pre-fork --> to all nginx workers
+    -- post-fork --> to master worker only
+
+
+
+
+
+-- draft to demonstrate advantages:
+
+
+-- common read/only shared state can be created at config time and it is always inherited by nginx workers.
+-- long calsulations in nginx worker w/o blocking event loop: use Worker(s) (they have clean context)
+-- complex state shared between nginx workers: use SharedWorker(s) (they ahve clean context)
+-- no need use js_var -- any regular var can be used from javascript, but can be compatible with js_var
+-- no need use js_set, use instead template literals, but compatible with js_set
+-- alwyas redy to run handlers
+-- use global object common for all handlers in nginx worker
+
+
+-- TBD:
+
+
+-- rename files for export com: like: nginx_com_module_connamds...
+
+-- add js_com_core_commands (from config main context)
+-- add other modules: js_com_stream, js_com_events_* js_com_mail_*, etc
+
+
+-- remove js_init_http and conf.write() as very ugly feture;
+-- rename COM --> NOM (nginx object model)
+-- check if SharedWorkers and SharedArrayBuffera are garbage-collectable (normally and at nginx worker termination by master)
+
+-done- use prototypes for request, and othersto seed up object creation
+-done- check same for other our objects?
+-- this way we can override, wrap getters/setters if required (for security, etc)
+
+
+-- make All event driven (safe, so prevent EventListeners from modification/introspection, by wrappers?)
+-- use global init (global code)
+-- use event: on nginx worker load (for custom worker conf); onunload?
+-- we can provide event propagation from master worker to nginx workers global context, and then down hierarchy, and back
+
+-- add access to nginx variables of config time? (and later run-time?)
+-- directives:
+    -- modules directives reconfig (at config stage) --> we need to know clear semantics?
+    -- styles <--> directives
+
+-- other place for SharedWorker to satisfy nginx reconfiguration (lazy reconfig),
+   place SharedWorkers out of master worker ?
+
+-- add support for 'stream {' (at config stage)
+
+-- test performance;
+-- test memory consumption;
+
+-- js based security for multitenant configs (prefix script to provide security, wrappers, set of API, no global or no global obj, shadowed global props,  etc);
+
+-- dynamic reconfiguration after fork is next step
+  -- i need reconfigure 'directives of modules', so I need have some hooks in modules, and hooks for modules
+
+
+-- COM definition (control template for objects: ops set, callbacks, async stuff, serialization/dump for state);
+
+------------------------>
+
+can handler be async --> yes
+can handler be generator? --> yes, wrapped into usual function or closure
+can handler be async generator? --> yes
+
+------------------------>
+i can't use nginx event loop only for Workers, beacuse:
+    -- workers need own stack.
+
+
+------------------------->
+
+-- ServiceWorkers --> in our model they can be placed behind fetch, stream
+-- actors: revocable proxies (transferable) (i can use manager in master to control revokable behaviour)
+
+------------------------>
+
+new CfgOM model for core modules of nginx (fully reconfiguarble modules), servers, etc
+make nginx part of web-app (like node.js is)
+
+
+---------------------------> !!!!!
+
+    design new backward compatible architecture, where js can be used to reconfigure modules which are desinget to be reconfigurable
+     while old modules can be used as is in static config
+
+
+      -- we can look at server, locations, and so on as on objects with arbitrary properties, part of them are getters/setters/functions,
+         and we can take a list of them to discover what props are r/o, r/w, etc
+      -- 1st step: provide for CfgOM such property list
+      -- 2nd step: make them configurable by modifying nginx core
+
+      -- 3rd step: define sync callbacks (so events from modules can be processed and used to affect other modules)
+      -- 4th step: define event model: like addEventListener()
+
+
+
+// I think nginx modules parameters merging looks like styles application, but more relaxed/module_specific (so we have computed directives, and we can have overrided directives)
+
+
+
+/////////// short intro to COM:
+
+    -- background: web-server migreation to web-app server (see how node.js is on raise);
+    -- inspired by browser evolution, from static html, to scripted DOM, fully backward compatible;
+       ability add objects to COM step-by-step for existing modules
+    -- we need extremaly flexible scripting
+    -- we have final data (after directives applied, merged) from CfgOM
+    -- modification for some data is already possible
+    -- we need add full cycle here with merging?
+
+
+////////////
+   -- new VM per request option??? re-fork nginx worker (i need events processing for this..)
+   -- what to do with sync API?-- generate events? for listeners (like in browser: addEventListener)? (or call from Worker and have callbacks?) how?
+      -- not thread safe: only in nginx worker main event loop
+      -- thread safe: ok to be used in Workers
+   -- Events model: (event on global->server->http|stream->location|......->modules in ordder)
+
+   -- recommended use "use strict" mode for qjs
+
+   -- compiled scripts (internal/external compiler)
+   -- external SharedWorkers, SharedArrayBuffers) using qjs/node.js, etc
+
+
+
+
+////////////////////////////////////////////////////////////////////////
+
+// i need maxTime hierarchy to count full time in request processing, even if it is splitted over series of events.
+
+// connection --> .... phase engine is per connection? (it has interbal state, defined in modules)
+// dynamic code modifications --> it is close to dynamic reconfig
+
+/*****************
+
+/////////////////// recconfig: wait for not completed requests are finished; ???
+                       is this web-app level problem? stop accept_connections, and wait phase machine should finish all not completed requests;
+                         again: is this web-app integreted? (probably yes)!
+
+LETS DRAW FULL PICTURE WITH WEB_APP not interruptible update life cycle (so it wrap web-server)
+
+   update on the fly web-app
+       -- client s/w will send some request:
+             -- during usual singile-page app work with loaded html/js/etc (img.src=.., 
+             -- at attempt send/receive data to backend by fetch, img.src=, something else
+             -- at goto some web/app page
+       -- we want allow clint save all data on server, then update html/scripts extract saved data from server, update data
+       -- we ready to continue work with updated web-app
+
+       -- for this case we need just separate set of locations for new version of web-app, and have in all versions sort of ping for new version
+          that is one of ways.
+
+
+
+
+
+                complentely new config: backwrd compat way as is;
+                non destructive (do not change result) re-config: just update, on fly: do not stop processing;
+                keep behavoour: add new new paths (locations), and then add redircts to them from old paths; remove not used paths -- on the fly; 
+
+                destructive update: somehow make app-level on clients informed, and then reload nginx (use old way, so we need free old js state);
+                       free old state: remove all callbacks from modules, free JSContext, JSRuntime; terminate SharedWorkers, Workers, free SharedMemeory
+
+                what is source of reconfig:
+                          -- worker can reconfig itself, and can send request to master worker to reconfig itself (like create new ServiceWorker)
+                             or reconfig other workers as well
+                          -- master can send reconfig request to any worker, or fork itself (i need to know how basic nginx rload works)
+
+                we can have extremally long old config finalization!!! (just byte-by-byte response, very slow)
+                      so, I guess we need timeout here?
+
+
+
+
+*******************/
+
+
+/////////////////// implementation order: own phases per each location, then dynamic locations, and then dynamic servers... up to global
+
+
+
+/////////////////// project "dymamo" dynamic phases/filters per location (backward compatible with static config)
+
+/////////////////// we neeed to be sure nginx (HTTP, STREM at least)  modules are indpendent of each other!!!!!!!! (or convert them to this form)
+
+/////////////////// we always configure modules chains on pahses for each specific location (streams -- later)
+
+/////////////////// modules instanciation (have own dirctives set)
+/////////////////// dynamic modules loading order (all modules need to be included here)  --> own modules list per request on location)
+/////////////////// free module resources (GC module)
+/////////////////// all COM nginx modules need to be independent self-contained instances
+
+
+/////////////////// suppose all modules are injected, so we'll have in each phase/filter range-tags where some module is (optionally) placed
+                    so we always know what cllbacks need to be removed (on rm module), or inserted, on (insert module)
+
+                    we can always create new module instance and add/remove it to phases/filters
+
+
+                    event for module for javascript: module_uloaded, so javascript can free resources, (or just free link to resources, and make it GC-able)
+
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+//////////////////////////////////////// rm_location, add_location, copy_location_config (with list if fields), clone location, etc.
+////////////////////////////////////////  same for servers
+
+// add collections of COM objects: getElementsByName, getElementsById
+// have ability navigate using Node like object
+
+// add ability reconfig locations? servers? (make copy of any conf object on the base of...,
+// have own config, and merged one? (can it looks like prototype inheritance? or reduced to it?)
+
+// do we need finish previous all not completed http requests with previous setting(s)?
+//    -- as special mode
+
+
+
+
+
+// now reconfig is per nginx worker.
+//   How perform reconfig for all wokers?
+//      -- onreconfig_master event?
+//      -- onreconfig_worker event? (non destructive reconfigs, like add local statistics, etc)
+//   Who can send message to all workers? I guess from master worker event loop, using postMessage
+//      -- a apply config to master Worker, and this way test it (and have master copy of config),
+//         and using nginx.iuterCONF, nginx.innerCONF --> perform config serialization
+//       -- send config as series of operations to all workers
+
+
+
+
+// add location-pre-select callback
+
+
+// for reconfig we can postMessage(reconfig, + JSON with new values, etc)
+// or share buffer? (it deped on size of reconfig)
+
+// make channel transferrable object
+

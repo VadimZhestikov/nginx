@@ -1,0 +1,109 @@
+❯ What modules have internal state which affect request/response processing between phase handlers?
+
+● This is a deep architectural question. The answer spans three different kinds of "internal state":
+
+  ---
+  1. Cross-phase request state (set in one phase, read in another)
+
+  These modules write into r->* fields or per-request contexts that later phases depend on:
+
+  ngx_http_rewrite_module
+  - Sets r->uri_changed, r->internal, r->rewritten — these control whether nginx loops back through server/location resolution after a rewrite
+  - Tracks redirect count in r->main->count to detect infinite rewrite loops
+  - The script engine's variable assignments live in r->variables[] and are visible to all subsequent phases
+
+  ngx_http_realip_module (POST_READ)
+  - Rewrites r->connection->addr_text, r->connection->sockaddr in-place
+  - Access module, geo module, and log module in later phases see the replaced client address, not the original TCP source
+
+  ngx_http_auth_request_module (ACCESS)
+  - Issues a subrequest; stores result in its per-request context
+  - Gates POST_ACCESS phase: if the subrequest returned non-2xx, the main request is rejected before CONTENT phase runs
+
+  ngx_http_limit_req_module (PREACCESS → LOG)
+  - On PREACCESS: acquires a slot in a shared memory rbtree; may delay the request
+  - On request cleanup (LOG-equivalent): releases the slot
+  - The "was this request delayed" flag lives in per-request context and affects whether the delay is charged
+
+  ngx_http_limit_conn_module (PREACCESS → LOG)
+  - Increments a shared memory counter on PREACCESS
+  - Registers a cleanup handler that decrements it at LOG phase — the decrement is state that depends on the request having been accepted earlier
+
+  ngx_http_userid_module (CONTENT → LOG)
+  - Parses incoming cookie in content phase
+  - May set/update $uid_got/$uid_set variables
+  - Cookie is sent in response headers, but the variable values cross into the log phase for logging
+
+  ---
+  2. Modules with significant intra-request streaming state (filter chain)
+
+  These run in the body filter chain; their state accumulates across multiple ngx_http_output_filter() calls for a single request — i.e., between successive invocations of the same phase handler for
+  chunked data:
+
+  ngx_http_sub_filter_module
+  - Maintains a KMP automaton state machine across buffer boundaries
+  - Partial-match buffer: a string that started matching the search pattern at the end of one buffer may complete in the next
+  - ctx->tried flag prevents re-application after sub_filter_once on
+
+  ngx_http_charset_filter_module
+  - Holds an iconv_t conversion descriptor open across buffer calls
+  - Multi-byte character boundary state: a character may be split across two output buffers
+
+  ngx_http_gzip_filter_module
+  - Holds a live z_stream (zlib deflate context) across the entire response
+  - Output is not flushed on every call; zlib internal buffering state persists
+
+  ngx_http_gunzip_filter_module
+  - Same pattern with z_stream inflate context
+
+  ngx_http_ssi_filter_module
+  - Full SSI parser state machine across chunks: tag scanning position, <!--# partial-match state
+  - Manages a stack of active SSI blocks (if/else nesting)
+  - Issues subrequests mid-stream and buffers output while waiting for them
+
+  ngx_http_slice_filter_module
+  - Tracks the current byte offset into the sliced range
+  - Each slice is a separate internal subrequest; the filter orchestrates them sequentially, replacing the main request's range header between subrequests
+
+  ---
+  3. Modules that buffer the entire response body before processing
+
+  These effectively "hold" the response across all body filter calls until the upstream sends the final buffer:
+
+  ngx_http_image_filter_module
+  - Accumulates all body buffers into one contiguous block
+  - Only processes and re-emits the image (resize/crop/rotate) on last buffer received
+
+  ngx_http_xslt_filter_module
+  - Same pattern: accumulates entire body, builds an xmlDoc, applies XSLT, emits transformed output
+  - libxslt state lives in per-request context from first to last buffer
+
+  ngx_http_addition_filter_module
+  - Issues subrequests for add_before_body and add_after_body
+  - Buffers the main response body while waiting for the "before" subrequest to finish
+
+  ---
+  4. Upstream connection state (CONTENT phase spanning multiple event loop iterations)
+
+  ngx_http_upstream_module (base for proxy, fastcgi, scgi, uwsgi, memcached, grpc)
+  - Maintains the entire upstream state machine in r->upstream (ngx_http_upstream_t):
+    - Peer connection, SSL handshake state
+    - Send buffer (request to backend) / receive buffer (response from backend)
+    - Retry count and which peer was tried last
+    - Header parse state (partial headers across TCP segments)
+    - Buffered-proxy disk write state
+  - This is all "between invocations of the same content handler" triggered by I/O events, not a different phase, but it is long-lived state that outlasts any single event loop iteration
+
+  ngx_http_fastcgi_module adds:
+  - FastCGI framing parser state: record type, payload length, remaining bytes for the current record
+
+  ---
+  What this means for the JS COM
+
+  Currently the COM exposes only static configuration (the merged *_loc_conf_t, *_srv_conf_t structs). None of the per-request dynamic state described above is visible or writable from JavaScript —
+  no r->upstream, no zlib stream, no sub filter automaton state.
+
+  The most actionable consequence: when you write a JS content handler (location.handler), you are replacing nginx's content phase entirely for that location. The filter chain modules (gzip,
+  sub_filter, SSI, etc.) still run on your response — their state machines activate on whatever buffers your handler produces via r.respond() or r.write().
+
+✻ Worked for 1m 6s

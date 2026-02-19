@@ -1,0 +1,39 @@
+● Stage 4 is done — 338/338 tests passing. Summary of what was implemented:
+
+  New NginxProxy class (ngx_js_com_proxy.c) exposed as location.proxy:
+
+  ┌─────────────────────┬───────────────────────────┬────────────────────────────────┐
+  │      Property       │           Type            │             Source             │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ pass                │ string | "dynamic" | null │ plcf->url / proxy_lengths      │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ httpVersion         │ "1.0" | "1.1"             │ plcf->http_version             │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ connectTimeout      │ ms                        │ upstream.connect_timeout       │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ sendTimeout         │ ms                        │ upstream.send_timeout          │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ readTimeout         │ ms                        │ upstream.read_timeout          │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ buffering           │ bool                      │ upstream.buffering             │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ requestBuffering    │ bool                      │ upstream.request_buffering     │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ interceptErrors     │ bool                      │ upstream.intercept_errors      │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ bufferSize          │ bytes                     │ upstream.buffer_size           │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ buffers             │ {num, size}               │ upstream.bufs                  │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ nextUpstream        │ string[]                  │ upstream.next_upstream bitmask │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ nextUpstreamTries   │ number                    │ upstream.next_upstream_tries   │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ nextUpstreamTimeout │ ms                        │ upstream.next_upstream_timeout │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┤
+  │ setHeader           │ [{key, value}]            │ headers_source                 │
+  └─────────────────────┴───────────────────────────┴────────────────────────────────┘
+
+  Ready for Stage 5 when you are.
+
+✻ Cooked for 11m 15s

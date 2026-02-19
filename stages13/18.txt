@@ -1,0 +1,17 @@
+● Stage 17 done. 930 tests, 68 files, all passing.
+
+  ---
+  Stage 18 candidates:
+
+  Option A — r.variable(name) / r.setVariable(name, value): Read and write nginx variables from JS content handlers. Very useful for integration with existing nginx config (access_log, upstream
+  selection, etc.).
+
+  Option B — NginxRequest response-header incremental API: r.setHeader(name, value) sets response headers before r.respond(). Currently respond() only takes a plain JS object for headers.
+
+  Option C — r.location getter: Returns the NginxLocation object for the request's matched location from request handlers — bridging the two object trees.
+
+  Option D — nginx.http.upstream(name) method: Lookup an upstream by name from JS (complement to the existing array iteration).
+
+  Option A (r.variable / r.setVariable) is the most impactful for real-world use — it lets JS handlers interact with nginx variables used by other modules. Shall I proceed with Stage 18 as Option A?
+
+yes!

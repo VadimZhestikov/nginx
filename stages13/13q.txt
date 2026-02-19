@@ -1,0 +1,15 @@
+  Stage 13p is done: 711/711 tests pass.
+
+  ---
+  Stage 13q proposal — mp4 / flv
+
+  The next candidates from nginx's built-in location modules are:
+
+  - ngx_http_mp4_module (--with-http_mp4_module) — ngx_http_mp4_conf_t holds: buffer_size, max_buffer_size, start_key_frame (since 1.27.x). Expose as location.mp4.
+  - ngx_http_flv_module (--with-http_flv_module) — no per-location conf struct; the module only enables FLV pseudo-streaming by its presence. We could expose location.flv as a boolean.
+
+  Alternatively, we could move on to ngx_http_geo_module (server-level) or skip to ngx_http_map_module, both of which don't have per-location conf but are interesting at the http {} level.
+
+  A cleaner choice for 13q is mp4 — it has a proper loc_conf with useful fields. After that we can do flv as a trivial boolean property on the same commit, or skip it.
+
+  Shall I proceed with Stage 13q — location.mp4 (NginxMp4)?

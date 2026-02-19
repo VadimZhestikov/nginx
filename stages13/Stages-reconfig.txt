@@ -1,0 +1,311 @@
+❯ question: having last answer in the mind, which of all core modules can be reconfigured safely on the fly (from JS called by nginx event loop (as example, by nginx.setTimeout() in nginx workers) ?
+
+● This is a subtle but important question. The key architectural distinction is:
+
+  Does the module read its config struct field on every request invocation, or does it pre-build derivative data structures at init time that the field merely parameterises?
+
+  If a module re-reads clcf->field on every request, changing the field is safe. If it built a compiled structure (KMP table, regex bytecode, hash table, OpenSSL context) from the field once,
+  changing the field has no effect and could leave the derivative structure inconsistent.
+
+  The JS event loop gives you single-threaded exclusivity within the worker — no nginx module code runs concurrently while your JS callback runs. But other workers are separate processes running
+  concurrently in shared memory.
+
+  ---
+  Fully safe — designed for runtime changes
+
+  These are either pure JS properties or use nginx's shared memory rwlock protocol:
+
+  nginx.workerMemoryLimit           — applied before every JS_Call, no nginx internals
+  nginx.workerRequestTimeout        — applied before every JS_Call, no nginx internals
+  location.handler                  — JS function swap, purely within QuickJS heap
+
+  upstream[].peers[].weight         — shm rwlock; upstream reads under lock
+  upstream[].peers[].down           — shm rwlock
+  upstream[].peers[].maxFails       — shm rwlock
+  upstream[].peers[].failTimeout    — shm rwlock
+  upstream[].peers[].maxConns       — shm rwlock
+  upstream[].addPeer()              — shm rwlock
+  upstream[].removePeer()           — shm rwlock
+
+  ---
+  Safe in practice — module re-reads the field on every request
+
+  No derivative structures; the module does a straight clcf->field read at request time. Changing the field between requests takes effect immediately with no risk:
+
+  Static/core request handling
+  location.root / server.root           — read at start of each static file/proxy resolve
+  location.defaultType                  — read when setting Content-Type
+  location.sendfile / tcpNopush / tcpNodelay / etag
+  location.keepaliveTimeout / keepaliveRequests / keepaliveTime
+  location.clientMaxBodySize            — checked when body arrives
+  location.clientBodyTimeout
+  location.sendTimeout
+  location.alias
+  location.satisfy                      — read at access phase
+  location.limitExcept                  — read at access phase
+  location.errorPage[]                  — read when generating error response
+
+  Upstream/proxy timeouts — copied into r->upstream at connection start; safe to change between requests:
+  proxy.connectTimeout / sendTimeout / readTimeout
+  proxy.nextUpstreamTries / nextUpstreamTimeout
+  proxy.interceptErrors / buffering / requestBuffering
+  fastcgi.connectTimeout / sendTimeout / readTimeout
+  scgi/uwsgi/memcached — same timeout fields
+
+  Filter module flags — read at the start of each response's filter chain:
+  gzip.enable / level / minLength / vary   — checked per response
+  gunzip.enable
+  autoindex.enable / format / localtime / exactSize
+  subFilter.once / lastModified            — flags only; safe between responses
+  addition.addBeforeBody / addAfterBody    — URI read at precontent phase
+  mirror.uris[] / requestBody             — read at precontent phase
+  slice.size                               — read at start of slicing (between subrequests)
+
+  Access/auth — re-evaluated per request:
+  access.rules[]                           — iterated on each access check
+  auth.userFile                            — file path re-read on each auth check
+  auth.realm                               — sent in WWW-Authenticate header each time
+  limitReq.logLevel / statusCode / dryRun
+  limitConn.logLevel / statusCode / dryRun
+  authRequest.uri                          — subrequest URI read at access phase
+
+  ---
+  Unsafe — pre-built derivative structures, changing the field has no effect
+
+  These modules build a compiled artifact from config at init/first-use time. The field you can write is stale metadata; the real logic runs from the artifact:
+
+  rewrite rules (.hasRules, .stackSize)
+    → scripts compiled to QuickJS-like bytecode at parse time; not re-compiled
+
+  subFilter.pairs[]
+    → KMP failure function table built at first response; changing pairs[]
+      would desync from the already-running automaton state for live responses
+
+  charset.charset / sourceCharset
+    → iconv_t descriptor opened once; not re-opened on field change
+
+  SSL (certificate, certificateKey, ciphers, protocols, …)
+    → OpenSSL SSL_CTX built once at init; these fields are metadata after that
+
+  server names / serverNamesHashMaxSize / serverNamesHashBucketSize
+    → hash table built once during post-configuration; field change doesn't rebuild it
+
+  variables hash / variablesHashMaxSize / variablesHashBucketSize
+    → same: hash built once, indexes already distributed to all modules
+
+  cycle.workers
+    → field write doesn't signal master process; master controls worker lifecycle
+      independently of this field value
+
+  imageFilter.action / width / height / angle
+    → GD/libpng processing parameters read once per response (actually safe
+      between responses, but the image is processed as a whole — no mid-stream
+      state machine to corrupt)
+
+  xslt parameters
+    → libxslt stylesheet compiled once; runtime XSLT param values safe between
+      responses but the stylesheet itself is not reloadable
+
+  secureLink.secret
+    → HMAC computed fresh each request — actually safe to change between requests
+      (the new secret takes effect on the next check)
+
+  ---
+  The precise safety boundary
+
+             ┌─ reads field on every request/response? ──────► SAFE to change
+             │
+  config ────┤
+  field      │
+             └─ was used to build a table/context/bytecode? ─► UNSAFE to change
+                                                                 (the field is now
+                                                                  dead metadata)
+
+  The modules that are safe to tune from a setTimeout callback or request handler are primarily: upstream load-balancing, timeouts, document root, content handler, and simple on/off flags in filter
+  modules. Anything that involved compilation, hashing, or cryptographic context construction at init time cannot be meaningfully reconfigured this way.
+
+✻ Sautéed for 1m 23s
+
+
+
+
+❯ Does this means, that for unsafe list provide setter which will rebuilt artifact after setting new metadata?
+
+● Yes, exactly. That's the right approach — a setter that not only writes the metadata field but also invalidates and rebuilds the derivative artifact.
+
+  Here's how each unsafe case would need to be handled:
+
+  ---
+  Sub filter — KMP tables
+
+  What to rebuild: the KMP failure function table for each pattern in pairs[].
+
+  /* ngx_http_sub_filter_module.c builds tables in ngx_http_sub_init_tables()
+     called lazily on first response. Expose a method: */
+  location.subFilter.setPairs([{match, replacement}, ...])
+
+  The setter would:
+  1. Write new slcf->pairs array
+  2. Call ngx_http_sub_init_tables(cf, slcf) to rebuild KMP tables
+  3. Only safe between responses (not while a body filter is mid-stream)
+
+  Risk: must not be called while a response using this location is being filtered. Since JS runs in the event loop and body filtering is synchronous within a single event loop tick, calling from
+  setTimeout between requests is safe.
+
+  ---
+  Charset — iconv descriptor
+
+  What to rebuild: close old iconv_t, open a new one.
+
+  location.charset.setCharset(charset, sourceCharset)
+
+  The setter would:
+  1. Find or open a new iconv_t for the new pair
+  2. Replace the stored descriptor
+  3. The per-request filter context holds its own iconv_t copy — only new requests get the new descriptor
+
+  ---
+  SSL — OpenSSL SSL_CTX
+
+  This is the most complex. nginx already has a solution: ngx_ssl_t holds an SSL_CTX*. There are two levels:
+
+  server.ssl.setCertificate(certPath, keyPath)
+  server.ssl.setCiphers(cipherString)
+  server.ssl.setProtocols([...])
+
+  Each setter would:
+  1. Write the metadata field
+  2. Call SSL_CTX_use_certificate_file() / SSL_CTX_use_PrivateKey_file() / SSL_CTX_set_cipher_list() on the existing SSL_CTX*
+
+  This is actually what nginx already does on graceful reload — the same SSL_CTX can be updated in place. Existing TLS connections keep their old session; new handshakes use the new cert/ciphers.
+
+  This is the most valuable one — dynamic certificate rotation without reload.
+
+  ---
+  Server name hash
+
+  What to rebuild: call ngx_hash_init() on the names array.
+
+  server.setNames([...])
+
+  The setter would:
+  1. Update cscf->server_names array
+  2. Reallocate and rebuild the hash in cycle->pool (or a dedicated pool)
+  3. Swap the pointer atomically
+
+  Complexity: the hash is also used by ngx_http_find_virtual_server() at the http-block level — a single server's hash feeds into a larger virtual server dispatch table. Rebuilding one server's names
+   in isolation requires understanding the full virtual server dispatch tree.
+
+  ---
+  Rewrite rules
+
+  This is the hardest and probably not worth doing:
+
+  location.rewrite.setRules(scriptText)
+
+  Would require:
+  1. Creating a temporary ngx_conf_t
+  2. Running ngx_http_rewrite_module's directive handler on the script text
+  3. Compiling new bytecode into a fresh array
+  4. Swapping rlcf->codes
+
+  Verdict: too invasive. Better to replace location.handler with a JS function that does the equivalent logic — JS is already a superset of what rewrite scripts can express.
+
+  ---
+  Variables hash
+
+  nginx.http.rebuildVariablesHash()
+
+  After nginx.http.addVariable() calls, rebuild the variables hash. nginx already has ngx_http_variables_init_vars() for this — calling it again after adding variables would work, but requires a pool
+   allocation and careful handling of existing variable indexes (which modules have already cached).
+
+  Verdict: addVariable() already only works during js_init_http (config phase) for this reason.
+
+  ---
+  Image filter / XSLT / SecureLink
+
+  These are actually safe to change between requests already:
+
+  imageFilter.action / width / height     — read fresh per response, no compiled artifact
+  xslt params                             — XSLT params are strings looked up per-transform
+  secureLink.secret                       — HMAC computed fresh each time
+
+  These don't need special setters — direct field writes already work.
+
+  ---
+  Summary of what's worth building
+
+  ┌───────────────────────┬────────────────────────┬─────────────────────────┬─────────────────────────────────────┐
+  │        Module         │     Setter needed      │      Rebuild cost       │                Value                │
+  ├───────────────────────┼────────────────────────┼─────────────────────────┼─────────────────────────────────────┤
+  │ subFilter.pairs[]     │ setPairs()             │ Rebuild KMP tables      │ Medium — dynamic content rewriting  │
+  ├───────────────────────┼────────────────────────┼─────────────────────────┼─────────────────────────────────────┤
+  │ ssl.certificate/key   │ setCertificate()       │ SSL_CTX update in place │ High — cert rotation without reload │
+  ├───────────────────────┼────────────────────────┼─────────────────────────┼─────────────────────────────────────┤
+  │ ssl.ciphers/protocols │ setCiphers()           │ SSL_CTX update in place │ High — security policy update       │
+  ├───────────────────────┼────────────────────────┼─────────────────────────┼─────────────────────────────────────┤
+  │ charset               │ setCharset()           │ Open new iconv_t        │ Low                                 │
+  ├───────────────────────┼────────────────────────┼─────────────────────────┼─────────────────────────────────────┤
+  │ Server name hash      │ setNames()             │ Rebuild hash table      │ Medium — dynamic vhosts             │
+  ├───────────────────────┼────────────────────────┼─────────────────────────┼─────────────────────────────────────┤
+  │ Rewrite rules         │ Not worth it           │ Full recompile          │ Low — use location.handler instead  │
+  ├───────────────────────┼────────────────────────┼─────────────────────────┼─────────────────────────────────────┤
+  │ Variables hash        │ rebuildVariablesHash() │ Re-run init_vars        │ Low — only useful at config phase   │
+  └───────────────────────┴────────────────────────┴─────────────────────────┴─────────────────────────────────────┘
+
+  The SSL and sub_filter setters have the clearest value proposition. SSL certificate rotation is a real operational need (cert expiry, key compromise), and the rebuild is well-understood — nginx's
+  own reload mechanism does essentially the same thing.
+
+
+
+ All 1399 tests pass. Committed as 499e8a06d.
+
+  Stage 8 summary — 8 COM modules, 22 newly writable properties:
+
+  ┌──────────────────┬───────────────────────────────────────────────────────────────────────────────────┐
+  │      Module      │                             Properties made writable                              │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ NginxSlice       │ size                                                                              │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ NginxSsi         │ enable, silentErrors, ignoreRecycledBuffers, lastModified, minFileChunk, valueLen │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ NginxRandomIndex │ enable                                                                            │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ NginxGzipStatic  │ enable ("off"/"on"/"always" — TypeError on bad string)                            │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ NginxMp4         │ bufferSize, maxBufferSize, startKeyFrame                                          │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ NginxXslt        │ lastModified                                                                      │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ NginxDav         │ methods (string array → bitmask), access, minDeleteDepth, createFullPutPath       │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────┤
+  │ NginxCharset     │ overrideCharset (missed in stage 6)                                               │
+  └──────────────────┴───────────────────────────────────────────────────────────────────────────────────┘
+
+✻ Churned for 6m 18s
+
+
+
+.............................
+
+
+
+
+● All 1428 tests pass. Committed as 5ed0933af.
+
+  Stage 9 summary — 37 newly writable properties across location and server COM objects:
+
+  Location (29 new setters):
+  - String enums: satisfy, lingering, clientBodyInFileOnly, ifModifiedSince, directio ("off" or bytes)
+  - Array→bitmask: limitExcept (HTTP methods), keepaliveDisable ("msie6"/"safari")
+  - Timeouts (ms): lingeringTimeout, lingeringTime, resolverTimeout, authDelay, keepaliveMinTimeout
+  - Sizes (bytes): clientBodyBufferSize, sendLowat, postponeOutput, sendfileMaxChunk, readAhead, directioAlignment
+  - Booleans (10): chunkedTransferEncoding, msieRefresh, logNotFound, logSubrequest, recursiveErrorPages, clientBodyInSingleBuffer, resetTimedoutConnection, absoluteRedirect, serverNameInRedirect,
+  portInRedirect, msiePadding
+
+  Server (8 new setters):
+  - clientHeaderBufferSize, clientHeaderTimeout, connectionPoolSize, requestPoolSize
+  - ignoreInvalidHeaders, mergeSlashes, underscoresInHeaders
+  - serverTokens ("off"/"on"/"build")
+
+✻ Cooked for 5m 52s

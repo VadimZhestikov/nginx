@@ -1,0 +1,14 @@
+● Stage 13q done. 721/721 tests passing.
+
+  ---
+  Stage 13r proposal — location.randomIndex (NginxRandomIndex)
+
+  ngx_http_random_index_module has a tiny per-location conf:
+
+  typedef struct {
+      ngx_flag_t  enable;
+  } ngx_http_random_index_loc_conf_t;
+
+  One boolean: enable — whether random_index on is active in this location. Expose as location.randomIndex.enable.
+
+  Shall I proceed?

@@ -1,0 +1,1019 @@
+❯ I'd like be shure that currently implemented dynamic configuration is safely  
+applied to all next request processing by modules, but not affect currently     
+processed requests. In other words: be sure that modules get their config in    
+the beginnig of request processing and keep it before their end of request      
+processing. This includes filters installed by modules.                         
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Question: I'd like be shure that currently implemented dynamic configuration  
+is safely applied to all next request processing by modules, but not affect     
+currently processed requests. In other words: be sure                           
+ that modules get their config in the beginnig of request processing and keep   
+it before their end of request processing. This includes filters installed by   
+modules.                                                                        
+
+● This is a fundamental architectural question. Let me work through exactly what
+   nginx does and where the current implementation stands.
+
+  How modules access config today
+
+  After NGX_HTTP_FIND_CONFIG_PHASE, nginx sets:
+  r->loc_conf = clcf->loc_conf;   /* direct pointer to the shared array */
+
+  Every subsequent module access — phase handlers AND filters — does:
+  clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+  // expands to: r->loc_conf[ngx_http_core_module.ctx_index]
+  // which is: the original shared ngx_http_core_loc_conf_t *
+
+  When our JS setter writes clcf->keepalive_timeout = newVal, it writes to that
+  shared struct. There is no per-request copy. r->loc_conf gives the in-progress
+   request the same pointer it would give a brand-new request.
+
+  Concrete danger points
+
+  1. Cross-phase, same request:
+  client_max_body_size is checked during body reading (preaccess phase). If a JS
+   content handler raises it, the check already passed and it's harmless. But
+  keepalive_timeout is read at ngx_http_finalize_request — after the content
+  phase — so a change in the content handler does affect the current request's
+  keepalive decision.
+
+  2. Filters during chunked/streaming responses:
+  Filters re-read r->loc_conf[m.ctx_index] on every invocation. For a streaming
+  response, the filter chain fires multiple times across multiple event-loop
+  ticks. A JS-driven config change between two chunks (e.g. changing gzip
+  settings) would be seen mid-stream by the gzip filter — which has already
+  written a gzip stream header. That would corrupt the response.
+
+  3. Async handlers (nginx.setTimeout):
+  The request is suspended, other JS code runs, changes config, request resumes.
+   The resumed request's filters see the new config. This is the highest-risk
+  scenario.
+
+  What would actually guarantee isolation
+
+  The only proper fix is a per-request snapshot of the loc_conf structs copied
+  into r->pool at the end of FIND_CONFIG_PHASE. In
+  ngx_http_core_find_config_phase, after the location is matched:
+
+  /* snapshot ngx_http_core_loc_conf_t for this request */
+  ngx_http_core_loc_conf_t *snap = ngx_palloc(r->pool, sizeof(*snap));
+  *snap = *clcf;                           /* shallow copy of the struct */
+
+  void **lc = ngx_palloc(r->pool, nmodules * sizeof(void *));
+  ngx_memcpy(lc, clcf->loc_conf, nmodules * sizeof(void *));
+  lc[ngx_http_core_module.ctx_index] = snap;
+  snap->loc_conf = lc;
+  r->loc_conf = lc;
+
+  This gives each request its own immutable snapshot of the core config. JS
+  changes only affect the original clcf; new requests get a fresh snapshot of
+  the updated struct.
+
+  Limitation: this only snapshots ngx_http_core_loc_conf_t. Other modules'
+  loc_conf structs (gzip, proxy, sub_filter, etc.) remain shared. A full
+  per-module snapshot would require knowing each module's struct size, which
+  isn't available through the module API.
+
+  Practical scope: most of the values we expose as writable live in
+  ngx_http_core_loc_conf_t. The sub-module wrappers (NginxGzip, NginxProxy,
+  etc.) expose writable fields in their own structs, which the snapshot above
+  would not protect.
+
+  Bottom line
+
+  ┌───────────────────────────────┬─────────────────────────────────────────┐
+  │           Scenario            │             Current status              │
+  ├───────────────────────────────┼─────────────────────────────────────────┤
+  │ JS changes config at init     │ Safe — no requests in flight            │
+  │ time (before any request)     │                                         │
+  ├───────────────────────────────┼─────────────────────────────────────────┤
+  │ Synchronous JS content        │ Partially unsafe — values read after    │
+  │ handler changes core fields   │ content phase (keepalive, filters) see  │
+  │                               │ the new value                           │
+  ├───────────────────────────────┼─────────────────────────────────────────┤
+  │ Async handler changes config  │ Unsafe — request resumes with changed   │
+  │ while request is suspended    │ config                                  │
+  ├───────────────────────────────┼─────────────────────────────────────────┤
+  │ Streaming response, filter    │ Unsafe — filter sees new config         │
+  │ config changed between chunks │ mid-stream                              │
+  ├───────────────────────────────┼─────────────────────────────────────────┤
+  │ location.handler = fn (our JS │ Safe — handler_idx is read once,        │
+  │  handler slot)                │ synchronously                           │
+  └───────────────────────────────┴─────────────────────────────────────────┘
+
+  The per-request core loc_conf snapshot is the right fix for the first three
+  rows. It's a targeted, low-cost change (one ngx_palloc + ngx_memcpy per
+  request) that covers most of the exposed writable surface. Shall I implement
+  it?
+
+✻ Cooked for 1m 46s
+
+❯ Lets plan approach for 4th row as well                                        
+
+● The row 4 problem in detail
+
+  Streaming body filters run once per chunk, across multiple event-loop ticks.
+  Between chunks, the event loop returns to accept other work (including JS
+  callbacks). The sub_filter body filter, for example, re-reads its config on
+  every chunk to know what pattern to match:
+
+  chunk 1 arrives → sub_filter reads slcf->match = "foo"   → replaces "foo"
+    [event loop tick — JS setTimeout fires, sets slcf->match = "bar"]
+  chunk 2 arrives → sub_filter reads slcf->match = "bar"   → mid-stream
+  inconsistency
+
+  For gzip specifically it's even worse: the gzip body filter maintains a
+  deflate stream in per-request ctx, but some gzip options (buffer size, level)
+  are re-read per chunk. Changing them mid-deflate-stream is undefined behavior.
+
+  ---
+  The unified approach that covers all four rows
+
+  The key insight: JS only runs inside our content handler (or timer callbacks).
+   No other phase calls JS. So config can only be mutated at one well-defined
+  point in the request lifecycle.
+
+  Take a per-request snapshot of all writable loc_conf structs at the start of 
+  ngx_js_content_handler, before calling the JS function:
+
+  ngx_int_t
+  ngx_js_content_handler(ngx_http_request_t *r)
+  {
+      ngx_js_snapshot_loc_conf(r);   /* freeze config for this request */
+      /* ... call JS ... */
+  }
+
+  After ngx_js_snapshot_loc_conf:
+  - r->loc_conf → per-request copy of the pointer array (in r->pool)
+  - r->loc_conf[core_module.ctx_index] → per-request copy of
+  ngx_http_core_loc_conf_t
+  - r->loc_conf[gzip_module.ctx_index] → per-request copy of
+  ngx_http_gzip_conf_t
+  - r->loc_conf[sub_filter_module.ctx_index] → per-request copy of
+  ngx_http_sub_loc_conf_t
+  - … (each module we expose as writable in the COM)
+
+  JS then runs and mutates the originals (shared structs). The in-progress
+  request's r->loc_conf[m.ctx_index] already points to the snapshots, so:
+
+  ┌───────────────────────────────────────┬─────────────────────────────────┐
+  │           Who reads config            │          What they get          │
+  ├───────────────────────────────────────┼─────────────────────────────────┤
+  │ Current request's filters             │ Snapshot — frozen at moment JS  │
+  │ (post-snapshot)                       │ was called                      │
+  ├───────────────────────────────────────┼─────────────────────────────────┤
+  │ Current request's finalization        │ Snapshot                        │
+  │ (keepalive etc.)                      │                                 │
+  ├───────────────────────────────────────┼─────────────────────────────────┤
+  │ New requests (any phase)              │ Shared original — sees JS       │
+  │                                       │ mutations ✓                     │
+  └───────────────────────────────────────┴─────────────────────────────────┘
+
+  This also handles the nginx.setTimeout case: the snapshot is taken before JS
+  suspends. When JS resumes and makes further mutations, the suspended request's
+   snapshot is already in r->pool and unaffected.
+
+  ---
+  ngx_js_snapshot_loc_conf design
+
+  static ngx_int_t
+  ngx_js_snapshot_loc_conf(ngx_http_request_t *r)
+  {
+      void  **lc;
+
+      /* idempotent — skip if already snapshotted for this request */
+      if (ngx_js_get_ctx(r)->loc_conf_snapshotted) {
+          return NGX_OK;
+      }
+
+      /* 1. copy pointer array */
+      lc = ngx_palloc(r->pool, ngx_js_http_nmodules * sizeof(void *));
+      ngx_memcpy(lc, r->loc_conf, ngx_js_http_nmodules * sizeof(void *));
+      r->loc_conf = lc;
+
+      /* 2. deep-copy each writable struct (only modules we expose via JS COM) 
+  */
+      #define SNAP(module_sym, type)  do {                    \
+          type *_s = ngx_palloc(r->pool, sizeof(*_s));        \
+          *_s = *(type *) lc[(module_sym).ctx_index];         \
+          lc[(module_sym).ctx_index] = _s;                    \
+      } while (0)
+
+      SNAP(ngx_http_core_module,          ngx_http_core_loc_conf_t);
+      /* fix self-reference: clcf->loc_conf must point to our new lc */
+      ((ngx_http_core_loc_conf_t *)
+  lc[ngx_http_core_module.ctx_index])->loc_conf = lc;
+
+  #if (NGX_HTTP_GZIP)
+      SNAP(ngx_http_gzip_filter_module,   ngx_http_gzip_conf_t);
+  #endif
+      SNAP(ngx_http_sub_filter_module,    ngx_http_sub_loc_conf_t);
+      SNAP(ngx_http_headers_filter_module,ngx_http_headers_conf_t);
+      SNAP(ngx_http_rewrite_module,       ngx_http_rewrite_loc_conf_t);
+      /* … add one SNAP per module we expose as writable … */
+
+      #undef SNAP
+
+      ngx_js_get_ctx(r)->loc_conf_snapshotted = 1;
+      return NGX_OK;
+  }
+
+  Memory cost: ~10 modules × ~200 bytes average ≈ 2 KB per request, allocated
+  from r->pool (freed when request ends). Negligible.
+
+  Maintenance rule: every time we add a new writable property to any module's
+  COM wrapper, we add the corresponding SNAP(...) line. The list lives in one
+  place and is obviously auditable.
+
+  ---
+  One subtlety: clcf->loc_conf self-reference
+
+  ngx_http_core_loc_conf_t contains void **loc_conf which points back to the
+  pointer array it lives in. After snapshot, this must be updated to point to lc
+   (the per-request copy), not the original array — otherwise modules that do
+  clcf->loc_conf[other_module.ctx_index] will bypass the snapshot for other
+  modules. This is the one non-mechanical line in the function above.
+
+  ---
+  Shall I implement this?
+
+✻ Churned for 2m 51s
+
+❯ Next question: Should we add similar snapshot for modified main config, http  
+config and server config?                                                       
+
+● Good question. The answer turns out to be no for most cases, because of when
+  those configs are actually read relative to when JS runs.
+
+  ---
+  The timing argument
+
+  JS only runs in NGX_HTTP_CONTENT_PHASE. Everything before that phase is frozen
+   from JS's perspective. The question for each config level is: are its 
+  writable fields read before or after CONTENT_PHASE?
+
+  srv_conf (ngx_http_core_srv_conf_t)
+
+  The writable fields we expose — clientHeaderBufferSize, clientHeaderTimeout,
+  largeClientHeaderBuffers, ignoreInvalidHeaders, underscoresInHeaders,
+  mergeSlashes — are all consumed during header parsing, which happens at
+  connection setup / POST_READ_PHASE, long before CONTENT_PHASE. By the time JS
+  runs, those reads are already done and the parsed result (e.g. the header
+  buffers, the normalized URI) is sitting in r-> fields. Mutating the srv_conf
+  originals after the fact has no effect on the current request.
+
+  The one exception is serverTokens — it's read when building the Server:
+  response header. But that's cosmetic and arguably the desired behavior ("I
+  changed the server token, I want this response to reflect it").
+
+  main_conf (ngx_http_core_main_conf_t)
+
+  The writable fields exposed at nginx.http level — if any — are
+  structural/global: variable hashes, type maps, server count. These are
+  consumed at startup or during phase engine construction, not during
+  per-request filter chains. Nothing in main_conf is read in a body filter or
+  finalization path that JS could affect.
+
+  Filters read loc_conf, not srv_conf or main_conf
+
+  The row 4 problem (streaming filter inconsistency) exists specifically because
+   body filters call ngx_http_get_module_loc_conf(r, m). They don't call
+  ngx_http_get_module_srv_conf or ngx_http_get_module_main_conf. So the snapshot
+   requirement is loc_conf-scoped.
+
+  ---
+  Summary
+
+  ┌────────────┬────────────────────────────────────────────┬──────────────┐
+  │  Config    │         Fields read after JS runs?         │  Snapshot    │
+  │   level    │                                            │   needed?    │
+  ├────────────┼────────────────────────────────────────────┼──────────────┤
+  │ loc_conf   │ Yes — filters, finalization, keepalive     │ Yes          │
+  ├────────────┼────────────────────────────────────────────┼──────────────┤
+  │ srv_conf   │ Mostly no — header parsing precedes JS;    │ No           │
+  │            │ serverTokens is cosmetic                   │              │
+  ├────────────┼────────────────────────────────────────────┼──────────────┤
+  │ main_conf  │ No — structural data, consumed at startup  │ No           │
+  └────────────┴────────────────────────────────────────────┴──────────────┘
+
+  The loc_conf snapshot is sufficient. If we ever expose srv_conf fields that
+  affect response generation (e.g. a hypothetical server.defaultErrorPage that's
+   read in the error filter), we'd add a srv_conf snapshot at that point — but
+  that's a future concern, not a current one.
+
+✻ Churned for 55s
+
+❯ /export snapshot                                                              
+  ⎿  Conversation exported to: /home/vadim/fixes.github/tmp/nginx/snapshot.txt
+
+❯ Can we correct plan: move snapshot to setters of configured values, and make  
+snapshot more lazy this way?                                                    
+
+● Good refinement. The key insight: most JS handlers never write config at all
+  (they just call r.respond()), so the eager approach wastes a snapshot for
+  every such request. Triggering on first write is strictly better.
+
+  Revised plan: snapshot-on-first-write
+
+  Mechanics
+
+  When a setter writes to any snapshotable loc_conf field:
+  1. Check if we're currently inside a request context
+  2. If yes and not yet snapshotted: take the full snapshot into r->pool,
+  redirect r->loc_conf to the per-request copies
+  3. Write the new value to the original (shared) struct
+
+  Result:
+  - Future requests: r->loc_conf[m.ctx_index] → shared original → see the new
+  value ✓
+  - Current request: r->loc_conf[m.ctx_index] → snapshot → sees pre-write value,
+   consistent throughout ✓
+  - Requests that never write config: no snapshot, no memory cost ✓
+
+  ---
+  What needs to change
+
+  ngx_js_worker_t — add a current_request pointer:
+  ngx_http_request_t  *current_request;   /* non-NULL while JS is running for a 
+  request */
+
+  Content handler lifecycle — bracket every JS invocation with the pointer:
+  // sync entry:
+  w->current_request = r;
+  result = JS_Call(ctx, fn, ...);
+  w->current_request = NULL;
+
+  // async timer callback (before resolving the promise):
+  w->current_request = pending_request;
+  JS_Call(ctx, resolver, ...);  /* microtasks drain here */
+  w->current_request = NULL;
+
+  Request context — add one flag:
+  unsigned  loc_conf_snapshotted:1;
+
+  ngx_js_ensure_snapshot(r) — idempotent, called from setters:
+  if (ctx->loc_conf_snapshotted) return NGX_OK;
+  /* copy pointer array + all writable module structs into r->pool */
+  /* fix clcf->loc_conf self-reference */
+  ctx->loc_conf_snapshotted = 1;
+
+  Every setter for a snapshotable field:
+  ngx_js_worker_t *w = JS_GetContextOpaque(ctx);
+  if (w->current_request) {
+      if (ngx_js_ensure_snapshot(w->current_request) != NGX_OK) {
+          return JS_ThrowOutOfMemory(ctx);
+      }
+  }
+  clcf->keepalive_timeout = (ngx_msec_t) n;   /* writes to original */
+
+  ---
+  Which setters need the guard
+
+  Any setter that writes to a struct that's also read by post-content-phase code
+   (filters, finalization). That's exactly the list in the snapshot function:
+  ngx_http_core_loc_conf_t, ngx_http_gzip_conf_t, ngx_http_sub_loc_conf_t, etc.
+
+  Setters that don't need it:
+  - location.handler = fn — writes to jlcf->handler_idx (our own field, not read
+   by any other module's filter)
+  - Server/main-level setters (srv_conf, main_conf — as established, no post-JS
+  reads)
+
+  ---
+  One design question to settle
+
+  After the snapshot, the write goes to the original. This means the current
+  request's own filters see the pre-write (snapshot) value, while future
+  requests see the post-write value. Is that the intended semantic — or should
+  the current request also see its own write (write to snapshot instead of
+  original)?
+
+  The two options have different meanings:
+  - Write to original → reconfiguration semantics: "change the global setting; I
+   accept that my own in-flight response uses the old value"
+  - Write to snapshot → per-request override semantics: "change the setting just
+   for this request's response; don't affect other requests"
+
+  Both are defensible. Which is it?
+
+✻ Worked for 2m 1s
+
+❯ Can we use instead of object.configurable_property = new_value, explicit      
+setter object.setProperty('configurebale_property', value, options), defined on 
+ object prototype, where options can include combination of 'write to original' 
+ and 'Write to snapshot'. It would be nice have function set default            
+combination for assignment to object.configurable_property.                     
+
+● Good API design thinking. Let me map this out carefully.
+
+  Proposed API
+
+  // Explicit write with mode — overrides object's default for this call:
+  loc.setProperty('keepaliveTimeout', 0, 'global');  // write to shared original
+   only
+  loc.setProperty('keepaliveTimeout', 0, 'local');   // write to request 
+  snapshot only
+  loc.setProperty('keepaliveTimeout', 0, 'both');    // write to both
+
+  // Set default mode for the = operator on this object instance:
+  loc.setWriteMode('local');       // subsequent loc.x = v → local
+  loc.setWriteMode('global');      // reset to default
+
+  // = uses the object's current writeMode (default: 'global'):
+  loc.keepaliveTimeout = 0;        // → same as setProperty(..., loc.writeMode)
+
+  // writeMode is also readable:
+  console.log(loc.writeMode);      // 'global' | 'local' | 'both'
+
+  The 'both' mode is the "intent visible everywhere" case: current request sees
+  it immediately, future requests inherit it.
+
+  ---
+  Where writeMode lives
+
+  COM objects at the loc_conf level (NginxLocation, NginxProxy, NginxGzip, etc.)
+   are created fresh on every access — server.locations builds a new array each
+  call, location.proxy allocates a new wrapper each call. So writeMode stored in
+   the opaque struct starts fresh at 'global' for every access. No cross-request
+   contamination.
+
+  Singleton objects (nginx, nginx.http) don't support the snapshot mechanism
+  anyway (no per-request snapshot for main/srv conf), so setWriteMode can simply
+   be a no-op or throw on those.
+
+  ---
+  C implementation shape
+
+  Opaque structs — add one field each:
+  typedef struct {
+      ngx_http_core_loc_conf_t  *clcf;
+      ngx_uint_t                 write_mode;   /* NGX_JS_WRITE_GLOBAL | LOCAL | 
+  BOTH */
+  } ngx_js_location_opaque_t;
+
+  #define NGX_JS_WRITE_GLOBAL  0x1
+  #define NGX_JS_WRITE_LOCAL   0x2
+  #define NGX_JS_WRITE_BOTH    (NGX_JS_WRITE_GLOBAL | NGX_JS_WRITE_LOCAL)
+
+  Existing setter (loc.x = v) — reads op->write_mode:
+  static JSValue
+  ngx_js_location_set(JSContext *ctx, JSValueConst this_val,
+      JSValueConst val, int magic)
+  {
+      op = JS_GetOpaque2(...);
+      return ngx_js_location_write(ctx, op, magic, val, op->write_mode);
+  }
+
+  setProperty(name, value, mode) — parses name→magic, mode→flags, calls same
+  writer:
+  static JSValue
+  ngx_js_location_set_property(JSContext *ctx, JSValueConst this_val,
+      int argc, JSValueConst *argv)
+  {
+      /* argv[0]=name, argv[1]=value, argv[2]=mode string */
+      magic     = ngx_js_location_name_to_magic(ctx, argv[0]);
+      write_mode = ngx_js_parse_write_mode(ctx, argv[2]);  /* default: 
+  op->write_mode */
+      return ngx_js_location_write(ctx, op, magic, argv[1], write_mode);
+  }
+
+  ngx_js_location_write(ctx, op, magic, val, write_mode) — the shared writer:
+  static JSValue
+  ngx_js_location_write(JSContext *ctx, ngx_js_location_opaque_t *op,
+      int magic, JSValueConst val, ngx_uint_t write_mode)
+  {
+      ngx_js_worker_t            *w  = JS_GetContextOpaque(ctx);
+      ngx_http_core_loc_conf_t   *orig = op->clcf;
+      ngx_http_core_loc_conf_t   *snap = NULL;
+
+      if ((write_mode & NGX_JS_WRITE_LOCAL) && w->current_request) {
+          ngx_js_ensure_snapshot(w->current_request);
+          snap = w->current_request->loc_conf[ngx_http_core_module.ctx_index];
+      }
+
+      switch (magic) {
+      case 8: /* keepaliveTimeout */
+          JS_ToInt64(ctx, &n, val);
+          if (write_mode & NGX_JS_WRITE_GLOBAL) orig->keepalive_timeout =
+  (ngx_msec_t) n;
+          if (snap)                             snap->keepalive_timeout =
+  (ngx_msec_t) n;
+          return JS_UNDEFINED;
+      /* ... */
+      }
+  }
+
+  setWriteMode(mode):
+  static JSValue
+  ngx_js_location_set_write_mode(JSContext *ctx, JSValueConst this_val,
+      int argc, JSValueConst *argv)
+  {
+      op = JS_GetOpaque2(...);
+      op->write_mode = ngx_js_parse_write_mode(ctx, argv[0]);
+      return JS_UNDEFINED;
+  }
+
+  ---
+  Name → magic dispatch for setProperty
+
+  The magic integer is an implementation detail — JS doesn't know it.
+  setProperty needs to map the string name to the right magic. Options:
+
+  A) Build a name→magic hash at prototype install time — clean but extra code.
+  B) Use JS_GetPropertyStr on the prototype to get the existing getter/setter
+  descriptor and extract the magic — clever but fragile.
+  C) Maintain a {name, magic} table alongside ngx_js_location_proto_funcs[] —
+  explicit and auditable.
+
+  Option C is the right call: we already have the proto_funcs table; add a
+  parallel ngx_js_location_prop_names[] array mapping name strings to magic
+  ints. setProperty does a linear scan (small table, rarely called).
+
+  ---
+  Summary of affected files
+
+  ┌───────────────────────────┬─────────────────────────────────────────────┐
+  │           File            │                   Change                    │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │                           │ write_mode in opaque; split setter into     │
+  │ ngx_js_com_http.c         │ _set/_write; add setProperty, setWriteMode  │
+  │                           │ to all writable COM classes                 │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │ ngx_js_com_proxy.c,       │ Same pattern for their opcodes              │
+  │ ngx_js_com_gzip.c, etc.   │                                             │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │ ngx_js.h                  │ NGX_JS_WRITE_* constants; current_request   │
+  │                           │ in ngx_js_worker_t                          │
+  ├───────────────────────────┼─────────────────────────────────────────────┤
+  │                           │ Set/clear w->current_request in content     │
+  │ ngx_js_http_module.c      │ handler and timer callbacks;                │
+  │                           │ ngx_js_ensure_snapshot                      │
+  └───────────────────────────┴─────────────────────────────────────────────┘
+
+  Shall I implement this?
+
+✻ Brewed for 1m 50s
+
+❯ /export snapshot                                                              
+  ⎿  Conversation exported to: /home/vadim/fixes.github/tmp/nginx/snapshot.txt
+
+❯ lets add to plan correspondent getProperty functions, and plase provide       
+complete plan now                                                               
+
+● Complete Plan: getProperty / setProperty / writeMode on COM objects
+
+  ---
+  API surface
+
+  // ── Read ──────────────────────────────────────────────────────────────────
+  loc.keepaliveTimeout                           // effective: snapshot if 
+  exists, else global
+  loc.getProperty('keepaliveTimeout')            // same
+  loc.getProperty('keepaliveTimeout', 'global')  // always reads shared original
+  loc.getProperty('keepaliveTimeout', 'local')   // reads snapshot (falls back 
+  to global
+                                                 //   if no snapshot taken yet)
+
+  // ── Write ─────────────────────────────────────────────────────────────────
+  loc.keepaliveTimeout = v                       // uses loc.writeMode (default:
+   'global')
+  loc.setProperty('keepaliveTimeout', v)         // same — uses loc.writeMode
+  loc.setProperty('keepaliveTimeout', v, 'global')  // write to shared original 
+  only
+  loc.setProperty('keepaliveTimeout', v, 'local')   // write to request snapshot
+   only
+  loc.setProperty('keepaliveTimeout', v, 'both')    // write to both
+
+  // ── Configure default write mode for = and bare setProperty ───────────────
+  loc.writeMode = 'local';    // subsequent loc.x = v  →  local
+  loc.writeMode = 'global';   // reset to default
+  loc.writeMode = 'both';
+  // identical:
+  loc.setWriteMode('global' | 'local' | 'both');
+
+  // ── Example in a handler ──────────────────────────────────────────────────
+  loc.handler = r => {
+      // read what this request will actually see:
+      nginx.log(3, loc.getProperty('keepaliveTimeout', 'local'));
+
+      // reconfigure globally (future requests) but isolate current request:
+      loc.setProperty('keepaliveTimeout', 0, 'global');
+
+      // quick local-only batch via writeMode:
+      loc.setWriteMode('local');
+      loc.sendTimeout      = 5000;
+      loc.keepaliveTimeout = 0;
+      loc.setWriteMode('global');   // restore
+
+      return r.respond(200, {}, 'ok');
+  };
+
+  ---
+  Semantics of each mode
+
+  ┌──────────┬─────────────────────────────┬────────────────────────────────┐
+  │   mode   │            read             │             write              │
+  ├──────────┼─────────────────────────────┼────────────────────────────────┤
+  │ 'global' │ shared original struct      │ shared original                │
+  ├──────────┼─────────────────────────────┼────────────────────────────────┤
+  │ 'local'  │ per-request snapshot (or    │ per-request snapshot (takes    │
+  │          │ original if none yet)       │ snapshot first if needed)      │
+  ├──────────┼─────────────────────────────┼────────────────────────────────┤
+  │ 'both'   │ n/a (read-only modes are    │ writes to original and         │
+  │          │ singular)                   │ snapshot                       │
+  └──────────┴─────────────────────────────┴────────────────────────────────┘
+
+  Default writeMode for all COM objects: 'global' (fully backward-compatible).
+
+  ---
+  Default getter change
+
+  Currently loc.x reads from op->clcf (always global). After this plan the
+  getter becomes effective: if a snapshot exists for the current request, it
+  reads from the snapshot; otherwise from the original. This keeps loc.x
+  coherent with what the request will actually use:
+
+  loc.setProperty('x', 99, 'local');
+  loc.x  →  99   ✓  (not the old global value)
+
+  For the rare case where you need the global value while a snapshot exists:
+  loc.getProperty('x', 'global');   // explicitly bypass snapshot
+
+  ---
+  Implementation — C side
+
+  ngx_js.h
+
+  /* write mode flags */
+  #define NGX_JS_WRITE_GLOBAL  0x1
+  #define NGX_JS_WRITE_LOCAL   0x2
+  #define NGX_JS_WRITE_BOTH    (NGX_JS_WRITE_GLOBAL | NGX_JS_WRITE_LOCAL)
+
+  /* add to ngx_js_worker_t */
+  ngx_http_request_t  *current_request;
+
+  /* add to ngx_js_request_ctx_t (JS request context) */
+  unsigned  loc_conf_snapshotted:1;
+
+  Opaque structs (NginxLocation, NginxProxy, NginxGzip, NginxSSL, …)
+
+  typedef struct {
+      ngx_http_core_loc_conf_t  *clcf;
+      ngx_uint_t                 write_mode;   /* default NGX_JS_WRITE_GLOBAL */
+  } ngx_js_location_opaque_t;
+
+  Core refactor — shared read/write workers
+
+  /* all setter cases consolidated here; called by both = and setProperty */
+  static JSValue
+  ngx_js_location_write(JSContext *ctx, ngx_js_location_opaque_t *op,
+      int magic, JSValueConst val, ngx_uint_t mode);
+
+  /* all getter cases consolidated here; called by both loc.x and getProperty */
+  static JSValue
+  ngx_js_location_read(JSContext *ctx, ngx_js_location_opaque_t *op,
+      int magic, ngx_uint_t mode);
+
+  The existing ngx_js_location_get and ngx_js_location_set become thin wrappers:
+
+  static JSValue
+  ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
+  {
+      op = JS_GetOpaque2(...);
+      /* effective mode: local if snapshot exists, else global */
+      ngx_js_worker_t *w = JS_GetContextOpaque(ctx);
+      ngx_uint_t mode = (w->current_request &&
+  snapshot_exists(w->current_request))
+                        ? NGX_JS_WRITE_LOCAL : NGX_JS_WRITE_GLOBAL;
+      return ngx_js_location_read(ctx, op, magic, mode);
+  }
+
+  static JSValue
+  ngx_js_location_set(JSContext *ctx, JSValueConst this_val,
+      JSValueConst val, int magic)
+  {
+      op = JS_GetOpaque2(...);
+      return ngx_js_location_write(ctx, op, magic, val, op->write_mode);
+  }
+
+  getProperty(name[, mode]) — C function
+
+  static JSValue
+  ngx_js_location_get_property(JSContext *ctx, JSValueConst this_val,
+      int argc, JSValueConst *argv)
+  {
+      /* 1. name → magic  (linear scan of name table, see below) */
+      /* 2. mode string → NGX_JS_WRITE_* flag (or effective default if absent) 
+  */
+      /* 3. return ngx_js_location_read(ctx, op, magic, mode) */
+  }
+
+  setProperty(name, value[, mode]) — implemented in JavaScript
+
+  Because the setter dispatch is already expressed in the = path, setProperty
+  can be installed as a JS helper on the prototype — no C name→magic table
+  needed:
+
+  /* installed once in ngx_js_location_install_proto */
+  NginxLocation.prototype.setProperty = function(name, value, mode) {
+      const saved = this.writeMode;
+      if (mode !== undefined) this.writeMode = mode;
+      this[name] = value;
+      this.writeMode = saved;
+  };
+
+  The setWriteMode method is also trivially expressible in JS:
+  NginxLocation.prototype.setWriteMode = function(mode) { this.writeMode = mode;
+   };
+
+  getProperty must be in C because the 'global' mode needs to bypass the
+  snapshot that the normal getter would prefer.
+
+  Name → magic table (needed only for getProperty)
+
+  static const struct { const char *name; int magic; }
+  ngx_js_location_prop_map[] = {
+      { "alias",            14 },
+      { "authDelay",        69 },
+      { "clientBodyBufferSize", 59 },
+      /* … one entry per writable magic value, sorted by name … */
+      { "writeMode",        -1 },  /* special — not a magic dispatch */
+  };
+
+  Linear scan is fine — getProperty is an explicit call, never in a hot path.
+
+  ngx_js_ensure_snapshot(r) — called from ngx_js_location_write when mode & 
+  NGX_JS_WRITE_LOCAL:
+
+  static ngx_int_t
+  ngx_js_ensure_snapshot(ngx_http_request_t *r)
+  {
+      /* idempotent guard */
+      /* 1. copy r->loc_conf pointer array into r->pool */
+      /* 2. SNAP each writable module struct (core, gzip, sub_filter, headers, 
+  …) */
+      /* 3. fix clcf->loc_conf self-reference */
+      /* 4. set snapshotted flag */
+  }
+
+  w->current_request lifecycle in ngx_js_http_module.c:
+
+  /* content handler — sync entry/exit */
+  w->current_request = r;
+  result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
+  w->current_request = NULL;
+
+  /* timer callback — before and after resolving the promise */
+  w->current_request = pending_r;
+  JS_Call(ctx, resolver, ...);   /* microtasks drain here */
+  w->current_request = NULL;
+
+  ---
+  Files changed
+
+  File: ngx_js.h
+  Change: NGX_JS_WRITE_* constants; current_request in worker; snapshot flag in
+    request ctx
+  ────────────────────────────────────────
+  File: ngx_js_http_module.c
+  Change: Set/clear w->current_request; ngx_js_ensure_snapshot
+  ────────────────────────────────────────
+  File: ngx_js_com_http.c
+  Change: write_mode in NginxLocation opaque; refactor get/set into
+  _read/_write;
+    add getProperty (C), setProperty+setWriteMode (JS helpers); writeMode
+    CGETSET; name→magic table
+  ────────────────────────────────────────
+  File: ngx_js_com_proxy.c, ngx_js_com_gzip.c, ngx_js_com_ssl.c, …
+  Change: Same pattern for each writable COM wrapper
+  ────────────────────────────────────────
+  File: t/js_snapshot.t
+  Change: Tests covering: global write, local write, both, effective getter,
+    getProperty modes, writeMode persistence within a request, isolation across
+    concurrent async requests
+
+  ---
+  Shall I implement?
+
+✻ Crunched for 1m 47s
+
+❯ lets add to plan setReadMode as well, and split pan in phases                 
+
+● Complete Plan: getProperty / setProperty / readMode / writeMode
+
+  ---
+  Full API
+
+  // ── Read ──────────────────────────────────────────────────────────────────
+  loc.keepaliveTimeout                            // uses loc.readMode (default:
+   'local')
+  loc.getProperty('keepaliveTimeout')             // same
+  loc.getProperty('keepaliveTimeout', 'global')   // explicit: always shared 
+  original
+  loc.getProperty('keepaliveTimeout', 'local')    // explicit: snapshot if 
+  exists, else original
+
+  // ── Write ─────────────────────────────────────────────────────────────────
+  loc.keepaliveTimeout = v                        // uses loc.writeMode 
+  (default: 'global')
+  loc.setProperty('keepaliveTimeout', v)          // same
+  loc.setProperty('keepaliveTimeout', v, 'global')  // shared original only
+  loc.setProperty('keepaliveTimeout', v, 'local')   // request snapshot only
+  loc.setProperty('keepaliveTimeout', v, 'both')    // both
+
+  // ── Configure defaults for this object instance ───────────────────────────
+  loc.readMode  = 'local';     // default: effective value (snapshot→original 
+  fallback)
+  loc.readMode  = 'global';    // always read shared original
+  loc.writeMode = 'global';    // default
+  loc.writeMode = 'local';
+  loc.writeMode = 'both';
+
+  loc.setReadMode('global');   // method alias for loc.readMode = 'global'
+  loc.setWriteMode('local');   // method alias for loc.writeMode = 'local'
+
+  Mode semantics:
+
+  ┌──────────┬─────────────────────────────┬────────────────────────────────┐
+  │   mode   │            read             │             write              │
+  ├──────────┼─────────────────────────────┼────────────────────────────────┤
+  │ 'global' │ always shared original      │ write to shared original       │
+  ├──────────┼─────────────────────────────┼────────────────────────────────┤
+  │ 'local'  │ snapshot if exists, else    │ take snapshot if needed, write │
+  │          │ original                    │  to it                         │
+  ├──────────┼─────────────────────────────┼────────────────────────────────┤
+  │ 'both'   │ — (not valid for read)      │ write to original AND snapshot │
+  └──────────┴─────────────────────────────┴────────────────────────────────┘
+
+  Default readMode: 'local' — inside a request, you naturally see what the
+  request will use.
+  Default writeMode: 'global' — backward-compatible.
+
+  ---
+  Phases
+
+  Phase 1 — Snapshot infrastructure
+
+  No JS API visible yet. Pure C plumbing.
+
+  ngx_js.h
+  - NGX_JS_WRITE_GLOBAL / LOCAL / BOTH constants
+  - current_request field in ngx_js_worker_t
+  - loc_conf_snapshotted:1 flag in ngx_js_request_ctx_t
+
+  ngx_js_http_module.c
+  - ngx_js_ensure_snapshot(r) — idempotent; copies r->loc_conf pointer array +
+  deep-copies every writable module struct (ngx_http_core_loc_conf_t,
+  ngx_http_gzip_conf_t, ngx_http_sub_loc_conf_t, ngx_http_headers_conf_t, …)
+  into r->pool; fixes clcf->loc_conf self-reference; sets flag
+  - Set/clear w->current_request bracketing every JS invocation in the content
+  handler and timer callbacks
+
+  Tests (t/js_snapshot_infra.t)
+  - Snapshot is taken when a write with mode 'local' occurs
+  - Not taken otherwise (no extra allocation for read-only handlers)
+  - r->loc_conf points to per-request copies after snapshot
+
+  ---
+  Phase 2 — writeMode + setProperty on NginxLocation
+
+  ngx_js_com_http.c
+  - Add write_mode (default NGX_JS_WRITE_GLOBAL) to ngx_js_location_opaque_t
+  - Extract setter dispatch into ngx_js_location_write(ctx, op, magic, val, 
+  mode) — the full switch goes here; existing ngx_js_location_set becomes a
+  one-liner delegating with op->write_mode
+  - Add writeMode as a JS_CGETSET_DEF property (string getter/setter, stored in
+  opaque)
+  - Install setWriteMode and setProperty as JS-side prototype methods:
+
+  // installed via JS_Eval on the prototype object during install_proto:
+  NginxLocation.prototype.setWriteMode = function(m) { this.writeMode = m; };
+  NginxLocation.prototype.setProperty  = function(name, val, mode) {
+      const saved = this.writeMode;
+      if (mode !== undefined) this.writeMode = mode;
+      this[name] = val;
+      this.writeMode = saved;
+  };
+
+  Tests (t/js_write_mode.t)
+  - writeMode default is 'global'
+  - setProperty(name, v, 'global') affects future requests
+  - setProperty(name, v, 'local') does not affect future requests
+  - setProperty(name, v, 'both') affects both current and future
+  - setWriteMode + = equivalent to setProperty with that mode
+  - writeMode resets to default at next object access (fresh opaque)
+
+  ---
+  Phase 3 — readMode + getProperty on NginxLocation
+
+  ngx_js_com_http.c
+  - Add read_mode (default NGX_JS_WRITE_LOCAL) to ngx_js_location_opaque_t
+  - Extract getter dispatch into ngx_js_location_read(ctx, op, magic, mode):
+    - 'local': if w->current_request && snapshotted → read from
+  r->loc_conf[core.ctx_index]; else read from op->clcf
+    - 'global': always read from op->clcf
+  - ngx_js_location_get becomes a one-liner delegating with op->read_mode
+  - Add readMode as a JS_CGETSET_DEF property
+  - Add name→magic lookup table (sorted array, binary search):
+
+  static const ngx_js_prop_t  ngx_js_location_props[] = {
+      { "alias",                14 },
+      { "authDelay",            69 },
+      { "clientBodyBufferSize", 59 },
+      /* … all writable magic values, sorted … */
+  };
+
+  - Add ngx_js_location_get_property (C function): name→magic lookup, mode
+  parse, delegates to ngx_js_location_read
+  - Install setReadMode as a JS-side prototype method:
+
+  NginxLocation.prototype.setReadMode = function(m) { this.readMode = m; };
+
+  Tests (t/js_read_mode.t)
+  - readMode default is 'local'
+  - loc.x returns snapshot value after setProperty(x, v, 'local')
+  - getProperty(x, 'global') returns original even when snapshot differs
+  - getProperty(x, 'local') returns snapshot value
+  - getProperty(x) uses readMode
+  - setReadMode('global') makes loc.x bypass snapshot
+
+  ---
+  Phase 4 — Apply to all writable COM classes
+
+  Apply the identical pattern to every COM wrapper that has writable properties:
+
+  ┌─────────────────┬──────────────────────────┬─────────────────────────────┐
+  │      Class      │           File           │      Writable surface       │
+  ├─────────────────┼──────────────────────────┼─────────────────────────────┤
+  │ NginxProxy      │ ngx_js_com_proxy.c       │ upstream, timeouts,         │
+  │                 │                          │ buffering, …                │
+  ├─────────────────┼──────────────────────────┼─────────────────────────────┤
+  │ NginxGzip       │ ngx_js_com_gzip.c        │ enable, level, buffers, …   │
+  ├─────────────────┼──────────────────────────┼─────────────────────────────┤
+  │ NginxSSL        │ ngx_js_com_ssl.c         │ protocols, ciphers,         │
+  │                 │                          │ timeouts, …                 │
+  ├─────────────────┼──────────────────────────┼─────────────────────────────┤
+  │ NginxHeaders    │ ngx_js_com_headers.c     │ add-header entries,         │
+  │                 │                          │ expires, …                  │
+  ├─────────────────┼──────────────────────────┼─────────────────────────────┤
+  │ NginxRewrite    │ ngx_js_com_rewrite.c     │ return code, …              │
+  ├─────────────────┼──────────────────────────┼─────────────────────────────┤
+  │ NginxProxyCache │ ngx_js_com_proxy_cache.c │ cache key, valid, …         │
+  ├─────────────────┼──────────────────────────┼─────────────────────────────┤
+  │                 │                          │ srv_conf fields (no         │
+  │ NginxServer     │ ngx_js_com_http.c        │ snapshot needed — Phase 1   │
+  │                 │                          │ note)                       │
+  └─────────────────┴──────────────────────────┴─────────────────────────────┘
+
+  Each gets: write_mode, read_mode, writeMode, readMode, setWriteMode,
+  setReadMode, getProperty, setProperty.
+
+  For classes whose backing struct is NOT snapshotted (srv_conf, main_conf), the
+   'local' mode is a no-op on write (or raises an informative error) and falls
+  back to 'global' on read.
+
+  Tests (t/js_prop_api_ext.t) — one test file covering all extended classes.
+
+  ---
+  Phase 5 — Integration tests
+
+  t/js_snapshot_integration.t
+  - Async handler: nginx.setTimeout suspends; config changed mid-flight; resumed
+   request sees snapshot values, next request sees new values
+  - Streaming response: sub_filter config changed between chunks; current
+  response unaffected; next response uses new config
+  - 'both' mode: current request sees new value immediately; so does next
+  request
+  - Multiple concurrent async requests each get independent snapshots
+
+  ---
+  File inventory
+
+  ┌────────────────────────────────────────────────────────────┬───────┐
+  │                            File                            │ Phase │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ ngx_js.h                                                   │ 1     │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ ngx_js_http_module.c                                       │ 1     │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ ngx_js_com_http.c (NginxLocation)                          │ 2, 3  │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ ngx_js_com_http.c (NginxServer)                            │ 4     │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ ngx_js_com_proxy.c, ngx_js_com_gzip.c, ngx_js_com_ssl.c, … │ 4     │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ t/js_snapshot_infra.t                                      │ 1     │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ t/js_write_mode.t                                          │ 2     │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ t/js_read_mode.t                                           │ 3     │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ t/js_prop_api_ext.t                                        │ 4     │
+  ├────────────────────────────────────────────────────────────┼───────┤
+  │ t/js_snapshot_integration.t                                │ 5     │
+  └────────────────────────────────────────────────────────────┴───────┘
+
+  Shall I start with Phase 1?
+
+✻ Crunched for 1m 14s

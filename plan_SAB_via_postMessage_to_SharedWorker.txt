@@ -1,0 +1,209 @@
+
+ ▐▛███▜▌   Claude Code v2.1.70
+▝▜█████▛▘  Sonnet 4.6 · API Usage Billing
+  ▘▘ ▝▝    ~/fixes.github/tmp/nginx
+
+✻ Conversation compacted (ctrl+o for history)
+
+  ⎿  Referenced file nginx/src/js/ngx_js_worker.c
+  ⎿  Read t/js_worker_atomics.t (164 lines)
+  ⎿  Read t/js_worker_sab.t (132 lines)
+  ⎿  Read t/js_worker.t (102 lines)
+  ⎿  Referenced file nginx/src/js/ngx_js_http_module.c
+
+● All work from the previous session is complete and committed:
+
+  - JS: enable std/os module imports via quickjs-libc —
+  js_std_init_handlers/js_std_free_handlers in all 3 runtimes
+  - JS: pass SharedArrayBuffers by reference in Worker messages —
+  JS_WriteObject2 with SAB reference counting
+  - Tests: js_worker_sab — SAB sum + shared-memory tests
+  - JS: enable Atomics.wait() in Worker threads; add Atomics tests —
+  JS_SetCanBlock(rt, TRUE) + t/js_worker_atomics.t
+
+  All 202 tests pass. Ready for the next task.
+
+✻ Churned for 7m 14s
+
+❯ /export after_Atomics_wait_notify 
+  ⎿  Conversation exported to: after_Atomics_wait_notify.txt
+
+❯ Let's plan sharing SharedArrayBuffer with SharedWorker using postMessage 
+
+❯ Tool loaded. 
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I have a clear picture of both the Worker (in-process) and SharedWorker
+  (cross-process) implementations. Let me lay out the plan.
+
+  ---
+  Plan: SAB via postMessage to SharedWorker
+
+  The fundamental challenge
+
+  ┌────────────┬────────────────────────────────┬──────────────────────────┐
+  │            │             Worker             │       SharedWorker       │
+  ├────────────┼────────────────────────────────┼──────────────────────────┤
+  │ Thread     │ pthread_create in same nginx   │ pthread_create in master │
+  │ model      │ worker process                 │  process                 │
+  ├────────────┼────────────────────────────────┼──────────────────────────┤
+  │ Address    │ Shared with caller             │ Separate (fork boundary) │
+  │ space      │                                │                          │
+  ├────────────┼────────────────────────────────┼──────────────────────────┤
+  │ SAB today  │ By-reference via               │ Deep-copy via            │
+  │            │ JS_WriteObject2 ✓              │ JS_WriteObject only      │
+  └────────────┴────────────────────────────────┴──────────────────────────┘
+
+  True shared memory across a fork boundary requires
+  mmap(MAP_SHARED|MAP_ANONYMOUS). MAP_SHARED|MAP_ANONYMOUS regions created
+  before fork() remain accessible (same physical pages) in all child processes
+  at the same virtual address. This is the key.
+
+  ---
+  Scope
+
+  What will work: SABs created in master (js_include init code, before fork) —
+  the mmap mapping is inherited by all nginx worker processes. The SW thread (in
+   master) and nginx workers (children) all map the same physical pages.
+
+  What won't work without fd-passing (future): SABs created per-request in nginx
+   worker handlers — the worker's mmap is private; the master process has no
+  mapping for that address.
+
+  ---
+  Changes needed
+
+  1. Shared SAB infrastructure → ngx_js.h + ngx_js_module.c
+
+  Move ngx_js_sab_hdr_t, ngx_js_sab_dup, ngx_js_sab_free out of ngx_js_worker.c
+  into ngx_js.h/ngx_js_module.c so both Worker and SharedWorker share them.
+
+  Add a new alloc function:
+
+  static void *
+  ngx_js_sab_alloc(void *opaque, size_t size)
+  {
+      void              *ptr;
+      ngx_js_sab_hdr_t  *hdr;
+
+      hdr = mmap(NULL, sizeof(ngx_js_sab_hdr_t) + size,
+                 PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
+      if (hdr == MAP_FAILED) { return NULL; }
+
+      hdr->ref_count = 1;
+      return hdr->buf;    /* QuickJS gets the data pointer */
+  }
+
+  And ngx_js_sab_free uses munmap instead of free:
+
+  static void
+  ngx_js_sab_free(void *opaque, void *ptr)
+  {
+      ngx_js_sab_hdr_t *hdr = (ngx_js_sab_hdr_t *) ptr - 1;
+      if (__atomic_fetch_add(&hdr->ref_count, -1, __ATOMIC_SEQ_CST) == 1) {
+          munmap(hdr, sizeof(*hdr) + /* size ? */ );
+      }
+  }
+
+  Problem: munmap needs the size. Solution: store size in the header too.
+
+  typedef struct {
+      int      ref_count;
+      uint32_t size;
+      uint64_t buf[0];   /* keep 8-byte alignment */
+  } ngx_js_sab_hdr_t;   /* total: 16 bytes */
+
+  Install on the main runtime (ngx_js_init_conf) so every new 
+  SharedArrayBuffer() in master uses mmap(MAP_SHARED|MAP_ANONYMOUS).
+
+  2. Extend the pipe protocol (ngx_js_sw.c)
+
+  Current: [uint32_t type][uint32_t data_len][data]
+
+  New for DATA messages: [uint32_t type][uint32_t data_len][uint32_t 
+  n_sabs][data][n_sabs × (uint64_t ptr, uint32_t byte_len)]
+
+  The sab_tab from JS_WriteObject2 gives us (ptr, byte_len) pairs; we append
+  them after the serialized data. The receiver reassembles the sab_tab before
+  calling JS_ReadObject.
+
+  xpipe_send signature change:
+  static void
+  xpipe_send(ngx_js_sw_xpipe_t *p, uint32_t type,
+             uint8_t *buf, uint32_t len,
+             uint8_t **sab_tab, uint32_t *sab_tab_size, uint32_t n_sabs);
+
+  xpipe_read_one fills in sab_tab on return; caller calls sab_free after
+  delivery.
+
+  3. Update both postMessage directions
+
+  Worker → SW (ngx_js_sw_post_message):
+  qjs_buf = JS_WriteObject2(ctx, &qjs_len, argv[0],
+                JS_WRITE_OBJ_SAB | JS_WRITE_OBJ_REFERENCE,
+                &sab_tab, &sab_tab_size, &n_sabs);
+  /* sab_dup each entry — message takes ownership */
+  xpipe_send(&inbox, NGX_JS_SW_MSG_DATA, buf, len,
+             sab_tab, sab_tab_size, n_sabs);
+
+  SW → Worker (ngx_js_sw_port_post_message):
+  Same pattern. SW thread's SAB funcs already use mmap (same alloc installed
+  there too).
+
+  4. Update both deserialize directions
+
+  /* Reconstruct JSValue *sab_tab_vals from raw ptrs + sizes */
+  for (i = 0; i < n_sabs; i++) {
+      sab_tab_vals[i] = JS_NewArrayBuffer(ctx, raw_ptrs[i], raw_sizes[i],
+                                          ngx_js_sab_free, NULL, 1 /*is_sab*/);
+      /* JS_ReadObject takes its own ref; sab_free after read */
+  }
+  data = JS_ReadObject(ctx, buf, len,
+             JS_READ_OBJ_SAB | JS_READ_OBJ_REFERENCE);
+  for (i = 0; i < n_sabs; i++) {
+      ngx_js_sab_free(NULL, raw_ptrs[i]);   /* release our ref */
+      JS_FreeValue(ctx, sab_tab_vals[i]);
+  }
+
+  Actually, the JS_ReadObject with sab_tab API takes a different form — need to
+  check exactly how QuickJS's reader consumes the sab_tab (likely same as Worker
+   side).
+
+  5. SW thread runtime setup
+
+  js_std_init_handlers(rt);
+  JS_SetCanBlock(rt, TRUE);
+  JS_SetSharedArrayBufferFunctions(rt, &sab_funcs);  /* same mmap funcs */
+
+  ---
+  Test
+
+  t/js_sw_sab.t:
+  - Init code creates var sab = new SharedArrayBuffer(8) + fills with [5, 7]
+  - new SharedWorker(...) with script that doubles elements in-place,
+  postMessage('done')
+  - Request handler: sw.postMessage(sab), awaits reply via onmessage, responds
+  with arr[0] + ':' + arr[1]
+  - Expected: 10:14
+
+  ---
+  Open questions before starting
+
+  1. Header layout change (size field in ngx_js_sab_hdr_t): The Worker side
+  currently uses {int ref_count; uint64_t buf[0]} (8 bytes). Adding uint32_t 
+  size changes the layout and would break the Worker's existing
+  sab_dup/sab_free. We'd need to update Worker too. Do you want a single shared
+  allocator, or keep Worker using malloc and only SharedWorker using mmap?
+  2. Worker-process per-request SABs to SW: Accept the limitation (document that
+   only init-phase SABs are truly shared), or do you want fd-passing
+  (memfd_create + SCM_RIGHTS) in scope now?
+  3. Atomics.wait in SW thread: The SW thread runs a poll() loop. Atomics.wait()
+   on the SW side blocks that thread, preventing it from servicing other worker
+  messages. Is that acceptable, or should we skip Atomics.wait on the SW thread
+  for now?
+
+✻ Baked for 2m 49s
+
+❯ /rename plan_SAB_via_postMessage_to_SharedWorker 
+  ⎿  Session renamed to: plan_SAB_via_postMessage_to_SharedWorker

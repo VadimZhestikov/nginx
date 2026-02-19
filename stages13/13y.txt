@@ -1,0 +1,21 @@
+● Stage 13x done. 812/812 passing.
+
+  ---
+  Stage 13y proposal — location.limitExcept (method bitmask)
+
+  ngx_http_core_loc_conf_t.limit_except is already in the core loc_conf — it's a bitmask of allowed HTTP methods (NGX_HTTP_GET, NGX_HTTP_POST, etc.). We could expose it as location.limitExcept
+  returning an array of method name strings (e.g. ["GET", "HEAD"]).
+
+  This is also a zero-new-class change using the existing NginxLocation getter.
+
+  Alternatively, the next most interesting unexplored area is nginx.http main-level properties — things like variables[], types{}, or the upstream_zone shared memory. Or we could look at server-level
+   properties not yet covered.
+
+  Let me propose something a bit more substantial: location.limitExcept (bitmask → string array) plus two small leftover location properties that are already in ngx_http_core_loc_conf_t but not yet
+  exposed:
+  - location.satisfyAll — satisfy directive: NGX_HTTP_SATISFY_ALL (0) vs NGX_HTTP_SATISFY_ANY (1)
+  - location.limitExcept — methods bitmask → string array
+
+  Both are plain getters on NginxLocation, zero new classes.
+
+  Shall I proceed with both together as Stage 13y?

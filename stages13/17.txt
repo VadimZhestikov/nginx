@@ -1,0 +1,18 @@
+● Stage 16 done. 918 tests, 67 files, all passing.
+
+  ---
+  Stage 17 candidates — continuing from where we are:
+
+  Option A — NginxRequest response-headers write: currently respond() takes a plain object. Add r.responseHeaders as a writable property so handlers can set response headers incrementally before
+  calling respond(). Or r.setHeader(name, value) method.
+
+  Option B — nginx.cycle object: expose ngx_cycle_t globals as nginx.cycle.{prefix, confPrefix, confFile, errorLog, workerProcesses} — useful for introspection.
+
+  Option C — NginxRequest subrequest: r.subrequest(uri) → Promise resolving to {status, headers, body}. This is the most useful new capability for request handlers but also the most complex.
+
+  Option D — NginxRequest variables: r.variable(name) / r.setVariable(name, value) — read/write nginx variables from JS handlers.
+
+  Option B is self-contained and testable from init scripts (no request needed). Option D is very useful for integration with existing nginx config. Shall I proceed with Stage 17 as Option B
+  (nginx.cycle)?
+
+yes!

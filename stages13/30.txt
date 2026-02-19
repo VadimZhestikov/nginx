@@ -1,0 +1,29 @@
+  Stage 30 — nginx.http.servers[i].locations[j].handler setter (enable setting handlers from within request handlers)
+
+  Currently loc.handler = fn works only during init_conf (the js_include script). But the COM write path for handler assignment is the same define_own_property in the location class. The question is:
+   is it already usable from within a request handler (where ctx holds a worker, not the init state)?
+
+  Actually, let me think of something more useful:
+
+  Stage 30 — r.sendfile(path) — serve a static file
+
+  Allow JS handlers to send a local file as the response:
+
+  r.sendfile('/var/www/html/index.html')
+
+  Implementation:
+  - Set r->uri to the file path (or use ngx_http_send_header + ngx_http_static_handler approach)
+  - Or: open the file, create a temp chain buf pointing to it, call ngx_http_output_filter
+  - Or: set a local variable and redirect to a static location
+
+  Alternative: Stage 30 — r.redirect(url[, code]) — HTTP redirect:
+
+  r.redirect('/new-path')           // 302
+  r.redirect('https://example.com', 301)  // 301
+
+  This is simple: set r->headers_out.status, add Location header, call ngx_http_send_header + empty body.
+
+  Which would you prefer, or do you have another direction in mind?
+
+
+ Let's implenmet first one and then second

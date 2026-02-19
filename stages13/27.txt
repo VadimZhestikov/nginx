@@ -1,0 +1,9 @@
+  Stage 27 proposal — nginx.http.servers[i].listen (listening addresses)
+
+  Expose server.listen as an array of objects, one per listen directive on the server. Each entry: {addr: string, port: number, ssl: bool, http2: bool, default: bool}.
+
+  This lets JS scripts inspect exactly which addresses/ports each virtual server is bound to — useful for dynamic routing decisions in js_init_http.
+
+  Implementation: iterate cscf->ports (ngx_array_t of ngx_http_conf_port_t), or more directly walk cscf->listen / the server's listening addresses from ngx_http_core_srv_conf_t.
+
+  Shall I proceed?

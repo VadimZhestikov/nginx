@@ -1,0 +1,18 @@
+
+# Copyright (C) nginx JS contributors
+
+
+if [ $QUICKJS != NONE ]; then
+    CORE_INCS="$CORE_INCS $QUICKJS"
+    LINK_DEPS="$LINK_DEPS $QUICKJS/libquickjs.a"
+    CORE_LIBS="$CORE_LIBS $QUICKJS/libquickjs.a -lm"
+    have=NGX_HAVE_QUICKJS . auto/have
+
+    # quickjs.h uses a function-pointer cast in JS_NewCFunctionMagic that
+    # triggers -Wcast-function-type on GCC 8+.  Append directly to CFLAGS
+    # because NGX_CC_OPT is already consumed by auto/cc/conf at this point.
+    CFLAGS="$CFLAGS -Wno-cast-function-type"
+else
+    echo "$0: error: --with-quickjs=<path> is required for QuickJS support"
+    exit 1
+fi

@@ -1,0 +1,951 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE article PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN" "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
+<?asciidoc-toc?>
+<?asciidoc-numbered?>
+
+<article lang="en">
+<articleinfo>
+    <title>NGINX JS DOM — Header and Body Filters</title>
+    <date>2026-03-19</date>
+<revhistory><revision><date>2026-03-19</date><revremark>Draft</revremark></revision></revhistory>
+</articleinfo>
+<section id="_overview">
+<title>Overview</title>
+<simpara>NGINX JS DOM lets JavaScript code intercept and transform every HTTP response
+that passes through a location.  The interception happens at two points in
+nginx&#8217;s filter chain:</simpara>
+<itemizedlist>
+<listitem>
+<simpara>
+<emphasis role="strong">Header filters</emphasis> — called once, just before response headers are sent to
+  the client.  The callback receives the live <literal>NginxRequest</literal> object and may
+  mutate response headers in place.  The filter is always synchronous.
+</simpara>
+</listitem>
+<listitem>
+<simpara>
+<emphasis role="strong">Body filters</emphasis> — called for each piece of the response body (streaming
+  modes) or once on the complete body (whole-body modes).  Four execution
+  modes cover every combination of sync/async and chunk/whole:
+  <literal>wholeBodySync</literal>, <literal>wholeBodyAsync</literal>, <literal>streamingSync</literal>, <literal>streamingAsync</literal>.
+</simpara>
+</listitem>
+</itemizedlist>
+<simpara>Filters are registered per-location via methods on the
+<literal>NginxLocation</literal> object (accessible through <literal>nginx.http.servers[i].locations[j]</literal>
+or by iterating <literal>nginx.http.servers[i].locations</literal>).  Registering a filter
+from any script that runs at config time — <literal>js_source</literal>, <literal>js_init_http</literal>,
+<literal>js_preprocess</literal> — is sufficient; the filter then applies to every request
+that reaches that location.</simpara>
+</section>
+<section id="_location_filter_api">
+<title>Location filter API</title>
+<simpara>All filter management methods live on the <literal>NginxLocation</literal> object.</simpara>
+<section id="_literal_location_addheaderfilter_fn_opts_literal">
+<title><literal>location.addHeaderFilter(fn [, opts])</literal></title>
+<simpara>Appends a header-filter callback to the location&#8217;s header filter list.</simpara>
+<programlisting language="js" linenumbering="unnumbered">location.addHeaderFilter(fn)
+location.addHeaderFilter(fn, opts)</programlisting>
+<variablelist>
+<varlistentry>
+<term>
+<literal>fn</literal>
+</term>
+<listitem>
+<simpara>
+<emphasis role="strong">Required.</emphasis>  A function with signature <literal>function(req)</literal>.  Called once
+per request just before nginx sends the response headers.  The return value
+is ignored.  <literal>req</literal> is a <literal>NginxRequest</literal> — header mutation is described in
+<xref linkend="header-filter-api"/>.
+</simpara>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+<literal>opts</literal>
+</term>
+<listitem>
+<simpara>
+<emphasis role="strong">Optional</emphasis> object; see <xref linkend="filter-options"/>.
+</simpara>
+</listitem>
+</varlistentry>
+</variablelist>
+<simpara>Returns <literal>undefined</literal>.  Throws <literal>TypeError</literal> if <literal>fn</literal> is not a function.</simpara>
+</section>
+<section id="_literal_location_addbodyfilter_mode_fn_opts_literal">
+<title><literal>location.addBodyFilter(mode, fn [, opts])</literal></title>
+<simpara>Appends a body-filter callback to the location&#8217;s body filter list.</simpara>
+<programlisting language="js" linenumbering="unnumbered">location.addBodyFilter(mode, fn)
+location.addBodyFilter(mode, fn, opts)</programlisting>
+<variablelist>
+<varlistentry>
+<term>
+<literal>mode</literal>
+</term>
+<listitem>
+<simpara>
+<emphasis role="strong">Required</emphasis> string — one of:
+</simpara>
+<informaltable
+frame="all"
+rowsep="1" colsep="1"
+>
+<tgroup cols="2">
+<colspec colname="col_1" colwidth="33*"/>
+<colspec colname="col_2" colwidth="66*"/>
+<thead>
+<row>
+<entry align="left" valign="top">Value </entry>
+<entry align="left" valign="top">Meaning</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry align="left" valign="top"><simpara><literal>'wholeBodySync'</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Synchronous whole-body transform. <?asciidoc-br?>
+Signature: <literal>function(req, body) → string | undefined</literal><?asciidoc-br?>
+<literal>body</literal> is the complete accumulated response body as a string. Return a new
+string to replace it; return <literal>undefined</literal> (or any non-string) to pass through
+unchanged.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>'wholeBodyAsync'</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Asynchronous whole-body transform. <?asciidoc-br?>
+Signature: <literal>async function(req, body) → Promise&lt;string | undefined&gt;</literal><?asciidoc-br?>
+Same semantics as <literal>wholeBodySync</literal> but the function may <literal>await</literal> I/O or timers
+before returning.  If the Promise rejects, the connection is closed with an
+error.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>'streamingSync'</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Synchronous per-chunk transform. <?asciidoc-br?>
+Signature: <literal>function(req, chunk, flags)</literal><?asciidoc-br?>
+Called once per nginx body-filter call (one "chunk").  Output is emitted via
+<literal>req.sendBuffer(data)</literal> — any number of calls per invocation.<?asciidoc-br?>
+If <literal>sendBuffer</literal> is never called the chunk is <emphasis role="strong">dropped</emphasis> (not forwarded).</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>'streamingAsync'</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Asynchronous per-chunk transform. <?asciidoc-br?>
+Signature: <literal>async function(req, chunk, flags) → Promise&lt;string | undefined&gt;</literal><?asciidoc-br?>
+Called once per nginx body-filter call.  The chunk is transformed via the
+<emphasis role="strong">resolved value</emphasis> of the returned Promise: a string replaces the chunk; <literal>''</literal>
+drops it; <literal>undefined</literal> (or any non-string) passes the original chunk through.
+If the Promise rejects, the connection is closed with an error.</simpara></entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+<literal>fn</literal>
+</term>
+<listitem>
+<simpara>
+<emphasis role="strong">Required.</emphasis>  The filter callback; signature depends on <literal>mode</literal>.
+</simpara>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+<literal>opts</literal>
+</term>
+<listitem>
+<simpara>
+<emphasis role="strong">Optional</emphasis> object; see <xref linkend="filter-options"/>.
+</simpara>
+</listitem>
+</varlistentry>
+</variablelist>
+<simpara>Returns <literal>undefined</literal>.  Throws <literal>TypeError</literal> if <literal>mode</literal> is invalid or <literal>fn</literal> is not
+a function.</simpara>
+</section>
+<section id="_literal_location_removeheaderfilter_ref_literal">
+<title><literal>location.removeHeaderFilter(ref)</literal></title>
+<simpara>Removes the first header filter whose registered name equals <literal>ref</literal> (string)
+or whose function reference is <literal>===</literal> to <literal>ref</literal>.  No-op if not found.</simpara>
+</section>
+<section id="_literal_location_removebodyfilter_ref_literal">
+<title><literal>location.removeBodyFilter(ref)</literal></title>
+<simpara>Removes the first body filter matching <literal>ref</literal> by name or function reference.
+No-op if not found.</simpara>
+</section>
+<section id="_literal_location_getheaderfilter_ref_literal">
+<title><literal>location.getHeaderFilter(ref)</literal></title>
+<simpara>Returns a descriptor object <literal>{ name, priority, fn }</literal> for the first matching
+header filter, or <literal>null</literal> if not found.</simpara>
+</section>
+<section id="_literal_location_getbodyfilter_ref_literal">
+<title><literal>location.getBodyFilter(ref)</literal></title>
+<simpara>Returns a descriptor object <literal>{ name, priority, fn, mode }</literal> for the first
+matching body filter, or <literal>null</literal> if not found.  <literal>mode</literal> is the string passed
+to <literal>addBodyFilter</literal>.</simpara>
+</section>
+<section id="_literal_location_headerfilters_literal_getter">
+<title><literal>location.headerFilters</literal> (getter)</title>
+<simpara>Returns a snapshot array of <literal>{ name, priority, fn }</literal> objects for all
+currently registered header filters, in dispatch order.</simpara>
+</section>
+<section id="_literal_location_bodyfilters_literal_getter">
+<title><literal>location.bodyFilters</literal> (getter)</title>
+<simpara>Returns a snapshot array of <literal>{ name, priority, fn, mode }</literal> objects for all
+currently registered body filters, in dispatch order.</simpara>
+</section>
+<section id="filter-options">
+<title>Filter options object</title>
+<simpara>Both <literal>addHeaderFilter</literal> and <literal>addBodyFilter</literal> accept an optional second/third
+<literal>opts</literal> argument that controls where the new filter is inserted in the list:</simpara>
+<programlisting language="js" linenumbering="unnumbered">{
+  name:     string,   // symbolic name — used by remove/get
+  priority: number,   // lower = earlier; default 50
+  before:   fn | string,  // insert immediately before this filter
+  after:    fn | string,  // insert immediately after this filter
+  index:    number    // insert at this absolute position (0-based)
+}</programlisting>
+<simpara>Precedence (highest first): <literal>index</literal> &gt; <literal>before</literal> / <literal>after</literal> &gt; <literal>priority</literal>.</simpara>
+<simpara>If <literal>before</literal> or <literal>after</literal> references a filter that does not exist, the new
+filter is appended.</simpara>
+<programlisting language="js" linenumbering="unnumbered">const upper = function(req, body) { return body.toUpperCase(); };
+
+// append at default priority 50
+loc.addBodyFilter('wholeBodySync', upper);
+
+// insert with a name so it can be removed later
+loc.addBodyFilter('wholeBodySync', upper, { name: 'uppercase' });
+loc.removeBodyFilter('uppercase');
+
+// insert before an existing filter
+const wrap = function(req, body) { return '[' + body + ']'; };
+loc.addBodyFilter('wholeBodySync', wrap, { before: upper });
+
+// insert at the beginning
+loc.addBodyFilter('wholeBodySync', wrap, { index: 0 });
+
+// priority-based ordering: lower numbers run first
+loc.addBodyFilter('wholeBodySync', upper, { priority: 10 });
+loc.addBodyFilter('wholeBodySync', wrap,  { priority: 20 });
+// → upper runs first, then wrap</programlisting>
+</section>
+</section>
+<section id="_header_filter_api_anchor_id_header_filter_api_xreflabel_header_filter_api">
+<title>Header filter API <anchor id="header-filter-api" xreflabel="[header-filter-api]"/></title>
+<simpara>A header filter receives a single <literal>NginxRequest</literal> argument.  At that point
+response headers are still mutable.  Use standard property access on <literal>req</literal>:</simpara>
+<programlisting language="js" linenumbering="unnumbered">function(req) {
+  // Read a response header
+  const type = req.getResponseHeader('content-type');
+
+  // Set/replace a response header
+  req.setResponseHeader('x-processed-by', 'nginx-js');
+
+  // Delete a response header
+  req.removeResponseHeader('server');
+
+  // Inspect the response status
+  const status = req.status;  // number, e.g. 200
+
+  // Mutate the status before it is sent
+  req.status = 404;
+}</programlisting>
+<simpara>Header filters are always synchronous.  <literal>async function</literal> callbacks are
+accepted but any awaited operation completes <emphasis role="strong">after</emphasis> headers are already
+sent — do not rely on async behaviour inside a header filter.</simpara>
+<simpara>The return value is ignored.</simpara>
+</section>
+<section id="_body_filter_api">
+<title>Body filter API</title>
+<section id="_whole_body_modes_literal_wholebodysync_literal_literal_wholebodyasync_literal">
+<title>Whole-body modes (<literal>wholeBodySync</literal>, <literal>wholeBodyAsync</literal>)</title>
+<simpara>The body is accumulated from all nginx chain links until <literal>last_buf</literal> is seen.
+Then the JS filter chain runs once on the complete body string.</simpara>
+<programlisting language="js" linenumbering="unnumbered">// wholeBodySync — transform body synchronously
+location.addBodyFilter('wholeBodySync', function(req, body) {
+    return body.toUpperCase();  // replace
+    // return undefined          → pass through unchanged
+});
+
+// wholeBodyAsync — transform body after an async operation
+location.addBodyFilter('wholeBodyAsync', async function(req, body) {
+    const translated = await callTranslationService(body);
+    return translated;          // replace
+    // return undefined          → pass through unchanged
+    // throw new Error('...')    → close the connection
+});</programlisting>
+<simpara>Chaining: when multiple whole-body filters are registered they run in
+registration order; each filter receives the output of the previous one as
+its <literal>body</literal> argument.</simpara>
+</section>
+<section id="_streaming_modes_literal_streamingsync_literal_literal_streamingasync_literal">
+<title>Streaming modes (<literal>streamingSync</literal>, <literal>streamingAsync</literal>)</title>
+<simpara>Streaming filters run on each chunk individually as nginx delivers it.
+The filter chain processes chunks in registration order.</simpara>
+<section id="_literal_streamingsync_literal">
+<title><literal>streamingSync</literal></title>
+<simpara>Output is produced via <literal>req.sendBuffer(data)</literal>.  Multiple calls per invocation
+are allowed; their output is concatenated in call order and forwarded
+downstream.  The next filter in the chain receives the <emphasis role="strong">concatenated output</emphasis>
+of the previous filter — not the original chunk.</simpara>
+<programlisting language="js" linenumbering="unnumbered">location.addBodyFilter('streamingSync', function(req, chunk, flags) {
+    req.sendBuffer(chunk.toUpperCase());  // emit transformed chunk
+    // no call to sendBuffer              → chunk is dropped
+});</programlisting>
+<simpara><literal>flags</literal> is an object with one property:</simpara>
+<itemizedlist>
+<listitem>
+<simpara>
+<literal>flags.last</literal> — <literal>true</literal> if this is the last chunk (corresponds to nginx&#8217;s
+  <literal>last_buf</literal> flag).
+</simpara>
+</listitem>
+</itemizedlist>
+</section>
+<section id="_literal_streamingasync_literal">
+<title><literal>streamingAsync</literal></title>
+<simpara>The filter returns a Promise.  The resolved value determines the output:</simpara>
+<informaltable
+frame="all"
+rowsep="1" colsep="1"
+>
+<tgroup cols="2">
+<colspec colname="col_1" colwidth="40*"/>
+<colspec colname="col_2" colwidth="60*"/>
+<thead>
+<row>
+<entry align="left" valign="top">Resolved value </entry>
+<entry align="left" valign="top">Effect</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry align="left" valign="top"><simpara>non-empty string</simpara></entry>
+<entry align="left" valign="top"><simpara>Replace the chunk with this string</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>''</literal> (empty string)</simpara></entry>
+<entry align="left" valign="top"><simpara>Drop the chunk (emit nothing)</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>undefined</literal> / non-string</simpara></entry>
+<entry align="left" valign="top"><simpara>Pass the chunk through unchanged</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara>Rejection</simpara></entry>
+<entry align="left" valign="top"><simpara>Close the connection with an error</simpara></entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+<simpara><literal>req.sendBuffer()</literal> is <emphasis role="strong">not</emphasis> the output mechanism for <literal>streamingAsync</literal> — use
+the return value.</simpara>
+<programlisting language="js" linenumbering="unnumbered">location.addBodyFilter('streamingAsync', async function(req, chunk, flags) {
+    await nginx.setTimeout(20);     // simulate async work
+    return chunk.toUpperCase();     // replace
+    // return ''                     → drop
+    // return undefined / no return → pass through
+    // throw new Error('...')        → close connection
+});</programlisting>
+</section>
+</section>
+<section id="_literal_req_sendbuffer_data_literal">
+<title><literal>req.sendBuffer(data)</literal></title>
+<simpara>Valid only inside a <literal>streamingSync</literal> filter callback.  Appends <literal>data</literal>
+(coerced to string) to the current chunk&#8217;s output accumulator.  Multiple
+calls per invocation are allowed.</simpara>
+<simpara>If called outside a <literal>streamingSync</literal> context (i.e. inside a <literal>wholeBody*</literal>
+filter or outside any filter) it is a silent no-op and a <literal>WARN</literal> message is
+written to the error log.</simpara>
+</section>
+<section id="_literal_flags_literal_object">
+<title><literal>flags</literal> object</title>
+<simpara>Passed as the third argument to both <literal>streamingSync</literal> and <literal>streamingAsync</literal>
+callbacks:</simpara>
+<programlisting language="js" linenumbering="unnumbered">{
+  last: boolean   // true when this is the last chunk of the response
+}</programlisting>
+<simpara>In <emphasis role="strong">mixed mode</emphasis> (see below) streaming filters receive the whole accumulated
+body as a single chunk with <literal>flags.last === true</literal>.</simpara>
+</section>
+<section id="_mode_selection_mode_a_vs_mode_b">
+<title>Mode selection (Mode A vs Mode B)</title>
+<simpara>nginx JS DOM uses two internal dispatch strategies based on what filter types
+are registered for a location:</simpara>
+<informaltable
+frame="all"
+rowsep="1" colsep="1"
+>
+<tgroup cols="3">
+<colspec colname="col_1" colwidth="16*"/>
+<colspec colname="col_2" colwidth="33*"/>
+<colspec colname="col_3" colwidth="50*"/>
+<thead>
+<row>
+<entry align="left" valign="top">Mode </entry>
+<entry align="left" valign="top">When used </entry>
+<entry align="left" valign="top">Behaviour</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry align="left" valign="top"><simpara><emphasis role="strong">Mode A</emphasis> — streaming</simpara></entry>
+<entry align="left" valign="top"><simpara>Location has <emphasis role="strong">no</emphasis> <literal>wholeBody*</literal> filters</simpara></entry>
+<entry align="left" valign="top"><simpara>nginx body-filter calls pass directly to the streaming chain; the body is
+never accumulated.  Each call to nginx&#8217;s body filter = one call to each
+streaming filter.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><emphasis role="strong">Mode B</emphasis> — whole-body</simpara></entry>
+<entry align="left" valign="top"><simpara>Location has <emphasis role="strong">at least one</emphasis> <literal>wholeBody*</literal> filter</simpara></entry>
+<entry align="left" valign="top"><simpara>The body is fully accumulated, then ALL filters run in registration order
+on the complete body.  <literal>streamingSync</literal>/<literal>streamingAsync</literal> filters in this list
+receive the whole body as a single last chunk.</simpara></entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+<simpara>The mode is selected automatically based on the filter list at request time.
+There is no explicit configuration knob.</simpara>
+</section>
+</section>
+<section id="_mixed_mode_mode_b_with_streaming_filters">
+<title>Mixed mode (Mode B with streaming filters)</title>
+<simpara>When both <literal>wholeBody*</literal> and <literal>streaming*</literal> filters share a location, Mode B is
+used and all filters run in registration order on the accumulated body.
+Streaming filters behave as follows:</simpara>
+<itemizedlist>
+<listitem>
+<simpara>
+<emphasis role="strong"><literal>streamingSync</literal></emphasis>: called with <literal>(req, body, {last: true})</literal>.  Emit output
+  via <literal>req.sendBuffer()</literal>; no call → body is dropped.
+</simpara>
+</listitem>
+<listitem>
+<simpara>
+<emphasis role="strong"><literal>streamingAsync</literal></emphasis>: called with <literal>(req, body, {last: true})</literal>.  Resolved
+  string replaces the body; <literal>undefined</literal> passes through; <literal>''</literal> drops it.
+</simpara>
+</listitem>
+</itemizedlist>
+<programlisting language="js" linenumbering="unnumbered">// Filter 1 (wholeBody): uppercase the body
+location.addBodyFilter('wholeBodySync', function(req, body) {
+    return body.toUpperCase();
+});
+
+// Filter 2 (streaming): wrap in brackets — runs after filter 1
+location.addBodyFilter('streamingSync', function(req, chunk, flags) {
+    req.sendBuffer('[' + chunk + ']');
+});
+
+// Request body 'hello' → 'HELLO' → '[HELLO]'</programlisting>
+</section>
+<section id="_execution_order_and_chaining">
+<title>Execution order and chaining</title>
+<simpara>Filters execute in the order they appear in the location&#8217;s filter list.
+Both header and body filter lists are independent.</simpara>
+<programlisting language="js" linenumbering="unnumbered">// Header filter runs first, body filters run in order for each request
+location.addHeaderFilter(function(req) {
+    req.setResponseHeader('x-stage', 'raw');
+});
+
+const step1 = function(req, body) { return body.trim(); };
+const step2 = function(req, body) { return body.toUpperCase(); };
+const step3 = function(req, body) { return '[' + body + ']'; };
+
+location.addBodyFilter('wholeBodySync', step1);
+location.addBodyFilter('wholeBodySync', step2);
+location.addBodyFilter('wholeBodySync', step3);
+// body passes through step1 → step2 → step3 in that order</programlisting>
+</section>
+<section id="_dynamic_filter_management">
+<title>Dynamic filter management</title>
+<simpara>Filters can be added and removed at runtime from within a running filter
+callback.  The implementation uses copy-on-write (COW) for the filter list:
+mutations during dispatch do not affect the current iteration but take effect
+for the next request.</simpara>
+<programlisting language="js" linenumbering="unnumbered">let patched = false;
+const firstRequest = function(req, body) {
+    if (!patched) {
+        // Add a second filter on the first request; takes effect on second
+        location.addBodyFilter('wholeBodySync', function(req, body) {
+            return body + ' (patched)';
+        });
+        patched = true;
+    }
+    return body;
+};
+location.addBodyFilter('wholeBodySync', firstRequest);</programlisting>
+<programlisting language="js" linenumbering="unnumbered">// Remove a named filter while it is running (safe — COW guarantees
+// the current dispatch sees the old list)
+const selfRemove = function(req, body) {
+    location.removeBodyFilter('once');  // removes itself
+    return body + ' [one-shot]';
+};
+location.addBodyFilter('wholeBodySync', selfRemove, { name: 'once' });</programlisting>
+</section>
+<section id="_priority_and_ordering">
+<title>Priority and ordering</title>
+<simpara>Filters added without an explicit <literal>index</literal>, <literal>before</literal>, or <literal>after</literal> option are
+inserted based on <literal>priority</literal> (lower = earlier, default <literal>50</literal>):</simpara>
+<programlisting language="js" linenumbering="unnumbered">// priority 10 runs before priority 20 runs before priority 50 (default)
+location.addBodyFilter('wholeBodySync',
+    (req, body) =&gt; body.trimStart(), { priority: 10 });
+
+location.addBodyFilter('wholeBodySync',
+    (req, body) =&gt; body.toUpperCase(), { priority: 20 });
+
+location.addBodyFilter('wholeBodySync',
+    (req, body) =&gt; '[' + body + ']');   // priority 50 (default)
+// Order: trimStart → toUpperCase → bracket</programlisting>
+</section>
+<section id="_error_handling">
+<title>Error handling</title>
+<informaltable
+frame="all"
+rowsep="1" colsep="1"
+>
+<tgroup cols="2">
+<colspec colname="col_1" colwidth="40*"/>
+<colspec colname="col_2" colwidth="60*"/>
+<thead>
+<row>
+<entry align="left" valign="top">Situation </entry>
+<entry align="left" valign="top">Behaviour</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry align="left" valign="top"><simpara><literal>wholeBodySync</literal> filter throws</simpara></entry>
+<entry align="left" valign="top"><simpara>Exception is logged; body is passed through unchanged; next filter runs.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>wholeBodyAsync</literal> filter rejects</simpara></entry>
+<entry align="left" valign="top"><simpara>Error is logged; connection is closed (HTTP 500 or connection reset).</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>streamingSync</literal> filter throws</simpara></entry>
+<entry align="left" valign="top"><simpara>Exception is logged; chunk is dropped; next filter runs.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>streamingAsync</literal> filter rejects</simpara></entry>
+<entry align="left" valign="top"><simpara>Error is logged; connection is closed.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>addBodyFilter</literal> / <literal>addHeaderFilter</literal> called with wrong type</simpara></entry>
+<entry align="left" valign="top"><simpara><literal>TypeError</literal> is thrown immediately (synchronous, propagates to the caller).</simpara></entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+</section>
+<section id="_complete_examples">
+<title>Complete examples</title>
+<section id="_example_1_inject_a_banner_into_every_html_response">
+<title>Example 1 — Inject a banner into every HTML response</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/'; }
+    );
+
+    // Modify the Content-Type header to ensure UTF-8
+    loc.addHeaderFilter(function(req) {
+        var ct = req.getResponseHeader('content-type') || '';
+        if (ct.indexOf('charset') === -1 &amp;&amp; ct.indexOf('text/html') !== -1) {
+            req.setResponseHeader('content-type', ct + '; charset=utf-8');
+        }
+    });
+
+    // Inject a banner comment before &lt;/body&gt;
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        var banner = '&lt;!-- served by nginx-js --&gt;';
+        return body.replace('&lt;/body&gt;', banner + '&lt;/body&gt;');
+    });
+})();</programlisting>
+</section>
+<section id="_example_2_gzip_style_response_size_logging">
+<title>Example 2 — GZIP-style response size logging</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations[0];
+    var totalBytes = 0;
+
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        totalBytes += body.length;
+        nginx.log('info', 'Response size: ' + body.length + ' bytes '
+                  + '(cumulative: ' + totalBytes + ')');
+        return undefined;   // pass through unchanged
+    });
+})();</programlisting>
+</section>
+<section id="_example_3_strip_server_sent_events_containing_a_keyword">
+<title>Example 3 — Strip server-sent events containing a keyword</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/events/'; }
+    );
+
+    // Per-chunk streaming: drop any SSE event containing 'internal'
+    loc.addBodyFilter('streamingSync', function(req, chunk, flags) {
+        if (chunk.indexOf('internal') !== -1) {
+            return;   // no sendBuffer → drop this chunk
+        }
+        req.sendBuffer(chunk);
+    });
+})();</programlisting>
+</section>
+<section id="_example_4_async_translation_wholebodyasync">
+<title>Example 4 — Async translation (wholeBodyAsync)</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/translate/'; }
+    );
+
+    loc.addBodyFilter('wholeBodyAsync', async function(req, body) {
+        // nginx.setTimeout returns a Promise that resolves after ms
+        await nginx.setTimeout(0);  // yield to event loop
+
+        // Simulate async translation (replace with a real upstream fetch)
+        var translated = body.split('hello').join('hola');
+        return translated;
+    });
+})();</programlisting>
+</section>
+<section id="_example_5_async_per_chunk_watermark_injection_streamingasync">
+<title>Example 5 — Async per-chunk watermark injection (streamingAsync)</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/stream/'; }
+    );
+
+    loc.addBodyFilter('streamingAsync', async function(req, chunk, flags) {
+        await nginx.setTimeout(0);  // yield to event loop
+
+        if (flags.last) {
+            // Append a watermark to the last chunk
+            return chunk + '\n&lt;!-- end of stream --&gt;';
+        }
+        return chunk;   // pass through other chunks unchanged
+    });
+})();</programlisting>
+</section>
+<section id="_example_6_chained_pipeline_streaming_bracket_async_uppercase">
+<title>Example 6 — Chained pipeline: streaming bracket + async uppercase</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations[0];
+
+    // Step 1: synchronously wrap each chunk in angle brackets
+    loc.addBodyFilter('streamingSync', function(req, chunk, flags) {
+        req.sendBuffer('&lt;' + chunk + '&gt;');
+    });
+
+    // Step 2: asynchronously uppercase (receives step 1 output as input)
+    loc.addBodyFilter('streamingAsync', async function(req, chunk, flags) {
+        await nginx.setTimeout(5);
+        return chunk.toUpperCase();   // '&lt;hello&gt;' → '&lt;HELLO&gt;'
+    });
+})();</programlisting>
+</section>
+<section id="_example_7_priority_based_middleware_stack">
+<title>Example 7 — Priority-based middleware stack</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations[0];
+
+    // Security: strip internal headers — run first (priority 10)
+    loc.addHeaderFilter(function(req) {
+        req.removeResponseHeader('x-internal-token');
+        req.removeResponseHeader('x-debug-info');
+    }, { priority: 10 });
+
+    // Observability: add timing header — run last (priority 90)
+    var started = Date.now();
+    loc.addHeaderFilter(function(req) {
+        req.setResponseHeader('x-response-ms',
+                              String(Date.now() - started));
+    }, { priority: 90 });
+
+    // Body: redact PII — normal priority (50)
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        return body.replace(/\b\d{4}-\d{4}-\d{4}-\d{4}\b/g, '****-****-****-****');
+    });
+})();</programlisting>
+</section>
+<section id="_example_8_one_shot_filter_that_installs_itself_then_removes_itself">
+<title>Example 8 — One-shot filter that installs itself then removes itself</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations[0];
+
+    // Fires only on the first request, then removes itself
+    loc.addBodyFilter('wholeBodySync', function firstOnly(req, body) {
+        loc.removeBodyFilter(firstOnly);
+        return '&lt;!-- first request --&gt;\n' + body;
+    }, { name: 'first-only' });
+})();</programlisting>
+</section>
+<section id="_example_9_mixed_mode_wb_normalize_then_streaming_chunk_markers">
+<title>Example 9 — Mixed mode: WB normalize then streaming chunk markers</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/api/'; }
+    );
+
+    // Filter 1 (wholeBodySync): parse JSON and re-serialize normalized
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        try {
+            var obj = JSON.parse(body);
+            return JSON.stringify(obj);   // compact, keys sorted by JS engine
+        } catch (e) {
+            return undefined;   // pass through if not JSON
+        }
+    });
+
+    // Filter 2 (streamingAsync): add a Content-Length annotation asynchronously
+    // Receives the normalized body as a single chunk (flags.last === true)
+    loc.addBodyFilter('streamingAsync', async function(req, chunk, flags) {
+        await nginx.setTimeout(0);
+        return chunk + '\n/* length: ' + chunk.length + ' */';
+    });
+})();</programlisting>
+</section>
+<section id="_example_10_runtime_conditional_filter_a_b_test">
+<title>Example 10 — Runtime conditional filter (A/B test)</title>
+<programlisting language="js" linenumbering="unnumbered">(function() {
+    var loc = nginx.http.servers[0].locations[0];
+    var featureEnabled = false;
+
+    // Toggle can be flipped externally via a SharedWorker or another
+    // request handler that has access to the same closure.
+    function enableFeature() { featureEnabled = true; }
+    function disableFeature() { featureEnabled = false; }
+
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        if (!featureEnabled) {
+            return undefined;   // pass through when A/B flag is off
+        }
+        return '&lt;div class="beta"&gt;' + body + '&lt;/div&gt;';
+    });
+
+    // Expose control surface via a separate management location
+    var mgmt = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/admin/feature/'; }
+    );
+    if (mgmt) {
+        mgmt.handler = function(req) {
+            var enable = req.uri.indexOf('?enable') !== -1;
+            if (enable) { enableFeature(); } else { disableFeature(); }
+            req.respond(200, {}, 'feature ' + (featureEnabled ? 'ON' : 'OFF'));
+        };
+    }
+})();</programlisting>
+</section>
+</section>
+<section id="_reference_summary">
+<title>Reference summary</title>
+<section id="_location_methods">
+<title>Location methods</title>
+<informaltable
+frame="all"
+rowsep="1" colsep="1"
+>
+<tgroup cols="3">
+<colspec colname="col_1" colwidth="33*"/>
+<colspec colname="col_2" colwidth="16*"/>
+<colspec colname="col_3" colwidth="50*"/>
+<thead>
+<row>
+<entry align="left" valign="top">Method </entry>
+<entry align="left" valign="top">Returns </entry>
+<entry align="left" valign="top">Description</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry align="left" valign="top"><simpara><literal>addHeaderFilter(fn [, opts])</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>undefined</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Register a header-filter callback.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>addBodyFilter(mode, fn [, opts])</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>undefined</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Register a body-filter callback.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>removeHeaderFilter(ref)</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>undefined</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Remove a header filter by name or function reference.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>removeBodyFilter(ref)</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>undefined</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Remove a body filter by name or function reference.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>getHeaderFilter(ref)</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>{name, priority, fn}</literal> or <literal>null</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Retrieve header filter descriptor.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>getBodyFilter(ref)</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>{name, priority, fn, mode}</literal> or <literal>null</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Retrieve body filter descriptor.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>headerFilters</literal> <emphasis>(getter)</emphasis></simpara></entry>
+<entry align="left" valign="top"><simpara>Array of <literal>{name, priority, fn}</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Snapshot of all header filters in dispatch order.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>bodyFilters</literal> <emphasis>(getter)</emphasis></simpara></entry>
+<entry align="left" valign="top"><simpara>Array of <literal>{name, priority, fn, mode}</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Snapshot of all body filters in dispatch order.</simpara></entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+</section>
+<section id="_body_filter_modes">
+<title>Body filter modes</title>
+<informaltable
+frame="all"
+rowsep="1" colsep="1"
+>
+<tgroup cols="3">
+<colspec colname="col_1" colwidth="28*"/>
+<colspec colname="col_2" colwidth="28*"/>
+<colspec colname="col_3" colwidth="42*"/>
+<thead>
+<row>
+<entry align="left" valign="top">Mode string </entry>
+<entry align="left" valign="top">Signature </entry>
+<entry align="left" valign="top">Output mechanism</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry align="left" valign="top"><simpara><literal>'wholeBodySync'</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>fn(req, body) → string|undefined</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Return value</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>'wholeBodyAsync'</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>async fn(req, body) → Promise&lt;string|undefined&gt;</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Resolved value of returned Promise</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>'streamingSync'</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>fn(req, chunk, flags)</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>req.sendBuffer(data)</literal> — zero or more calls</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>'streamingAsync'</literal></simpara></entry>
+<entry align="left" valign="top"><simpara><literal>async fn(req, chunk, flags) → Promise&lt;string|undefined&gt;</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>Resolved value of returned Promise</simpara></entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+</section>
+<section id="_literal_req_sendbuffer_data_literal_2">
+<title><literal>req.sendBuffer(data)</literal></title>
+<informaltable
+frame="all"
+rowsep="1" colsep="1"
+>
+<tgroup cols="2">
+<colspec colname="col_1" colwidth="25*"/>
+<colspec colname="col_2" colwidth="75*"/>
+<thead>
+<row>
+<entry align="left" valign="top">Parameter </entry>
+<entry align="left" valign="top">Description</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry align="left" valign="top"><simpara><literal>data</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>String (or coercible to string) to append to the current chunk output.</simpara></entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+<simpara>Valid only inside a <literal>streamingSync</literal> callback.  No-op + <literal>WARN</literal> log in all
+other contexts.</simpara>
+</section>
+<section id="_filter_options_object">
+<title>Filter options object</title>
+<informaltable
+frame="all"
+rowsep="1" colsep="1"
+>
+<tgroup cols="3">
+<colspec colname="col_1" colwidth="20*"/>
+<colspec colname="col_2" colwidth="20*"/>
+<colspec colname="col_3" colwidth="60*"/>
+<thead>
+<row>
+<entry align="left" valign="top">Property </entry>
+<entry align="left" valign="top">Type </entry>
+<entry align="left" valign="top">Description</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry align="left" valign="top"><simpara><literal>name</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>string</simpara></entry>
+<entry align="left" valign="top"><simpara>Symbolic name for later <literal>remove</literal> / <literal>get</literal> calls.  Optional.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>priority</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>number</simpara></entry>
+<entry align="left" valign="top"><simpara>Insertion priority.  Lower = earlier.  Default <literal>50</literal>.  Used when no positional
+option (<literal>index</literal>, <literal>before</literal>, <literal>after</literal>) is given.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>index</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>number</simpara></entry>
+<entry align="left" valign="top"><simpara>Absolute 0-based insertion position.  Takes precedence over all other options.</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>before</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>function or string</simpara></entry>
+<entry align="left" valign="top"><simpara>Insert immediately before this filter (matched by function reference or
+name).</simpara></entry>
+</row>
+<row>
+<entry align="left" valign="top"><simpara><literal>after</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>function or string</simpara></entry>
+<entry align="left" valign="top"><simpara>Insert immediately after this filter (matched by function reference or
+name).</simpara></entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+</section>
+<section id="_literal_flags_literal_object_streaming_callbacks">
+<title><literal>flags</literal> object (streaming callbacks)</title>
+<informaltable
+frame="all"
+rowsep="1" colsep="1"
+>
+<tgroup cols="3">
+<colspec colname="col_1" colwidth="20*"/>
+<colspec colname="col_2" colwidth="20*"/>
+<colspec colname="col_3" colwidth="60*"/>
+<thead>
+<row>
+<entry align="left" valign="top">Property </entry>
+<entry align="left" valign="top">Type </entry>
+<entry align="left" valign="top">Description</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry align="left" valign="top"><simpara><literal>last</literal></simpara></entry>
+<entry align="left" valign="top"><simpara>boolean</simpara></entry>
+<entry align="left" valign="top"><simpara><literal>true</literal> if this is the final chunk of the response body.</simpara></entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+</section>
+</section>
+</article>

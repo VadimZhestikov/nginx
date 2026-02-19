@@ -1,0 +1,41 @@
+  Stage 14 — More ngx_http_core_loc_conf_t getters on NginxLocation
+
+  Properties not yet exposed, grouped by theme:
+
+  ┌──────────────────────────┬──────────────────────────────┬────────────────────────────┐
+  │       JS property        │           C field            │            Type            │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ clientBodyBufferSize     │ client_body_buffer_size      │ number (bytes)             │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ clientBodyInFileOnly     │ client_body_in_file_only     │ "off" | "clean" | "on"     │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ clientBodyInSingleBuffer │ client_body_in_single_buffer │ boolean                    │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ resetTimedoutConnection  │ reset_timedout_connection    │ boolean                    │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ absoluteRedirect         │ absolute_redirect            │ boolean                    │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ serverNameInRedirect     │ server_name_in_redirect      │ boolean                    │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ portInRedirect           │ port_in_redirect             │ boolean                    │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ msiePadding              │ msie_padding                 │ boolean                    │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ ifModifiedSince          │ if_modified_since            │ "off" | "exact" | "before" │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ maxRanges                │ max_ranges                   │ number                     │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ authDelay                │ auth_delay                   │ number (ms)                │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ keepaliveTime            │ keepalive_time               │ number (ms)                │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ sendLowat                │ send_lowat                   │ number (bytes)             │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ postponeOutput           │ postpone_output              │ number (bytes)             │
+  ├──────────────────────────┼──────────────────────────────┼────────────────────────────┤
+  │ typesHashMaxSize         │ types_hash_max_size          │ number                     │
+  └──────────────────────────┴──────────────────────────────┴────────────────────────────┘
+
+  All 15 plain getters, no new classes, added to the existing ngx_js_location_get (magic 59–73).
+
+  Shall I proceed?

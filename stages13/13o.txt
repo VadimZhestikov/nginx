@@ -1,0 +1,18 @@
+● Stage 13n done. 686 tests passing.
+
+  ---
+  Stage 13o proposal — xslt (ngx_http_xslt_filter_module)
+
+  Optional (--with-http_xslt_module). Applies XSLT stylesheets to XML responses. Exposes location.xslt:
+
+  ┌──────────────┬──────────────────┬───────────────────────┐
+  │   Property   │       Type       │       Directive       │
+  ├──────────────┼──────────────────┼───────────────────────┤
+  │ stylesheets  │ array of strings │ xslt_stylesheet paths │
+  ├──────────────┼──────────────────┼───────────────────────┤
+  │ types        │ (skip — hash)    │ —                     │
+  ├──────────────┼──────────────────┼───────────────────────┤
+  │ lastModified │ boolean          │ xslt_last_modified    │
+  └──────────────┴──────────────────┴───────────────────────┘
+
+  Shall I proceed with Stage 13o (xslt)?

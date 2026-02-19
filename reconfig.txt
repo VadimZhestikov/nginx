@@ -1,0 +1,64 @@
+❯ what nginx modules can be reconfigured without usual nginx config reload?
+
+● There are two distinct categories depending on when the change happens and how far it propagates:
+
+  ---
+  1. Cross-worker live reconfiguration (shared memory — no reload, instant, all workers)
+
+  Only upstream load-balancing works here, because nginx stores the active peer state in a shared memory zone (zone directive):
+
+  NginxRRPeer — readable and writable from request handlers, changes visible immediately to all workers:
+  upstream[].peers[].weight        — shift traffic weight
+  upstream[].peers[].down          — take a backend out of rotation
+  upstream[].peers[].maxFails      — adjust failure threshold
+  upstream[].peers[].failTimeout   — adjust penalty period
+  upstream[].peers[].maxConns      — cap per-backend concurrency
+  upstream[].addPeer(addr, opts)   — add a backend server on the fly
+  upstream[].removePeer(addr)      — remove a backend server on the fly
+
+  This is the only mechanism that is truly cross-worker (changes written through one worker are immediately seen by all others), because the data lives in a named shared memory zone, not in
+  COW-forked process memory.
+
+  Requirement: the upstream block must have a zone directive. Without it there is no shared memory and peer state is per-worker.
+
+  ---
+  2. Per-worker runtime reconfiguration (COW memory — change affects only that worker)
+
+  Writable properties that live in the worker's own copy-on-write address space. A change made in one worker's request handler is not visible to other workers:
+
+  nginx.workerMemoryLimit          — JS heap cap for this worker (bytes, 0=unlimited)
+  nginx.workerRequestTimeout       — per-request JS deadline for this worker (ms, 0=none)
+  location.handler                 — swap out the JS content handler function
+  location.root / server.root      — change document root path
+
+  These are useful for per-worker self-tuning (e.g., a handler that detects high load and tightens its own timeout), but not for coordinated config changes across the whole nginx instance.
+
+  ---
+  3. Pre-fork reconfiguration (js_source / js_init_http — before workers fork, all workers inherit)
+
+  Everything writable in the COM, plus config generation, runs during init_conf. Since workers inherit via fork, all of them see the result:
+
+  - All location.* / server.* r/w fields
+  - nginx.cycle.workers
+  - upstream[] peer fields (NginxPeer, config-phase)
+  - Config injection via config.write() (js_preprocess) or js_init_http
+
+  But this still requires an nginx reload to trigger — it's just that the reload does not need to touch nginx.conf on disk because the JS script generates the config dynamically.
+
+  ---
+  Summary
+
+  ┌────────────────────────┬──────────────────────────────────────────────────────────────────────────┬────────────────────┐
+  │         Scope          │                            Module / Property                             │     Mechanism      │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────┼────────────────────┤
+  │ All workers, instant   │ Upstream peer weight/down/add/remove                                     │ Shared memory zone │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────┼────────────────────┤
+  │ This worker only       │ workerMemoryLimit, workerRequestTimeout, location.handler, location.root │ COW process memory │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────┼────────────────────┤
+  │ All workers, on reload │ Everything else writable                                                 │ Fork inheritance   │
+  └────────────────────────┴──────────────────────────────────────────────────────────────────────────┴────────────────────┘
+
+  The practical answer for "without config reload": upstream peers are the only thing that propagates to all workers instantly. Everything else either requires a reload or only affects the worker
+  that made the change.
+
+✻ Cooked for 38s

@@ -1,0 +1,138 @@
+❯ just a question: how much getters request object (passed to js handler) have?
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● 21 getters (magic 0–20), all read-only (no setter). They are:
+
+  ┌─────┬───────────────┬─────────────────────────────────────┐
+  │  #  │     Name      │                Type                 │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 0   │ method        │ string                              │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 1   │ uri           │ string                              │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 2   │ args          │ string                              │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 3   │ remoteAddr    │ string                              │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 4   │ headers       │ object (lowercase keys)             │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 5   │ host          │ string                              │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 6   │ httpVersion   │ string                              │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 7   │ isInternal    │ boolean                             │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 8   │ keepalive     │ boolean                             │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 9   │ contentLength │ number (-1 if absent)               │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 10  │ contentType   │ string                              │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 11  │ startTime     │ number (ms)                         │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 12  │ remotePort    │ number                              │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 13  │ scheme        │ string                              │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 14  │ connection    │ object {id, requests, fd}           │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 15  │ location      │ NginxLocation object                │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 16  │ queryParams   │ object (decoded key/value)          │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 17  │ cookies       │ object (name/value)                 │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 18  │ upstream      │ object or null                      │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 19  │ variables     │ NginxRequestVariables exotic object │
+  ├─────┼───────────────┼─────────────────────────────────────┤
+  │ 20  │ body          │ string or null                      │
+  └─────┴───────────────┴─────────────────────────────────────┘
+
+❯ are they own properties?
+
+● No — they're prototype properties, not own properties.
+
+  JS_SetPropertyFunctionList installs them on the class prototype object, not on each instance. So r.method triggers a prototype chain lookup, finds the getter on NginxRequest.prototype, and calls
+  ngx_js_request_get.
+
+● Read 1 file (ctrl+o to expand)
+
+● Actually — slightly more nuanced. A fresh prototype object is created per request instance (JS_NewObject → JS_SetPropertyFunctionList → JS_NewObjectProtoClass). So the getters live on a per-request
+   prototype, not a shared class prototype.
+
+  The consequence:
+  - Object.keys(r) / r.hasOwnProperty('method') → false for all 21 getters
+  - 'method' in r → true (found via prototype chain)
+  - Each request gets its own proto object (slight overhead vs. a shared class prototype, but functionally equivalent from JS code's perspective)
+
+
+
+❯ can we use instead shared class prototype instead own proto object?
+
+● Yes. The standard QuickJS pattern is to set the prototype once per runtime and use JS_NewObjectClass for instances. Let me look at what ngx_js_request_register_class currently does and how other
+  classes in the module handle this:
+
+● Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● The module doesn't use JS_SetClassProto anywhere yet — every other class does the same per-instance proto pattern.
+
+  Yes, we can. The standard QuickJS pattern:
+
+  Init time (once per context):
+  JSValue proto = JS_NewObject(ctx);
+  JS_SetPropertyFunctionList(ctx, proto,
+      ngx_js_request_proto_funcs,
+      countof(ngx_js_request_proto_funcs));
+  JS_SetClassProto(ctx, ngx_js_request_class_id, proto); /* takes ownership */
+
+  Wrap time (per request):
+  obj = JS_NewObjectClass(ctx, ngx_js_request_class_id);
+  /* prototype is automatically the one registered above */
+
+  The change requires splitting the current ngx_js_request_register_class(rt) into two calls:
+  1. JS_NewClass(rt, ...) — stays runtime-level (current)
+  2. A new ngx_js_request_install_proto(ctx) — context-level, called from ngx_js_com_init
+
+  The savings per request: one JS_NewObject + 21 property installations → zero. With high request rates this is meaningful. The prototype object is shared (read-only after setup), so there's no
+  correctness concern — the opaque pointer on each instance still uniquely identifies the ngx_http_request_t *.
+
+  Want me to make this change?
+
+yes
+
+● Done. The shared prototype optimization is committed:
+
+  - ngx_js_request_install_proto(ctx) — creates one prototype object per context with all 21 method/getter definitions, installed via JS_SetClassProto
+  - ngx_js_wrap_request — now uses JS_NewObjectClass (picks up the shared prototype automatically), no per-request JS_SetPropertyFunctionList
+  - All 1107 tests pass
+
+✻ Sautéed for 3m 32s
+
+
+❯ question: do we have similar situation with our other objects?
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Yes — every class except NginxRequest (just fixed) and ngx_js_req_vars_class_id (exotic class, no proto needed) still uses the old pattern. But there's an important distinction:
+
+  Per-request (created on every HTTP request):
+  - NginxRequest — already fixed
+
+  Config-phase (created once at init_conf, not per-request):
+  - NginxCycle (1 ever) — ngx_js_com.c
+  - NginxLocation (1 per location), NginxServer (1 per server) — ngx_js_com_http.c
+  - NginxUpstream, NginxPeer, NginxRRPeer — ngx_js_com_upstream.c
+  - NginxProxy, NginxSSL, NginxGzip, NginxHeaders, NginxProxyCache, NginxRewrite, and all the other ~25 sub-objects — one per location
+
+  Constructor-phase (once per new Worker/SharedWorker() call):
+  - NginxWorker, NginxSharedWorker — ngx_js_worker.c, ngx_js_sw.c
+  - ngx_js_wt_sw_class_id (SW inside Worker thread), ngx_js_pending_server_class_id
+
+  Conclusion: The optimization matters almost exclusively for NginxRequest because it's the only class instantiated on every HTTP request. Everything else is created once during config parsing or
+  once per Worker/SW construction — the per-instance prototype allocation cost there is negligible (it happens once in the process lifetime, not in the hot path).
+
+
+lets make same changes for all of them
+

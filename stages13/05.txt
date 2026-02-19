@@ -1,0 +1,23 @@
+● Stage 5 complete — 353/353 tests passing. Summary:
+
+  ┌─────────────┬───────────────┬────────┬──────────────────────────────────┐
+  │  Property   │     Class     │ Access │           Description            │
+  ├─────────────┼───────────────┼────────┼──────────────────────────────────┤
+  │ failTimeout │ NginxPeer     │ r/w    │ fail_timeout in seconds          │
+  ├─────────────┼───────────────┼────────┼──────────────────────────────────┤
+  │ maxConns    │ NginxPeer     │ r/w    │ max_conns (0 = unlimited)        │
+  ├─────────────┼───────────────┼────────┼──────────────────────────────────┤
+  │ failTimeout │ NginxRRPeer   │ r/w    │ same, with rwlock                │
+  ├─────────────┼───────────────┼────────┼──────────────────────────────────┤
+  │ maxConns    │ NginxRRPeer   │ r/w    │ same, with rwlock                │
+  ├─────────────┼───────────────┼────────┼──────────────────────────────────┤
+  │ server      │ NginxRRPeer   │ r/o    │ configured server address string │
+  ├─────────────┼───────────────┼────────┼──────────────────────────────────┤
+  │ fails       │ NginxRRPeer   │ r/o    │ runtime failure counter          │
+  ├─────────────┼───────────────┼────────┼──────────────────────────────────┤
+  │ zone        │ NginxUpstream │ r/o    │ shm zone name, or null           │
+  └─────────────┴───────────────┴────────┴──────────────────────────────────┘
+
+  Ready for Stage 6 when you are.
+
+✻ Worked for 3m 46s

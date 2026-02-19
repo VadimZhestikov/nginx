@@ -1,0 +1,30 @@
+● Stage 13t done. 741/741 passing.
+
+  ---
+  Stage 13u proposal — location.proxyCache expansion
+
+  We already have location.proxyCache (Stage 9) exposing the ngx_http_proxy_cache_conf_t. Let me check what's still unexposed there — or we could look at new modules.
+
+  The remaining useful per-location modules in nginx's built-in set are fairly small. Let me assess what's left:
+
+  - ngx_http_geo_module — no per-location conf; it's a variable source
+  - ngx_http_map_module — same, variable source
+  - ngx_http_split_clients_module — variable source
+  - ngx_http_uwsgi_module — has ngx_http_uwsgi_loc_conf_t with many fields (similar to fastcgi)
+  - ngx_http_scgi_module — has ngx_http_scgi_loc_conf_t (similar to fastcgi)
+  - ngx_http_memcached_module — has ngx_http_memcached_loc_conf_t with key, timeout, gzip
+
+  Stage 13u proposal: location.memcached (NginxMemcached)
+
+  ngx_http_memcached_module has:
+  typedef struct {
+      ngx_http_complex_value_t  *key;
+      ngx_msec_t                 send_timeout;
+      ngx_msec_t                 read_timeout;
+      size_t                     buffer_size;
+      ngx_flag_t                 gzip_flag;
+  } ngx_http_memcached_loc_conf_t;
+
+  Expose: key (static portion), sendTimeout, readTimeout, bufferSize, gzipFlag.
+
+  Shall I proceed?

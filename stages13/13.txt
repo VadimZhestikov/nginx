@@ -1,0 +1,25 @@
+● Stage 13 has many candidate modules. Here's a proposed list in rough priority order:
+
+  ┌─────┬────────────────────┬───────────────────────────────┬───────────────────────────────────────────┐
+  │  #  │      Property      │         Source struct         │                   Notes                   │
+  ├─────┼────────────────────┼───────────────────────────────┼───────────────────────────────────────────┤
+  │ 13a │ location.fastcgi   │ ngx_http_fastcgi_loc_conf_t   │ fastcgi_pass, params, timeouts, buffering │
+  ├─────┼────────────────────┼───────────────────────────────┼───────────────────────────────────────────┤
+  │ 13b │ location.log       │ ngx_http_log_loc_conf_t       │ access_log path + format name             │
+  ├─────┼────────────────────┼───────────────────────────────┼───────────────────────────────────────────┤
+  │ 13c │ location.realip    │ ngx_http_realip_loc_conf_t    │ set_real_ip_from[], real_ip_header        │
+  ├─────┼────────────────────┼───────────────────────────────┼───────────────────────────────────────────┤
+  │ 13d │ location.charset   │ ngx_http_charset_loc_conf_t   │ charset, sourceCharset                    │
+  ├─────┼────────────────────┼───────────────────────────────┼───────────────────────────────────────────┤
+  │ 13e │ location.sub       │ ngx_http_sub_loc_conf_t       │ sub_filter pairs, once, types             │
+  ├─────┼────────────────────┼───────────────────────────────┼───────────────────────────────────────────┤
+  │ 13f │ location.autoindex │ ngx_http_autoindex_loc_conf_t │ autoindex, format, exact size, localtime  │
+  ├─────┼────────────────────┼───────────────────────────────┼───────────────────────────────────────────┤
+  │ 13g │ location.referer   │ ngx_http_referer_conf_t       │ valid_referers rules                      │
+  ├─────┼────────────────────┼───────────────────────────────┼───────────────────────────────────────────┤
+  │ 13h │ location.dav       │ ngx_http_dav_loc_conf_t       │ dav_methods, create_full_put_path, access │
+  ├─────┼────────────────────┼───────────────────────────────┼───────────────────────────────────────────┤
+  │ 13i │ location.ssi       │ ngx_http_ssi_loc_conf_t       │ ssi, silent_errors, min_file_chunk        │
+  └─────┴────────────────────┴───────────────────────────────┴───────────────────────────────────────────┘
+
+  Shall I start with 13a — location.fastcgi?

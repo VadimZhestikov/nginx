@@ -1,0 +1,52 @@
+//////////////////////////////// budget:
+
+237.42 before 13 stages plan impementation started
+236.33 after stage 1
+234.98 after stage 2
+234.23 after stage 3
+231.43 after stage 4
+230.47 after stage 5
+227.18 after stage 6
+225.67 after stage 7
+224.00 after stage 8
+222.54 after stage 9
+221.27 after stage 10
+219.14 after stage 11
+217.91 after stage 12
+215.56 after stage 13a
+214.59 after stage 13b
+212.96 after stage 13c
+                   13d (missed in this table)
+206.57 after stage 13e
+.........
+202.58 after stage 13g
+199.73 after stage 13h
+148.03 after stage 36
+
+
+111.68 before Stages-reconfig
+111.48 after 0-A
+109.97 after 0-B and 0-C
+108.80 after 0-D
+108.10 after 0-E
+106.96 after 0-F
+105.88 after 1
+104.55 after 2
+104.07 after 3
+103.67 after 4
+103.13 after 5a
+101.40 after 5b
+100.02 after 6
+ 98.25 after 7
+ 96.78 after 8
+ 95.04 after 9
+ 92.00 after 10
+
+
+
+
+///////////////// snapshot plan implementation
+
+167.49 start budget
+
+

@@ -1,0 +1,14 @@
+● Stage 13s done. 733/733 passing.
+
+  ---
+  Stage 13t proposal — location.gzipStatic (NginxGzipStatic)
+
+  ngx_http_gzip_static_module has a per-location conf:
+
+  typedef struct {
+      ngx_uint_t  enable;   /* NGX_HTTP_GZIP_STATIC_OFF/ON/ALWAYS */
+  } ngx_http_gzip_static_conf_t;
+
+  One property: enable — string "off" / "on" / "always". Expose as location.gzipStatic.enable.
+
+  Shall I proceed?

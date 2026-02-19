@@ -1,0 +1,16 @@
+● Stage 15 done. 894 tests, 66 files, all passing.
+
+  ---
+  Stage 16 candidates. At this point, NginxLocation and NginxServer are very well covered. Remaining meaningful areas:
+
+  Option A — NginxRequest extension: the request-phase JS object (r in content handlers) currently has limited properties. Could add: r.host, r.scheme, r.remoteAddr, r.remotePort, r.serverAddr,
+  r.serverPort, r.isInternal, r.startTime, r.contentLength, r.contentType, r.connection.{id,requests,fd}.
+
+  Option B — nginx.http server-count / location-count stats: nginx.http.serverCount, nginx.http.locationCount (trivially derived from existing arrays, so low value).
+
+  Option C — Open-file cache on location: location.openFileCache → {maxSize, inactive, valid, minUses, errors, events} or null when disabled. Maps to ngx_open_file_cache_t plus the 4 scalar fields
+  (open_file_cache_valid, open_file_cache_min_uses, open_file_cache_errors, open_file_cache_events).
+
+  Option D — nginx.cycle object: expose ngx_cycle_t fields: nginx.cycle.{prefix, confPrefix, confFile, errorLog, workerProcesses, debugConnections[]}.
+
+  Option A (request object extension) or Option D (cycle object) would add the most new surface. Shall I proceed with Stage 16 as Option A — extending NginxRequest?
