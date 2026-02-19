@@ -49,10 +49,10 @@ static JSClassDef ngx_js_cycle_class = {
 
 
 /*
- * Magic values for ngx_js_cycle_get:
+ * Magic values for ngx_js_cycle_get / ngx_js_cycle_set:
  *   0 — hostname   (r/o)
  *   1 — prefix     (r/o)
- *   2 — workers    (r/o)
+ *   2 — workers    (r/w)
  */
 static JSValue
 ngx_js_cycle_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -84,10 +84,37 @@ ngx_js_cycle_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_cycle_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_cycle_opaque_t  *op;
+    ngx_core_conf_t        *ccf;
+    int32_t                 n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_cycle_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    switch (magic) {
+    case 2: /* workers */
+        if (JS_ToInt32(ctx, &n, val)) {
+            return JS_EXCEPTION;
+        }
+        ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
+                                               ngx_core_module);
+        ccf->worker_processes = (ngx_int_t) n;
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_cycle_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("hostname", ngx_js_cycle_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("prefix",   ngx_js_cycle_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("workers",  ngx_js_cycle_get, NULL, 2),
+    JS_CGETSET_MAGIC_DEF("hostname", ngx_js_cycle_get, NULL,              0),
+    JS_CGETSET_MAGIC_DEF("prefix",   ngx_js_cycle_get, NULL,              1),
+    JS_CGETSET_MAGIC_DEF("workers",  ngx_js_cycle_get, ngx_js_cycle_set,  2),
 };
 
 

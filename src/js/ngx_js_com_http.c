@@ -69,9 +69,9 @@ static JSClassDef ngx_js_location_class = {
 
 
 /*
- * Magic values for ngx_js_location_get:
+ * Magic values for ngx_js_location_get / ngx_js_location_set:
  *   0 — path    (r/o: location name/pattern)
- *   1 — root    (r/o)
+ *   1 — root    (r/w)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -99,9 +99,55 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_location_opaque_t  *op;
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_cycle_t               *cycle;
+    const char                *cstr;
+    size_t                     len;
+    u_char                    *data;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    clcf  = op->clcf;
+    cycle = (ngx_cycle_t *) JS_GetContextOpaque(ctx);
+
+    switch (magic) {
+    case 1: /* root */
+        cstr = JS_ToCString(ctx, val);
+        if (!cstr) {
+            return JS_EXCEPTION;
+        }
+
+        len  = ngx_strlen(cstr);
+        data = ngx_pnalloc(cycle->pool, len + 1);
+        if (data == NULL) {
+            JS_FreeCString(ctx, cstr);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        ngx_memcpy(data, cstr, len + 1);
+        JS_FreeCString(ctx, cstr);
+
+        clcf->root.data    = data;
+        clcf->root.len     = len;
+        clcf->root_lengths = NULL;  /* mark as literal (no variables) */
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("path", ngx_js_location_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("root", ngx_js_location_get, NULL, 1),
+    JS_CGETSET_MAGIC_DEF("path", ngx_js_location_get, NULL,                0),
+    JS_CGETSET_MAGIC_DEF("root", ngx_js_location_get, ngx_js_location_set, 1),
 };
 
 
@@ -235,9 +281,9 @@ static JSClassDef ngx_js_server_class = {
 
 
 /*
- * Magic values for ngx_js_server_get:
+ * Magic values for ngx_js_server_get / ngx_js_server_set:
  *   0 — name   (r/o: first server_name entry, or "" if none)
- *   1 — root   (r/o: document root from the server's implicit / location)
+ *   1 — root   (r/w: document root from the server's implicit / location)
  */
 static JSValue
 ngx_js_server_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -269,6 +315,53 @@ ngx_js_server_get(JSContext *ctx, JSValueConst this_val, int magic)
         clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
         return JS_NewStringLen(ctx, (const char *) clcf->root.data,
                                clcf->root.len);
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_server_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_server_opaque_t    *op;
+    ngx_http_core_srv_conf_t  *cscf;
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_cycle_t               *cycle;
+    const char                *cstr;
+    size_t                     len;
+    u_char                    *data;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    cscf  = op->cscf;
+    cycle = (ngx_cycle_t *) JS_GetContextOpaque(ctx);
+
+    switch (magic) {
+    case 1: /* root — server's default location */
+        cstr = JS_ToCString(ctx, val);
+        if (!cstr) {
+            return JS_EXCEPTION;
+        }
+
+        len  = ngx_strlen(cstr);
+        data = ngx_pnalloc(cycle->pool, len + 1);
+        if (data == NULL) {
+            JS_FreeCString(ctx, cstr);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        ngx_memcpy(data, cstr, len + 1);
+        JS_FreeCString(ctx, cstr);
+
+        clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+        clcf->root.data   = data;
+        clcf->root.len    = len;
+        clcf->root_lengths = NULL;
+        return JS_UNDEFINED;
     }
 
     return JS_UNDEFINED;
@@ -330,10 +423,10 @@ ngx_js_server_get_locations(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("name",      ngx_js_server_get,           NULL, 0),
-    JS_CGETSET_MAGIC_DEF("root",      ngx_js_server_get,           NULL, 1),
-    JS_CGETSET_MAGIC_DEF("names",     ngx_js_server_get_names,     NULL, 0),
-    JS_CGETSET_MAGIC_DEF("locations", ngx_js_server_get_locations, NULL, 0),
+    JS_CGETSET_MAGIC_DEF("name",      ngx_js_server_get,           NULL,               0),
+    JS_CGETSET_MAGIC_DEF("root",      ngx_js_server_get,           ngx_js_server_set,  1),
+    JS_CGETSET_MAGIC_DEF("names",     ngx_js_server_get_names,     NULL,               0),
+    JS_CGETSET_MAGIC_DEF("locations", ngx_js_server_get_locations, NULL,               0),
 };
 
 

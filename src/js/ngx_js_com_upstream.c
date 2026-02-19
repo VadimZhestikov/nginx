@@ -80,12 +80,46 @@ ngx_js_peer_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_peer_opaque_t        *op;
+    ngx_http_upstream_server_t  *srv;
+    int32_t                      i32;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_peer_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    srv = op->srv;
+
+    switch (magic) {
+    case 1:
+        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        srv->weight = (ngx_uint_t) i32;
+        return JS_UNDEFINED;
+
+    case 2:
+        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        srv->max_fails = (ngx_uint_t) i32;
+        return JS_UNDEFINED;
+
+    case 3:
+        srv->down = (ngx_uint_t) JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_peer_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("address",  ngx_js_peer_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("weight",   ngx_js_peer_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("maxFails", ngx_js_peer_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("down",     ngx_js_peer_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("backup",   ngx_js_peer_get, NULL, 4),
+    JS_CGETSET_MAGIC_DEF("address",  ngx_js_peer_get, NULL,            0),
+    JS_CGETSET_MAGIC_DEF("weight",   ngx_js_peer_get, ngx_js_peer_set, 1),
+    JS_CGETSET_MAGIC_DEF("maxFails", ngx_js_peer_get, ngx_js_peer_set, 2),
+    JS_CGETSET_MAGIC_DEF("down",     ngx_js_peer_get, ngx_js_peer_set, 3),
+    JS_CGETSET_MAGIC_DEF("backup",   ngx_js_peer_get, NULL,            4),
 };
 
 
