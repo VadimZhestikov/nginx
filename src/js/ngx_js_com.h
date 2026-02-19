@@ -24,7 +24,8 @@ extern JSClassID  ngx_js_http_class_id;
 extern JSClassID  ngx_js_server_class_id;
 extern JSClassID  ngx_js_location_class_id;
 extern JSClassID  ngx_js_upstream_class_id;
-extern JSClassID  ngx_js_peer_class_id;
+extern JSClassID  ngx_js_peer_class_id;     /* config-phase peer (Phase 1/2) */
+extern JSClassID  ngx_js_rr_peer_class_id;  /* runtime RR peer   (Phase 3)   */
 
 
 /*
