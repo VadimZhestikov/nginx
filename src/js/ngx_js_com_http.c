@@ -289,6 +289,14 @@ ngx_js_build_locations(JSContext *ctx, ngx_http_core_loc_conf_t *root_clcf)
 typedef struct {
     ngx_http_core_srv_conf_t  *cscf;
     ngx_cycle_t               *cycle;
+    /*
+     * server_names.elts lives in cf->temp_pool, which is destroyed after
+     * ngx_init_cycle() returns — before workers fork.  Copy the ngx_str_t
+     * array into cycle->pool here so workers can safely read server names.
+     * The individual name.data pointers are in cycle->pool already.
+     */
+    ngx_str_t                 *names;
+    ngx_uint_t                 nnames;
 } ngx_js_server_opaque_t;
 
 
@@ -321,7 +329,6 @@ ngx_js_server_get(JSContext *ctx, JSValueConst this_val, int magic)
     ngx_js_server_opaque_t    *op;
     ngx_http_core_srv_conf_t  *cscf;
     ngx_http_core_loc_conf_t  *clcf;
-    ngx_http_server_name_t    *sn;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
     if (!op) {
@@ -333,13 +340,12 @@ ngx_js_server_get(JSContext *ctx, JSValueConst this_val, int magic)
     switch (magic) {
 
     case 0: /* name — first server_name or "" */
-        if (cscf->server_names.nelts == 0) {
+        if (op->nnames == 0) {
             return JS_NewString(ctx, "");
         }
 
-        sn = cscf->server_names.elts;
-        return JS_NewStringLen(ctx, (const char *) sn[0].name.data,
-                               sn[0].name.len);
+        return JS_NewStringLen(ctx, (const char *) op->names[0].data,
+                               op->names[0].len);
 
     case 1: /* root — from the server's default (/) location config */
         clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
@@ -348,6 +354,39 @@ ngx_js_server_get(JSContext *ctx, JSValueConst this_val, int magic)
     }
 
     return JS_UNDEFINED;
+}
+
+
+/*
+ * Recursively update any child location in the static_locations tree
+ * whose root.data still points to the old server-level root.  This is
+ * necessary because ngx_conf_merge_str_value copies the data pointer by
+ * value; after merge, child locations that did not set their own root
+ * share the same .data address as the parent.
+ */
+static void
+ngx_js_propagate_root(ngx_http_location_tree_node_t *node,
+    u_char *old_data, u_char *new_data, size_t new_len)
+{
+    if (node == NULL) {
+        return;
+    }
+
+    ngx_js_propagate_root(node->left,  old_data, new_data, new_len);
+    ngx_js_propagate_root(node->right, old_data, new_data, new_len);
+    ngx_js_propagate_root(node->tree,  old_data, new_data, new_len);
+
+    if (node->exact && node->exact->root.data == old_data) {
+        node->exact->root.data    = new_data;
+        node->exact->root.len     = new_len;
+        node->exact->root_lengths = NULL;
+    }
+
+    if (node->inclusive && node->inclusive->root.data == old_data) {
+        node->inclusive->root.data    = new_data;
+        node->inclusive->root.len     = new_len;
+        node->inclusive->root_lengths = NULL;
+    }
 }
 
 
@@ -360,7 +399,7 @@ ngx_js_server_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
     ngx_cycle_t               *cycle;
     const char                *cstr;
     size_t                     len;
-    u_char                    *data;
+    u_char                    *old_data, *data;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
     if (!op) {
@@ -387,10 +426,34 @@ ngx_js_server_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
         ngx_memcpy(data, cstr, len + 1);
         JS_FreeCString(ctx, cstr);
 
-        clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
-        clcf->root.data   = data;
-        clcf->root.len    = len;
+        clcf     = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+        old_data = clcf->root.data;
+
+        clcf->root.data    = data;
+        clcf->root.len     = len;
         clcf->root_lengths = NULL;
+
+        /*
+         * Propagate to child locations that inherited the old root pointer
+         * via ngx_conf_merge_str_value (they share the same .data address).
+         */
+        ngx_js_propagate_root(clcf->static_locations,
+                              old_data, data, len);
+
+#if (NGX_PCRE)
+        if (clcf->regex_locations) {
+            ngx_http_core_loc_conf_t  **rloc;
+
+            for (rloc = clcf->regex_locations; *rloc; rloc++) {
+                if ((*rloc)->root.data == old_data) {
+                    (*rloc)->root.data    = data;
+                    (*rloc)->root.len     = len;
+                    (*rloc)->root_lengths = NULL;
+                }
+            }
+        }
+#endif
+
         return JS_UNDEFINED;
     }
 
@@ -405,7 +468,6 @@ static JSValue
 ngx_js_server_get_names(JSContext *ctx, JSValueConst this_val, int magic)
 {
     ngx_js_server_opaque_t  *op;
-    ngx_http_server_name_t  *sn;
     JSValue                  arr;
     ngx_uint_t               i;
 
@@ -419,13 +481,11 @@ ngx_js_server_get_names(JSContext *ctx, JSValueConst this_val, int magic)
         return arr;
     }
 
-    sn = op->cscf->server_names.elts;
-
-    for (i = 0; i < op->cscf->server_names.nelts; i++) {
+    for (i = 0; i < op->nnames; i++) {
         JS_SetPropertyUint32(ctx, arr, (uint32_t) i,
                              JS_NewStringLen(ctx,
-                                             (const char *) sn[i].name.data,
-                                             sn[i].name.len));
+                                             (const char *) op->names[i].data,
+                                             op->names[i].len));
     }
 
     return arr;
@@ -464,8 +524,10 @@ static JSValue
 ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
     ngx_cycle_t *cycle)
 {
-    JSValue                  obj, proto;
-    ngx_js_server_opaque_t  *op;
+    JSValue                    obj, proto;
+    ngx_js_server_opaque_t    *op;
+    ngx_http_server_name_t    *sn;
+    ngx_uint_t                 n;
 
     op = js_mallocz(ctx, sizeof(ngx_js_server_opaque_t));
     if (!op) {
@@ -474,6 +536,35 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
 
     op->cscf  = cscf;
     op->cycle = cycle;
+
+    /*
+     * cscf->server_names.elts lives in cf->temp_pool, which is destroyed
+     * after ngx_init_cycle() returns — before workers fork.  Copy the
+     * ngx_str_t array into cycle->pool only while we are in the master
+     * process (init_conf time), where cf->temp_pool is still alive.
+     * Workers set nnames = 0; they only need locations, not server names.
+     *
+     * The individual name.data pointers are in cycle->pool already, so
+     * copying the ngx_str_t structs is sufficient — no deep copy needed.
+     */
+    if (ngx_process != NGX_PROCESS_WORKER
+        && cscf->server_names.nelts > 0)
+    {
+        op->nnames = cscf->server_names.nelts;
+
+        op->names = ngx_palloc(cycle->pool,
+                               op->nnames * sizeof(ngx_str_t));
+        if (op->names == NULL) {
+            js_free(ctx, op);
+            return JS_EXCEPTION;
+        }
+
+        sn = cscf->server_names.elts;
+
+        for (n = 0; n < op->nnames; n++) {
+            op->names[n] = sn[n].name;
+        }
+    }
 
     proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, proto,

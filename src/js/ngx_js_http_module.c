@@ -25,6 +25,8 @@
 
 typedef struct {
     ngx_http_request_t  *r;
+    ngx_int_t            respond_rc;  /* rc from ngx_http_output_filter */
+    unsigned             responded:1; /* set when req.respond() was called */
 } ngx_js_request_opaque_t;
 
 
@@ -247,23 +249,47 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
     body_len = ngx_strlen(body_cstr);
     r->headers_out.content_length_n = (off_t) body_len;
 
+    /*
+     * req.respond() must NOT call ngx_http_finalize_request() itself.
+     * The correct nginx pattern is: the content handler returns the rc to
+     * ngx_http_core_content_phase, which calls ngx_http_finalize_request()
+     * exactly once.  We store the rc in the opaque and ngx_js_content_handler
+     * reads it after JS_Call returns.
+     */
+
     rc = ngx_http_send_header(r);
     if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
         JS_FreeCString(ctx, body_cstr);
-        ngx_http_finalize_request(r, rc);
+        op->respond_rc = rc;
+        op->responded  = 1;
         return JS_UNDEFINED;
     }
 
-    /* Allocate at least 1 byte so the buf is always valid */
-    b = ngx_create_temp_buf(r->pool, body_len ? body_len : 1);
-    if (b == NULL) {
-        JS_FreeCString(ctx, body_cstr);
-        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
-        return JS_UNDEFINED;
-    }
+    /*
+     * Build the body buffer.  For an empty body, use a zero-size buf with
+     * last_buf = 1 (the nginx idiom, identical to ngx_http_send_special
+     * with NGX_HTTP_LAST).  ngx_http_write_filter does not alert on
+     * zero-size bufs that carry last_buf or sync flags.
+     */
+    if (body_len > 0) {
+        b = ngx_create_temp_buf(r->pool, body_len);
+        if (b == NULL) {
+            JS_FreeCString(ctx, body_cstr);
+            op->respond_rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            op->responded  = 1;
+            return JS_UNDEFINED;
+        }
 
-    if (body_len) {
         b->last = ngx_cpymem(b->pos, body_cstr, body_len);
+
+    } else {
+        b = ngx_calloc_buf(r->pool);
+        if (b == NULL) {
+            JS_FreeCString(ctx, body_cstr);
+            op->respond_rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            op->responded  = 1;
+            return JS_UNDEFINED;
+        }
     }
 
     b->last_buf      = 1;
@@ -275,7 +301,8 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
     out.next = NULL;
 
     rc = ngx_http_output_filter(r, &out);
-    ngx_http_finalize_request(r, rc);
+    op->respond_rc = rc;
+    op->responded  = 1;
 
     return JS_UNDEFINED;
 }
@@ -341,11 +368,13 @@ ngx_js_wrap_request(JSContext *ctx, ngx_http_request_t *r)
 ngx_int_t
 ngx_js_content_handler(ngx_http_request_t *r)
 {
-    ngx_js_conf_t      *jcf;
-    ngx_js_loc_conf_t  *jlcf;
-    ngx_js_worker_t    *w;
-    JSContext          *ctx;
-    JSValue             global, fn, req_obj, result;
+    ngx_js_conf_t            *jcf;
+    ngx_js_loc_conf_t        *jlcf;
+    ngx_js_worker_t          *w;
+    JSContext                *ctx;
+    JSValue                   global, fn, req_obj, result;
+    ngx_js_request_opaque_t  *req_op;
+    ngx_int_t                 final_rc;
 
     jlcf = ngx_http_get_module_loc_conf(r, ngx_js_http_module);
     jcf  = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx,
@@ -383,6 +412,20 @@ ngx_js_content_handler(ngx_http_request_t *r)
     result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
 
     JS_FreeValue(ctx, fn);
+
+    /*
+     * Read respond_rc from the opaque BEFORE JS_FreeValue triggers the
+     * finalizer and frees req_op.
+     *
+     * We do NOT call ngx_http_finalize_request() here.  The correct nginx
+     * pattern is to return the rc to ngx_http_core_content_phase, which
+     * calls ngx_http_finalize_request() exactly once.
+     */
+    req_op   = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+    final_rc = (req_op && req_op->responded)
+               ? req_op->respond_rc
+               : NGX_HTTP_INTERNAL_SERVER_ERROR;
+
     JS_FreeValue(ctx, req_obj);
 
     if (JS_IsException(result)) {
@@ -393,12 +436,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
 
     JS_FreeValue(ctx, result);
 
-    /*
-     * The JS handler called req.respond() which already called
-     * ngx_http_finalize_request().  Return NGX_DONE so the NGINX
-     * pipeline does not finalize the request a second time.
-     */
-    return NGX_DONE;
+    return final_rc;
 }
 
 
