@@ -11,16 +11,21 @@
 #include <quickjs.h>
 
 
+/* Forward declaration for SharedWorker state list */
+struct ngx_js_sw_state_s;
+typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
+
 /*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).
  * Allocated in cycle->pool via create_conf; populated by js_include
  * directives during ngx_conf_parse(), executed by init_conf().
  */
 typedef struct {
-    ngx_array_t   includes;    /* ngx_str_t: resolved paths from js_include */
-    JSRuntime    *rt;          /* master-process QuickJS runtime             */
-    JSContext    *ctx;         /* master-process QuickJS context             */
-    void         *worker;     /* ngx_js_worker_t* after fork (in workers)   */
+    ngx_array_t         includes;    /* ngx_str_t: resolved paths from js_include */
+    JSRuntime          *rt;          /* master-process QuickJS runtime             */
+    JSContext          *ctx;         /* master-process QuickJS context             */
+    void               *worker;      /* ngx_js_worker_t* after fork (in workers)  */
+    ngx_js_sw_state_t  *sw_list;     /* linked list of SharedWorker states        */
 } ngx_js_conf_t;
 
 

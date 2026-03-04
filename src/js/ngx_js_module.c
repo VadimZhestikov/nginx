@@ -17,6 +17,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include "ngx_js.h"
+#include "ngx_js_sw.h"
 
 
 static void *ngx_js_create_conf(ngx_cycle_t *cycle);
@@ -283,6 +284,8 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
         return;
     }
 
+    ngx_js_sw_exit_process(cycle, jcf);
+
     if (w->ctx) {
         JS_FreeContext(w->ctx);
         w->ctx = NULL;
@@ -301,6 +304,8 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
     ngx_js_conf_t  *jcf;
 
     jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
+
+    ngx_js_sw_exit_master(jcf);
 
     if (jcf->ctx) {
         JS_FreeContext(jcf->ctx);

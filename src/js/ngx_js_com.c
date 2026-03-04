@@ -13,6 +13,7 @@
 #include "ngx_js.h"
 #include "ngx_js_com.h"
 #include "ngx_js_worker.h"
+#include "ngx_js_sw.h"
 
 
 /* ------------------------------------------------------------------ */
@@ -369,6 +370,12 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 
     /* global Worker constructor */
     if (ngx_js_worker_install(ctx) != NGX_OK) {
+        JS_FreeValue(ctx, global);
+        return NGX_ERROR;
+    }
+
+    /* global SharedWorker constructor */
+    if (ngx_js_sw_install(ctx) != NGX_OK) {
         JS_FreeValue(ctx, global);
         return NGX_ERROR;
     }
