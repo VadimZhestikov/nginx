@@ -72,7 +72,7 @@ static JSClassDef ngx_js_location_class = {
  * Magic values for ngx_js_location_get / ngx_js_location_set:
  *   0 — path    (r/o: location name/pattern)
  *   1 — root    (r/w)
- *   2 — handler (w/o: JS function name, installs ngx_js_content_handler)
+ *   2 — handler (r/w: JS function, stored in global __ngx_handlers__ array)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -94,6 +94,27 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 1: /* root */
         return JS_NewStringLen(ctx, (const char *) clcf->root.data,
                                clcf->root.len);
+    case 2: /* handler — return the stored function or undefined */
+    {
+        ngx_js_loc_conf_t  *jlcf;
+        JSValue             global, registry, fn;
+
+        jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+
+        if (jlcf->handler_idx < 0) {
+            return JS_UNDEFINED;
+        }
+
+        global   = JS_GetGlobalObject(ctx);
+        registry = JS_GetPropertyStr(ctx, global, "__ngx_handlers__");
+        JS_FreeValue(ctx, global);
+
+        fn = JS_GetPropertyUint32(ctx, registry,
+                                  (uint32_t) jlcf->handler_idx);
+        JS_FreeValue(ctx, registry);
+
+        return fn;
+    }
     }
 
     return JS_UNDEFINED;
@@ -141,28 +162,43 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         clcf->root_lengths = NULL;  /* mark as literal (no variables) */
         return JS_UNDEFINED;
 
-    case 2: /* handler — install a JS content handler for this location */
+    case 2: /* handler — store function in __ngx_handlers__, save index */
     {
-        ngx_js_loc_conf_t  *jlcf;
+        JSValue            global, registry, len_val;
+        uint32_t           idx;
+        ngx_js_loc_conf_t *jlcf;
 
-        cstr = JS_ToCString(ctx, val);
-        if (!cstr) {
-            return JS_EXCEPTION;
+        if (!JS_IsFunction(ctx, val)) {
+            return JS_ThrowTypeError(ctx,
+                                     "location.handler: expected a function");
         }
 
-        len  = ngx_strlen(cstr);
-        data = ngx_pnalloc(cycle->pool, len + 1);
-        if (data == NULL) {
-            JS_FreeCString(ctx, cstr);
-            return JS_ThrowOutOfMemory(ctx);
+        /*
+         * Append the function to the __ngx_handlers__ array on the global
+         * object.  This keeps the function GC-reachable even when it is an
+         * anonymous or arrow function with no other JS-side reference.
+         */
+        global   = JS_GetGlobalObject(ctx);
+        registry = JS_GetPropertyStr(ctx, global, "__ngx_handlers__");
+
+        if (!JS_IsArray(ctx, registry)) {
+            JS_FreeValue(ctx, registry);
+            registry = JS_NewArray(ctx);
+            JS_SetPropertyStr(ctx, global, "__ngx_handlers__",
+                              JS_DupValue(ctx, registry));
         }
 
-        ngx_memcpy(data, cstr, len + 1);
-        JS_FreeCString(ctx, cstr);
+        JS_FreeValue(ctx, global);
+
+        len_val = JS_GetPropertyStr(ctx, registry, "length");
+        JS_ToUint32(ctx, &idx, len_val);
+        JS_FreeValue(ctx, len_val);
+
+        JS_SetPropertyUint32(ctx, registry, idx, JS_DupValue(ctx, val));
+        JS_FreeValue(ctx, registry);
 
         jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
-        jlcf->handler.data = data;
-        jlcf->handler.len  = len;
+        jlcf->handler_idx = (ngx_int_t) idx;
 
         /* Wire up the content handler pointer */
         clcf->handler = ngx_js_content_handler;
@@ -177,7 +213,7 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("path",    ngx_js_location_get, NULL,                0),
     JS_CGETSET_MAGIC_DEF("root",    ngx_js_location_get, ngx_js_location_set, 1),
-    JS_CGETSET_MAGIC_DEF("handler", NULL,                ngx_js_location_set, 2),
+    JS_CGETSET_MAGIC_DEF("handler", ngx_js_location_get, ngx_js_location_set, 2),
 };
 
 

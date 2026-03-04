@@ -5,7 +5,7 @@
  * ngx_js_http_module — NGX_HTTP_MODULE companion to ngx_js_module.
  *
  * Provides:
- *   - ngx_js_loc_conf_t (per-location JS handler function name)
+ *   - ngx_js_loc_conf_t (per-location JS handler function reference)
  *   - ngx_js_content_handler — content-phase handler called by NGINX
  *   - NginxRequest COM class — wraps ngx_http_request_t for JS
  *   - req.respond(status, headers, body) — sends response and finalizes
@@ -372,7 +372,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
     ngx_js_loc_conf_t        *jlcf;
     ngx_js_worker_t          *w;
     JSContext                *ctx;
-    JSValue                   global, fn, req_obj, result;
+    JSValue                   global, registry, fn, req_obj, result;
     ngx_js_request_opaque_t  *req_op;
     ngx_int_t                 final_rc;
 
@@ -384,22 +384,23 @@ ngx_js_content_handler(ngx_http_request_t *r)
 
     if (w == NULL || w->ctx == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "js: worker runtime not available for handler \"%V\"",
-                      &jlcf->handler);
+                      "js: worker runtime not available");
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    ctx    = w->ctx;
-    global = JS_GetGlobalObject(ctx);
-    fn     = JS_GetPropertyStr(ctx, global,
-                               (const char *) jlcf->handler.data);
+    ctx      = w->ctx;
+    global   = JS_GetGlobalObject(ctx);
+    registry = JS_GetPropertyStr(ctx, global, "__ngx_handlers__");
     JS_FreeValue(ctx, global);
+
+    fn = JS_GetPropertyUint32(ctx, registry, (uint32_t) jlcf->handler_idx);
+    JS_FreeValue(ctx, registry);
 
     if (!JS_IsFunction(ctx, fn)) {
         JS_FreeValue(ctx, fn);
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "js: handler function \"%V\" not found or not callable",
-                      &jlcf->handler);
+                      "js: handler #%i not found or not callable",
+                      jlcf->handler_idx);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -454,7 +455,7 @@ ngx_js_create_loc_conf(ngx_conf_t *cf)
         return NULL;
     }
 
-    /* handler.data == NULL means "no JS handler set for this location" */
+    jlcf->handler_idx = -1;  /* unset */
 
     return jlcf;
 }
@@ -466,8 +467,8 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_js_loc_conf_t  *prev = parent;
     ngx_js_loc_conf_t  *conf = child;
 
-    if (conf->handler.data == NULL) {
-        conf->handler = prev->handler;
+    if (conf->handler_idx == -1) {
+        conf->handler_idx = prev->handler_idx;
     }
 
     return NGX_CONF_OK;

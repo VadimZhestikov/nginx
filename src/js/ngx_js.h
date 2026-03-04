@@ -36,10 +36,13 @@ typedef struct {
 
 /*
  * Per-location JS handler config owned by ngx_js_http_module.
- * handler.data == NULL means no JS handler is set for this location.
+ * handler_idx == -1 means no JS handler is set for this location.
+ * Otherwise it is an index into the global __ngx_handlers__ array
+ * that was populated by location.handler = <function> assignments
+ * during the config phase.
  */
 typedef struct {
-    ngx_str_t  handler;   /* JS function name, NUL-terminated */
+    ngx_int_t  handler_idx;
 } ngx_js_loc_conf_t;
 
 

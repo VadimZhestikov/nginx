@@ -46,9 +46,11 @@ EOF
 
 $t->write_file('init.js', <<'JS');
 // Config phase — install JS handlers on each location.
-// This code also re-runs in each worker; the handler assignments are
-// idempotent and the function definitions register the functions in
-// the worker's global JS context where the content handler calls them.
+// This script runs once in the master process (init_conf).  Workers
+// inherit the fully-evaluated JSContext via fork() copy-on-write, so
+// the handler functions are already available with no re-evaluation.
+//
+// location.handler now accepts a function value directly (not a name).
 
 (function installHandlers() {
     const locs = nginx.http.servers[0].locations;
@@ -58,17 +60,19 @@ $t->write_file('init.js', <<'JS');
         if (loc) { loc.handler = fn; }
     }
 
-    set('/hello/',   'helloHandler');
-    set('/echo/',    'echoHandler');
-    set('/headers/', 'headersHandler');
-    set('/status/',  'statusHandler');
-    set('/empty/',   'emptyHandler');
-    set('/addr/',    'addrHandler');
-    set('/missing/', 'noSuchFunction');   // intentionally undefined → 500
+    // Named functions passed by reference
+    set('/hello/',   helloHandler);
+    set('/echo/',    echoHandler);
+    set('/headers/', headersHandler);
+    set('/status/',  statusHandler);
+    set('/empty/',   emptyHandler);
+    set('/addr/',    addrHandler);
+
+    // Anonymous arrow function assigned inline
+    set('/missing/', req => { throw new Error('deliberate error'); });
 })();
 
 // --- Request-phase handler functions ---
-// These must be in the global scope so ngx_js_content_handler can find them.
 
 function helloHandler(req) {
     req.respond(200, {'content-type': 'text/plain'}, 'Hello World');
@@ -129,5 +133,5 @@ like(http_get('/addr/'), qr/127\.0\.0\.1/, 'req.remoteAddr is loopback IP');
 # empty body is accepted
 like(http_get('/empty/'), qr|200 OK|, 'handler with empty body responds 200');
 
-# missing handler function → 500 Internal Server Error
-like(http_get('/missing/'), qr/500/, 'undefined handler function returns 500');
+# handler that throws → 500 Internal Server Error
+like(http_get('/missing/'), qr/500/, 'handler that throws returns 500');
