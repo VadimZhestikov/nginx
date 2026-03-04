@@ -38,8 +38,10 @@ http {
         location /headers/ { }
         location /status/  { }
         location /empty/   { }
-        location /addr/    { }
-        location /missing/ { }
+        location /addr/        { }
+        location /missing/     { }
+        location /async/       { }
+        location /async_throw/ { }
     }
 }
 EOF
@@ -70,6 +72,17 @@ $t->write_file('init.js', <<'JS');
 
     // Anonymous arrow function assigned inline
     set('/missing/', req => { throw new Error('deliberate error'); });
+
+    // Async handlers
+    set('/async/', async req => {
+        const msg = await Promise.resolve('AsyncOK');
+        req.respond(200, {'content-type': 'text/plain'}, msg);
+    });
+
+    set('/async_throw/', async req => {
+        await Promise.resolve();
+        throw new Error('async deliberate error');
+    });
 })();
 
 // --- Request-phase handler functions ---
@@ -102,7 +115,7 @@ function addrHandler(req) {
 }
 JS
 
-$t->try_run('no js module')->plan(10);
+$t->try_run('no js module')->plan(13);
 
 # --- HTTP assertions ---
 
@@ -135,3 +148,10 @@ like(http_get('/empty/'), qr|200 OK|, 'handler with empty body responds 200');
 
 # handler that throws → 500 Internal Server Error
 like(http_get('/missing/'), qr/500/, 'handler that throws returns 500');
+
+# async handler — awaits a resolved Promise, then responds
+like(http_get('/async/'), qr/200 OK/,  'async handler responds 200');
+like(http_get('/async/'), qr/AsyncOK/, 'async handler body correct');
+
+# async handler that throws → rejected Promise → 500
+like(http_get('/async_throw/'), qr/500/, 'async handler rejection returns 500');

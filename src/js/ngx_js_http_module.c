@@ -414,6 +414,70 @@ ngx_js_content_handler(ngx_http_request_t *r)
 
     JS_FreeValue(ctx, fn);
 
+    /* Synchronous exception */
+    if (JS_IsException(result)) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        JS_FreeValue(ctx, result);
+        JS_FreeValue(ctx, req_obj);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    /*
+     * Async handler: if the function returned a thenable (Promise), drain
+     * the QuickJS microtask queue so the async body runs to completion.
+     * This handles async handlers that settle synchronously — the common
+     * case of `await Promise.resolve(...)` or `await asyncFn()` where no
+     * real I/O is involved.
+     */
+    if (JS_IsObject(result)) {
+        JSValue  then;
+        int      is_promise;
+
+        then       = JS_GetPropertyStr(ctx, result, "then");
+        is_promise = JS_IsFunction(ctx, then);
+        JS_FreeValue(ctx, then);
+
+        if (is_promise) {
+            JSContext  *job_ctx;
+
+            while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { }
+
+            switch (JS_PromiseState(ctx, result)) {
+
+            case JS_PROMISE_REJECTED:
+            {
+                JSValue      reason, str;
+                const char  *cstr;
+
+                reason = JS_PromiseResult(ctx, result);
+                str    = JS_ToString(ctx, reason);
+                cstr   = JS_ToCString(ctx, str);
+                if (cstr) {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                                  "js async exception: %s", cstr);
+                    JS_FreeCString(ctx, cstr);
+                }
+                JS_FreeValue(ctx, str);
+                JS_FreeValue(ctx, reason);
+                JS_FreeValue(ctx, result);
+                JS_FreeValue(ctx, req_obj);
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+
+            case JS_PROMISE_PENDING:
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "js: async handler still pending after "
+                              "job drain (real async I/O not supported)");
+                JS_FreeValue(ctx, result);
+                JS_FreeValue(ctx, req_obj);
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+
+            default:  /* JS_PROMISE_FULFILLED — fall through */
+                break;
+            }
+        }
+    }
+
     /*
      * Read respond_rc from the opaque BEFORE JS_FreeValue triggers the
      * finalizer and frees req_op.
@@ -428,13 +492,6 @@ ngx_js_content_handler(ngx_http_request_t *r)
                : NGX_HTTP_INTERNAL_SERVER_ERROR;
 
     JS_FreeValue(ctx, req_obj);
-
-    if (JS_IsException(result)) {
-        ngx_js_log_exception(ctx, r->connection->log);
-        JS_FreeValue(ctx, result);
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
     JS_FreeValue(ctx, result);
 
     return final_rc;
