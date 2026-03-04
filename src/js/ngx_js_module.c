@@ -257,6 +257,13 @@ ngx_js_init_process(ngx_cycle_t *cycle)
     w->rt  = jcf->rt;
     w->ctx = jcf->ctx;
 
+    /*
+     * Overwrite the context opaque (set to cycle in ngx_js_com_init) with
+     * the worker pointer so that JS C functions (e.g. nginx.setTimeout) can
+     * retrieve the worker via JS_GetContextOpaque(ctx).
+     */
+    JS_SetContextOpaque(w->ctx, w);
+
     jcf->worker = w;
 
     return NGX_OK;

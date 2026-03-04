@@ -42,6 +42,7 @@ http {
         location /missing/     { }
         location /async/       { }
         location /async_throw/ { }
+        location /async_timer/ { }
     }
 }
 EOF
@@ -83,6 +84,11 @@ $t->write_file('init.js', <<'JS');
         await Promise.resolve();
         throw new Error('async deliberate error');
     });
+
+    set('/async_timer/', async req => {
+        await nginx.setTimeout(10);
+        req.respond(200, {'content-type': 'text/plain'}, 'TimerOK');
+    });
 })();
 
 // --- Request-phase handler functions ---
@@ -115,7 +121,7 @@ function addrHandler(req) {
 }
 JS
 
-$t->try_run('no js module')->plan(13);
+$t->try_run('no js module')->plan(15);
 
 # --- HTTP assertions ---
 
@@ -155,3 +161,7 @@ like(http_get('/async/'), qr/AsyncOK/, 'async handler body correct');
 
 # async handler that throws → rejected Promise → 500
 like(http_get('/async_throw/'), qr/500/, 'async handler rejection returns 500');
+
+# async handler using a real NGINX timer — request is suspended and resumed
+like(http_get('/async_timer/'), qr/200 OK/,  'async timer handler responds 200');
+like(http_get('/async_timer/'), qr/TimerOK/, 'async timer handler body correct');

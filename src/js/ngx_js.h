@@ -25,12 +25,26 @@ typedef struct {
 
 
 /*
+ * Saved state for one suspended async nginx request.
+ * Allocated in r->pool; freed automatically when the request pool is torn down.
+ */
+struct ngx_http_request_s;
+
+typedef struct {
+    struct ngx_http_request_s  *r;
+    JSValue                     req_obj;   /* DupValue'd from content handler */
+    JSValue                     promise;   /* outer handler Promise */
+} ngx_js_async_ctx_t;
+
+
+/*
  * Per-worker JS runtime created in init_process().
  * Workers never share a JSRuntime — QuickJS is not thread-safe.
  */
 typedef struct {
-    JSRuntime    *rt;
-    JSContext    *ctx;
+    JSRuntime           *rt;
+    JSContext           *ctx;
+    ngx_js_async_ctx_t  *async_pending;  /* NULL or one suspended request */
 } ngx_js_worker_t;
 
 
@@ -62,6 +76,12 @@ ngx_int_t  ngx_js_request_register_class(JSRuntime *rt);
 /* Content-phase handler; installed in clcf->handler by the JS setter */
 struct ngx_http_request_s;
 ngx_int_t  ngx_js_content_handler(struct ngx_http_request_s *r);
+
+/*
+ * Inspect the promise of a suspended async request and finalize it if
+ * the promise has settled.  Called from the timer handler in ngx_js_com.c.
+ */
+void ngx_js_async_check(ngx_js_worker_t *w);
 
 
 #endif /* _NGX_JS_H_INCLUDED_ */

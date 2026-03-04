@@ -362,6 +362,66 @@ ngx_js_wrap_request(JSContext *ctx, ngx_http_request_t *r)
 
 
 /* ------------------------------------------------------------------ */
+/* Async request finalizer — called from timer handler in ngx_js_com.c */
+/* ------------------------------------------------------------------ */
+
+void
+ngx_js_async_check(ngx_js_worker_t *w)
+{
+    ngx_js_async_ctx_t       *actx;
+    ngx_js_request_opaque_t  *req_op;
+    JSContext                *ctx;
+    JSValue                   reason, str;
+    const char               *cstr;
+
+    actx = w->async_pending;
+    if (actx == NULL) {
+        return;
+    }
+
+    ctx = w->ctx;
+
+    switch (JS_PromiseState(ctx, actx->promise)) {
+
+    case JS_PROMISE_FULFILLED:
+        w->async_pending = NULL;
+        req_op = JS_GetOpaque(actx->req_obj, ngx_js_request_class_id);
+        if (req_op == NULL || !req_op->responded) {
+            ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
+                          "js: async handler fulfilled without calling "
+                          "req.respond()");
+        }
+        JS_FreeValue(ctx, actx->req_obj);
+        JS_FreeValue(ctx, actx->promise);
+        ngx_http_finalize_request(actx->r, NGX_DONE);
+        break;
+
+    case JS_PROMISE_REJECTED:
+        w->async_pending = NULL;
+        reason = JS_PromiseResult(ctx, actx->promise);
+        str    = JS_ToString(ctx, reason);
+        cstr   = JS_ToCString(ctx, str);
+        if (cstr) {
+            ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
+                          "js async exception: %s", cstr);
+            JS_FreeCString(ctx, cstr);
+        }
+        JS_FreeValue(ctx, str);
+        JS_FreeValue(ctx, reason);
+        JS_FreeValue(ctx, actx->req_obj);
+        JS_FreeValue(ctx, actx->promise);
+        actx->r->headers_out.status = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        ngx_http_finalize_request(actx->r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+        break;
+
+    case JS_PROMISE_PENDING:
+        /* still waiting; another timer will call ngx_js_async_check later */
+        break;
+    }
+}
+
+
+/* ------------------------------------------------------------------ */
 /* Content handler — called by NGINX in each worker process            */
 /* ------------------------------------------------------------------ */
 
@@ -465,12 +525,35 @@ ngx_js_content_handler(ngx_http_request_t *r)
             }
 
             case JS_PROMISE_PENDING:
-                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                              "js: async handler still pending after "
-                              "job drain (real async I/O not supported)");
-                JS_FreeValue(ctx, result);
+            {
+                ngx_js_async_ctx_t  *actx;
+
+                if (w->async_pending != NULL) {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                                  "js: another async request already pending");
+                    JS_FreeValue(ctx, result);
+                    JS_FreeValue(ctx, req_obj);
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                }
+
+                actx = ngx_pcalloc(r->pool, sizeof(ngx_js_async_ctx_t));
+                if (actx == NULL) {
+                    JS_FreeValue(ctx, result);
+                    JS_FreeValue(ctx, req_obj);
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                }
+
+                actx->r       = r;
+                actx->req_obj = JS_DupValue(ctx, req_obj);
+                actx->promise = JS_DupValue(ctx, result);
+
+                w->async_pending = actx;
+                r->main->count++;
+
                 JS_FreeValue(ctx, req_obj);
-                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                JS_FreeValue(ctx, result);
+                return NGX_DONE;
+            }
 
             default:  /* JS_PROMISE_FULFILLED — fall through */
                 break;

@@ -8,6 +8,7 @@
 
 #include <ngx_config.h>
 #include <ngx_core.h>
+#include <ngx_event.h>
 #include <cutils.h>
 #include "ngx_js.h"
 #include "ngx_js_com.h"
@@ -160,11 +161,8 @@ static JSValue
 ngx_js_log(JSContext *ctx, JSValueConst this_val,
            int argc, JSValueConst *argv)
 {
-    ngx_cycle_t  *cycle;
     int32_t       level;
     const char   *msg;
-
-    cycle = JS_GetContextOpaque(ctx);
 
     if (argc < 2) {
         return JS_ThrowTypeError(ctx, "nginx.log: expected (level, message)");
@@ -179,11 +177,96 @@ ngx_js_log(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    ngx_log_error((ngx_uint_t) level, cycle->log, 0, "js: %s", msg);
+    ngx_log_error((ngx_uint_t) level, ngx_cycle->log, 0, "js: %s", msg);
 
     JS_FreeCString(ctx, msg);
 
     return JS_UNDEFINED;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* nginx.setTimeout(ms) — resolves a Promise via an NGINX timer        */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    JSContext        *ctx;
+    JSRuntime        *rt;
+    ngx_js_worker_t  *w;
+    JSValue           resolve;
+    JSValue           reject;
+    ngx_event_t       ev;       /* embedded; ev.data = this timer struct */
+} ngx_js_timer_t;
+
+
+static void
+ngx_js_timer_handler(ngx_event_t *ev)
+{
+    ngx_js_timer_t  *t = ev->data;
+    JSValue          ret;
+    JSContext       *job_ctx;
+
+    /* Resolve the awaited Promise, re-queuing the async body as a microtask */
+    ret = JS_Call(t->ctx, t->resolve, JS_UNDEFINED, 0, NULL);
+    JS_FreeValue(t->ctx, ret);
+    JS_FreeValue(t->ctx, t->resolve);
+    JS_FreeValue(t->ctx, t->reject);
+
+    /* Drain microtasks — async body runs, calls req.respond() */
+    while (JS_ExecutePendingJob(t->rt, &job_ctx) > 0) { }
+
+    /* Finalize any suspended nginx request whose promise has now settled */
+    ngx_js_async_check(t->w);
+
+    ngx_free(t);
+}
+
+
+static JSValue
+ngx_js_nginx_set_timeout(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    uint32_t         ms;
+    ngx_js_timer_t  *t;
+    ngx_js_worker_t *w;
+    JSValue          resolving[2], promise;
+
+    if (argc < 1 || JS_ToUint32(ctx, &ms, argv[0])) {
+        return JS_ThrowTypeError(ctx, "setTimeout(ms): ms required");
+    }
+
+    w = JS_GetContextOpaque(ctx);
+    if (w == NULL) {
+        return JS_ThrowInternalError(ctx, "setTimeout: no worker context");
+    }
+
+    promise = JS_NewPromiseCapability(ctx, resolving);
+    if (JS_IsException(promise)) {
+        return promise;
+    }
+
+    t = ngx_alloc(sizeof(ngx_js_timer_t), ngx_cycle->log);
+    if (t == NULL) {
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowInternalError(ctx, "setTimeout: alloc failed");
+    }
+
+    t->ctx     = ctx;
+    t->rt      = w->rt;
+    t->w       = w;
+    t->resolve = resolving[0];   /* JS_NewPromiseCapability gave us ownership */
+    t->reject  = resolving[1];
+
+    ngx_memzero(&t->ev, sizeof(ngx_event_t));
+    t->ev.handler = ngx_js_timer_handler;
+    t->ev.data    = t;
+    t->ev.log     = ngx_cycle->log;
+
+    ngx_add_timer(&t->ev, (ngx_msec_t) ms);
+
+    return promise;
 }
 
 
@@ -258,6 +341,11 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     /* nginx.log(level, msg) */
     JS_SetPropertyStr(ctx, nginx_obj, "log",
                       JS_NewCFunction(ctx, ngx_js_log, "log", 2));
+
+    /* nginx.setTimeout(ms) — returns a Promise resolved by an NGINX timer */
+    JS_SetPropertyStr(ctx, nginx_obj, "setTimeout",
+                      JS_NewCFunction(ctx, ngx_js_nginx_set_timeout,
+                                      "setTimeout", 1));
 
     /* nginx.cycle */
     cycle_obj = ngx_js_wrap_cycle(ctx, cycle);
