@@ -8,9 +8,10 @@
  *   create_conf  — allocate ngx_js_conf_t in cycle->pool
  *   [ngx_conf_parse runs; js_include directives populate jcf->includes]
  *   init_conf    — create JSRuntime/JSContext, install COM, eval scripts
- *   init_process — each worker creates its own independent runtime
- *   exit_process — free worker runtime
- *   exit_master  — free master runtime
+ *   init_process — each worker inherits jcf->rt/ctx directly (fork COW);
+ *                  no new runtime, no re-evaluation, no I/O
+ *   exit_process — free worker's private copy of the runtime
+ *   exit_master  — free master's original runtime
  */
 
 #include <ngx_config.h>
@@ -202,10 +203,9 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     }
 
     /*
-     * The master runtime stays alive until exit_master() so that
-     * COM objects remain valid during the lifetime of the master
-     * process.  Worker processes create their own runtimes in
-     * init_process() and must not use this one.
+     * The master runtime stays alive until exit_master().  Worker
+     * processes inherit it via fork() (copy-on-write) and use their
+     * private copies; init_process() just wires w->rt / w->ctx to it.
      */
 
     return NGX_CONF_OK;
@@ -225,26 +225,28 @@ failed_rt:
 /*
  * ngx_js_init_process — called in each worker after fork().
  *
- * Workers get their own independent JSRuntime.  They re-evaluate
- * all js_include scripts so that any globally-registered handler
- * functions (Phase 4) are available.  The COM installed here points
- * to the same cycle->conf_ctx (read-only in Phase 1).
+ * After fork() every worker has a private copy-on-write image of the
+ * master's address space, including its JSRuntime and JSContext.  Those
+ * objects already contain the fully-evaluated JS environment (all
+ * js_include scripts executed, COM installed, handler functions
+ * registered in the global scope, all QuickJS classes registered).
+ *
+ * We simply point the worker's runtime handle at jcf->rt / jcf->ctx.
+ * No new runtime, no re-evaluation, no file I/O.
+ *
+ * exit_process() frees the worker's private copy; exit_master() frees
+ * the master's original — no double-free, no shared mutable state.
  */
 static ngx_int_t
 ngx_js_init_process(ngx_cycle_t *cycle)
 {
-    ngx_js_conf_t   *jcf;
-    ngx_js_worker_t *w;
-    ngx_uint_t       i;
-    ngx_str_t       *path;
-    u_char          *src;
-    size_t           src_len;
-    JSValue          result;
+    ngx_js_conf_t    *jcf;
+    ngx_js_worker_t  *w;
 
     jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
 
-    if (jcf->includes.nelts == 0) {
-        return NGX_OK;
+    if (jcf->rt == NULL) {
+        return NGX_OK;    /* no js_include directives */
     }
 
     w = ngx_pcalloc(cycle->pool, sizeof(ngx_js_worker_t));
@@ -252,57 +254,8 @@ ngx_js_init_process(ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
-    w->rt = JS_NewRuntime();
-    if (w->rt == NULL) {
-        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                      "js: worker JS_NewRuntime() failed");
-        return NGX_ERROR;
-    }
-
-    JS_SetMemoryLimit(w->rt, 32 * 1024 * 1024);
-
-    w->ctx = JS_NewContext(w->rt);
-    if (w->ctx == NULL) {
-        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                      "js: worker JS_NewContext() failed");
-        JS_FreeRuntime(w->rt);
-        return NGX_ERROR;
-    }
-
-    if (ngx_js_com_init(w->ctx, cycle) != NGX_OK) {
-        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                      "js: worker COM initialisation failed");
-        JS_FreeContext(w->ctx);
-        JS_FreeRuntime(w->rt);
-        return NGX_ERROR;
-    }
-
-    path = jcf->includes.elts;
-
-    for (i = 0; i < jcf->includes.nelts; i++) {
-        src = ngx_js_read_file(cycle, &path[i], &src_len);
-        if (src == NULL) {
-            JS_FreeContext(w->ctx);
-            JS_FreeRuntime(w->rt);
-            return NGX_ERROR;
-        }
-
-        result = JS_Eval(w->ctx,
-                         (const char *) src,
-                         src_len,
-                         (const char *) path[i].data,
-                         JS_EVAL_TYPE_GLOBAL);
-
-        if (JS_IsException(result)) {
-            ngx_js_log_exception(w->ctx, cycle->log);
-            JS_FreeValue(w->ctx, result);
-            JS_FreeContext(w->ctx);
-            JS_FreeRuntime(w->rt);
-            return NGX_ERROR;
-        }
-
-        JS_FreeValue(w->ctx, result);
-    }
+    w->rt  = jcf->rt;
+    w->ctx = jcf->ctx;
 
     jcf->worker = w;
 

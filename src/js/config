@@ -1,0 +1,21 @@
+ngx_module_type=CORE
+ngx_module_name="ngx_js_module"
+ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
+                 $ngx_addon_dir/ngx_js_com.c \
+                 $ngx_addon_dir/ngx_js_com_http.c \
+                 $ngx_addon_dir/ngx_js_com_upstream.c \
+                 $ngx_addon_dir/ngx_js_http_module.c"
+ngx_module_deps="$ngx_addon_dir/ngx_js.h \
+                 $ngx_addon_dir/ngx_js_com.h"
+ngx_module_libs=
+
+. auto/module
+
+# HTTP module lives in the same source tree; register it separately
+ngx_module_type=HTTP
+ngx_module_name="ngx_js_http_module"
+ngx_module_srcs=
+ngx_module_deps=
+ngx_module_libs=
+
+. auto/module
