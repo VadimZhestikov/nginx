@@ -1,0 +1,984 @@
+
+/*
+ * Copyright (C) nginx JS contributors
+ *
+ * ngx_js_worker.c — JS Worker class backed by pthreads + nginx event loop.
+ *
+ * new Worker("script.js")   — spawn independent JS thread
+ * worker.postMessage(data)  — send structured-clone message to thread
+ * worker.onmessage = fn     — receive messages from thread
+ * worker.terminate()        — stop thread (blocks briefly for join)
+ *
+ * In the worker script:
+ *   onmessage = e => { postMessage(e.data); }
+ *
+ * Integration: the worker thread communicates back via a pipe whose read-end
+ * is registered with nginx's epoll event loop via ngx_get_connection().
+ */
+
+#include <ngx_config.h>
+#include <ngx_core.h>
+#include <ngx_event.h>
+#include <pthread.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <cutils.h>
+#include "ngx_js.h"
+#include "ngx_js_worker.h"
+
+
+/* ------------------------------------------------------------------ */
+/* Message types                                                        */
+/* ------------------------------------------------------------------ */
+
+/* One queued message.  buf == NULL is the terminate sentinel. */
+typedef struct {
+    ngx_queue_t  link;
+    uint8_t     *buf;
+    size_t       len;
+} ngx_js_msg_t;
+
+
+/*
+ * Mutex-protected queue + a Unix pipe used as a waker.
+ * The sender writes one byte to wfd whenever the queue transitions from
+ * empty to non-empty; the receiver drains wfd after dequeuing.
+ */
+typedef struct {
+    pthread_mutex_t  mutex;
+    ngx_queue_t      queue;
+    int              rfd;
+    int              wfd;
+} ngx_js_msg_pipe_t;
+
+
+/* ------------------------------------------------------------------ */
+/* State structs                                                        */
+/* ------------------------------------------------------------------ */
+
+/* Shared between main thread and worker thread (no nginx pool; heap only). */
+typedef struct {
+    pthread_t           tid;
+    ngx_js_msg_pipe_t   to_worker;
+    ngx_js_msg_pipe_t   from_worker;
+    char               *script;    /* heap copy of script path */
+} ngx_js_worker_state_t;
+
+
+/* Opaque stored in the JS Worker object (main thread). */
+typedef struct {
+    ngx_js_worker_state_t  *state;
+    JSValue                 on_message;
+    ngx_connection_t       *conn;    /* wraps from_worker.rfd in nginx epoll */
+    ngx_js_worker_t        *w;       /* nginx worker state (rt, ctx, …) */
+} ngx_js_worker_opaque_t;
+
+
+/* Stored in the worker thread's JS context opaque. */
+typedef struct {
+    ngx_js_msg_pipe_t  *to_worker;
+    ngx_js_msg_pipe_t  *from_worker;
+    JSValue             on_message;
+} ngx_js_wthread_ctx_t;
+
+
+/* ------------------------------------------------------------------ */
+/* JS class                                                             */
+/* ------------------------------------------------------------------ */
+
+static JSClassID ngx_js_worker_class_id;
+
+
+static void
+ngx_js_worker_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_worker_opaque_t  *op;
+
+    op = JS_GetOpaque(val, ngx_js_worker_class_id);
+    if (op == NULL) {
+        return;
+    }
+
+    JS_FreeValueRT(rt, op->on_message);
+
+    /*
+     * state should have been freed by terminate().  If it is not NULL here,
+     * the caller forgot to call terminate() and we have a resource leak
+     * (worker thread still running).  Log a warning but don't block the GC.
+     */
+    if (op->state != NULL) {
+        ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                      "js: Worker GC'd without terminate() — resource leak");
+    }
+
+    ngx_free(op);
+}
+
+
+static JSClassDef ngx_js_worker_class = {
+    "Worker",
+    .finalizer = ngx_js_worker_finalizer
+};
+
+
+/* ------------------------------------------------------------------ */
+/* Pipe helpers                                                         */
+/* ------------------------------------------------------------------ */
+
+static ngx_int_t
+pipe_init(ngx_js_msg_pipe_t *p)
+{
+    int  fds[2];
+
+    if (pipe(fds) != 0) {
+        return NGX_ERROR;
+    }
+
+    /* O_NONBLOCK on both ends so neither sender nor receiver ever blocks */
+    if (fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0
+        || fcntl(fds[1], F_SETFL, O_NONBLOCK) != 0)
+    {
+        close(fds[0]);
+        close(fds[1]);
+        return NGX_ERROR;
+    }
+
+    if (pthread_mutex_init(&p->mutex, NULL) != 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return NGX_ERROR;
+    }
+
+    p->rfd = fds[0];
+    p->wfd = fds[1];
+    ngx_queue_init(&p->queue);
+
+    return NGX_OK;
+}
+
+
+static void
+pipe_send(ngx_js_msg_pipe_t *p, uint8_t *buf, size_t len)
+{
+    ngx_js_msg_t  *msg;
+    int            was_empty;
+    char           byte = 1;
+
+    msg = ngx_alloc(sizeof(ngx_js_msg_t), ngx_cycle->log);
+    if (msg == NULL) {
+        if (buf) {
+            ngx_free(buf);
+        }
+        return;
+    }
+
+    msg->buf = buf;
+    msg->len = len;
+
+    pthread_mutex_lock(&p->mutex);
+    was_empty = ngx_queue_empty(&p->queue);
+    ngx_queue_insert_tail(&p->queue, &msg->link);
+    pthread_mutex_unlock(&p->mutex);
+
+    if (was_empty) {
+        ssize_t  n = write(p->wfd, &byte, 1);
+        (void) n;   /* O_NONBLOCK: failure is benign (reader still polls) */
+    }
+}
+
+
+static void
+pipe_recv_all(ngx_js_msg_pipe_t *p, ngx_queue_t *out)
+{
+    char  drain[256];
+
+    pthread_mutex_lock(&p->mutex);
+
+    /* Splice entire queue into *out */
+    if (!ngx_queue_empty(&p->queue)) {
+        /* Cheap O(1) queue concatenation */
+        ngx_queue_t *head = ngx_queue_next(&p->queue);
+        ngx_queue_t *tail = ngx_queue_last(&p->queue);
+        ngx_queue_t *out_tail = ngx_queue_last(out);
+
+        out_tail->next  = head;
+        head->prev      = out_tail;
+        tail->next      = out;
+        out->prev       = tail;
+
+        ngx_queue_init(&p->queue);
+    }
+
+    pthread_mutex_unlock(&p->mutex);
+
+    /* Drain waker bytes (non-blocking) */
+    while (read(p->rfd, drain, sizeof(drain)) > 0) { }
+}
+
+
+static void
+pipe_destroy(ngx_js_msg_pipe_t *p)
+{
+    ngx_queue_t   *q;
+    ngx_js_msg_t  *msg;
+
+    pthread_mutex_lock(&p->mutex);
+
+    while (!ngx_queue_empty(&p->queue)) {
+        q   = ngx_queue_head(&p->queue);
+        ngx_queue_remove(q);
+        msg = ngx_queue_data(q, ngx_js_msg_t, link);
+        if (msg->buf) {
+            ngx_free(msg->buf);
+        }
+        ngx_free(msg);
+    }
+
+    pthread_mutex_unlock(&p->mutex);
+
+    pthread_mutex_destroy(&p->mutex);
+    close(p->rfd);
+    close(p->wfd);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Worker thread — runs in a separate pthread                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Worker-side postMessage: serialize val and send to the main thread.
+ */
+static JSValue
+ngx_js_wt_post_message(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_wthread_ctx_t  *tctx;
+    uint8_t               *qjs_buf, *buf;
+    size_t                 qjs_len;
+
+    tctx = JS_GetContextOpaque(ctx);
+    if (tctx == NULL) {
+        return JS_ThrowInternalError(ctx, "postMessage: no worker context");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "postMessage(data): data required");
+    }
+
+    qjs_buf = JS_WriteObject(ctx, &qjs_len, argv[0], 0);
+    if (qjs_buf == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    buf = ngx_alloc(qjs_len, ngx_cycle->log);
+    if (buf == NULL) {
+        js_free(ctx, qjs_buf);
+        return JS_ThrowInternalError(ctx, "postMessage: alloc failed");
+    }
+
+    ngx_memcpy(buf, qjs_buf, qjs_len);
+    js_free(ctx, qjs_buf);
+
+    pipe_send(tctx->from_worker, buf, qjs_len);
+
+    return JS_UNDEFINED;
+}
+
+
+/* Worker-side onmessage getter (magic 0) */
+static JSValue
+ngx_js_wt_get_onmessage(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_wthread_ctx_t  *tctx;
+
+    tctx = JS_GetContextOpaque(ctx);
+    if (tctx == NULL) {
+        return JS_UNDEFINED;
+    }
+
+    return JS_DupValue(ctx, tctx->on_message);
+}
+
+
+/* Worker-side onmessage setter (magic 0) */
+static JSValue
+ngx_js_wt_set_onmessage(JSContext *ctx, JSValueConst this_val,
+    JSValue val, int magic)
+{
+    ngx_js_wthread_ctx_t  *tctx;
+
+    tctx = JS_GetContextOpaque(ctx);
+    if (tctx == NULL) {
+        return JS_UNDEFINED;
+    }
+
+    JS_FreeValue(ctx, tctx->on_message);
+    tctx->on_message = JS_DupValue(ctx, val);
+
+    return JS_UNDEFINED;
+}
+
+
+static const JSCFunctionListEntry  ngx_js_wt_global_props[] = {
+    JS_CGETSET_MAGIC_DEF("onmessage",
+                         ngx_js_wt_get_onmessage,
+                         ngx_js_wt_set_onmessage, 0),
+};
+
+
+/*
+ * Read a file into a NUL-terminated heap buffer.
+ * Uses only heap allocation (thread-safe).
+ */
+static u_char *
+wt_read_file(const char *path, size_t *out_len)
+{
+    int         fd;
+    struct stat st;
+    u_char     *buf;
+    ssize_t     n;
+
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return NULL;
+    }
+
+    if (fstat(fd, &st) < 0) {
+        close(fd);
+        return NULL;
+    }
+
+    buf = ngx_alloc((size_t) st.st_size + 1, ngx_cycle->log);
+    if (buf == NULL) {
+        close(fd);
+        return NULL;
+    }
+
+    n = read(fd, buf, (size_t) st.st_size);
+    close(fd);
+
+    if (n < 0) {
+        ngx_free(buf);
+        return NULL;
+    }
+
+    buf[n]   = '\0';
+    *out_len = (size_t) n;
+
+    return buf;
+}
+
+
+/*
+ * ngx_js_worker_thread — entry point for the worker pthread.
+ *
+ * Creates a fresh JSRuntime+JSContext, installs global postMessage /
+ * onmessage, evaluates the script, then enters a blocking message loop.
+ */
+static void *
+ngx_js_worker_thread(void *arg)
+{
+    ngx_js_worker_state_t  *state = arg;
+    ngx_js_wthread_ctx_t   *tctx;
+    JSRuntime              *rt;
+    JSContext              *ctx, *job_ctx;
+    JSValue                 global, result, data, event_obj, call_ret;
+    u_char                 *src;
+    size_t                  src_len;
+    struct pollfd           pfd;
+    ngx_queue_t             msgs;
+    ngx_queue_t            *q;
+    ngx_js_msg_t           *msg;
+    int                     terminate;
+
+    rt = JS_NewRuntime();
+    if (rt == NULL) {
+        return NULL;
+    }
+
+    ctx = JS_NewContext(rt);
+    if (ctx == NULL) {
+        JS_FreeRuntime(rt);
+        return NULL;
+    }
+
+    tctx = ngx_alloc(sizeof(ngx_js_wthread_ctx_t), ngx_cycle->log);
+    if (tctx == NULL) {
+        JS_FreeContext(ctx);
+        JS_FreeRuntime(rt);
+        return NULL;
+    }
+
+    tctx->to_worker   = &state->to_worker;
+    tctx->from_worker = &state->from_worker;
+    tctx->on_message  = JS_UNDEFINED;
+
+    JS_SetContextOpaque(ctx, tctx);
+
+    /* Install global postMessage and onmessage on the global object */
+    global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "postMessage",
+                      JS_NewCFunction(ctx, ngx_js_wt_post_message,
+                                      "postMessage", 1));
+    JS_SetPropertyFunctionList(ctx, global,
+                               ngx_js_wt_global_props,
+                               countof(ngx_js_wt_global_props));
+    JS_FreeValue(ctx, global);
+
+    /* Read and evaluate the worker script */
+    src = wt_read_file(state->script, &src_len);
+    if (src == NULL) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                      "js worker: failed to read \"%s\"", state->script);
+        goto done;
+    }
+
+    result = JS_Eval(ctx, (const char *) src, src_len,
+                     state->script, JS_EVAL_TYPE_GLOBAL);
+    ngx_free(src);
+
+    if (JS_IsException(result)) {
+        JSValue exc = JS_GetException(ctx);
+        JSValue str = JS_ToString(ctx, exc);
+        const char *cstr = JS_ToCString(ctx, str);
+        if (cstr) {
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                          "js worker eval exception: %s", cstr);
+            JS_FreeCString(ctx, cstr);
+        }
+        JS_FreeValue(ctx, str);
+        JS_FreeValue(ctx, exc);
+        JS_FreeValue(ctx, result);
+        goto done;
+    }
+
+    JS_FreeValue(ctx, result);
+
+    /* Message loop */
+    pfd.fd     = state->to_worker.rfd;
+    pfd.events = POLLIN;
+
+    for ( ;; ) {
+        pfd.revents = 0;
+
+        if (poll(&pfd, 1, -1) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        ngx_queue_init(&msgs);
+        pipe_recv_all(&state->to_worker, &msgs);
+
+        terminate = 0;
+
+        while (!ngx_queue_empty(&msgs)) {
+            q   = ngx_queue_head(&msgs);
+            ngx_queue_remove(q);
+            msg = ngx_queue_data(q, ngx_js_msg_t, link);
+
+            /* NULL buf is the terminate sentinel */
+            if (msg->buf == NULL) {
+                ngx_free(msg);
+                terminate = 1;
+                break;
+            }
+
+            data = JS_ReadObject(ctx, msg->buf, msg->len, 0);
+            ngx_free(msg->buf);
+            ngx_free(msg);
+
+            if (JS_IsException(data)) {
+                JSValue exc = JS_GetException(ctx);
+                JS_FreeValue(ctx, exc);
+                continue;
+            }
+
+            /* Build MessageEvent-like object: { data: <value> } */
+            event_obj = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, event_obj, "data", data);
+
+            if (JS_IsFunction(ctx, tctx->on_message)) {
+                call_ret = JS_Call(ctx, tctx->on_message,
+                                   JS_UNDEFINED, 1, &event_obj);
+                if (JS_IsException(call_ret)) {
+                    JSValue exc = JS_GetException(ctx);
+                    JSValue str = JS_ToString(ctx, exc);
+                    const char *cstr = JS_ToCString(ctx, str);
+                    if (cstr) {
+                        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                                      "js worker onmessage exception: %s",
+                                      cstr);
+                        JS_FreeCString(ctx, cstr);
+                    }
+                    JS_FreeValue(ctx, str);
+                    JS_FreeValue(ctx, exc);
+                }
+                JS_FreeValue(ctx, call_ret);
+            }
+
+            JS_FreeValue(ctx, event_obj);
+
+            while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+        }
+
+        /* Free any messages left in the queue (after a terminate) */
+        while (!ngx_queue_empty(&msgs)) {
+            q   = ngx_queue_head(&msgs);
+            ngx_queue_remove(q);
+            msg = ngx_queue_data(q, ngx_js_msg_t, link);
+            if (msg->buf) {
+                ngx_free(msg->buf);
+            }
+            ngx_free(msg);
+        }
+
+        if (terminate) {
+            break;
+        }
+    }
+
+done:
+    JS_FreeValue(ctx, tctx->on_message);
+    ngx_free(tctx);
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(rt);
+
+    return NULL;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Main-thread (nginx event loop) side                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ngx_js_worker_recv_handler — nginx read event on from_worker.rfd.
+ *
+ * Called when the worker thread has posted one or more messages.
+ * Deserializes each, calls worker.onmessage({data: …}), drains
+ * microtasks, and checks for a settled async pending request.
+ */
+static void
+ngx_js_worker_recv_handler(ngx_event_t *ev)
+{
+    ngx_connection_t        *conn;
+    ngx_js_worker_opaque_t  *op;
+    ngx_js_worker_t         *w;
+    JSContext               *ctx, *job_ctx;
+    ngx_queue_t              msgs, *q;
+    ngx_js_msg_t            *msg;
+    JSValue                  data, event_obj, call_ret;
+
+    conn = ev->data;    /* nginx sets ev->data = connection */
+    op   = conn->data;  /* our opaque is in conn->data */
+    w    = op->w;
+    ctx  = w->ctx;
+
+    ngx_queue_init(&msgs);
+    pipe_recv_all(&op->state->from_worker, &msgs);
+
+    while (!ngx_queue_empty(&msgs)) {
+        q   = ngx_queue_head(&msgs);
+        ngx_queue_remove(q);
+        msg = ngx_queue_data(q, ngx_js_msg_t, link);
+
+        if (msg->buf == NULL) {
+            /* Terminate sentinel from worker — unusual in this direction */
+            ngx_free(msg);
+            continue;
+        }
+
+        data = JS_ReadObject(ctx, msg->buf, msg->len, 0);
+        ngx_free(msg->buf);
+        ngx_free(msg);
+
+        if (JS_IsException(data)) {
+            JSValue exc = JS_GetException(ctx);
+            JSValue str = JS_ToString(ctx, exc);
+            const char *cstr = JS_ToCString(ctx, str);
+            if (cstr) {
+                ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                              "js worker recv deserialize error: %s", cstr);
+                JS_FreeCString(ctx, cstr);
+            }
+            JS_FreeValue(ctx, str);
+            JS_FreeValue(ctx, exc);
+            continue;
+        }
+
+        event_obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, event_obj, "data", data);
+
+        if (JS_IsFunction(ctx, op->on_message)) {
+            /* Dup before calling: terminate() may free op->on_message
+             * from within the callback (e.g. "w.onmessage = e => {
+             * w.terminate(); ... }").  Without the dup the closure's
+             * ref_count would drop to 0 while still executing → SIGSEGV.
+             * With the dup it drops to 1 (safe) and reaches 0 only after
+             * on_msg is freed here in C, outside of any JS frame. */
+            JSValue on_msg = JS_DupValue(ctx, op->on_message);
+            call_ret = JS_Call(ctx, on_msg, JS_UNDEFINED, 1, &event_obj);
+            JS_FreeValue(ctx, on_msg);
+            if (JS_IsException(call_ret)) {
+                ngx_js_log_exception(ctx, ngx_cycle->log);
+            }
+            JS_FreeValue(ctx, call_ret);
+        }
+
+        JS_FreeValue(ctx, event_obj);
+    }
+
+    while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { }
+
+    ngx_js_async_check(w);
+}
+
+
+/*
+ * Worker.prototype.postMessage(data) — main thread sends to worker.
+ */
+static JSValue
+ngx_js_worker_post_message(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_worker_opaque_t  *op;
+    uint8_t                 *qjs_buf, *buf;
+    size_t                   qjs_len;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_worker_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->state == NULL) {
+        return JS_ThrowInternalError(ctx, "postMessage: worker terminated");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "postMessage(data): data required");
+    }
+
+    qjs_buf = JS_WriteObject(ctx, &qjs_len, argv[0], 0);
+    if (qjs_buf == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    buf = ngx_alloc(qjs_len, ngx_cycle->log);
+    if (buf == NULL) {
+        js_free(ctx, qjs_buf);
+        return JS_ThrowInternalError(ctx, "postMessage: alloc failed");
+    }
+
+    ngx_memcpy(buf, qjs_buf, qjs_len);
+    js_free(ctx, qjs_buf);
+
+    pipe_send(&op->state->to_worker, buf, qjs_len);
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * Worker.prototype.terminate() — shut down the worker thread.
+ *
+ * Sends the terminate sentinel, waits for the thread to exit (pthread_join),
+ * then tears down all resources.  May block the event loop briefly while the
+ * worker thread finishes (typically microseconds).
+ */
+static JSValue
+ngx_js_worker_terminate(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_worker_opaque_t  *op;
+    ngx_js_worker_state_t   *state;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_worker_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->state == NULL) {
+        return JS_UNDEFINED;    /* already terminated */
+    }
+
+    state = op->state;
+
+    /* Wake worker thread with terminate sentinel (buf == NULL) */
+    pipe_send(&state->to_worker, NULL, 0);
+
+    /* Wait for the worker thread to finish (frees its JSRuntime etc.) */
+    pthread_join(state->tid, NULL);
+
+    /* Remove from nginx event loop and release connection slot.
+     * ngx_free_connection() clears cycle->files[fd] but does NOT set
+     * fd = -1.  nginx's shutdown code iterates ALL connection slots and
+     * alerts on any slot where fd != -1, so we must clear it ourselves
+     * before nulling the pointer. */
+    ngx_del_event(op->conn->read, NGX_READ_EVENT, 0);
+    ngx_free_connection(op->conn);
+    op->conn->fd = (ngx_socket_t) -1;
+    op->conn = NULL;
+
+    /* Free shared pipes and state */
+    pipe_destroy(&state->to_worker);
+    pipe_destroy(&state->from_worker);
+    ngx_free(state->script);
+    ngx_free(state);
+
+    /* Break the cycle: closure may capture the Worker object (w), so free
+     * on_message here rather than leaving it for the GC finalizer.  The
+     * finalizer will see JS_UNDEFINED and skip the free safely. */
+    JS_FreeValue(ctx, op->on_message);
+    op->on_message = JS_UNDEFINED;
+
+    op->state = NULL;
+
+    return JS_UNDEFINED;
+}
+
+
+/* Worker object getset for onmessage (main thread side, magic 0) */
+static JSValue
+ngx_js_worker_get_onmessage(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_worker_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_worker_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_DupValue(ctx, op->on_message);
+}
+
+
+static JSValue
+ngx_js_worker_set_onmessage(JSContext *ctx, JSValueConst this_val,
+    JSValue val, int magic)
+{
+    ngx_js_worker_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_worker_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    JS_FreeValue(ctx, op->on_message);
+    op->on_message = JS_DupValue(ctx, val);
+
+    return JS_UNDEFINED;
+}
+
+
+static const JSCFunctionListEntry  ngx_js_worker_proto_funcs[] = {
+    JS_CFUNC_DEF("postMessage", 1, ngx_js_worker_post_message),
+    JS_CFUNC_DEF("terminate",   0, ngx_js_worker_terminate),
+    JS_CGETSET_MAGIC_DEF("onmessage",
+                         ngx_js_worker_get_onmessage,
+                         ngx_js_worker_set_onmessage, 0),
+};
+
+
+/*
+ * new Worker("script.js") constructor.
+ *
+ * Only available in nginx worker processes (where the JS context opaque
+ * has been set to ngx_js_worker_t by init_process).
+ */
+static JSValue
+ngx_js_worker_ctor(JSContext *ctx, JSValueConst new_target,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_worker_t        *w;
+    ngx_js_worker_state_t  *state;
+    ngx_js_worker_opaque_t *opaque;
+    ngx_connection_t       *conn;
+    JSValue                 proto, obj;
+    const char             *path_cstr;
+    size_t                  path_len;
+
+    if (ngx_process != NGX_PROCESS_WORKER
+        && ngx_process != NGX_PROCESS_SINGLE)
+    {
+        return JS_ThrowInternalError(ctx,
+                                     "new Worker(): requires nginx worker");
+    }
+
+    w = JS_GetContextOpaque(ctx);
+    if (w == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "new Worker(): no worker context");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "new Worker(path): path required");
+    }
+
+    path_cstr = JS_ToCStringLen(ctx, &path_len, argv[0]);
+    if (path_cstr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    /* ---- Allocate shared state ---- */
+
+    state = ngx_alloc(sizeof(ngx_js_worker_state_t), ngx_cycle->log);
+    if (state == NULL) {
+        JS_FreeCString(ctx, path_cstr);
+        return JS_ThrowInternalError(ctx, "new Worker(): alloc failed");
+    }
+
+    ngx_memzero(state, sizeof(ngx_js_worker_state_t));
+
+    state->script = ngx_alloc(path_len + 1, ngx_cycle->log);
+    if (state->script == NULL) {
+        ngx_free(state);
+        JS_FreeCString(ctx, path_cstr);
+        return JS_ThrowInternalError(ctx, "new Worker(): alloc failed");
+    }
+
+    ngx_memcpy(state->script, path_cstr, path_len + 1);
+    JS_FreeCString(ctx, path_cstr);
+
+    if (pipe_init(&state->to_worker) != NGX_OK) {
+        ngx_free(state->script);
+        ngx_free(state);
+        return JS_ThrowInternalError(ctx,
+                                     "new Worker(): pipe_init failed");
+    }
+
+    if (pipe_init(&state->from_worker) != NGX_OK) {
+        pipe_destroy(&state->to_worker);
+        ngx_free(state->script);
+        ngx_free(state);
+        return JS_ThrowInternalError(ctx,
+                                     "new Worker(): pipe_init failed");
+    }
+
+    /* ---- Allocate JS opaque ---- */
+
+    opaque = ngx_alloc(sizeof(ngx_js_worker_opaque_t), ngx_cycle->log);
+    if (opaque == NULL) {
+        pipe_destroy(&state->from_worker);
+        pipe_destroy(&state->to_worker);
+        ngx_free(state->script);
+        ngx_free(state);
+        return JS_ThrowInternalError(ctx, "new Worker(): alloc failed");
+    }
+
+    opaque->on_message = JS_UNDEFINED;
+    opaque->state      = state;
+    opaque->w          = w;
+
+    /* ---- Register from_worker.rfd with nginx event loop ---- */
+
+    conn = ngx_get_connection(state->from_worker.rfd, ngx_cycle->log);
+    if (conn == NULL) {
+        ngx_free(opaque);
+        pipe_destroy(&state->from_worker);
+        pipe_destroy(&state->to_worker);
+        ngx_free(state->script);
+        ngx_free(state);
+        return JS_ThrowInternalError(ctx,
+                                     "new Worker(): ngx_get_connection failed");
+    }
+
+    conn->data          = opaque;   /* our opaque; nginx keeps ev->data = conn */
+    conn->read->handler = ngx_js_worker_recv_handler;
+    conn->read->log     = ngx_cycle->log;
+
+    if (ngx_add_event(conn->read, NGX_READ_EVENT, 0) != NGX_OK) {
+        ngx_free_connection(conn);
+        ngx_free(opaque);
+        pipe_destroy(&state->from_worker);
+        pipe_destroy(&state->to_worker);
+        ngx_free(state->script);
+        ngx_free(state);
+        return JS_ThrowInternalError(ctx,
+                                     "new Worker(): ngx_add_event failed");
+    }
+
+    opaque->conn = conn;
+
+    /* ---- Spawn the worker thread ---- */
+
+    if (pthread_create(&state->tid, NULL,
+                       ngx_js_worker_thread, state) != 0)
+    {
+        ngx_del_event(conn->read, NGX_READ_EVENT, 0);
+        ngx_free_connection(conn);
+        ngx_free(opaque);
+        pipe_destroy(&state->from_worker);
+        pipe_destroy(&state->to_worker);
+        ngx_free(state->script);
+        ngx_free(state);
+        return JS_ThrowInternalError(ctx,
+                                     "new Worker(): pthread_create failed");
+    }
+
+    /* ---- Build the JS Worker object ---- */
+
+    proto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_worker_proto_funcs,
+                               countof(ngx_js_worker_proto_funcs));
+
+    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_worker_class_id);
+    JS_FreeValue(ctx, proto);
+
+    if (JS_IsException(obj)) {
+        /* Thread is running; send terminate to clean it up */
+        pipe_send(&state->to_worker, NULL, 0);
+        pthread_join(state->tid, NULL);
+        ngx_del_event(conn->read, NGX_READ_EVENT, 0);
+        ngx_free_connection(conn);
+        ngx_free(opaque);
+        pipe_destroy(&state->from_worker);
+        pipe_destroy(&state->to_worker);
+        ngx_free(state->script);
+        ngx_free(state);
+        return obj;
+    }
+
+    JS_SetOpaque(obj, opaque);
+
+    return obj;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Public entry point                                                   */
+/* ------------------------------------------------------------------ */
+
+ngx_int_t
+ngx_js_worker_install(JSContext *ctx)
+{
+    static ngx_uint_t  initialized;
+    JSValue            global, ctor;
+
+    if (!initialized) {
+        JS_NewClassID(&ngx_js_worker_class_id);
+        initialized = 1;
+    }
+
+    if (JS_NewClass(JS_GetRuntime(ctx),
+                    ngx_js_worker_class_id,
+                    &ngx_js_worker_class) < 0)
+    {
+        return NGX_ERROR;
+    }
+
+    global = JS_GetGlobalObject(ctx);
+
+    ctor = JS_NewCFunction2(ctx, ngx_js_worker_ctor, "Worker", 1,
+                            JS_CFUNC_constructor, 0);
+
+    JS_SetPropertyStr(ctx, global, "Worker", ctor);
+
+    JS_FreeValue(ctx, global);
+
+    return NGX_OK;
+}

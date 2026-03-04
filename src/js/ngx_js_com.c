@@ -12,6 +12,7 @@
 #include <cutils.h>
 #include "ngx_js.h"
 #include "ngx_js_com.h"
+#include "ngx_js_worker.h"
 
 
 /* ------------------------------------------------------------------ */
@@ -365,6 +366,12 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     }
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
+
+    /* global Worker constructor */
+    if (ngx_js_worker_install(ctx) != NGX_OK) {
+        JS_FreeValue(ctx, global);
+        return NGX_ERROR;
+    }
 
     JS_FreeValue(ctx, global);
 
