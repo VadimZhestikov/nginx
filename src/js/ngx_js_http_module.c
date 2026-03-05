@@ -1033,6 +1033,284 @@ ngx_js_apply_pending_servers(ngx_conf_t *cf, ngx_array_t *pending)
 }
 
 
+/* ---- delServer / delLocation mutators ---- */
+
+/*
+ * Return cmcf from the current ngx_js_current_cf, or NULL if unavailable.
+ */
+static ngx_http_core_main_conf_t *
+ngx_js_get_cmcf(void)
+{
+    ngx_http_conf_ctx_t  *http_ctx;
+
+    if (ngx_js_current_cf == NULL) {
+        return NULL;
+    }
+
+    http_ctx = ngx_js_current_cf->ctx;
+    if (http_ctx == NULL) {
+        return NULL;
+    }
+
+    return http_ctx->main_conf[ngx_http_core_module.ctx_index];
+}
+
+
+/*
+ * nginx.http.delServer(name)
+ *
+ * Removes all virtual servers whose server_names include `name` (case-
+ * insensitive, matching the nginx server_name convention).
+ *
+ * Returns the number of servers removed (0 when none matched).
+ *
+ * Operates on:
+ *   1. cmcf->servers — so merge/init_locations/static_trees skip it
+ *   2. addr->servers in every cmcf->ports entry — so the server is not
+ *      registered in the virtual-host name hash and requests are never
+ *      dispatched to it
+ *
+ * Addrs with no remaining servers are removed from their port; ports
+ * with no remaining addrs are removed from cmcf->ports.  This prevents
+ * ngx_http_optimize_servers from setting up a listening socket with a
+ * NULL default_server.
+ *
+ * All operations are safe at parse time before ngx_http_block() runs
+ * its merge/optimize passes.
+ */
+static JSValue
+ngx_js_http_del_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_core_srv_conf_t  **cscfp, **addr_srvp;
+    ngx_http_conf_port_t       *ports;
+    ngx_http_conf_addr_t       *addrs;
+    ngx_http_server_name_t     *sn;
+    const char                 *name_cstr;
+    size_t                      name_len;
+    ngx_uint_t                  i, j, p, a, s, removed;
+    ngx_flag_t                  match;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "delServer(name) requires 1 argument");
+    }
+
+    cmcf = ngx_js_get_cmcf();
+    if (cmcf == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "delServer: not in js_init_http context");
+    }
+
+    name_cstr = JS_ToCStringLen(ctx, &name_len, argv[0]);
+    if (!name_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    cscfp   = cmcf->servers.elts;
+    removed = 0;
+    i       = 0;
+
+    while (i < cmcf->servers.nelts) {
+
+        match = 0;
+        sn    = cscfp[i]->server_names.elts;
+
+        for (j = 0; j < cscfp[i]->server_names.nelts; j++) {
+            if (sn[j].name.len == name_len
+                && ngx_strncasecmp(sn[j].name.data,
+                                   (u_char *) name_cstr, name_len) == 0)
+            {
+                match = 1;
+                break;
+            }
+        }
+
+        if (!match) {
+            i++;
+            continue;
+        }
+
+        /*
+         * Also remove this cscf from every addr->servers list inside
+         * cmcf->ports.  Without this, ngx_http_optimize_servers would
+         * still register the server in the virtual-host name hash and
+         * would bind its listen port with a potentially NULL
+         * default_server.
+         */
+        if (cmcf->ports) {
+            ports = cmcf->ports->elts;
+
+            for (p = 0; p < cmcf->ports->nelts; /* manual */) {
+                addrs = ports[p].addrs.elts;
+                a = 0;
+
+                while (a < ports[p].addrs.nelts) {
+                    addr_srvp = addrs[a].servers.elts;
+                    s = 0;
+
+                    while (s < addrs[a].servers.nelts) {
+                        if (addr_srvp[s] == cscfp[i]) {
+                            ngx_memmove(
+                                &addr_srvp[s],
+                                &addr_srvp[s + 1],
+                                (addrs[a].servers.nelts - s - 1)
+                                * sizeof(ngx_http_core_srv_conf_t *));
+                            addrs[a].servers.nelts--;
+                        } else {
+                            s++;
+                        }
+                    }
+
+                    /* Fix default_server if it pointed to the deleted cscf */
+                    if (addrs[a].default_server == cscfp[i]) {
+                        addrs[a].default_server =
+                            addrs[a].servers.nelts > 0
+                            ? ((ngx_http_core_srv_conf_t **)
+                               addrs[a].servers.elts)[0]
+                            : NULL;
+                    }
+
+                    /* Remove addr if it has no servers left */
+                    if (addrs[a].servers.nelts == 0) {
+                        ngx_memmove(
+                            &addrs[a], &addrs[a + 1],
+                            (ports[p].addrs.nelts - a - 1)
+                            * sizeof(ngx_http_conf_addr_t));
+                        ports[p].addrs.nelts--;
+                    } else {
+                        a++;
+                    }
+                }
+
+                /* Remove port if it has no addrs left */
+                if (ports[p].addrs.nelts == 0) {
+                    ngx_memmove(
+                        &ports[p], &ports[p + 1],
+                        (cmcf->ports->nelts - p - 1)
+                        * sizeof(ngx_http_conf_port_t));
+                    cmcf->ports->nelts--;
+                } else {
+                    p++;
+                }
+            }
+        }
+
+        /* Remove from cmcf->servers */
+        ngx_memmove(&cscfp[i], &cscfp[i + 1],
+                    (cmcf->servers.nelts - i - 1)
+                    * sizeof(ngx_http_core_srv_conf_t *));
+        cmcf->servers.nelts--;
+        removed++;
+    }
+
+    JS_FreeCString(ctx, name_cstr);
+    return JS_NewInt32(ctx, (int32_t) removed);
+}
+
+
+/*
+ * nginx.http.delLocation(serverName, path)
+ *
+ * Removes all location entries whose name matches `path` from the named
+ * server.  The server is located by server_name (case-insensitive).
+ *
+ * Returns the number of locations removed (0 when none matched).
+ *
+ * Uses ngx_queue_remove() on the raw location queue, which is safe at
+ * parse time before nginx builds the static-location radix trees.
+ */
+static JSValue
+ngx_js_http_del_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_core_srv_conf_t  **cscfp;
+    ngx_http_core_loc_conf_t   *clcf, *lclcf;
+    ngx_http_server_name_t     *sn;
+    ngx_http_location_queue_t  *lq;
+    ngx_queue_t                *q, *next;
+    const char                 *sname_cstr, *path_cstr;
+    size_t                      sname_len, path_len;
+    ngx_uint_t                  i, j, removed;
+    ngx_flag_t                  smatch;
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx,
+                                 "delLocation(serverName, path) requires "
+                                 "2 arguments");
+    }
+
+    cmcf = ngx_js_get_cmcf();
+    if (cmcf == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                 "delLocation: not in js_init_http context");
+    }
+
+    sname_cstr = JS_ToCStringLen(ctx, &sname_len, argv[0]);
+    if (!sname_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    path_cstr = JS_ToCStringLen(ctx, &path_len, argv[1]);
+    if (!path_cstr) {
+        JS_FreeCString(ctx, sname_cstr);
+        return JS_EXCEPTION;
+    }
+
+    cscfp   = cmcf->servers.elts;
+    removed = 0;
+
+    for (i = 0; i < cmcf->servers.nelts; i++) {
+
+        smatch = 0;
+        sn     = cscfp[i]->server_names.elts;
+
+        for (j = 0; j < cscfp[i]->server_names.nelts; j++) {
+            if (sn[j].name.len == sname_len
+                && ngx_strncasecmp(sn[j].name.data,
+                                   (u_char *) sname_cstr, sname_len) == 0)
+            {
+                smatch = 1;
+                break;
+            }
+        }
+
+        if (!smatch) {
+            continue;
+        }
+
+        clcf = cscfp[i]->ctx->loc_conf[ngx_http_core_module.ctx_index];
+        if (clcf->locations == NULL) {
+            continue;
+        }
+
+        q = ngx_queue_head(clcf->locations);
+
+        while (q != ngx_queue_sentinel(clcf->locations)) {
+            next  = ngx_queue_next(q);
+            lq    = (ngx_http_location_queue_t *) q;
+            lclcf = lq->exact ? lq->exact : lq->inclusive;
+
+            if (lclcf->name.len == path_len
+                && ngx_strncmp(lclcf->name.data,
+                               (u_char *) path_cstr, path_len) == 0)
+            {
+                ngx_queue_remove(q);
+                removed++;
+            }
+
+            q = next;
+        }
+    }
+
+    JS_FreeCString(ctx, sname_cstr);
+    JS_FreeCString(ctx, path_cstr);
+    return JS_NewInt32(ctx, (int32_t) removed);
+}
+
+
 /*
  * Build a read-only JS array of plain objects representing the nginx
  * virtual servers that have been parsed so far in the http{} block.
@@ -1253,6 +1531,12 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     JS_SetPropertyStr(ctx, http_obj, "addServer",
                       JS_NewCFunction(ctx, ngx_js_http_add_server,
                                       "addServer", 1));
+    JS_SetPropertyStr(ctx, http_obj, "delServer",
+                      JS_NewCFunction(ctx, ngx_js_http_del_server,
+                                      "delServer", 1));
+    JS_SetPropertyStr(ctx, http_obj, "delLocation",
+                      JS_NewCFunction(ctx, ngx_js_http_del_location,
+                                      "delLocation", 2));
 
     JS_SetPropertyStr(ctx, nginx_obj, "http", http_obj);
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
