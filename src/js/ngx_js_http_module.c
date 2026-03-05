@@ -1311,6 +1311,278 @@ ngx_js_http_del_location(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ---- modServer / modLocation mutators ---- */
+
+/*
+ * nginx.http.modServer(name, opts)
+ *
+ * Modifies all virtual servers whose server_names include `name`.
+ *
+ *   opts.serverNames[]  — replace the server_name list with new strings
+ *
+ * Returns the number of servers modified (0 when none matched).
+ *
+ * Only the server_names array is replaced; listen addresses and all
+ * other server-level config remain unchanged.  The replacement is done
+ * before ngx_http_block() calls ngx_http_server_names(), so the new
+ * names are used when nginx builds the virtual-host hash tables.
+ */
+static JSValue
+ngx_js_http_mod_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_core_srv_conf_t  **cscfp;
+    ngx_http_server_name_t     *sn, *new_sn;
+    JSValue                     arr_val, item, len_val;
+    const char                 *name_cstr, *new_name_cstr;
+    size_t                      name_len, new_name_len;
+    ngx_pool_t                 *pool;
+    ngx_uint_t                  i, j, modified;
+    uint32_t                    k, arr_len;
+    ngx_flag_t                  match;
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx,
+                                 "modServer(name, opts) requires 2 arguments");
+    }
+
+    cmcf = ngx_js_get_cmcf();
+    if (cmcf == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "modServer: not in js_init_http context");
+    }
+
+    name_cstr = JS_ToCStringLen(ctx, &name_len, argv[0]);
+    if (!name_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    pool     = ngx_js_current_cf->pool;
+    cscfp    = cmcf->servers.elts;
+    modified = 0;
+
+    for (i = 0; i < cmcf->servers.nelts; i++) {
+
+        match = 0;
+        sn    = cscfp[i]->server_names.elts;
+
+        for (j = 0; j < cscfp[i]->server_names.nelts; j++) {
+            if (sn[j].name.len == name_len
+                && ngx_strncasecmp(sn[j].name.data,
+                                   (u_char *) name_cstr, name_len) == 0)
+            {
+                match = 1;
+                break;
+            }
+        }
+
+        if (!match) {
+            continue;
+        }
+
+        /* opts.serverNames[] — replace the server_name list */
+        arr_val = JS_GetPropertyStr(ctx, argv[1], "serverNames");
+
+        if (JS_IsArray(ctx, arr_val)) {
+            len_val = JS_GetPropertyStr(ctx, arr_val, "length");
+            JS_ToUint32(ctx, &arr_len, len_val);
+            JS_FreeValue(ctx, len_val);
+
+            /* Reset the server_names array and fill with new names */
+            cscfp[i]->server_names.nelts = 0;
+
+            for (k = 0; k < arr_len; k++) {
+                item = JS_GetPropertyUint32(ctx, arr_val, k);
+
+                new_name_cstr = JS_ToCStringLen(ctx, &new_name_len, item);
+                JS_FreeValue(ctx, item);
+
+                if (!new_name_cstr) {
+                    JS_FreeValue(ctx, arr_val);
+                    JS_FreeCString(ctx, name_cstr);
+                    return JS_EXCEPTION;
+                }
+
+                new_sn = ngx_array_push(&cscfp[i]->server_names);
+                if (new_sn == NULL) {
+                    JS_FreeCString(ctx, new_name_cstr);
+                    JS_FreeValue(ctx, arr_val);
+                    JS_FreeCString(ctx, name_cstr);
+                    return JS_ThrowInternalError(ctx,
+                                           "modServer: ngx_array_push failed");
+                }
+
+                ngx_memzero(new_sn, sizeof(ngx_http_server_name_t));
+                new_sn->server    = cscfp[i];
+                new_sn->name.data = ngx_pnalloc(pool, new_name_len + 1);
+
+                if (new_sn->name.data == NULL) {
+                    JS_FreeCString(ctx, new_name_cstr);
+                    JS_FreeValue(ctx, arr_val);
+                    JS_FreeCString(ctx, name_cstr);
+                    return JS_ThrowInternalError(ctx,
+                                           "modServer: ngx_pnalloc failed");
+                }
+
+                ngx_memcpy(new_sn->name.data, new_name_cstr,
+                           new_name_len + 1);
+                new_sn->name.len = new_name_len;
+
+                JS_FreeCString(ctx, new_name_cstr);
+            }
+
+            modified++;
+        }
+
+        JS_FreeValue(ctx, arr_val);
+    }
+
+    JS_FreeCString(ctx, name_cstr);
+    return JS_NewInt32(ctx, (int32_t) modified);
+}
+
+
+/*
+ * nginx.http.modLocation(serverName, path, opts)
+ *
+ * Modifies all locations matching `path` in the named server.
+ *
+ *   opts.path   — rename the location (update clcf->name)
+ *   opts.root   — change the root directory (update clcf->root)
+ *
+ * Returns the number of locations modified (0 when none matched).
+ *
+ * Location trees are not yet built when js_init_http fires, so path
+ * renames take effect before ngx_http_init_locations builds the trees.
+ * Root updates are safe for simple (non-variable) root values.
+ */
+static JSValue
+ngx_js_http_mod_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_core_srv_conf_t  **cscfp;
+    ngx_http_core_loc_conf_t   *clcf, *lclcf;
+    ngx_http_server_name_t     *sn;
+    ngx_http_location_queue_t  *lq;
+    ngx_queue_t                *q;
+    JSValue                     opt;
+    const char                 *sname_cstr, *path_cstr, *cstr;
+    size_t                      sname_len, path_len, len;
+    ngx_pool_t                 *pool;
+    ngx_uint_t                  i, j, modified;
+    ngx_flag_t                  smatch;
+
+    if (argc < 3) {
+        return JS_ThrowTypeError(ctx,
+                                 "modLocation(serverName, path, opts) "
+                                 "requires 3 arguments");
+    }
+
+    cmcf = ngx_js_get_cmcf();
+    if (cmcf == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                 "modLocation: not in js_init_http context");
+    }
+
+    sname_cstr = JS_ToCStringLen(ctx, &sname_len, argv[0]);
+    if (!sname_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    path_cstr = JS_ToCStringLen(ctx, &path_len, argv[1]);
+    if (!path_cstr) {
+        JS_FreeCString(ctx, sname_cstr);
+        return JS_EXCEPTION;
+    }
+
+    pool     = ngx_js_current_cf->pool;
+    cscfp    = cmcf->servers.elts;
+    modified = 0;
+
+    for (i = 0; i < cmcf->servers.nelts; i++) {
+
+        smatch = 0;
+        sn     = cscfp[i]->server_names.elts;
+
+        for (j = 0; j < cscfp[i]->server_names.nelts; j++) {
+            if (sn[j].name.len == sname_len
+                && ngx_strncasecmp(sn[j].name.data,
+                                   (u_char *) sname_cstr, sname_len) == 0)
+            {
+                smatch = 1;
+                break;
+            }
+        }
+
+        if (!smatch) {
+            continue;
+        }
+
+        clcf = cscfp[i]->ctx->loc_conf[ngx_http_core_module.ctx_index];
+        if (clcf->locations == NULL) {
+            continue;
+        }
+
+        for (q = ngx_queue_head(clcf->locations);
+             q != ngx_queue_sentinel(clcf->locations);
+             q = ngx_queue_next(q))
+        {
+            lq    = (ngx_http_location_queue_t *) q;
+            lclcf = lq->exact ? lq->exact : lq->inclusive;
+
+            if (lclcf->name.len != path_len
+                || ngx_strncmp(lclcf->name.data,
+                               (u_char *) path_cstr, path_len) != 0)
+            {
+                continue;
+            }
+
+            /* opts.path — rename this location */
+            opt = JS_GetPropertyStr(ctx, argv[2], "path");
+            if (!JS_IsUndefined(opt)) {
+                cstr = JS_ToCStringLen(ctx, &len, opt);
+                if (cstr) {
+                    lclcf->name.data = ngx_pnalloc(pool, len + 1);
+                    if (lclcf->name.data) {
+                        ngx_memcpy(lclcf->name.data, cstr, len + 1);
+                        lclcf->name.len = len;
+                    }
+                    JS_FreeCString(ctx, cstr);
+                }
+            }
+            JS_FreeValue(ctx, opt);
+
+            /* opts.root — update root directory (simple paths only) */
+            opt = JS_GetPropertyStr(ctx, argv[2], "root");
+            if (!JS_IsUndefined(opt)) {
+                cstr = JS_ToCStringLen(ctx, &len, opt);
+                if (cstr) {
+                    lclcf->root.data = ngx_pnalloc(pool, len + 1);
+                    if (lclcf->root.data) {
+                        ngx_memcpy(lclcf->root.data, cstr, len + 1);
+                        lclcf->root.len     = len;
+                        /* clear compiled variable arrays so nginx uses
+                         * the plain string path */
+                        lclcf->root_lengths = NULL;
+                        lclcf->root_values  = NULL;
+                    }
+                    JS_FreeCString(ctx, cstr);
+                }
+            }
+            JS_FreeValue(ctx, opt);
+
+            modified++;
+        }
+    }
+
+    JS_FreeCString(ctx, sname_cstr);
+    JS_FreeCString(ctx, path_cstr);
+    return JS_NewInt32(ctx, (int32_t) modified);
+}
+
+
 /*
  * Build a read-only JS array of plain objects representing the nginx
  * virtual servers that have been parsed so far in the http{} block.
@@ -1537,6 +1809,12 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     JS_SetPropertyStr(ctx, http_obj, "delLocation",
                       JS_NewCFunction(ctx, ngx_js_http_del_location,
                                       "delLocation", 2));
+    JS_SetPropertyStr(ctx, http_obj, "modServer",
+                      JS_NewCFunction(ctx, ngx_js_http_mod_server,
+                                      "modServer", 2));
+    JS_SetPropertyStr(ctx, http_obj, "modLocation",
+                      JS_NewCFunction(ctx, ngx_js_http_mod_location,
+                                      "modLocation", 3));
 
     JS_SetPropertyStr(ctx, nginx_obj, "http", http_obj);
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
