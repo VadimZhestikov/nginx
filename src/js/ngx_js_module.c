@@ -6,7 +6,8 @@
  *
  * Lifecycle:
  *   create_conf  — allocate ngx_js_conf_t in cycle->pool
- *   [ngx_conf_parse runs; js_include directives populate jcf->includes]
+ *   [ngx_conf_parse runs; js_include directives populate jcf->includes;
+ *    js_preprocess directives run immediately and may inject config text]
  *   init_conf    — create JSRuntime/JSContext, install COM, eval scripts
  *   init_process — each worker inherits jcf->rt/ctx directly (fork COW);
  *                  no new runtime, no re-evaluation, no I/O
@@ -27,7 +28,11 @@ static ngx_int_t ngx_js_init_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_master(ngx_cycle_t *cycle);
 
-static char *ngx_js_include(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char   *ngx_js_include(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static JSValue ngx_js_config_write(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
 
 static u_char *ngx_js_read_file(ngx_cycle_t *cycle, ngx_str_t *path,
     size_t *len);
@@ -46,6 +51,31 @@ static ngx_command_t  ngx_js_commands[] = {
     { ngx_string("js_include"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
       ngx_js_include,
+      0,
+      0,
+      NULL },
+
+    /*
+     * js_preprocess /path/to/script.js;
+     *
+     * JS config preprocessor — the script is evaluated immediately
+     * when this directive is encountered during ngx_conf_parse().
+     * The script receives a global `config` object with a single
+     * method: config.write(text) feeds `text` back into the nginx
+     * config parser as if it had appeared inline.  This lets JS
+     * generate any nginx directives (including full http{}/server{}
+     * blocks) from files, environment variables, or external sources.
+     *
+     * The JS runtime used here is short-lived and independent of the
+     * runtime created by js_include/init_conf.  nginx.http.servers[]
+     * and other post-parse COM objects are NOT available.
+     *
+     * Multiple js_preprocess directives are allowed; each runs in its
+     * own isolated runtime.
+     */
+    { ngx_string("js_preprocess"),
+      NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
+      ngx_js_preprocess,
       0,
       0,
       NULL },
@@ -316,6 +346,157 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
         JS_FreeRuntime(jcf->rt);
         jcf->rt = NULL;
     }
+}
+
+
+/*
+ * config.write(text) — called from a js_preprocess script.
+ *
+ * Writes `text` to a temporary file then calls ngx_conf_parse()
+ * recursively so that the generated text is treated as if it
+ * appeared inline in nginx.conf.  Using a real file (rather than an
+ * in-memory buffer) is required so that nested block directives
+ * (http{}, server{}, etc.) are parsed correctly: ngx_conf_parse()
+ * uses a non-invalid fd to distinguish parse_block from parse_param,
+ * and only the file path gives that guarantee.
+ *
+ * The temporary file is unlinked before this function returns,
+ * regardless of parse success or failure.
+ */
+static JSValue
+ngx_js_config_write(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_conf_t   *cf;
+    const char   *text;
+    size_t        len;
+    char          tmppath[] = "/tmp/ngx_js_pp_XXXXXX";
+    ngx_str_t     tmpstr;
+    int           fd;
+    ssize_t       n;
+    char         *rv;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "config.write(text): argument required");
+    }
+
+    cf = JS_GetContextOpaque(ctx);
+    if (cf == NULL) {
+        return JS_ThrowInternalError(ctx, "config.write: no conf context");
+    }
+
+    text = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!text) {
+        return JS_EXCEPTION;
+    }
+
+    fd = mkstemp(tmppath);
+    if (fd == -1) {
+        JS_FreeCString(ctx, text);
+        return JS_ThrowInternalError(ctx, "config.write: mkstemp failed");
+    }
+
+    n = write(fd, text, len);
+    close(fd);
+
+    JS_FreeCString(ctx, text);
+
+    if ((size_t) n != len) {
+        unlink(tmppath);
+        return JS_ThrowInternalError(ctx, "config.write: write failed");
+    }
+
+    tmpstr.data = (u_char *) tmppath;
+    tmpstr.len  = ngx_strlen(tmppath);
+
+    rv = ngx_conf_parse(cf, &tmpstr);
+
+    unlink(tmppath);
+
+    if (rv != NGX_CONF_OK) {
+        return JS_ThrowInternalError(ctx,
+                                     "config.write: config parse failed");
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * ngx_js_preprocess — directive handler for js_preprocess.
+ *
+ * Creates a short-lived JSRuntime, installs a global `config` object
+ * exposing config.write(), evaluates the named script, then frees the
+ * runtime.  The cf pointer is stored as the context opaque so that
+ * config.write() can call ngx_conf_parse() directly.
+ */
+static char *
+ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_str_t   *value, path;
+    u_char      *src;
+    size_t       src_len;
+    JSRuntime   *rt;
+    JSContext   *ctx;
+    JSValue      global, config_obj, result;
+    char        *rv;
+
+    value = cf->args->elts;
+    path  = value[1];
+
+    if (ngx_conf_full_name(cf->cycle, &path, 1) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    src = ngx_js_read_file(cf->cycle, &path, &src_len);
+    if (src == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    rt = JS_NewRuntime();
+    if (rt == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+                      "js: JS_NewRuntime() failed");
+        return NGX_CONF_ERROR;
+    }
+
+    ctx = JS_NewContext(rt);
+    if (ctx == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+                      "js: JS_NewContext() failed");
+        JS_FreeRuntime(rt);
+        return NGX_CONF_ERROR;
+    }
+
+    /*
+     * Store cf so that config.write() can retrieve it via
+     * JS_GetContextOpaque() and call ngx_conf_parse().
+     */
+    JS_SetContextOpaque(ctx, cf);
+
+    /* Install global `config` object with write() method */
+    global     = JS_GetGlobalObject(ctx);
+    config_obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, config_obj, "write",
+                      JS_NewCFunction(ctx, ngx_js_config_write, "write", 1));
+    JS_SetPropertyStr(ctx, global, "config", config_obj);
+    JS_FreeValue(ctx, global);
+
+    result = JS_Eval(ctx, (const char *) src, src_len,
+                     (const char *) path.data, JS_EVAL_TYPE_GLOBAL);
+
+    rv = NGX_CONF_OK;
+
+    if (JS_IsException(result)) {
+        ngx_js_log_exception(ctx, cf->log);
+        rv = NGX_CONF_ERROR;
+    }
+
+    JS_FreeValue(ctx, result);
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(rt);
+
+    return rv;
 }
 
 
