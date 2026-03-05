@@ -585,6 +585,454 @@ ngx_js_content_handler(ngx_http_request_t *r)
 /* js_init_http — JS config hook that fires inside the http{} block    */
 /* ------------------------------------------------------------------ */
 
+/* ---- addServer / addLocation builder ---- */
+
+typedef struct {
+    ngx_str_t  path;
+    ngx_str_t  root;    /* optional; zero-len if not set */
+    ngx_str_t  ret;     /* optional; content for "return" directive */
+} ngx_js_pending_loc_t;
+
+typedef struct {
+    ngx_conf_t   *cf;
+    ngx_array_t   listen;     /* ngx_str_t[] */
+    ngx_array_t   names;      /* ngx_str_t[] */
+    ngx_array_t   locations;  /* ngx_js_pending_loc_t[] */
+} ngx_js_pending_server_t;
+
+
+static JSClassID     ngx_js_pending_server_class_id;
+static ngx_array_t  *ngx_js_current_pending;  /* ngx_js_pending_server_t*[] */
+static ngx_conf_t   *ngx_js_current_cf;
+
+
+static void
+ngx_js_pending_server_finalizer(JSRuntime *rt, JSValue val)
+{
+    /* all data lives in cf->pool — nothing to free here */
+    (void) rt;
+    (void) val;
+}
+
+
+static JSClassDef ngx_js_pending_server_class = {
+    "PendingServer",
+    .finalizer = ngx_js_pending_server_finalizer
+};
+
+
+/*
+ * srv.addLocation(path[, opts])
+ *
+ *   path          — string, e.g. "/api/"
+ *   opts.root     — optional root directory
+ *   opts.return   — optional argument to "return" directive
+ *
+ * Returns `this` for chaining.
+ */
+static JSValue
+ngx_js_pending_server_add_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_pending_server_t  *ps;
+    ngx_js_pending_loc_t     *loc;
+    const char               *cstr;
+    size_t                    len;
+    JSValue                   opt;
+    ngx_pool_t               *pool;
+
+    ps = JS_GetOpaque2(ctx, this_val, ngx_js_pending_server_class_id);
+    if (!ps) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "addLocation(path[, opts]) requires at "
+                                 "least 1 argument");
+    }
+
+    pool = ps->cf->pool;
+
+    loc = ngx_array_push(&ps->locations);
+    if (loc == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "addLocation: ngx_array_push failed");
+    }
+
+    ngx_memzero(loc, sizeof(ngx_js_pending_loc_t));
+
+    cstr = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!cstr) {
+        return JS_EXCEPTION;
+    }
+
+    loc->path.data = ngx_pnalloc(pool, len + 1);
+    if (loc->path.data == NULL) {
+        JS_FreeCString(ctx, cstr);
+        return JS_ThrowInternalError(ctx, "addLocation: ngx_pnalloc failed");
+    }
+
+    ngx_memcpy(loc->path.data, cstr, len + 1);
+    loc->path.len = len;
+    JS_FreeCString(ctx, cstr);
+
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+
+        opt = JS_GetPropertyStr(ctx, argv[1], "root");
+        if (!JS_IsUndefined(opt)) {
+            cstr = JS_ToCStringLen(ctx, &len, opt);
+            if (cstr) {
+                loc->root.data = ngx_pnalloc(pool, len + 1);
+                if (loc->root.data) {
+                    ngx_memcpy(loc->root.data, cstr, len + 1);
+                    loc->root.len = len;
+                }
+                JS_FreeCString(ctx, cstr);
+            }
+        }
+        JS_FreeValue(ctx, opt);
+
+        opt = JS_GetPropertyStr(ctx, argv[1], "return");
+        if (!JS_IsUndefined(opt)) {
+            cstr = JS_ToCStringLen(ctx, &len, opt);
+            if (cstr) {
+                loc->ret.data = ngx_pnalloc(pool, len + 1);
+                if (loc->ret.data) {
+                    ngx_memcpy(loc->ret.data, cstr, len + 1);
+                    loc->ret.len = len;
+                }
+                JS_FreeCString(ctx, cstr);
+            }
+        }
+        JS_FreeValue(ctx, opt);
+    }
+
+    return JS_DupValue(ctx, this_val);
+}
+
+
+static const JSCFunctionListEntry ngx_js_pending_server_proto_funcs[] = {
+    JS_CFUNC_DEF("addLocation", 1, ngx_js_pending_server_add_location),
+};
+
+
+/*
+ * Copy an ngx_str_t from a JS string into cf->pool.
+ * Returns NGX_ERROR on allocation failure, NGX_OK otherwise.
+ */
+static ngx_int_t
+ngx_js_str_from_js(JSContext *ctx, JSValueConst val, ngx_pool_t *pool,
+    ngx_str_t *out)
+{
+    const char  *cstr;
+    size_t       len;
+
+    cstr = JS_ToCStringLen(ctx, &len, val);
+    if (!cstr) {
+        return NGX_ERROR;
+    }
+
+    out->data = ngx_pnalloc(pool, len + 1);
+    if (out->data == NULL) {
+        JS_FreeCString(ctx, cstr);
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(out->data, cstr, len + 1);
+    out->len = len;
+
+    JS_FreeCString(ctx, cstr);
+    return NGX_OK;
+}
+
+
+/*
+ * Parse one location object {path, root?, return?} into a pending_loc.
+ */
+static ngx_int_t
+ngx_js_parse_loc_obj(JSContext *ctx, JSValueConst item,
+    ngx_pool_t *pool, ngx_js_pending_loc_t *loc)
+{
+    JSValue  v;
+
+    ngx_memzero(loc, sizeof(ngx_js_pending_loc_t));
+
+    v = JS_GetPropertyStr(ctx, item, "path");
+    if (ngx_js_str_from_js(ctx, v, pool, &loc->path) != NGX_OK) {
+        JS_FreeValue(ctx, v);
+        return NGX_ERROR;
+    }
+    JS_FreeValue(ctx, v);
+
+    v = JS_GetPropertyStr(ctx, item, "root");
+    if (!JS_IsUndefined(v)) {
+        ngx_js_str_from_js(ctx, v, pool, &loc->root);
+    }
+    JS_FreeValue(ctx, v);
+
+    v = JS_GetPropertyStr(ctx, item, "return");
+    if (!JS_IsUndefined(v)) {
+        ngx_js_str_from_js(ctx, v, pool, &loc->ret);
+    }
+    JS_FreeValue(ctx, v);
+
+    return NGX_OK;
+}
+
+
+/*
+ * nginx.http.addServer(opts)
+ *
+ *   opts.listen[]      — array of listen strings, e.g. ["127.0.0.1:8082"]
+ *   opts.serverNames[] — array of server_name strings
+ *   opts.locations[]   — optional inline location array
+ *
+ * Returns a PendingServer JS object that supports .addLocation() chaining.
+ * All pending servers are flushed via ngx_conf_parse() after JS_Eval returns.
+ */
+static JSValue
+ngx_js_http_add_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_pending_server_t   *ps;
+    ngx_js_pending_server_t  **slot;
+    JSValue                    obj, proto, arr_val, item, len_val;
+    ngx_str_t                 *ns;
+    ngx_js_pending_loc_t      *loc;
+    ngx_pool_t                *pool;
+    uint32_t                   k, arr_len;
+
+    if (ngx_js_current_pending == NULL || ngx_js_current_cf == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "addServer: not in js_init_http context");
+    }
+
+    pool = ngx_js_current_cf->pool;
+
+    ps = ngx_pcalloc(pool, sizeof(ngx_js_pending_server_t));
+    if (ps == NULL) {
+        return JS_ThrowInternalError(ctx, "addServer: ngx_pcalloc failed");
+    }
+
+    ps->cf = ngx_js_current_cf;
+
+    if (ngx_array_init(&ps->listen,    pool, 2, sizeof(ngx_str_t))
+        != NGX_OK
+        || ngx_array_init(&ps->names,  pool, 2, sizeof(ngx_str_t))
+        != NGX_OK
+        || ngx_array_init(&ps->locations, pool, 4,
+                          sizeof(ngx_js_pending_loc_t))
+        != NGX_OK)
+    {
+        return JS_ThrowInternalError(ctx,
+                                     "addServer: ngx_array_init failed");
+    }
+
+    if (argc >= 1 && JS_IsObject(argv[0])) {
+
+        /* opts.listen[] */
+        arr_val = JS_GetPropertyStr(ctx, argv[0], "listen");
+        if (JS_IsArray(ctx, arr_val)) {
+            len_val = JS_GetPropertyStr(ctx, arr_val, "length");
+            JS_ToUint32(ctx, &arr_len, len_val);
+            JS_FreeValue(ctx, len_val);
+
+            for (k = 0; k < arr_len; k++) {
+                item = JS_GetPropertyUint32(ctx, arr_val, k);
+                ns = ngx_array_push(&ps->listen);
+                if (ns && ngx_js_str_from_js(ctx, item, pool, ns) != NGX_OK) {
+                    JS_FreeValue(ctx, item);
+                    JS_FreeValue(ctx, arr_val);
+                    return JS_ThrowInternalError(ctx,
+                                                 "addServer: listen alloc");
+                }
+                JS_FreeValue(ctx, item);
+            }
+        }
+        JS_FreeValue(ctx, arr_val);
+
+        /* opts.serverNames[] */
+        arr_val = JS_GetPropertyStr(ctx, argv[0], "serverNames");
+        if (JS_IsArray(ctx, arr_val)) {
+            len_val = JS_GetPropertyStr(ctx, arr_val, "length");
+            JS_ToUint32(ctx, &arr_len, len_val);
+            JS_FreeValue(ctx, len_val);
+
+            for (k = 0; k < arr_len; k++) {
+                item = JS_GetPropertyUint32(ctx, arr_val, k);
+                ns = ngx_array_push(&ps->names);
+                if (ns && ngx_js_str_from_js(ctx, item, pool, ns) != NGX_OK) {
+                    JS_FreeValue(ctx, item);
+                    JS_FreeValue(ctx, arr_val);
+                    return JS_ThrowInternalError(ctx,
+                                                 "addServer: names alloc");
+                }
+                JS_FreeValue(ctx, item);
+            }
+        }
+        JS_FreeValue(ctx, arr_val);
+
+        /* opts.locations[] — inline location objects */
+        arr_val = JS_GetPropertyStr(ctx, argv[0], "locations");
+        if (JS_IsArray(ctx, arr_val)) {
+            len_val = JS_GetPropertyStr(ctx, arr_val, "length");
+            JS_ToUint32(ctx, &arr_len, len_val);
+            JS_FreeValue(ctx, len_val);
+
+            for (k = 0; k < arr_len; k++) {
+                item = JS_GetPropertyUint32(ctx, arr_val, k);
+
+                if (JS_IsObject(item)) {
+                    loc = ngx_array_push(&ps->locations);
+                    if (loc == NULL
+                        || ngx_js_parse_loc_obj(ctx, item, pool, loc)
+                           != NGX_OK)
+                    {
+                        JS_FreeValue(ctx, item);
+                        JS_FreeValue(ctx, arr_val);
+                        return JS_ThrowInternalError(ctx,
+                                              "addServer: location alloc");
+                    }
+                }
+
+                JS_FreeValue(ctx, item);
+            }
+        }
+        JS_FreeValue(ctx, arr_val);
+    }
+
+    /* Register with pending list */
+    slot = ngx_array_push(ngx_js_current_pending);
+    if (slot == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "addServer: pending push failed");
+    }
+    *slot = ps;
+
+    /* Build and return PendingServer JS object */
+    proto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_pending_server_proto_funcs,
+                               countof(ngx_js_pending_server_proto_funcs));
+
+    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_pending_server_class_id);
+    JS_FreeValue(ctx, proto);
+
+    if (JS_IsException(obj)) {
+        return JS_EXCEPTION;
+    }
+
+    JS_SetOpaque(obj, ps);
+    return obj;
+}
+
+
+/*
+ * Generate a server{} config text from one pending server and feed it
+ * to ngx_conf_parse() via a temporary file (same approach as config.write).
+ */
+static char *
+ngx_js_flush_pending_server(ngx_conf_t *cf, ngx_js_pending_server_t *ps)
+{
+    ngx_str_t             *listen_arr, *names_arr;
+    ngx_js_pending_loc_t  *locs;
+    ngx_uint_t             i;
+    u_char                 buf[16384];
+    u_char                *p, *end;
+    char                   tmppath[] = "/tmp/ngx_js_srv_XXXXXX";
+    ngx_str_t              tmpstr;
+    int                    fd;
+    ssize_t                n;
+    char                  *rv;
+
+    p   = buf;
+    end = buf + sizeof(buf);
+
+    listen_arr = ps->listen.elts;
+    names_arr  = ps->names.elts;
+    locs       = ps->locations.elts;
+
+    p = ngx_slprintf(p, end, "server {\n");
+
+    for (i = 0; i < ps->listen.nelts; i++) {
+        p = ngx_slprintf(p, end, "    listen %V;\n", &listen_arr[i]);
+    }
+
+    if (ps->names.nelts > 0) {
+        p = ngx_slprintf(p, end, "    server_name");
+        for (i = 0; i < ps->names.nelts; i++) {
+            p = ngx_slprintf(p, end, " %V", &names_arr[i]);
+        }
+        p = ngx_slprintf(p, end, ";\n");
+    }
+
+    for (i = 0; i < ps->locations.nelts; i++) {
+        p = ngx_slprintf(p, end, "    location %V {\n", &locs[i].path);
+        if (locs[i].root.data) {
+            p = ngx_slprintf(p, end, "        root %V;\n", &locs[i].root);
+        }
+        if (locs[i].ret.data) {
+            p = ngx_slprintf(p, end, "        return %V;\n", &locs[i].ret);
+        }
+        p = ngx_slprintf(p, end, "    }\n");
+    }
+
+    p = ngx_slprintf(p, end, "}\n");
+
+    if (p >= end) {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+                      "js: addServer: config text overflow (>%uz bytes)",
+                      sizeof(buf));
+        return NGX_CONF_ERROR;
+    }
+
+    fd = mkstemp(tmppath);
+    if (fd < 0) {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, ngx_errno,
+                      "js: addServer: mkstemp() failed");
+        return NGX_CONF_ERROR;
+    }
+
+    n = write(fd, buf, (size_t)(p - buf));
+    close(fd);
+
+    if (n < 0 || (size_t) n != (size_t)(p - buf)) {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, ngx_errno,
+                      "js: addServer: write() failed");
+        unlink(tmppath);
+        return NGX_CONF_ERROR;
+    }
+
+    tmpstr.data = (u_char *) tmppath;
+    tmpstr.len  = ngx_strlen(tmppath);
+
+    rv = (char *) ngx_conf_parse(cf, &tmpstr);
+    unlink(tmppath);
+    return rv;
+}
+
+
+static char *
+ngx_js_apply_pending_servers(ngx_conf_t *cf, ngx_array_t *pending)
+{
+    ngx_js_pending_server_t  **slot;
+    ngx_uint_t                 i;
+    char                      *rv;
+
+    slot = pending->elts;
+
+    for (i = 0; i < pending->nelts; i++) {
+        rv = ngx_js_flush_pending_server(cf, slot[i]);
+        if (rv != NGX_CONF_OK) {
+            return rv;
+        }
+    }
+
+    return NGX_CONF_OK;
+}
+
+
 /*
  * Build a read-only JS array of plain objects representing the nginx
  * virtual servers that have been parsed so far in the http{} block.
@@ -720,13 +1168,14 @@ ngx_js_init_http_servers(JSContext *ctx, ngx_conf_t *cf)
 static char *
 ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_str_t   *value, path;
-    u_char      *src;
-    size_t       src_len;
-    JSRuntime   *rt;
-    JSContext   *ctx;
-    JSValue      global, config_obj, nginx_obj, http_obj, result;
-    char        *rv;
+    ngx_str_t    *value, path;
+    u_char       *src;
+    size_t        src_len;
+    JSRuntime    *rt;
+    JSContext    *ctx;
+    JSValue       global, config_obj, nginx_obj, http_obj, result;
+    ngx_array_t   pending;
+    char         *rv;
 
     value = cf->args->elts;
     path  = value[1];
@@ -740,10 +1189,24 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /* Lazy class ID allocation — safe: single-threaded config parse */
+    if (ngx_js_pending_server_class_id == 0) {
+        JS_NewClassID(&ngx_js_pending_server_class_id);
+    }
+
     rt = JS_NewRuntime();
     if (rt == NULL) {
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
                       "js: JS_NewRuntime() failed");
+        return NGX_CONF_ERROR;
+    }
+
+    if (JS_NewClass(rt, ngx_js_pending_server_class_id,
+                    &ngx_js_pending_server_class) < 0)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+                      "js: JS_NewClass(PendingServer) failed");
+        JS_FreeRuntime(rt);
         return NGX_CONF_ERROR;
     }
 
@@ -756,10 +1219,22 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     /*
-     * Store cf so that config.write() can call ngx_conf_parse().
-     * This is the same pattern used by js_preprocess.
+     * Store cf so that config.write() and addServer() can call
+     * ngx_conf_parse().  Same pattern as js_preprocess.
      */
     JS_SetContextOpaque(ctx, cf);
+
+    /* Initialise the pending-server list in cf->pool */
+    if (ngx_array_init(&pending, cf->pool, 4,
+                       sizeof(ngx_js_pending_server_t *)) != NGX_OK)
+    {
+        JS_FreeContext(ctx);
+        JS_FreeRuntime(rt);
+        return NGX_CONF_ERROR;
+    }
+
+    ngx_js_current_pending = &pending;
+    ngx_js_current_cf      = cf;
 
     global = JS_GetGlobalObject(ctx);
 
@@ -769,12 +1244,15 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                       JS_NewCFunction(ctx, ngx_js_config_write, "write", 1));
     JS_SetPropertyStr(ctx, global, "config", config_obj);
 
-    /* Install nginx.http.servers[] (read-only parse-time view) */
+    /* Install nginx.http.servers[] and nginx.http.addServer() */
     nginx_obj = JS_NewObject(ctx);
     http_obj  = JS_NewObject(ctx);
 
     JS_SetPropertyStr(ctx, http_obj, "servers",
                       ngx_js_init_http_servers(ctx, cf));
+    JS_SetPropertyStr(ctx, http_obj, "addServer",
+                      JS_NewCFunction(ctx, ngx_js_http_add_server,
+                                      "addServer", 1));
 
     JS_SetPropertyStr(ctx, nginx_obj, "http", http_obj);
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
@@ -794,6 +1272,14 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     JS_FreeValue(ctx, result);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
+
+    /* Flush pending servers added via addServer() */
+    if (rv == NGX_CONF_OK) {
+        rv = ngx_js_apply_pending_servers(cf, &pending);
+    }
+
+    ngx_js_current_pending = NULL;
+    ngx_js_current_cf      = NULL;
 
     return rv;
 }
