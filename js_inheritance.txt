@@ -1,0 +1,1368 @@
+
+ ▐▛███▜▌   Claude Code v2.1.68
+▝▜█████▛▘  Sonnet 4.6 · API Usage Billing
+  ▘▘ ▝▝    ~/fixes.github/tmp/nginx
+
+❯ Let's try inherit  javascript interpreter from nginx master worker to     
+  nginx workers                                                             
+
+● Searched for 5 patterns, read 1 file (ctrl+o to expand)
+
+● I can see the JS module lives in nginx/src/js/. Let me read those files to
+  understand the current architecture.
+
+● Read 2 files (ctrl+o to expand)
+
+● Now let me look at the header and the test files to get the full picture:
+
+● Searched for 3 patterns, read 1 file (ctrl+o to expand)
+
+● Now I have a complete picture. Here's the situation:
+
+  - Master (init_conf): creates JSRuntime, installs COM, evals scripts (config
+  mutations), then discards JS state
+  - Workers (init_process): each creates a new independent JSRuntime and
+  re-reads + re-parses all source files from disk
+
+  The goal is to have workers inherit pre-compiled bytecode from the master
+  instead of re-parsing source files. The mechanism: use QuickJS's
+  JS_Eval(COMPILE_ONLY) + JS_WriteObject in master to serialize bytecode into
+  cycle->pool, then workers use JS_ReadObject + JS_EvalFunction on the
+  pool-inherited buffers.
+
+  This is safe because cycle->pool memory is inherited via fork()
+  (copy-on-write), and the bytecode buffers are valid read-only data from the
+  worker's perspective.
+
+● Update(nginx/src/js/ngx_js.h)
+  ⎿  Added 13 lines
+      12                                                                 
+      13                                                                 
+      14  /*                                                             
+      15 + * Pre-compiled QuickJS bytecode for one js_include file.      
+      16 + * Serialised in master's init_conf via JS_WriteObject(), then 
+         + copied                                                        
+      17 + * into cycle->pool so workers can deserialise it after fork() 
+         + without                                                       
+      18 + * re-reading or re-parsing the source file.                   
+      19 + */                                                            
+      20 +typedef struct {                                               
+      21 +    uint8_t  *data;                                            
+      22 +    size_t    size;                                            
+      23 +} ngx_js_bytecode_t;                                           
+      24 +                                                               
+      25 +                                                               
+      26 +/*                                                             
+      27   * Per-cycle configuration owned by ngx_js_module              
+          (NGX_CORE_MODULE).                                             
+      28   * Allocated in cycle->pool via create_conf; populated by      
+          js_include                                                     
+      29   * directives during ngx_conf_parse(), executed by             
+          init_conf().                                                   
+      30   */                                                            
+      31  typedef struct {                                               
+      32      ngx_array_t   includes;    /* ngx_str_t: resolved paths    
+          from js_include */                                             
+      33 +    ngx_array_t   bytecodes;   /* ngx_js_bytecode_t:           
+         +pool-owned bytecode    */                                      
+      34      JSRuntime    *rt;          /* master-process QuickJS       
+          runtime             */                                         
+      35      JSContext    *ctx;         /* master-process QuickJS       
+          context             */                                         
+      36      void         *worker;     /* ngx_js_worker_t* after fork   
+          (in workers)   */                                              
+
+● Now update create_conf to initialise the new array:
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Added 6 lines
+       91          return NULL;                                          
+       92      }                                                         
+       93                                                                
+       94 +    if (ngx_array_init(&jcf->bytecodes, cycle->pool, 4,       
+       95 +                       sizeof(ngx_js_bytecode_t)) != NGX_OK)  
+       96 +    {                                                         
+       97 +        return NULL;                                          
+       98 +    }                                                         
+       99 +                                                              
+      100      /* rt, ctx, worker are NULL after pcalloc */              
+      101                                                                
+      102      return jcf;                                               
+
+● Now update init_conf to compile bytecode after executing each script:
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Added 9 lines, removed 6 lines
+      140  static char *                                                 
+      141  ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)              
+      142  {                                                             
+      143 -    ngx_js_conf_t  *jcf = conf;                               
+      144 -    ngx_uint_t      i;                                        
+      145 -    ngx_str_t      *path;                                     
+      146 -    u_char         *src;                                      
+      147 -    size_t          src_len;                                  
+      148 -    JSValue         result;                                   
+      143 +    ngx_js_conf_t      *jcf = conf;                           
+      144 +    ngx_uint_t          i;                                    
+      145 +    ngx_str_t          *path;                                 
+      146 +    u_char             *src;                                  
+      147 +    size_t              src_len;                              
+      148 +    JSValue             result, compiled;                     
+      149 +    uint8_t            *bc_buf;                               
+      150 +    size_t              bc_size;                              
+      151 +    ngx_js_bytecode_t  *bc;                                   
+      152                                                                
+      153      if (jcf->includes.nelts == 0) {                           
+      154          return NGX_CONF_OK;    /* nothing to do — pure static 
+            config */                                                    
+
+● Now add bytecode compilation inside the loop, right after each script is
+  evaluated:
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Added 43 lines
+      208          }                                                     
+      209                                                                
+      210          JS_FreeValue(jcf->ctx, result);                       
+      211 +                                                              
+      212 +        /*                                                    
+      213 +         * Compile the same source to bytecode so workers can 
+          + load it                                                      
+      214 +         * via JS_ReadObject() + JS_EvalFunction() after      
+          +fork() without                                                
+      215 +         * re-reading or re-parsing the source file.          
+      216 +         */                                                   
+      217 +        compiled = JS_Eval(jcf->ctx,                          
+      218 +                           (const char *) src,                
+      219 +                           src_len,                           
+      220 +                           (const char *) path[i].data,       
+      221 +                           JS_EVAL_TYPE_GLOBAL |              
+          +JS_EVAL_FLAG_COMPILE_ONLY);                                   
+      222 +                                                              
+      223 +        if (JS_IsException(compiled)) {                       
+      224 +            ngx_js_log_exception(jcf->ctx, cycle->log);       
+      225 +            goto failed_ctx;                                  
+      226 +        }                                                     
+      227 +                                                              
+      228 +        bc_buf = JS_WriteObject(jcf->ctx, &bc_size, compiled, 
+      229 +                                JS_WRITE_OBJ_BYTECODE);       
+      230 +        JS_FreeValue(jcf->ctx, compiled);                     
+      231 +                                                              
+      232 +        if (bc_buf == NULL) {                                 
+      233 +            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,       
+      234 +                          "js: JS_WriteObject() failed for    
+          +\"%V\"", &path[i]);                                           
+      235 +            goto failed_ctx;                                  
+      236 +        }                                                     
+      237 +                                                              
+      238 +        bc = ngx_array_push(&jcf->bytecodes);                 
+      239 +        if (bc == NULL) {                                     
+      240 +            js_free(jcf->ctx, bc_buf);                        
+      241 +            goto failed_ctx;                                  
+      242 +        }                                                     
+      243 +                                                              
+      244 +        bc->data = ngx_palloc(cycle->pool, bc_size);          
+      245 +        if (bc->data == NULL) {                               
+      246 +            js_free(jcf->ctx, bc_buf);                        
+      247 +            goto failed_ctx;                                  
+      248 +        }                                                     
+      249 +                                                              
+      250 +        ngx_memcpy(bc->data, bc_buf, bc_size);                
+      251 +        bc->size = bc_size;                                   
+      252 +                                                              
+      253 +        js_free(jcf->ctx, bc_buf);                            
+      254      }                                                         
+      255                                                                
+      256      /*                                                        
+
+● Now replace init_process to use bytecodes instead of re-reading source files:
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Added 21 lines, removed 21 lines
+      277  /*                                                            
+      278   * ngx_js_init_process — called in each worker after fork().  
+      279   *                                                            
+      280 - * Workers get their own independent JSRuntime.  They re-     
+          -evaluate                                                      
+      281 - * all js_include scripts so that any globally-registered     
+          -handler                                                       
+      282 - * functions (Phase 4) are available.  The COM installed here 
+          - points                                                       
+      283 - * to the same cycle->conf_ctx (read-only in Phase 1).        
+      280 + * Workers get their own independent JSRuntime.  Instead of   
+          +re-reading                                                    
+      281 + * and re-parsing source files, they load the pre-compiled    
+          +bytecode                                                      
+      282 + * that the master serialised into cycle->pool during         
+          +init_conf().                                                  
+      283 + * The pool memory is inherited via fork() (copy-on-write),   
+          +so no I/O                                                     
+      284 + * or JS parsing is needed at worker start.                   
+      285   */                                                           
+      286  static ngx_int_t                                              
+      287  ngx_js_init_process(ngx_cycle_t *cycle)                       
+      288  {                                                             
+      289 -    ngx_js_conf_t   *jcf;                                     
+      290 -    ngx_js_worker_t *w;                                       
+      291 -    ngx_uint_t       i;                                       
+      292 -    ngx_str_t       *path;                                    
+      293 -    u_char          *src;                                     
+      294 -    size_t           src_len;                                 
+      295 -    JSValue          result;                                  
+      289 +    ngx_js_conf_t      *jcf;                                  
+      290 +    ngx_js_worker_t    *w;                                    
+      291 +    ngx_js_bytecode_t  *bc;                                   
+      292 +    ngx_uint_t          i;                                    
+      293 +    JSValue             fn, result;                           
+      294                                                                
+      295      jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx,     
+           ngx_js_module);                                               
+      296                                                                
+      297 -    if (jcf->includes.nelts == 0) {                           
+      297 +    if (jcf->bytecodes.nelts == 0) {                          
+      298          return NGX_OK;                                        
+      299      }                                                         
+      300                                                                
+     ...
+      329          return NGX_ERROR;                                     
+      330      }                                                         
+      331                                                                
+      332 -    path = jcf->includes.elts;                                
+      332 +    /* Load pre-compiled bytecodes inherited from master via  
+          +cycle->pool */                                                
+      333                                                                
+      334 -    for (i = 0; i < jcf->includes.nelts; i++) {               
+      335 -        src = ngx_js_read_file(cycle, &path[i], &src_len);    
+      336 -        if (src == NULL) {                                    
+      334 +    bc = jcf->bytecodes.elts;                                 
+      335 +                                                              
+      336 +    for (i = 0; i < jcf->bytecodes.nelts; i++) {              
+      337 +                                                              
+      338 +        fn = JS_ReadObject(w->ctx, bc[i].data, bc[i].size,    
+      339 +                           JS_READ_OBJ_BYTECODE);             
+      340 +        if (JS_IsException(fn)) {                             
+      341 +            ngx_js_log_exception(w->ctx, cycle->log);         
+      342              JS_FreeContext(w->ctx);                           
+      343              JS_FreeRuntime(w->rt);                            
+      344              return NGX_ERROR;                                 
+      345          }                                                     
+      346                                                                
+      347 -        result = JS_Eval(w->ctx,                              
+      348 -                         (const char *) src,                  
+      349 -                         src_len,                             
+      350 -                         (const char *) path[i].data,         
+      351 -                         JS_EVAL_TYPE_GLOBAL);                
+      347 +        result = JS_EvalFunction(w->ctx, fn);  /* fn is       
+          +consumed */                                                   
+      348                                                                
+      349          if (JS_IsException(result)) {                         
+      350              ngx_js_log_exception(w->ctx, cycle->log);         
+
+● Now verify the final file looks correct:
+
+● Read 1 file (ctrl+o to expand)
+
+● The file looks good. Let me also update the comment at the top of the file to
+  reflect the new lifecycle:
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Added 4 lines, removed 2 lines
+       7   * Lifecycle:                                                  
+       8   *   create_conf  — allocate ngx_js_conf_t in cycle->pool      
+       9   *   [ngx_conf_parse runs; js_include directives populate      
+          jcf->includes]                                                 
+      10 - *   init_conf    — create JSRuntime/JSContext, install COM,   
+         -eval scripts                                                   
+      11 - *   init_process — each worker creates its own independent    
+         -runtime                                                        
+      10 + *   init_conf    — create JSRuntime/JSContext, install COM,   
+         +eval scripts,                                                  
+      11 + *                  compile each script to bytecode stored in  
+         +cycle->pool                                                    
+      12 + *   init_process — each worker creates its own runtime, loads 
+         + pre-compiled                                                  
+      13 + *                  bytecodes inherited from master via        
+         +fork()/cycle->pool                                             
+      14   *   exit_process — free worker runtime                        
+      15   *   exit_master  — free master runtime                        
+      16   */                                                            
+
+● Let me also check if there's a test file for the answer/expected output that
+  should be updated:
+
+● Read 1 file (ctrl+o to expand)
+
+● That's just a session log. The implementation is complete. Let me do a quick
+  sanity check to make sure js_free is declared in the QuickJS headers:
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Good. Everything checks out. Here's a summary of what was changed and why:
+
+  ---
+  What changed
+
+  nginx/src/js/ngx_js.h
+
+  Added ngx_js_bytecode_t struct and a bytecodes array field to ngx_js_conf_t:
+  typedef struct {
+      uint8_t  *data;
+      size_t    size;
+  } ngx_js_bytecode_t;
+
+  nginx/src/js/ngx_js_module.c
+
+  create_conf — initialises the new bytecodes array alongside includes.
+
+  init_conf (master) — after executing each script for config mutations, runs a
+  second pass with JS_EVAL_FLAG_COMPILE_ONLY to produce a compiled function
+  object, serialises it to a byte buffer via JS_WriteObject, copies the buffer
+  into cycle->pool, and frees the QuickJS-owned copy. One ngx_js_bytecode_t
+  entry is pushed per include file.
+
+  init_process (workers) — no longer reads source files or parses JS. Instead it
+   iterates over jcf->bytecodes, deserialises each with
+  JS_ReadObject(JS_READ_OBJ_BYTECODE), and executes it with JS_EvalFunction. The
+   bytecode buffers live in cycle->pool which is inherited by workers via fork()
+   (copy-on-write) — no I/O, no parsing.
+
+  Why this is the right approach
+
+  Workers cannot simply reuse the master's JSRuntime pointer after fork() —
+  QuickJS runtimes own heap state (GC roots, class registries, atom tables) that
+   must be private per-process. The bytecode path is the canonical way QuickJS
+  itself handles pre-compilation (qjsc): parse once, execute N times. Each
+  worker gets a fresh runtime with its own GC, but skips the parse step
+  entirely.
+
+✻ Cogitated for 3m 37s
+
+❯ I need inherit runtime from master as well 
+
+● Let me first understand how the worker runtime is accessed by other parts of
+  the module before designing the approach:
+
+● Read 2 files (ctrl+o to expand)
+
+● Let me check where ngx_js_request_register_class is currently called:
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now I have the full picture. ngx_js_http_register_classes (which includes
+  ngx_js_request_register_class) is called from ngx_js_http_com_install during
+  init_conf. So the master's runtime has every class registered and all scripts 
+  evaluated — including Phase 4 handler functions.
+
+  After fork(), each worker process already has a private copy-on-write copy of
+  the master's JSRuntime and JSContext. Workers can just point at them directly
+  — zero script evaluation, zero bytecode, zero I/O.
+
+  The bytecode approach we just added is now superseded. Let me replace all of
+  it with direct inheritance:
+
+● Update(nginx/src/js/ngx_js.h)
+  ⎿  Removed 13 lines
+      12                                                                 
+      13                                                                 
+      14  /*                                                             
+      15 - * Pre-compiled QuickJS bytecode for one js_include file.      
+      16 - * Serialised in master's init_conf via JS_WriteObject(), then 
+         - copied                                                        
+      17 - * into cycle->pool so workers can deserialise it after fork() 
+         - without                                                       
+      18 - * re-reading or re-parsing the source file.                   
+      19 - */                                                            
+      20 -typedef struct {                                               
+      21 -    uint8_t  *data;                                            
+      22 -    size_t    size;                                            
+      23 -} ngx_js_bytecode_t;                                           
+      24 -                                                               
+      25 -                                                               
+      26 -/*                                                             
+      15   * Per-cycle configuration owned by ngx_js_module              
+          (NGX_CORE_MODULE).                                             
+      16   * Allocated in cycle->pool via create_conf; populated by      
+          js_include                                                     
+      17   * directives during ngx_conf_parse(), executed by             
+          init_conf().                                                   
+      18   */                                                            
+      19  typedef struct {                                               
+      20      ngx_array_t   includes;    /* ngx_str_t: resolved paths    
+          from js_include */                                             
+      21 -    ngx_array_t   bytecodes;   /* ngx_js_bytecode_t:           
+         -pool-owned bytecode    */                                      
+      21      JSRuntime    *rt;          /* master-process QuickJS       
+          runtime             */                                         
+      22      JSContext    *ctx;         /* master-process QuickJS       
+          context             */                                         
+      23      void         *worker;     /* ngx_js_worker_t* after fork   
+          (in workers)   */                                              
+
+● Now rewrite ngx_js_module.c — remove the bytecode init from create_conf, strip
+   the bytecode compilation from init_conf, and replace init_process with direct
+   inheritance:
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Removed 6 lines
+       93          return NULL;                                          
+       94      }                                                         
+       95                                                                
+       96 -    if (ngx_array_init(&jcf->bytecodes, cycle->pool, 4,       
+       97 -                       sizeof(ngx_js_bytecode_t)) != NGX_OK)  
+       98 -    {                                                         
+       99 -        return NULL;                                          
+      100 -    }                                                         
+      101 -                                                              
+       96      /* rt, ctx, worker are NULL after pcalloc */              
+       97                                                                
+       98      return jcf;                                               
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Added 6 lines, removed 9 lines
+      136  static char *                                                 
+      137  ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)              
+      138  {                                                             
+      139 -    ngx_js_conf_t      *jcf = conf;                           
+      140 -    ngx_uint_t          i;                                    
+      141 -    ngx_str_t          *path;                                 
+      142 -    u_char             *src;                                  
+      143 -    size_t              src_len;                              
+      144 -    JSValue             result, compiled;                     
+      145 -    uint8_t            *bc_buf;                               
+      146 -    size_t              bc_size;                              
+      147 -    ngx_js_bytecode_t  *bc;                                   
+      139 +    ngx_js_conf_t  *jcf = conf;                               
+      140 +    ngx_uint_t      i;                                        
+      141 +    ngx_str_t      *path;                                     
+      142 +    u_char         *src;                                      
+      143 +    size_t          src_len;                                  
+      144 +    JSValue         result;                                   
+      145                                                                
+      146      if (jcf->includes.nelts == 0) {                           
+      147          return NGX_CONF_OK;    /* nothing to do — pure static 
+            config */                                                    
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Removed 43 lines
+      201          }                                                     
+      202                                                                
+      203          JS_FreeValue(jcf->ctx, result);                       
+      204 -                                                              
+      205 -        /*                                                    
+      206 -         * Compile the same source to bytecode so workers can 
+          - load it                                                      
+      207 -         * via JS_ReadObject() + JS_EvalFunction() after      
+          -fork() without                                                
+      208 -         * re-reading or re-parsing the source file.          
+      209 -         */                                                   
+      210 -        compiled = JS_Eval(jcf->ctx,                          
+      211 -                           (const char *) src,                
+      212 -                           src_len,                           
+      213 -                           (const char *) path[i].data,       
+      214 -                           JS_EVAL_TYPE_GLOBAL |              
+          -JS_EVAL_FLAG_COMPILE_ONLY);                                   
+      215 -                                                              
+      216 -        if (JS_IsException(compiled)) {                       
+      217 -            ngx_js_log_exception(jcf->ctx, cycle->log);       
+      218 -            goto failed_ctx;                                  
+      219 -        }                                                     
+      220 -                                                              
+      221 -        bc_buf = JS_WriteObject(jcf->ctx, &bc_size, compiled, 
+      222 -                                JS_WRITE_OBJ_BYTECODE);       
+      223 -        JS_FreeValue(jcf->ctx, compiled);                     
+      224 -                                                              
+      225 -        if (bc_buf == NULL) {                                 
+      226 -            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,       
+      227 -                          "js: JS_WriteObject() failed for    
+          -\"%V\"", &path[i]);                                           
+      228 -            goto failed_ctx;                                  
+      229 -        }                                                     
+      230 -                                                              
+      231 -        bc = ngx_array_push(&jcf->bytecodes);                 
+      232 -        if (bc == NULL) {                                     
+      233 -            js_free(jcf->ctx, bc_buf);                        
+      234 -            goto failed_ctx;                                  
+      235 -        }                                                     
+      236 -                                                              
+      237 -        bc->data = ngx_palloc(cycle->pool, bc_size);          
+      238 -        if (bc->data == NULL) {                               
+      239 -            js_free(jcf->ctx, bc_buf);                        
+      240 -            goto failed_ctx;                                  
+      241 -        }                                                     
+      242 -                                                              
+      243 -        ngx_memcpy(bc->data, bc_buf, bc_size);                
+      244 -        bc->size = bc_size;                                   
+      245 -                                                              
+      246 -        js_free(jcf->ctx, bc_buf);                            
+      204      }                                                         
+      205                                                                
+      206      /*                                                        
+
+● Now replace init_process with the inheritance approach:
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Added 17 lines, removed 64 lines
+      227  /*                                                            
+      228   * ngx_js_init_process — called in each worker after fork().  
+      229   *                                                            
+      230 - * Workers get their own independent JSRuntime.  Instead of   
+          -re-reading                                                    
+      231 - * and re-parsing source files, they load the pre-compiled    
+          -bytecode                                                      
+      232 - * that the master serialised into cycle->pool during         
+          -init_conf().                                                  
+      233 - * The pool memory is inherited via fork() (copy-on-write),   
+          -so no I/O                                                     
+      234 - * or JS parsing is needed at worker start.                   
+      230 + * After fork() every worker has a private copy-on-write      
+          +image of the                                                  
+      231 + * master's address space, including its JSRuntime and        
+          +JSContext.  Those                                             
+      232 + * objects already contain the fully-evaluated JS environment 
+          + (all                                                         
+      233 + * js_include scripts executed, COM installed, handler        
+          +functions                                                     
+      234 + * registered in the global scope, all QuickJS classes        
+          +registered).                                                  
+      235 + *                                                            
+      236 + * We simply point the worker's runtime handle at jcf->rt /   
+          +jcf->ctx.                                                     
+      237 + * No new runtime, no re-evaluation, no file I/O.             
+      238 + *                                                            
+      239 + * exit_process() frees the worker's private copy;            
+          +exit_master() frees                                           
+      240 + * the master's original — no double-free, no shared mutable  
+          +state.                                                        
+      241   */                                                           
+      242  static ngx_int_t                                              
+      243  ngx_js_init_process(ngx_cycle_t *cycle)                       
+      244  {                                                             
+      245 -    ngx_js_conf_t      *jcf;                                  
+      246 -    ngx_js_worker_t    *w;                                    
+      247 -    ngx_js_bytecode_t  *bc;                                   
+      248 -    ngx_uint_t          i;                                    
+      249 -    JSValue             fn, result;                           
+      245 +    ngx_js_conf_t    *jcf;                                    
+      246 +    ngx_js_worker_t  *w;                                      
+      247                                                                
+      248      jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx,     
+           ngx_js_module);                                               
+      249                                                                
+      250 -    if (jcf->bytecodes.nelts == 0) {                          
+      251 -        return NGX_OK;                                        
+      250 +    if (jcf->rt == NULL) {                                    
+      251 +        return NGX_OK;    /* no js_include directives */      
+      252      }                                                         
+      253                                                                
+      254      w = ngx_pcalloc(cycle->pool, sizeof(ngx_js_worker_t));    
+     ...
+      253          return NGX_ERROR;                                     
+      254      }                                                         
+      255                                                                
+      256 -    w->rt = JS_NewRuntime();                                  
+      257 -    if (w->rt == NULL) {                                      
+      258 -        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,           
+      259 -                      "js: worker JS_NewRuntime() failed");   
+      260 -        return NGX_ERROR;                                     
+      261 -    }                                                         
+      256 +    w->rt  = jcf->rt;                                         
+      257 +    w->ctx = jcf->ctx;                                        
+      258                                                                
+      259 -    JS_SetMemoryLimit(w->rt, 32 * 1024 * 1024);               
+      260 -                                                              
+      261 -    w->ctx = JS_NewContext(w->rt);                            
+      262 -    if (w->ctx == NULL) {                                     
+      263 -        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,           
+      264 -                      "js: worker JS_NewContext() failed");   
+      265 -        JS_FreeRuntime(w->rt);                                
+      266 -        return NGX_ERROR;                                     
+      267 -    }                                                         
+      268 -                                                              
+      269 -    if (ngx_js_com_init(w->ctx, cycle) != NGX_OK) {           
+      270 -        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,           
+      271 -                      "js: worker COM initialisation          
+          -failed");                                                     
+      272 -        JS_FreeContext(w->ctx);                               
+      273 -        JS_FreeRuntime(w->rt);                                
+      274 -        return NGX_ERROR;                                     
+      275 -    }                                                         
+      276 -                                                              
+      277 -    /* Load pre-compiled bytecodes inherited from master via  
+          -cycle->pool */                                                
+      278 -                                                              
+      279 -    bc = jcf->bytecodes.elts;                                 
+      280 -                                                              
+      281 -    for (i = 0; i < jcf->bytecodes.nelts; i++) {              
+      282 -                                                              
+      283 -        fn = JS_ReadObject(w->ctx, bc[i].data, bc[i].size,    
+      284 -                           JS_READ_OBJ_BYTECODE);             
+      285 -        if (JS_IsException(fn)) {                             
+      286 -            ngx_js_log_exception(w->ctx, cycle->log);         
+      287 -            JS_FreeContext(w->ctx);                           
+      288 -            JS_FreeRuntime(w->rt);                            
+      289 -            return NGX_ERROR;                                 
+      290 -        }                                                     
+      291 -                                                              
+      292 -        result = JS_EvalFunction(w->ctx, fn);  /* fn is       
+          -consumed */                                                   
+      293 -                                                              
+      294 -        if (JS_IsException(result)) {                         
+      295 -            ngx_js_log_exception(w->ctx, cycle->log);         
+      296 -            JS_FreeValue(w->ctx, result);                     
+      297 -            JS_FreeContext(w->ctx);                           
+      298 -            JS_FreeRuntime(w->rt);                            
+      299 -            return NGX_ERROR;                                 
+      300 -        }                                                     
+      301 -                                                              
+      302 -        JS_FreeValue(w->ctx, result);                         
+      303 -    }                                                         
+      304 -                                                              
+      259      jcf->worker = w;                                          
+      260                                                                
+      261      return NGX_OK;                                            
+
+● Update the lifecycle comment at the top of the file:
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Added 5 lines, removed 6 lines
+       7   * Lifecycle:                                                  
+       8   *   create_conf  — allocate ngx_js_conf_t in cycle->pool      
+       9   *   [ngx_conf_parse runs; js_include directives populate      
+          jcf->includes]                                                 
+      10 - *   init_conf    — create JSRuntime/JSContext, install COM,   
+         -eval scripts,                                                  
+      11 - *                  compile each script to bytecode stored in  
+         -cycle->pool                                                    
+      12 - *   init_process — each worker creates its own runtime, loads 
+         - pre-compiled                                                  
+      13 - *                  bytecodes inherited from master via        
+         -fork()/cycle->pool                                             
+      14 - *   exit_process — free worker runtime                        
+      15 - *   exit_master  — free master runtime                        
+      10 + *   init_conf    — create JSRuntime/JSContext, install COM,   
+         +eval scripts                                                   
+      11 + *   init_process — each worker inherits jcf->rt/ctx directly  
+         +(fork COW);                                                    
+      12 + *                  no new runtime, no re-evaluation, no I/O   
+      13 + *   exit_process — free worker's private copy of the runtime  
+      14 + *   exit_master  — free master's original runtime             
+      15   */                                                            
+      16                                                                 
+      17  #include <ngx_config.h>                                        
+
+● Let me do a final review of the complete file:
+
+● Read 1 file (ctrl+o to expand)
+
+● Also fix the stale comment in init_conf that says "Worker processes create
+  their own runtimes in init_process()":
+
+● Update(nginx/src/js/ngx_js_module.c)
+  ⎿  Added 3 lines, removed 4 lines
+      203      }                                                         
+      204                                                                
+      205      /*                                                        
+      206 -     * The master runtime stays alive until exit_master()     
+          - so that                                                      
+      207 -     * COM objects remain valid during the lifetime of the    
+          -master                                                        
+      208 -     * process.  Worker processes create their own runtimes   
+          -in                                                            
+      209 -     * init_process() and must not use this one.              
+      206 +     * The master runtime stays alive until exit_master()     
+          +.  Worker                                                     
+      207 +     * processes inherit it via fork() (copy-on-write) and    
+          +use their                                                     
+      208 +     * private copies; init_process() just wires w->rt /      
+          +w->ctx to it.                                                 
+      209       */                                                       
+      210                                                                
+      211      return NGX_CONF_OK;                                       
+
+● Clean and done. Here's what changed and why it works:
+
+  ---
+  What changed
+
+  ngx_js.h
+
+  Removed ngx_js_bytecode_t and the bytecodes array field — no longer needed.
+
+  ngx_js_module.c
+
+  init_conf — unchanged in substance; the master still creates the runtime,
+  installs COM (which registers all classes including NginxRequest via
+  ngx_js_http_register_classes), and evaluates all scripts. The full JS
+  environment lives in jcf->rt / jcf->ctx.
+
+  init_process — reduced to 4 lines of actual logic:
+  w->rt  = jcf->rt;
+  w->ctx = jcf->ctx;
+  No JS_NewRuntime, no JS_NewContext, no ngx_js_com_init, no script evaluation,
+  no file I/O.
+
+  exit_process — unchanged; frees the worker's private copy of the
+  runtime/context.
+
+  exit_master — unchanged; frees the master's original. No conflict because
+  these are separate processes after fork().
+
+  ---
+  Why this is safe
+
+  After fork(), each worker has its own private copy-on-write image of the
+  master's address space. jcf->rt and jcf->ctx are usable QuickJS objects in
+  each worker process because:
+
+  1. QuickJS is single-threaded — no internal mutexes that could be held at fork
+   time
+  2. All classes already registered — ngx_js_http_register_classes ran during
+  init_conf, including NginxRequest
+  3. All handler functions already in global scope — JS_Eval ran before fork
+  4. COM pointers are valid — cycle and its pool data are in the inherited
+  address space
+  5. No shared mutable state — each process modifies only its own copy (COW),
+  and exit_process/exit_master each free their own copy independently
+
+✻ Baked for 3m 47s
+
+❯ I need update tests 
+
+● Read 4 files (ctrl+o to expand)
+
+● The only stale content is in js_com_phase4.t — the init.js comment claims the
+  script re-runs in each worker, which is no longer true. The other three tests
+  run entirely in the master process (log + HTTP) and need no changes.
+
+● Update(t/js_com_phase4.t)
+  ⎿  Added 4 lines, removed 3 lines
+      46                                                                 
+      47  $t->write_file('init.js', <<'JS');                             
+      48  // Config phase — install JS handlers on each location.        
+      49 -// This code also re-runs in each worker; the handler          
+         -assignments are                                                
+      50 -// idempotent and the function definitions register the        
+         -functions in                                                   
+      51 -// the worker's global JS context where the content handler    
+         -calls them.                                                    
+      49 +// This script runs once in the master process (init_conf).    
+         +Workers                                                        
+      50 +// inherit the fully-evaluated JSContext via fork()            
+         +copy-on-write, so                                              
+      51 +// the handler functions are already in their global scope     
+         +with no                                                        
+      52 +// re-evaluation or file I/O at worker start.                  
+      53                                                                 
+      54  (function installHandlers() {                                  
+      55      const locs = nginx.http.servers[0].locations;              
+
+● That's the only test update needed. The HTTP assertions (plan(10)) are
+  unchanged — they remain the proof that the inherited context works correctly
+  from a worker: if handler functions weren't available in the inherited
+  JSContext, every request would return 500 instead of the expected responses.
+
+✻ Worked for 50s
+
+❯ i need run tests 
+
+● Read 5 files (ctrl+o to expand)
+
+● Need to build first. Let me check the configure options and build:
+
+● Read 1 file (ctrl+o to expand)
+
+● Bash(which perl && perl -e 'use Test::More; print "ok\n"' 2>/dev/null || echo
+      "Test::More missing")
+  ⎿  /usr/bin/perl
+     ok
+
+● Bash(perl -e 'use Test::Nginx; print "ok\n"' 2>/dev/null || echo "Test::Nginx
+      missing")
+  ⎿  Test::Nginx missing
+
+● Read 1 file (ctrl+o to expand)
+
+● Bash(cpan -i Test::Nginx 2>&1 | tail -5 &
+      make -C /home/vadim/fixes.github/tmp/nginx/quickjs libquickjs.a 2>&1 |
+      tail -5)
+  ⎿  gcc -g -Wall -MMD -MF .obj/libunicode.o.d -Wno-array-bounds -Wno-forma
+     t-truncation -Wno-infinite-recursion -fwrapv  -D_GNU_SOURCE -DCONFIG_V
+     ERSION=\"2025-04-26\" -DHAVE_CLOSEFROM -O2 -c -o .obj/libunicode.o lib
+     … +11 lines (ctrl+o to expand)
+
+● Bash(cd /home/vadim/fixes.github/tmp/nginx/nginx && \
+      auto/configure \…)
+  ⎿  checking for struct tm.tm_gmtoff ... found
+     checking for struct dirent.d_namlen ... not found
+     checking for struct dirent.d_type ... found
+     … +7 lines (ctrl+o to expand)
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Need a config file for the module. Let me check another module's config as
+  reference:
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Write(nginx/src/js/config)
+  ⎿  Wrote 21 lines to nginx/src/js/config
+     ngx_module_type=CORE
+     ngx_module_name="ngx_js_module"
+     ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
+                      $ngx_addon_dir/ngx_js_com.c \
+                      $ngx_addon_dir/ngx_js_com_http.c \
+                      $ngx_addon_dir/ngx_js_com_upstream.c \
+                      $ngx_addon_dir/ngx_js_http_module.c"
+     ngx_module_deps="$ngx_addon_dir/ngx_js.h \
+                      $ngx_addon_dir/ngx_js_com.h"
+     ngx_module_libs=
+     … +11 lines (ctrl+o to expand)
+
+● Bash(\
+      auto/configure \…)
+  ⎿    nginx configuration file: "/usr/local/nginx/conf/nginx.conf"
+       nginx pid file: "/usr/local/nginx/logs/nginx.pid"
+       nginx error log file: "/usr/local/nginx/logs/error.log"
+     … +6 lines (ctrl+o to expand)
+
+● Bash(make -j$(nproc) 2>&1)
+  ⎿  Error: Exit code 2
+     make -f objs/Makefile
+     make[1]: Entering directory '/home/vadim/fixes.github/tmp/nginx/nginx'
+     cc -c -pipe  -O -W -Wall -Wpointer-arith -Wno-unused-parameter -Werror -g 
+     -I../quickjs -I src/core -I src/event -I src/event/modules -I 
+     src/event/quic -I src/os/unix -I objs \
+        -o objs/src/core/nginx.o \
+        src/core/nginx.c
+     cc -c -pipe  -O -W -Wall -Wpointer-arith -Wno-unused-parameter -Werror -g 
+     -I../quickjs -I src/core -I src/event -I src/event/modules -I 
+     src/event/quic -I src/os/unix -I objs \
+        -o objs/src/core/ngx_log.o \
+        src/core/ngx_log.c
+     cc -c -pipe  -O -W -Wall -Wpointer-arith -Wno-unused-parameter -Werror -g 
+     -I../quickjs -I src/core -I src/event -I src/event/modules -I 
+     src/event/quic -I src/os/unix -I objs \
+     … +110 lines (ctrl+o to see all)
+
+● Bash(make -j$(nproc) 2>&1 | grep "error:" | head -20)
+  ⎿  ../quickjs/quickjs.h:1052:34: error: cast between incompatible functio
+     n types from ‘JSValue (*)(JSContext *, JSValue,  int,  JSValue *, int)
+     ’ to ‘JSValue (*)(JSContext *, JSValue,  int,  JSValue *)’ [-Werror=ca
+     … +14 lines (ctrl+o to expand)
+
+● QuickJS triggers a GCC warning-as-error. Add -Wno-cast-function-type to the
+  configure:
+
+● Bash(\
+      auto/configure \…)
+  ⎿    nginx http uwsgi temporary files: "uwsgi_temp"
+       nginx http scgi temporary files: "scgi_temp"
+
+● Bash(make -j$(nproc) 2>&1 | grep -E "error:|warning:|^objs/nginx" | tail -20)
+  ⎿  (No output)
+  ⎿  (timeout 2m)
+
+● Read 1 file (ctrl+o to expand)
+
+● Binary built. Now install Test::Nginx and run the tests:
+
+● Bash(cpan -i Test::Nginx 2>&1 | tail -5)
+  ⎿  Loading internal logger. Log::Log4perl recommended for better logging
+     Reading '/home/vadim/.cpan/Metadata'
+       Database was generated on Wed, 04 Mar 2026 14:17:01 GMT
+     Test::Nginx is up to date (0.32).
+
+● Bash(cd /home/vadim/fixes.github/tmp/nginx && \
+      TEST_NGINX_BINARY=nginx/objs/nginx prove -v t/ 2>&1)
+  ⎿  Error: Exit code 1
+     Can't locate object method "new" via package "Test::Nginx" at 
+     t/js_com_phase1.t line 21.
+     t/js_com_phase1.t .. 
+     Dubious, test returned 255 (wstat 65280, 0xff00)
+     No subtests run 
+     Can't locate object method "new" via package "Test::Nginx" at 
+     t/js_com_phase2.t line 22.
+     t/js_com_phase2.t .. 
+     Dubious, test returned 255 (wstat 65280, 0xff00)
+     No subtests run 
+     Can't locate object method "new" via package "Test::Nginx" at 
+     t/js_com_phase3.t line 20.
+     … +58 lines (ctrl+o to see all)
+
+● The tests need nginx-tests's local Test::Nginx in t/lib/. Let me get it:
+
+● Bash(git clone --depth=1 https://github.com/nginx/nginx-tests.git
+      /tmp/nginx-tests 2>&1 | tail -3)
+  ⎿  Cloning into '/tmp/nginx-tests'...
+
+● Bash(cp -r /tmp/nginx-tests/lib /home/vadim/fixes.github/tmp/nginx/t/lib && ls
+       /home/vadim/fixes.github/tmp/nginx/t/lib/Test/)
+  ⎿  Nginx
+     Nginx.pm
+
+● Bash(cd /home/vadim/fixes.github/tmp/nginx && \
+      TEST_NGINX_BINARY=nginx/objs/nginx prove -v t/ 2>&1)
+  ⎿  Error: Exit code 255
+     Bailout called.  Further testing stopped:  no nginx/objs/nginx binary found
+     FAILED--Further testing stopped: no nginx/objs/nginx binary found
+
+     Bailout called.  Further testing stopped:  no nginx/objs/nginx binary found
+     FAILED--Further testing stopped: no nginx/objs/nginx binary found
+
+● Bash(cd /home/vadim/fixes.github/tmp/nginx && \
+      TEST_NGINX_BINARY=$(pwd)/nginx/objs/nginx prove -v t/ 2>&1)
+  ⎿  t/js_com_phase1.t ..
+     1..29
+     ok 1 - nginx.version is set
+     … +34 lines (ctrl+o to expand)
+
+● All 69 tests pass across all four phases. Let me save the build steps to
+  memory:
+
+● Bash(mkdir -p
+      /home/vadim/.claude/projects/-home-vadim-fixes-github-tmp-nginx/memory/)
+  ⎿  Done
+
+● Wrote 1 memory (ctrl+o to expand)
+
+● All 69 tests pass:
+
+  t/js_com_phase1.t  29/29  ok  (COM read-only: version, cycle, servers,
+  upstreams)
+  t/js_com_phase2.t  11/11  ok  (config mutations: root, workers, peer setters)
+  t/js_com_phase3.t  17/17  ok  (live RR upstream: addPeer/removePeer)
+  t/js_com_phase4.t  12/12  ok  (request handlers via inherited context)
+
+  Two setup steps were needed that weren't in the repo:
+
+  1. nginx/src/js/config — the nginx module config file (required by
+  auto/configure --add-module)
+  2. -Wno-cast-function-type in cc-opt — QuickJS's JS_CFUNC_DEF macro triggers a
+   GCC cast warning; nginx builds with -Werror so it must be suppressed
+  3. t/lib/ — copied from the nginx-tests repo (the test harness)
+
+✻ Brewed for 2m 55s
+
+❯ rework location.handler to accept function, not function name 
+
+● Let me trace all the sites that need changing before writing any code:
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Clear picture. Here's what changes:
+
+  - ngx_js.h: handler ngx_str_t → handler_idx ngx_int_t (-1 = unset)
+  - ngx_js_com_http.c: setter type-checks for function, appends it to a
+  __ngx_handlers__ array on the global object (keeping it GC-reachable), stores
+  the index
+  - ngx_js_http_module.c: content handler looks up __ngx_handlers__[idx] instead
+   of a name; create_loc_conf/merge_loc_conf updated accordingly
+  - js_com_phase4.t: pass function values, repurpose the "missing" test to use a
+   handler that throws (still returns 500)
+
+● Update(nginx/src/js/ngx_js.h)
+  ⎿  Added 5 lines, removed 2 lines
+      36                                                                 
+      37  /*                                                             
+      38   * Per-location JS handler config owned by ngx_js_http_module. 
+      39 - * handler.data == NULL                                        
+         - means no JS handler is set for this location.                 
+      39 + * handler_idx == -1                                           
+         + means no JS handler is set for this location.                 
+      40 + * Otherwise it is an index into the global __ngx_handlers__   
+         +array                                                          
+      41 + * that was populated by location.handler = <function>         
+         +assignments                                                    
+      42 + * during the config phase.                                    
+      43   */                                                            
+      44  typedef struct {                                               
+      45 -    ngx_str_t  handler;   /* JS function name, NUL-terminated  
+         -*/                                                             
+      45 +    ngx_int_t  handler_idx;                                    
+      46  } ngx_js_loc_conf_t;                                           
+      47                                                                 
+      48                                                                 
+
+● Now update the location setter in ngx_js_com_http.c:
+
+● Update(nginx/src/js/ngx_js_com_http.c)
+  ⎿  Added 1 line, removed 1 line
+      72   * Magic values for ngx_js_location_get / ngx_js_location_set: 
+      73   *   0 — path    (r/o: location name/pattern)                  
+      74   *   1 — root    (r/w)                                         
+      75 - *   2 — handler (w/o: JS function name, installs              
+         -ngx_js_content_handler)                                        
+      75 + *   2 — handler (r/w: JS function, stored in global           
+         +__ngx_handlers__ array)                                        
+      76   */                                                            
+      77  static JSValue                                                 
+      78  ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int 
+           magic)                                                        
+
+● Update(nginx/src/js/ngx_js_com_http.c)
+  ⎿  Added 29 lines, removed 14 lines
+      141          clcf->root_lengths = NULL;  /* mark as literal (no    
+           variables) */                                                 
+      142          return JS_UNDEFINED;                                  
+      143                                                                
+      144 -    case 2: /* handler — install a JS content handler for     
+          -this location */                                              
+      144 +    case 2: /* handler — store function in __ngx_handlers__,  
+          +save index */                                                 
+      145      {                                                         
+      146 -        ngx_js_loc_conf_t  *jlcf;                             
+      146 +        JSValue            global, registry, len_val;         
+      147 +        uint32_t           idx;                               
+      148 +        ngx_js_loc_conf_t *jlcf;                              
+      149                                                                
+      150 -        cstr = JS_ToCString(ctx, val);                        
+      151 -        if (!cstr) {                                          
+      152 -            return JS_EXCEPTION;                              
+      150 +        if (!JS_IsFunction(ctx, val)) {                       
+      151 +            return JS_ThrowTypeError(ctx,                     
+      152 +                                     "location.handler:       
+          +expected a function");                                        
+      153          }                                                     
+      154                                                                
+      155 -        len  = ngx_strlen(cstr);                              
+      156 -        data = ngx_pnalloc(cycle->pool, len + 1);             
+      157 -        if (data == NULL) {                                   
+      158 -            JS_FreeCString(ctx, cstr);                        
+      159 -            return JS_ThrowOutOfMemory(ctx);                  
+      155 +        /*                                                    
+      156 +         * Append the function to the __ngx_handlers__ array  
+          +on the global                                                 
+      157 +         * object.  This keeps the function GC-reachable even 
+          + when it is an                                                
+      158 +         * anonymous or arrow function with no other JS-side  
+          +reference.                                                    
+      159 +         */                                                   
+      160 +        global   = JS_GetGlobalObject(ctx);                   
+      161 +        registry = JS_GetPropertyStr(ctx, global,             
+          +"__ngx_handlers__");                                          
+      162 +                                                              
+      163 +        if (!JS_IsArray(ctx, registry)) {                     
+      164 +            JS_FreeValue(ctx, registry);                      
+      165 +            registry = JS_NewArray(ctx);                      
+      166 +            JS_SetPropertyStr(ctx, global,                    
+          +"__ngx_handlers__",                                           
+      167 +                              JS_DupValue(ctx, registry));    
+      168          }                                                     
+      169                                                                
+      170 -        ngx_memcpy(data, cstr, len + 1);                      
+      171 -        JS_FreeCString(ctx, cstr);                            
+      170 +        JS_FreeValue(ctx, global);                            
+      171                                                                
+      172 +        len_val = JS_GetPropertyStr(ctx, registry, "length"); 
+      173 +        JS_ToUint32(ctx, &idx, len_val);                      
+      174 +        JS_FreeValue(ctx, len_val);                           
+      175 +                                                              
+      176 +        JS_SetPropertyUint32(ctx, registry, idx,              
+          +JS_DupValue(ctx, val));                                       
+      177 +        JS_FreeValue(ctx, registry);                          
+      178 +                                                              
+      179          jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];  
+      180 -        jlcf->handler.data = data;                            
+      181 -        jlcf->handler.len  = len;                             
+      180 +        jlcf->handler_idx = (ngx_int_t) idx;                  
+      181                                                                
+      182          /* Wire up the content handler pointer */             
+      183          clcf->handler = ngx_js_content_handler;               
+
+● Add a getter so location.handler returns the function back, and update the
+  proto entry:
+
+● Update(nginx/src/js/ngx_js_com_http.c)
+  ⎿  Added 21 lines
+       94      case 1: /* root */                                        
+       95          return JS_NewStringLen(ctx, (const char *)            
+           clcf->root.data,                                              
+       96                                 clcf->root.len);               
+       97 +    case 2: /* handler — return the stored function or        
+          +undefined */                                                  
+       98 +    {                                                         
+       99 +        ngx_js_loc_conf_t  *jlcf;                             
+      100 +        JSValue             global, registry, fn;             
+      101 +                                                              
+      102 +        jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];  
+      103 +                                                              
+      104 +        if (jlcf->handler_idx < 0) {                          
+      105 +            return JS_UNDEFINED;                              
+      106 +        }                                                     
+      107 +                                                              
+      108 +        global   = JS_GetGlobalObject(ctx);                   
+      109 +        registry = JS_GetPropertyStr(ctx, global,             
+          +"__ngx_handlers__");                                          
+      110 +        JS_FreeValue(ctx, global);                            
+      111 +                                                              
+      112 +        fn = JS_GetPropertyUint32(ctx, registry,              
+      113 +                                  (uint32_t)                  
+          +jlcf->handler_idx);                                           
+      114 +        JS_FreeValue(ctx, registry);                          
+      115 +                                                              
+      116 +        return fn;                                            
+      117      }                                                         
+      118 +    }                                                         
+      119                                                                
+      120      return JS_UNDEFINED;                                      
+      121  }                                                             
+
+● Update(nginx/src/js/ngx_js_com_http.c)
+  ⎿  Added 1 line, removed 1 line
+      213  static const JSCFunctionListEntry                             
+           ngx_js_location_proto_funcs[] = {                             
+      214      JS_CGETSET_MAGIC_DEF("path",    ngx_js_location_get,      
+           NULL,                0),                                      
+      215      JS_CGETSET_MAGIC_DEF("root",    ngx_js_location_get,      
+           ngx_js_location_set, 1),                                      
+      216 -    JS_CGETSET_MAGIC_DEF("handler", NULL,                     
+          -ngx_js_location_set, 2),                                      
+      216 +    JS_CGETSET_MAGIC_DEF("handler", ngx_js_location_get,      
+          +ngx_js_location_set, 2),                                      
+      217  };                                                            
+      218                                                                
+      219                                                                
+
+● Now update ngx_js_http_module.c — the content handler, create_loc_conf, and
+  merge_loc_conf:
+
+● Update(nginx/src/js/ngx_js_http_module.c)
+  ⎿  Added 1 line, removed 1 line
+       5   * ngx_js_http_module — NGX_HTTP_MODULE companion to           
+          ngx_js_module.                                                 
+       6   *                                                             
+       7   * Provides:                                                   
+       8 - *   - ngx_js_loc_conf_t (per-location JS handler function name
+         -)                                                              
+       8 + *   - ngx_js_loc_conf_t (per-location JS handler function     
+         +reference)                                                     
+       9   *   - ngx_js_content_handler — content-phase handler called   
+          by NGINX                                                       
+      10   *   - NginxRequest COM class — wraps ngx_http_request_t for   
+          JS                                                             
+      11   *   - req.respond(status, headers, body) — sends response and 
+           finalizes                                                     
+
+● Update(nginx/src/js/ngx_js_http_module.c)
+  ⎿  Added 10 lines, removed 9 lines
+      372      ngx_js_loc_conf_t        *jlcf;                           
+      373      ngx_js_worker_t          *w;                              
+      374      JSContext                *ctx;                            
+      375 -    JSValue                   global, fn, req_obj, result;    
+      375 +    JSValue                   global, registry,               
+          +fn, req_obj, result;                                          
+      376      ngx_js_request_opaque_t  *req_op;                         
+      377      ngx_int_t                 final_rc;                       
+      378                                                                
+     ...
+      384                                                                
+      385      if (w == NULL || w->ctx == NULL) {                        
+      386          ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,     
+      387 -                      "js: worker runtime not available       
+          - for handler \"%V\"",                                         
+      388 -                      &jlcf->handler);                        
+      387 +                      "js: worker runtime not available");    
+      388          return NGX_HTTP_INTERNAL_SERVER_ERROR;                
+      389      }                                                         
+      390                                                                
+      391 -    ctx    = w->ctx;                                          
+      392 -    global = JS_GetGlobalObject(ctx);                         
+      393 -    fn     = JS_GetPropertyStr(ctx, global,                   
+      394 -                               (const char *)                 
+          -jlcf->handler.data);                                          
+      391 +    ctx      = w->ctx;                                        
+      392 +    global   = JS_GetGlobalObject(ctx);                       
+      393 +    registry = JS_GetPropertyStr(ctx, global,                 
+          + "__ngx_handlers__");                                         
+      394      JS_FreeValue(ctx, global);                                
+      395                                                                
+      396 +    fn = JS_GetPropertyUint32(ctx, registry, (uint32_t)       
+          +jlcf->handler_idx);                                           
+      397 +    JS_FreeValue(ctx, registry);                              
+      398 +                                                              
+      399      if (!JS_IsFunction(ctx, fn)) {                            
+      400          JS_FreeValue(ctx, fn);                                
+      401          ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,     
+      402 -                      "js: handler function \"%V\"            
+          - not found or not callable",                                  
+      403 -                      &jlcf->handler);                        
+      402 +                      "js: handler #%i                        
+          + not found or not callable",                                  
+      403 +                      jlcf->handler_idx);                     
+      404          return NGX_HTTP_INTERNAL_SERVER_ERROR;                
+      405      }                                                         
+      406                                                                
+
+● Update(nginx/src/js/ngx_js_http_module.c)
+  ⎿  Added 1 line, removed 1 line
+      455          return NULL;                                          
+      456      }                                                         
+      457                                                                
+      458 -    /* handler.data == NULL means "no JS handler set for this 
+          - location" */                                                 
+      458 +    jlcf->handler_idx = -1;  /* unset */                      
+      459                                                                
+      460      return jlcf;                                              
+      461  }                                                             
+
+● Update(nginx/src/js/ngx_js_http_module.c)
+  ⎿  Added 2 lines, removed 2 lines
+      467      ngx_js_loc_conf_t  *prev = parent;                        
+      468      ngx_js_loc_conf_t  *conf = child;                         
+      469                                                                
+      470 -    if (conf->handler.data == NULL) {                         
+      471 -        conf->handler = prev->handler;                        
+      470 +    if (conf->handler_idx == -1) {                            
+      471 +        conf->handler_idx = prev->handler_idx;                
+      472      }                                                         
+      473                                                                
+      474      return NGX_CONF_OK;                                       
+
+● Now update the test — pass functions directly, and repurpose the "missing"
+  test to a handler that throws:
+
+● Update(t/js_com_phase4.t)
+  ⎿  Added 13 lines, removed 10 lines
+      48  // Config phase — install JS handlers on each location.        
+      49  // This script runs once in the master process (init_conf).    
+          Workers                                                        
+      50  // inherit the fully-evaluated JSContext via fork()            
+          copy-on-write, so                                              
+      51 -// the handler functions are already in their global scope     
+         -with no                                                        
+      52 -// re-evaluation or file I/O at worker start.                  
+      51 +// the handler functions are already available with no         
+         + re-evaluation.                                                
+      52 +//                                                             
+      53 +// location.handler now accepts a function value directly (not 
+         + a name).                                                      
+      54                                                                 
+      55  (function installHandlers() {                                  
+      56      const locs = nginx.http.servers[0].locations;              
+     ...
+      59          if (loc) { loc.handler = fn; }                         
+      60      }                                                          
+      61                                                                 
+      62 -    set('/hello/',   'helloHandler');                          
+      63 -    set('/echo/',    'echoHandler');                           
+      64 -    set('/headers/', 'headersHandler');                        
+      65 -    set('/status/',  'statusHandler');                         
+      66 -    set('/empty/',   'emptyHandler');                          
+      67 -    set('/addr/',    'addrHandler');                           
+      68 -    set('/missing/', 'noSuchFunction');   // intentionally     
+         -undefined → 500                                                
+      62 +    // Named functions passed by reference                     
+      63 +    set('/hello/',   helloHandler);                            
+      64 +    set('/echo/',    echoHandler);                             
+      65 +    set('/headers/', headersHandler);                          
+      66 +    set('/status/',  statusHandler);                           
+      67 +    set('/empty/',   emptyHandler);                            
+      68 +    set('/addr/',    addrHandler);                             
+      69 +                                                               
+      70 +    // Anonymous arrow function assigned inline                
+      71 +    set('/missing/', req => { throw new Error('deliberate      
+         +error'); });                                                   
+      72  })();                                                          
+      73                                                                 
+      74  // --- Request-phase handler functions ---                     
+      75 -// These must be in the global scope so ngx_js_content_handler 
+         - can find them.                                                
+      75                                                                 
+      76  function helloHandler(req) {                                   
+      77      req.respond(200, {'content-type': 'text/plain'}, 'Hello    
+          World');                                                       
+
+● Also update the test description for the last assertion:
+
+● Update(t/js_com_phase4.t)
+  ⎿  Added 2 lines, removed 2 lines
+      133  # empty body is accepted                                      
+      134  like(http_get('/empty/'), qr|200 OK|, 'handler with empty     
+           body responds 200');                                          
+      135                                                                
+      136 -# missing handler function → 500 Internal Server Error        
+      137 -like(http_get('/missing/'), qr/500/, 'undefined handler       
+          -function returns 500');                                       
+      136 +# handler that throws → 500 Internal Server Error             
+      137 +like(http_get('/missing/'), qr/500/, 'handler that throws     
+          +returns 500');                                                
+
+● Build and run:
+
+● Bash(cd /home/vadim/fixes.github/tmp/nginx/nginx && make -j$(nproc) 2>&1 |
+      grep -E "error:|warning:" | grep -v "^In file" | head -20)
+  ⎿  (No output)
+
+● Bash(cd /home/vadim/fixes.github/tmp/nginx &&
+      TEST_NGINX_BINARY=$(pwd)/nginx/objs/nginx prove -v t/ 2>&1)
+  ⎿  t/js_com_phase1.t ..
+     1..29
+     ok 1 - nginx.version is set
+     … +34 lines (ctrl+o to expand)
+
+● All 69 tests pass. Here's a summary of what changed:
+
+  ngx_js.h — ngx_js_loc_conf_t now holds handler_idx ngx_int_t instead of
+  handler ngx_str_t.
+
+  ngx_js_com_http.c — The setter type-checks that the value is actually a
+  function (JS_ThrowTypeError otherwise), then appends it to a __ngx_handlers__
+  array on the global object and stores its index. The array keeps the function
+  GC-reachable — this is critical for anonymous/arrow functions that have no
+  other JS-side reference. A getter was also added so location.handler returns
+  the stored function.
+
+  ngx_js_http_module.c — ngx_js_content_handler retrieves
+  __ngx_handlers__[handler_idx] instead of doing a global name lookup.
+  create_loc_conf initialises handler_idx = -1; merge_loc_conf uses -1 as the
+  unset sentinel.
+
+  t/js_com_phase4.t — Handlers are now passed as values (set('/hello/', 
+  helloHandler)) or inline arrow functions (set('/missing/', req => { throw ... 
+  })). The "throws → 500" path replaces the old "name not found → 500" path.
+
+✻ Churned for 3m 48s
+
+❯ make commit 
+
+● Bash(git diff --stat && git status)
+  ⎿   nginx/src/js/ngx_js.h             |  7 ++-
+      nginx/src/js/ngx_js_com_http.c    | 68 +++++++++++++++++++++-------
+      nginx/src/js/ngx_js_http_module.c | 27 +++++------
+     … +19 lines (ctrl+o to expand)
+
+● Bash(git log --oneline -3)
+  ⎿  18d1d3863 JS: fix three bugs found during test run
+     db07a98a2 JS: tests for all four COM phases (nginx-tests style)
+     ac1d88b11 JS: Phase 4 — request-phase JS content handlers
+
+● Two distinct topics in this diff — runtime inheritance and the handler API
+  change. I'll split into two commits.
+
+● Bash(\
+      git add nginx/src/js/ngx_js_module.c nginx/src/js/config && \…)
+  ⎿  [js_dom 6c1c7e11f] JS: inherit JSRuntime/JSContext from master in work
+     ers
+      2 files changed, 45 insertions(+), 71 deletions(-)
+      create mode 100644 nginx/src/js/config
+
+● Bash(\
+      git add nginx/src/js/ngx_js.h \…)
+  ⎿  [js_dom 3cbe082f4] JS: location.handler accepts a function, not a func
+     tion name
+      4 files changed, 88 insertions(+), 44 deletions(-)
+
+● Bash(git log --oneline -5)
+  ⎿  3cbe082f4 JS: location.handler accepts a function, not a function name
+     6c1c7e11f JS: inherit JSRuntime/JSContext from master in workers
+     18d1d3863 JS: fix three bugs found during test run
+     … +2 lines (ctrl+o to expand)
+
+● Two commits on js_dom:
+
+  - 6c1c7e11f — runtime inheritance: init_process reduced to two pointer
+  assignments, plus the config file for --add-module
+  - 3cbe082f4 — location.handler now takes a function value; stores it in
+  __ngx_handlers__[] to keep it GC-reachable; includes the updated test
+
+✻ Cogitated for 31s
