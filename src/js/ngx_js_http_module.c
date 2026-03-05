@@ -582,6 +582,224 @@ ngx_js_content_handler(ngx_http_request_t *r)
 
 
 /* ------------------------------------------------------------------ */
+/* js_init_http — JS config hook that fires inside the http{} block    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Build a read-only JS array of plain objects representing the nginx
+ * virtual servers that have been parsed so far in the http{} block.
+ *
+ * Each element has:
+ *   .name       — first server_name string (or "" if none)
+ *   .names[]    — all server_name strings
+ *   .locations[] — locations parsed so far; each has .path and .root
+ *
+ * Called at parse time: location trees are not yet built, so we walk
+ * the raw location queue (clcf->locations) instead of the tree.
+ */
+static JSValue
+ngx_js_init_http_servers(JSContext *ctx, ngx_conf_t *cf)
+{
+    ngx_http_conf_ctx_t        *http_ctx;
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_core_srv_conf_t  **cscfp;
+    ngx_http_core_loc_conf_t   *clcf;
+    ngx_http_server_name_t     *sn;
+    ngx_queue_t                *q;
+    ngx_http_location_queue_t  *lq;
+    ngx_http_core_loc_conf_t   *lclcf;
+    JSValue                     arr, srv_obj, names_arr, locs_arr, loc_obj;
+    ngx_uint_t                  i, j;
+    uint32_t                    li;
+
+    arr = JS_NewArray(ctx);
+
+    http_ctx = cf->ctx;
+    if (http_ctx == NULL) {
+        return arr;
+    }
+
+    cmcf = http_ctx->main_conf[ngx_http_core_module.ctx_index];
+    if (cmcf == NULL || cmcf->servers.nelts == 0) {
+        return arr;
+    }
+
+    cscfp = cmcf->servers.elts;
+
+    for (i = 0; i < cmcf->servers.nelts; i++) {
+
+        srv_obj = JS_NewObject(ctx);
+
+        /* .name — first server_name */
+        sn = cscfp[i]->server_names.elts;
+
+        if (cscfp[i]->server_names.nelts > 0) {
+            JS_SetPropertyStr(ctx, srv_obj, "name",
+                JS_NewStringLen(ctx,
+                                (const char *) sn[0].name.data,
+                                sn[0].name.len));
+        } else {
+            JS_SetPropertyStr(ctx, srv_obj, "name",
+                              JS_NewString(ctx, ""));
+        }
+
+        /* .names[] — all server_names */
+        names_arr = JS_NewArray(ctx);
+        for (j = 0; j < cscfp[i]->server_names.nelts; j++) {
+            JS_SetPropertyUint32(ctx, names_arr, (uint32_t) j,
+                JS_NewStringLen(ctx,
+                                (const char *) sn[j].name.data,
+                                sn[j].name.len));
+        }
+        JS_SetPropertyStr(ctx, srv_obj, "names", names_arr);
+
+        /* .locations[] — walk the raw location queue */
+        locs_arr = JS_NewArray(ctx);
+        li       = 0;
+
+        clcf = cscfp[i]->ctx->loc_conf[ngx_http_core_module.ctx_index];
+
+        if (clcf->locations != NULL) {
+            for (q = ngx_queue_head(clcf->locations);
+                 q != ngx_queue_sentinel(clcf->locations);
+                 q = ngx_queue_next(q))
+            {
+                lq    = (ngx_http_location_queue_t *) q;
+                lclcf = lq->exact ? lq->exact : lq->inclusive;
+
+                loc_obj = JS_NewObject(ctx);
+
+                JS_SetPropertyStr(ctx, loc_obj, "path",
+                    JS_NewStringLen(ctx,
+                                   (const char *) lclcf->name.data,
+                                   lclcf->name.len));
+
+                if (lclcf->root.data) {
+                    JS_SetPropertyStr(ctx, loc_obj, "root",
+                        JS_NewStringLen(ctx,
+                                       (const char *) lclcf->root.data,
+                                       lclcf->root.len));
+                }
+
+                JS_SetPropertyUint32(ctx, locs_arr, li++, loc_obj);
+            }
+        }
+
+        JS_SetPropertyStr(ctx, srv_obj, "locations", locs_arr);
+
+        JS_SetPropertyUint32(ctx, arr, (uint32_t) i, srv_obj);
+    }
+
+    return arr;
+}
+
+
+/*
+ * Handler for:  js_init_http /path/to/script.js;
+ *
+ * Fires immediately when the directive is encountered during the
+ * http{} block parse.  The script receives:
+ *
+ *   config.write(text)         — same as js_preprocess; feeds nginx
+ *                                config text back into ngx_conf_parse()
+ *                                so new server{}/location{} blocks are
+ *                                added during parse and receive the full
+ *                                merge/init_locations/optimize treatment.
+ *
+ *   nginx.http.servers[]       — read-only view of the virtual servers
+ *                                that have been parsed before this
+ *                                directive (useful for conditional adds).
+ *
+ * The JS runtime is short-lived and independent of the js_include
+ * runtime.  nginx.setTimeout, Worker, SharedWorker etc. are NOT
+ * available here.
+ *
+ * Place js_init_http AFTER the server{} blocks you want to read.
+ * Servers defined after this directive are not visible in servers[].
+ */
+static char *
+ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_str_t   *value, path;
+    u_char      *src;
+    size_t       src_len;
+    JSRuntime   *rt;
+    JSContext   *ctx;
+    JSValue      global, config_obj, nginx_obj, http_obj, result;
+    char        *rv;
+
+    value = cf->args->elts;
+    path  = value[1];
+
+    if (ngx_conf_full_name(cf->cycle, &path, 1) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    src = ngx_js_read_file(cf->cycle, &path, &src_len);
+    if (src == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    rt = JS_NewRuntime();
+    if (rt == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+                      "js: JS_NewRuntime() failed");
+        return NGX_CONF_ERROR;
+    }
+
+    ctx = JS_NewContext(rt);
+    if (ctx == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+                      "js: JS_NewContext() failed");
+        JS_FreeRuntime(rt);
+        return NGX_CONF_ERROR;
+    }
+
+    /*
+     * Store cf so that config.write() can call ngx_conf_parse().
+     * This is the same pattern used by js_preprocess.
+     */
+    JS_SetContextOpaque(ctx, cf);
+
+    global = JS_GetGlobalObject(ctx);
+
+    /* Install global `config` with write() */
+    config_obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, config_obj, "write",
+                      JS_NewCFunction(ctx, ngx_js_config_write, "write", 1));
+    JS_SetPropertyStr(ctx, global, "config", config_obj);
+
+    /* Install nginx.http.servers[] (read-only parse-time view) */
+    nginx_obj = JS_NewObject(ctx);
+    http_obj  = JS_NewObject(ctx);
+
+    JS_SetPropertyStr(ctx, http_obj, "servers",
+                      ngx_js_init_http_servers(ctx, cf));
+
+    JS_SetPropertyStr(ctx, nginx_obj, "http", http_obj);
+    JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
+
+    JS_FreeValue(ctx, global);
+
+    result = JS_Eval(ctx, (const char *) src, src_len,
+                     (const char *) path.data, JS_EVAL_TYPE_GLOBAL);
+
+    rv = NGX_CONF_OK;
+
+    if (JS_IsException(result)) {
+        ngx_js_log_exception(ctx, cf->log);
+        rv = NGX_CONF_ERROR;
+    }
+
+    JS_FreeValue(ctx, result);
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(rt);
+
+    return rv;
+}
+
+
+/* ------------------------------------------------------------------ */
 /* NGX_HTTP_MODULE lifecycle                                            */
 /* ------------------------------------------------------------------ */
 
@@ -615,6 +833,35 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+static ngx_command_t  ngx_js_http_commands[] = {
+
+    /*
+     * js_init_http /path/to/script.js;
+     *
+     * Valid inside http{}.  Evaluates the named JS file immediately
+     * when this directive is encountered during ngx_conf_parse() of
+     * the http{} block.  The script receives:
+     *
+     *   config.write(text)    — inject nginx config text (server{} etc.)
+     *   nginx.http.servers[]  — read-only view of servers parsed so far
+     *
+     * New servers added via config.write() are handled by all of
+     * nginx's normal merge/init_locations/optimize_servers machinery
+     * because they are added during the http{} parse phase.
+     *
+     * Place js_init_http AFTER the server{} blocks you want to read.
+     */
+    { ngx_string("js_init_http"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_js_init_http,
+      0,
+      0,
+      NULL },
+
+    ngx_null_command
+};
+
+
 static ngx_http_module_t  ngx_js_http_module_ctx = {
     NULL,                       /* preconfiguration  */
     NULL,                       /* postconfiguration */
@@ -630,7 +877,7 @@ static ngx_http_module_t  ngx_js_http_module_ctx = {
 ngx_module_t  ngx_js_http_module = {
     NGX_MODULE_V1,
     &ngx_js_http_module_ctx,    /* module context  */
-    NULL,                       /* module directives */
+    ngx_js_http_commands,       /* module directives */
     NGX_HTTP_MODULE,            /* module type     */
     NULL,                       /* init master     */
     NULL,                       /* init module     */

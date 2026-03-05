@@ -31,11 +31,6 @@ static void      ngx_js_exit_master(ngx_cycle_t *cycle);
 static char   *ngx_js_include(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
-static JSValue ngx_js_config_write(JSContext *ctx, JSValueConst this_val,
-    int argc, JSValueConst *argv);
-
-static u_char *ngx_js_read_file(ngx_cycle_t *cycle, ngx_str_t *path,
-    size_t *len);
 
 
 static ngx_command_t  ngx_js_commands[] = {
@@ -363,7 +358,7 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
  * The temporary file is unlinked before this function returns,
  * regardless of parse success or failure.
  */
-static JSValue
+JSValue
 ngx_js_config_write(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
@@ -504,7 +499,7 @@ ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  * Read an entire file into a NUL-terminated cycle->pool buffer.
  * Returns the buffer on success, NULL on error.
  */
-static u_char *
+u_char *
 ngx_js_read_file(ngx_cycle_t *cycle, ngx_str_t *path, size_t *out_len)
 {
     ngx_fd_t         fd;

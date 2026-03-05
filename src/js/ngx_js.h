@@ -72,6 +72,18 @@ extern ngx_module_t  ngx_js_http_module;
 /* COM initialisation — installs nginx.* into ctx's global object */
 ngx_int_t  ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle);
 
+/*
+ * config.write(text) — feeds config text back into ngx_conf_parse() via a
+ * temporary file.  ctx's opaque must be a valid ngx_conf_t*.  Usable from
+ * both js_preprocess (core-level) and js_init_http (http-level) handlers.
+ */
+JSValue    ngx_js_config_write(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
+
+/* Read a file into a NUL-terminated cycle->pool buffer. */
+u_char    *ngx_js_read_file(ngx_cycle_t *cycle, ngx_str_t *path,
+    size_t *len);
+
 /* Log a pending JS exception to the NGINX error log, then clear it */
 void       ngx_js_log_exception(JSContext *ctx, ngx_log_t *log);
 
