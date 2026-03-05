@@ -1,0 +1,620 @@
+
+ ▐▛███▜▌   Claude Code v2.1.47
+▝▜█████▛▘  Sonnet 4.6 · API Usage Billing
+  ▘▘ ▝▝    ~/fixes.github/nginx-dynamic-conf
+
+✻ Conversation compacted (ctrl+o for history)
+
+  ⎿  Referenced file nginx/src/js/ngx_js_com_http.c
+  ⎿  Referenced file ../../../../tmp/nginx-test-CQt9b6Y0qX/error.log
+  ⎿  Read ../../../../proc/sys/kernel/core_pattern (2 lines)
+  ⎿  Referenced file ../../../../tmp/nginx-test-Vfc8pcTTAA/error.log
+  ⎿  Read t/js_com_phase4.t (134 lines)
+  ⎿  Plan file referenced (~/.claude/plans/goofy-gliding-map.md)
+
+● Let me read the current state of the files before applying the remaining
+  fixes.
+
+● Read 2 files (ctrl+o to expand)
+
+● Good, I have the current state. Now I'll apply the two remaining fixes.
+
+  Fix 2: ngx_js_server_set needs to propagate the new root to child locations
+  that share the old root.data pointer.
+
+  Fix 3: ngx_js_request_respond with body_len == 0 needs to skip
+  ngx_http_output_filter entirely.
+
+● Update(nginx/src/js/ngx_js_com_http.c)
+  ⎿  Added 61 lines, removed 4 lines
+      357  }                                                             
+      358                                                                
+      359                                                                
+      360 +/*                                                            
+      361 + * Recursively update any child location in the               
+          +static_locations tree                                         
+      362 + * whose root.data still points to the old server-level root. 
+          +  This is                                                     
+      363 + * necessary because ngx_conf_merge_str_value copies the data 
+          + pointer by                                                   
+      364 + * value; after merge, child locations that did not set their 
+          + own root                                                     
+      365 + * share the same .data address as the parent.                
+      366 + */                                                           
+      367 +static void                                                   
+      368 +ngx_js_propagate_root(ngx_http_location_tree_node_t *node,    
+      369 +    u_char *old_data, u_char *new_data, size_t new_len)       
+      370 +{                                                             
+      371 +    if (node == NULL) {                                       
+      372 +        return;                                               
+      373 +    }                                                         
+      374 +                                                              
+      375 +    ngx_js_propagate_root(node->left,  old_data, new_data,    
+          +new_len);                                                     
+      376 +    ngx_js_propagate_root(node->right, old_data, new_data,    
+          +new_len);                                                     
+      377 +    ngx_js_propagate_root(node->tree,  old_data, new_data,    
+          +new_len);                                                     
+      378 +                                                              
+      379 +    if (node->exact && node->exact->root.data == old_data) {  
+      380 +        node->exact->root.data    = new_data;                 
+      381 +        node->exact->root.len     = new_len;                  
+      382 +        node->exact->root_lengths = NULL;                     
+      383 +    }                                                         
+      384 +                                                              
+      385 +    if (node->inclusive && node->inclusive->root.data ==      
+          +old_data) {                                                   
+      386 +        node->inclusive->root.data    = new_data;             
+      387 +        node->inclusive->root.len     = new_len;              
+      388 +        node->inclusive->root_lengths = NULL;                 
+      389 +    }                                                         
+      390 +}                                                             
+      391 +                                                              
+      392 +                                                              
+      393  static JSValue                                                
+      394  ngx_js_server_set(JSContext *ctx, JSValueConst this_val,      
+           JSValue val, int magic)                                       
+      395  {                                                             
+     ...
+      366      ngx_cycle_t               *cycle;                         
+      367      const char                *cstr;                          
+      368      size_t                     len;                           
+      369 -    u_char                    *data;                          
+      369 +    u_char                    *old_data, *data;               
+      370                                                                
+      371      op = JS_GetOpaque2(ctx, this_val,                         
+           ngx_js_server_class_id);                                      
+      372      if (!op) {                                                
+     ...
+      393          ngx_memcpy(data, cstr, len + 1);                      
+      394          JS_FreeCString(ctx, cstr);                            
+      395                                                                
+      396 -        clcf                                                  
+          -= cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];        
+      397 -        clcf->root.data   = data;                             
+      398 -        clcf->root.len    = len;                              
+      396 +        clcf                                                  
+          += cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];        
+      397 +        old_data = clcf->root.data;                           
+      398 +                                                              
+      399 +        clcf->root.data    = data;                            
+      400 +        clcf->root.len     = len;                             
+      401          clcf->root_lengths = NULL;                            
+      402 +                                                              
+      403 +        /*                                                    
+      404 +         * Propagate to child locations that inherited the    
+          +old root pointer                                              
+      405 +         * via ngx_conf_merge_str_value (they share the same  
+          +.data address).                                               
+      406 +         */                                                   
+      407 +        ngx_js_propagate_root(clcf->static_locations,         
+      408 +                              old_data, data, len);           
+      409 +                                                              
+      410 +#if (NGX_PCRE)                                                
+      411 +        if (clcf->regex_locations) {                          
+      412 +            ngx_http_core_loc_conf_t  **rloc;                 
+      413 +                                                              
+      414 +            for (rloc = clcf->regex_locations; *rloc; rloc++) 
+          + {                                                            
+      415 +                if ((*rloc)->root.data == old_data) {         
+      416 +                    (*rloc)->root.data    = data;             
+      417 +                    (*rloc)->root.len     = len;              
+      418 +                    (*rloc)->root_lengths = NULL;             
+      419 +                }                                             
+      420 +            }                                                 
+      421 +        }                                                     
+      422 +#endif                                                        
+      423 +                                                              
+      424          return JS_UNDEFINED;                                  
+      425      }                                                         
+      426                                                                
+
+● Now fix the empty-body issue in ngx_js_request_respond:
+
+● Update(nginx/src/js/ngx_js_http_module.c)
+  ⎿  Added 9 lines, removed 5 lines
+      254          return JS_UNDEFINED;                                  
+      255      }                                                         
+      256                                                                
+      257 -    /* Allocate at least 1 byte so the buf is always valid */ 
+      258 -    b = ngx_create_temp_buf(r->pool, body_len ? body_len :    
+          -1);                                                           
+      257 +    if (body_len == 0) {                                      
+      258 +        /* Empty body — headers already sent; nothing more to 
+          + write. */                                                    
+      259 +        JS_FreeCString(ctx, body_cstr);                       
+      260 +        ngx_http_finalize_request(r, NGX_OK);                 
+      261 +        return JS_UNDEFINED;                                  
+      262 +    }                                                         
+      263 +                                                              
+      264 +    b = ngx_create_temp_buf(r->pool, body_len);               
+      265      if (b == NULL) {                                          
+      266          JS_FreeCString(ctx, body_cstr);                       
+      267          ngx_http_finalize_request(r,                          
+           NGX_HTTP_INTERNAL_SERVER_ERROR);                              
+      268          return JS_UNDEFINED;                                  
+      269      }                                                         
+      270                                                                
+      271 -    if (body_len) {                                           
+      272 -        b->last = ngx_cpymem(b->pos, body_cstr, body_len);    
+      273 -    }                                                         
+      271 +    b->last = ngx_cpymem(b->pos, body_cstr, body_len);        
+      272                                                                
+      273      b->last_buf      = 1;                                     
+      274      b->last_in_chain = 1;                                     
+
+● Now rebuild nginx:
+
+● Bash(make -C /home/vadim/fixes.github/nginx-dynamic-conf/nginx -j$(nproc)
+      2>&1)
+  ⎿  make: Entering directory '/home/vadim/fixes.github/nginx-dynamic-conf/
+     nginx'
+     make -f objs/Makefile
+     … +83 lines (ctrl+o to expand)
+
+● Clean build. Now run all four tests:
+
+● Bash(prove -v js_com_phase1.t js_com_phase2.t js_com_phase3.t js_com_phase4.t
+      2>&1)
+  ⎿  Error: Exit code 1
+     js_com_phase1.t .. 
+     1..29
+     ok 1 - nginx.version is set
+     ok 2 - nginx.version starts with 1.
+     ok 3 - nginx.cpu_count > 0
+     ok 4 - nginx.cycle.hostname is set
+     ok 5 - nginx.cycle.prefix ends with /
+     ok 6 - nginx.cycle.workers == 1
+     ok 7 - servers is array
+     … +210 lines (ctrl+o to see all)
+
+● The alert fires for ALL 9 connections, not just the empty-body one. This means
+   the design is wrong: req.respond() calls ngx_http_finalize_request
+  internally, AND ngx_js_content_handler returns NGX_DONE which causes
+  ngx_http_core_content_phase to call ngx_http_finalize_request(r, NGX_DONE) —
+  double-finalization for every request.
+
+  The correct nginx pattern (used by ngx_http_empty_gif_module and others) is:
+  the content handler calls ngx_http_output_filter and returns the rc;
+  ngx_http_core_content_phase calls ngx_http_finalize_request exactly once. The
+  req.respond() JS function must communicate the rc back through the opaque.
+
+● Update(nginx/src/js/ngx_js_http_module.c)
+  ⎿  Added 2 lines
+      25                                                                 
+      26  typedef struct {                                               
+      27      ngx_http_request_t  *r;                                    
+      28 +    ngx_int_t            respond_rc;  /* rc from               
+         +ngx_http_output_filter */                                      
+      29 +    unsigned             responded:1; /* set when              
+         +req.respond() was called */                                    
+      30  } ngx_js_request_opaque_t;                                     
+      31                                                                 
+      32                                                                 
+
+● Now rewrite ngx_js_request_respond to never call ngx_http_finalize_request —
+  store the rc in the opaque instead and handle the empty-body case correctly:
+
+● Update(nginx/src/js/ngx_js_http_module.c)
+  ⎿  Added 36 lines, removed 15 lines
+      249      body_len = ngx_strlen(body_cstr);                         
+      250      r->headers_out.content_length_n = (off_t) body_len;       
+      251                                                                
+      252 +    /*                                                        
+      253 +     * req.respond() must NOT call                            
+          +ngx_http_finalize_request() itself.                           
+      254 +     * The correct nginx pattern is: the content handler      
+          +returns the rc to                                             
+      255 +     * ngx_http_core_content_phase, which calls               
+          +ngx_http_finalize_request()                                   
+      256 +     * exactly once.  We store the rc in the opaque and       
+          +ngx_js_content_handler                                        
+      257 +     * reads it after JS_Call returns.                        
+      258 +     */                                                       
+      259 +                                                              
+      260      rc = ngx_http_send_header(r);                             
+      261      if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {   
+      262          JS_FreeCString(ctx, body_cstr);                       
+      263 -        ngx_http_finalize_request(r, rc);                     
+      263 +        op->respond_rc = rc;                                  
+      264 +        op->responded  = 1;                                   
+      265          return JS_UNDEFINED;                                  
+      266      }                                                         
+      267                                                                
+      268 -    if (body_len == 0) {                                      
+      269 -        /* Empty body — headers already sent; nothing more to 
+          - write. */                                                    
+      270 -        JS_FreeCString(ctx, body_cstr);                       
+      271 -        ngx_http_finalize_request(r, NGX_OK);                 
+      272 -        return JS_UNDEFINED;                                  
+      273 -    }                                                         
+      268 +    /*                                                        
+      269 +     * Build the body buffer.  For an empty body, use a       
+          +zero-size buf with                                            
+      270 +     * last_buf = 1 (the nginx idiom, identical to            
+          +ngx_http_send_special                                         
+      271 +     * with NGX_HTTP_LAST).  ngx_http_write_filter does not   
+          +alert on                                                      
+      272 +     * zero-size bufs that carry last_buf or sync flags.      
+      273 +     */                                                       
+      274 +    if (body_len > 0) {                                       
+      275 +        b = ngx_create_temp_buf(r->pool, body_len);           
+      276 +        if (b == NULL) {                                      
+      277 +            JS_FreeCString(ctx, body_cstr);                   
+      278 +            op->respond_rc = NGX_HTTP_INTERNAL_SERVER_ERROR;  
+      279 +            op->responded  = 1;                               
+      280 +            return JS_UNDEFINED;                              
+      281 +        }                                                     
+      282                                                                
+      283 -    b = ngx_create_temp_buf(r->pool, body_len);               
+      284 -    if (b == NULL) {                                          
+      285 -        JS_FreeCString(ctx, body_cstr);                       
+      286 -        ngx_http_finalize_request(r,                          
+          -NGX_HTTP_INTERNAL_SERVER_ERROR);                              
+      287 -        return JS_UNDEFINED;                                  
+      283 +        b->last = ngx_cpymem(b->pos, body_cstr, body_len);    
+      284 +                                                              
+      285 +    } else {                                                  
+      286 +        b = ngx_calloc_buf(r->pool);                          
+      287 +        if (b == NULL) {                                      
+      288 +            JS_FreeCString(ctx, body_cstr);                   
+      289 +            op->respond_rc = NGX_HTTP_INTERNAL_SERVER_ERROR;  
+      290 +            op->responded  = 1;                               
+      291 +            return JS_UNDEFINED;                              
+      292 +        }                                                     
+      293      }                                                         
+      294                                                                
+      295 -    b->last = ngx_cpymem(b->pos, body_cstr, body_len);        
+      296 -                                                              
+      295      b->last_buf      = 1;                                     
+      296      b->last_in_chain = 1;                                     
+      297                                                                
+     ...
+      281      out.next = NULL;                                          
+      282                                                                
+      283      rc = ngx_http_output_filter(r, &out);                     
+      284 -    ngx_http_finalize_request(r, rc);                         
+      284 +    op->respond_rc = rc;                                      
+      285 +    op->responded  = 1;                                       
+      286                                                                
+      287      return JS_UNDEFINED;                                      
+      288  }                                                             
+
+● Now rewrite ngx_js_content_handler to read the rc from the opaque and return
+  it instead of NGX_DONE:
+
+● Update(nginx/src/js/ngx_js_http_module.c)
+  ⎿  Added 22 lines, removed 11 lines
+      368  ngx_int_t                                                     
+      369  ngx_js_content_handler(ngx_http_request_t *r)                 
+      370  {                                                             
+      371 -    ngx_js_conf_t      *jcf;                                  
+      372 -    ngx_js_loc_conf_t  *jlcf;                                 
+      373 -    ngx_js_worker_t    *w;                                    
+      374 -    JSContext          *ctx;                                  
+      375 -    JSValue             global, fn, req_obj, result;          
+      371 +    ngx_js_conf_t            *jcf;                            
+      372 +    ngx_js_loc_conf_t        *jlcf;                           
+      373 +    ngx_js_worker_t          *w;                              
+      374 +    JSContext                *ctx;                            
+      375 +    JSValue                   global, fn, req_obj, result;    
+      376 +    ngx_js_request_opaque_t  *req_op;                         
+      377 +    ngx_int_t                 final_rc;                       
+      378                                                                
+      379      jlcf = ngx_http_get_module_loc_conf(r,                    
+           ngx_js_http_module);                                          
+      380      jcf  = (ngx_js_conf_t *)                                  
+           ngx_get_conf(ngx_cycle->conf_ctx,                             
+     ...
+      410      result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);     
+      411                                                                
+      412      JS_FreeValue(ctx, fn);                                    
+      413 +                                                              
+      414 +    /*                                                        
+      415 +     * Read respond_rc from the opaque BEFORE JS_FreeValue    
+          +triggers the                                                  
+      416 +     * finalizer and frees req_op.                            
+      417 +     *                                                        
+      418 +     * We do NOT call ngx_http_finalize_request() here.  The  
+          +correct nginx                                                 
+      419 +     * pattern is to return the rc to                         
+          +ngx_http_core_content_phase, which                            
+      420 +     * calls ngx_http_finalize_request() exactly once.        
+      421 +     */                                                       
+      422 +    req_op   = JS_GetOpaque(req_obj,                          
+          +ngx_js_request_class_id);                                     
+      423 +    final_rc = (req_op && req_op->responded)                  
+      424 +               ? req_op->respond_rc                           
+      425 +               : NGX_HTTP_INTERNAL_SERVER_ERROR;              
+      426 +                                                              
+      427      JS_FreeValue(ctx, req_obj);                               
+      428                                                                
+      429      if (JS_IsException(result)) {                             
+     ...
+      420                                                                
+      421      JS_FreeValue(ctx, result);                                
+      422                                                                
+      423 -    /*                                                        
+      424 -     * The JS handler called req.respond() which already      
+          -called                                                        
+      425 -     * ngx_http_finalize_request().  Return NGX_DONE so the   
+          -NGINX                                                         
+      426 -     * pipeline does not finalize the request a second time.  
+      427 -     */                                                       
+      428 -    return NGX_DONE;                                          
+      423 +    return final_rc;                                          
+      424  }                                                             
+      425                                                                
+      426                                                                
+
+● Bash(make -C /home/vadim/fixes.github/nginx-dynamic-conf/nginx -j$(nproc)
+      2>&1)
+  ⎿  make: Entering directory '/home/vadim/fixes.github/nginx-dynamic-conf/
+     nginx'
+     make -f objs/Makefile
+     … +79 lines (ctrl+o to expand)
+
+● Bash(prove -v js_com_phase1.t js_com_phase2.t js_com_phase3.t js_com_phase4.t
+      2>&1)
+  ⎿  js_com_phase1.t ..
+     1..29
+     ok 1 - nginx.version is set
+     … +34 lines (ctrl+o to expand)
+
+● All 69 tests pass across all four phases. Now commit the fixes:
+
+● Bash(cd /home/vadim/fixes.github/nginx-dynamic-conf && git status && git diff
+      --stat && git log --oneline -6)
+  ⎿  On branch js_dom
+     Changes not staged for commit:
+       (use "git add <file>..." to update what will be committed)
+     … +19 lines (ctrl+o to expand)
+
+● Bash(git add nginx/src/js/ngx_js_com_http.c nginx/src/js/ngx_js_http_module.c
+      && git commit -m "JS: fix three bugs found during test run…)
+  ⎿  [js_dom 08a26ef] JS: fix three bugs found during test run
+      2 files changed, 167 insertions(+), 38 deletions(-)
+
+● All 69/69 tests pass. Here's a summary of the three bugs that were fixed:
+
+  1. Worker crash on server.names / server.name (Phase 1)
+
+  cscf->server_names.elts is allocated from cf->temp_pool, which nginx destroys
+  after init_conf() returns but before workers fork. Workers inherited dangling
+  pointers. Fix: ngx_js_wrap_server() now copies the ngx_str_t array into
+  cycle->pool only when ngx_process != NGX_PROCESS_WORKER. The guard uses != 
+  NGX_PROCESS_WORKER (not == NGX_PROCESS_MASTER) because during init_conf() the
+  process is NGX_PROCESS_SINGLE (0), not NGX_PROCESS_MASTER (1).
+
+  2. server.root mutation not serving new root (Phase 2)
+
+  ngx_conf_merge_str_value copies the parent's root.data pointer by value —
+  child locations that lack an explicit root {} directive share the same address
+   as the parent. The setter was only updating the server-level clcf. Fix: a new
+   ngx_js_propagate_root() recursively walks static_locations (and
+  regex_locations) and updates every child whose root.data matches the old
+  pointer.
+
+  3. Double ngx_http_finalize_request() for all Phase 4 requests
+
+  req.respond() was calling ngx_http_finalize_request() internally, then
+  ngx_js_content_handler returned NGX_DONE, causing ngx_http_core_content_phase
+  to call ngx_http_finalize_request(r, NGX_DONE) a second time — triggering
+  [alert] http request count is zero for every request. Fix: req.respond() now
+  stores the output-filter rc in the NginxRequest opaque; ngx_js_content_handler
+   reads it and returns it to nginx, letting ngx_http_core_content_phase call
+  ngx_http_finalize_request() exactly once. The empty-body case uses
+  ngx_calloc_buf + last_buf=1 through ngx_http_output_filter (the standard nginx
+   idiom).
+
+✻ Baked for 27m 42s
+
+❯ /rename after_all_tests_ok 
+  ⎿  Session renamed to: after_all_tests_ok
+
+❯ As next step, can we sonsider plan for script ability add/remove any      
+  config objects at config time? for example: imagine config with only      
+  dirctive "js_include" and this javascript will dynamically create rest of 
+   config? or after config parsing it can modify it? I see 2 approches      
+  here: just use something like config.write("http {}") (like               
+  document.write() in browser), or create configuration using COM API:      
+  create configuration tree, and/or modify it at run-time (in nginx         
+  workers). Since nginx workers consideres as identical items, how can we   
+  reconfigure all workers from master worker?                               
+
+● This is a rich design question with several distinct sub-problems. Let me lay
+  out the constraints and the options clearly.
+
+  ---
+  The Two Execution Windows
+
+  nginx has two points where "JS that builds config" can run:
+
+  Window: During parse
+  When: Inside ngx_conf_parse() when js_include is encountered
+  Can modify: Anything — location trees not yet built
+  ────────────────────────────────────────
+  Window: After parse (init_conf)
+  When: After ngx_http_block() finishes
+  Can modify: Scalars (root, workers) + shmem (upstreams). Location trees are
+    frozen.
+
+  The current implementation uses the after-parse window. That's fine for scalar
+   mutations and upstream manipulation (Phases 2–3), but structural additions
+  (addServer, addLocation) must happen during parse — before
+  ngx_http_optimize_servers() builds the radix/hash structures.
+
+  ---
+  Approach A: config.write("http { ... }")
+
+  JS runs as a config preprocessor — executed when js_include is encountered
+  mid-parse, and it emits more config text that is fed back into
+  ngx_conf_parse() recursively:
+
+  // nginx.conf contains only:  js_include bootstrap.js
+  config.write(`
+    http {
+      server {
+        listen 80;
+        server_name localhost;
+        location / { root /var/www/html; }
+      }
+    }
+  `);
+
+  nginx already supports recursive parsing (include files do it). Implementation
+   is straightforward: config.write(text) allocates a ngx_buf_t, sets
+  cf->conf_file to point at it, calls ngx_conf_parse() recursively.
+
+  Pros: No structural COM needed. Every directive nginx already knows works.
+  Clean separation — JS is a preprocessor, not an internal manipulator.
+
+  Cons: JS runs during parse, so the COM objects (nginx.http.servers[]) don't
+  exist yet — you can introspect the environment (files, env vars, external
+  services) but not already-parsed nginx config.
+
+  ---
+  Approach B: Structural COM API
+
+  JS runs after parse (current init_conf window), but structural additions are
+  deferred to ngx_js_http_module's postconfiguration hook, which fires inside
+  ngx_http_block() before the location trees are frozen:
+
+  ngx_http_block()
+    → create_loc_conf × all HTTP modules
+    → merge_loc_conf × all HTTP modules
+    → postconfiguration × all HTTP modules    ← structural mutations applied
+  HERE
+    → ngx_http_optimize_servers()             ← trees frozen after this
+    → ngx_http_init_static_location_trees()
+
+  // Runs in init_conf() — structural additions queued, applied in 
+  postconfiguration
+  const srv = nginx.http.addServer({ listen: [8080], serverNames:
+  ['api.example.com'] });
+  srv.addLocation('/api/', { root: '/srv/api', handler: 'apiHandler' });
+
+  Pros: Full COM access — JS can read existing servers, conditionally add more,
+  combine with scalar mutations.
+
+  Cons: More complex to implement. addServer must allocate a complete
+  ngx_http_core_srv_conf_t and all loc_conf[] slots for every HTTP module (to
+  satisfy merge expectations). This is the same work nginx does internally in
+  ngx_http_core_server().
+
+  ---
+  Multi-Worker Coordination: The Hard Constraint
+
+  This is the real architectural boundary:
+
+  master: init_conf() runs → JS mutates config → fork workers
+            ↓
+  worker 0:  inherits master's memory snapshot (read-only copy-on-write)
+  worker 1:  inherits master's memory snapshot
+  worker N:  inherits master's memory snapshot
+
+  Changes made before fork() are free — all workers see them automatically. This
+   covers Phases 1–4 as implemented today.
+
+  Changes made after fork() are per-worker. Three mechanisms exist for
+  cross-worker coordination:
+
+  1. Shared memory (the only truly atomic mechanism)
+
+  Phase 3 already uses this for upstream peers. It can be extended to a
+  general-purpose slab:
+
+  nginx.shm.set('routing_table', JSON.stringify(routes));  // any worker writes
+  // Every worker reads it on each request (or caches with TTL)
+  const routes = JSON.parse(nginx.shm.get('routing_table'));
+
+  This is the right tool for data that changes at runtime (routing tables,
+  feature flags, rate limit state). It does not work for nginx C struct
+  mutations (location trees etc.) because those structs are not shmem-backed.
+
+  2. nginx reload (SIGHUP) — workers restart with new config
+
+  The standard nginx mechanism. JS re-runs from scratch in init_conf() of the
+  new cycle. New workers fork with the updated config; old workers drain
+  gracefully. Zero-downtime since nginx already handles this.
+
+  This is the right tool for structural config changes at runtime. The workflow:
+  update /etc/nginx/routes.json
+  nginx -s reload   # or POST to management API that sends SIGHUP
+
+  JS reads routes.json in init_conf() and builds the COM tree accordingly.
+
+  3. Worker-internal JS state (no inter-worker sync)
+
+  Since each worker has its own JSRuntime, a nginx.onReload(fn) callback
+  (triggered by the existing ngx_process_get_status() SIGUSR1 path) can update
+  worker-private JS objects. Useful for in-process caches that tolerate
+  per-worker staleness.
+
+  ---
+  Recommendation: Implement Both A and B, Use Shmem for Runtime
+
+  The two approaches are complementary, not competing:
+
+  Use case: Build entire config from scratch (js_include only)
+  Mechanism: Approach A: config.write(text) as preprocessor
+  ────────────────────────────────────────
+  Use case: Read existing config, conditionally add/modify
+  Mechanism: Approach B: structural COM (addServer, addLocation) deferred to
+    postconfiguration
+  ────────────────────────────────────────
+  Use case: Runtime routing table / feature flags
+  Mechanism: nginx.shm key-value store (slab-backed)
+  ────────────────────────────────────────
+  Use case: Structural config changes at runtime
+  Mechanism: Existing nginx reload (SIGHUP) + JS re-runs init_conf
+
+  Workers are intentionally not general-purpose reconfiguration targets. nginx's
+   architecture treats them as identical, stateless request handlers. The
+  master-restart-with-new-config model (reload) is the right lever for
+  structural changes; shared memory is the right lever for data changes.
+
+  The next concrete implementation step would be Approach A first — it's
+  architecturally simpler (no deferred mutation queue, no postconfiguration
+  hooks for structure) and immediately enables the "minimal nginx.conf + JS
+  builds everything" scenario. The config.write() implementation is roughly:
+
+  // During js_include execution — cf is available on JS context
+  // config.write(text) pushes a buffer and calls ngx_conf_parse recursively
+  static JSValue
+  ngx_js_config_write(JSContext *ctx, JSValueConst this_val,
+      int argc, JSValueConst *argv)
+  {
+      ngx_conf_t      *cf = JS_GetContextOpaque2(ctx, ...);
+      const char      *text = JS_ToCString(ctx, argv[0]);
+      // ... set up cf->conf_file pointing at text buffer ...
+      ngx_conf_parse(cf, NULL);
+      JS_FreeCString(ctx, text);
+      return JS_UNDEFINED;
+  }
+
+  This requires shifting the JS execution window from init_conf() to inside the 
+  js_include directive handler — which also unlocks postconfiguration-timed
+  structural mutations as a natural consequence.
+
+✻ Crunched for 1m 59s
