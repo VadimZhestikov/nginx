@@ -15,11 +15,45 @@
 #include "ngx_js.h"
 
 
+/* Channel message types (shared with ngx_js_worker.c for Worker-thread SW) */
+#define NGX_JS_SW_MSG_DATA     0u
+#define NGX_JS_SW_MSG_CONNECT  1u
+#define NGX_JS_SW_MSG_TERM     2u
+
+
 /*
  * Install the global SharedWorker constructor into ctx.
  * Called once per process from ngx_js_com_init().
  */
 ngx_int_t  ngx_js_sw_install(JSContext *ctx);
+
+
+/*
+ * Acquire a channel to a SharedWorker for the given URL.
+ * May be called from any thread in a nginx worker process (including
+ * JS Worker threads) — the call blocks until the master manager replies.
+ * Sends the CONNECT sentinel on the returned fd.
+ * Returns the worker_fd on success, -1 on failure.
+ */
+int  ngx_js_sw_acquire_channel(const char *url, size_t url_len,
+    ngx_uint_t worker_idx);
+
+/*
+ * Send a DATA message on a SharedWorker channel fd.
+ * Used by JS Worker threads to call sw.postMessage().
+ * Takes ownership of buf and sab_tab (freed by channel_send internals).
+ */
+void  ngx_js_sw_wt_send(int worker_fd, uint8_t *buf, uint32_t len,
+    uint8_t **sab_tab, uint32_t n_sabs);
+
+/*
+ * Receive the next message from a SharedWorker channel fd (non-blocking).
+ * Returns 0 on success (caller owns *buf_out / *sab_tab_out),
+ *        -1 if no message is available or on error.
+ */
+int  ngx_js_sw_wt_recv(int worker_fd, uint32_t *type_out,
+    uint8_t **buf_out, uint32_t *len_out,
+    uint8_t ***sab_tab_out, uint32_t *n_sabs_out);
 
 /*
  * Release per-worker resources (epoll connection, on_message JSValue).

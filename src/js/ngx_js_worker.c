@@ -26,6 +26,7 @@
 #include <cutils.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
+#include "ngx_js_sw.h"
 #include "ngx_js_worker.h"
 
 
@@ -78,12 +79,262 @@ typedef struct {
 } ngx_js_worker_opaque_t;
 
 
+/*
+ * One SharedWorker connection owned by a JS Worker thread.
+ * Linked list rooted at ngx_js_wthread_ctx_t.sw_list.
+ *
+ * js_obj holds a strong JSValue reference to the wrapping JS object so that
+ * the GC does not prematurely collect it when the user-script's local 'sw'
+ * variable goes out of scope after onmessage() returns.  The fd must remain
+ * open until the Worker thread has received the SW reply and forwarded it.
+ * Released explicitly in done: before JS_FreeContext.
+ */
+typedef struct ngx_js_wt_sw_s  ngx_js_wt_sw_t;
+struct ngx_js_wt_sw_s {
+    int               worker_fd;  /* channel fd to SW thread (or -1 if dead) */
+    JSValue           on_message;
+    JSValue           js_obj;     /* strong ref — prevents premature GC */
+    ngx_js_wt_sw_t  **list;       /* &tctx->sw_list; for unlink in finalizer */
+    ngx_js_wt_sw_t   *next;
+};
+
+
 /* Stored in the worker thread's JS context opaque. */
 typedef struct {
     ngx_js_msg_pipe_t  *to_worker;
     ngx_js_msg_pipe_t  *from_worker;
     JSValue             on_message;
+    ngx_js_wt_sw_t     *sw_list;   /* SharedWorker connections (may be NULL) */
 } ngx_js_wthread_ctx_t;
+
+
+/* ------------------------------------------------------------------ */
+/* SharedWorker class (for use inside JS Worker threads)               */
+/* ------------------------------------------------------------------ */
+
+static JSClassID  ngx_js_wt_sw_class_id;
+
+/* Max simultaneous SW connections per Worker thread (poll array) */
+#define NGX_JS_WT_SW_MAX  16
+
+
+static void
+ngx_js_wt_sw_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_wt_sw_t  *sw, **p;
+
+    sw = JS_GetOpaque(val, ngx_js_wt_sw_class_id);
+    if (sw == NULL) {
+        return;
+    }
+
+    /* Unlink from the Worker thread's sw_list */
+    if (sw->list != NULL) {
+        for (p = sw->list; *p != NULL; p = &(*p)->next) {
+            if (*p == sw) {
+                *p = sw->next;
+                break;
+            }
+        }
+    }
+
+    JS_FreeValueRT(rt, sw->on_message);
+
+    if (sw->worker_fd >= 0) {
+        close(sw->worker_fd);
+    }
+
+    ngx_free(sw);
+}
+
+
+static JSClassDef ngx_js_wt_sw_class = {
+    "SharedWorker",
+    .finalizer = ngx_js_wt_sw_finalizer
+};
+
+
+static JSValue
+ngx_js_wt_sw_post_message(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_wt_sw_t  *sw;
+    uint8_t         *qjs_buf, *buf, **qjs_sab, **sab_tab;
+    size_t           qjs_len, sab_tab_len;
+
+    sw = JS_GetOpaque2(ctx, this_val, ngx_js_wt_sw_class_id);
+    if (sw == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (sw->worker_fd < 0) {
+        return JS_ThrowInternalError(ctx, "postMessage: SW disconnected");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "postMessage(data): data required");
+    }
+
+    qjs_buf = JS_WriteObject2(ctx, &qjs_len, argv[0],
+                              JS_WRITE_OBJ_SAB | JS_WRITE_OBJ_REFERENCE,
+                              &qjs_sab, &sab_tab_len);
+    if (qjs_buf == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    buf = ngx_alloc(qjs_len, ngx_cycle->log);
+    if (buf == NULL) {
+        js_free(ctx, qjs_buf);
+        js_free(ctx, qjs_sab);
+        return JS_ThrowInternalError(ctx, "postMessage: alloc failed");
+    }
+
+    ngx_memcpy(buf, qjs_buf, qjs_len);
+    js_free(ctx, qjs_buf);
+
+    sab_tab = NULL;
+    if (sab_tab_len > 0) {
+        sab_tab = ngx_alloc(sab_tab_len * sizeof(uint8_t *), ngx_cycle->log);
+        if (sab_tab == NULL) {
+            js_free(ctx, qjs_sab);
+            ngx_free(buf);
+            return JS_ThrowInternalError(ctx, "postMessage: alloc failed");
+        }
+        ngx_memcpy(sab_tab, qjs_sab, sab_tab_len * sizeof(uint8_t *));
+    }
+    js_free(ctx, qjs_sab);
+
+    ngx_js_sw_wt_send(sw->worker_fd, buf, (uint32_t) qjs_len,
+                      sab_tab, (uint32_t) sab_tab_len);
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_wt_sw_get_onmessage(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_wt_sw_t  *sw;
+
+    sw = JS_GetOpaque2(ctx, this_val, ngx_js_wt_sw_class_id);
+    if (sw == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_DupValue(ctx, sw->on_message);
+}
+
+
+static JSValue
+ngx_js_wt_sw_set_onmessage(JSContext *ctx, JSValueConst this_val,
+    JSValue val, int magic)
+{
+    ngx_js_wt_sw_t  *sw;
+
+    sw = JS_GetOpaque2(ctx, this_val, ngx_js_wt_sw_class_id);
+    if (sw == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    JS_FreeValue(ctx, sw->on_message);
+    sw->on_message = JS_DupValue(ctx, val);
+
+    return JS_UNDEFINED;
+}
+
+
+static const JSCFunctionListEntry  ngx_js_wt_sw_proto_funcs[] = {
+    JS_CFUNC_DEF("postMessage", 1, ngx_js_wt_sw_post_message),
+    JS_CGETSET_MAGIC_DEF("onmessage",
+                         ngx_js_wt_sw_get_onmessage,
+                         ngx_js_wt_sw_set_onmessage, 0),
+};
+
+
+/*
+ * new SharedWorker("script.js") inside a JS Worker thread.
+ *
+ * Connects to (or creates) a SharedWorker in the master process by
+ * calling ngx_js_sw_acquire_channel(), which talks to the SW manager
+ * thread via sw_cmd_fds.  The call blocks only for the manager reply,
+ * which is safe because Worker threads run their own blocking poll loop.
+ */
+static JSValue
+ngx_js_wt_sw_ctor(JSContext *ctx, JSValueConst new_target,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_wthread_ctx_t  *tctx;
+    ngx_js_wt_sw_t        *sw;
+    JSValue                proto, obj;
+    const char            *url_cstr;
+    size_t                 url_len;
+    int                    worker_fd;
+
+    tctx = JS_GetContextOpaque(ctx);
+    if (tctx == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "SharedWorker: no thread context");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "new SharedWorker(url): url required");
+    }
+
+    url_cstr = JS_ToCStringLen(ctx, &url_len, argv[0]);
+    if (url_cstr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    /* Blocking acquire: sends cmd to master manager, waits for reply */
+    worker_fd = ngx_js_sw_acquire_channel(url_cstr, url_len, ngx_worker);
+    JS_FreeCString(ctx, url_cstr);
+
+    if (worker_fd < 0) {
+        return JS_ThrowInternalError(ctx,
+                                     "SharedWorker: failed to connect");
+    }
+
+    sw = ngx_alloc(sizeof(ngx_js_wt_sw_t), ngx_cycle->log);
+    if (sw == NULL) {
+        close(worker_fd);
+        return JS_ThrowInternalError(ctx, "SharedWorker: alloc failed");
+    }
+
+    sw->worker_fd  = worker_fd;
+    sw->on_message = JS_UNDEFINED;
+    sw->js_obj     = JS_UNDEFINED;  /* filled in after obj is created */
+    sw->list       = &tctx->sw_list;
+    sw->next       = tctx->sw_list;
+    tctx->sw_list  = sw;
+
+    proto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_wt_sw_proto_funcs,
+                               countof(ngx_js_wt_sw_proto_funcs));
+
+    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_wt_sw_class_id);
+    JS_FreeValue(ctx, proto);
+
+    if (JS_IsException(obj)) {
+        tctx->sw_list = sw->next;
+        close(worker_fd);
+        ngx_free(sw);
+        return obj;
+    }
+
+    JS_SetOpaque(obj, sw);
+
+    /*
+     * Hold a strong reference so the GC does not collect this JS object when
+     * the user-script's local variable goes out of scope.  The fd must stay
+     * open until the Worker thread has drained the SW reply.  Released in the
+     * done: section below (before JS_FreeContext).
+     */
+    sw->js_obj = JS_DupValue(ctx, obj);
+
+    return obj;
+}
 
 
 /* ------------------------------------------------------------------ */
@@ -416,7 +667,8 @@ wt_read_file(const char *path, size_t *out_len)
  * ngx_js_worker_thread — entry point for the worker pthread.
  *
  * Creates a fresh JSRuntime+JSContext, installs global postMessage /
- * onmessage, evaluates the script, then enters a blocking message loop.
+ * onmessage / SharedWorker, evaluates the script, then enters a blocking
+ * message loop that also polls any SharedWorker channel fds.
  */
 static void *
 ngx_js_worker_thread(void *arg)
@@ -428,10 +680,12 @@ ngx_js_worker_thread(void *arg)
     JSValue                 global, result, data, event_obj, call_ret;
     u_char                 *src;
     size_t                  src_len;
-    struct pollfd           pfd;
+    struct pollfd           pfds[NGX_JS_WT_SW_MAX + 1];
+    int                     nfds;
     ngx_queue_t             msgs;
     ngx_queue_t            *q;
     ngx_js_msg_t           *msg;
+    ngx_js_wt_sw_t         *sw;
     int                     terminate;
 
     rt = JS_NewRuntime();
@@ -456,6 +710,9 @@ ngx_js_worker_thread(void *arg)
      */
     JS_SetSharedArrayBufferFunctions(rt, &ngx_js_sab_funcs);
 
+    /* Register the SharedWorker class in this runtime */
+    JS_NewClass(rt, ngx_js_wt_sw_class_id, &ngx_js_wt_sw_class);
+
     ctx = JS_NewContext(rt);
     if (ctx == NULL) {
         js_std_free_handlers(rt);
@@ -473,6 +730,7 @@ ngx_js_worker_thread(void *arg)
     tctx->to_worker   = &state->to_worker;
     tctx->from_worker = &state->from_worker;
     tctx->on_message  = JS_UNDEFINED;
+    tctx->sw_list     = NULL;
 
     JS_SetContextOpaque(ctx, tctx);
 
@@ -484,6 +742,13 @@ ngx_js_worker_thread(void *arg)
     JS_SetPropertyFunctionList(ctx, global,
                                ngx_js_wt_global_props,
                                countof(ngx_js_wt_global_props));
+
+    /* Install SharedWorker constructor for use from Worker threads */
+    JS_SetPropertyStr(ctx, global, "SharedWorker",
+                      JS_NewCFunction2(ctx, ngx_js_wt_sw_ctor,
+                                       "SharedWorker", 1,
+                                       JS_CFUNC_constructor, 0));
+
     JS_FreeValue(ctx, global);
 
     /* Read and evaluate the worker script */
@@ -515,18 +780,129 @@ ngx_js_worker_thread(void *arg)
 
     JS_FreeValue(ctx, result);
 
-    /* Message loop */
-    pfd.fd     = state->to_worker.rfd;
-    pfd.events = POLLIN;
+    /* Message loop — polls to_worker pipe + any SharedWorker channel fds */
 
     for ( ;; ) {
-        pfd.revents = 0;
+        /*
+         * Build pfds fresh each iteration: [0] = to_worker.rfd,
+         * [1..N] = worker_fd of each live SW connection.
+         * Capped at NGX_JS_WT_SW_MAX SWs; extra connections are polled
+         * in subsequent iterations once earlier ones drain.
+         */
+        pfds[0].fd      = state->to_worker.rfd;
+        pfds[0].events  = POLLIN;
+        pfds[0].revents = 0;
+        nfds = 1;
 
-        if (poll(&pfd, 1, -1) < 0) {
+        for (sw = tctx->sw_list;
+             sw != NULL && nfds <= NGX_JS_WT_SW_MAX;
+             sw = sw->next)
+        {
+            pfds[nfds].fd      = sw->worker_fd;
+            pfds[nfds].events  = POLLIN;
+            pfds[nfds].revents = 0;
+            nfds++;
+        }
+
+        if (poll(pfds, nfds, -1) < 0) {
             if (errno == EINTR) {
                 continue;
             }
             break;
+        }
+
+        /*
+         * Process SharedWorker messages first.
+         * We build a snapshot of {fd, on_message} pairs before executing
+         * any JS so that mutations to sw_list during callbacks don't affect
+         * the iteration.
+         */
+        {
+            struct {
+                int      fd;
+                JSValue  on_message;
+            } snap[NGX_JS_WT_SW_MAX];
+            int      snap_len, si;
+            uint8_t *sw_buf;
+            uint32_t sw_type, sw_len, sw_n_sabs;
+            uint8_t **sw_sab_tab;
+
+            snap_len = 0;
+            {
+                int  pidx = 1;
+                for (sw = tctx->sw_list;
+                     sw != NULL && pidx < nfds && snap_len < NGX_JS_WT_SW_MAX;
+                     sw = sw->next, pidx++)
+                {
+                    if (!(pfds[pidx].revents & POLLIN)) {
+                        continue;
+                    }
+                    snap[snap_len].fd         = sw->worker_fd;
+                    snap[snap_len].on_message = JS_DupValue(ctx, sw->on_message);
+                    snap_len++;
+                }
+            }
+
+            for (si = 0; si < snap_len; si++) {
+                if (snap[si].fd < 0) {
+                    JS_FreeValue(ctx, snap[si].on_message);
+                    continue;
+                }
+
+                while (ngx_js_sw_wt_recv(snap[si].fd, &sw_type, &sw_buf,
+                                         &sw_len, &sw_sab_tab,
+                                         &sw_n_sabs) == 0)
+                {
+                    uint32_t  k;
+
+                    if (sw_type != NGX_JS_SW_MSG_DATA) {
+                        if (sw_buf) { ngx_free(sw_buf); }
+                        for (k = 0; k < sw_n_sabs; k++) {
+                            ngx_js_sab_free(NULL, sw_sab_tab[k]);
+                        }
+                        ngx_free(sw_sab_tab);
+                        continue;
+                    }
+
+                    data = JS_ReadObject(ctx, sw_buf, (size_t) sw_len,
+                                         JS_READ_OBJ_SAB
+                                         | JS_READ_OBJ_REFERENCE);
+                    ngx_free(sw_buf);
+                    for (k = 0; k < sw_n_sabs; k++) {
+                        ngx_js_sab_free(NULL, sw_sab_tab[k]);
+                    }
+                    ngx_free(sw_sab_tab);
+
+                    if (JS_IsException(data)) {
+                        JS_FreeValue(ctx, JS_GetException(ctx));
+                        continue;
+                    }
+
+                    event_obj = JS_NewObject(ctx);
+                    JS_SetPropertyStr(ctx, event_obj, "data", data);
+
+                    if (JS_IsFunction(ctx, snap[si].on_message)) {
+                        call_ret = JS_Call(ctx, snap[si].on_message,
+                                           JS_UNDEFINED, 1, &event_obj);
+                        if (JS_IsException(call_ret)) {
+                            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                                          "js worker sw onmessage exception");
+                            JS_FreeValue(ctx, JS_GetException(ctx));
+                        }
+                        JS_FreeValue(ctx, call_ret);
+                    }
+
+                    JS_FreeValue(ctx, event_obj);
+                    while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+                }
+
+                JS_FreeValue(ctx, snap[si].on_message);
+            }
+        }
+
+        /* Process to_worker messages */
+        if (!(pfds[0].revents & POLLIN)) {
+            continue;
         }
 
         ngx_queue_init(&msgs);
@@ -616,10 +992,33 @@ ngx_js_worker_thread(void *arg)
 
 done:
     JS_FreeValue(ctx, tctx->on_message);
-    ngx_free(tctx);
+    /*
+     * Release the strong js_obj references held by each SW entry.
+     * This triggers the finalizer for each entry (refcount → 0), which:
+     *   - unlinks the entry from tctx->sw_list,
+     *   - frees sw->on_message,
+     *   - closes sw->worker_fd (after we set it to -1 here),
+     *   - frees the ngx_js_wt_sw_t struct itself.
+     * We save sw->next before each JS_FreeValue call because the finalizer
+     * frees the struct.  ngx_free(tctx) comes last so the finalizer can
+     * safely dereference sw->list (= &tctx->sw_list).
+     */
+    {
+        ngx_js_wt_sw_t  *sw_iter, *sw_next_iter;
+
+        for (sw_iter = tctx->sw_list; sw_iter != NULL; sw_iter = sw_next_iter) {
+            sw_next_iter = sw_iter->next;
+            if (sw_iter->worker_fd >= 0) {
+                close(sw_iter->worker_fd);
+                sw_iter->worker_fd = -1;
+            }
+            JS_FreeValue(ctx, sw_iter->js_obj);  /* → finalizer → ngx_free */
+        }
+    }
     JS_FreeContext(ctx);
     js_std_free_handlers(rt);
     JS_FreeRuntime(rt);
+    ngx_free(tctx);
 
     return NULL;
 }
@@ -1060,12 +1459,20 @@ ngx_js_worker_install(JSContext *ctx)
 
     if (!initialized) {
         JS_NewClassID(&ngx_js_worker_class_id);
+        JS_NewClassID(&ngx_js_wt_sw_class_id);
         initialized = 1;
     }
 
     if (JS_NewClass(JS_GetRuntime(ctx),
                     ngx_js_worker_class_id,
                     &ngx_js_worker_class) < 0)
+    {
+        return NGX_ERROR;
+    }
+
+    if (JS_NewClass(JS_GetRuntime(ctx),
+                    ngx_js_wt_sw_class_id,
+                    &ngx_js_wt_sw_class) < 0)
     {
         return NGX_ERROR;
     }

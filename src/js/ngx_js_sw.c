@@ -65,9 +65,7 @@
 /* Channel message constants                                           */
 /* ------------------------------------------------------------------ */
 
-#define NGX_JS_SW_MSG_DATA     0u
-#define NGX_JS_SW_MSG_CONNECT  1u
-#define NGX_JS_SW_MSG_TERM     2u
+/* NGX_JS_SW_MSG_* are defined in ngx_js_sw.h */
 
 /* Maximum memfd SABs and total message body per sendmsg */
 #define NGX_JS_SW_MAX_SABS    8u
@@ -1787,6 +1785,138 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
     w->local_sw_list = stub;
 
     return ngx_js_sw_make_object(ctx, stub, 0);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Public API for JS Worker threads                                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ngx_js_sw_acquire_channel — connect to (or create) a SharedWorker for
+ * the given URL from any thread in a nginx worker process.
+ *
+ * This is the non-JS, non-event-loop subset of ngx_js_sw_request_dynamic:
+ * it communicates with the master manager via sw_cmd_fds (SEQPACKET, safe
+ * for concurrent callers) and blocks only on the per-request reply socket.
+ * The CONNECT sentinel is sent on the returned fd.
+ */
+int
+ngx_js_sw_acquire_channel(const char *url, size_t url_len,
+    ngx_uint_t worker_idx)
+{
+    int                reply_fds[2];
+    int                recv_fd;
+    uint32_t           url_len32, worker_idx32;
+    uint8_t           *cmdbuf;
+    uint8_t            status;
+    struct msghdr      msg;
+    struct iovec       iov;
+    union {
+        char            buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_snd;
+    union {
+        char            buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_rcv;
+    struct cmsghdr    *cmh;
+    ssize_t            n;
+
+    if (sw_cmd_fds[1] < 0) {
+        return -1;
+    }
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, reply_fds) != 0) {
+        return -1;
+    }
+
+    url_len32    = (uint32_t) url_len;
+    worker_idx32 = (uint32_t) worker_idx;
+
+    cmdbuf = ngx_alloc(NGX_JS_SW_CMD_HDR + url_len, ngx_cycle->log);
+    if (cmdbuf == NULL) {
+        close(reply_fds[0]);
+        close(reply_fds[1]);
+        return -1;
+    }
+
+    ngx_memcpy(cmdbuf,                    &url_len32,    sizeof(uint32_t));
+    ngx_memcpy(cmdbuf + sizeof(uint32_t), &worker_idx32, sizeof(uint32_t));
+    ngx_memcpy(cmdbuf + NGX_JS_SW_CMD_HDR, url, url_len);
+
+    iov.iov_base = cmdbuf;
+    iov.iov_len  = NGX_JS_SW_CMD_HDR + url_len;
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_snd.buf;
+    msg.msg_controllen = sizeof(cmsg_snd.buf);
+
+    cmh             = CMSG_FIRSTHDR(&msg);
+    cmh->cmsg_level = SOL_SOCKET;
+    cmh->cmsg_type  = SCM_RIGHTS;
+    cmh->cmsg_len   = CMSG_LEN(sizeof(int));
+    ngx_memcpy(CMSG_DATA(cmh), &reply_fds[1], sizeof(int));
+
+    n = sendmsg(sw_cmd_fds[1], &msg, 0);
+    ngx_free(cmdbuf);
+    close(reply_fds[1]);
+
+    if (n < 0) {
+        close(reply_fds[0]);
+        return -1;
+    }
+
+    /* Blocking receive: status byte + worker_fd via SCM_RIGHTS */
+    iov.iov_base = &status;
+    iov.iov_len  = 1;
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_rcv.buf;
+    msg.msg_controllen = sizeof(cmsg_rcv.buf);
+
+    n = recvmsg(reply_fds[0], &msg, 0);
+    close(reply_fds[0]);
+
+    recv_fd = -1;
+    if (n >= 1 && status == 0) {
+        cmh = CMSG_FIRSTHDR(&msg);
+        if (cmh != NULL
+            && cmh->cmsg_level == SOL_SOCKET
+            && cmh->cmsg_type  == SCM_RIGHTS
+            && cmh->cmsg_len   == CMSG_LEN(sizeof(int)))
+        {
+            ngx_memcpy(&recv_fd, CMSG_DATA(cmh), sizeof(int));
+        }
+    }
+
+    if (recv_fd >= 0) {
+        channel_send(recv_fd, NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
+    }
+
+    return recv_fd;
+}
+
+
+void
+ngx_js_sw_wt_send(int worker_fd, uint8_t *buf, uint32_t len,
+    uint8_t **sab_tab, uint32_t n_sabs)
+{
+    channel_send(worker_fd, NGX_JS_SW_MSG_DATA, buf, len, sab_tab, n_sabs);
+}
+
+
+int
+ngx_js_sw_wt_recv(int worker_fd, uint32_t *type_out,
+    uint8_t **buf_out, uint32_t *len_out,
+    uint8_t ***sab_tab_out, uint32_t *n_sabs_out)
+{
+    return channel_recv(worker_fd, type_out, buf_out, len_out,
+                        sab_tab_out, n_sabs_out);
 }
 
 
