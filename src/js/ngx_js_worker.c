@@ -30,46 +30,6 @@
 
 
 /* ------------------------------------------------------------------ */
-/* SharedArrayBuffer helpers                                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * Mirror of JSSABHeader in quickjs-libc.c.  The uint64_t buf[] member
- * forces 8-byte alignment so sizeof matches JSSABHeader exactly.
- * Both this code and quickjs-libc use libc malloc, so our dup/free
- * functions work correctly on SABs allocated by either side.
- */
-typedef struct {
-    int      ref_count;
-    uint64_t buf[0];
-} ngx_js_sab_hdr_t;
-
-
-static void
-ngx_js_sab_free(void *opaque, void *ptr)
-{
-    ngx_js_sab_hdr_t  *hdr;
-    int                rc;
-
-    hdr = (ngx_js_sab_hdr_t *) ptr - 1;
-    rc  = __atomic_fetch_add(&hdr->ref_count, -1, __ATOMIC_SEQ_CST) - 1;
-    if (rc == 0) {
-        free(hdr);
-    }
-}
-
-
-static void
-ngx_js_sab_dup(void *opaque, void *ptr)
-{
-    ngx_js_sab_hdr_t  *hdr;
-
-    hdr = (ngx_js_sab_hdr_t *) ptr - 1;
-    __atomic_fetch_add(&hdr->ref_count, 1, __ATOMIC_SEQ_CST);
-}
-
-
-/* ------------------------------------------------------------------ */
 /* Message types                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -490,20 +450,11 @@ ngx_js_worker_thread(void *arg)
     JS_SetCanBlock(rt, TRUE);
 
     /*
-     * Register our SAB alloc/free/dup so that SharedArrayBuffers
-     * serialised by the main thread (which uses the same functions via
-     * js_std_init_handlers) can be passed by reference through the pipe.
+     * Register the shared SAB alloc/free/dup.  Worker threads may create
+     * their own SharedArrayBuffers (via new SharedArrayBuffer() in JS), so
+     * the full alloc function is needed here too.
      */
-    {
-        static const JSSharedArrayBufferFunctions sab_funcs = {
-            NULL,            /* alloc — not needed: SABs are created on the
-                              *         main side; worker only receives them */
-            ngx_js_sab_free,
-            ngx_js_sab_dup,
-            NULL,
-        };
-        JS_SetSharedArrayBufferFunctions(rt, &sab_funcs);
-    }
+    JS_SetSharedArrayBufferFunctions(rt, &ngx_js_sab_funcs);
 
     ctx = JS_NewContext(rt);
     if (ctx == NULL) {

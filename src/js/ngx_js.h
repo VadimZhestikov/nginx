@@ -111,4 +111,46 @@ ngx_int_t  ngx_js_content_handler(struct ngx_http_request_s *r);
 void ngx_js_async_check(ngx_js_worker_t *w);
 
 
+/*
+ * ------------------------------------------------------------------ *
+ * Shared-memory SharedArrayBuffer infrastructure                       *
+ * ------------------------------------------------------------------ *
+ *
+ * All SABs created by any JS runtime in this module use
+ * mmap(MAP_SHARED|MAP_ANONYMOUS).  Because the mapping is established
+ * before fork(), the same physical pages are visible at the same
+ * virtual address in the master process AND in every nginx worker
+ * process, making cross-process pointer passing correct.
+ *
+ * SABs created in a worker process after fork() have NGX_JS_SAB_SHARED
+ * clear; the SharedWorker pipe layer rejects them with a TypeError so
+ * the user gets a clear error instead of a SIGSEGV.
+ *
+ * Header layout (total 16 bytes; buf[] is at offset 16, 8-byte aligned):
+ *
+ *   offset  0  int      ref_count   (atomic)
+ *   offset  4  uint32_t flags
+ *   offset  8  uint32_t size        payload bytes
+ *   offset 12  uint32_t _pad
+ *   offset 16  uint64_t buf[]       SAB data (pointer passed to QuickJS)
+ */
+
+#define NGX_JS_SAB_SHARED  0x01u   /* mmap'd before fork — valid in all processes */
+
+typedef struct {
+    int      ref_count;
+    uint32_t flags;
+    uint32_t size;
+    uint32_t _pad;
+    uint64_t buf[0];
+} ngx_js_sab_hdr_t;
+
+
+void  ngx_js_sab_dup(void *opaque, void *ptr);
+void  ngx_js_sab_free(void *opaque, void *ptr);
+void *ngx_js_sab_alloc(void *opaque, size_t size);
+
+extern const JSSharedArrayBufferFunctions  ngx_js_sab_funcs;
+
+
 #endif /* _NGX_JS_H_INCLUDED_ */

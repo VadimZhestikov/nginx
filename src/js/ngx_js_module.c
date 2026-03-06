@@ -17,9 +17,74 @@
 
 #include <ngx_config.h>
 #include <ngx_core.h>
+#include <sys/mman.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
 #include "ngx_js_sw.h"
+
+
+/* ------------------------------------------------------------------ */
+/* Shared-memory SAB allocator (see ngx_js.h for design rationale)    */
+/* ------------------------------------------------------------------ */
+
+void *
+ngx_js_sab_alloc(void *opaque, size_t size)
+{
+    ngx_js_sab_hdr_t  *hdr;
+    size_t             total;
+
+    total = sizeof(ngx_js_sab_hdr_t) + size;
+
+    hdr = mmap(NULL, total, PROT_READ | PROT_WRITE,
+               MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (hdr == MAP_FAILED) {
+        return NULL;
+    }
+
+    hdr->ref_count = 1;
+    hdr->flags     = (ngx_process == NGX_PROCESS_MASTER
+                      || ngx_process == NGX_PROCESS_SINGLE)
+                     ? NGX_JS_SAB_SHARED : 0;
+    hdr->size      = (uint32_t) size;
+    hdr->_pad      = 0;
+
+    return (void *) hdr->buf;
+}
+
+
+void
+ngx_js_sab_dup(void *opaque, void *ptr)
+{
+    ngx_js_sab_hdr_t  *hdr;
+
+    hdr = (ngx_js_sab_hdr_t *) ptr - 1;
+    __atomic_fetch_add(&hdr->ref_count, 1, __ATOMIC_SEQ_CST);
+}
+
+
+void
+ngx_js_sab_free(void *opaque, void *ptr)
+{
+    ngx_js_sab_hdr_t  *hdr;
+    size_t             total;
+
+    hdr = (ngx_js_sab_hdr_t *) ptr - 1;
+
+    if (__atomic_fetch_add(&hdr->ref_count, -1, __ATOMIC_SEQ_CST) != 1) {
+        return;
+    }
+
+    total = sizeof(ngx_js_sab_hdr_t) + hdr->size;
+    munmap(hdr, total);
+}
+
+
+const JSSharedArrayBufferFunctions  ngx_js_sab_funcs = {
+    ngx_js_sab_alloc,
+    ngx_js_sab_free,
+    ngx_js_sab_dup,
+    NULL,
+};
 
 
 static void *ngx_js_create_conf(ngx_cycle_t *cycle);
@@ -182,6 +247,7 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     }
 
     js_std_init_handlers(jcf->rt);
+    JS_SetSharedArrayBufferFunctions(jcf->rt, &ngx_js_sab_funcs);
 
     /* Limit memory to 64 MB for the config-phase runtime */
     JS_SetMemoryLimit(jcf->rt, 64 * 1024 * 1024);
@@ -465,6 +531,7 @@ ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     js_std_init_handlers(rt);
+    JS_SetSharedArrayBufferFunctions(rt, &ngx_js_sab_funcs);
 
     ctx = JS_NewContext(rt);
     if (ctx == NULL) {

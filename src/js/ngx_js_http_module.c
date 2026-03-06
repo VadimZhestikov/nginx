@@ -1753,6 +1753,7 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     js_std_init_handlers(rt);
+    JS_SetSharedArrayBufferFunctions(rt, &ngx_js_sab_funcs);
 
     if (JS_NewClass(rt, ngx_js_pending_server_class_id,
                     &ngx_js_pending_server_class) < 0)
