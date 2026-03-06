@@ -87,6 +87,16 @@ u_char    *ngx_js_read_file(ngx_cycle_t *cycle, ngx_str_t *path,
 /* Log a pending JS exception to the NGINX error log, then clear it */
 void       ngx_js_log_exception(JSContext *ctx, ngx_log_t *log);
 
+/*
+ * Compile and execute a JS file as an ES module.  Handles the compile-only
+ * → JS_EvalFunction → drain-jobs → promise-rejection-check sequence that
+ * QuickJS requires for module-mode evaluation.
+ * Returns NGX_CONF_OK or NGX_CONF_ERROR (exception already logged).
+ */
+char      *ngx_js_eval_module(JSContext *ctx, JSRuntime *rt,
+    const u_char *src, size_t src_len, const u_char *filename,
+    ngx_log_t *log);
+
 /* Register NginxRequest class in rt (called once per new runtime) */
 ngx_int_t  ngx_js_request_register_class(JSRuntime *rt);
 

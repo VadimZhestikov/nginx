@@ -408,3 +408,59 @@ ngx_js_log_exception(JSContext *ctx, ngx_log_t *log)
     JS_FreeValue(ctx, str);
     JS_FreeValue(ctx, exc);
 }
+
+
+/*
+ * Compile and execute a JS source file as an ES module.
+ *
+ * Module evaluation in QuickJS always returns a Promise (even for
+ * synchronous modules with no top-level await).  Errors are reported as
+ * rejected promises, not as JS_EXCEPTION from JS_EvalFunction.  This
+ * helper handles the full sequence:
+ *
+ *   1. Compile with JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY
+ *   2. Execute with JS_EvalFunction (returns a Promise)
+ *   3. Drain the pending-jobs queue (required for async module bodies)
+ *   4. Check the promise state; if rejected, log the reason and fail
+ *
+ * Returns NGX_CONF_OK on success, NGX_CONF_ERROR on any failure.
+ */
+char *
+ngx_js_eval_module(JSContext *ctx, JSRuntime *rt,
+    const u_char *src, size_t src_len, const u_char *filename,
+    ngx_log_t *log)
+{
+    JSValue    fn, promise, reason;
+    JSContext *job_ctx;
+
+    fn = JS_Eval(ctx, (const char *) src, src_len, (const char *) filename,
+                 JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+
+    if (JS_IsException(fn)) {
+        ngx_js_log_exception(ctx, log);
+        return NGX_CONF_ERROR;
+    }
+
+    promise = JS_EvalFunction(ctx, fn);
+
+    if (JS_IsException(promise)) {
+        ngx_js_log_exception(ctx, log);
+        JS_FreeValue(ctx, promise);
+        return NGX_CONF_ERROR;
+    }
+
+    /* Drain pending jobs — module body executes here for async modules */
+    while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+
+    /* Module evaluation errors land in the promise as rejections */
+    if (JS_PromiseState(ctx, promise) == JS_PROMISE_REJECTED) {
+        reason = JS_PromiseResult(ctx, promise);
+        JS_Throw(ctx, reason);      /* install as current exception */
+        ngx_js_log_exception(ctx, log);
+        JS_FreeValue(ctx, promise);
+        return NGX_CONF_ERROR;
+    }
+
+    JS_FreeValue(ctx, promise);
+    return NGX_CONF_OK;
+}

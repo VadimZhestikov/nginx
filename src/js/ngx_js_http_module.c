@@ -15,6 +15,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 #include <cutils.h>
+#include <quickjs-libc.h>
 #include "ngx_js.h"
 #include "ngx_js_com.h"
 
@@ -1723,7 +1724,7 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     size_t        src_len;
     JSRuntime    *rt;
     JSContext    *ctx;
-    JSValue       global, config_obj, nginx_obj, http_obj, result;
+    JSValue       global, config_obj, nginx_obj, http_obj;
     ngx_array_t   pending;
     char         *rv;
 
@@ -1751,11 +1752,14 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    js_std_init_handlers(rt);
+
     if (JS_NewClass(rt, ngx_js_pending_server_class_id,
                     &ngx_js_pending_server_class) < 0)
     {
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
                       "js: JS_NewClass(PendingServer) failed");
+        js_std_free_handlers(rt);
         JS_FreeRuntime(rt);
         return NGX_CONF_ERROR;
     }
@@ -1764,6 +1768,18 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     if (ctx == NULL) {
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
                       "js: JS_NewContext() failed");
+        js_std_free_handlers(rt);
+        JS_FreeRuntime(rt);
+        return NGX_CONF_ERROR;
+    }
+
+    if (js_init_module_std(ctx, "std") == NULL
+        || js_init_module_os(ctx, "os") == NULL)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+                      "js: failed to register std/os modules");
+        JS_FreeContext(ctx);
+        js_std_free_handlers(rt);
         JS_FreeRuntime(rt);
         return NGX_CONF_ERROR;
     }
@@ -1779,6 +1795,7 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                        sizeof(ngx_js_pending_server_t *)) != NGX_OK)
     {
         JS_FreeContext(ctx);
+        js_std_free_handlers(rt);
         JS_FreeRuntime(rt);
         return NGX_CONF_ERROR;
     }
@@ -1821,18 +1838,10 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     JS_FreeValue(ctx, global);
 
-    result = JS_Eval(ctx, (const char *) src, src_len,
-                     (const char *) path.data, JS_EVAL_TYPE_GLOBAL);
+    rv = ngx_js_eval_module(ctx, rt, src, src_len, path.data, cf->log);
 
-    rv = NGX_CONF_OK;
-
-    if (JS_IsException(result)) {
-        ngx_js_log_exception(ctx, cf->log);
-        rv = NGX_CONF_ERROR;
-    }
-
-    JS_FreeValue(ctx, result);
     JS_FreeContext(ctx);
+    js_std_free_handlers(rt);
     JS_FreeRuntime(rt);
 
     /* Flush pending servers added via addServer() */

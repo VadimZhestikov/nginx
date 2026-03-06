@@ -17,6 +17,7 @@
 
 #include <ngx_config.h>
 #include <ngx_core.h>
+#include <quickjs-libc.h>
 #include "ngx_js.h"
 #include "ngx_js_sw.h"
 
@@ -166,7 +167,6 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     ngx_str_t      *path;
     u_char         *src;
     size_t          src_len;
-    JSValue         result;
 
     if (jcf->includes.nelts == 0) {
         return NGX_CONF_OK;    /* nothing to do — pure static config */
@@ -181,6 +181,8 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    js_std_init_handlers(jcf->rt);
+
     /* Limit memory to 64 MB for the config-phase runtime */
     JS_SetMemoryLimit(jcf->rt, 64 * 1024 * 1024);
 
@@ -189,6 +191,16 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
         ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
                       "js: JS_NewContext() failed");
         goto failed_rt;
+    }
+
+    /* ---- Register std and os built-in modules ---- */
+
+    if (js_init_module_std(jcf->ctx, "std") == NULL
+        || js_init_module_os(jcf->ctx, "os") == NULL)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "js: failed to register std/os modules");
+        goto failed_ctx;
     }
 
     /* ---- Install nginx.* COM namespace ---- */
@@ -213,19 +225,13 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
             goto failed_ctx;
         }
 
-        result = JS_Eval(jcf->ctx,
-                         (const char *) src,
-                         src_len,
-                         (const char *) path[i].data,
-                         JS_EVAL_TYPE_GLOBAL);
-
-        if (JS_IsException(result)) {
-            ngx_js_log_exception(jcf->ctx, cycle->log);
-            JS_FreeValue(jcf->ctx, result);
+        if (ngx_js_eval_module(jcf->ctx, jcf->rt,
+                               src, src_len, path[i].data,
+                               cycle->log)
+            != NGX_CONF_OK)
+        {
             goto failed_ctx;
         }
-
-        JS_FreeValue(jcf->ctx, result);
     }
 
     /*
@@ -241,6 +247,7 @@ failed_ctx:
     jcf->ctx = NULL;
 
 failed_rt:
+    js_std_free_handlers(jcf->rt);
     JS_FreeRuntime(jcf->rt);
     jcf->rt = NULL;
 
@@ -317,6 +324,7 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
     }
 
     if (w->rt) {
+        js_std_free_handlers(w->rt);
         JS_FreeRuntime(w->rt);
         w->rt = NULL;
     }
@@ -338,6 +346,7 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
     }
 
     if (jcf->rt) {
+        js_std_free_handlers(jcf->rt);
         JS_FreeRuntime(jcf->rt);
         jcf->rt = NULL;
     }
@@ -433,7 +442,7 @@ ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     size_t       src_len;
     JSRuntime   *rt;
     JSContext   *ctx;
-    JSValue      global, config_obj, result;
+    JSValue      global, config_obj;
     char        *rv;
 
     value = cf->args->elts;
@@ -455,10 +464,24 @@ ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    js_std_init_handlers(rt);
+
     ctx = JS_NewContext(rt);
     if (ctx == NULL) {
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
                       "js: JS_NewContext() failed");
+        js_std_free_handlers(rt);
+        JS_FreeRuntime(rt);
+        return NGX_CONF_ERROR;
+    }
+
+    if (js_init_module_std(ctx, "std") == NULL
+        || js_init_module_os(ctx, "os") == NULL)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+                      "js: failed to register std/os modules");
+        JS_FreeContext(ctx);
+        js_std_free_handlers(rt);
         JS_FreeRuntime(rt);
         return NGX_CONF_ERROR;
     }
@@ -477,18 +500,10 @@ ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     JS_SetPropertyStr(ctx, global, "config", config_obj);
     JS_FreeValue(ctx, global);
 
-    result = JS_Eval(ctx, (const char *) src, src_len,
-                     (const char *) path.data, JS_EVAL_TYPE_GLOBAL);
+    rv = ngx_js_eval_module(ctx, rt, src, src_len, path.data, cf->log);
 
-    rv = NGX_CONF_OK;
-
-    if (JS_IsException(result)) {
-        ngx_js_log_exception(ctx, cf->log);
-        rv = NGX_CONF_ERROR;
-    }
-
-    JS_FreeValue(ctx, result);
     JS_FreeContext(ctx);
+    js_std_free_handlers(rt);
     JS_FreeRuntime(rt);
 
     return rv;
