@@ -304,7 +304,13 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
      * The master runtime stays alive until exit_master().  Worker
      * processes inherit it via fork() (copy-on-write) and use their
      * private copies; init_process() just wires w->rt / w->ctx to it.
+     *
+     * Start the SharedWorker manager thread so that workers can call
+     * new SharedWorker(url) from request handlers.
      */
+    if (ngx_js_sw_manager_start(jcf, cycle) != NGX_OK) {
+        goto failed_ctx;
+    }
 
     return NGX_CONF_OK;
 

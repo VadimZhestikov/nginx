@@ -33,5 +33,14 @@ void  ngx_js_sw_exit_process(ngx_cycle_t *cycle, ngx_js_conf_t *jcf);
  */
 void  ngx_js_sw_exit_master(ngx_js_conf_t *jcf);
 
+/*
+ * Create the command socketpair and term pipe, then start the SW manager
+ * thread.  The manager handles new SharedWorker(url) requests from worker
+ * processes, creating SW threads in the master on demand.
+ * Called once at the end of ngx_js_init_conf().
+ */
+ngx_int_t  ngx_js_sw_manager_start(ngx_js_conf_t *jcf,
+    ngx_cycle_t *cycle);
+
 
 #endif /* _NGX_JS_SW_H_INCLUDED_ */

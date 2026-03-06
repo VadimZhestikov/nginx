@@ -49,7 +49,8 @@ typedef struct {
 typedef struct {
     JSRuntime           *rt;
     JSContext           *ctx;
-    ngx_js_async_ctx_t  *async_pending;  /* NULL or one suspended request */
+    ngx_js_async_ctx_t  *async_pending;   /* NULL or one suspended request */
+    ngx_js_sw_state_t   *local_sw_list;   /* dynamic SWs created post-fork  */
 } ngx_js_worker_t;
 
 

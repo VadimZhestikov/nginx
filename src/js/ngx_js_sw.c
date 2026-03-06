@@ -42,6 +42,7 @@
 #include <pthread.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <cutils.h>
@@ -326,6 +327,8 @@ struct ngx_js_sw_state_s {
 /* JS SharedWorker object opaque (worker side) */
 typedef struct {
     ngx_js_sw_state_t  *state;
+    ngx_uint_t          local_wi;  /* (ngx_uint_t) -1 = use ngx_worker;
+                                    * else use this index into stub state */
 } ngx_js_sw_opaque_t;
 
 
@@ -353,11 +356,33 @@ typedef struct {
 
 
 /* ------------------------------------------------------------------ */
-/* JS class IDs                                                        */
+/* JS class IDs and manager-thread state (file-static)                */
 /* ------------------------------------------------------------------ */
 
 static JSClassID  ngx_js_sw_class_id;
 static JSClassID  ngx_js_sw_port_class_id;
+
+/*
+ * Pre-fork socketpair for worker→master "create SW" commands.
+ * sw_cmd_fds[0] — master side (manager reads requests here)
+ * sw_cmd_fds[1] — worker side (workers write requests here, COW-shared)
+ *
+ * Command message format  (SOCK_SEQPACKET, atomic send):
+ *   [uint32_t url_len][uint32_t worker_idx][url_len bytes url]
+ * plus SCM_RIGHTS carrying one reply socket fd.
+ *
+ * Reply message format (sent back on the reply socket):
+ *   [uint8_t status (0 = ok)]
+ * plus SCM_RIGHTS carrying two fds: {inbox.wfd, outbox.rfd}.
+ */
+#define NGX_JS_SW_CMD_HDR  (2 * sizeof(uint32_t))
+#define NGX_JS_SW_URL_MAX  512
+#define NGX_JS_SW_CMD_MAX  (NGX_JS_SW_CMD_HDR + NGX_JS_SW_URL_MAX + 1)
+
+static int        sw_cmd_fds[2]  = {-1, -1};
+static int        sw_term_fds[2] = {-1, -1};
+static pthread_t  sw_mgr_tid;
+static int        sw_mgr_started;
 
 
 /* ------------------------------------------------------------------ */
@@ -365,8 +390,26 @@ static JSClassID  ngx_js_sw_port_class_id;
 /* ------------------------------------------------------------------ */
 
 static void *ngx_js_sw_thread(void *arg);
+static void *ngx_js_sw_manager_thread(void *arg);
 static ngx_int_t ngx_js_sw_activate(JSContext *ctx,
     ngx_js_sw_state_t *state, ngx_uint_t wi);
+static JSValue ngx_js_sw_request_dynamic(JSContext *ctx,
+    ngx_js_conf_t *jcf, const char *url_cstr, size_t url_len);
+
+
+/*
+ * Resolve the worker-slot index for a SharedWorker opaque.
+ * Static SWs (created in master) use ngx_worker.
+ * Dynamic stub SWs (created per-worker) store index 0.
+ */
+static ngx_uint_t
+sw_wi(ngx_js_sw_opaque_t *op)
+{
+    if (op->local_wi == (ngx_uint_t) -1) {
+        return (ngx_uint_t) ngx_worker;
+    }
+    return op->local_wi;
+}
 
 
 /* ------------------------------------------------------------------ */
@@ -1098,7 +1141,7 @@ ngx_js_sw_post_message(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "postMessage(data): data required");
     }
 
-    wi = (ngx_uint_t) ngx_worker;
+    wi = sw_wi(op);
 
     if (wi >= op->state->nchannels) {
         return JS_ThrowInternalError(ctx,
@@ -1173,7 +1216,7 @@ ngx_js_sw_get_onmessage(JSContext *ctx, JSValueConst this_val, int magic)
         return JS_EXCEPTION;
     }
 
-    wi = (ngx_uint_t) ngx_worker;
+    wi = sw_wi(op);
     if (wi >= op->state->nchannels) {
         return JS_UNDEFINED;
     }
@@ -1195,7 +1238,7 @@ ngx_js_sw_set_onmessage(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    wi = (ngx_uint_t) ngx_worker;
+    wi = sw_wi(op);
     if (wi >= op->state->nchannels) {
         return JS_ThrowInternalError(ctx,
                                      "onmessage: worker index out of range");
@@ -1228,7 +1271,8 @@ static const JSCFunctionListEntry  ngx_js_sw_proto_funcs[] = {
 /* ------------------------------------------------------------------ */
 
 static JSValue
-ngx_js_sw_make_object(JSContext *ctx, ngx_js_sw_state_t *state)
+ngx_js_sw_make_object(JSContext *ctx, ngx_js_sw_state_t *state,
+    ngx_uint_t local_wi)
 {
     ngx_js_sw_opaque_t  *opaque;
     JSValue              proto, obj;
@@ -1239,7 +1283,8 @@ ngx_js_sw_make_object(JSContext *ctx, ngx_js_sw_state_t *state)
                                      "SharedWorker: opaque alloc failed");
     }
 
-    opaque->state = state;
+    opaque->state    = state;
+    opaque->local_wi = local_wi;
 
     proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, proto,
@@ -1313,7 +1358,7 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
         for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
             if (ngx_strcmp(sw->url, url_cstr) == 0) {
                 JS_FreeCString(ctx, url_cstr);
-                return ngx_js_sw_make_object(ctx, sw);
+                return ngx_js_sw_make_object(ctx, sw, (ngx_uint_t) -1);
             }
         }
 
@@ -1437,21 +1482,219 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
         sw->next     = jcf->sw_list;
         jcf->sw_list = sw;
 
-        return ngx_js_sw_make_object(ctx, sw);
+        return ngx_js_sw_make_object(ctx, sw, (ngx_uint_t) -1);
     }
 
-    /* Worker / single-process request phase: look up existing state */
+    /* ---- Worker / single-process request phase ---- */
+
+    /* 1. Check static SWs created in master (jcf->sw_list COW copy) */
     for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
         if (ngx_strcmp(sw->url, url_cstr) == 0) {
             JS_FreeCString(ctx, url_cstr);
-            return ngx_js_sw_make_object(ctx, sw);
+            return ngx_js_sw_make_object(ctx, sw, (ngx_uint_t) -1);
         }
     }
 
+    /* 2. Check dynamic SWs already created in this worker */
+    {
+        ngx_js_worker_t  *w;
+
+        w = (ngx_js_worker_t *) jcf->worker;
+
+        for (sw = w->local_sw_list; sw != NULL; sw = sw->next) {
+            if (ngx_strcmp(sw->url, url_cstr) == 0) {
+                JS_FreeCString(ctx, url_cstr);
+                return ngx_js_sw_make_object(ctx, sw, 0);
+            }
+        }
+    }
+
+    /* 3. Not found — request dynamic creation from the master manager.
+     *    url_cstr ownership is passed; it is freed inside the callee. */
+    return ngx_js_sw_request_dynamic(ctx, jcf, url_cstr, url_len);
+}
+
+
+/*
+ * ngx_js_sw_request_dynamic — worker asks the master manager thread to
+ * create a new SharedWorker (or return an existing one for this URL),
+ * then builds a per-worker stub state for the channel.
+ *
+ * Protocol (atomic SEQPACKET):
+ *   send: [uint32_t url_len][uint32_t worker_idx][url] + SCM_RIGHTS{reply}
+ *   recv: [uint8_t 0=ok]                               + SCM_RIGHTS{inbox_wfd, outbox_rfd}
+ *
+ * The blocking recvmsg() completes in microseconds (manager just allocates
+ * and creates pipes/thread, no I/O).  url_cstr is consumed (freed) here.
+ */
+static JSValue
+ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
+    const char *url_cstr, size_t url_len)
+{
+    ngx_js_worker_t           *w;
+    ngx_js_sw_state_t         *stub;
+    ngx_js_sw_channel_t       *ch;
+    ngx_js_sw_worker_slot_t   *ws_slot;
+    int                        reply_fds[2];
+    int                        recv_fds[2];
+    uint32_t                   url_len32, worker_idx32;
+    uint8_t                   *cmdbuf;
+    uint8_t                    status;
+    struct msghdr              msg;
+    struct iovec               iov;
+    union {
+        char            buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_snd;
+    union {
+        char            buf[CMSG_SPACE(2 * sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_rcv;
+    struct cmsghdr            *cmh;
+    ssize_t                    n;
+
+    if (sw_cmd_fds[1] < 0) {
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowInternalError(ctx,
+            "SharedWorker: manager not running");
+    }
+
+    /* Create a private reply socket for this request */
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, reply_fds) != 0) {
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowInternalError(ctx,
+            "SharedWorker: socketpair failed");
+    }
+
+    /* Command buffer: [url_len32][worker_idx32][url bytes] */
+    url_len32    = (uint32_t) url_len;
+    worker_idx32 = (uint32_t) ngx_worker;
+
+    cmdbuf = ngx_alloc(NGX_JS_SW_CMD_HDR + url_len, ngx_cycle->log);
+    if (cmdbuf == NULL) {
+        close(reply_fds[0]);
+        close(reply_fds[1]);
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowInternalError(ctx, "SharedWorker: alloc failed");
+    }
+
+    ngx_memcpy(cmdbuf,                    &url_len32,    sizeof(uint32_t));
+    ngx_memcpy(cmdbuf + sizeof(uint32_t), &worker_idx32, sizeof(uint32_t));
+    ngx_memcpy(cmdbuf + NGX_JS_SW_CMD_HDR, url_cstr, url_len);
+
+    /* Send command + reply_fds[1] via SCM_RIGHTS */
+    iov.iov_base = cmdbuf;
+    iov.iov_len  = NGX_JS_SW_CMD_HDR + url_len;
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_snd.buf;
+    msg.msg_controllen = sizeof(cmsg_snd.buf);
+
+    cmh             = CMSG_FIRSTHDR(&msg);
+    cmh->cmsg_level = SOL_SOCKET;
+    cmh->cmsg_type  = SCM_RIGHTS;
+    cmh->cmsg_len   = CMSG_LEN(sizeof(int));
+    ngx_memcpy(CMSG_DATA(cmh), &reply_fds[1], sizeof(int));
+
+    n = sendmsg(sw_cmd_fds[1], &msg, 0);
+    ngx_free(cmdbuf);
+    close(reply_fds[1]);
+
+    if (n < 0) {
+        close(reply_fds[0]);
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowInternalError(ctx,
+            "SharedWorker: sendmsg to manager failed");
+    }
+
+    /* Blocking receive: status byte + {inbox_wfd, outbox_rfd} */
+    iov.iov_base = &status;
+    iov.iov_len  = 1;
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_rcv.buf;
+    msg.msg_controllen = sizeof(cmsg_rcv.buf);
+
+    n = recvmsg(reply_fds[0], &msg, 0);
+    close(reply_fds[0]);
+
+    recv_fds[0] = recv_fds[1] = -1;
+    if (n >= 1 && status == 0) {
+        cmh = CMSG_FIRSTHDR(&msg);
+        if (cmh != NULL
+            && cmh->cmsg_level == SOL_SOCKET
+            && cmh->cmsg_type  == SCM_RIGHTS
+            && cmh->cmsg_len   == CMSG_LEN(2 * sizeof(int)))
+        {
+            ngx_memcpy(recv_fds, CMSG_DATA(cmh), 2 * sizeof(int));
+        }
+    }
+
+    if (recv_fds[0] < 0 || recv_fds[1] < 0) {
+        if (recv_fds[0] >= 0) { close(recv_fds[0]); }
+        if (recv_fds[1] >= 0) { close(recv_fds[1]); }
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowInternalError(ctx,
+            "SharedWorker: manager did not return channel fds");
+    }
+
+    /* Build local stub state: nchannels=1, slot 0 = this worker */
+    stub = ngx_alloc(sizeof(ngx_js_sw_state_t), ngx_cycle->log);
+    ch   = ngx_alloc(sizeof(ngx_js_sw_channel_t), ngx_cycle->log);
+    ws_slot = ngx_alloc(sizeof(ngx_js_sw_worker_slot_t), ngx_cycle->log);
+
+    if (stub == NULL || ch == NULL || ws_slot == NULL) {
+        ngx_free(stub);
+        ngx_free(ch);
+        ngx_free(ws_slot);
+        close(recv_fds[0]);
+        close(recv_fds[1]);
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowInternalError(ctx, "SharedWorker: alloc failed");
+    }
+
+    ngx_memzero(stub, sizeof(ngx_js_sw_state_t));
+
+    stub->url = ngx_alloc(url_len32 + 1, ngx_cycle->log);
+    if (stub->url == NULL) {
+        ngx_free(ws_slot);
+        ngx_free(ch);
+        ngx_free(stub);
+        close(recv_fds[0]);
+        close(recv_fds[1]);
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowInternalError(ctx, "SharedWorker: alloc failed");
+    }
+
+    ngx_memcpy(stub->url, url_cstr, url_len32 + 1);
     JS_FreeCString(ctx, url_cstr);
-    return JS_ThrowReferenceError(ctx,
-        "SharedWorker: no SharedWorker with that URL "
-        "(must be created in master scope first)");
+
+    /* recv_fds[0] = inbox.wfd (worker writes to SW) */
+    /* recv_fds[1] = outbox.rfd (worker reads from SW) */
+    ch->inbox.wfd  = recv_fds[0];
+    ch->inbox.rfd  = -1;   /* not used by this worker */
+    ch->outbox.rfd = recv_fds[1];
+    ch->outbox.wfd = -1;   /* not used by this worker */
+
+    ws_slot->conn       = NULL;
+    ws_slot->on_message = JS_UNDEFINED;
+    ws_slot->w          = NULL;
+
+    stub->nchannels   = 1;
+    stub->channels    = ch;
+    stub->worker_slots = ws_slot;
+    stub->tid         = 0;   /* SW thread lives in master; don't join here */
+
+    /* Add to this worker's local list */
+    w = (ngx_js_worker_t *) jcf->worker;
+    stub->next       = w->local_sw_list;
+    w->local_sw_list = stub;
+
+    return ngx_js_sw_make_object(ctx, stub, 0);
 }
 
 
@@ -1502,7 +1745,8 @@ ngx_js_sw_install(JSContext *ctx)
 void
 ngx_js_sw_exit_process(ngx_cycle_t *cycle, ngx_js_conf_t *jcf)
 {
-    ngx_js_sw_state_t        *sw;
+    ngx_js_worker_t          *w;
+    ngx_js_sw_state_t        *sw, *next;
     ngx_js_sw_worker_slot_t  *ws;
     ngx_js_sw_recv_ctx_t     *recv_ctx;
     ngx_uint_t                wi;
@@ -1515,6 +1759,7 @@ ngx_js_sw_exit_process(ngx_cycle_t *cycle, ngx_js_conf_t *jcf)
 
     wi = (ngx_uint_t) ngx_worker;
 
+    /* Clean up static (init_conf) SharedWorkers */
     for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
         if (wi >= sw->nchannels) {
             continue;
@@ -1536,6 +1781,44 @@ ngx_js_sw_exit_process(ngx_cycle_t *cycle, ngx_js_conf_t *jcf)
             ngx_free(recv_ctx);
         }
     }
+
+    /* Clean up dynamic (worker-local) SharedWorker stubs */
+    w = (ngx_js_worker_t *) jcf->worker;
+    if (w == NULL) {
+        return;
+    }
+
+    for (sw = w->local_sw_list; sw != NULL; sw = next) {
+        next = sw->next;
+        ws   = &sw->worker_slots[0];
+
+        if (!JS_IsUndefined(ws->on_message)) {
+            JS_FreeValue(jcf->ctx, ws->on_message);
+        }
+
+        if (ws->conn != NULL) {
+            recv_ctx = ws->conn->data;
+            ngx_del_event(ws->conn->read, NGX_READ_EVENT, 0);
+            ngx_free_connection(ws->conn);
+            ws->conn->fd = (ngx_socket_t) -1;
+            ngx_free(recv_ctx);
+        }
+
+        /* Close the fds we received from the manager */
+        if (sw->channels[0].inbox.wfd >= 0) {
+            close(sw->channels[0].inbox.wfd);
+        }
+        if (sw->channels[0].outbox.rfd >= 0) {
+            close(sw->channels[0].outbox.rfd);
+        }
+
+        ngx_free(sw->channels);
+        ngx_free(sw->worker_slots);
+        ngx_free(sw->url);
+        ngx_free(sw);
+    }
+
+    w->local_sw_list = NULL;
 }
 
 
@@ -1544,6 +1827,19 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
 {
     ngx_js_sw_state_t  *sw, *next;
     ngx_uint_t          i;
+    char                c;
+
+    /* Stop the manager thread first so it can't add to sw_list anymore */
+    if (sw_mgr_started) {
+        c = 0;
+        if (write(sw_term_fds[1], &c, 1) < 0) { /* ignore */ }
+        pthread_join(sw_mgr_tid, NULL);
+        sw_mgr_started = 0;
+        close(sw_cmd_fds[0]);  sw_cmd_fds[0]  = -1;
+        close(sw_cmd_fds[1]);  sw_cmd_fds[1]  = -1;
+        close(sw_term_fds[0]); sw_term_fds[0] = -1;
+        close(sw_term_fds[1]); sw_term_fds[1] = -1;
+    }
 
     for (sw = jcf->sw_list; sw != NULL; sw = next) {
         next = sw->next;
@@ -1554,7 +1850,9 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
                        NULL, 0, NULL, 0);
         }
 
-        pthread_join(sw->tid, NULL);
+        if (sw->tid) {
+            pthread_join(sw->tid, NULL);
+        }
 
         for (i = 0; i < sw->nchannels; i++) {
             xpipe_destroy(&sw->channels[i].inbox);
@@ -1569,4 +1867,297 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
     }
 
     jcf->sw_list = NULL;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* SW manager thread — creates SW threads on worker demand             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ngx_js_sw_manager_thread — runs in the master process; receives
+ * "create SharedWorker" requests from worker processes via sw_cmd_fds[0].
+ *
+ * For each request it either finds an existing sw in jcf->sw_list (by URL)
+ * or creates a new one (allocates channels, starts the SW pthread, prepends
+ * to jcf->sw_list).  It then sends the requesting worker's
+ * {channels[wi].inbox.wfd, channels[wi].outbox.rfd} back on the reply fd
+ * received via SCM_RIGHTS.
+ */
+static void *
+ngx_js_sw_manager_thread(void *arg)
+{
+    ngx_js_conf_t             *jcf = arg;
+    ngx_core_conf_t           *ccf;
+    ngx_js_sw_state_t         *sw;
+    struct pollfd              pfds[2];
+    char                       cmdbuf[NGX_JS_SW_CMD_MAX];
+    uint32_t                   url_len, worker_idx;
+    char                      *url;
+    ngx_uint_t                 nchannels, i;
+    int                        reply_fd, ok;
+    int                        fds[2];
+    uint8_t                    status;
+    struct msghdr              msg;
+    struct iovec               iov;
+    union {
+        char            buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_rcv;
+    union {
+        char            buf[CMSG_SPACE(2 * sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_snd;
+    struct cmsghdr            *cmh;
+    ssize_t                    n;
+
+    pfds[0].fd     = sw_cmd_fds[0];
+    pfds[0].events = POLLIN;
+    pfds[1].fd     = sw_term_fds[0];
+    pfds[1].events = POLLIN;
+
+    for ( ;; ) {
+        pfds[0].revents = 0;
+        pfds[1].revents = 0;
+
+        if (poll(pfds, 2, -1) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        if (pfds[1].revents & POLLIN) {
+            break;   /* terminate signal */
+        }
+
+        if (!(pfds[0].revents & POLLIN)) {
+            continue;
+        }
+
+        /* Receive command + reply_fd via SCM_RIGHTS */
+        iov.iov_base = cmdbuf;
+        iov.iov_len  = sizeof(cmdbuf) - 1;  /* leave room for NUL */
+
+        ngx_memzero(&msg, sizeof(msg));
+        msg.msg_iov        = &iov;
+        msg.msg_iovlen     = 1;
+        msg.msg_control    = cmsg_rcv.buf;
+        msg.msg_controllen = sizeof(cmsg_rcv.buf);
+
+        n = recvmsg(sw_cmd_fds[0], &msg, 0);
+        if (n < (ssize_t) NGX_JS_SW_CMD_HDR) {
+            continue;
+        }
+
+        /* Extract reply_fd from ancillary data */
+        reply_fd = -1;
+        cmh = CMSG_FIRSTHDR(&msg);
+        if (cmh != NULL
+            && cmh->cmsg_level == SOL_SOCKET
+            && cmh->cmsg_type  == SCM_RIGHTS
+            && cmh->cmsg_len   == CMSG_LEN(sizeof(int)))
+        {
+            ngx_memcpy(&reply_fd, CMSG_DATA(cmh), sizeof(int));
+        }
+
+        if (reply_fd < 0) {
+            continue;   /* malformed — no reply fd */
+        }
+
+        ngx_memcpy(&url_len,    cmdbuf,                    sizeof(uint32_t));
+        ngx_memcpy(&worker_idx, cmdbuf + sizeof(uint32_t), sizeof(uint32_t));
+
+        if (url_len > NGX_JS_SW_URL_MAX
+            || (ssize_t)(NGX_JS_SW_CMD_HDR + url_len) > n)
+        {
+            close(reply_fd);
+            continue;
+        }
+
+        url              = cmdbuf + NGX_JS_SW_CMD_HDR;
+        url[url_len]     = '\0';
+
+        /* Find or create SW state */
+        for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
+            if (ngx_strcmp(sw->url, url) == 0) {
+                break;
+            }
+        }
+
+        if (sw == NULL) {
+            /* Create new SW state */
+            ccf = (ngx_core_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx,
+                                                    ngx_core_module);
+            nchannels = (ngx_uint_t) ccf->worker_processes;
+            if (nchannels < 1) {
+                nchannels = 1;
+            }
+            if (nchannels > NGX_MAX_PROCESSES) {
+                nchannels = NGX_MAX_PROCESSES;
+            }
+
+            sw = ngx_alloc(sizeof(ngx_js_sw_state_t), ngx_cycle->log);
+            if (sw == NULL) {
+                close(reply_fd);
+                continue;
+            }
+
+            ngx_memzero(sw, sizeof(ngx_js_sw_state_t));
+
+            sw->url = ngx_alloc(url_len + 1, ngx_cycle->log);
+            if (sw->url == NULL) {
+                ngx_free(sw);
+                close(reply_fd);
+                continue;
+            }
+            ngx_memcpy(sw->url, url, url_len + 1);
+
+            sw->script = ngx_alloc(url_len + 1, ngx_cycle->log);
+            if (sw->script == NULL) {
+                ngx_free(sw->url);
+                ngx_free(sw);
+                close(reply_fd);
+                continue;
+            }
+            ngx_memcpy(sw->script, url, url_len + 1);
+
+            sw->nchannels = nchannels;
+            sw->channels  = ngx_alloc(
+                nchannels * sizeof(ngx_js_sw_channel_t), ngx_cycle->log);
+            if (sw->channels == NULL) {
+                ngx_free(sw->script);
+                ngx_free(sw->url);
+                ngx_free(sw);
+                close(reply_fd);
+                continue;
+            }
+
+            sw->worker_slots = ngx_alloc(
+                nchannels * sizeof(ngx_js_sw_worker_slot_t),
+                ngx_cycle->log);
+            if (sw->worker_slots == NULL) {
+                ngx_free(sw->channels);
+                ngx_free(sw->script);
+                ngx_free(sw->url);
+                ngx_free(sw);
+                close(reply_fd);
+                continue;
+            }
+
+            ok = 1;
+            for (i = 0; i < nchannels; i++) {
+                if (xpipe_init(&sw->channels[i].inbox) != NGX_OK) {
+                    ok = 0;
+                    break;
+                }
+                if (xpipe_init(&sw->channels[i].outbox) != NGX_OK) {
+                    xpipe_destroy(&sw->channels[i].inbox);
+                    ok = 0;
+                    break;
+                }
+                sw->worker_slots[i].conn       = NULL;
+                sw->worker_slots[i].on_message = JS_UNDEFINED;
+                sw->worker_slots[i].w          = NULL;
+            }
+
+            if (!ok) {
+                while (i-- > 0) {
+                    xpipe_destroy(&sw->channels[i].inbox);
+                    xpipe_destroy(&sw->channels[i].outbox);
+                }
+                ngx_free(sw->worker_slots);
+                ngx_free(sw->channels);
+                ngx_free(sw->script);
+                ngx_free(sw->url);
+                ngx_free(sw);
+                close(reply_fd);
+                continue;
+            }
+
+            if (pthread_create(&sw->tid, NULL, ngx_js_sw_thread, sw) != 0) {
+                for (i = 0; i < nchannels; i++) {
+                    xpipe_destroy(&sw->channels[i].inbox);
+                    xpipe_destroy(&sw->channels[i].outbox);
+                }
+                ngx_free(sw->worker_slots);
+                ngx_free(sw->channels);
+                ngx_free(sw->script);
+                ngx_free(sw->url);
+                ngx_free(sw);
+                close(reply_fd);
+                continue;
+            }
+
+            sw->next     = jcf->sw_list;
+            jcf->sw_list = sw;
+        }
+
+        if (worker_idx >= sw->nchannels) {
+            close(reply_fd);
+            continue;
+        }
+
+        /* Reply: status=0 + {inbox.wfd, outbox.rfd} via SCM_RIGHTS */
+        fds[0] = sw->channels[worker_idx].inbox.wfd;
+        fds[1] = sw->channels[worker_idx].outbox.rfd;
+        status = 0;
+
+        iov.iov_base = &status;
+        iov.iov_len  = 1;
+
+        ngx_memzero(&msg, sizeof(msg));
+        msg.msg_iov        = &iov;
+        msg.msg_iovlen     = 1;
+        msg.msg_control    = cmsg_snd.buf;
+        msg.msg_controllen = sizeof(cmsg_snd.buf);
+
+        cmh             = CMSG_FIRSTHDR(&msg);
+        cmh->cmsg_level = SOL_SOCKET;
+        cmh->cmsg_type  = SCM_RIGHTS;
+        cmh->cmsg_len   = CMSG_LEN(2 * sizeof(int));
+        ngx_memcpy(CMSG_DATA(cmh), fds, 2 * sizeof(int));
+
+        (void) sendmsg(reply_fd, &msg, 0);
+        close(reply_fd);
+    }
+
+    return NULL;
+}
+
+
+ngx_int_t
+ngx_js_sw_manager_start(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
+{
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sw_cmd_fds) != 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "js: SharedWorker manager socketpair failed");
+        return NGX_ERROR;
+    }
+
+    if (pipe(sw_term_fds) != 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "js: SharedWorker manager term pipe failed");
+        close(sw_cmd_fds[0]);
+        close(sw_cmd_fds[1]);
+        sw_cmd_fds[0] = sw_cmd_fds[1] = -1;
+        return NGX_ERROR;
+    }
+
+    if (pthread_create(&sw_mgr_tid, NULL,
+                       ngx_js_sw_manager_thread, jcf) != 0)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "js: SharedWorker manager pthread_create failed");
+        close(sw_cmd_fds[0]);
+        close(sw_cmd_fds[1]);
+        close(sw_term_fds[0]);
+        close(sw_term_fds[1]);
+        sw_cmd_fds[0]  = sw_cmd_fds[1]  = -1;
+        sw_term_fds[0] = sw_term_fds[1] = -1;
+        return NGX_ERROR;
+    }
+
+    sw_mgr_started = 1;
+    return NGX_OK;
 }
