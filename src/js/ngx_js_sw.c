@@ -520,6 +520,13 @@ static int        sw_term_fds[2] = {-1, -1};
 static pthread_t  sw_mgr_tid;
 static int        sw_mgr_started;
 
+/*
+ * Set to 1 inside ngx_js_sw_thread so that ngx_js_sab_alloc uses
+ * memfd even in the master process (post-fork SW thread cannot share
+ * a MAP_SHARED|MAP_ANONYMOUS mapping with workers).
+ */
+__thread int  ngx_js_sw_thread_active;
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                */
@@ -805,6 +812,8 @@ ngx_js_sw_thread(void *arg)
     int                      terminate;
     ngx_uint_t               wi;
 
+    ngx_js_sw_thread_active = 1;
+
     rt = JS_NewRuntime();
     if (rt == NULL) {
         return NULL;
@@ -814,8 +823,9 @@ ngx_js_sw_thread(void *arg)
 
     /*
      * The SW thread runs a blocking poll() loop, so it may use
-     * Atomics.wait().  Install the shared SAB allocator so that
-     * SABs created here are also MAP_SHARED (accessible to workers).
+     * Atomics.wait().  Install the shared SAB allocator so SABs
+     * created here use memfd (so the fd can be passed to workers
+     * via SCM_RIGHTS).
      */
     JS_SetCanBlock(rt, TRUE);
     JS_SetSharedArrayBufferFunctions(rt, &ngx_js_sab_funcs);

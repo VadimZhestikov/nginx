@@ -170,5 +170,11 @@ void  ngx_js_sab_register_memfd(void *ptr, int fd, size_t size);
 
 extern const JSSharedArrayBufferFunctions  ngx_js_sab_funcs;
 
+/*
+ * Set to 1 inside an SW thread so ngx_js_sab_alloc uses memfd even
+ * when ngx_process == NGX_PROCESS_MASTER.
+ */
+extern __thread int  ngx_js_sw_thread_active;
+
 
 #endif /* _NGX_JS_H_INCLUDED_ */

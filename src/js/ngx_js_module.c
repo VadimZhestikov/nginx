@@ -106,10 +106,13 @@ ngx_js_sab_alloc(void *opaque, size_t size)
 
     total = sizeof(ngx_js_sab_hdr_t) + size;
 
-    if (ngx_process == NGX_PROCESS_MASTER
-        || ngx_process == NGX_PROCESS_SINGLE)
+    if ((ngx_process == NGX_PROCESS_MASTER
+         || ngx_process == NGX_PROCESS_SINGLE)
+        && !ngx_js_sw_thread_active)
     {
-        /* Pre-fork: MAP_SHARED|MAP_ANONYMOUS — same VA in all workers */
+        /* Pre-fork master main thread: MAP_SHARED|MAP_ANONYMOUS — same VA
+         * in all workers.  SW threads (post-fork, master process) fall
+         * through to memfd so the fd can be passed via SCM_RIGHTS. */
         hdr = mmap(NULL, total, PROT_READ | PROT_WRITE,
                    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
         if (hdr == MAP_FAILED) {
