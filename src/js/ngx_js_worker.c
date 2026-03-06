@@ -24,8 +24,49 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <cutils.h>
+#include <quickjs-libc.h>
 #include "ngx_js.h"
 #include "ngx_js_worker.h"
+
+
+/* ------------------------------------------------------------------ */
+/* SharedArrayBuffer helpers                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Mirror of JSSABHeader in quickjs-libc.c.  The uint64_t buf[] member
+ * forces 8-byte alignment so sizeof matches JSSABHeader exactly.
+ * Both this code and quickjs-libc use libc malloc, so our dup/free
+ * functions work correctly on SABs allocated by either side.
+ */
+typedef struct {
+    int      ref_count;
+    uint64_t buf[0];
+} ngx_js_sab_hdr_t;
+
+
+static void
+ngx_js_sab_free(void *opaque, void *ptr)
+{
+    ngx_js_sab_hdr_t  *hdr;
+    int                rc;
+
+    hdr = (ngx_js_sab_hdr_t *) ptr - 1;
+    rc  = __atomic_fetch_add(&hdr->ref_count, -1, __ATOMIC_SEQ_CST) - 1;
+    if (rc == 0) {
+        free(hdr);
+    }
+}
+
+
+static void
+ngx_js_sab_dup(void *opaque, void *ptr)
+{
+    ngx_js_sab_hdr_t  *hdr;
+
+    hdr = (ngx_js_sab_hdr_t *) ptr - 1;
+    __atomic_fetch_add(&hdr->ref_count, 1, __ATOMIC_SEQ_CST);
+}
 
 
 /* ------------------------------------------------------------------ */
@@ -37,6 +78,8 @@ typedef struct {
     ngx_queue_t  link;
     uint8_t     *buf;
     size_t       len;
+    uint8_t    **sab_tab;      /* SAB data pointers (may be NULL) */
+    size_t       sab_tab_len;
 } ngx_js_msg_t;
 
 
@@ -159,9 +202,11 @@ pipe_init(ngx_js_msg_pipe_t *p)
 
 
 static void
-pipe_send(ngx_js_msg_pipe_t *p, uint8_t *buf, size_t len)
+pipe_send(ngx_js_msg_pipe_t *p, uint8_t *buf, size_t len,
+    uint8_t **sab_tab, size_t sab_tab_len)
 {
     ngx_js_msg_t  *msg;
+    size_t         i;
     int            was_empty;
     char           byte = 1;
 
@@ -170,11 +215,26 @@ pipe_send(ngx_js_msg_pipe_t *p, uint8_t *buf, size_t len)
         if (buf) {
             ngx_free(buf);
         }
+        for (i = 0; i < sab_tab_len; i++) {
+            ngx_js_sab_free(NULL, sab_tab[i]);
+        }
+        ngx_free(sab_tab);
         return;
     }
 
-    msg->buf = buf;
-    msg->len = len;
+    /*
+     * Increment each SAB's reference count so the data stays alive
+     * while the message is in transit (even if the sending JS context
+     * GCs the original SharedArrayBuffer object before delivery).
+     */
+    for (i = 0; i < sab_tab_len; i++) {
+        ngx_js_sab_dup(NULL, sab_tab[i]);
+    }
+
+    msg->buf         = buf;
+    msg->len         = len;
+    msg->sab_tab     = sab_tab;
+    msg->sab_tab_len = sab_tab_len;
 
     pthread_mutex_lock(&p->mutex);
     was_empty = ngx_queue_empty(&p->queue);
@@ -222,6 +282,7 @@ pipe_destroy(ngx_js_msg_pipe_t *p)
 {
     ngx_queue_t   *q;
     ngx_js_msg_t  *msg;
+    size_t         i;
 
     pthread_mutex_lock(&p->mutex);
 
@@ -232,6 +293,10 @@ pipe_destroy(ngx_js_msg_pipe_t *p)
         if (msg->buf) {
             ngx_free(msg->buf);
         }
+        for (i = 0; i < msg->sab_tab_len; i++) {
+            ngx_js_sab_free(NULL, msg->sab_tab[i]);
+        }
+        ngx_free(msg->sab_tab);
         ngx_free(msg);
     }
 
@@ -255,8 +320,8 @@ ngx_js_wt_post_message(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     ngx_js_wthread_ctx_t  *tctx;
-    uint8_t               *qjs_buf, *buf;
-    size_t                 qjs_len;
+    uint8_t               *qjs_buf, *buf, **qjs_sab, **sab_tab;
+    size_t                 qjs_len, sab_tab_len;
 
     tctx = JS_GetContextOpaque(ctx);
     if (tctx == NULL) {
@@ -267,7 +332,9 @@ ngx_js_wt_post_message(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "postMessage(data): data required");
     }
 
-    qjs_buf = JS_WriteObject(ctx, &qjs_len, argv[0], 0);
+    qjs_buf = JS_WriteObject2(ctx, &qjs_len, argv[0],
+                              JS_WRITE_OBJ_SAB | JS_WRITE_OBJ_REFERENCE,
+                              &qjs_sab, &sab_tab_len);
     if (qjs_buf == NULL) {
         return JS_EXCEPTION;
     }
@@ -275,13 +342,27 @@ ngx_js_wt_post_message(JSContext *ctx, JSValueConst this_val,
     buf = ngx_alloc(qjs_len, ngx_cycle->log);
     if (buf == NULL) {
         js_free(ctx, qjs_buf);
+        js_free(ctx, qjs_sab);
         return JS_ThrowInternalError(ctx, "postMessage: alloc failed");
     }
 
     ngx_memcpy(buf, qjs_buf, qjs_len);
     js_free(ctx, qjs_buf);
 
-    pipe_send(tctx->from_worker, buf, qjs_len);
+    /* Copy sab_tab from JS heap to nginx heap */
+    sab_tab = NULL;
+    if (sab_tab_len > 0) {
+        sab_tab = ngx_alloc(sab_tab_len * sizeof(uint8_t *), ngx_cycle->log);
+        if (sab_tab == NULL) {
+            js_free(ctx, qjs_sab);
+            ngx_free(buf);
+            return JS_ThrowInternalError(ctx, "postMessage: alloc failed");
+        }
+        ngx_memcpy(sab_tab, qjs_sab, sab_tab_len * sizeof(uint8_t *));
+    }
+    js_free(ctx, qjs_sab);
+
+    pipe_send(tctx->from_worker, buf, qjs_len, sab_tab, sab_tab_len);
 
     return JS_UNDEFINED;
 }
@@ -398,8 +479,27 @@ ngx_js_worker_thread(void *arg)
         return NULL;
     }
 
+    js_std_init_handlers(rt);
+
+    /*
+     * Register our SAB alloc/free/dup so that SharedArrayBuffers
+     * serialised by the main thread (which uses the same functions via
+     * js_std_init_handlers) can be passed by reference through the pipe.
+     */
+    {
+        static const JSSharedArrayBufferFunctions sab_funcs = {
+            NULL,            /* alloc — not needed: SABs are created on the
+                              *         main side; worker only receives them */
+            ngx_js_sab_free,
+            ngx_js_sab_dup,
+            NULL,
+        };
+        JS_SetSharedArrayBufferFunctions(rt, &sab_funcs);
+    }
+
     ctx = JS_NewContext(rt);
     if (ctx == NULL) {
+        js_std_free_handlers(rt);
         JS_FreeRuntime(rt);
         return NULL;
     }
@@ -487,8 +587,17 @@ ngx_js_worker_thread(void *arg)
                 break;
             }
 
-            data = JS_ReadObject(ctx, msg->buf, msg->len, 0);
+            data = JS_ReadObject(ctx, msg->buf, msg->len,
+                                 JS_READ_OBJ_SAB | JS_READ_OBJ_REFERENCE);
             ngx_free(msg->buf);
+            /* Release the in-transit SAB refs (JS_ReadObject took its own) */
+            {
+                size_t  si;
+                for (si = 0; si < msg->sab_tab_len; si++) {
+                    ngx_js_sab_free(NULL, msg->sab_tab[si]);
+                }
+                ngx_free(msg->sab_tab);
+            }
             ngx_free(msg);
 
             if (JS_IsException(data)) {
@@ -527,12 +636,17 @@ ngx_js_worker_thread(void *arg)
 
         /* Free any messages left in the queue (after a terminate) */
         while (!ngx_queue_empty(&msgs)) {
+            size_t  si;
             q   = ngx_queue_head(&msgs);
             ngx_queue_remove(q);
             msg = ngx_queue_data(q, ngx_js_msg_t, link);
             if (msg->buf) {
                 ngx_free(msg->buf);
             }
+            for (si = 0; si < msg->sab_tab_len; si++) {
+                ngx_js_sab_free(NULL, msg->sab_tab[si]);
+            }
+            ngx_free(msg->sab_tab);
             ngx_free(msg);
         }
 
@@ -545,6 +659,7 @@ done:
     JS_FreeValue(ctx, tctx->on_message);
     ngx_free(tctx);
     JS_FreeContext(ctx);
+    js_std_free_handlers(rt);
     JS_FreeRuntime(rt);
 
     return NULL;
@@ -592,8 +707,17 @@ ngx_js_worker_recv_handler(ngx_event_t *ev)
             continue;
         }
 
-        data = JS_ReadObject(ctx, msg->buf, msg->len, 0);
+        data = JS_ReadObject(ctx, msg->buf, msg->len,
+                             JS_READ_OBJ_SAB | JS_READ_OBJ_REFERENCE);
         ngx_free(msg->buf);
+        /* Release the in-transit SAB refs (JS_ReadObject took its own) */
+        {
+            size_t  si;
+            for (si = 0; si < msg->sab_tab_len; si++) {
+                ngx_js_sab_free(NULL, msg->sab_tab[si]);
+            }
+            ngx_free(msg->sab_tab);
+        }
         ngx_free(msg);
 
         if (JS_IsException(data)) {
@@ -646,8 +770,8 @@ ngx_js_worker_post_message(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     ngx_js_worker_opaque_t  *op;
-    uint8_t                 *qjs_buf, *buf;
-    size_t                   qjs_len;
+    uint8_t                 *qjs_buf, *buf, **qjs_sab, **sab_tab;
+    size_t                   qjs_len, sab_tab_len;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_worker_class_id);
     if (op == NULL) {
@@ -662,7 +786,9 @@ ngx_js_worker_post_message(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "postMessage(data): data required");
     }
 
-    qjs_buf = JS_WriteObject(ctx, &qjs_len, argv[0], 0);
+    qjs_buf = JS_WriteObject2(ctx, &qjs_len, argv[0],
+                              JS_WRITE_OBJ_SAB | JS_WRITE_OBJ_REFERENCE,
+                              &qjs_sab, &sab_tab_len);
     if (qjs_buf == NULL) {
         return JS_EXCEPTION;
     }
@@ -670,13 +796,27 @@ ngx_js_worker_post_message(JSContext *ctx, JSValueConst this_val,
     buf = ngx_alloc(qjs_len, ngx_cycle->log);
     if (buf == NULL) {
         js_free(ctx, qjs_buf);
+        js_free(ctx, qjs_sab);
         return JS_ThrowInternalError(ctx, "postMessage: alloc failed");
     }
 
     ngx_memcpy(buf, qjs_buf, qjs_len);
     js_free(ctx, qjs_buf);
 
-    pipe_send(&op->state->to_worker, buf, qjs_len);
+    /* Copy sab_tab from JS heap to nginx heap */
+    sab_tab = NULL;
+    if (sab_tab_len > 0) {
+        sab_tab = ngx_alloc(sab_tab_len * sizeof(uint8_t *), ngx_cycle->log);
+        if (sab_tab == NULL) {
+            js_free(ctx, qjs_sab);
+            ngx_free(buf);
+            return JS_ThrowInternalError(ctx, "postMessage: alloc failed");
+        }
+        ngx_memcpy(sab_tab, qjs_sab, sab_tab_len * sizeof(uint8_t *));
+    }
+    js_free(ctx, qjs_sab);
+
+    pipe_send(&op->state->to_worker, buf, qjs_len, sab_tab, sab_tab_len);
 
     return JS_UNDEFINED;
 }
@@ -708,7 +848,7 @@ ngx_js_worker_terminate(JSContext *ctx, JSValueConst this_val,
     state = op->state;
 
     /* Wake worker thread with terminate sentinel (buf == NULL) */
-    pipe_send(&state->to_worker, NULL, 0);
+    pipe_send(&state->to_worker, NULL, 0, NULL, 0);
 
     /* Wait for the worker thread to finish (frees its JSRuntime etc.) */
     pthread_join(state->tid, NULL);
@@ -931,7 +1071,7 @@ ngx_js_worker_ctor(JSContext *ctx, JSValueConst new_target,
 
     if (JS_IsException(obj)) {
         /* Thread is running; send terminate to clean it up */
-        pipe_send(&state->to_worker, NULL, 0);
+        pipe_send(&state->to_worker, NULL, 0, NULL, 0);
         pthread_join(state->tid, NULL);
         ngx_del_event(conn->read, NGX_READ_EVENT, 0);
         ngx_free_connection(conn);
