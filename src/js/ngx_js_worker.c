@@ -482,6 +482,14 @@ ngx_js_worker_thread(void *arg)
     js_std_init_handlers(rt);
 
     /*
+     * Worker threads run their own poll() loop, so they are allowed to
+     * block.  This enables Atomics.wait() for inter-thread synchronization
+     * via SharedArrayBuffer.  The main nginx worker runtime must NOT have
+     * can_block set (it would stall the nginx event loop).
+     */
+    JS_SetCanBlock(rt, TRUE);
+
+    /*
      * Register our SAB alloc/free/dup so that SharedArrayBuffers
      * serialised by the main thread (which uses the same functions via
      * js_std_init_handlers) can be passed by reference through the pipe.
