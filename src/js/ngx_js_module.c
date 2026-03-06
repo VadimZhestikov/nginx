@@ -18,6 +18,8 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <pthread.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
 #include "ngx_js_sw.h"
@@ -27,14 +29,150 @@
 /* Shared-memory SAB allocator (see ngx_js.h for design rationale)    */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Per-process table of memfd-backed SABs.
+ *
+ * Workers create SABs post-fork using memfd_create so the backing memory
+ * can be passed to the master (SharedWorker thread) via SCM_RIGHTS.
+ * Each process tracks its own {data-pointer → memfd fd} mapping.
+ * local_refs counts JS references within THIS process only.
+ */
+
+#ifdef SYS_memfd_create
+# ifndef MFD_CLOEXEC
+#  define MFD_CLOEXEC  1U
+# endif
+static int
+ngx_memfd_create(const char *name, unsigned int flags)
+{
+    return (int) syscall(SYS_memfd_create, name, flags);
+}
+# define NGX_JS_HAVE_MEMFD  1
+#endif
+
+
+#define NGX_JS_SAB_FD_TABLE_MAX  64
+
+typedef struct {
+    void     *ptr;        /* SAB data pointer (buf[]) in this process */
+    int       fd;         /* memfd fd; -1 = slot unused */
+    size_t    size;       /* payload bytes */
+    uint32_t  local_refs; /* ref count within this process */
+} ngx_js_sab_fd_entry_t;
+
+static ngx_js_sab_fd_entry_t  ngx_js_sab_fd_table[NGX_JS_SAB_FD_TABLE_MAX];
+static pthread_mutex_t         ngx_js_sab_fd_lock = PTHREAD_MUTEX_INITIALIZER;
+static int                     ngx_js_sab_fd_initialized;
+
+static void
+ngx_js_sab_fd_table_init(void)
+{
+    int  i;
+
+    for (i = 0; i < NGX_JS_SAB_FD_TABLE_MAX; i++) {
+        ngx_js_sab_fd_table[i].fd = -1;
+    }
+
+    ngx_js_sab_fd_initialized = 1;
+}
+
+
+/* Find entry index by ptr; caller must hold the lock. */
+static int
+ngx_js_sab_fd_find(void *ptr)
+{
+    int  i;
+
+    for (i = 0; i < NGX_JS_SAB_FD_TABLE_MAX; i++) {
+        if (ngx_js_sab_fd_table[i].fd >= 0
+            && ngx_js_sab_fd_table[i].ptr == ptr)
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+
 void *
 ngx_js_sab_alloc(void *opaque, size_t size)
 {
     ngx_js_sab_hdr_t  *hdr;
     size_t             total;
+#ifdef NGX_JS_HAVE_MEMFD
+    int                fd, i;
+#endif
 
     total = sizeof(ngx_js_sab_hdr_t) + size;
 
+    if (ngx_process == NGX_PROCESS_MASTER
+        || ngx_process == NGX_PROCESS_SINGLE)
+    {
+        /* Pre-fork: MAP_SHARED|MAP_ANONYMOUS — same VA in all workers */
+        hdr = mmap(NULL, total, PROT_READ | PROT_WRITE,
+                   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        if (hdr == MAP_FAILED) {
+            return NULL;
+        }
+
+        hdr->ref_count = 1;
+        hdr->flags     = NGX_JS_SAB_SHARED;
+        hdr->size      = (uint32_t) size;
+        hdr->_pad      = 0;
+
+        return (void *) hdr->buf;
+    }
+
+#ifdef NGX_JS_HAVE_MEMFD
+    /* Worker (post-fork): use memfd so the fd can be passed via SCM_RIGHTS */
+    fd = ngx_memfd_create("ngx_js_sab", MFD_CLOEXEC);
+    if (fd < 0) {
+        return NULL;
+    }
+
+    if (ftruncate(fd, (off_t) total) < 0) {
+        close(fd);
+        return NULL;
+    }
+
+    hdr = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (hdr == MAP_FAILED) {
+        close(fd);
+        return NULL;
+    }
+
+    hdr->ref_count = 0;   /* not used for memfd SABs; tracked in fd table */
+    hdr->flags     = NGX_JS_SAB_MEMFD;
+    hdr->size      = (uint32_t) size;
+    hdr->_pad      = 0;
+
+    if (!ngx_js_sab_fd_initialized) {
+        ngx_js_sab_fd_table_init();
+    }
+
+    pthread_mutex_lock(&ngx_js_sab_fd_lock);
+
+    for (i = 0; i < NGX_JS_SAB_FD_TABLE_MAX; i++) {
+        if (ngx_js_sab_fd_table[i].fd < 0) {
+            ngx_js_sab_fd_table[i].ptr        = (void *) hdr->buf;
+            ngx_js_sab_fd_table[i].fd         = fd;
+            ngx_js_sab_fd_table[i].size        = size;
+            ngx_js_sab_fd_table[i].local_refs  = 1;
+            pthread_mutex_unlock(&ngx_js_sab_fd_lock);
+            return (void *) hdr->buf;
+        }
+    }
+
+    pthread_mutex_unlock(&ngx_js_sab_fd_lock);
+
+    /* Table full */
+    munmap(hdr, total);
+    close(fd);
+    return NULL;
+
+#else
+    /* No memfd support: fall back to MAP_SHARED|MAP_ANONYMOUS (no cross-process) */
     hdr = mmap(NULL, total, PROT_READ | PROT_WRITE,
                MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (hdr == MAP_FAILED) {
@@ -42,13 +180,12 @@ ngx_js_sab_alloc(void *opaque, size_t size)
     }
 
     hdr->ref_count = 1;
-    hdr->flags     = (ngx_process == NGX_PROCESS_MASTER
-                      || ngx_process == NGX_PROCESS_SINGLE)
-                     ? NGX_JS_SAB_SHARED : 0;
+    hdr->flags     = 0;
     hdr->size      = (uint32_t) size;
     hdr->_pad      = 0;
 
     return (void *) hdr->buf;
+#endif
 }
 
 
@@ -56,7 +193,22 @@ void
 ngx_js_sab_dup(void *opaque, void *ptr)
 {
     ngx_js_sab_hdr_t  *hdr;
+    int                idx;
 
+    if (!ngx_js_sab_fd_initialized) {
+        ngx_js_sab_fd_table_init();
+    }
+
+    pthread_mutex_lock(&ngx_js_sab_fd_lock);
+    idx = ngx_js_sab_fd_find(ptr);
+    if (idx >= 0) {
+        ngx_js_sab_fd_table[idx].local_refs++;
+        pthread_mutex_unlock(&ngx_js_sab_fd_lock);
+        return;
+    }
+    pthread_mutex_unlock(&ngx_js_sab_fd_lock);
+
+    /* Pre-fork SAB: use shared atomic ref count */
     hdr = (ngx_js_sab_hdr_t *) ptr - 1;
     __atomic_fetch_add(&hdr->ref_count, 1, __ATOMIC_SEQ_CST);
 }
@@ -67,15 +219,87 @@ ngx_js_sab_free(void *opaque, void *ptr)
 {
     ngx_js_sab_hdr_t  *hdr;
     size_t             total;
+    int                idx, fd;
+    size_t             size;
 
+    if (!ngx_js_sab_fd_initialized) {
+        ngx_js_sab_fd_table_init();
+    }
+
+    pthread_mutex_lock(&ngx_js_sab_fd_lock);
+    idx = ngx_js_sab_fd_find(ptr);
+    if (idx >= 0) {
+        ngx_js_sab_fd_table[idx].local_refs--;
+        if (ngx_js_sab_fd_table[idx].local_refs > 0) {
+            pthread_mutex_unlock(&ngx_js_sab_fd_lock);
+            return;
+        }
+
+        fd   = ngx_js_sab_fd_table[idx].fd;
+        size = ngx_js_sab_fd_table[idx].size;
+        ngx_js_sab_fd_table[idx].fd  = -1;
+        ngx_js_sab_fd_table[idx].ptr = NULL;
+        pthread_mutex_unlock(&ngx_js_sab_fd_lock);
+
+        hdr   = (ngx_js_sab_hdr_t *) ptr - 1;
+        total = sizeof(ngx_js_sab_hdr_t) + size;
+        munmap(hdr, total);
+        close(fd);
+        return;
+    }
+    pthread_mutex_unlock(&ngx_js_sab_fd_lock);
+
+    /* Pre-fork SAB: free when shared ref count reaches zero */
     hdr = (ngx_js_sab_hdr_t *) ptr - 1;
-
     if (__atomic_fetch_add(&hdr->ref_count, -1, __ATOMIC_SEQ_CST) != 1) {
         return;
     }
 
     total = sizeof(ngx_js_sab_hdr_t) + hdr->size;
     munmap(hdr, total);
+}
+
+
+int
+ngx_js_sab_get_fd(void *ptr)
+{
+    int  idx, fd;
+
+    if (!ngx_js_sab_fd_initialized) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&ngx_js_sab_fd_lock);
+    idx = ngx_js_sab_fd_find(ptr);
+    fd  = (idx >= 0) ? ngx_js_sab_fd_table[idx].fd : -1;
+    pthread_mutex_unlock(&ngx_js_sab_fd_lock);
+
+    return fd;
+}
+
+
+void
+ngx_js_sab_register_memfd(void *ptr, int fd, size_t size)
+{
+    int  i;
+
+    if (!ngx_js_sab_fd_initialized) {
+        ngx_js_sab_fd_table_init();
+    }
+
+    pthread_mutex_lock(&ngx_js_sab_fd_lock);
+
+    for (i = 0; i < NGX_JS_SAB_FD_TABLE_MAX; i++) {
+        if (ngx_js_sab_fd_table[i].fd < 0) {
+            ngx_js_sab_fd_table[i].ptr        = ptr;
+            ngx_js_sab_fd_table[i].fd         = fd;
+            ngx_js_sab_fd_table[i].size        = size;
+            ngx_js_sab_fd_table[i].local_refs  = 1;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&ngx_js_sab_fd_lock);
 }
 
 

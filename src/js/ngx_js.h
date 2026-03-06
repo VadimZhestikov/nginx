@@ -137,6 +137,7 @@ void ngx_js_async_check(ngx_js_worker_t *w);
  */
 
 #define NGX_JS_SAB_SHARED  0x01u   /* mmap'd before fork — valid in all processes */
+#define NGX_JS_SAB_MEMFD   0x02u   /* memfd-backed — fd tracked in per-process table */
 
 typedef struct {
     int      ref_count;
@@ -150,6 +151,22 @@ typedef struct {
 void  ngx_js_sab_dup(void *opaque, void *ptr);
 void  ngx_js_sab_free(void *opaque, void *ptr);
 void *ngx_js_sab_alloc(void *opaque, size_t size);
+
+/*
+ * Return the memfd fd for a worker-created SAB, or -1 if not memfd.
+ * Used by the channel layer to pass the fd via SCM_RIGHTS.
+ */
+int   ngx_js_sab_get_fd(void *ptr);
+
+/*
+ * Register a memfd SAB mapping received from another process.
+ * ptr  — data pointer (buf[] address in THIS process's mapping)
+ * fd   — the local memfd fd (dup'd from SCM_RIGHTS)
+ * size — payload bytes (== ngx_js_sab_hdr_t.size)
+ * The mapping starts with local_refs=1; the caller releases this ref
+ * after JS_ReadObject has taken its own ref via sab_dup.
+ */
+void  ngx_js_sab_register_memfd(void *ptr, int fd, size_t size);
 
 extern const JSSharedArrayBufferFunctions  ngx_js_sab_funcs;
 

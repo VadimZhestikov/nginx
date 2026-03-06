@@ -5,35 +5,45 @@
  * ngx_js_sw.c — SharedWorker class backed by a master-process pthread.
  *
  * new SharedWorker("script.js") in master (init_conf):
- *   - allocates N pipe-pairs (inbox + outbox per nginx worker)
+ *   - allocates N bidirectional socketpairs (one per nginx worker)
  *   - spawns a pthread running the script with a fresh JSRuntime
  *
  * new SharedWorker("script.js") in a worker process:
  *   - looks up the existing state by URL
- *   - on first use per worker: activates the outbox.rfd in nginx epoll
- *     and sends a CONNECT sentinel to the SW thread via inbox
+ *   - on first use per worker: activates the worker_fd in nginx epoll
+ *     and sends a CONNECT sentinel to the SW thread
  *
  * SW thread receives CONNECT for channel[i] → fires onconnect({ports:[p]})
  * where p.postMessage(data) sends back to the nginx worker.
  *
- * Worker-side sw.postMessage(data) → serialise → write to inbox.wfd
- * SW thread receives data from inbox.rfd → calls port[i].onmessage({data:…})
+ * Worker-side sw.postMessage(data) → serialise → sendmsg(worker_fd)
+ * SW thread receives data from sw_fd → calls port[i].onmessage({data:…})
  *
  * Worker-side sw.onmessage = fn → stored in worker_slots[i].on_message
- * nginx event on outbox.rfd → deserialise → call on_message({data:…})
+ * nginx event on worker_fd → deserialise → call on_message({data:…})
  *
- * PIPE PROTOCOL (cross-process, direct write — NO in-memory queue)
- * ---------------------------------------------------------------
- * Each pipe carries binary-framed messages:
- *   [uint32_t type][uint32_t len][len bytes data]
+ * CHANNEL PROTOCOL (AF_UNIX SOCK_SEQPACKET, one message per sendmsg)
+ * ------------------------------------------------------------------
+ * Each message is one atomic sendmsg/recvmsg on the channel socket.
+ *
+ * Message layout:
+ *   [uint32_t type][uint32_t data_len][uint32_t n_sabs][uint32_t n_memfds]
+ *   [data_len bytes: serialised JS]
+ *   [n_sabs × 8 bytes: pre-fork SAB sender VAs]
+ *   [n_memfds × 16 bytes: {uint64_t sender_va, uint32_t size, uint32_t pad}]
+ *   SCM_RIGHTS: n_memfds memfd file descriptors
  *
  * type values:
  *   NGX_JS_SW_MSG_DATA    (0) — serialised JS value
  *   NGX_JS_SW_MSG_CONNECT (1) — worker connects for the first time
  *   NGX_JS_SW_MSG_TERM    (2) — shutdown signal
  *
- * Writes use writev() so header+data land atomically (< PIPE_BUF = 4096).
- * Reads loop until EAGAIN.
+ * SharedArrayBuffers:
+ *   Pre-fork (NGX_JS_SAB_SHARED): same VA in all processes; transit dup
+ *     keeps the mapping alive; receiver calls sab_free after JS_ReadObject.
+ *   Worker-created (NGX_JS_SAB_MEMFD): backed by memfd; fd sent via
+ *     SCM_RIGHTS; receiver mmaps to a local VA, patches the serialised
+ *     buffer, then calls JS_ReadObject + releases the mmap ref.
  */
 
 #include <ngx_config.h>
@@ -42,9 +52,9 @@
 #include <pthread.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/uio.h>
 #include <cutils.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
@@ -52,25 +62,35 @@
 
 
 /* ------------------------------------------------------------------ */
-/* Cross-process pipe (direct write, no in-memory queue)               */
+/* Channel message constants                                           */
 /* ------------------------------------------------------------------ */
 
 #define NGX_JS_SW_MSG_DATA     0u
 #define NGX_JS_SW_MSG_CONNECT  1u
 #define NGX_JS_SW_MSG_TERM     2u
 
+/* Maximum memfd SABs and total message body per sendmsg */
+#define NGX_JS_SW_MAX_SABS    8u
+#define NGX_JS_SW_MAX_MEMFDS  8u
+#define NGX_JS_SW_MAX_MSG     (32u * 1024u)
+
+
+/* ------------------------------------------------------------------ */
+/* Channel: bidirectional AF_UNIX SOCK_SEQPACKET socketpair           */
+/* ------------------------------------------------------------------ */
+
 typedef struct {
-    int  rfd;
-    int  wfd;
-} ngx_js_sw_xpipe_t;
+    int  sw_fd;      /* SW thread's end: read=from-worker, write=to-worker */
+    int  worker_fd;  /* worker's end: read=from-SW, write=to-SW */
+} ngx_js_sw_channel_t;
 
 
 static ngx_int_t
-xpipe_init(ngx_js_sw_xpipe_t *p)
+channel_init(ngx_js_sw_channel_t *ch)
 {
     int  fds[2];
 
-    if (pipe(fds) != 0) {
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fds) != 0) {
         return NGX_ERROR;
     }
 
@@ -82,86 +102,142 @@ xpipe_init(ngx_js_sw_xpipe_t *p)
         return NGX_ERROR;
     }
 
-    p->rfd = fds[0];
-    p->wfd = fds[1];
+    ch->sw_fd     = fds[0];
+    ch->worker_fd = fds[1];
 
     return NGX_OK;
 }
 
 
 static void
-xpipe_destroy(ngx_js_sw_xpipe_t *p)
+channel_destroy(ngx_js_sw_channel_t *ch)
 {
-    close(p->rfd);
-    close(p->wfd);
+    if (ch->sw_fd >= 0) {
+        close(ch->sw_fd);
+        ch->sw_fd = -1;
+    }
+    if (ch->worker_fd >= 0) {
+        close(ch->worker_fd);
+        ch->worker_fd = -1;
+    }
 }
 
 
 /*
- * xpipe_send — write one framed message directly into the pipe.
- *
- * Message layout (total must be < PIPE_BUF = 4096 for atomic writev):
- *   [uint32_t type][uint32_t data_len][uint32_t n_sabs]   (12 bytes)
- *   [data_len bytes: serialised JS]
- *   [n_sabs × uint64_t: SAB data pointers]
+ * Memfd SAB info packed into the message body.
+ * 16 bytes per entry (8-byte aligned).
+ */
+typedef struct {
+    uint64_t  sender_va;  /* SAB data pointer in sending process */
+    uint32_t  size;       /* payload bytes */
+    uint32_t  _pad;
+} ngx_js_sw_memfd_info_t;
+
+
+/*
+ * channel_send — send one framed message over socket fd.
  *
  * Ownership of buf and sab_tab is transferred; both are ngx_free()'d here.
- * For each SAB pointer, sab_dup() is called so the mapping stays alive
- * while the message travels through the pipe.
+ * Pre-fork SABs: transit sab_dup here, receiver releases after JS_ReadObject.
+ * Memfd SABs: fd sent via SCM_RIGHTS; receiver mmap+releases the mmap ref.
  */
 static void
-xpipe_send(ngx_js_sw_xpipe_t *p, uint32_t type,
-           uint8_t *buf, uint32_t len,
-           uint8_t **sab_tab, uint32_t n_sabs)
+channel_send(int fd, uint32_t type,
+             uint8_t *buf, uint32_t data_len,
+             uint8_t **sab_tab, uint32_t n_sabs)
 {
-    uint32_t      hdr[3];
-    uint64_t     *sab_ptrs;
-    struct iovec  iov[3];
-    int           niov;
-    ssize_t       n;
-    uint32_t      i;
+    uint32_t                hdr[4];
+    ngx_js_sab_hdr_t       *sab_hdr;
+    uint64_t                shared_vas[NGX_JS_SW_MAX_SABS];
+    ngx_js_sw_memfd_info_t  memfd_info[NGX_JS_SW_MAX_MEMFDS];
+    int                     memfd_fds[NGX_JS_SW_MAX_MEMFDS];
+    uint32_t                n_shared, n_memfds, i;
+    int                     sab_fd;
+    struct iovec            iov[5];
+    int                     niov;
+    struct msghdr           msg;
+    char                    cmsg_buf[CMSG_SPACE(NGX_JS_SW_MAX_MEMFDS
+                                                * sizeof(int))];
+    struct cmsghdr         *cmh;
 
-    /* Increment SAB ref counts for in-transit ownership */
+    n_shared = 0;
+    n_memfds = 0;
+
     for (i = 0; i < n_sabs; i++) {
-        ngx_js_sab_dup(NULL, sab_tab[i]);
+        sab_hdr = (ngx_js_sab_hdr_t *) sab_tab[i] - 1;
+
+        if (sab_hdr->flags & NGX_JS_SAB_MEMFD) {
+            if (n_memfds >= NGX_JS_SW_MAX_MEMFDS) {
+                continue;
+            }
+            sab_fd = ngx_js_sab_get_fd(sab_tab[i]);
+            if (sab_fd < 0) {
+                continue;
+            }
+            memfd_fds[n_memfds]             = sab_fd;
+            memfd_info[n_memfds].sender_va  = (uint64_t)(uintptr_t) sab_tab[i];
+            memfd_info[n_memfds].size       = sab_hdr->size;
+            memfd_info[n_memfds]._pad       = 0;
+            n_memfds++;
+
+        } else if (sab_hdr->flags & NGX_JS_SAB_SHARED) {
+            if (n_shared >= NGX_JS_SW_MAX_SABS) {
+                continue;
+            }
+            /* Transit dup: keeps the mapping alive during pipe transit */
+            ngx_js_sab_dup(NULL, sab_tab[i]);
+            shared_vas[n_shared++] = (uint64_t)(uintptr_t) sab_tab[i];
+        }
+        /* SABs with flags==0 (no sharing) are silently dropped */
     }
 
     hdr[0] = type;
-    hdr[1] = len;
-    hdr[2] = n_sabs;
+    hdr[1] = data_len;
+    hdr[2] = n_shared;
+    hdr[3] = n_memfds;
 
-    iov[0].iov_base = hdr;
-    iov[0].iov_len  = 12;
-    niov = 1;
+    niov = 0;
+    iov[niov].iov_base = hdr;
+    iov[niov].iov_len  = 16;
+    niov++;
 
-    if (buf != NULL && len > 0) {
+    if (buf != NULL && data_len > 0) {
         iov[niov].iov_base = buf;
-        iov[niov].iov_len  = len;
+        iov[niov].iov_len  = data_len;
         niov++;
     }
 
-    if (n_sabs > 0) {
-        sab_ptrs = ngx_alloc(n_sabs * sizeof(uint64_t), ngx_cycle->log);
-        if (sab_ptrs != NULL) {
-            for (i = 0; i < n_sabs; i++) {
-                sab_ptrs[i] = (uint64_t)(uintptr_t) sab_tab[i];
-            }
-            iov[niov].iov_base = sab_ptrs;
-            iov[niov].iov_len  = n_sabs * sizeof(uint64_t);
-            niov++;
-        }
-    } else {
-        sab_ptrs = NULL;
+    if (n_shared > 0) {
+        iov[niov].iov_base = shared_vas;
+        iov[niov].iov_len  = n_shared * sizeof(uint64_t);
+        niov++;
     }
 
-    n = writev(p->wfd, iov, niov);
-    (void) n;   /* O_NONBLOCK: failure logged elsewhere */
-
-    if (sab_ptrs) {
-        ngx_free(sab_ptrs);
+    if (n_memfds > 0) {
+        iov[niov].iov_base = memfd_info;
+        iov[niov].iov_len  = n_memfds * sizeof(ngx_js_sw_memfd_info_t);
+        niov++;
     }
-    ngx_free(sab_tab);
 
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov    = iov;
+    msg.msg_iovlen = niov;
+
+    if (n_memfds > 0) {
+        msg.msg_control    = cmsg_buf;
+        msg.msg_controllen = CMSG_SPACE(n_memfds * sizeof(int));
+        cmh                = CMSG_FIRSTHDR(&msg);
+        cmh->cmsg_level    = SOL_SOCKET;
+        cmh->cmsg_type     = SCM_RIGHTS;
+        cmh->cmsg_len      = CMSG_LEN(n_memfds * sizeof(int));
+        ngx_memcpy(CMSG_DATA(cmh), memfd_fds, n_memfds * sizeof(int));
+    }
+
+    (void) sendmsg(fd, &msg, 0);
+
+    if (sab_tab) {
+        ngx_free(sab_tab);
+    }
     if (buf) {
         ngx_free(buf);
     }
@@ -169,135 +245,195 @@ xpipe_send(ngx_js_sw_xpipe_t *p, uint32_t type,
 
 
 /*
- * xpipe_read_one — try to read one framed message from the pipe.
- *
- * Returns 0 on success, -1 on EAGAIN or error.
- * On success:
- *   *buf_out     — heap-allocated serialised JS data (caller ngx_free's it),
- *                  or NULL for zero-length/sentinel messages.
- *   *sab_tab_out — heap-allocated array of SAB data pointers (caller
- *                  ngx_free's it after calling sab_free for each entry).
- *   *n_sabs_out  — number of entries in *sab_tab_out.
+ * Scan serialized buffer and replace all occurrences of old_va with new_va.
+ * QuickJS writes SAB pointers as raw uint64 little-endian in the buffer.
  */
-static int
-xpipe_read_one(ngx_js_sw_xpipe_t *p, uint32_t *type_out,
-               uint8_t **buf_out, uint32_t *len_out,
-               uint8_t ***sab_tab_out, uint32_t *n_sabs_out)
+static void
+channel_patch_va(uint8_t *buf, uint32_t len,
+                 uint64_t old_va, uint64_t new_va)
 {
-    uint32_t   hdr[3];
-    uint8_t   *buf;
-    uint8_t  **sab_tab;
-    uint64_t  *sab_ptrs;
-    ssize_t    n;
-    size_t     total;
-    uint32_t   i;
+    uint32_t  i;
+    uint64_t  v;
 
-    /* Read 12-byte header */
-    n = read(p->rfd, hdr, 12);
-    if (n <= 0) {
-        return -1;    /* EAGAIN or EOF */
-    }
-
-    /* Handle partial header (rare but possible) */
-    if ((size_t) n < 12) {
-        uint8_t  *h = (uint8_t *) hdr;
-        size_t    got = (size_t) n;
-
-        while (got < 12) {
-            n = read(p->rfd, h + got, 12 - got);
-            if (n <= 0) {
-                return -1;
-            }
-            got += (size_t) n;
+    for (i = 0; i + 8 <= len; i++) {
+        ngx_memcpy(&v, buf + i, 8);
+        if (v == old_va) {
+            ngx_memcpy(buf + i, &new_va, 8);
         }
     }
+}
 
-    *type_out    = hdr[0];
-    *len_out     = hdr[1];
+
+/*
+ * channel_recv — receive one framed message from socket fd.
+ *
+ * Returns 0 on success, -1 on EAGAIN/error.
+ * On success:
+ *   *buf_out     — heap buffer with serialised JS (caller ngx_free's it)
+ *   *sab_tab_out — receiver-side SAB data pointers (all types unified)
+ *   *n_sabs_out  — total SABs (pre-fork + memfd)
+ *
+ * Caller must call ngx_js_sab_free on each sab_tab entry after
+ * JS_ReadObject to release the transit/mmap ref.
+ */
+static int
+channel_recv(int fd, uint32_t *type_out,
+             uint8_t **buf_out, uint32_t *len_out,
+             uint8_t ***sab_tab_out, uint32_t *n_sabs_out)
+{
+    uint8_t                 recv_body[NGX_JS_SW_MAX_MSG];
+    char                    cmsg_buf[CMSG_SPACE(NGX_JS_SW_MAX_MEMFDS
+                                                * sizeof(int))];
+    struct iovec            iov;
+    struct msghdr           msg;
+    ssize_t                 n;
+    uint32_t               *hdr;
+    uint32_t                type, data_len, n_shared, n_memfds, n_total;
+    uint8_t                *data_ptr;
+    uint64_t               *shared_vas;
+    ngx_js_sw_memfd_info_t *memfd_info;
+    uint8_t               **sab_tab;
+    struct cmsghdr         *cmh;
+    int                     recv_fds[NGX_JS_SW_MAX_MEMFDS];
+    uint32_t                n_recv_fds;
+    uint32_t                i;
+    ngx_js_sab_hdr_t       *sab_hdr;
+    void                   *new_ptr;
+    size_t                  total_map;
+    int                     rfd;
+
+    iov.iov_base = recv_body;
+    iov.iov_len  = sizeof(recv_body);
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_buf;
+    msg.msg_controllen = sizeof(cmsg_buf);
+
+    n = recvmsg(fd, &msg, MSG_DONTWAIT);
+    if (n <= 0) {
+        return -1;   /* EAGAIN or EOF */
+    }
+
+    if ((size_t) n < 16) {
+        return -1;   /* truncated header */
+    }
+
+    if (msg.msg_flags & MSG_TRUNC) {
+        return -1;   /* message too large */
+    }
+
+    hdr       = (uint32_t *)(void *) recv_body;
+    type      = hdr[0];
+    data_len  = hdr[1];
+    n_shared  = hdr[2];
+    n_memfds  = hdr[3];
+
+    /* Sanity-check */
+    if (n_shared > NGX_JS_SW_MAX_SABS
+        || n_memfds > NGX_JS_SW_MAX_MEMFDS
+        || (size_t) n < 16 + data_len
+                          + n_shared * sizeof(uint64_t)
+                          + n_memfds * sizeof(ngx_js_sw_memfd_info_t))
+    {
+        return -1;
+    }
+
+    data_ptr   = recv_body + 16;
+    shared_vas = (uint64_t *)(void *)(data_ptr + data_len);
+    memfd_info = (ngx_js_sw_memfd_info_t *)(void *)
+                     ((uint8_t *) shared_vas + n_shared * sizeof(uint64_t));
+
+    /* Extract received fds from SCM_RIGHTS */
+    n_recv_fds = 0;
+    cmh = CMSG_FIRSTHDR(&msg);
+    if (cmh != NULL
+        && cmh->cmsg_level == SOL_SOCKET
+        && cmh->cmsg_type  == SCM_RIGHTS)
+    {
+        n_recv_fds = (uint32_t)((cmh->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+        if (n_recv_fds > NGX_JS_SW_MAX_MEMFDS) {
+            n_recv_fds = NGX_JS_SW_MAX_MEMFDS;
+        }
+        ngx_memcpy(recv_fds, CMSG_DATA(cmh), n_recv_fds * sizeof(int));
+    }
+
+    *type_out    = type;
     *buf_out     = NULL;
     *sab_tab_out = NULL;
     *n_sabs_out  = 0;
 
-    /* Read serialised JS data */
-    if (hdr[1] > 0) {
-        buf = ngx_alloc((size_t) hdr[1], ngx_cycle->log);
-        if (buf == NULL) {
+    /* Copy serialised JS data to a heap buffer */
+    if (data_len > 0) {
+        *buf_out = ngx_alloc((size_t) data_len, ngx_cycle->log);
+        if (*buf_out == NULL) {
+            for (i = 0; i < n_recv_fds; i++) { close(recv_fds[i]); }
             return -1;
         }
-
-        total = 0;
-        while (total < (size_t) hdr[1]) {
-            n = read(p->rfd, buf + total, (size_t) hdr[1] - total);
-            if (n <= 0) {
-                ngx_free(buf);
-                return -1;
-            }
-            total += (size_t) n;
-        }
-
-        *buf_out = buf;
+        ngx_memcpy(*buf_out, data_ptr, data_len);
     }
 
-    /* Read SAB pointer table */
-    if (hdr[2] > 0) {
-        sab_ptrs = ngx_alloc((size_t) hdr[2] * sizeof(uint64_t),
-                             ngx_cycle->log);
-        if (sab_ptrs == NULL) {
-            if (*buf_out) {
-                ngx_free(*buf_out);
-                *buf_out = NULL;
-            }
-            return -1;
-        }
+    n_total = n_shared + n_memfds;
 
-        total = 0;
-        while (total < (size_t) hdr[2] * sizeof(uint64_t)) {
-            n = read(p->rfd, (uint8_t *) sab_ptrs + total,
-                     (size_t) hdr[2] * sizeof(uint64_t) - total);
-            if (n <= 0) {
-                ngx_free(sab_ptrs);
-                if (*buf_out) {
-                    ngx_free(*buf_out);
-                    *buf_out = NULL;
-                }
-                return -1;
-            }
-            total += (size_t) n;
-        }
-
-        sab_tab = ngx_alloc((size_t) hdr[2] * sizeof(uint8_t *),
-                            ngx_cycle->log);
+    if (n_total > 0) {
+        sab_tab = ngx_alloc(n_total * sizeof(uint8_t *), ngx_cycle->log);
         if (sab_tab == NULL) {
-            ngx_free(sab_ptrs);
-            if (*buf_out) {
-                ngx_free(*buf_out);
-                *buf_out = NULL;
-            }
+            ngx_free(*buf_out);
+            *buf_out = NULL;
+            for (i = 0; i < n_recv_fds; i++) { close(recv_fds[i]); }
             return -1;
         }
 
-        for (i = 0; i < hdr[2]; i++) {
-            sab_tab[i] = (uint8_t *)(uintptr_t) sab_ptrs[i];
+        /* Pre-fork SABs: same VA is valid in this process */
+        for (i = 0; i < n_shared; i++) {
+            sab_tab[i] = (uint8_t *)(uintptr_t) shared_vas[i];
         }
 
-        ngx_free(sab_ptrs);
+        /* Memfd SABs: mmap the received fd to a local VA, patch buffer */
+        for (i = 0; i < n_memfds; i++) {
+            if (i >= n_recv_fds) {
+                /* No fd received for this entry — skip */
+                sab_tab[n_shared + i] = NULL;
+                continue;
+            }
+
+            rfd        = recv_fds[i];
+            total_map  = sizeof(ngx_js_sab_hdr_t) + memfd_info[i].size;
+
+            new_ptr = mmap(NULL, total_map, PROT_READ | PROT_WRITE,
+                           MAP_SHARED, rfd, 0);
+            if (new_ptr == MAP_FAILED) {
+                close(rfd);
+                sab_tab[n_shared + i] = NULL;
+                continue;
+            }
+
+            sab_hdr = (ngx_js_sab_hdr_t *) new_ptr;
+            /* Data pointer in this process */
+            new_ptr = (void *) sab_hdr->buf;
+
+            /* Register in this process's fd table (local_refs = 1) */
+            ngx_js_sab_register_memfd(new_ptr, rfd,
+                                      (size_t) memfd_info[i].size);
+
+            /* Patch the serialised buffer: replace sender VA with local VA */
+            if (*buf_out != NULL) {
+                channel_patch_va(*buf_out, data_len,
+                                 memfd_info[i].sender_va,
+                                 (uint64_t)(uintptr_t) new_ptr);
+            }
+
+            sab_tab[n_shared + i] = (uint8_t *) new_ptr;
+        }
 
         *sab_tab_out = sab_tab;
-        *n_sabs_out  = hdr[2];
+        *n_sabs_out  = n_total;
     }
 
+    *len_out = data_len;
     return 0;
 }
-
-
-/* ------------------------------------------------------------------ */
-/* SharedWorker channel (one per nginx worker slot)                    */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    ngx_js_sw_xpipe_t  inbox;    /* worker → SW  */
-    ngx_js_sw_xpipe_t  outbox;   /* SW   → worker */
-} ngx_js_sw_channel_t;
 
 
 /* ------------------------------------------------------------------ */
@@ -460,11 +596,9 @@ static JSClassDef  ngx_js_sw_port_class = {
 /*
  * port.postMessage(data) — SW thread → worker[wi]
  *
- * SharedArrayBuffers are passed by reference: the same mmap region
- * is visible to all processes (created before fork with MAP_SHARED).
- * The SAB data pointers are embedded in the serialised buffer by
- * JS_WriteObject2; we also send them as a separate table so the
- * receiver can release the in-transit reference after JS_ReadObject.
+ * SharedArrayBuffers: pre-fork SABs are passed by reference (same VA
+ * in all processes).  Worker-created memfd SABs are sent by fd via
+ * SCM_RIGHTS; the receiver mmap's to a local VA and patches the buffer.
  */
 static JSValue
 ngx_js_sw_port_post_message(JSContext *ctx, JSValueConst this_val,
@@ -473,8 +607,6 @@ ngx_js_sw_port_post_message(JSContext *ctx, JSValueConst this_val,
     ngx_js_sw_port_opaque_t  *op;
     uint8_t                  *qjs_buf, *buf, **qjs_sab, **sab_tab;
     size_t                    qjs_len, n_sabs;
-    ngx_js_sab_hdr_t         *hdr;
-    uint32_t                  i;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_sw_port_class_id);
     if (op == NULL) {
@@ -491,18 +623,6 @@ ngx_js_sw_port_post_message(JSContext *ctx, JSValueConst this_val,
                               &qjs_sab, &n_sabs);
     if (qjs_buf == NULL) {
         return JS_EXCEPTION;
-    }
-
-    /* Validate: all SABs must have been created before fork */
-    for (i = 0; i < (uint32_t) n_sabs; i++) {
-        hdr = (ngx_js_sab_hdr_t *) qjs_sab[i] - 1;
-        if (!(hdr->flags & NGX_JS_SAB_SHARED)) {
-            js_free(ctx, qjs_buf);
-            js_free(ctx, qjs_sab);
-            return JS_ThrowTypeError(ctx,
-                "port.postMessage: SharedArrayBuffer was not created "
-                "in master scope — cannot cross process boundary");
-        }
     }
 
     buf = ngx_alloc(qjs_len, ngx_cycle->log);
@@ -527,9 +647,9 @@ ngx_js_sw_port_post_message(JSContext *ctx, JSValueConst this_val,
     }
     js_free(ctx, qjs_sab);
 
-    xpipe_send(&op->state->channels[op->wi].outbox,
-               NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
-               sab_tab, (uint32_t) n_sabs);
+    channel_send(op->state->channels[op->wi].sw_fd,
+                 NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
+                 sab_tab, (uint32_t) n_sabs);
 
     return JS_UNDEFINED;
 }
@@ -785,7 +905,7 @@ ngx_js_sw_thread(void *arg)
     }
 
     for (i = 0; i < state->nchannels; i++) {
-        pfds[i].fd      = state->channels[i].inbox.rfd;
+        pfds[i].fd      = state->channels[i].sw_fd;
         pfds[i].events  = POLLIN;
         pfds[i].revents = 0;
     }
@@ -810,9 +930,9 @@ ngx_js_sw_thread(void *arg)
                 continue;
             }
 
-            /* Drain all messages from this inbox */
-            while (xpipe_read_one(&state->channels[wi].inbox,
-                                  &type, &buf, &len, &sab_tab, &n_sabs) == 0)
+            /* Drain all messages from this channel */
+            while (channel_recv(state->channels[wi].sw_fd,
+                                &type, &buf, &len, &sab_tab, &n_sabs) == 0)
             {
                 if (type == NGX_JS_SW_MSG_TERM) {
                     if (buf) {
@@ -1003,7 +1123,7 @@ ngx_js_sw_activate(JSContext *ctx, ngx_js_sw_state_t *state, ngx_uint_t wi)
     recv_ctx->state = state;
     recv_ctx->wi    = wi;
 
-    conn = ngx_get_connection(state->channels[wi].outbox.rfd,
+    conn = ngx_get_connection(state->channels[wi].worker_fd,
                               ngx_cycle->log);
     if (conn == NULL) {
         ngx_free(recv_ctx);
@@ -1025,8 +1145,8 @@ ngx_js_sw_activate(JSContext *ctx, ngx_js_sw_state_t *state, ngx_uint_t wi)
     ws->w    = w;
 
     /* Send CONNECT sentinel to SW thread */
-    xpipe_send(&state->channels[wi].inbox, NGX_JS_SW_MSG_CONNECT,
-               NULL, 0, NULL, 0);
+    channel_send(state->channels[wi].worker_fd, NGX_JS_SW_MSG_CONNECT,
+                 NULL, 0, NULL, 0);
 
     return NGX_OK;
 }
@@ -1058,8 +1178,8 @@ ngx_js_sw_recv_handler(ngx_event_t *ev)
     w        = ws->w;
     ctx      = w->ctx;
 
-    while (xpipe_read_one(&state->channels[wi].outbox,
-                          &type, &buf, &len, &sab_tab, &n_sabs) == 0)
+    while (channel_recv(state->channels[wi].worker_fd,
+                        &type, &buf, &len, &sab_tab, &n_sabs) == 0)
     {
         if (type != NGX_JS_SW_MSG_DATA) {
             if (buf) {
@@ -1128,9 +1248,7 @@ ngx_js_sw_post_message(JSContext *ctx, JSValueConst this_val,
     ngx_js_sw_opaque_t  *op;
     uint8_t             *qjs_buf, *buf, **qjs_sab, **sab_tab;
     size_t               qjs_len, n_sabs;
-    ngx_js_sab_hdr_t    *hdr;
     ngx_uint_t           wi;
-    uint32_t             i;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_sw_class_id);
     if (op == NULL) {
@@ -1159,18 +1277,6 @@ ngx_js_sw_post_message(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    /* Validate: all SABs must have been created before fork */
-    for (i = 0; i < (uint32_t) n_sabs; i++) {
-        hdr = (ngx_js_sab_hdr_t *) qjs_sab[i] - 1;
-        if (!(hdr->flags & NGX_JS_SAB_SHARED)) {
-            js_free(ctx, qjs_buf);
-            js_free(ctx, qjs_sab);
-            return JS_ThrowTypeError(ctx,
-                "postMessage: SharedArrayBuffer was not created "
-                "in master scope — cannot cross process boundary");
-        }
-    }
-
     buf = ngx_alloc(qjs_len, ngx_cycle->log);
     if (buf == NULL) {
         js_free(ctx, qjs_buf);
@@ -1193,9 +1299,9 @@ ngx_js_sw_post_message(JSContext *ctx, JSValueConst this_val,
     }
     js_free(ctx, qjs_sab);
 
-    xpipe_send(&op->state->channels[wi].inbox,
-               NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
-               sab_tab, (uint32_t) n_sabs);
+    channel_send(op->state->channels[wi].worker_fd,
+                 NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
+                 sab_tab, (uint32_t) n_sabs);
 
     return JS_UNDEFINED;
 }
@@ -1430,10 +1536,9 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
         }
 
         for (i = 0; i < nchannels; i++) {
-            if (xpipe_init(&sw->channels[i].inbox) != NGX_OK) {
+            if (channel_init(&sw->channels[i]) != NGX_OK) {
                 while (i-- > 0) {
-                    xpipe_destroy(&sw->channels[i].inbox);
-                    xpipe_destroy(&sw->channels[i].outbox);
+                    channel_destroy(&sw->channels[i]);
                 }
                 ngx_free(sw->worker_slots);
                 ngx_free(sw->channels);
@@ -1441,22 +1546,7 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
                 ngx_free(sw->url);
                 ngx_free(sw);
                 return JS_ThrowInternalError(ctx,
-                    "new SharedWorker: pipe_init failed");
-            }
-
-            if (xpipe_init(&sw->channels[i].outbox) != NGX_OK) {
-                xpipe_destroy(&sw->channels[i].inbox);
-                while (i-- > 0) {
-                    xpipe_destroy(&sw->channels[i].inbox);
-                    xpipe_destroy(&sw->channels[i].outbox);
-                }
-                ngx_free(sw->worker_slots);
-                ngx_free(sw->channels);
-                ngx_free(sw->script);
-                ngx_free(sw->url);
-                ngx_free(sw);
-                return JS_ThrowInternalError(ctx,
-                    "new SharedWorker: pipe_init failed");
+                    "new SharedWorker: channel_init failed");
             }
 
             sw->worker_slots[i].conn       = NULL;
@@ -1466,8 +1556,7 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
 
         if (pthread_create(&sw->tid, NULL, ngx_js_sw_thread, sw) != 0) {
             for (i = 0; i < nchannels; i++) {
-                xpipe_destroy(&sw->channels[i].inbox);
-                xpipe_destroy(&sw->channels[i].outbox);
+                channel_destroy(&sw->channels[i]);
             }
             ngx_free(sw->worker_slots);
             ngx_free(sw->channels);
@@ -1536,7 +1625,7 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
     ngx_js_sw_channel_t       *ch;
     ngx_js_sw_worker_slot_t   *ws_slot;
     int                        reply_fds[2];
-    int                        recv_fds[2];
+    int                        recv_fd;
     uint32_t                   url_len32, worker_idx32;
     uint8_t                   *cmdbuf;
     uint8_t                    status;
@@ -1547,7 +1636,7 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
         struct cmsghdr  hdr;
     } cmsg_snd;
     union {
-        char            buf[CMSG_SPACE(2 * sizeof(int))];
+        char            buf[CMSG_SPACE(sizeof(int))];
         struct cmsghdr  hdr;
     } cmsg_rcv;
     struct cmsghdr            *cmh;
@@ -1622,37 +1711,34 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
     n = recvmsg(reply_fds[0], &msg, 0);
     close(reply_fds[0]);
 
-    recv_fds[0] = recv_fds[1] = -1;
+    recv_fd = -1;
     if (n >= 1 && status == 0) {
         cmh = CMSG_FIRSTHDR(&msg);
         if (cmh != NULL
             && cmh->cmsg_level == SOL_SOCKET
             && cmh->cmsg_type  == SCM_RIGHTS
-            && cmh->cmsg_len   == CMSG_LEN(2 * sizeof(int)))
+            && cmh->cmsg_len   == CMSG_LEN(sizeof(int)))
         {
-            ngx_memcpy(recv_fds, CMSG_DATA(cmh), 2 * sizeof(int));
+            ngx_memcpy(&recv_fd, CMSG_DATA(cmh), sizeof(int));
         }
     }
 
-    if (recv_fds[0] < 0 || recv_fds[1] < 0) {
-        if (recv_fds[0] >= 0) { close(recv_fds[0]); }
-        if (recv_fds[1] >= 0) { close(recv_fds[1]); }
+    if (recv_fd < 0) {
         JS_FreeCString(ctx, url_cstr);
         return JS_ThrowInternalError(ctx,
-            "SharedWorker: manager did not return channel fds");
+            "SharedWorker: manager did not return channel fd");
     }
 
     /* Build local stub state: nchannels=1, slot 0 = this worker */
-    stub = ngx_alloc(sizeof(ngx_js_sw_state_t), ngx_cycle->log);
-    ch   = ngx_alloc(sizeof(ngx_js_sw_channel_t), ngx_cycle->log);
+    stub    = ngx_alloc(sizeof(ngx_js_sw_state_t), ngx_cycle->log);
+    ch      = ngx_alloc(sizeof(ngx_js_sw_channel_t), ngx_cycle->log);
     ws_slot = ngx_alloc(sizeof(ngx_js_sw_worker_slot_t), ngx_cycle->log);
 
     if (stub == NULL || ch == NULL || ws_slot == NULL) {
         ngx_free(stub);
         ngx_free(ch);
         ngx_free(ws_slot);
-        close(recv_fds[0]);
-        close(recv_fds[1]);
+        close(recv_fd);
         JS_FreeCString(ctx, url_cstr);
         return JS_ThrowInternalError(ctx, "SharedWorker: alloc failed");
     }
@@ -1664,8 +1750,7 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
         ngx_free(ws_slot);
         ngx_free(ch);
         ngx_free(stub);
-        close(recv_fds[0]);
-        close(recv_fds[1]);
+        close(recv_fd);
         JS_FreeCString(ctx, url_cstr);
         return JS_ThrowInternalError(ctx, "SharedWorker: alloc failed");
     }
@@ -1673,12 +1758,9 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
     ngx_memcpy(stub->url, url_cstr, url_len32 + 1);
     JS_FreeCString(ctx, url_cstr);
 
-    /* recv_fds[0] = inbox.wfd (worker writes to SW) */
-    /* recv_fds[1] = outbox.rfd (worker reads from SW) */
-    ch->inbox.wfd  = recv_fds[0];
-    ch->inbox.rfd  = -1;   /* not used by this worker */
-    ch->outbox.rfd = recv_fds[1];
-    ch->outbox.wfd = -1;   /* not used by this worker */
+    /* recv_fd is the worker_fd end of the channel socketpair */
+    ch->worker_fd = recv_fd;
+    ch->sw_fd     = -1;   /* SW end lives in master; not used by this worker */
 
     ws_slot->conn       = NULL;
     ws_slot->on_message = JS_UNDEFINED;
@@ -1804,12 +1886,10 @@ ngx_js_sw_exit_process(ngx_cycle_t *cycle, ngx_js_conf_t *jcf)
             ngx_free(recv_ctx);
         }
 
-        /* Close the fds we received from the manager */
-        if (sw->channels[0].inbox.wfd >= 0) {
-            close(sw->channels[0].inbox.wfd);
-        }
-        if (sw->channels[0].outbox.rfd >= 0) {
-            close(sw->channels[0].outbox.rfd);
+        /* Close the channel fd we received from the manager */
+        if (sw->channels[0].worker_fd >= 0) {
+            close(sw->channels[0].worker_fd);
+            sw->channels[0].worker_fd = -1;
         }
 
         ngx_free(sw->channels);
@@ -1846,8 +1926,8 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
 
         /* Signal all channels to terminate */
         for (i = 0; i < sw->nchannels; i++) {
-            xpipe_send(&sw->channels[i].inbox, NGX_JS_SW_MSG_TERM,
-                       NULL, 0, NULL, 0);
+            channel_send(sw->channels[i].worker_fd, NGX_JS_SW_MSG_TERM,
+                         NULL, 0, NULL, 0);
         }
 
         if (sw->tid) {
@@ -1855,8 +1935,7 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
         }
 
         for (i = 0; i < sw->nchannels; i++) {
-            xpipe_destroy(&sw->channels[i].inbox);
-            xpipe_destroy(&sw->channels[i].outbox);
+            channel_destroy(&sw->channels[i]);
         }
 
         ngx_free(sw->channels);
@@ -1896,7 +1975,7 @@ ngx_js_sw_manager_thread(void *arg)
     char                      *url;
     ngx_uint_t                 nchannels, i;
     int                        reply_fd, ok;
-    int                        fds[2];
+    int                        fds[1];
     uint8_t                    status;
     struct msghdr              msg;
     struct iovec               iov;
@@ -1905,7 +1984,7 @@ ngx_js_sw_manager_thread(void *arg)
         struct cmsghdr  hdr;
     } cmsg_rcv;
     union {
-        char            buf[CMSG_SPACE(2 * sizeof(int))];
+        char            buf[CMSG_SPACE(sizeof(int))];
         struct cmsghdr  hdr;
     } cmsg_snd;
     struct cmsghdr            *cmh;
@@ -2047,12 +2126,7 @@ ngx_js_sw_manager_thread(void *arg)
 
             ok = 1;
             for (i = 0; i < nchannels; i++) {
-                if (xpipe_init(&sw->channels[i].inbox) != NGX_OK) {
-                    ok = 0;
-                    break;
-                }
-                if (xpipe_init(&sw->channels[i].outbox) != NGX_OK) {
-                    xpipe_destroy(&sw->channels[i].inbox);
+                if (channel_init(&sw->channels[i]) != NGX_OK) {
                     ok = 0;
                     break;
                 }
@@ -2063,8 +2137,7 @@ ngx_js_sw_manager_thread(void *arg)
 
             if (!ok) {
                 while (i-- > 0) {
-                    xpipe_destroy(&sw->channels[i].inbox);
-                    xpipe_destroy(&sw->channels[i].outbox);
+                    channel_destroy(&sw->channels[i]);
                 }
                 ngx_free(sw->worker_slots);
                 ngx_free(sw->channels);
@@ -2077,8 +2150,7 @@ ngx_js_sw_manager_thread(void *arg)
 
             if (pthread_create(&sw->tid, NULL, ngx_js_sw_thread, sw) != 0) {
                 for (i = 0; i < nchannels; i++) {
-                    xpipe_destroy(&sw->channels[i].inbox);
-                    xpipe_destroy(&sw->channels[i].outbox);
+                    channel_destroy(&sw->channels[i]);
                 }
                 ngx_free(sw->worker_slots);
                 ngx_free(sw->channels);
@@ -2098,9 +2170,8 @@ ngx_js_sw_manager_thread(void *arg)
             continue;
         }
 
-        /* Reply: status=0 + {inbox.wfd, outbox.rfd} via SCM_RIGHTS */
-        fds[0] = sw->channels[worker_idx].inbox.wfd;
-        fds[1] = sw->channels[worker_idx].outbox.rfd;
+        /* Reply: status=0 + worker_fd via SCM_RIGHTS */
+        fds[0] = sw->channels[worker_idx].worker_fd;
         status = 0;
 
         iov.iov_base = &status;
@@ -2110,13 +2181,13 @@ ngx_js_sw_manager_thread(void *arg)
         msg.msg_iov        = &iov;
         msg.msg_iovlen     = 1;
         msg.msg_control    = cmsg_snd.buf;
-        msg.msg_controllen = sizeof(cmsg_snd.buf);
+        msg.msg_controllen = CMSG_SPACE(sizeof(int));
 
         cmh             = CMSG_FIRSTHDR(&msg);
         cmh->cmsg_level = SOL_SOCKET;
         cmh->cmsg_type  = SCM_RIGHTS;
-        cmh->cmsg_len   = CMSG_LEN(2 * sizeof(int));
-        ngx_memcpy(CMSG_DATA(cmh), fds, 2 * sizeof(int));
+        cmh->cmsg_len   = CMSG_LEN(sizeof(int));
+        ngx_memcpy(CMSG_DATA(cmh), fds, sizeof(int));
 
         (void) sendmsg(reply_fd, &msg, 0);
         close(reply_fd);
