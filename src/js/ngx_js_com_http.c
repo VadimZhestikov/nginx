@@ -486,8 +486,14 @@ static JSClassDef ngx_js_server_class = {
 
 /*
  * Magic values for ngx_js_server_get / ngx_js_server_set:
- *   0 — name   (r/o: first server_name entry, or "" if none)
- *   1 — root   (r/w: document root from the server's implicit / location)
+ *   0 — name                    (r/o: first server_name, or "" if none)
+ *   1 — root                    (r/w: document root from implicit / location)
+ *   2 — clientHeaderBufferSize  (r/o: bytes)
+ *   3 — clientHeaderTimeout     (r/o: ms)
+ *   4 — ignoreInvalidHeaders    (r/o: bool)
+ *   5 — mergeSlashes            (r/o: bool)
+ *   6 — underscoresInHeaders    (r/o: bool)
+ *   7 — serverTokens            (r/o: "off" | "on" | "build")
  */
 static JSValue
 ngx_js_server_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -517,9 +523,66 @@ ngx_js_server_get(JSContext *ctx, JSValueConst this_val, int magic)
         clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
         return JS_NewStringLen(ctx, (const char *) clcf->root.data,
                                clcf->root.len);
+
+    case 2: /* clientHeaderBufferSize — bytes */
+        return JS_NewInt64(ctx, (int64_t) cscf->client_header_buffer_size);
+
+    case 3: /* clientHeaderTimeout — ms */
+        return JS_NewInt64(ctx, (int64_t) cscf->client_header_timeout);
+
+    case 4: /* ignoreInvalidHeaders */
+        return JS_NewBool(ctx, cscf->ignore_invalid_headers);
+
+    case 5: /* mergeSlashes */
+        return JS_NewBool(ctx, cscf->merge_slashes);
+
+    case 6: /* underscoresInHeaders */
+        return JS_NewBool(ctx, cscf->underscores_in_headers);
+
+    case 7: /* serverTokens — read from server's default loc conf */
+    {
+        const char  *tok;
+
+        clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+
+        switch (clcf->server_tokens) {
+        case NGX_HTTP_SERVER_TOKENS_OFF:   tok = "off";   break;
+        case NGX_HTTP_SERVER_TOKENS_BUILD: tok = "build"; break;
+        default:                           tok = "on";    break;
+        }
+
+        return JS_NewString(ctx, tok);
+    }
     }
 
     return JS_UNDEFINED;
+}
+
+
+/*
+ * server.largeClientHeaderBuffers — {num: N, size: S} object.
+ * Maps to large_client_header_buffers directive (ngx_bufs_t).
+ */
+static JSValue
+ngx_js_server_get_large_client_hdr_bufs(JSContext *ctx,
+    JSValueConst this_val)
+{
+    ngx_js_server_opaque_t    *op;
+    JSValue                    obj;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, obj, "num",
+                      JS_NewInt32(ctx,
+                          (int32_t) op->cscf->large_client_header_buffers.num));
+    JS_SetPropertyStr(ctx, obj, "size",
+                      JS_NewInt64(ctx,
+                          (int64_t) op->cscf->large_client_header_buffers.size));
+    return obj;
 }
 
 
@@ -679,10 +742,17 @@ ngx_js_server_get_locations(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("name",      ngx_js_server_get,           NULL,               0),
-    JS_CGETSET_MAGIC_DEF("root",      ngx_js_server_get,           ngx_js_server_set,  1),
-    JS_CGETSET_MAGIC_DEF("names",     ngx_js_server_get_names,     NULL,               0),
-    JS_CGETSET_MAGIC_DEF("locations", ngx_js_server_get_locations, NULL,               0),
+    JS_CGETSET_MAGIC_DEF("name",                     ngx_js_server_get,                       NULL,              0),
+    JS_CGETSET_MAGIC_DEF("root",                     ngx_js_server_get,                       ngx_js_server_set, 1),
+    JS_CGETSET_MAGIC_DEF("names",                    ngx_js_server_get_names,                 NULL,              0),
+    JS_CGETSET_MAGIC_DEF("locations",                ngx_js_server_get_locations,             NULL,              0),
+    JS_CGETSET_MAGIC_DEF("clientHeaderBufferSize",   ngx_js_server_get,                       NULL,              2),
+    JS_CGETSET_MAGIC_DEF("clientHeaderTimeout",      ngx_js_server_get,                       NULL,              3),
+    JS_CGETSET_MAGIC_DEF("ignoreInvalidHeaders",     ngx_js_server_get,                       NULL,              4),
+    JS_CGETSET_MAGIC_DEF("mergeSlashes",             ngx_js_server_get,                       NULL,              5),
+    JS_CGETSET_MAGIC_DEF("underscoresInHeaders",     ngx_js_server_get,                       NULL,              6),
+    JS_CGETSET_MAGIC_DEF("serverTokens",             ngx_js_server_get,                       NULL,              7),
+    JS_CGETSET_DEF       ("largeClientHeaderBuffers", ngx_js_server_get_large_client_hdr_bufs, NULL),
 };
 
 
