@@ -77,6 +77,11 @@ JSValue  ngx_js_wrap_log(JSContext *ctx, ngx_http_log_loc_conf_t *llcf);
 JSValue  ngx_js_wrap_realip(JSContext *ctx, ngx_http_realip_loc_conf_t *rlcf);
 #endif
 
+/* Forward declaration from ngx_js_com_charset.c */
+#include "../http/modules/ngx_http_charset_filter_module.h"
+JSValue  ngx_js_wrap_charset(JSContext *ctx,
+    ngx_http_charset_loc_conf_t *lcf, ngx_http_charset_main_conf_t *mcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -368,6 +373,29 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
         return ngx_js_wrap_realip(ctx, rlcf);
     }
 #endif
+
+    case 26: /* charset — NginxCharset wrapping charset filter conf */
+    {
+        ngx_http_charset_loc_conf_t   *cslcf;
+        ngx_http_charset_main_conf_t  *csmcf;
+        ngx_cycle_t                   *cycle;
+
+        cslcf = clcf->loc_conf[ngx_http_charset_filter_module.ctx_index];
+        if (cslcf == NULL) {
+            return JS_NULL;
+        }
+
+        /*
+         * Location getters are only invoked during init_conf script
+         * evaluation, when the context opaque is the current cycle pointer
+         * (set by ngx_js_com_init).  Use it to reach the correct main conf.
+         */
+        cycle = JS_GetContextOpaque(ctx);
+        csmcf = ngx_http_cycle_get_module_main_conf(cycle,
+                                               ngx_http_charset_filter_module);
+
+        return ngx_js_wrap_charset(ctx, cslcf, csmcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -556,6 +584,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
 #if (NGX_HTTP_REALIP)
     JS_CGETSET_MAGIC_DEF("realip",           ngx_js_location_get, NULL,                25),
 #endif
+    JS_CGETSET_MAGIC_DEF("charset",          ngx_js_location_get, NULL,                26),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1141,6 +1170,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
         return NGX_ERROR;
     }
 #endif
+
+    if (ngx_js_charset_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
 
     return NGX_OK;
 }

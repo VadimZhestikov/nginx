@@ -40,6 +40,7 @@ extern JSClassID  ngx_js_limit_conn_class_id;  /* limit_conn conf  (Stage 12) */
 extern JSClassID  ngx_js_fastcgi_class_id;     /* fastcgi loc conf (Stage 13) */
 extern JSClassID  ngx_js_log_class_id;         /* access log conf  (Stage 13) */
 extern JSClassID  ngx_js_realip_class_id;      /* realip loc conf  (Stage 13) */
+extern JSClassID  ngx_js_charset_class_id;     /* charset loc conf (Stage 13) */
 
 
 /*
@@ -81,6 +82,7 @@ ngx_int_t  ngx_js_log_register_class(JSRuntime *rt);
 #if (NGX_HTTP_REALIP)
 ngx_int_t  ngx_js_realip_register_class(JSRuntime *rt);
 #endif
+ngx_int_t  ngx_js_charset_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */

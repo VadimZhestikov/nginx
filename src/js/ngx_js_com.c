@@ -41,6 +41,7 @@ JSClassID  ngx_js_limit_conn_class_id;
 JSClassID  ngx_js_fastcgi_class_id;
 JSClassID  ngx_js_log_class_id;
 JSClassID  ngx_js_realip_class_id;
+JSClassID  ngx_js_charset_class_id;
 
 
 typedef struct {
@@ -321,6 +322,7 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_fastcgi_class_id);
         JS_NewClassID(&ngx_js_log_class_id);
         JS_NewClassID(&ngx_js_realip_class_id);
+        JS_NewClassID(&ngx_js_charset_class_id);
         initialised = 1;
     }
 
