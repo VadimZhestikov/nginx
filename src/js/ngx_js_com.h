@@ -31,6 +31,7 @@ extern JSClassID  ngx_js_proxy_class_id;    /* proxy_pass conf    (Stage 4)  */
 extern JSClassID  ngx_js_ssl_class_id;      /* SSL server conf    (Stage 6)  */
 extern JSClassID  ngx_js_gzip_class_id;     /* gzip loc conf      (Stage 7)  */
 extern JSClassID  ngx_js_headers_class_id;  /* headers filter loc (Stage 8)  */
+extern JSClassID  ngx_js_proxy_cache_class_id; /* proxy cache conf (Stage 9)  */
 
 
 /*
@@ -61,6 +62,7 @@ ngx_int_t  ngx_js_proxy_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_ssl_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_gzip_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_headers_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_proxy_cache_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */

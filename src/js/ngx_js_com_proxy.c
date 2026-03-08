@@ -29,6 +29,12 @@
 #include "ngx_js.h"
 #include "ngx_js_com.h"
 
+/* Forward declaration from ngx_js_com_proxy_cache.c */
+#if (NGX_HTTP_CACHE)
+JSValue  ngx_js_wrap_proxy_cache(JSContext *ctx,
+    ngx_http_upstream_conf_t *uconf);
+#endif
+
 
 typedef struct {
     ngx_http_proxy_loc_conf_t  *plcf;
@@ -239,6 +245,33 @@ ngx_js_proxy_get_set_header(JSContext *ctx, JSValueConst this_val)
 }
 
 
+/*
+ * proxy.cache — NginxProxyCache wrapping the upstream cache conf,
+ * or null when no proxy_cache directive is configured.
+ */
+static JSValue
+ngx_js_proxy_get_cache(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_proxy_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_proxy_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+#if (NGX_HTTP_CACHE)
+    /* cache is active when a cache zone is assigned */
+    if (op->plcf->upstream.cache_zone == NULL) {
+        return JS_NULL;
+    }
+
+    return ngx_js_wrap_proxy_cache(ctx, &op->plcf->upstream);
+#else
+    return JS_NULL;
+#endif
+}
+
+
 static const JSCFunctionListEntry ngx_js_proxy_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("pass",                ngx_js_proxy_get, NULL,  0),
     JS_CGETSET_MAGIC_DEF("httpVersion",         ngx_js_proxy_get, NULL,  1),
@@ -254,6 +287,7 @@ static const JSCFunctionListEntry ngx_js_proxy_proto_funcs[] = {
     JS_CGETSET_DEF       ("buffers",            ngx_js_proxy_get_buffers,       NULL),
     JS_CGETSET_DEF       ("nextUpstream",       ngx_js_proxy_get_next_upstream, NULL),
     JS_CGETSET_DEF       ("setHeader",          ngx_js_proxy_get_set_header,    NULL),
+    JS_CGETSET_DEF       ("cache",              ngx_js_proxy_get_cache,         NULL),
 };
 
 

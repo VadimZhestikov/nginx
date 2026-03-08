@@ -961,6 +961,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
         return NGX_ERROR;
     }
 
+    if (ngx_js_proxy_cache_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     return NGX_OK;
 }
 
