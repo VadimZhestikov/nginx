@@ -898,6 +898,25 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
     http_obj = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, http_obj, "servers", servers_arr);
 
+    /*
+     * Scalar globals from ngx_http_core_main_conf_t.
+     * These directives are only settable at the http{} level and have no
+     * per-server or per-location counterpart, so they belong on nginx.http
+     * rather than on individual server/location objects.
+     */
+    JS_SetPropertyStr(ctx, http_obj, "serverNamesHashMaxSize",
+                      JS_NewUint32(ctx,
+                          (uint32_t) cmcf->server_names_hash_max_size));
+    JS_SetPropertyStr(ctx, http_obj, "serverNamesHashBucketSize",
+                      JS_NewUint32(ctx,
+                          (uint32_t) cmcf->server_names_hash_bucket_size));
+    JS_SetPropertyStr(ctx, http_obj, "variablesHashMaxSize",
+                      JS_NewUint32(ctx,
+                          (uint32_t) cmcf->variables_hash_max_size));
+    JS_SetPropertyStr(ctx, http_obj, "variablesHashBucketSize",
+                      JS_NewUint32(ctx,
+                          (uint32_t) cmcf->variables_hash_bucket_size));
+
     /* nginx.http.upstreams[] — delegated to upstream COM */
     if (ngx_js_upstream_com_install(ctx, http_obj, cycle) != NGX_OK) {
         JS_FreeValue(ctx, http_obj);
