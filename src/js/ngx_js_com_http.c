@@ -51,6 +51,12 @@ JSValue  ngx_js_wrap_headers(JSContext *ctx, ngx_http_headers_conf_t *hcf);
 #include "../http/modules/ngx_http_rewrite_module.h"
 JSValue  ngx_js_wrap_rewrite(JSContext *ctx, ngx_http_rewrite_loc_conf_t *rlcf);
 
+/* Forward declarations from ngx_js_com_access.c and ngx_js_com_auth.c */
+#include "../http/modules/ngx_http_access_module.h"
+#include "../http/modules/ngx_http_auth_basic_module.h"
+JSValue  ngx_js_wrap_access(JSContext *ctx, ngx_http_access_loc_conf_t *alcf);
+JSValue  ngx_js_wrap_auth(JSContext *ctx, ngx_http_auth_basic_loc_conf_t *alcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -117,6 +123,8 @@ static JSClassDef ngx_js_location_class = {
  *   16 — gzip              (r/o: NginxGzip for gzip conf, or null)
  *   17 — headers           (r/o: NginxHeaders for add_header/expires conf)
  *   18 — rewrite           (r/o: NginxRewrite for rewrite/set/return conf)
+ *   19 — access            (r/o: NginxAccess for allow/deny rules)
+ *   20 — auth              (r/o: NginxAuth for auth_basic realm/user_file)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -251,6 +259,30 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
         }
 
         return ngx_js_wrap_rewrite(ctx, rlcf);
+    }
+
+    case 19: /* access — NginxAccess wrapping allow/deny rules */
+    {
+        ngx_http_access_loc_conf_t  *aclcf;
+
+        aclcf = clcf->loc_conf[ngx_http_access_module.ctx_index];
+        if (aclcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_access(ctx, aclcf);
+    }
+
+    case 20: /* auth — NginxAuth wrapping auth_basic conf */
+    {
+        ngx_http_auth_basic_loc_conf_t  *ablcf;
+
+        ablcf = clcf->loc_conf[ngx_http_auth_basic_module.ctx_index];
+        if (ablcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_auth(ctx, ablcf);
     }
     }
 
@@ -431,6 +463,8 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("gzip",             ngx_js_location_get, NULL,                16),
     JS_CGETSET_MAGIC_DEF("headers",          ngx_js_location_get, NULL,                17),
     JS_CGETSET_MAGIC_DEF("rewrite",          ngx_js_location_get, NULL,                18),
+    JS_CGETSET_MAGIC_DEF("access",           ngx_js_location_get, NULL,                19),
+    JS_CGETSET_MAGIC_DEF("auth",             ngx_js_location_get, NULL,                20),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -984,6 +1018,14 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_rewrite_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_access_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_auth_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
