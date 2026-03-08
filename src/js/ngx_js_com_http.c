@@ -43,6 +43,10 @@ JSValue  ngx_js_wrap_gzip(JSContext *ctx, ngx_http_gzip_conf_t *gcf,
     ngx_http_core_loc_conf_t *clcf);
 #endif
 
+/* Forward declaration from ngx_js_com_headers.c */
+#include "../http/modules/ngx_http_headers_filter_module.h"
+JSValue  ngx_js_wrap_headers(JSContext *ctx, ngx_http_headers_conf_t *hcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -107,6 +111,7 @@ static JSClassDef ngx_js_location_class = {
  *   14 — alias             (r/o: alias path, or null if root directive)
  *   15 — proxy             (r/o: NginxProxy for proxy_pass conf)
  *   16 — gzip              (r/o: NginxGzip for gzip conf, or null)
+ *   17 — headers           (r/o: NginxHeaders for add_header/expires conf)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -217,6 +222,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 #else
         return JS_NULL;
 #endif
+    }
+
+    case 17: /* headers — NginxHeaders wrapping add_header/expires conf */
+    {
+        ngx_http_headers_conf_t  *hcf;
+
+        hcf = clcf->loc_conf[ngx_http_headers_filter_module.ctx_index];
+        if (hcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_headers(ctx, hcf);
     }
     }
 
@@ -395,6 +412,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("alias",            ngx_js_location_get, NULL,                14),
     JS_CGETSET_MAGIC_DEF("proxy",            ngx_js_location_get, NULL,                15),
     JS_CGETSET_MAGIC_DEF("gzip",             ngx_js_location_get, NULL,                16),
+    JS_CGETSET_MAGIC_DEF("headers",          ngx_js_location_get, NULL,                17),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -936,6 +954,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_gzip_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_headers_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
