@@ -57,6 +57,20 @@ JSValue  ngx_js_wrap_rewrite(JSContext *ctx, ngx_http_rewrite_loc_conf_t *rlcf);
 JSValue  ngx_js_wrap_access(JSContext *ctx, ngx_http_access_loc_conf_t *alcf);
 JSValue  ngx_js_wrap_auth(JSContext *ctx, ngx_http_auth_basic_loc_conf_t *alcf);
 
+/* Forward declarations from ngx_js_com_limit_req.c and ngx_js_com_limit_conn.c */
+#include "../http/modules/ngx_http_limit_req_module.h"
+#include "../http/modules/ngx_http_limit_conn_module.h"
+JSValue  ngx_js_wrap_limit_req(JSContext *ctx, ngx_http_limit_req_conf_t *lrcf);
+JSValue  ngx_js_wrap_limit_conn(JSContext *ctx, ngx_http_limit_conn_conf_t *lccf);
+
+/* Forward declaration from ngx_js_com_fastcgi.c */
+#include "../http/modules/ngx_http_fastcgi_module.h"
+JSValue  ngx_js_wrap_fastcgi(JSContext *ctx, ngx_http_fastcgi_loc_conf_t *flcf);
+
+/* Forward declaration from ngx_js_com_log.c */
+#include "../http/modules/ngx_http_log_module.h"
+JSValue  ngx_js_wrap_log(JSContext *ctx, ngx_http_log_loc_conf_t *llcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -284,6 +298,56 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_auth(ctx, ablcf);
     }
+
+    case 21: /* limitReq — NginxLimitReq wrapping limit_req conf */
+    {
+        ngx_http_limit_req_conf_t  *lrcf;
+
+        lrcf = clcf->loc_conf[ngx_http_limit_req_module.ctx_index];
+        if (lrcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_limit_req(ctx, lrcf);
+    }
+
+    case 22: /* limitConn — NginxLimitConn wrapping limit_conn conf */
+    {
+        ngx_http_limit_conn_conf_t  *lccf;
+
+        lccf = clcf->loc_conf[ngx_http_limit_conn_module.ctx_index];
+        if (lccf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_limit_conn(ctx, lccf);
+    }
+
+    case 23: /* fastcgi — NginxFastCGI wrapping fastcgi_pass conf */
+    {
+        ngx_http_fastcgi_loc_conf_t  *flcf;
+
+        flcf = clcf->loc_conf[ngx_http_fastcgi_module.ctx_index];
+        if (flcf == NULL || (flcf->upstream.upstream == NULL
+                             && flcf->fastcgi_lengths == NULL))
+        {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_fastcgi(ctx, flcf);
+    }
+
+    case 24: /* log — NginxLog wrapping access_log conf */
+    {
+        ngx_http_log_loc_conf_t  *llcf;
+
+        llcf = clcf->loc_conf[ngx_http_log_module.ctx_index];
+        if (llcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_log(ctx, llcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -465,6 +529,10 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("rewrite",          ngx_js_location_get, NULL,                18),
     JS_CGETSET_MAGIC_DEF("access",           ngx_js_location_get, NULL,                19),
     JS_CGETSET_MAGIC_DEF("auth",             ngx_js_location_get, NULL,                20),
+    JS_CGETSET_MAGIC_DEF("limitReq",         ngx_js_location_get, NULL,                21),
+    JS_CGETSET_MAGIC_DEF("limitConn",        ngx_js_location_get, NULL,                22),
+    JS_CGETSET_MAGIC_DEF("fastcgi",          ngx_js_location_get, NULL,                23),
+    JS_CGETSET_MAGIC_DEF("log",              ngx_js_location_get, NULL,                24),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1026,6 +1094,22 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_auth_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_limit_req_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_limit_conn_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_fastcgi_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_log_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 

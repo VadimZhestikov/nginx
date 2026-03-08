@@ -35,6 +35,10 @@ extern JSClassID  ngx_js_proxy_cache_class_id; /* proxy cache conf (Stage 9)  */
 extern JSClassID  ngx_js_rewrite_class_id;     /* rewrite loc conf (Stage 10) */
 extern JSClassID  ngx_js_access_class_id;      /* access loc conf  (Stage 11) */
 extern JSClassID  ngx_js_auth_class_id;        /* auth_basic conf  (Stage 11) */
+extern JSClassID  ngx_js_limit_req_class_id;   /* limit_req conf   (Stage 12) */
+extern JSClassID  ngx_js_limit_conn_class_id;  /* limit_conn conf  (Stage 12) */
+extern JSClassID  ngx_js_fastcgi_class_id;     /* fastcgi loc conf (Stage 13) */
+extern JSClassID  ngx_js_log_class_id;         /* access log conf  (Stage 13) */
 
 
 /*
@@ -69,6 +73,10 @@ ngx_int_t  ngx_js_proxy_cache_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_rewrite_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_access_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_auth_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_limit_req_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_limit_conn_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_fastcgi_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_log_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */

@@ -14,6 +14,10 @@ ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
                  $ngx_addon_dir/ngx_js_com_rewrite.c \
                  $ngx_addon_dir/ngx_js_com_access.c \
                  $ngx_addon_dir/ngx_js_com_auth.c \
+                 $ngx_addon_dir/ngx_js_com_limit_req.c \
+                 $ngx_addon_dir/ngx_js_com_limit_conn.c \
+                 $ngx_addon_dir/ngx_js_com_fastcgi.c \
+                 $ngx_addon_dir/ngx_js_com_log.c \
                  $ngx_addon_dir/ngx_js_http_module.c"
 ngx_module_deps="$ngx_addon_dir/ngx_js.h \
                  $ngx_addon_dir/ngx_js_com.h \
