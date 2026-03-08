@@ -28,6 +28,7 @@ extern JSClassID  ngx_js_peer_class_id;     /* config-phase peer (Phase 1/2) */
 extern JSClassID  ngx_js_rr_peer_class_id;  /* runtime RR peer   (Phase 3)   */
 extern JSClassID  ngx_js_request_class_id;  /* per-request object (Phase 4)  */
 extern JSClassID  ngx_js_proxy_class_id;    /* proxy_pass conf    (Stage 4)  */
+extern JSClassID  ngx_js_ssl_class_id;      /* SSL server conf    (Stage 6)  */
 
 
 /*
@@ -55,6 +56,7 @@ ngx_int_t  ngx_js_upstream_com_install(JSContext *ctx, JSValue http_obj,
  * Called from ngx_js_http_register_classes().
  */
 ngx_int_t  ngx_js_proxy_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_ssl_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */

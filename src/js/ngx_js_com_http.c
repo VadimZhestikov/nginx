@@ -24,9 +24,17 @@
 #include "ngx_js.h"
 #include "ngx_js_com.h"
 
+#if (NGX_HTTP_SSL)
+#include <ngx_http_ssl_module.h>
+#endif
 
-/* Forward declaration from ngx_js_com_proxy.c */
+
+/* Forward declarations from ngx_js_com_proxy.c and ngx_js_com_ssl.c */
 JSValue  ngx_js_wrap_proxy(JSContext *ctx, ngx_http_proxy_loc_conf_t *plcf);
+
+#if (NGX_HTTP_SSL)
+JSValue  ngx_js_wrap_ssl(JSContext *ctx, ngx_http_ssl_srv_conf_t *sscf);
+#endif
 
 
 /* ------------------------------------------------------------------ */
@@ -760,6 +768,38 @@ ngx_js_server_get_locations(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+/*
+ * server.ssl — NginxSSL object if ssl_certificate is configured,
+ * JS_NULL otherwise (or if nginx was built without --with-http_ssl_module).
+ */
+static JSValue
+ngx_js_server_get_ssl(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_server_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+#if (NGX_HTTP_SSL)
+    {
+        ngx_http_ssl_srv_conf_t *sscf;
+
+        sscf = op->cscf->ctx->srv_conf[ngx_http_ssl_module.ctx_index];
+
+        if (sscf == NULL || sscf->certificates == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_ssl(ctx, sscf);
+    }
+#else
+    return JS_NULL;
+#endif
+}
+
+
 static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("name",                     ngx_js_server_get,                       NULL,              0),
     JS_CGETSET_MAGIC_DEF("root",                     ngx_js_server_get,                       ngx_js_server_set, 1),
@@ -772,6 +812,7 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("underscoresInHeaders",     ngx_js_server_get,                       NULL,              6),
     JS_CGETSET_MAGIC_DEF("serverTokens",             ngx_js_server_get,                       NULL,              7),
     JS_CGETSET_DEF       ("largeClientHeaderBuffers", ngx_js_server_get_large_client_hdr_bufs, NULL),
+    JS_CGETSET_DEF       ("ssl",                      ngx_js_server_get_ssl,                   NULL),
 };
 
 
@@ -862,6 +903,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_proxy_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_ssl_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
