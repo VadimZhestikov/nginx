@@ -29,6 +29,7 @@ extern JSClassID  ngx_js_rr_peer_class_id;  /* runtime RR peer   (Phase 3)   */
 extern JSClassID  ngx_js_request_class_id;  /* per-request object (Phase 4)  */
 extern JSClassID  ngx_js_proxy_class_id;    /* proxy_pass conf    (Stage 4)  */
 extern JSClassID  ngx_js_ssl_class_id;      /* SSL server conf    (Stage 6)  */
+extern JSClassID  ngx_js_gzip_class_id;     /* gzip loc conf      (Stage 7)  */
 
 
 /*
@@ -57,6 +58,7 @@ ngx_int_t  ngx_js_upstream_com_install(JSContext *ctx, JSValue http_obj,
  */
 ngx_int_t  ngx_js_proxy_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_ssl_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_gzip_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */

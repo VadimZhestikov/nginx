@@ -36,6 +36,13 @@ JSValue  ngx_js_wrap_proxy(JSContext *ctx, ngx_http_proxy_loc_conf_t *plcf);
 JSValue  ngx_js_wrap_ssl(JSContext *ctx, ngx_http_ssl_srv_conf_t *sscf);
 #endif
 
+/* Forward declaration from ngx_js_com_gzip.c */
+#ifdef NGX_HTTP_GZIP
+#include "../http/modules/ngx_http_gzip_filter_module.h"
+JSValue  ngx_js_wrap_gzip(JSContext *ctx, ngx_http_gzip_conf_t *gcf,
+    ngx_http_core_loc_conf_t *clcf);
+#endif
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -99,6 +106,7 @@ static JSClassDef ngx_js_location_class = {
  *   13 — defaultType       (r/o: string)
  *   14 — alias             (r/o: alias path, or null if root directive)
  *   15 — proxy             (r/o: NginxProxy for proxy_pass conf)
+ *   16 — gzip              (r/o: NginxGzip for gzip conf, or null)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -193,6 +201,22 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
         }
 
         return ngx_js_wrap_proxy(ctx, plcf);
+    }
+
+    case 16: /* gzip — NginxGzip wrapping the gzip location conf */
+    {
+#ifdef NGX_HTTP_GZIP
+        ngx_http_gzip_conf_t  *gcf;
+
+        gcf = clcf->loc_conf[ngx_http_gzip_filter_module.ctx_index];
+        if (gcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_gzip(ctx, gcf, clcf);
+#else
+        return JS_NULL;
+#endif
     }
     }
 
@@ -370,6 +394,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("defaultType",      ngx_js_location_get, NULL,                13),
     JS_CGETSET_MAGIC_DEF("alias",            ngx_js_location_get, NULL,                14),
     JS_CGETSET_MAGIC_DEF("proxy",            ngx_js_location_get, NULL,                15),
+    JS_CGETSET_MAGIC_DEF("gzip",             ngx_js_location_get, NULL,                16),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -907,6 +932,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_ssl_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_gzip_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
