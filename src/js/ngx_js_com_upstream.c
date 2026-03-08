@@ -80,6 +80,8 @@ ngx_js_peer_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 2: return JS_NewInt32(ctx, (int32_t) srv->max_fails);
     case 3: return JS_NewBool(ctx, (int) srv->down);
     case 4: return JS_NewBool(ctx, (int) srv->backup);
+    case 5: return JS_NewInt64(ctx, (int64_t) srv->fail_timeout);
+    case 6: return JS_NewInt64(ctx, (int64_t) srv->max_conns);
     }
 
     return JS_UNDEFINED;
@@ -114,6 +116,16 @@ ngx_js_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
     case 3:
         srv->down = (ngx_uint_t) JS_ToBool(ctx, val);
         return JS_UNDEFINED;
+
+    case 5: /* failTimeout */
+        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        srv->fail_timeout = (time_t) i32;
+        return JS_UNDEFINED;
+
+    case 6: /* maxConns */
+        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        srv->max_conns = (ngx_uint_t) i32;
+        return JS_UNDEFINED;
     }
 
     return JS_UNDEFINED;
@@ -121,11 +133,13 @@ ngx_js_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
 
 
 static const JSCFunctionListEntry ngx_js_peer_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("address",  ngx_js_peer_get, NULL,            0),
-    JS_CGETSET_MAGIC_DEF("weight",   ngx_js_peer_get, ngx_js_peer_set, 1),
-    JS_CGETSET_MAGIC_DEF("maxFails", ngx_js_peer_get, ngx_js_peer_set, 2),
-    JS_CGETSET_MAGIC_DEF("down",     ngx_js_peer_get, ngx_js_peer_set, 3),
-    JS_CGETSET_MAGIC_DEF("backup",   ngx_js_peer_get, NULL,            4),
+    JS_CGETSET_MAGIC_DEF("address",     ngx_js_peer_get, NULL,            0),
+    JS_CGETSET_MAGIC_DEF("weight",      ngx_js_peer_get, ngx_js_peer_set, 1),
+    JS_CGETSET_MAGIC_DEF("maxFails",    ngx_js_peer_get, ngx_js_peer_set, 2),
+    JS_CGETSET_MAGIC_DEF("down",        ngx_js_peer_get, ngx_js_peer_set, 3),
+    JS_CGETSET_MAGIC_DEF("backup",      ngx_js_peer_get, NULL,            4),
+    JS_CGETSET_MAGIC_DEF("failTimeout", ngx_js_peer_get, ngx_js_peer_set, 5),
+    JS_CGETSET_MAGIC_DEF("maxConns",    ngx_js_peer_get, ngx_js_peer_set, 6),
 };
 
 
@@ -160,12 +174,16 @@ static JSClassDef ngx_js_rr_peer_class = {
 
 /*
  * Magic values for ngx_js_rr_peer_get / ngx_js_rr_peer_set:
- *   0 — address   (r/o)
- *   1 — weight    (r/w, with wlock)
- *   2 — maxFails  (r/w, with wlock)
- *   3 — down      (r/w, with wlock; updates peers->tries)
- *   4 — backup    (r/o)
- *   5 — conns     (r/o, runtime stat)
+ *   0 — address      (r/o)
+ *   1 — weight       (r/w, with wlock)
+ *   2 — maxFails     (r/w, with wlock)
+ *   3 — down         (r/w, with wlock; updates peers->tries)
+ *   4 — backup       (r/o)
+ *   5 — conns        (r/o, runtime stat)
+ *   6 — failTimeout  (r/w, seconds, with wlock)
+ *   7 — maxConns     (r/w, with wlock)
+ *   8 — server       (r/o, configured server address string)
+ *   9 — fails        (r/o, runtime fail counter)
  */
 static JSValue
 ngx_js_rr_peer_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -188,6 +206,11 @@ ngx_js_rr_peer_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 3: return JS_NewBool(ctx,   (int) p->down);
     case 4: return JS_NewBool(ctx,   (int) op->backup);
     case 5: return JS_NewInt32(ctx,  (int32_t) p->conns);
+    case 6: return JS_NewInt64(ctx,  (int64_t) p->fail_timeout);
+    case 7: return JS_NewInt64(ctx,  (int64_t) p->max_conns);
+    case 8: return JS_NewStringLen(ctx, (const char *) p->server.data,
+                                   p->server.len);
+    case 9: return JS_NewInt64(ctx,  (int64_t) p->fails);
     }
 
     return JS_UNDEFINED;
@@ -252,6 +275,20 @@ ngx_js_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         }
         ngx_http_upstream_rr_peers_unlock(peers);
         return JS_UNDEFINED;
+
+    case 6: /* failTimeout */
+        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        ngx_http_upstream_rr_peers_wlock(peers);
+        p->fail_timeout = (time_t) i32;
+        ngx_http_upstream_rr_peers_unlock(peers);
+        return JS_UNDEFINED;
+
+    case 7: /* maxConns */
+        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        ngx_http_upstream_rr_peers_wlock(peers);
+        p->max_conns = (ngx_uint_t) i32;
+        ngx_http_upstream_rr_peers_unlock(peers);
+        return JS_UNDEFINED;
     }
 
     return JS_UNDEFINED;
@@ -259,12 +296,16 @@ ngx_js_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 
 
 static const JSCFunctionListEntry ngx_js_rr_peer_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("address",  ngx_js_rr_peer_get, NULL,               0),
-    JS_CGETSET_MAGIC_DEF("weight",   ngx_js_rr_peer_get, ngx_js_rr_peer_set, 1),
-    JS_CGETSET_MAGIC_DEF("maxFails", ngx_js_rr_peer_get, ngx_js_rr_peer_set, 2),
-    JS_CGETSET_MAGIC_DEF("down",     ngx_js_rr_peer_get, ngx_js_rr_peer_set, 3),
-    JS_CGETSET_MAGIC_DEF("backup",   ngx_js_rr_peer_get, NULL,               4),
-    JS_CGETSET_MAGIC_DEF("conns",    ngx_js_rr_peer_get, NULL,               5),
+    JS_CGETSET_MAGIC_DEF("address",     ngx_js_rr_peer_get, NULL,               0),
+    JS_CGETSET_MAGIC_DEF("weight",      ngx_js_rr_peer_get, ngx_js_rr_peer_set, 1),
+    JS_CGETSET_MAGIC_DEF("maxFails",    ngx_js_rr_peer_get, ngx_js_rr_peer_set, 2),
+    JS_CGETSET_MAGIC_DEF("down",        ngx_js_rr_peer_get, ngx_js_rr_peer_set, 3),
+    JS_CGETSET_MAGIC_DEF("backup",      ngx_js_rr_peer_get, NULL,               4),
+    JS_CGETSET_MAGIC_DEF("conns",       ngx_js_rr_peer_get, NULL,               5),
+    JS_CGETSET_MAGIC_DEF("failTimeout", ngx_js_rr_peer_get, ngx_js_rr_peer_set, 6),
+    JS_CGETSET_MAGIC_DEF("maxConns",    ngx_js_rr_peer_get, ngx_js_rr_peer_set, 7),
+    JS_CGETSET_MAGIC_DEF("server",      ngx_js_rr_peer_get, NULL,               8),
+    JS_CGETSET_MAGIC_DEF("fails",       ngx_js_rr_peer_get, NULL,               9),
 };
 
 
@@ -345,6 +386,19 @@ ngx_js_upstream_get(JSContext *ctx, JSValueConst this_val, int magic)
         return JS_NewStringLen(ctx,
                                (const char *) op->uscf->host.data,
                                op->uscf->host.len);
+
+#if (NGX_HTTP_UPSTREAM_ZONE)
+    case 1: /* zone — shm zone name, or null if not zone-backed */
+        if (op->uscf->shm_zone == NULL) {
+            return JS_NULL;
+        }
+        return JS_NewStringLen(ctx,
+                               (const char *) op->uscf->shm_zone->shm.name.data,
+                               op->uscf->shm_zone->shm.name.len);
+#else
+    case 1:
+        return JS_NULL;
+#endif
     }
 
     return JS_UNDEFINED;
@@ -730,6 +784,7 @@ ngx_js_upstream_remove_peer(JSContext *ctx, JSValueConst this_val,
 
 static const JSCFunctionListEntry ngx_js_upstream_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("name",  ngx_js_upstream_get,       NULL, 0),
+    JS_CGETSET_MAGIC_DEF("zone",  ngx_js_upstream_get,       NULL, 1),
     JS_CGETSET_MAGIC_DEF("peers", ngx_js_upstream_get_peers, NULL, 0),
     JS_CFUNC_DEF("addPeer",    1, ngx_js_upstream_add_peer),
     JS_CFUNC_DEF("removePeer", 1, ngx_js_upstream_remove_peer),
