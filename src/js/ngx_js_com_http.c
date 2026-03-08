@@ -70,9 +70,21 @@ static JSClassDef ngx_js_location_class = {
 
 /*
  * Magic values for ngx_js_location_get / ngx_js_location_set:
- *   0 — path    (r/o: location name/pattern)
- *   1 — root    (r/w)
- *   2 — handler (r/w: JS function, stored in global __ngx_handlers__ array)
+ *   0  — path              (r/o: location name/pattern)
+ *   1  — root              (r/w: document root)
+ *   2  — handler           (r/w: JS content handler function)
+ *   3  — internal          (r/o: bool)
+ *   4  — sendfile          (r/o: bool)
+ *   5  — tcpNopush         (r/o: bool)
+ *   6  — tcpNodelay        (r/o: bool)
+ *   7  — etag              (r/o: bool)
+ *   8  — keepaliveTimeout  (r/o: ms)
+ *   9  — keepaliveRequests (r/o: count)
+ *   10 — clientMaxBodySize (r/o: bytes)
+ *   11 — clientBodyTimeout (r/o: ms)
+ *   12 — sendTimeout       (r/o: ms)
+ *   13 — defaultType       (r/o: string)
+ *   14 — alias             (r/o: alias path, or null if root directive)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -115,9 +127,114 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return fn;
     }
+
+    case 3:  /* internal */
+        return JS_NewBool(ctx, clcf->internal);
+
+    case 4:  /* sendfile */
+        return JS_NewBool(ctx, clcf->sendfile);
+
+    case 5:  /* tcpNopush */
+        return JS_NewBool(ctx, clcf->tcp_nopush);
+
+    case 6:  /* tcpNodelay */
+        return JS_NewBool(ctx, clcf->tcp_nodelay);
+
+    case 7:  /* etag */
+        return JS_NewBool(ctx, clcf->etag);
+
+    case 8:  /* keepaliveTimeout — ngx_msec_t (ms) */
+        return JS_NewInt64(ctx, (int64_t) clcf->keepalive_timeout);
+
+    case 9:  /* keepaliveRequests */
+        return JS_NewInt64(ctx, (int64_t) clcf->keepalive_requests);
+
+    case 10: /* clientMaxBodySize — off_t (bytes) */
+        return JS_NewInt64(ctx, (int64_t) clcf->client_max_body_size);
+
+    case 11: /* clientBodyTimeout — ngx_msec_t (ms) */
+        return JS_NewInt64(ctx, (int64_t) clcf->client_body_timeout);
+
+    case 12: /* sendTimeout — ngx_msec_t (ms) */
+        return JS_NewInt64(ctx, (int64_t) clcf->send_timeout);
+
+    case 13: /* defaultType */
+        return JS_NewStringLen(ctx, (const char *) clcf->default_type.data,
+                               clcf->default_type.len);
+
+    case 14: /* alias — null if root directive, alias path if alias */
+        if (clcf->alias == 0) {
+            return JS_NULL;
+        }
+        return JS_NewStringLen(ctx, (const char *) clcf->root.data,
+                               clcf->root.len);
     }
 
     return JS_UNDEFINED;
+}
+
+
+/*
+ * location.errorPage — array of {status, overwrite, uri} objects,
+ * one per error_page entry (nginx creates one entry per status code).
+ * For dynamic URI expressions (containing nginx variables) the uri field
+ * reflects the literal prefix only; use JS_NULL if completely dynamic.
+ */
+static JSValue
+ngx_js_location_get_error_page(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_location_opaque_t  *op;
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_http_err_page_t       *ep;
+    JSValue                    arr, obj, uri_val;
+    ngx_uint_t                 i;
+    uint32_t                   idx;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) {
+        return arr;
+    }
+
+    clcf = op->clcf;
+
+    if (clcf->error_pages == NULL) {
+        return arr;
+    }
+
+    ep  = clcf->error_pages->elts;
+    idx = 0;
+
+    for (i = 0; i < clcf->error_pages->nelts; i++) {
+
+        /*
+         * value.value holds the literal URI; value.lengths != NULL means
+         * the URI contains nginx variables — return empty string in that
+         * case (the compiled expression is not easily recoverable as text).
+         */
+        if (ep[i].value.lengths == NULL) {
+            uri_val = JS_NewStringLen(ctx,
+                                      (const char *) ep[i].value.value.data,
+                                      ep[i].value.value.len);
+        } else {
+            uri_val = JS_NewString(ctx, "");
+        }
+
+        obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "status",
+                          JS_NewInt32(ctx, (int32_t) ep[i].status));
+        JS_SetPropertyStr(ctx, obj, "overwrite",
+                          JS_NewInt32(ctx, (int32_t) ep[i].overwrite));
+        JS_SetPropertyStr(ctx, obj, "uri", uri_val);
+
+        JS_SetPropertyUint32(ctx, arr, idx++, obj);
+    }
+
+    return arr;
 }
 
 
@@ -211,9 +328,22 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 
 
 static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("path",    ngx_js_location_get, NULL,                0),
-    JS_CGETSET_MAGIC_DEF("root",    ngx_js_location_get, ngx_js_location_set, 1),
-    JS_CGETSET_MAGIC_DEF("handler", ngx_js_location_get, ngx_js_location_set, 2),
+    JS_CGETSET_MAGIC_DEF("path",             ngx_js_location_get, NULL,                 0),
+    JS_CGETSET_MAGIC_DEF("root",             ngx_js_location_get, ngx_js_location_set,  1),
+    JS_CGETSET_MAGIC_DEF("handler",          ngx_js_location_get, ngx_js_location_set,  2),
+    JS_CGETSET_MAGIC_DEF("internal",         ngx_js_location_get, NULL,                 3),
+    JS_CGETSET_MAGIC_DEF("sendfile",         ngx_js_location_get, NULL,                 4),
+    JS_CGETSET_MAGIC_DEF("tcpNopush",        ngx_js_location_get, NULL,                 5),
+    JS_CGETSET_MAGIC_DEF("tcpNodelay",       ngx_js_location_get, NULL,                 6),
+    JS_CGETSET_MAGIC_DEF("etag",             ngx_js_location_get, NULL,                 7),
+    JS_CGETSET_MAGIC_DEF("keepaliveTimeout", ngx_js_location_get, NULL,                 8),
+    JS_CGETSET_MAGIC_DEF("keepaliveRequests",ngx_js_location_get, NULL,                 9),
+    JS_CGETSET_MAGIC_DEF("clientMaxBodySize",ngx_js_location_get, NULL,                10),
+    JS_CGETSET_MAGIC_DEF("clientBodyTimeout",ngx_js_location_get, NULL,                11),
+    JS_CGETSET_MAGIC_DEF("sendTimeout",      ngx_js_location_get, NULL,                12),
+    JS_CGETSET_MAGIC_DEF("defaultType",      ngx_js_location_get, NULL,                13),
+    JS_CGETSET_MAGIC_DEF("alias",            ngx_js_location_get, NULL,                14),
+    JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
 
