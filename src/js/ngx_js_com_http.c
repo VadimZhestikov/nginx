@@ -71,6 +71,12 @@ JSValue  ngx_js_wrap_fastcgi(JSContext *ctx, ngx_http_fastcgi_loc_conf_t *flcf);
 #include "../http/modules/ngx_http_log_module.h"
 JSValue  ngx_js_wrap_log(JSContext *ctx, ngx_http_log_loc_conf_t *llcf);
 
+/* Forward declaration from ngx_js_com_realip.c */
+#include "../http/modules/ngx_http_realip_module.h"
+#if (NGX_HTTP_REALIP)
+JSValue  ngx_js_wrap_realip(JSContext *ctx, ngx_http_realip_loc_conf_t *rlcf);
+#endif
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -348,6 +354,20 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_log(ctx, llcf);
     }
+
+#if (NGX_HTTP_REALIP)
+    case 25: /* realip — NginxRealIP wrapping realip conf */
+    {
+        ngx_http_realip_loc_conf_t  *rlcf;
+
+        rlcf = clcf->loc_conf[ngx_http_realip_module.ctx_index];
+        if (rlcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_realip(ctx, rlcf);
+    }
+#endif
     }
 
     return JS_UNDEFINED;
@@ -533,6 +553,9 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("limitConn",        ngx_js_location_get, NULL,                22),
     JS_CGETSET_MAGIC_DEF("fastcgi",          ngx_js_location_get, NULL,                23),
     JS_CGETSET_MAGIC_DEF("log",              ngx_js_location_get, NULL,                24),
+#if (NGX_HTTP_REALIP)
+    JS_CGETSET_MAGIC_DEF("realip",           ngx_js_location_get, NULL,                25),
+#endif
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1112,6 +1135,12 @@ ngx_js_http_register_classes(JSRuntime *rt)
     if (ngx_js_log_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
+
+#if (NGX_HTTP_REALIP)
+    if (ngx_js_realip_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+#endif
 
     return NGX_OK;
 }
