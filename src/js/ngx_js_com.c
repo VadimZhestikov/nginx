@@ -33,6 +33,7 @@ JSClassID  ngx_js_ssl_class_id;
 JSClassID  ngx_js_gzip_class_id;
 JSClassID  ngx_js_headers_class_id;
 JSClassID  ngx_js_proxy_cache_class_id;
+JSClassID  ngx_js_rewrite_class_id;
 
 
 typedef struct {
@@ -305,6 +306,7 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_gzip_class_id);
         JS_NewClassID(&ngx_js_headers_class_id);
         JS_NewClassID(&ngx_js_proxy_cache_class_id);
+        JS_NewClassID(&ngx_js_rewrite_class_id);
         initialised = 1;
     }
 

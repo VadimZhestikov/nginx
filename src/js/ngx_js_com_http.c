@@ -47,6 +47,10 @@ JSValue  ngx_js_wrap_gzip(JSContext *ctx, ngx_http_gzip_conf_t *gcf,
 #include "../http/modules/ngx_http_headers_filter_module.h"
 JSValue  ngx_js_wrap_headers(JSContext *ctx, ngx_http_headers_conf_t *hcf);
 
+/* Forward declaration from ngx_js_com_rewrite.c */
+#include "../http/modules/ngx_http_rewrite_module.h"
+JSValue  ngx_js_wrap_rewrite(JSContext *ctx, ngx_http_rewrite_loc_conf_t *rlcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -112,6 +116,7 @@ static JSClassDef ngx_js_location_class = {
  *   15 — proxy             (r/o: NginxProxy for proxy_pass conf)
  *   16 — gzip              (r/o: NginxGzip for gzip conf, or null)
  *   17 — headers           (r/o: NginxHeaders for add_header/expires conf)
+ *   18 — rewrite           (r/o: NginxRewrite for rewrite/set/return conf)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -234,6 +239,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
         }
 
         return ngx_js_wrap_headers(ctx, hcf);
+    }
+
+    case 18: /* rewrite — NginxRewrite wrapping rewrite/set/return conf */
+    {
+        ngx_http_rewrite_loc_conf_t  *rlcf;
+
+        rlcf = clcf->loc_conf[ngx_http_rewrite_module.ctx_index];
+        if (rlcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_rewrite(ctx, rlcf);
     }
     }
 
@@ -413,6 +430,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("proxy",            ngx_js_location_get, NULL,                15),
     JS_CGETSET_MAGIC_DEF("gzip",             ngx_js_location_get, NULL,                16),
     JS_CGETSET_MAGIC_DEF("headers",          ngx_js_location_get, NULL,                17),
+    JS_CGETSET_MAGIC_DEF("rewrite",          ngx_js_location_get, NULL,                18),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -962,6 +980,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_proxy_cache_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_rewrite_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
