@@ -19,9 +19,14 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <ngx_http_proxy_module.h>
 #include <cutils.h>
 #include "ngx_js.h"
 #include "ngx_js_com.h"
+
+
+/* Forward declaration from ngx_js_com_proxy.c */
+JSValue  ngx_js_wrap_proxy(JSContext *ctx, ngx_http_proxy_loc_conf_t *plcf);
 
 
 /* ------------------------------------------------------------------ */
@@ -85,6 +90,7 @@ static JSClassDef ngx_js_location_class = {
  *   12 — sendTimeout       (r/o: ms)
  *   13 — defaultType       (r/o: string)
  *   14 — alias             (r/o: alias path, or null if root directive)
+ *   15 — proxy             (r/o: NginxProxy for proxy_pass conf)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -168,6 +174,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
         }
         return JS_NewStringLen(ctx, (const char *) clcf->root.data,
                                clcf->root.len);
+
+    case 15: /* proxy — NginxProxy wrapping the proxy_pass conf */
+    {
+        ngx_http_proxy_loc_conf_t  *plcf;
+
+        plcf = clcf->loc_conf[ngx_http_proxy_module.ctx_index];
+        if (plcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_proxy(ctx, plcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -343,6 +361,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("sendTimeout",      ngx_js_location_get, NULL,                12),
     JS_CGETSET_MAGIC_DEF("defaultType",      ngx_js_location_get, NULL,                13),
     JS_CGETSET_MAGIC_DEF("alias",            ngx_js_location_get, NULL,                14),
+    JS_CGETSET_MAGIC_DEF("proxy",            ngx_js_location_get, NULL,                15),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -839,6 +858,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_request_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_proxy_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
