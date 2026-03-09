@@ -3518,6 +3518,99 @@ ngx_js_http_mod_location(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * Get-handler for JS-registered variables.
+ *
+ * Variables added by nginx.http.addVariable() are "set-only" at
+ * config time: they have no built-in source.  Reading such a variable
+ * returns the value placed in r->variables[index] by a prior write
+ * (e.g. via r.variables['name'] = '...' in a JS handler), or
+ * not_found if the variable has never been set in this request.
+ */
+static ngx_int_t
+ngx_js_variable_get_handler(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_uint_t  index;
+
+    index = (ngx_uint_t) data;
+
+    if (r->variables[index].not_found || !r->variables[index].valid) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    *v = r->variables[index];
+    return NGX_OK;
+}
+
+
+/*
+ * nginx.http.addVariable(name)
+ *
+ * Registers a new indexed nginx variable named `name` (lowercase,
+ * no '$' prefix) in the current config context.  Only available
+ * during js_init_http execution (ngx_js_current_cf != NULL).
+ *
+ * The variable is writable at request time via r.variables[name] and
+ * readable by nginx modules that look it up by name or index.
+ *
+ * Returns the variable's integer index, or throws a TypeError if
+ * called outside js_init_http or if registration fails.
+ */
+static JSValue
+ngx_js_http_add_variable(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    const char           *name_cstr;
+    u_char               *lc;
+    ngx_str_t             name;
+    ngx_http_variable_t  *v;
+    ngx_int_t             index;
+
+    if (ngx_js_current_cf == NULL) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.http.addVariable() is only available in js_init_http");
+    }
+
+    name_cstr = JS_ToCString(ctx, argv[0]);
+    if (name_cstr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    name.len  = ngx_strlen(name_cstr);
+    lc = ngx_pnalloc(ngx_js_current_cf->pool, name.len ? name.len : 1);
+    if (lc == NULL) {
+        JS_FreeCString(ctx, name_cstr);
+        return JS_ThrowInternalError(ctx, "out of memory");
+    }
+
+    ngx_strlow(lc, (u_char *) name_cstr, name.len);
+    name.data = lc;
+
+    JS_FreeCString(ctx, name_cstr);
+
+    v = ngx_http_add_variable(ngx_js_current_cf, &name,
+                              NGX_HTTP_VAR_CHANGEABLE | NGX_HTTP_VAR_INDEXED);
+    if (v == NULL) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.http.addVariable: ngx_http_add_variable() failed");
+    }
+
+    index = ngx_http_get_variable_index(ngx_js_current_cf, &name);
+    if (index == NGX_ERROR) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.http.addVariable: ngx_http_get_variable_index() failed");
+    }
+
+    /* Provide a get_handler so variables_init_vars does not reject us */
+    v->get_handler = ngx_js_variable_get_handler;
+    v->data        = (uintptr_t) index;
+
+    return JS_NewInt32(ctx, (int32_t) index);
+}
+
+
+/*
  * Build a read-only JS array of plain objects representing the nginx
  * virtual servers that have been parsed so far in the http{} block.
  *
@@ -3766,6 +3859,9 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     JS_SetPropertyStr(ctx, http_obj, "modLocation",
                       JS_NewCFunction(ctx, ngx_js_http_mod_location,
                                       "modLocation", 3));
+    JS_SetPropertyStr(ctx, http_obj, "addVariable",
+                      JS_NewCFunction(ctx, ngx_js_http_add_variable,
+                                      "addVariable", 1));
 
     JS_SetPropertyStr(ctx, nginx_obj, "http", http_obj);
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
