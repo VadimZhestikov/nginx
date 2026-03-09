@@ -917,6 +917,45 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 73: /* typesHashMaxSize */
         return JS_NewInt64(ctx, (int64_t) clcf->types_hash_max_size);
 
+    case 74: /* keepaliveDisable — string[] of disabled browser names */
+    {
+        JSValue  arr;
+        int      idx;
+
+        arr = JS_NewArray(ctx);
+        idx = 0;
+
+        if (clcf->keepalive_disable & NGX_HTTP_KEEPALIVE_DISABLE_MSIE6) {
+            JS_SetPropertyUint32(ctx, arr, idx++,
+                                 JS_NewString(ctx, "msie6"));
+        }
+
+        if (clcf->keepalive_disable & NGX_HTTP_KEEPALIVE_DISABLE_SAFARI) {
+            JS_SetPropertyUint32(ctx, arr, idx++,
+                                 JS_NewString(ctx, "safari"));
+        }
+
+        return arr;
+    }
+
+    case 75: /* keepaliveMinTimeout — ms */
+        return JS_NewInt64(ctx, (int64_t) clcf->keepalive_min_timeout);
+
+    case 76: /* sendfileMaxChunk — bytes */
+        return JS_NewInt64(ctx, (int64_t) clcf->sendfile_max_chunk);
+
+    case 77: /* readAhead — bytes */
+        return JS_NewInt64(ctx, (int64_t) clcf->read_ahead);
+
+    case 78: /* directio — bytes, or "off" when disabled */
+        if (clcf->directio == NGX_OPEN_FILE_DIRECTIO_OFF) {
+            return JS_NewString(ctx, "off");
+        }
+        return JS_NewInt64(ctx, (int64_t) clcf->directio);
+
+    case 79: /* directioAlignment — bytes */
+        return JS_NewInt64(ctx, (int64_t) clcf->directio_alignment);
+
     }
 
     return JS_UNDEFINED;
@@ -1155,6 +1194,12 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("sendLowat",                ngx_js_location_get, NULL,       71),
     JS_CGETSET_MAGIC_DEF("postponeOutput",           ngx_js_location_get, NULL,       72),
     JS_CGETSET_MAGIC_DEF("typesHashMaxSize",         ngx_js_location_get, NULL,       73),
+    JS_CGETSET_MAGIC_DEF("keepaliveDisable",         ngx_js_location_get, NULL,       74),
+    JS_CGETSET_MAGIC_DEF("keepaliveMinTimeout",      ngx_js_location_get, NULL,       75),
+    JS_CGETSET_MAGIC_DEF("sendfileMaxChunk",         ngx_js_location_get, NULL,       76),
+    JS_CGETSET_MAGIC_DEF("readAhead",                ngx_js_location_get, NULL,       77),
+    JS_CGETSET_MAGIC_DEF("directio",                 ngx_js_location_get, NULL,       78),
+    JS_CGETSET_MAGIC_DEF("directioAlignment",        ngx_js_location_get, NULL,       79),
     JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page, NULL),
 };
 
@@ -1365,6 +1410,13 @@ ngx_js_server_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return JS_NewString(ctx, tok);
     }
+
+    case 8: /* connectionPoolSize — bytes */
+        return JS_NewInt64(ctx, (int64_t) cscf->connection_pool_size);
+
+    case 9: /* requestPoolSize — bytes */
+        return JS_NewInt64(ctx, (int64_t) cscf->request_pool_size);
+
     }
 
     return JS_UNDEFINED;
@@ -1596,6 +1648,8 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("mergeSlashes",             ngx_js_server_get,                       NULL,              5),
     JS_CGETSET_MAGIC_DEF("underscoresInHeaders",     ngx_js_server_get,                       NULL,              6),
     JS_CGETSET_MAGIC_DEF("serverTokens",             ngx_js_server_get,                       NULL,              7),
+    JS_CGETSET_MAGIC_DEF("connectionPoolSize",       ngx_js_server_get,                       NULL,              8),
+    JS_CGETSET_MAGIC_DEF("requestPoolSize",          ngx_js_server_get,                       NULL,              9),
     JS_CGETSET_DEF       ("largeClientHeaderBuffers", ngx_js_server_get_large_client_hdr_bufs, NULL),
     JS_CGETSET_DEF       ("ssl",                      ngx_js_server_get_ssl,                   NULL),
 };
