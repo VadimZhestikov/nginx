@@ -66,6 +66,7 @@ static JSClassDef ngx_js_request_class = {
  *  12 — remotePort     (r/o number)
  *  13 — scheme         (r/o string, "http" or "https")
  *  14 — connection     (r/o object {id, requests, fd})
+ *  15 — location      (r/o NginxLocation for the matched location)
  */
 static JSValue
 ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -192,6 +193,14 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
         JS_SetPropertyStr(ctx, conn, "fd",
                           JS_NewInt32(ctx, (int32_t) r->connection->fd));
         return conn;
+    }
+
+    case 15: /* location — NginxLocation for the matched location */
+    {
+        ngx_http_core_loc_conf_t  *clcf;
+
+        clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+        return ngx_js_wrap_location(ctx, clcf);
     }
 
     }
@@ -546,6 +555,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("remotePort",    ngx_js_request_get, NULL, 12),
     JS_CGETSET_MAGIC_DEF("scheme",        ngx_js_request_get, NULL, 13),
     JS_CGETSET_MAGIC_DEF("connection",    ngx_js_request_get, NULL, 14),
+    JS_CGETSET_MAGIC_DEF("location",      ngx_js_request_get, NULL, 15),
     JS_CFUNC_DEF("respond",     3, ngx_js_request_respond),
     JS_CFUNC_DEF("variable",    1, ngx_js_request_variable),
     JS_CFUNC_DEF("setVariable", 2, ngx_js_request_set_variable),

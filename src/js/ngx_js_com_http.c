@@ -182,7 +182,7 @@ JSValue  ngx_js_wrap_mirror(JSContext *ctx,
 /* Forward declarations                                                 */
 /* ------------------------------------------------------------------ */
 
-static JSValue ngx_js_wrap_location(JSContext *ctx,
+JSValue ngx_js_wrap_location(JSContext *ctx,
     ngx_http_core_loc_conf_t *clcf);
 
 static void ngx_js_collect_locations(JSContext *ctx, JSValue arr,
@@ -1204,7 +1204,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
 };
 
 
-static JSValue
+JSValue
 ngx_js_wrap_location(JSContext *ctx, ngx_http_core_loc_conf_t *clcf)
 {
     JSValue                    obj, proto;

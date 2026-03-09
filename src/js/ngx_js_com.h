@@ -127,4 +127,15 @@ ngx_int_t  ngx_js_uwsgi_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_mirror_register_class(JSRuntime *rt);
 
 
+/*
+ * Wrap a single ngx_http_core_loc_conf_t into a NginxLocation JS object.
+ * Used by ngx_js_http_module.c to implement r.location.
+ * ngx_http_core_loc_conf_t is defined in <ngx_http.h>; callers must
+ * include it before this header.
+ */
+struct ngx_http_core_loc_conf_s;
+JSValue  ngx_js_wrap_location(JSContext *ctx,
+    struct ngx_http_core_loc_conf_s *clcf);
+
+
 #endif /* _NGX_JS_COM_H_INCLUDED_ */
