@@ -60,6 +60,7 @@ extern JSClassID  ngx_js_gzip_static_class_id;  /* gzip_static loc conf  (Stage 
 extern JSClassID  ngx_js_memcached_class_id;    /* memcached loc conf    (Stage 13) */
 extern JSClassID  ngx_js_scgi_class_id;         /* scgi loc conf         (Stage 13) */
 extern JSClassID  ngx_js_uwsgi_class_id;        /* uwsgi loc conf        (Stage 13) */
+extern JSClassID  ngx_js_mirror_class_id;       /* mirror loc conf       (Stage 13) */
 
 
 /*
@@ -123,6 +124,7 @@ ngx_int_t  ngx_js_gzip_static_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_memcached_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_scgi_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_uwsgi_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_mirror_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */

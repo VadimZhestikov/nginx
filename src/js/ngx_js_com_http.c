@@ -169,6 +169,11 @@ JSValue  ngx_js_wrap_scgi(JSContext *ctx, ngx_http_scgi_loc_conf_t *scf);
 #include "../http/modules/ngx_http_uwsgi_module.h"
 JSValue  ngx_js_wrap_uwsgi(JSContext *ctx, ngx_http_uwsgi_loc_conf_t *ucf);
 
+/* Forward declaration from ngx_js_com_mirror.c */
+#include "../http/modules/ngx_http_mirror_module.h"
+JSValue  ngx_js_wrap_mirror(JSContext *ctx,
+    ngx_http_mirror_loc_conf_t *mlcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -713,6 +718,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_uwsgi(ctx, ucf);
     }
+
+    case 46: /* mirror — NginxMirror wrapping mirror loc conf */
+    {
+        ngx_http_mirror_loc_conf_t  *mlcf;
+
+        mlcf = clcf->loc_conf[ngx_http_mirror_module.ctx_index];
+        if (mlcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_mirror(ctx, mlcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -923,6 +940,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("memcached",       ngx_js_location_get, NULL,                43),
     JS_CGETSET_MAGIC_DEF("scgi",            ngx_js_location_get, NULL,                44),
     JS_CGETSET_MAGIC_DEF("uwsgi",           ngx_js_location_get, NULL,                45),
+    JS_CGETSET_MAGIC_DEF("mirror",          ngx_js_location_get, NULL,                46),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1588,6 +1606,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_uwsgi_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_mirror_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
