@@ -14,6 +14,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <ngx_event_connect.h>
 #include <cutils.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
@@ -1836,6 +1837,738 @@ ngx_js_request_sleep(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* r.fetch(url[, opts]) — async outbound HTTP/1.1 fetch                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Outbound fetch context — allocated from r->pool.
+ * Manages a raw TCP connection to the upstream and collects the
+ * full HTTP/1.1 response in memory before resolving the JS Promise.
+ */
+#define NGX_JS_FETCH_RECV_CAP  (256 * 1024)
+
+typedef struct {
+    ngx_peer_connection_t   pc;
+    ngx_log_t              *log;
+    ngx_pool_t             *pool;
+
+    /* send */
+    u_char                 *send_pos;   /* next byte to write */
+    u_char                 *send_end;   /* one past last byte */
+    ngx_buf_t              *send_buf;   /* request buffer */
+
+    /* recv — grows if needed */
+    u_char                 *recv_buf;
+    size_t                  recv_cap;
+    size_t                  recv_len;   /* bytes filled so far */
+
+    /* response parse state */
+    int                     resp_status;
+    JSValue                 resp_headers;
+    size_t                  body_offset;   /* byte offset in recv_buf */
+    ssize_t                 content_length; /* -1 = unknown / chunked */
+    unsigned                headers_done:1;
+    unsigned                resolved:1;
+
+    /* JS context */
+    JSContext              *ctx;
+    JSRuntime              *rt;
+    ngx_js_worker_t        *w;
+    ngx_http_request_t     *r;
+    JSValue                 resolve;
+    JSValue                 reject;
+
+    /* 0-ms timer used to schedule microtask drain after upstream finishes */
+    ngx_event_t             ev;
+} ngx_js_fetch_ctx_t;
+
+
+static void ngx_js_fetch_write_handler(ngx_event_t *wev);
+static void ngx_js_fetch_read_handler(ngx_event_t *rev);
+
+
+static void
+ngx_js_fetch_resume_handler(ngx_event_t *ev)
+{
+    ngx_js_fetch_ctx_t  *fctx = ev->data;
+    JSContext           *job_ctx;
+
+    while (JS_ExecutePendingJob(fctx->rt, &job_ctx) > 0) { }
+
+    ngx_js_async_check(fctx->w);
+}
+
+
+/*
+ * Resolve or reject the fetch Promise and schedule a 0-ms resume timer
+ * so that JS microtasks run (and r.respond() fires) after the current
+ * event handler returns.  Only resolves once.
+ */
+static void
+ngx_js_fetch_finish(ngx_js_fetch_ctx_t *fctx, JSValue result, int is_error)
+{
+    JSValue  ret;
+
+    if (fctx->resolved) {
+        return;
+    }
+    fctx->resolved = 1;
+
+    if (is_error) {
+        ret = JS_Call(fctx->ctx, fctx->reject, JS_UNDEFINED, 1, &result);
+    } else {
+        ret = JS_Call(fctx->ctx, fctx->resolve, JS_UNDEFINED, 1, &result);
+    }
+    JS_FreeValue(fctx->ctx, ret);
+    JS_FreeValue(fctx->ctx, result);
+    JS_FreeValue(fctx->ctx, fctx->resolve);
+    JS_FreeValue(fctx->ctx, fctx->reject);
+    JS_FreeValue(fctx->ctx, fctx->resp_headers);
+
+    /* Close the upstream connection */
+    if (fctx->pc.connection) {
+        ngx_close_connection(fctx->pc.connection);
+        fctx->pc.connection = NULL;
+    }
+
+    /* Schedule microtask drain on the next event loop tick (0-ms timer) */
+    ngx_memzero(&fctx->ev, sizeof(ngx_event_t));
+    fctx->ev.handler = ngx_js_fetch_resume_handler;
+    fctx->ev.data    = fctx;
+    fctx->ev.log     = fctx->r->connection->log;
+    ngx_add_timer(&fctx->ev, 0);
+}
+
+
+/*
+ * Write handler — sends the HTTP request.
+ * Called when the TCP connection is established (or writable again).
+ */
+static void
+ngx_js_fetch_write_handler(ngx_event_t *wev)
+{
+    ngx_connection_t    *c  = wev->data;
+    ngx_js_fetch_ctx_t  *fctx = c->data;
+    ssize_t              n;
+
+    if (wev->timedout) {
+        ngx_js_fetch_finish(fctx,
+            JS_NewString(fctx->ctx, "r.fetch: connect timed out"), 1);
+        return;
+    }
+
+    while (fctx->send_pos < fctx->send_end) {
+        n = c->send(c, fctx->send_pos,
+                    (size_t)(fctx->send_end - fctx->send_pos));
+        if (n == NGX_ERROR) {
+            ngx_js_fetch_finish(fctx,
+                JS_NewString(fctx->ctx, "r.fetch: send error"), 1);
+            return;
+        }
+        if (n == NGX_AGAIN) {
+            if (ngx_handle_write_event(wev, 0) != NGX_OK) {
+                ngx_js_fetch_finish(fctx,
+                    JS_NewString(fctx->ctx, "r.fetch: send event error"), 1);
+            }
+            return;
+        }
+        fctx->send_pos += n;
+    }
+
+    /* Request fully sent — wait for response */
+    if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+        ngx_js_fetch_finish(fctx,
+            JS_NewString(fctx->ctx, "r.fetch: read event error"), 1);
+    }
+}
+
+
+/*
+ * Parse the HTTP/1.1 response in recv_buf[0..recv_len).
+ * Sets fctx->resp_status, fctx->resp_headers, fctx->body_offset,
+ * fctx->content_length, fctx->headers_done.
+ * Returns 1 if headers fully parsed, 0 if more data needed.
+ */
+static int
+ngx_js_fetch_parse_headers(ngx_js_fetch_ctx_t *fctx)
+{
+    u_char  *p, *end, *line_start;
+    u_char  *sol, *eol;    /* start/end of line */
+    u_char  *colon;
+    size_t   klen, vlen;
+    u_char   lc[256];
+    int      code;
+
+    p   = fctx->recv_buf;
+    end = fctx->recv_buf + fctx->recv_len;
+
+    /* --- status line: "HTTP/1.x NNN ..." --- */
+    if (fctx->resp_status == 0) {
+        /* need at least "HTTP/1.1 200 " */
+        if (end - p < 12) {
+            return 0;
+        }
+        if (ngx_strncmp(p, "HTTP/1.", 7) != 0) {
+            fctx->resp_status = -1;  /* marker: invalid */
+            return 1;
+        }
+        code = 0;
+        p += 9;  /* skip "HTTP/1.x " */
+        while (p < end && *p >= '0' && *p <= '9') {
+            code = code * 10 + (*p++ - '0');
+        }
+        fctx->resp_status = code ? code : 200;
+    }
+
+    /* skip rest of status line to first \r\n */
+    line_start = fctx->recv_buf;
+    sol = (u_char *) ngx_strnstr(line_start, "\r\n",
+                                  (size_t)(end - line_start));
+    if (sol == NULL) {
+        return 0;   /* still reading status line */
+    }
+    sol += 2;   /* skip past \r\n — now at first header line */
+
+    /* --- parse header lines until \r\n\r\n --- */
+    for ( ;; ) {
+        eol = (u_char *) ngx_strnstr(sol, "\r\n",
+                                      (size_t)(end - sol));
+        if (eol == NULL) {
+            return 0;   /* need more data */
+        }
+
+        if (eol == sol) {
+            /* blank line → end of headers */
+            fctx->body_offset = (size_t)(eol + 2 - fctx->recv_buf);
+            fctx->headers_done = 1;
+            return 1;
+        }
+
+        /* find colon */
+        colon = sol;
+        while (colon < eol && *colon != ':') {
+            colon++;
+        }
+        if (colon < eol) {
+            klen = (size_t)(colon - sol);
+            if (klen > 0 && klen < sizeof(lc)) {
+                ngx_strlow(lc, sol, klen);
+                lc[klen] = '\0';
+
+                /* skip colon and optional leading whitespace */
+                u_char *vs = colon + 1;
+                while (vs < eol && *vs == ' ') {
+                    vs++;
+                }
+                vlen = (size_t)(eol - vs);
+
+                JS_SetPropertyStr(fctx->ctx, fctx->resp_headers,
+                    (const char *) lc,
+                    JS_NewStringLen(fctx->ctx, (const char *) vs, vlen));
+
+                /* pick up Content-Length */
+                if (klen == 14
+                    && ngx_strncasecmp(sol,
+                        (u_char *) "content-length", 14) == 0)
+                {
+                    fctx->content_length = 0;
+                    for (u_char *d = vs; d < eol; d++) {
+                        if (*d >= '0' && *d <= '9') {
+                            fctx->content_length =
+                                fctx->content_length * 10 + (*d - '0');
+                        }
+                    }
+                }
+            }
+        }
+
+        sol = eol + 2;
+    }
+}
+
+
+/*
+ * Read handler — receives the HTTP response.
+ * Accumulates data in recv_buf, then parses headers and body.
+ * Resolves the Promise once the full response has arrived.
+ */
+static void
+ngx_js_fetch_read_handler(ngx_event_t *rev)
+{
+    ngx_connection_t    *c    = rev->data;
+    ngx_js_fetch_ctx_t  *fctx = c->data;
+    ssize_t              n;
+    size_t               body_len;
+    JSValue              result, headers_clone;
+    u_char              *new_buf;
+
+    if (rev->timedout) {
+        ngx_js_fetch_finish(fctx,
+            JS_NewString(fctx->ctx, "r.fetch: read timed out"), 1);
+        return;
+    }
+
+    for ( ;; ) {
+        /* Grow recv buffer if full */
+        if (fctx->recv_len == fctx->recv_cap) {
+            if (fctx->recv_cap >= 16 * 1024 * 1024) {
+                ngx_js_fetch_finish(fctx,
+                    JS_NewString(fctx->ctx, "r.fetch: response too large"),
+                    1);
+                return;
+            }
+            new_buf = ngx_palloc(fctx->pool, fctx->recv_cap * 2);
+            if (new_buf == NULL) {
+                ngx_js_fetch_finish(fctx,
+                    JS_NewString(fctx->ctx, "r.fetch: out of memory"), 1);
+                return;
+            }
+            ngx_memcpy(new_buf, fctx->recv_buf, fctx->recv_len);
+            fctx->recv_buf = new_buf;
+            fctx->recv_cap *= 2;
+        }
+
+        n = c->recv(c, fctx->recv_buf + fctx->recv_len,
+                    fctx->recv_cap - fctx->recv_len);
+
+        if (n == NGX_AGAIN) {
+            if (ngx_handle_read_event(rev, 0) != NGX_OK) {
+                ngx_js_fetch_finish(fctx,
+                    JS_NewString(fctx->ctx, "r.fetch: read event error"), 1);
+            }
+            return;
+        }
+
+        if (n == NGX_ERROR || n == 0) {
+            /* Connection closed by upstream — response is what we have */
+            if (n == NGX_ERROR) {
+                ngx_log_debug0(NGX_LOG_DEBUG_HTTP, rev->log, 0,
+                               "r.fetch: upstream connection error/close");
+            }
+            break;
+        }
+
+        fctx->recv_len += (size_t) n;
+
+        /* Try to parse headers if not done yet */
+        if (!fctx->headers_done) {
+            if (!ngx_js_fetch_parse_headers(fctx)) {
+                continue;   /* need more data */
+            }
+        }
+
+        if (!fctx->headers_done) {
+            continue;
+        }
+
+        /* Check if we have a complete body */
+        body_len = fctx->recv_len - fctx->body_offset;
+        if (fctx->content_length >= 0
+            && body_len >= (size_t) fctx->content_length)
+        {
+            goto done;
+        }
+    }
+
+    /* Connection closed — finalize with whatever we have */
+    if (!fctx->headers_done) {
+        ngx_js_fetch_parse_headers(fctx);
+    }
+
+done:
+    body_len = fctx->recv_len > fctx->body_offset
+               ? fctx->recv_len - fctx->body_offset : 0;
+
+    if (fctx->content_length >= 0
+        && body_len > (size_t) fctx->content_length)
+    {
+        body_len = (size_t) fctx->content_length;
+    }
+
+    /* Build {status, headers, body} result object */
+    result = JS_NewObject(fctx->ctx);
+
+    JS_SetPropertyStr(fctx->ctx, result, "status",
+                      JS_NewInt32(fctx->ctx, fctx->resp_status));
+
+    /* Transfer ownership of resp_headers into result (avoid double-free) */
+    headers_clone = JS_DupValue(fctx->ctx, fctx->resp_headers);
+    JS_SetPropertyStr(fctx->ctx, result, "headers", headers_clone);
+
+    JS_SetPropertyStr(fctx->ctx, result, "body",
+                      JS_NewStringLen(fctx->ctx,
+                          (const char *)(fctx->recv_buf + fctx->body_offset),
+                          body_len));
+
+    ngx_js_fetch_finish(fctx, result, 0);
+}
+
+
+/*
+ * r.fetch(url[, opts]) → Promise<{status, headers, body}>
+ *
+ * Makes an outbound HTTP/1.1 GET (or opts.method) request to `url`.
+ * Supports http:// scheme with IPv4 host:port.
+ *
+ * opts (optional):
+ *   method  — HTTP method (default "GET")
+ *   headers — plain object of extra request headers
+ *   body    — string request body
+ *
+ * Returns a Promise that resolves to {status, headers, body}.
+ * Must be used with `await` inside an async handler.
+ */
+static JSValue
+ngx_js_request_fetch(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    ngx_js_worker_t          *w;
+    ngx_js_fetch_ctx_t       *fctx;
+    JSValue                   promise, resolving[2];
+    JSValue                   opts, val;
+    JSPropertyEnum           *tab;
+    uint32_t                  tab_len, j;
+    const char               *url_cstr, *method_cstr, *k_cstr, *v_cstr;
+    const char               *body_cstr;
+    size_t                    url_len, method_len, body_len;
+    /* URL components */
+    const u_char             *host_start, *host_end;
+    in_port_t                 port;
+    const u_char             *path_start;
+    u_char                    host_buf[256];
+    struct sockaddr_in        sin;
+    /* request buffer assembly */
+    u_char                   *p;
+    size_t                    req_len;
+    /* extra headers */
+    ngx_str_t                 hdr_str;
+    ngx_int_t                 rc;
+
+    (void) hdr_str;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1 || JS_IsUndefined(argv[0])) {
+        return JS_ThrowTypeError(ctx, "r.fetch(url): url required");
+    }
+
+    r = op->r;
+    w = JS_GetContextOpaque(ctx);
+    if (!w) {
+        return JS_ThrowInternalError(ctx, "r.fetch: no worker context");
+    }
+
+    /* ---- Parse URL ---- */
+    url_cstr = JS_ToCString(ctx, argv[0]);
+    if (!url_cstr) {
+        return JS_EXCEPTION;
+    }
+    url_len = ngx_strlen(url_cstr);
+
+    /* Strip "http://" */
+    if (url_len < 7 || ngx_strncasecmp((u_char *) url_cstr,
+                                        (u_char *) "http://", 7) != 0)
+    {
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowTypeError(ctx,
+            "r.fetch: only http:// scheme supported");
+    }
+
+    host_start = (const u_char *) url_cstr + 7;
+    host_end   = host_start;
+
+    /* Find end of host (stop at ':', '/', end-of-string) */
+    while (*host_end && *host_end != ':' && *host_end != '/') {
+        host_end++;
+    }
+
+    /* port */
+    port = 80;
+    if (*host_end == ':') {
+        const u_char *pp = host_end + 1;
+        port = 0;
+        while (*pp >= '0' && *pp <= '9') {
+            port = (in_port_t)(port * 10 + (*pp++ - '0'));
+        }
+        path_start = pp;
+    } else {
+        path_start = host_end;
+    }
+
+    if (*path_start == '\0') {
+        path_start = (u_char *) "/";
+    }
+
+    /* Copy host to local buffer (NUL-terminated) */
+    size_t host_len = (size_t)(host_end - host_start);
+    if (host_len == 0 || host_len >= sizeof(host_buf)) {
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowTypeError(ctx, "r.fetch: invalid host");
+    }
+    ngx_memcpy(host_buf, host_start, host_len);
+    host_buf[host_len] = '\0';
+
+    /* Resolve host — only IPv4 for now */
+    ngx_memzero(&sin, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port   = htons(port);
+    if (ngx_inet_addr(host_buf, host_len) == INADDR_NONE) {
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowTypeError(ctx,
+            "r.fetch: only IPv4 addresses supported (no DNS)");
+    }
+    sin.sin_addr.s_addr = ngx_inet_addr(host_buf, host_len);
+
+    /* ---- Parse opts ---- */
+    method_cstr = "GET";
+    method_len  = 3;
+    body_cstr   = NULL;
+    body_len    = 0;
+
+    opts = (argc >= 2) ? argv[1] : JS_UNDEFINED;
+
+    JSValue extra_headers = JS_NewObject(ctx);  /* key→value */
+
+    if (!JS_IsUndefined(opts) && JS_IsObject(opts)) {
+        val = JS_GetPropertyStr(ctx, opts, "method");
+        if (!JS_IsUndefined(val)) {
+            method_cstr = JS_ToCStringLen(ctx, &method_len, val);
+            JS_FreeValue(ctx, val);
+        }
+
+        val = JS_GetPropertyStr(ctx, opts, "body");
+        if (!JS_IsUndefined(val) && !JS_IsNull(val)) {
+            body_cstr = JS_ToCStringLen(ctx, &body_len, val);
+            JS_FreeValue(ctx, val);
+        }
+
+        val = JS_GetPropertyStr(ctx, opts, "headers");
+        if (JS_IsObject(val)) {
+            JS_FreeValue(ctx, val);  /* iterate via GetOwnPropertyNames */
+            /* Copy opts.headers into extra_headers */
+            JSValue hdrs = JS_GetPropertyStr(ctx, opts, "headers");
+            if (JS_GetOwnPropertyNames(ctx, &tab, &tab_len, hdrs,
+                                       JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY)
+                == 0)
+            {
+                for (j = 0; j < tab_len; j++) {
+                    JSValue kv = JS_AtomToString(ctx, tab[j].atom);
+                    JSValue vv = JS_GetProperty(ctx, hdrs, tab[j].atom);
+                    k_cstr = JS_ToCString(ctx, kv);
+                    v_cstr = JS_ToCString(ctx, vv);
+                    if (k_cstr && v_cstr) {
+                        JS_SetPropertyStr(ctx, extra_headers,
+                                          k_cstr, JS_NewString(ctx, v_cstr));
+                    }
+                    if (k_cstr) JS_FreeCString(ctx, k_cstr);
+                    if (v_cstr) JS_FreeCString(ctx, v_cstr);
+                    JS_FreeValue(ctx, kv);
+                    JS_FreeValue(ctx, vv);
+                    JS_FreeAtom(ctx, tab[j].atom);
+                }
+                js_free(ctx, tab);
+            }
+            JS_FreeValue(ctx, hdrs);
+        } else {
+            JS_FreeValue(ctx, val);
+        }
+    }
+
+    /* ---- Build HTTP request ---- */
+    /* Estimate size: method + path + headers + body */
+    /* "METHOD /path HTTP/1.1\r\nHost: host:port\r\n
+     *  Connection: close\r\n[Content-Length: NNN\r\n][extra]\r\n[body]" */
+    req_len = method_len + 1
+            + ngx_strlen(path_start) + 9  /* " HTTP/1.1" */
+            + 2                             /* \r\n */
+            + 7 + host_len + 6 + 2         /* Host: host:port\r\n (port≤5 chars) */
+            + 19                            /* Connection: close\r\n */
+            + 32                            /* Content-Length: NNN\r\n */
+            + body_len
+            + 2;                            /* final \r\n */
+
+    /* extra_headers size: iterate to estimate (rough) */
+    if (JS_GetOwnPropertyNames(ctx, &tab, &tab_len, extra_headers,
+                               JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY) == 0)
+    {
+        for (j = 0; j < tab_len; j++) {
+            JSValue kv = JS_AtomToString(ctx, tab[j].atom);
+            JSValue vv = JS_GetProperty(ctx, extra_headers, tab[j].atom);
+            k_cstr = JS_ToCString(ctx, kv);
+            v_cstr = JS_ToCString(ctx, vv);
+            if (k_cstr && v_cstr) {
+                req_len += ngx_strlen(k_cstr) + 2
+                         + ngx_strlen(v_cstr) + 2;
+            }
+            if (k_cstr) JS_FreeCString(ctx, k_cstr);
+            if (v_cstr) JS_FreeCString(ctx, v_cstr);
+            JS_FreeValue(ctx, kv);
+            JS_FreeValue(ctx, vv);
+            JS_FreeAtom(ctx, tab[j].atom);
+        }
+        js_free(ctx, tab);
+    }
+
+    u_char *req_buf = ngx_palloc(r->pool, req_len + 1);
+    if (!req_buf) {
+        JS_FreeCString(ctx, url_cstr);
+        if (body_cstr) JS_FreeCString(ctx, body_cstr);
+        JS_FreeValue(ctx, extra_headers);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    p = req_buf;
+    p = ngx_cpymem(p, method_cstr, method_len);
+    *p++ = ' ';
+    p = ngx_cpymem(p, path_start, ngx_strlen(path_start));
+    p = ngx_cpymem(p, " HTTP/1.1\r\n", 11);
+    p = ngx_cpymem(p, "Host: ", 6);
+    p = ngx_cpymem(p, host_buf, host_len);
+    if (port != 80) {
+        p = ngx_snprintf(p, 7, ":%d", (int) port);
+    }
+    p = ngx_cpymem(p, "\r\n", 2);
+    p = ngx_cpymem(p, "Connection: close\r\n", 19);
+
+    if (body_len > 0) {
+        p = ngx_snprintf(p, 32, "Content-Length: %uz\r\n", body_len);
+    }
+
+    /* Extra request headers from opts.headers */
+    if (JS_GetOwnPropertyNames(ctx, &tab, &tab_len, extra_headers,
+                               JS_GPN_STRING_MASK|JS_GPN_ENUM_ONLY) == 0)
+    {
+        for (j = 0; j < tab_len; j++) {
+            JSValue kv = JS_AtomToString(ctx, tab[j].atom);
+            JSValue vv = JS_GetProperty(ctx, extra_headers, tab[j].atom);
+            k_cstr = JS_ToCString(ctx, kv);
+            v_cstr = JS_ToCString(ctx, vv);
+            if (k_cstr && v_cstr) {
+                p = ngx_cpymem(p, k_cstr, ngx_strlen(k_cstr));
+                p = ngx_cpymem(p, ": ", 2);
+                p = ngx_cpymem(p, v_cstr, ngx_strlen(v_cstr));
+                p = ngx_cpymem(p, "\r\n", 2);
+            }
+            if (k_cstr) JS_FreeCString(ctx, k_cstr);
+            if (v_cstr) JS_FreeCString(ctx, v_cstr);
+            JS_FreeValue(ctx, kv);
+            JS_FreeValue(ctx, vv);
+            JS_FreeAtom(ctx, tab[j].atom);
+        }
+        js_free(ctx, tab);
+    }
+
+    p = ngx_cpymem(p, "\r\n", 2);
+
+    if (body_cstr && body_len > 0) {
+        p = ngx_cpymem(p, body_cstr, body_len);
+    }
+
+    if (body_cstr) JS_FreeCString(ctx, body_cstr);
+    JS_FreeCString(ctx, url_cstr);
+    JS_FreeValue(ctx, extra_headers);
+
+    /* ---- Allocate fetch context ---- */
+    fctx = ngx_pcalloc(r->pool, sizeof(ngx_js_fetch_ctx_t));
+    if (!fctx) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    fctx->pool            = r->pool;
+    fctx->log             = r->connection->log;
+    fctx->ctx             = ctx;
+    fctx->rt              = w->rt;
+    fctx->w               = w;
+    fctx->r               = r;
+    fctx->content_length  = -1;
+    fctx->resp_status     = 0;
+    fctx->resp_headers    = JS_NewObject(ctx);
+
+    fctx->send_buf = ngx_palloc(r->pool, sizeof(ngx_buf_t));
+    if (!fctx->send_buf) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memzero(fctx->send_buf, sizeof(ngx_buf_t));
+    fctx->send_buf->start = req_buf;
+    fctx->send_buf->pos   = req_buf;
+    fctx->send_buf->last  = p;
+    fctx->send_buf->end   = req_buf + req_len + 1;
+
+    fctx->send_pos = req_buf;
+    fctx->send_end = p;
+
+    fctx->recv_buf = ngx_palloc(r->pool, NGX_JS_FETCH_RECV_CAP);
+    if (!fctx->recv_buf) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    fctx->recv_cap = NGX_JS_FETCH_RECV_CAP;
+    fctx->recv_len = 0;
+
+    /* ---- Create Promise ---- */
+    promise = JS_NewPromiseCapability(ctx, resolving);
+    if (JS_IsException(promise)) {
+        return promise;
+    }
+    fctx->resolve = resolving[0];
+    fctx->reject  = resolving[1];
+
+    /* ---- Set up peer connection ---- */
+    ngx_memzero(&fctx->pc, sizeof(ngx_peer_connection_t));
+    fctx->pc.sockaddr  = (struct sockaddr *) &sin;
+    fctx->pc.socklen   = sizeof(sin);
+    fctx->pc.get       = ngx_event_get_peer;
+    fctx->pc.log       = fctx->log;
+    fctx->pc.log_error = NGX_ERROR_ERR;
+
+    /* Name string for logging */
+    {
+        u_char    *peer_name_buf = ngx_palloc(r->pool, host_len + 8);
+        ngx_str_t *peer_name_str = ngx_palloc(r->pool, sizeof(ngx_str_t));
+        if (peer_name_buf && peer_name_str) {
+            u_char *ep = ngx_cpymem(peer_name_buf, host_buf, host_len);
+            ep = ngx_snprintf(ep, 8, ":%d", (int) port);
+            peer_name_str->data = peer_name_buf;
+            peer_name_str->len  = (size_t)(ep - peer_name_buf);
+            fctx->pc.name = peer_name_str;
+        } else {
+            fctx->pc.name = &r->uri;
+        }
+    }
+
+    /* Connect */
+    rc = ngx_event_connect_peer(&fctx->pc);
+
+    if (rc == NGX_ERROR || rc == NGX_DECLINED || rc == NGX_BUSY) {
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        JS_FreeValue(ctx, promise);
+        JS_FreeValue(ctx, fctx->resp_headers);
+        return JS_ThrowInternalError(ctx, "r.fetch: connect failed (%d)",
+                                     (int) rc);
+    }
+
+    ngx_connection_t *conn = fctx->pc.connection;
+    conn->data              = fctx;
+    conn->write->handler    = ngx_js_fetch_write_handler;
+    conn->read->handler     = ngx_js_fetch_read_handler;
+    conn->pool              = r->pool;
+
+    if (rc == NGX_OK) {
+        /* Connected immediately — start writing */
+        ngx_js_fetch_write_handler(conn->write);
+    }
+    /* rc == NGX_AGAIN: write_handler fires when connection completes */
+
+    return promise;
+}
+
+
 /*
  * r.sendfile(path[, status])
  *
@@ -2445,6 +3178,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("write",               1, ngx_js_request_write),
     JS_CFUNC_DEF("finish",              0, ngx_js_request_finish),
     JS_CFUNC_DEF("sleep",               1, ngx_js_request_sleep),
+    JS_CFUNC_DEF("fetch",               1, ngx_js_request_fetch),
 };
 
 
