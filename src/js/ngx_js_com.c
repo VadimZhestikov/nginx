@@ -53,6 +53,7 @@ JSClassID  ngx_js_gunzip_class_id;
 JSClassID  ngx_js_slice_class_id;
 JSClassID  ngx_js_image_filter_class_id;
 JSClassID  ngx_js_xslt_class_id;
+JSClassID  ngx_js_secure_link_class_id;
 
 
 typedef struct {
@@ -345,6 +346,7 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_slice_class_id);
         JS_NewClassID(&ngx_js_image_filter_class_id);
         JS_NewClassID(&ngx_js_xslt_class_id);
+        JS_NewClassID(&ngx_js_secure_link_class_id);
         initialised = 1;
     }
 

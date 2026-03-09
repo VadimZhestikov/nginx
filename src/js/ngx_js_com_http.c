@@ -132,6 +132,11 @@ JSValue  ngx_js_wrap_image_filter(JSContext *ctx,
 JSValue  ngx_js_wrap_xslt(JSContext *ctx,
     ngx_http_xslt_filter_loc_conf_t *xcf);
 
+/* Forward declaration from ngx_js_com_secure_link.c */
+#include "../http/modules/ngx_http_secure_link_module.h"
+JSValue  ngx_js_wrap_secure_link(JSContext *ctx,
+    ngx_http_secure_link_conf_t *scf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -580,6 +585,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_xslt(ctx, xcf);
     }
+
+    case 38: /* secureLink — NginxSecureLink wrapping secure_link conf */
+    {
+        ngx_http_secure_link_conf_t  *scf;
+
+        scf = clcf->loc_conf[ngx_http_secure_link_module.ctx_index];
+        if (scf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_secure_link(ctx, scf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -782,6 +799,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("slice",           ngx_js_location_get, NULL,                35),
     JS_CGETSET_MAGIC_DEF("imageFilter",     ngx_js_location_get, NULL,                36),
     JS_CGETSET_MAGIC_DEF("xslt",            ngx_js_location_get, NULL,                37),
+    JS_CGETSET_MAGIC_DEF("secureLink",      ngx_js_location_get, NULL,                38),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1415,6 +1433,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_xslt_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_secure_link_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
