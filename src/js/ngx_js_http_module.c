@@ -4701,7 +4701,7 @@ ngx_js_init_http_servers(JSContext *ctx, ngx_conf_t *cf)
  *                                that have been parsed before this
  *                                directive (useful for conditional adds).
  *
- * The JS runtime is short-lived and independent of the js_include
+ * The JS runtime is short-lived and independent of the js_source
  * runtime.  nginx.setTimeout, Worker, SharedWorker etc. are NOT
  * available here.
  *

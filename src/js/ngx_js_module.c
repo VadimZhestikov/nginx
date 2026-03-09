@@ -6,7 +6,7 @@
  *
  * Lifecycle:
  *   create_conf  — allocate ngx_js_conf_t in cycle->pool
- *   [ngx_conf_parse runs; js_include directives populate jcf->includes;
+ *   [ngx_conf_parse runs; js_source directives populate jcf->sources;
  *    js_preprocess directives run immediately and may inject config text]
  *   init_conf    — create JSRuntime/JSContext, install COM, eval scripts
  *   init_process — each worker inherits jcf->rt/ctx directly (fork COW);
@@ -321,7 +321,7 @@ static ngx_int_t ngx_js_init_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_master(ngx_cycle_t *cycle);
 
-static char   *ngx_js_include(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char   *ngx_js_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
@@ -329,16 +329,16 @@ static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
 static ngx_command_t  ngx_js_commands[] = {
 
     /*
-     * js_include /path/to/script.js;
+     * js_source /path/to/script.js;
      *
      * Loads and evaluates a JavaScript file once the full nginx.conf
      * has been parsed (in init_conf).  Relative paths are resolved
      * against the directory of nginx.conf.  Multiple directives are
      * executed in declaration order.
      */
-    { ngx_string("js_include"),
+    { ngx_string("js_source"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
-      ngx_js_include,
+      ngx_js_source,
       0,
       0,
       NULL },
@@ -355,7 +355,7 @@ static ngx_command_t  ngx_js_commands[] = {
      * blocks) from files, environment variables, or external sources.
      *
      * The JS runtime used here is short-lived and independent of the
-     * runtime created by js_include/init_conf.  nginx.http.servers[]
+     * runtime created by js_source/init_conf.  nginx.http.servers[]
      * and other post-parse COM objects are NOT available.
      *
      * Multiple js_preprocess directives are allowed; each runs in its
@@ -405,7 +405,7 @@ ngx_js_create_conf(ngx_cycle_t *cycle)
         return NULL;
     }
 
-    if (ngx_array_init(&jcf->includes, cycle->pool, 4,
+    if (ngx_array_init(&jcf->sources, cycle->pool, 4,
                        sizeof(ngx_str_t)) != NGX_OK)
     {
         return NULL;
@@ -418,14 +418,14 @@ ngx_js_create_conf(ngx_cycle_t *cycle)
 
 
 static char *
-ngx_js_include(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+ngx_js_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_js_conf_t  *jcf = conf;
     ngx_str_t      *value, *path;
 
-    value = cf->args->elts;    /* value[0] = "js_include", value[1] = path */
+    value = cf->args->elts;    /* value[0] = "js_source", value[1] = path */
 
-    path = ngx_array_push(&jcf->includes);
+    path = ngx_array_push(&jcf->sources);
     if (path == NULL) {
         return NGX_CONF_ERROR;
     }
@@ -447,7 +447,7 @@ ngx_js_include(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  * At this point every server{}, location{}, upstream{} in nginx.conf
  * has been parsed and its C config structs are fully populated.  We
  * create the master QuickJS runtime, install the COM, and evaluate
- * every js_include file.  Any mutations JS makes to COM objects
+ * every js_source file.  Any mutations JS makes to COM objects
  * (Phases 2+) write directly into cycle-pool memory and are visible
  * to worker processes after fork().
  */
@@ -460,7 +460,7 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     u_char         *src;
     size_t          src_len;
 
-    if (jcf->includes.nelts == 0) {
+    if (jcf->sources.nelts == 0) {
         return NGX_CONF_OK;    /* nothing to do — pure static config */
     }
 
@@ -504,11 +504,11 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
         goto failed_ctx;
     }
 
-    /* ---- Evaluate each js_include file in declaration order ---- */
+    /* ---- Evaluate each js_source file in declaration order ---- */
 
-    path = jcf->includes.elts;
+    path = jcf->sources.elts;
 
-    for (i = 0; i < jcf->includes.nelts; i++) {
+    for (i = 0; i < jcf->sources.nelts; i++) {
 
         ngx_log_debug1(NGX_LOG_DEBUG_CORE, cycle->log, 0,
                        "js: executing \"%V\"", &path[i]);
@@ -560,7 +560,7 @@ failed_rt:
  * After fork() every worker has a private copy-on-write image of the
  * master's address space, including its JSRuntime and JSContext.  Those
  * objects already contain the fully-evaluated JS environment (all
- * js_include scripts executed, COM installed, handler functions
+ * js_source scripts executed, COM installed, handler functions
  * registered in the global scope, all QuickJS classes registered).
  *
  * We simply point the worker's runtime handle at jcf->rt / jcf->ctx.
@@ -578,7 +578,7 @@ ngx_js_init_process(ngx_cycle_t *cycle)
     jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
 
     if (jcf->rt == NULL) {
-        return NGX_OK;    /* no js_include directives */
+        return NGX_OK;    /* no js_source directives */
     }
 
     w = ngx_pcalloc(cycle->pool, sizeof(ngx_js_worker_t));

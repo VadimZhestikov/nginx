@@ -35,7 +35,7 @@ $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
 daemon off;
 
-js_include %%TESTDIR%%/init_upstream_ext.js;
+js_source %%TESTDIR%%/init_upstream_ext.js;
 
 events { }
 

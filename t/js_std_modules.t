@@ -3,7 +3,7 @@
 # Tests for std and os module availability in all three JS runtimes:
 #   js_preprocess    — parse-time, top-level
 #   js_init_http     — parse-time, http{} level
-#   js_include       — runtime, worker scripts
+#   js_source       — runtime, worker scripts
 
 use warnings;
 use strict;
@@ -103,7 +103,7 @@ JS
 
 
 # -----------------------------------------------------------------------
-# Scenario 3: std and os importable in js_include (worker runtime)
+# Scenario 3: std and os importable in js_source (worker runtime)
 # -----------------------------------------------------------------------
 
 {
@@ -113,7 +113,7 @@ JS
 %%TEST_GLOBALS%%
 daemon off;
 
-js_include %%TESTDIR%%/include_std.js;
+js_source %%TESTDIR%%/include_std.js;
 
 events { }
 

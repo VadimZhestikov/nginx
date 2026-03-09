@@ -5,7 +5,7 @@
 # js_preprocess runs JS mid-parse (before init_conf); the script calls
 # config.write(text) to inject nginx directives as if they appeared
 # inline in nginx.conf.  The JS runtime is short-lived and isolated
-# from the js_include runtime.
+# from the js_source runtime.
 #
 # Tests covered:
 #   - Basic: config.write() generates http{}/server{}/location{}
@@ -106,8 +106,8 @@ like(http_get('/second/', PeerAddr => '127.0.0.1:8081'),
      'second generated server body correct');
 
 
-# --- Verify js_include still works alongside js_preprocess ---
-# (Both directives can coexist; js_include runs after full parse)
+# --- Verify js_source still works alongside js_preprocess ---
+# (Both directives can coexist; js_source runs after full parse)
 
 like(http_get('/hello/'),
      qr|200 OK|,

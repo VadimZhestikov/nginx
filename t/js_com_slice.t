@@ -26,7 +26,7 @@ $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
 daemon off;
 
-js_include %%TESTDIR%%/init_slice.js;
+js_source %%TESTDIR%%/init_slice.js;
 
 events { }
 

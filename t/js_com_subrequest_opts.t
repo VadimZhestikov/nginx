@@ -29,7 +29,7 @@ $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
 daemon off;
 
-js_include %%TESTDIR%%/subreq_opts.js;
+js_source %%TESTDIR%%/subreq_opts.js;
 
 events { }
 

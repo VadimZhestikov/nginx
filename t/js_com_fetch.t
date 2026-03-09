@@ -23,7 +23,7 @@ $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
 daemon off;
 
-js_include %%TESTDIR%%/fetch_handler.js;
+js_source %%TESTDIR%%/fetch_handler.js;
 
 events { }
 

@@ -23,7 +23,7 @@ $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
 daemon off;
 
-js_include %%TESTDIR%%/init_server_listen.js;
+js_source %%TESTDIR%%/init_server_listen.js;
 
 events { }
 

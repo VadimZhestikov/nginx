@@ -17,11 +17,11 @@ typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
 
 /*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).
- * Allocated in cycle->pool via create_conf; populated by js_include
+ * Allocated in cycle->pool via create_conf; populated by js_source
  * directives during ngx_conf_parse(), executed by init_conf().
  */
 typedef struct {
-    ngx_array_t         includes;    /* ngx_str_t: resolved paths from js_include */
+    ngx_array_t         sources;     /* ngx_str_t: resolved paths from js_source */
     JSRuntime          *rt;          /* master-process QuickJS runtime             */
     JSContext          *ctx;         /* master-process QuickJS context             */
     void               *worker;      /* ngx_js_worker_t* after fork (in workers)  */

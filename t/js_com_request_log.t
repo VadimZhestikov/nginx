@@ -24,7 +24,7 @@ $t->write_file_expand('nginx.conf', <<'EOF');
 daemon off;
 error_log  %%TESTDIR%%/error.log info;
 
-js_include %%TESTDIR%%/init_request_log.js;
+js_source %%TESTDIR%%/init_request_log.js;
 
 events { }
 

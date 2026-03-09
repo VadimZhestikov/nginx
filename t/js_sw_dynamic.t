@@ -2,7 +2,7 @@
 
 # Tests for dynamic SharedWorker creation from nginx worker request handlers.
 #
-# Unlike static SharedWorkers (created in js_include init code), these are
+# Unlike static SharedWorkers (created in js_source init code), these are
 # created the first time a request handler calls new SharedWorker(url).  The
 # SW thread is started in the master process by the SW manager thread, and the
 # worker receives its channel fds via SCM_RIGHTS over the pre-fork command
@@ -48,7 +48,7 @@ $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
 daemon off;
 
-js_include %%TESTDIR%%/init_sw_dynamic.js;
+js_source %%TESTDIR%%/init_sw_dynamic.js;
 
 events { }
 

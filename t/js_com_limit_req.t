@@ -30,7 +30,7 @@ $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
 daemon off;
 
-js_include %%TESTDIR%%/init_limit_req.js;
+js_source %%TESTDIR%%/init_limit_req.js;
 
 events { }
 

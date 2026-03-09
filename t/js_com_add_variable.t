@@ -3,7 +3,7 @@
 # Tests for Stage 33 COM: nginx.http.addVariable(name)
 #
 # Registers a custom nginx variable from js_init_http, then reads and
-# writes it from a js_include request handler via r.variables.
+# writes it from a js_source request handler via r.variables.
 
 use warnings;
 use strict;
@@ -22,7 +22,7 @@ $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
 daemon off;
 
-js_include %%TESTDIR%%/handler_vars.js;
+js_source %%TESTDIR%%/handler_vars.js;
 
 events { }
 
@@ -57,7 +57,7 @@ if (typeof idx2 !== 'number' || idx2 < 0) {
 }
 JS
 
-# js_include: request handlers that read/write r.variables.js_custom
+# js_source: request handlers that read/write r.variables.js_custom
 $t->write_file('handler_vars.js', <<'JS');
 (function() {
     const locs = nginx.http.servers[0].locations;
