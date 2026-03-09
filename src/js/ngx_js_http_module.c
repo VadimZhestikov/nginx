@@ -51,11 +51,21 @@ static JSClassDef ngx_js_request_class = {
 
 /*
  * Magic values for ngx_js_request_get:
- *   0 — method      (r/o string)
- *   1 — uri         (r/o string, decoded, no query string)
- *   2 — args        (r/o string, query string)
- *   3 — remoteAddr  (r/o string)
- *   4 — headers     (r/o object, lowercase keys)
+ *   0 — method         (r/o string)
+ *   1 — uri            (r/o string, decoded, no query string)
+ *   2 — args           (r/o string, query string)
+ *   3 — remoteAddr     (r/o string)
+ *   4 — headers        (r/o object, lowercase keys)
+ *   5 — host           (r/o string, parsed Host without port)
+ *   6 — httpVersion    (r/o string, e.g. "1.1", "2.0")
+ *   7 — isInternal     (r/o boolean)
+ *   8 — keepalive      (r/o boolean)
+ *   9 — contentLength  (r/o number, -1 when absent)
+ *  10 — contentType    (r/o string, "" when absent)
+ *  11 — startTime      (r/o number, ms since nginx epoch)
+ *  12 — remotePort     (r/o number)
+ *  13 — scheme         (r/o string, "http" or "https")
+ *  14 — connection     (r/o object {id, requests, fd})
  */
 static JSValue
 ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -123,6 +133,67 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
         }
 
         return obj;
+
+    case 5: /* host — parsed Host header value without port */
+        return JS_NewStringLen(ctx, (const char *) r->headers_in.server.data,
+                               r->headers_in.server.len);
+
+    case 6: /* httpVersion */
+        switch (r->http_version) {
+        case NGX_HTTP_VERSION_9:  return JS_NewString(ctx, "0.9");
+        case NGX_HTTP_VERSION_10: return JS_NewString(ctx, "1.0");
+        case NGX_HTTP_VERSION_11: return JS_NewString(ctx, "1.1");
+        case NGX_HTTP_VERSION_20: return JS_NewString(ctx, "2.0");
+        case NGX_HTTP_VERSION_30: return JS_NewString(ctx, "3.0");
+        default:                  return JS_NewString(ctx, "1.1");
+        }
+
+    case 7: /* isInternal */
+        return JS_NewBool(ctx, r->internal);
+
+    case 8: /* keepalive */
+        return JS_NewBool(ctx, r->keepalive);
+
+    case 9: /* contentLength */
+        return JS_NewInt64(ctx, (int64_t) r->headers_in.content_length_n);
+
+    case 10: /* contentType */
+        if (r->headers_in.content_type) {
+            return JS_NewStringLen(ctx,
+                               (const char *) r->headers_in.content_type->value.data,
+                               r->headers_in.content_type->value.len);
+        }
+        return JS_NewString(ctx, "");
+
+    case 11: /* startTime — ms since nginx start */
+        return JS_NewInt64(ctx, (int64_t) r->start_msec);
+
+    case 12: /* remotePort */
+        return JS_NewInt32(ctx,
+                           (int32_t) ngx_inet_get_port(r->connection->sockaddr));
+
+    case 13: /* scheme */
+        if (r->http_connection->ssl) {
+            return JS_NewString(ctx, "https");
+        }
+        return JS_NewString(ctx, "http");
+
+    case 14: /* connection — {id, requests, fd} */
+    {
+        JSValue  conn;
+
+        conn = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, conn, "id",
+                          JS_NewInt64(ctx,
+                              (int64_t) r->connection->number));
+        JS_SetPropertyStr(ctx, conn, "requests",
+                          JS_NewInt64(ctx,
+                              (int64_t) r->connection->requests));
+        JS_SetPropertyStr(ctx, conn, "fd",
+                          JS_NewInt32(ctx, (int32_t) r->connection->fd));
+        return conn;
+    }
+
     }
 
     return JS_UNDEFINED;
@@ -310,11 +381,21 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
 
 
 static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("method",     ngx_js_request_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("uri",        ngx_js_request_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("args",       ngx_js_request_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("remoteAddr", ngx_js_request_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("headers",    ngx_js_request_get, NULL, 4),
+    JS_CGETSET_MAGIC_DEF("method",        ngx_js_request_get, NULL,  0),
+    JS_CGETSET_MAGIC_DEF("uri",           ngx_js_request_get, NULL,  1),
+    JS_CGETSET_MAGIC_DEF("args",          ngx_js_request_get, NULL,  2),
+    JS_CGETSET_MAGIC_DEF("remoteAddr",    ngx_js_request_get, NULL,  3),
+    JS_CGETSET_MAGIC_DEF("headers",       ngx_js_request_get, NULL,  4),
+    JS_CGETSET_MAGIC_DEF("host",          ngx_js_request_get, NULL,  5),
+    JS_CGETSET_MAGIC_DEF("httpVersion",   ngx_js_request_get, NULL,  6),
+    JS_CGETSET_MAGIC_DEF("isInternal",    ngx_js_request_get, NULL,  7),
+    JS_CGETSET_MAGIC_DEF("keepalive",     ngx_js_request_get, NULL,  8),
+    JS_CGETSET_MAGIC_DEF("contentLength", ngx_js_request_get, NULL,  9),
+    JS_CGETSET_MAGIC_DEF("contentType",   ngx_js_request_get, NULL, 10),
+    JS_CGETSET_MAGIC_DEF("startTime",     ngx_js_request_get, NULL, 11),
+    JS_CGETSET_MAGIC_DEF("remotePort",    ngx_js_request_get, NULL, 12),
+    JS_CGETSET_MAGIC_DEF("scheme",        ngx_js_request_get, NULL, 13),
+    JS_CGETSET_MAGIC_DEF("connection",    ngx_js_request_get, NULL, 14),
     JS_CFUNC_DEF("respond", 3, ngx_js_request_respond),
 };
 
