@@ -67,6 +67,7 @@ static JSClassDef ngx_js_request_class = {
  *  13 — scheme         (r/o string, "http" or "https")
  *  14 — connection     (r/o object {id, requests, fd})
  *  15 — location      (r/o NginxLocation for the matched location)
+ *  16 — queryParams  (r/o object, %XX-decoded key/value pairs from r->args)
  */
 static JSValue
 ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -201,6 +202,68 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
         return ngx_js_wrap_location(ctx, clcf);
+    }
+
+    case 16: /* queryParams — %XX-decoded query-string key/value pairs */
+    {
+        JSValue  qobj;
+        u_char  *p, *end, *ks, *ke, *vs, *ve, *src;
+        u_char  *key_buf, *val_buf, *kd, *vd;
+
+        qobj = JS_NewObject(ctx);
+
+        if (r->args.len == 0) {
+            return qobj;
+        }
+
+        /* Upper bound for decoded output is the encoded length */
+        key_buf = ngx_pnalloc(r->pool, r->args.len + 1);
+        val_buf = ngx_pnalloc(r->pool, r->args.len + 1);
+        if (!key_buf || !val_buf) {
+            JS_FreeValue(ctx, qobj);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        p   = r->args.data;
+        end = r->args.data + r->args.len;
+
+        while (p < end) {
+
+            /* Locate key span */
+            ks = p;
+            while (p < end && *p != '=' && *p != '&') { p++; }
+            ke = p;
+
+            /* Locate value span */
+            vs = ve = p;
+            if (p < end && *p == '=') {
+                p++;
+                vs = p;
+                while (p < end && *p != '&') { p++; }
+                ve = p;
+            }
+
+            if (p < end) { p++; }   /* skip '&' */
+            if (ke == ks) { continue; }  /* empty key — skip */
+
+            /* %XX-decode key */
+            kd  = key_buf;
+            src = ks;
+            ngx_unescape_uri(&kd, &src, (size_t)(ke - ks), NGX_UNESCAPE_URI);
+            *kd = '\0';
+
+            /* %XX-decode value */
+            vd  = val_buf;
+            src = vs;
+            ngx_unescape_uri(&vd, &src, (size_t)(ve - vs), NGX_UNESCAPE_URI);
+
+            JS_SetPropertyStr(ctx, qobj, (const char *) key_buf,
+                              JS_NewStringLen(ctx,
+                                             (const char *) val_buf,
+                                             (size_t)(vd - val_buf)));
+        }
+
+        return qobj;
     }
 
     }
@@ -825,6 +888,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("setVariable", 2, ngx_js_request_set_variable),
     JS_CFUNC_DEF("subrequest",  1, ngx_js_request_subrequest),
     JS_CFUNC_DEF("log",         2, ngx_js_request_log),
+    JS_CGETSET_MAGIC_DEF("queryParams", ngx_js_request_get, NULL, 16),
 };
 
 
