@@ -49,6 +49,7 @@ extern JSClassID  ngx_js_ssi_class_id;         /* ssi loc conf        (Stage 13)
 extern JSClassID  ngx_js_userid_class_id;      /* userid loc conf     (Stage 13) */
 extern JSClassID  ngx_js_addition_class_id;    /* addition loc conf   (Stage 13) */
 extern JSClassID  ngx_js_gunzip_class_id;      /* gunzip loc conf     (Stage 13) */
+extern JSClassID  ngx_js_slice_class_id;       /* slice loc conf      (Stage 13) */
 
 
 /*
@@ -101,6 +102,7 @@ ngx_int_t  ngx_js_ssi_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_userid_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_addition_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_gunzip_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_slice_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */
