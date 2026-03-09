@@ -174,6 +174,9 @@ JSValue  ngx_js_wrap_uwsgi(JSContext *ctx, ngx_http_uwsgi_loc_conf_t *ucf);
 JSValue  ngx_js_wrap_mirror(JSContext *ctx,
     ngx_http_mirror_loc_conf_t *mlcf);
 
+/* try_files module — used directly (no sub-object, plain array getter) */
+#include "../http/modules/ngx_http_try_files_module.h"
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -730,6 +733,59 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_mirror(ctx, mlcf);
     }
+
+    case 47: /* tryFiles — array of try_files argument strings */
+    {
+        JSValue                         arr;
+        ngx_uint_t                      n;
+        ngx_http_try_file_t            *tf;
+        ngx_http_try_files_loc_conf_t  *tlcf;
+        size_t                          len;
+
+        tlcf = clcf->loc_conf[ngx_http_try_files_module.ctx_index];
+        if (tlcf == NULL || tlcf->try_files == NULL) {
+            return JS_NewArray(ctx);
+        }
+
+        arr = JS_NewArray(ctx);
+        n   = 0;
+
+        for (tf = tlcf->try_files;
+             !(tf->lengths == NULL && tf->name.len == 0);
+             tf++)
+        {
+            JSValue  s;
+
+            /* static entries store len with trailing '\0' included */
+            len = (tf->lengths == NULL) ? tf->name.len - 1 : tf->name.len;
+
+            if (tf->test_dir) {
+                /*
+                 * nginx strips the trailing '/' and sets test_dir=1;
+                 * reconstruct it so the user sees what they configured.
+                 */
+                u_char  *buf;
+
+                buf = js_malloc(ctx, len + 2);
+                if (buf == NULL) {
+                    JS_FreeValue(ctx, arr);
+                    return JS_EXCEPTION;
+                }
+                ngx_memcpy(buf, tf->name.data, len);
+                buf[len]     = '/';
+                buf[len + 1] = '\0';
+                s = JS_NewStringLen(ctx, (char *) buf, len + 1);
+                js_free(ctx, buf);
+
+            } else {
+                s = JS_NewStringLen(ctx, (char *) tf->name.data, len);
+            }
+
+            JS_SetPropertyUint32(ctx, arr, (uint32_t) n++, s);
+        }
+
+        return arr;
+    }
     }
 
     return JS_UNDEFINED;
@@ -941,6 +997,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("scgi",            ngx_js_location_get, NULL,                44),
     JS_CGETSET_MAGIC_DEF("uwsgi",           ngx_js_location_get, NULL,                45),
     JS_CGETSET_MAGIC_DEF("mirror",          ngx_js_location_get, NULL,                46),
+    JS_CGETSET_MAGIC_DEF("tryFiles",        ngx_js_location_get, NULL,                47),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
