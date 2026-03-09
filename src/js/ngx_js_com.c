@@ -59,6 +59,8 @@ JSClassID  ngx_js_random_index_class_id;
 JSClassID  ngx_js_auth_request_class_id;
 JSClassID  ngx_js_gzip_static_class_id;
 JSClassID  ngx_js_memcached_class_id;
+JSClassID  ngx_js_scgi_class_id;
+JSClassID  ngx_js_uwsgi_class_id;
 
 
 typedef struct {
@@ -357,6 +359,8 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_auth_request_class_id);
         JS_NewClassID(&ngx_js_gzip_static_class_id);
         JS_NewClassID(&ngx_js_memcached_class_id);
+        JS_NewClassID(&ngx_js_scgi_class_id);
+        JS_NewClassID(&ngx_js_uwsgi_class_id);
         initialised = 1;
     }
 

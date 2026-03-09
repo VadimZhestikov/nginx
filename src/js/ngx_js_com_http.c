@@ -161,6 +161,14 @@ JSValue  ngx_js_wrap_gzip_static(JSContext *ctx,
 JSValue  ngx_js_wrap_memcached(JSContext *ctx,
     ngx_http_memcached_loc_conf_t *mlcf);
 
+/* Forward declaration from ngx_js_com_scgi.c */
+#include "../http/modules/ngx_http_scgi_module.h"
+JSValue  ngx_js_wrap_scgi(JSContext *ctx, ngx_http_scgi_loc_conf_t *scf);
+
+/* Forward declaration from ngx_js_com_uwsgi.c */
+#include "../http/modules/ngx_http_uwsgi_module.h"
+JSValue  ngx_js_wrap_uwsgi(JSContext *ctx, ngx_http_uwsgi_loc_conf_t *ucf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -681,6 +689,30 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_memcached(ctx, mlcf);
     }
+
+    case 44: /* scgi — NginxScgi wrapping scgi loc conf */
+    {
+        ngx_http_scgi_loc_conf_t  *scf;
+
+        scf = clcf->loc_conf[ngx_http_scgi_module.ctx_index];
+        if (scf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_scgi(ctx, scf);
+    }
+
+    case 45: /* uwsgi — NginxUwsgi wrapping uwsgi loc conf */
+    {
+        ngx_http_uwsgi_loc_conf_t  *ucf;
+
+        ucf = clcf->loc_conf[ngx_http_uwsgi_module.ctx_index];
+        if (ucf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_uwsgi(ctx, ucf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -889,6 +921,8 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("authRequest",     ngx_js_location_get, NULL,                41),
     JS_CGETSET_MAGIC_DEF("gzipStatic",      ngx_js_location_get, NULL,                42),
     JS_CGETSET_MAGIC_DEF("memcached",       ngx_js_location_get, NULL,                43),
+    JS_CGETSET_MAGIC_DEF("scgi",            ngx_js_location_get, NULL,                44),
+    JS_CGETSET_MAGIC_DEF("uwsgi",           ngx_js_location_get, NULL,                45),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1546,6 +1580,14 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_memcached_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_scgi_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_uwsgi_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
