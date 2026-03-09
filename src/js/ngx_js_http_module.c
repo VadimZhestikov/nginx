@@ -2429,6 +2429,8 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("respond",     3, ngx_js_request_respond),
     JS_CFUNC_DEF("variable",    1, ngx_js_request_variable),
     JS_CFUNC_DEF("setVariable", 2, ngx_js_request_set_variable),
+    JS_CFUNC_DEF("getVar",      1, ngx_js_request_variable),
+    JS_CFUNC_DEF("setVar",      2, ngx_js_request_set_variable),
     JS_CFUNC_DEF("subrequest",  1, ngx_js_request_subrequest),
     JS_CFUNC_DEF("log",         2, ngx_js_request_log),
     JS_CGETSET_MAGIC_DEF("queryParams", ngx_js_request_get, NULL, 16),
