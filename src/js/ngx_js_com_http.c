@@ -786,6 +786,50 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return arr;
     }
+
+    case 48: /* satisfy — "all" | "any" */
+        return JS_NewString(ctx,
+            clcf->satisfy == NGX_HTTP_SATISFY_ANY ? "any" : "all");
+
+    case 49: /* limitExcept — array of allowed method name strings */
+    {
+        JSValue     arr;
+        ngx_uint_t  n;
+
+        static const struct { uint32_t bit; const char *name; }
+        methods[] = {
+            { NGX_HTTP_GET,       "GET"       },
+            { NGX_HTTP_HEAD,      "HEAD"      },
+            { NGX_HTTP_POST,      "POST"      },
+            { NGX_HTTP_PUT,       "PUT"       },
+            { NGX_HTTP_DELETE,    "DELETE"    },
+            { NGX_HTTP_MKCOL,     "MKCOL"     },
+            { NGX_HTTP_COPY,      "COPY"      },
+            { NGX_HTTP_MOVE,      "MOVE"      },
+            { NGX_HTTP_OPTIONS,   "OPTIONS"   },
+            { NGX_HTTP_PROPFIND,  "PROPFIND"  },
+            { NGX_HTTP_PROPPATCH, "PROPPATCH" },
+            { NGX_HTTP_LOCK,      "LOCK"      },
+            { NGX_HTTP_UNLOCK,    "UNLOCK"    },
+            { NGX_HTTP_PATCH,     "PATCH"     },
+            { 0, NULL }
+        };
+        ngx_uint_t  i;
+
+        arr = JS_NewArray(ctx);
+        n   = 0;
+
+        if (clcf->limit_except) {
+            for (i = 0; methods[i].bit; i++) {
+                if (clcf->limit_except & methods[i].bit) {
+                    JS_SetPropertyUint32(ctx, arr, (uint32_t) n++,
+                        JS_NewString(ctx, methods[i].name));
+                }
+            }
+        }
+
+        return arr;
+    }
     }
 
     return JS_UNDEFINED;
@@ -998,6 +1042,8 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("uwsgi",           ngx_js_location_get, NULL,                45),
     JS_CGETSET_MAGIC_DEF("mirror",          ngx_js_location_get, NULL,                46),
     JS_CGETSET_MAGIC_DEF("tryFiles",        ngx_js_location_get, NULL,                47),
+    JS_CGETSET_MAGIC_DEF("satisfy",         ngx_js_location_get, NULL,                48),
+    JS_CGETSET_MAGIC_DEF("limitExcept",     ngx_js_location_get, NULL,                49),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
