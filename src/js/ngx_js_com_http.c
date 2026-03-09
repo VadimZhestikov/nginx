@@ -830,6 +830,38 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return arr;
     }
+
+    case 50: /* lingering — "off" | "on" | "always" */
+        switch (clcf->lingering_close) {
+        case NGX_HTTP_LINGERING_ON:     return JS_NewString(ctx, "on");
+        case NGX_HTTP_LINGERING_ALWAYS: return JS_NewString(ctx, "always");
+        default:                        return JS_NewString(ctx, "off");
+        }
+
+    case 51: /* lingeringTimeout — ms */
+        return JS_NewUint32(ctx, (uint32_t) clcf->lingering_timeout);
+
+    case 52: /* lingeringTime — ms */
+        return JS_NewUint32(ctx, (uint32_t) clcf->lingering_time);
+
+    case 53: /* resolverTimeout — ms */
+        return JS_NewUint32(ctx, (uint32_t) clcf->resolver_timeout);
+
+    case 54: /* chunkedTransferEncoding */
+        return JS_NewBool(ctx, (int) clcf->chunked_transfer_encoding);
+
+    case 55: /* msieRefresh */
+        return JS_NewBool(ctx, (int) clcf->msie_refresh);
+
+    case 56: /* logNotFound */
+        return JS_NewBool(ctx, (int) clcf->log_not_found);
+
+    case 57: /* logSubrequest */
+        return JS_NewBool(ctx, (int) clcf->log_subrequest);
+
+    case 58: /* recursiveErrorPages */
+        return JS_NewBool(ctx, (int) clcf->recursive_error_pages);
+
     }
 
     return JS_UNDEFINED;
@@ -1043,8 +1075,17 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("mirror",          ngx_js_location_get, NULL,                46),
     JS_CGETSET_MAGIC_DEF("tryFiles",        ngx_js_location_get, NULL,                47),
     JS_CGETSET_MAGIC_DEF("satisfy",         ngx_js_location_get, NULL,                48),
-    JS_CGETSET_MAGIC_DEF("limitExcept",     ngx_js_location_get, NULL,                49),
-    JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
+    JS_CGETSET_MAGIC_DEF("limitExcept",           ngx_js_location_get, NULL,          49),
+    JS_CGETSET_MAGIC_DEF("lingering",             ngx_js_location_get, NULL,          50),
+    JS_CGETSET_MAGIC_DEF("lingeringTimeout",      ngx_js_location_get, NULL,          51),
+    JS_CGETSET_MAGIC_DEF("lingeringTime",         ngx_js_location_get, NULL,          52),
+    JS_CGETSET_MAGIC_DEF("resolverTimeout",       ngx_js_location_get, NULL,          53),
+    JS_CGETSET_MAGIC_DEF("chunkedTransferEncoding", ngx_js_location_get, NULL,        54),
+    JS_CGETSET_MAGIC_DEF("msieRefresh",           ngx_js_location_get, NULL,          55),
+    JS_CGETSET_MAGIC_DEF("logNotFound",           ngx_js_location_get, NULL,          56),
+    JS_CGETSET_MAGIC_DEF("logSubrequest",         ngx_js_location_get, NULL,          57),
+    JS_CGETSET_MAGIC_DEF("recursiveErrorPages",   ngx_js_location_get, NULL,          58),
+    JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page, NULL),
 };
 
 
