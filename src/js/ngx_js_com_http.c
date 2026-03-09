@@ -1956,6 +1956,69 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
                       JS_NewUint32(ctx,
                           (uint32_t) cmcf->variables_hash_bucket_size));
 
+    /* ---- Build nginx.http.variables{} ---- */
+    /*
+     * Maps every variable in cmcf->variables_hash (all registered variables,
+     * including built-in ones like $uri / $args) to a plain object:
+     *
+     *   {index: number, writable: bool}
+     *
+     *   index    — position in r->variables[] at request time;
+     *              (ngx_uint_t)-1 for NOHASH / prefix variables
+     *   writable — true when NGX_HTTP_VAR_CHANGEABLE is set
+     *
+     * The hash is built by ngx_http_variables_init_vars() inside
+     * ngx_http_block(), which runs before our init_conf hook, so the
+     * hash is complete at this point.
+     *
+     * Iteration: walk each bucket's singly-linked list of ngx_hash_elt_t
+     * entries.  Each entry ends with a sentinel (value == NULL).
+     */
+    {
+        JSValue              vars_obj, meta;
+        ngx_uint_t           bi;
+        ngx_hash_elt_t      *elt;
+        ngx_http_variable_t *v;
+        u_char               name_buf[256];
+        size_t               nlen;
+
+        vars_obj = JS_NewObject(ctx);
+
+        for (bi = 0; bi < cmcf->variables_hash.size; bi++) {
+
+            elt = cmcf->variables_hash.buckets[bi];
+            if (elt == NULL) {
+                continue;
+            }
+
+            while (elt->value != NULL) {
+
+                v = elt->value;
+
+                nlen = v->name.len < sizeof(name_buf) - 1
+                       ? v->name.len : sizeof(name_buf) - 1;
+                ngx_memcpy(name_buf, v->name.data, nlen);
+                name_buf[nlen] = '\0';
+
+                meta = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, meta, "index",
+                    JS_NewInt32(ctx, (int32_t) v->index));
+                JS_SetPropertyStr(ctx, meta, "writable",
+                    JS_NewBool(ctx,
+                        (v->flags & NGX_HTTP_VAR_CHANGEABLE) != 0));
+
+                JS_SetPropertyStr(ctx, vars_obj,
+                                  (const char *) name_buf, meta);
+
+                /* Advance to next element (variable-length, void*-aligned) */
+                elt = (ngx_hash_elt_t *)
+                    ngx_align_ptr(&elt->name[0] + elt->len, sizeof(void *));
+            }
+        }
+
+        JS_SetPropertyStr(ctx, http_obj, "variables", vars_obj);
+    }
+
     /* nginx.http.upstreams[] — delegated to upstream COM */
     if (ngx_js_upstream_com_install(ctx, http_obj, cycle) != NGX_OK) {
         JS_FreeValue(ctx, http_obj);
