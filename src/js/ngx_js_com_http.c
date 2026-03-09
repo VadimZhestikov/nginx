@@ -103,6 +103,9 @@ JSValue  ngx_js_wrap_referer(JSContext *ctx,
 JSValue  ngx_js_wrap_dav(JSContext *ctx, ngx_http_dav_loc_conf_t *dlcf);
 #endif
 
+/* Forward declaration from ngx_js_com_ssi.c */
+JSValue  ngx_js_wrap_ssi(JSContext *ctx, void *slcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -467,6 +470,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
         return ngx_js_wrap_dav(ctx, dlcf);
     }
 #endif
+
+    case 31: /* ssi — NginxSsi wrapping ssi loc conf */
+    {
+        void  *sslcf;
+
+        sslcf = clcf->loc_conf[ngx_http_ssi_filter_module.ctx_index];
+        if (sslcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_ssi(ctx, sslcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -662,6 +677,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
 #if (NGX_HTTP_DAV)
     JS_CGETSET_MAGIC_DEF("dav",             ngx_js_location_get, NULL,                30),
 #endif
+    JS_CGETSET_MAGIC_DEF("ssi",             ngx_js_location_get, NULL,                31),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1269,6 +1285,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
         return NGX_ERROR;
     }
 #endif
+
+    if (ngx_js_ssi_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
 
     return NGX_OK;
 }

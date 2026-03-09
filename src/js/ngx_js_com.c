@@ -46,6 +46,7 @@ JSClassID  ngx_js_sub_filter_class_id;
 JSClassID  ngx_js_autoindex_class_id;
 JSClassID  ngx_js_referer_class_id;
 JSClassID  ngx_js_dav_class_id;
+JSClassID  ngx_js_ssi_class_id;
 
 
 typedef struct {
@@ -331,6 +332,7 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_autoindex_class_id);
         JS_NewClassID(&ngx_js_referer_class_id);
         JS_NewClassID(&ngx_js_dav_class_id);
+        JS_NewClassID(&ngx_js_ssi_class_id);
         initialised = 1;
     }
 

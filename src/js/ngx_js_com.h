@@ -45,6 +45,7 @@ extern JSClassID  ngx_js_sub_filter_class_id;  /* sub_filter loc conf (Stage 13)
 extern JSClassID  ngx_js_autoindex_class_id;   /* autoindex loc conf  (Stage 13) */
 extern JSClassID  ngx_js_referer_class_id;     /* referer loc conf    (Stage 13) */
 extern JSClassID  ngx_js_dav_class_id;         /* dav loc conf        (Stage 13) */
+extern JSClassID  ngx_js_ssi_class_id;         /* ssi loc conf        (Stage 13) */
 
 
 /*
@@ -93,6 +94,7 @@ ngx_int_t  ngx_js_referer_register_class(JSRuntime *rt);
 #if (NGX_HTTP_DAV)
 ngx_int_t  ngx_js_dav_register_class(JSRuntime *rt);
 #endif
+ngx_int_t  ngx_js_ssi_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */
