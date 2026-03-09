@@ -122,6 +122,11 @@ JSValue  ngx_js_wrap_gunzip(JSContext *ctx, ngx_http_gunzip_conf_t *gcf);
 #include "../http/modules/ngx_http_slice_filter_module.h"
 JSValue  ngx_js_wrap_slice(JSContext *ctx, ngx_http_slice_loc_conf_t *scf);
 
+/* Forward declaration from ngx_js_com_image_filter.c */
+#include "../http/modules/ngx_http_image_filter_module.h"
+JSValue  ngx_js_wrap_image_filter(JSContext *ctx,
+    ngx_http_image_filter_conf_t *icf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -546,6 +551,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_slice(ctx, scf);
     }
+
+    case 36: /* imageFilter — NginxImageFilter wrapping image_filter conf */
+    {
+        ngx_http_image_filter_conf_t  *icf;
+
+        icf = clcf->loc_conf[ngx_http_image_filter_module.ctx_index];
+        if (icf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_image_filter(ctx, icf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -746,6 +763,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("addition",        ngx_js_location_get, NULL,                33),
     JS_CGETSET_MAGIC_DEF("gunzip",          ngx_js_location_get, NULL,                34),
     JS_CGETSET_MAGIC_DEF("slice",           ngx_js_location_get, NULL,                35),
+    JS_CGETSET_MAGIC_DEF("imageFilter",     ngx_js_location_get, NULL,                36),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1371,6 +1389,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_slice_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_image_filter_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
