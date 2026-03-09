@@ -110,6 +110,10 @@ JSValue  ngx_js_wrap_ssi(JSContext *ctx, void *slcf);
 #include "../http/modules/ngx_http_userid_module.h"
 JSValue  ngx_js_wrap_userid(JSContext *ctx, ngx_http_userid_conf_t *ucf);
 
+/* Forward declaration from ngx_js_com_addition.c */
+#include "../http/modules/ngx_http_addition_filter_module.h"
+JSValue  ngx_js_wrap_addition(JSContext *ctx, ngx_http_addition_conf_t *acf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -498,6 +502,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_userid(ctx, ucf);
     }
+
+    case 33: /* addition — NginxAddition wrapping addition conf */
+    {
+        ngx_http_addition_conf_t  *acf;
+
+        acf = clcf->loc_conf[ngx_http_addition_filter_module.ctx_index];
+        if (acf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_addition(ctx, acf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -695,6 +711,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
 #endif
     JS_CGETSET_MAGIC_DEF("ssi",             ngx_js_location_get, NULL,                31),
     JS_CGETSET_MAGIC_DEF("userid",          ngx_js_location_get, NULL,                32),
+    JS_CGETSET_MAGIC_DEF("addition",        ngx_js_location_get, NULL,                33),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1308,6 +1325,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_userid_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_addition_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
