@@ -1146,9 +1146,14 @@ ngx_js_subreq_done(ngx_http_request_t *sr, void *data, ngx_int_t rc)
 {
     ngx_js_subreq_ctx_t  *sctx = data;
     JSContext            *ctx  = sctx->ctx;
-    JSValue               result, arg;
+    JSValue               result, arg, headers_obj;
+    ngx_list_part_t      *part;
+    ngx_table_elt_t      *h;
+    ngx_uint_t            i;
     u_char               *body_data;
     size_t                body_len;
+    u_char                lc_buf[256];
+    size_t                klen;
 
     /* Collect buffered body from sr->out (NGX_HTTP_SUBREQUEST_IN_MEMORY) */
     if (sr->out && sr->out->buf
@@ -1161,11 +1166,55 @@ ngx_js_subreq_done(ngx_http_request_t *sr, void *data, ngx_int_t rc)
         body_len  = 0;
     }
 
-    /* Build {status, body, upstream} result object */
+    /* Build {status, headers, body, upstream} result object */
     arg = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, arg, "status",
-                      JS_NewInt32(ctx,
-                                  (int32_t) sr->headers_out.status));
+                      JS_NewInt32(ctx, (int32_t) sr->headers_out.status));
+
+    /* Response headers — lowercase key, first value wins on duplicates */
+    headers_obj = JS_NewObject(ctx);
+
+    part = &sr->headers_out.headers.part;
+    h    = part->elts;
+    for (i = 0; ; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            h    = part->elts;
+            i    = 0;
+        }
+
+        if (!h[i].hash) {
+            continue;
+        }
+
+        klen = h[i].key.len;
+        if (klen == 0 || klen >= sizeof(lc_buf)) {
+            continue;
+        }
+
+        ngx_strlow(lc_buf, h[i].key.data, klen);
+        lc_buf[klen] = '\0';
+
+        JS_SetPropertyStr(ctx, headers_obj,
+                          (const char *) lc_buf,
+                          JS_NewStringLen(ctx,
+                                         (const char *) h[i].value.data,
+                                         h[i].value.len));
+    }
+
+    /* Expose Content-Type from the dedicated headers_out field */
+    if (sr->headers_out.content_type.len) {
+        JS_SetPropertyStr(ctx, headers_obj, "content-type",
+                          JS_NewStringLen(ctx,
+                              (const char *) sr->headers_out.content_type.data,
+                              sr->headers_out.content_type.len));
+    }
+
+    JS_SetPropertyStr(ctx, arg, "headers", headers_obj);
+
     JS_SetPropertyStr(ctx, arg, "body",
                       JS_NewStringLen(ctx,
                                       (const char *) body_data, body_len));
@@ -1202,12 +1251,16 @@ ngx_js_subreq_done(ngx_http_request_t *sr, void *data, ngx_int_t rc)
 
 
 /*
- * req.subrequest(uri) → Promise<{status, body}>
+ * req.subrequest(uri[, opts]) → Promise<{status, headers, body, upstream}>
  *
- * Issues an nginx internal subrequest to `uri` (no leading query string
- * args; use "$uri?args" style if needed).  The response body is buffered
- * in memory (NGX_HTTP_SUBREQUEST_IN_MEMORY).  The returned Promise
- * resolves to a plain object {status: number, body: string}.
+ * Issues an nginx internal subrequest to `uri`.  The response body is
+ * buffered in memory (NGX_HTTP_SUBREQUEST_IN_MEMORY).  The returned
+ * Promise resolves to {status, headers, body, upstream}.
+ *
+ * opts (optional object):
+ *   method  — HTTP method string ("GET", "POST", etc.; default: inherit)
+ *   args    — query string to append (ngx_str_t, no leading '?')
+ *   headers — plain object of request headers to add to the subrequest
  *
  * Must be used with `await` inside an async handler.
  */
@@ -1216,16 +1269,23 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     ngx_js_request_opaque_t     *op;
-    ngx_http_request_t          *r;
+    ngx_http_request_t          *r, *sr;
     ngx_js_worker_t             *w;
     ngx_js_subreq_ctx_t         *sctx;
-    ngx_http_request_t          *sr;
     ngx_http_post_subrequest_t  *psr;
     JSValue                      resolving[2], promise;
-    const char                  *uri_cstr;
+    JSValue                      opts, method_val, args_val, headers_val;
+    JSValue                      hkey, hval;
+    JSPropertyEnum              *tab;
+    uint32_t                     tab_len, j;
+    const char                  *uri_cstr, *m_cstr, *k_cstr, *v_cstr;
     size_t                       uri_len;
     ngx_str_t                    uri;
+    ngx_str_t                    args;
+    ngx_str_t                   *args_ptr;
+    ngx_table_elt_t             *he;
     ngx_int_t                    rc;
+    u_char                      *lc;
 
     if (argc < 1) {
         return JS_ThrowTypeError(ctx, "r.subrequest(uri): uri required");
@@ -1259,9 +1319,42 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
     uri.len = uri_len;
     JS_FreeCString(ctx, uri_cstr);
 
+    /* Parse opts */
+    args_ptr    = NULL;
+    method_val  = JS_UNDEFINED;
+    args_val    = JS_UNDEFINED;
+    headers_val = JS_UNDEFINED;
+
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+        opts        = argv[1];
+        method_val  = JS_GetPropertyStr(ctx, opts, "method");
+        args_val    = JS_GetPropertyStr(ctx, opts, "args");
+        headers_val = JS_GetPropertyStr(ctx, opts, "headers");
+    }
+
+    /* opts.args → ngx_str_t for ngx_http_subrequest */
+    if (!JS_IsUndefined(args_val) && !JS_IsNull(args_val)) {
+        size_t      alen;
+        const char *acstr;
+
+        acstr = JS_ToCStringLen(ctx, &alen, args_val);
+        if (acstr) {
+            args.data = ngx_pnalloc(r->pool, alen);
+            if (args.data) {
+                ngx_memcpy(args.data, acstr, alen);
+                args.len = alen;
+                args_ptr = &args;
+            }
+            JS_FreeCString(ctx, acstr);
+        }
+    }
+
     /* Create Promise */
     promise = JS_NewPromiseCapability(ctx, resolving);
     if (JS_IsException(promise)) {
+        JS_FreeValue(ctx, method_val);
+        JS_FreeValue(ctx, args_val);
+        JS_FreeValue(ctx, headers_val);
         return promise;
     }
 
@@ -1271,6 +1364,9 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
         JS_FreeValue(ctx, resolving[0]);
         JS_FreeValue(ctx, resolving[1]);
         JS_FreeValue(ctx, promise);
+        JS_FreeValue(ctx, method_val);
+        JS_FreeValue(ctx, args_val);
+        JS_FreeValue(ctx, headers_val);
         return JS_ThrowOutOfMemory(ctx);
     }
 
@@ -1286,21 +1382,123 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
         JS_FreeValue(ctx, resolving[0]);
         JS_FreeValue(ctx, resolving[1]);
         JS_FreeValue(ctx, promise);
+        JS_FreeValue(ctx, method_val);
+        JS_FreeValue(ctx, args_val);
+        JS_FreeValue(ctx, headers_val);
         return JS_ThrowOutOfMemory(ctx);
     }
 
     psr->handler = ngx_js_subreq_done;
     psr->data    = sctx;
 
-    rc = ngx_http_subrequest(r, &uri, NULL, &sr, psr,
+    rc = ngx_http_subrequest(r, &uri, args_ptr, &sr, psr,
                              NGX_HTTP_SUBREQUEST_IN_MEMORY);
     if (rc != NGX_OK) {
         JS_FreeValue(ctx, resolving[0]);
         JS_FreeValue(ctx, resolving[1]);
         JS_FreeValue(ctx, promise);
+        JS_FreeValue(ctx, method_val);
+        JS_FreeValue(ctx, args_val);
+        JS_FreeValue(ctx, headers_val);
         return JS_ThrowInternalError(ctx, "r.subrequest: failed (%ld)",
                                      (long) rc);
     }
+
+    /*
+     * ngx_http_subrequest() does sr->headers_in = r->headers_in (shallow
+     * copy).  The embedded `part` is copied by value, but `last` still
+     * points into the PARENT's struct.  Fix it so that pushes below
+     * increment sr's own `part.nelts` and stay private to this subrequest.
+     */
+    sr->headers_in.headers.last = &sr->headers_in.headers.part;
+
+    /* opts.method — set on the subrequest before it runs */
+    if (!JS_IsUndefined(method_val) && !JS_IsNull(method_val)) {
+        m_cstr = JS_ToCString(ctx, method_val);
+        if (m_cstr) {
+            static const struct {
+                const char  *name;
+                ngx_uint_t   code;
+            } methods[] = {
+                { "GET",     NGX_HTTP_GET     },
+                { "POST",    NGX_HTTP_POST    },
+                { "PUT",     NGX_HTTP_PUT     },
+                { "DELETE",  NGX_HTTP_DELETE  },
+                { "HEAD",    NGX_HTTP_HEAD    },
+                { "OPTIONS", NGX_HTTP_OPTIONS },
+                { "PATCH",   NGX_HTTP_PATCH   },
+                { NULL, 0 }
+            };
+            ngx_uint_t  mi;
+
+            for (mi = 0; methods[mi].name; mi++) {
+                if (ngx_strcasecmp((u_char *) m_cstr,
+                                   (u_char *) methods[mi].name) == 0)
+                {
+                    sr->method = methods[mi].code;
+                    /* method_name must live in pool */
+                    sr->method_name.len  = ngx_strlen(methods[mi].name);
+                    sr->method_name.data = ngx_pnalloc(r->pool,
+                                                  sr->method_name.len);
+                    if (sr->method_name.data) {
+                        ngx_memcpy(sr->method_name.data,
+                                   methods[mi].name, sr->method_name.len);
+                    }
+                    break;
+                }
+            }
+
+            JS_FreeCString(ctx, m_cstr);
+        }
+    }
+
+    /* opts.headers — add to subrequest's headers_in */
+    if (JS_IsObject(headers_val)
+        && JS_GetOwnPropertyNames(ctx, &tab, &tab_len, headers_val,
+                                  JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) >= 0)
+    {
+        for (j = 0; j < tab_len; j++) {
+            hkey = JS_AtomToString(ctx, tab[j].atom);
+            hval = JS_GetProperty(ctx, headers_val, tab[j].atom);
+
+            k_cstr = JS_ToCString(ctx, hkey);
+            v_cstr = JS_ToCString(ctx, hval);
+
+            if (k_cstr && v_cstr) {
+                he = ngx_list_push(&sr->headers_in.headers);
+                if (he) {
+                    size_t  klen = ngx_strlen(k_cstr);
+                    size_t  vlen = ngx_strlen(v_cstr);
+
+                    he->key.data   = ngx_pnalloc(sr->pool, klen + 1);
+                    he->value.data = ngx_pnalloc(sr->pool, vlen + 1);
+                    lc             = ngx_pnalloc(sr->pool, klen);
+
+                    if (he->key.data && he->value.data && lc) {
+                        ngx_memcpy(he->key.data, k_cstr, klen + 1);
+                        ngx_memcpy(he->value.data, v_cstr, vlen + 1);
+                        he->key.len   = klen;
+                        he->value.len = vlen;
+                        ngx_strlow(lc, he->key.data, klen);
+                        he->lowcase_key = lc;
+                        he->hash = ngx_hash_key(lc, klen);
+                    }
+                }
+            }
+
+            JS_FreeCString(ctx, k_cstr);
+            JS_FreeCString(ctx, v_cstr);
+            JS_FreeValue(ctx, hkey);
+            JS_FreeValue(ctx, hval);
+            JS_FreeAtom(ctx, tab[j].atom);
+        }
+
+        js_free(ctx, tab);
+    }
+
+    JS_FreeValue(ctx, method_val);
+    JS_FreeValue(ctx, args_val);
+    JS_FreeValue(ctx, headers_val);
 
     return promise;
 }
