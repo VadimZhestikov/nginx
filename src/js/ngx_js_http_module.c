@@ -1545,6 +1545,99 @@ ngx_js_request_log(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* r.sleep(ms) — async timer scoped to a request handler               */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    JSContext        *ctx;
+    JSRuntime        *rt;
+    ngx_js_worker_t  *w;
+    JSValue           resolve;
+    JSValue           reject;
+    ngx_event_t       ev;
+} ngx_js_sleep_timer_t;
+
+
+static void
+ngx_js_sleep_timer_handler(ngx_event_t *ev)
+{
+    ngx_js_sleep_timer_t  *t = ev->data;
+    JSValue                ret;
+    JSContext             *job_ctx;
+
+    ret = JS_Call(t->ctx, t->resolve, JS_UNDEFINED, 0, NULL);
+    JS_FreeValue(t->ctx, ret);
+    JS_FreeValue(t->ctx, t->resolve);
+    JS_FreeValue(t->ctx, t->reject);
+
+    while (JS_ExecutePendingJob(t->rt, &job_ctx) > 0) { }
+
+    ngx_js_async_check(t->w);
+}
+
+
+/*
+ * r.sleep(ms) → Promise<void>
+ *
+ * Suspends the async request handler for `ms` milliseconds, returning
+ * control to the nginx event loop.  Equivalent to nginx.setTimeout(ms)
+ * but allocates the timer from the request pool so it is automatically
+ * cleaned up if the request completes before the timer fires.
+ */
+static JSValue
+ngx_js_request_sleep(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    ngx_js_worker_t          *w;
+    ngx_js_sleep_timer_t     *t;
+    JSValue                   promise, resolving[2];
+    uint32_t                  ms;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1 || JS_ToUint32(ctx, &ms, argv[0])) {
+        return JS_ThrowTypeError(ctx, "r.sleep: expected ms argument");
+    }
+
+    r = op->r;
+    w = JS_GetContextOpaque(ctx);
+
+    promise = JS_NewPromiseCapability(ctx, resolving);
+    if (JS_IsException(promise)) {
+        return promise;
+    }
+
+    t = ngx_palloc(r->pool, sizeof(ngx_js_sleep_timer_t));
+    if (!t) {
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    t->ctx     = ctx;
+    t->rt      = w->rt;
+    t->w       = w;
+    t->resolve = resolving[0];
+    t->reject  = resolving[1];
+
+    ngx_memzero(&t->ev, sizeof(ngx_event_t));
+    t->ev.handler = ngx_js_sleep_timer_handler;
+    t->ev.data    = t;
+    t->ev.log     = r->connection->log;
+
+    ngx_add_timer(&t->ev, (ngx_msec_t) ms);
+
+    return promise;
+}
+
+
 /*
  * r.sendfile(path[, status])
  *
@@ -2151,6 +2244,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("writeHead",           1, ngx_js_request_write_head),
     JS_CFUNC_DEF("write",               1, ngx_js_request_write),
     JS_CFUNC_DEF("finish",              0, ngx_js_request_finish),
+    JS_CFUNC_DEF("sleep",               1, ngx_js_request_sleep),
 };
 
 
