@@ -27,7 +27,8 @@
 typedef struct {
     ngx_http_request_t  *r;
     ngx_int_t            respond_rc;  /* rc from ngx_http_output_filter */
-    unsigned             responded:1; /* set when req.respond() was called */
+    unsigned             responded:1;    /* set when req.respond()/finish() called */
+    unsigned             headers_sent:1; /* set after writeHead()/first write() */
 } ngx_js_request_opaque_t;
 
 
@@ -1841,6 +1842,282 @@ ngx_js_request_redirect(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* Streaming: r.writeHead() + r.write() + r.finish()                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Helper: parse a JS headers object and push entries into
+ * r->headers_out, handling Content-Type specially.
+ * Mirrors the logic in ngx_js_request_respond.
+ */
+static void
+ngx_js_apply_headers(JSContext *ctx, ngx_http_request_t *r,
+    JSValueConst headers_obj)
+{
+    JSPropertyEnum  *tab;
+    uint32_t         tab_len, j;
+    JSValue          hkey, hval;
+    const char      *key_cstr, *val_cstr;
+    ngx_table_elt_t *he;
+    size_t           klen, vlen;
+
+    if (!JS_IsObject(headers_obj)) {
+        return;
+    }
+
+    if (JS_GetOwnPropertyNames(ctx, &tab, &tab_len, headers_obj,
+                               JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) < 0)
+    {
+        return;
+    }
+
+    for (j = 0; j < tab_len; j++) {
+        hkey = JS_AtomToString(ctx, tab[j].atom);
+        hval = JS_GetProperty(ctx, headers_obj, tab[j].atom);
+
+        key_cstr = JS_ToCString(ctx, hkey);
+        val_cstr = JS_ToCString(ctx, hval);
+
+        if (key_cstr && val_cstr) {
+            if (ngx_strcasecmp((u_char *) key_cstr,
+                               (u_char *) "content-type") == 0)
+            {
+                vlen = ngx_strlen(val_cstr);
+                r->headers_out.content_type.data =
+                    ngx_pnalloc(r->pool, vlen + 1);
+                if (r->headers_out.content_type.data) {
+                    ngx_memcpy(r->headers_out.content_type.data, val_cstr,
+                               vlen + 1);
+                    r->headers_out.content_type.len = vlen;
+                    r->headers_out.content_type_len = vlen;
+                }
+            } else {
+                he = ngx_list_push(&r->headers_out.headers);
+                if (he) {
+                    klen = ngx_strlen(key_cstr);
+                    vlen = ngx_strlen(val_cstr);
+                    he->key.data   = ngx_pnalloc(r->pool, klen + 1);
+                    he->value.data = ngx_pnalloc(r->pool, vlen + 1);
+                    if (he->key.data && he->value.data) {
+                        ngx_memcpy(he->key.data,   key_cstr, klen + 1);
+                        ngx_memcpy(he->value.data, val_cstr, vlen + 1);
+                        he->key.len   = klen;
+                        he->value.len = vlen;
+                        he->hash      = 1;
+                    }
+                }
+            }
+        }
+
+        if (key_cstr) { JS_FreeCString(ctx, key_cstr); }
+        if (val_cstr) { JS_FreeCString(ctx, val_cstr); }
+        JS_FreeValue(ctx, hkey);
+        JS_FreeValue(ctx, hval);
+        JS_FreeAtom(ctx, tab[j].atom);
+    }
+
+    js_free(ctx, tab);
+}
+
+
+/*
+ * r.writeHead(status[, headers])
+ *
+ * Sends the response status line and headers.  Content-Length is NOT
+ * set (streaming mode); nginx uses chunked transfer encoding for
+ * HTTP/1.1 or Connection: close for HTTP/1.0.
+ *
+ * Must be called before r.write() or r.finish().  Throws if headers
+ * were already sent (by writeHead, write, or respond).
+ */
+static JSValue
+ngx_js_request_write_head(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    int32_t                   status;
+    ngx_int_t                 rc;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->headers_sent || op->responded) {
+        return JS_ThrowTypeError(ctx, "r.writeHead: headers already sent");
+    }
+
+    if (argc < 1 || JS_ToInt32(ctx, &status, argv[0])) {
+        return JS_ThrowTypeError(ctx, "r.writeHead: expected status argument");
+    }
+
+    r = op->r;
+    r->headers_out.status = (ngx_uint_t) status;
+    /* leave content_length_n = -1 so nginx uses chunked / close */
+
+    if (argc >= 2) {
+        ngx_js_apply_headers(ctx, r, argv[1]);
+    }
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR) {
+        op->responded  = 1;
+        op->respond_rc = rc;
+        return JS_UNDEFINED;
+    }
+
+    op->headers_sent = 1;
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * r.write(chunk)
+ *
+ * Sends one body chunk.  If writeHead() has not been called, sends
+ * headers automatically (status 200, no extra headers).
+ *
+ * Does not set last_buf — the stream remains open until r.finish().
+ * After r.respond() or r.finish() have been called, write() throws.
+ */
+static JSValue
+ngx_js_request_write(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    const char               *chunk_cstr;
+    size_t                    chunk_len;
+    ngx_buf_t                *b;
+    ngx_chain_t               out;
+    ngx_int_t                 rc;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->responded) {
+        return JS_ThrowTypeError(ctx, "r.write: response already finished");
+    }
+
+    r = op->r;
+
+    /* Auto-send headers with 200 if not yet sent */
+    if (!op->headers_sent) {
+        r->headers_out.status = NGX_HTTP_OK;
+        rc = ngx_http_send_header(r);
+        if (rc == NGX_ERROR) {
+            op->responded  = 1;
+            op->respond_rc = rc;
+            return JS_UNDEFINED;
+        }
+        op->headers_sent = 1;
+    }
+
+    if (argc < 1 || JS_IsUndefined(argv[0]) || JS_IsNull(argv[0])) {
+        return JS_UNDEFINED;  /* write(undefined) is a no-op */
+    }
+
+    chunk_cstr = JS_ToCStringLen(ctx, &chunk_len, argv[0]);
+    if (!chunk_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    if (chunk_len == 0) {
+        JS_FreeCString(ctx, chunk_cstr);
+        return JS_UNDEFINED;
+    }
+
+    b = ngx_create_temp_buf(r->pool, chunk_len);
+    if (!b) {
+        JS_FreeCString(ctx, chunk_cstr);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    b->last          = ngx_cpymem(b->pos, chunk_cstr, chunk_len);
+    b->last_buf      = 0;
+    b->last_in_chain = 1;
+    JS_FreeCString(ctx, chunk_cstr);
+
+    out.buf  = b;
+    out.next = NULL;
+
+    rc = ngx_http_output_filter(r, &out);
+    if (rc == NGX_ERROR) {
+        op->responded  = 1;
+        op->respond_rc = rc;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * r.finish()
+ *
+ * Closes the streaming response by sending an empty buffer with
+ * last_buf=1.  Marks the request as responded.  Throws if already
+ * finished.  If writeHead() and write() were never called, auto-sends
+ * a 200 header before finishing.
+ */
+static JSValue
+ngx_js_request_finish(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    ngx_buf_t                *b;
+    ngx_chain_t               out;
+    ngx_int_t                 rc;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->responded) {
+        return JS_ThrowTypeError(ctx, "r.finish: response already finished");
+    }
+
+    r = op->r;
+
+    /* Auto-send headers with 200 if not yet sent */
+    if (!op->headers_sent) {
+        r->headers_out.status = NGX_HTTP_OK;
+        rc = ngx_http_send_header(r);
+        if (rc == NGX_ERROR) {
+            op->responded  = 1;
+            op->respond_rc = rc;
+            return JS_UNDEFINED;
+        }
+        op->headers_sent = 1;
+    }
+
+    b = ngx_calloc_buf(r->pool);
+    if (!b) {
+        op->responded  = 1;
+        op->respond_rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        return JS_UNDEFINED;
+    }
+
+    b->last_buf      = 1;
+    b->last_in_chain = 1;
+    b->sync          = 1;
+
+    out.buf  = b;
+    out.next = NULL;
+
+    rc = ngx_http_output_filter(r, &out);
+    op->responded  = 1;
+    op->respond_rc = rc;
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("method",        ngx_js_request_get, NULL,  0),
     JS_CGETSET_MAGIC_DEF("uri",           ngx_js_request_get, NULL,  1),
@@ -1871,6 +2148,9 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("readBody",            0, ngx_js_request_read_body),
     JS_CFUNC_DEF("sendfile",            1, ngx_js_request_sendfile),
     JS_CFUNC_DEF("redirect",            1, ngx_js_request_redirect),
+    JS_CFUNC_DEF("writeHead",           1, ngx_js_request_write_head),
+    JS_CFUNC_DEF("write",               1, ngx_js_request_write),
+    JS_CFUNC_DEF("finish",              0, ngx_js_request_finish),
 };
 
 
