@@ -141,6 +141,11 @@ JSValue  ngx_js_wrap_secure_link(JSContext *ctx,
 #include "../http/modules/ngx_http_mp4_module.h"
 JSValue  ngx_js_wrap_mp4(JSContext *ctx, ngx_http_mp4_conf_t *mcf);
 
+/* Forward declaration from ngx_js_com_random_index.c */
+#include "../http/modules/ngx_http_random_index_module.h"
+JSValue  ngx_js_wrap_random_index(JSContext *ctx,
+    ngx_http_random_index_loc_conf_t *rcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -613,6 +618,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_mp4(ctx, mcf);
     }
+
+    case 40: /* randomIndex — NginxRandomIndex wrapping random_index conf */
+    {
+        ngx_http_random_index_loc_conf_t  *rcf;
+
+        rcf = clcf->loc_conf[ngx_http_random_index_module.ctx_index];
+        if (rcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_random_index(ctx, rcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -817,6 +834,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("xslt",            ngx_js_location_get, NULL,                37),
     JS_CGETSET_MAGIC_DEF("secureLink",      ngx_js_location_get, NULL,                38),
     JS_CGETSET_MAGIC_DEF("mp4",             ngx_js_location_get, NULL,                39),
+    JS_CGETSET_MAGIC_DEF("randomIndex",     ngx_js_location_get, NULL,                40),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1458,6 +1476,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_mp4_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_random_index_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 

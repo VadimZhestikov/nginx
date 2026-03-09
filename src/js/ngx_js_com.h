@@ -54,6 +54,7 @@ extern JSClassID  ngx_js_image_filter_class_id; /* image_filter loc conf (Stage 
 extern JSClassID  ngx_js_xslt_class_id;         /* xslt loc conf         (Stage 13) */
 extern JSClassID  ngx_js_secure_link_class_id;  /* secure_link loc conf  (Stage 13) */
 extern JSClassID  ngx_js_mp4_class_id;          /* mp4 loc conf          (Stage 13) */
+extern JSClassID  ngx_js_random_index_class_id; /* random_index loc conf (Stage 13) */
 
 
 /*
@@ -111,6 +112,7 @@ ngx_int_t  ngx_js_image_filter_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_xslt_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_secure_link_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_mp4_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_random_index_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */
