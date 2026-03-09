@@ -69,7 +69,48 @@ static JSClassDef ngx_js_request_class = {
  *  15 — location      (r/o NginxLocation for the matched location)
  *  16 — queryParams  (r/o object, %XX-decoded key/value pairs from r->args)
  *  17 — cookies      (r/o object, name/value pairs from Cookie header)
+ *  18 — upstream     (r/o object or null, last upstream attempt metadata)
  */
+/*
+ * Build a plain JS object from one ngx_http_upstream_state_t entry:
+ *   { status, responseTime, connectTime, bytesReceived, addr }
+ *
+ * Returns JS_NULL when state is NULL.
+ * Called by the r.upstream getter (magic 18) and ngx_js_subreq_done.
+ */
+static JSValue
+ngx_js_upstream_state_obj(JSContext *ctx, ngx_http_upstream_state_t *st)
+{
+    JSValue  obj;
+
+    if (st == NULL) {
+        return JS_NULL;
+    }
+
+    obj = JS_NewObject(ctx);
+
+    JS_SetPropertyStr(ctx, obj, "status",
+                      JS_NewInt32(ctx, (int32_t) st->status));
+    JS_SetPropertyStr(ctx, obj, "responseTime",
+                      JS_NewInt64(ctx, (int64_t) st->response_time));
+    JS_SetPropertyStr(ctx, obj, "connectTime",
+                      JS_NewInt64(ctx, (int64_t) st->connect_time));
+    JS_SetPropertyStr(ctx, obj, "bytesReceived",
+                      JS_NewInt64(ctx, (int64_t) st->bytes_received));
+
+    if (st->peer && st->peer->len > 0) {
+        JS_SetPropertyStr(ctx, obj, "addr",
+                          JS_NewStringLen(ctx,
+                                          (const char *) st->peer->data,
+                                          st->peer->len));
+    } else {
+        JS_SetPropertyStr(ctx, obj, "addr", JS_NewString(ctx, ""));
+    }
+
+    return obj;
+}
+
+
 static JSValue
 ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
@@ -350,6 +391,21 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
         return cobj;
     }
 
+    case 18: /* upstream — last upstream attempt metadata or null */
+    {
+        ngx_http_upstream_state_t  *st;
+        ngx_uint_t                  last;
+
+        if (r->upstream_states == NULL || r->upstream_states->nelts == 0) {
+            return JS_NULL;
+        }
+
+        last = r->upstream_states->nelts - 1;
+        st   = (ngx_http_upstream_state_t *) r->upstream_states->elts + last;
+
+        return ngx_js_upstream_state_obj(ctx, st);
+    }
+
     }
 
     return JS_UNDEFINED;
@@ -580,7 +636,7 @@ ngx_js_subreq_done(ngx_http_request_t *sr, void *data, ngx_int_t rc)
         body_len  = 0;
     }
 
-    /* Build {status, body} result object and resolve the awaited Promise */
+    /* Build {status, body, upstream} result object */
     arg = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, arg, "status",
                       JS_NewInt32(ctx,
@@ -588,6 +644,20 @@ ngx_js_subreq_done(ngx_http_request_t *sr, void *data, ngx_int_t rc)
     JS_SetPropertyStr(ctx, arg, "body",
                       JS_NewStringLen(ctx,
                                       (const char *) body_data, body_len));
+
+    /* upstream metadata — non-null only when sr was proxied */
+    {
+        ngx_http_upstream_state_t  *st = NULL;
+
+        if (sr->upstream_states && sr->upstream_states->nelts > 0) {
+            ngx_uint_t  last = sr->upstream_states->nelts - 1;
+            st = (ngx_http_upstream_state_t *) sr->upstream_states->elts
+                 + last;
+        }
+
+        JS_SetPropertyStr(ctx, arg, "upstream",
+                          ngx_js_upstream_state_obj(ctx, st));
+    }
 
     result = JS_Call(ctx, sctx->resolve, JS_UNDEFINED, 1, &arg);
     JS_FreeValue(ctx, result);
@@ -974,6 +1044,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("log",         2, ngx_js_request_log),
     JS_CGETSET_MAGIC_DEF("queryParams", ngx_js_request_get, NULL, 16),
     JS_CGETSET_MAGIC_DEF("cookies",     ngx_js_request_get, NULL, 17),
+    JS_CGETSET_MAGIC_DEF("upstream",    ngx_js_request_get, NULL, 18),
 };
 
 
