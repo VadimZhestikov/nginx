@@ -21,11 +21,12 @@ typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
  * directives during ngx_conf_parse(), executed by init_conf().
  */
 typedef struct {
-    ngx_array_t         sources;     /* ngx_str_t: resolved paths from js_source */
-    JSRuntime          *rt;          /* master-process QuickJS runtime             */
-    JSContext          *ctx;         /* master-process QuickJS context             */
-    void               *worker;      /* ngx_js_worker_t* after fork (in workers)  */
-    ngx_js_sw_state_t  *sw_list;     /* linked list of SharedWorker states        */
+    ngx_array_t         sources;              /* ngx_str_t: paths from js_source       */
+    JSRuntime          *rt;                   /* master-process QuickJS runtime         */
+    JSContext          *ctx;                  /* master-process QuickJS context         */
+    void               *worker;              /* ngx_js_worker_t* after fork            */
+    ngx_js_sw_state_t  *sw_list;             /* linked list of SharedWorker states     */
+    size_t              worker_memory_limit;  /* 0 = no limit; read from JS after eval */
 } ngx_js_conf_t;
 
 

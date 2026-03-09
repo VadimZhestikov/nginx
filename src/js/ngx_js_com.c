@@ -496,6 +496,16 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                       JS_NewCFunction(ctx, ngx_js_nginx_set_timeout,
                                       "setTimeout", 1));
 
+    /*
+     * nginx.workerMemoryLimit — per-worker JS heap cap in bytes (0 = none).
+     * js_source scripts write this value; init_process reads it and calls
+     * JS_SetMemoryLimit on the worker's private runtime copy after fork.
+     */
+    JS_DefinePropertyValueStr(ctx, nginx_obj, "workerMemoryLimit",
+                              JS_NewInt32(ctx, 0),
+                              JS_PROP_WRITABLE | JS_PROP_ENUMERABLE
+                              | JS_PROP_CONFIGURABLE);
+
     /* nginx.cycle */
     cycle_obj = ngx_js_wrap_cycle(ctx, cycle);
     if (JS_IsException(cycle_obj)) {

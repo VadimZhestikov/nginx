@@ -528,6 +528,30 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     }
 
     /*
+     * Read nginx.workerMemoryLimit back from JS (may have been set by
+     * a js_source script) and cache it in jcf so init_process() can
+     * apply it without touching the JS context after fork.
+     */
+    {
+        JSValue  global, nginx_obj, limit_val;
+        int64_t  limit;
+
+        global    = JS_GetGlobalObject(jcf->ctx);
+        nginx_obj = JS_GetPropertyStr(jcf->ctx, global, "nginx");
+        limit_val = JS_GetPropertyStr(jcf->ctx, nginx_obj, "workerMemoryLimit");
+        JS_FreeValue(jcf->ctx, nginx_obj);
+        JS_FreeValue(jcf->ctx, global);
+
+        if (!JS_IsException(limit_val) && !JS_IsUndefined(limit_val)
+            && JS_ToInt64(jcf->ctx, &limit, limit_val) == 0 && limit > 0)
+        {
+            jcf->worker_memory_limit = (size_t) limit;
+        }
+
+        JS_FreeValue(jcf->ctx, limit_val);
+    }
+
+    /*
      * The master runtime stays alive until exit_master().  Worker
      * processes inherit it via fork() (copy-on-write) and use their
      * private copies; init_process() just wires w->rt / w->ctx to it.
@@ -588,6 +612,21 @@ ngx_js_init_process(ngx_cycle_t *cycle)
 
     w->rt  = jcf->rt;
     w->ctx = jcf->ctx;
+
+    /*
+     * Apply nginx.workerMemoryLimit if set by a js_source script.
+     * The value was cached in jcf->worker_memory_limit during init_conf
+     * (after all scripts ran) to avoid touching the JS context here.
+     * It is a cap on ADDITIONAL heap growth: baseline usage is measured
+     * right after fork and the limit is set to baseline + configured cap.
+     */
+    if (jcf->worker_memory_limit > 0) {
+        JSMemoryUsage  mu;
+
+        JS_ComputeMemoryUsage(w->rt, &mu);
+        JS_SetMemoryLimit(w->rt,
+                          (size_t) mu.malloc_size + jcf->worker_memory_limit);
+    }
 
     /*
      * Overwrite the context opaque (set to cycle in ngx_js_com_init) with
