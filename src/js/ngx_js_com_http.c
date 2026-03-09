@@ -146,6 +146,11 @@ JSValue  ngx_js_wrap_mp4(JSContext *ctx, ngx_http_mp4_conf_t *mcf);
 JSValue  ngx_js_wrap_random_index(JSContext *ctx,
     ngx_http_random_index_loc_conf_t *rcf);
 
+/* Forward declaration from ngx_js_com_auth_request.c */
+#include "../http/modules/ngx_http_auth_request_module.h"
+JSValue  ngx_js_wrap_auth_request(JSContext *ctx,
+    ngx_http_auth_request_conf_t *arcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -630,6 +635,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_random_index(ctx, rcf);
     }
+
+    case 41: /* authRequest — NginxAuthRequest wrapping auth_request conf */
+    {
+        ngx_http_auth_request_conf_t  *arcf;
+
+        arcf = clcf->loc_conf[ngx_http_auth_request_module.ctx_index];
+        if (arcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_auth_request(ctx, arcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -835,6 +852,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("secureLink",      ngx_js_location_get, NULL,                38),
     JS_CGETSET_MAGIC_DEF("mp4",             ngx_js_location_get, NULL,                39),
     JS_CGETSET_MAGIC_DEF("randomIndex",     ngx_js_location_get, NULL,                40),
+    JS_CGETSET_MAGIC_DEF("authRequest",     ngx_js_location_get, NULL,                41),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1480,6 +1498,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_random_index_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_auth_request_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
