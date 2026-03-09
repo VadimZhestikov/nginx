@@ -82,6 +82,11 @@ JSValue  ngx_js_wrap_realip(JSContext *ctx, ngx_http_realip_loc_conf_t *rlcf);
 JSValue  ngx_js_wrap_charset(JSContext *ctx,
     ngx_http_charset_loc_conf_t *lcf, ngx_http_charset_main_conf_t *mcf);
 
+/* Forward declaration from ngx_js_com_sub_filter.c */
+#include "../http/modules/ngx_http_sub_filter_module.h"
+JSValue  ngx_js_wrap_sub_filter(JSContext *ctx,
+    ngx_http_sub_loc_conf_t *slcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -396,6 +401,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_charset(ctx, cslcf, csmcf);
     }
+
+    case 27: /* subFilter — NginxSubFilter wrapping sub_filter loc conf */
+    {
+        ngx_http_sub_loc_conf_t  *slcf;
+
+        slcf = clcf->loc_conf[ngx_http_sub_filter_module.ctx_index];
+        if (slcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_sub_filter(ctx, slcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -585,6 +602,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("realip",           ngx_js_location_get, NULL,                25),
 #endif
     JS_CGETSET_MAGIC_DEF("charset",          ngx_js_location_get, NULL,                26),
+    JS_CGETSET_MAGIC_DEF("subFilter",        ngx_js_location_get, NULL,                27),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1172,6 +1190,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
 #endif
 
     if (ngx_js_charset_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_sub_filter_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
