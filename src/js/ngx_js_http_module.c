@@ -744,6 +744,65 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * req.log(level, message)
+ *
+ *   level   — "debug" | "info" | "warn" | "error"  (default: "error")
+ *   message — string to log
+ *
+ * Logs to the nginx error log using the request's connection log context,
+ * so the line includes the client address and request id.
+ */
+static JSValue
+ngx_js_request_log(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    const char               *level_cstr, *msg_cstr;
+    ngx_uint_t                level;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    r = op->r;
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "r.log(level, message): 2 args required");
+    }
+
+    level_cstr = JS_ToCString(ctx, argv[0]);
+    if (!level_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_strcasecmp((u_char *) level_cstr, (u_char *) "debug") == 0) {
+        level = NGX_LOG_DEBUG;
+    } else if (ngx_strcasecmp((u_char *) level_cstr, (u_char *) "info") == 0) {
+        level = NGX_LOG_INFO;
+    } else if (ngx_strcasecmp((u_char *) level_cstr, (u_char *) "warn") == 0) {
+        level = NGX_LOG_WARN;
+    } else {
+        level = NGX_LOG_ERR;
+    }
+
+    JS_FreeCString(ctx, level_cstr);
+
+    msg_cstr = JS_ToCString(ctx, argv[1]);
+    if (!msg_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    ngx_log_error(level, r->connection->log, 0, "js: %s", msg_cstr);
+
+    JS_FreeCString(ctx, msg_cstr);
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("method",        ngx_js_request_get, NULL,  0),
     JS_CGETSET_MAGIC_DEF("uri",           ngx_js_request_get, NULL,  1),
@@ -765,6 +824,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("variable",    1, ngx_js_request_variable),
     JS_CFUNC_DEF("setVariable", 2, ngx_js_request_set_variable),
     JS_CFUNC_DEF("subrequest",  1, ngx_js_request_subrequest),
+    JS_CFUNC_DEF("log",         2, ngx_js_request_log),
 };
 
 
