@@ -89,9 +89,15 @@ static JSClassDef ngx_js_cycle_class = {
 
 /*
  * Magic values for ngx_js_cycle_get / ngx_js_cycle_set:
- *   0 — hostname   (r/o)
- *   1 — prefix     (r/o)
- *   2 — workers    (r/w)
+ *   0 — hostname      (r/o string)
+ *   1 — prefix        (r/o string, conf_prefix — config directory)
+ *   2 — workers       (r/w number)
+ *   3 — confFile      (r/o string, full config file path)
+ *   4 — errorLog      (r/o string, error log path)
+ *   5 — installPrefix (r/o string, installation prefix, cycle->prefix)
+ *   6 — pid           (r/o string, pid file path)
+ *   7 — connectionN   (r/o number, max connections per worker)
+ *   8 — daemon        (r/o boolean)
  */
 static JSValue
 ngx_js_cycle_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -117,6 +123,37 @@ ngx_js_cycle_get(JSContext *ctx, JSValueConst this_val, int magic)
         ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
                                                ngx_core_module);
         return JS_NewInt32(ctx, (int32_t) ccf->worker_processes);
+
+    case 3: /* confFile */
+        return JS_NewStringLen(ctx,
+                               (const char *) op->cycle->conf_file.data,
+                               op->cycle->conf_file.len);
+
+    case 4: /* errorLog */
+        return JS_NewStringLen(ctx,
+                               (const char *) op->cycle->error_log.data,
+                               op->cycle->error_log.len);
+
+    case 5: /* installPrefix — cycle->prefix (installation directory) */
+        return JS_NewStringLen(ctx,
+                               (const char *) op->cycle->prefix.data,
+                               op->cycle->prefix.len);
+
+    case 6: /* pid — pid file path */
+        ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
+                                               ngx_core_module);
+        return JS_NewStringLen(ctx,
+                               (const char *) ccf->pid.data,
+                               ccf->pid.len);
+
+    case 7: /* connectionN — max connections per worker */
+        return JS_NewInt64(ctx, (int64_t) op->cycle->connection_n);
+
+    case 8: /* daemon */
+        ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
+                                               ngx_core_module);
+        return JS_NewBool(ctx, (int) ccf->daemon);
+
     }
 
     return JS_UNDEFINED;
@@ -151,9 +188,15 @@ ngx_js_cycle_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
 
 
 static const JSCFunctionListEntry ngx_js_cycle_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("hostname", ngx_js_cycle_get, NULL,              0),
-    JS_CGETSET_MAGIC_DEF("prefix",   ngx_js_cycle_get, NULL,              1),
-    JS_CGETSET_MAGIC_DEF("workers",  ngx_js_cycle_get, ngx_js_cycle_set,  2),
+    JS_CGETSET_MAGIC_DEF("hostname",      ngx_js_cycle_get, NULL,             0),
+    JS_CGETSET_MAGIC_DEF("prefix",        ngx_js_cycle_get, NULL,             1),
+    JS_CGETSET_MAGIC_DEF("workers",       ngx_js_cycle_get, ngx_js_cycle_set, 2),
+    JS_CGETSET_MAGIC_DEF("confFile",      ngx_js_cycle_get, NULL,             3),
+    JS_CGETSET_MAGIC_DEF("errorLog",      ngx_js_cycle_get, NULL,             4),
+    JS_CGETSET_MAGIC_DEF("installPrefix", ngx_js_cycle_get, NULL,             5),
+    JS_CGETSET_MAGIC_DEF("pid",           ngx_js_cycle_get, NULL,             6),
+    JS_CGETSET_MAGIC_DEF("connectionN",   ngx_js_cycle_get, NULL,             7),
+    JS_CGETSET_MAGIC_DEF("daemon",        ngx_js_cycle_get, NULL,             8),
 };
 
 
