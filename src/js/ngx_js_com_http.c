@@ -97,6 +97,12 @@ JSValue  ngx_js_wrap_autoindex(JSContext *ctx,
 JSValue  ngx_js_wrap_referer(JSContext *ctx,
     ngx_http_referer_conf_t *rlcf);
 
+/* Forward declaration from ngx_js_com_dav.c */
+#if (NGX_HTTP_DAV)
+#include "../http/modules/ngx_http_dav_module.h"
+JSValue  ngx_js_wrap_dav(JSContext *ctx, ngx_http_dav_loc_conf_t *dlcf);
+#endif
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -447,6 +453,20 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_referer(ctx, rlcf);
     }
+
+#if (NGX_HTTP_DAV)
+    case 30: /* dav — NginxDav wrapping dav loc conf */
+    {
+        ngx_http_dav_loc_conf_t  *dlcf;
+
+        dlcf = clcf->loc_conf[ngx_http_dav_module.ctx_index];
+        if (dlcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_dav(ctx, dlcf);
+    }
+#endif
     }
 
     return JS_UNDEFINED;
@@ -639,6 +659,9 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("subFilter",        ngx_js_location_get, NULL,                27),
     JS_CGETSET_MAGIC_DEF("autoindex",        ngx_js_location_get, NULL,                28),
     JS_CGETSET_MAGIC_DEF("referer",          ngx_js_location_get, NULL,                29),
+#if (NGX_HTTP_DAV)
+    JS_CGETSET_MAGIC_DEF("dav",             ngx_js_location_get, NULL,                30),
+#endif
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1240,6 +1263,12 @@ ngx_js_http_register_classes(JSRuntime *rt)
     if (ngx_js_referer_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
+
+#if (NGX_HTTP_DAV)
+    if (ngx_js_dav_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+#endif
 
     return NGX_OK;
 }
