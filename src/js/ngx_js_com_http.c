@@ -151,6 +151,11 @@ JSValue  ngx_js_wrap_random_index(JSContext *ctx,
 JSValue  ngx_js_wrap_auth_request(JSContext *ctx,
     ngx_http_auth_request_conf_t *arcf);
 
+/* Forward declaration from ngx_js_com_gzip_static.c */
+#include "../http/modules/ngx_http_gzip_static_module.h"
+JSValue  ngx_js_wrap_gzip_static(JSContext *ctx,
+    ngx_http_gzip_static_conf_t *gcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -647,6 +652,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_auth_request(ctx, arcf);
     }
+
+    case 42: /* gzipStatic — NginxGzipStatic wrapping gzip_static conf */
+    {
+        ngx_http_gzip_static_conf_t  *gcf;
+
+        gcf = clcf->loc_conf[ngx_http_gzip_static_module.ctx_index];
+        if (gcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_gzip_static(ctx, gcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -853,6 +870,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("mp4",             ngx_js_location_get, NULL,                39),
     JS_CGETSET_MAGIC_DEF("randomIndex",     ngx_js_location_get, NULL,                40),
     JS_CGETSET_MAGIC_DEF("authRequest",     ngx_js_location_get, NULL,                41),
+    JS_CGETSET_MAGIC_DEF("gzipStatic",      ngx_js_location_get, NULL,                42),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1502,6 +1520,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_auth_request_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_gzip_static_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
