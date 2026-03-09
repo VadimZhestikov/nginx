@@ -862,6 +862,61 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 58: /* recursiveErrorPages */
         return JS_NewBool(ctx, (int) clcf->recursive_error_pages);
 
+    case 59: /* clientBodyBufferSize */
+        return JS_NewInt64(ctx, (int64_t) clcf->client_body_buffer_size);
+
+    case 60: /* clientBodyInFileOnly */
+        switch (clcf->client_body_in_file_only) {
+        case 0:  return JS_NewString(ctx, "off");
+        case 1:  return JS_NewString(ctx, "on");
+        case 2:  return JS_NewString(ctx, "clean");
+        default: return JS_NewString(ctx, "off");
+        }
+
+    case 61: /* clientBodyInSingleBuffer */
+        return JS_NewBool(ctx, (int) clcf->client_body_in_single_buffer);
+
+    case 62: /* resetTimedoutConnection */
+        return JS_NewBool(ctx, (int) clcf->reset_timedout_connection);
+
+    case 63: /* absoluteRedirect */
+        return JS_NewBool(ctx, (int) clcf->absolute_redirect);
+
+    case 64: /* serverNameInRedirect */
+        return JS_NewBool(ctx, (int) clcf->server_name_in_redirect);
+
+    case 65: /* portInRedirect */
+        return JS_NewBool(ctx, (int) clcf->port_in_redirect);
+
+    case 66: /* msiePadding */
+        return JS_NewBool(ctx, (int) clcf->msie_padding);
+
+    case 67: /* ifModifiedSince */
+        switch (clcf->if_modified_since) {
+        case NGX_HTTP_IMS_OFF:    return JS_NewString(ctx, "off");
+        case NGX_HTTP_IMS_EXACT:  return JS_NewString(ctx, "exact");
+        case NGX_HTTP_IMS_BEFORE: return JS_NewString(ctx, "before");
+        default:                  return JS_NewString(ctx, "exact");
+        }
+
+    case 68: /* maxRanges */
+        return JS_NewInt64(ctx, (int64_t) clcf->max_ranges);
+
+    case 69: /* authDelay */
+        return JS_NewInt64(ctx, (int64_t) clcf->auth_delay);
+
+    case 70: /* keepaliveTime */
+        return JS_NewInt64(ctx, (int64_t) clcf->keepalive_time);
+
+    case 71: /* sendLowat */
+        return JS_NewInt64(ctx, (int64_t) clcf->send_lowat);
+
+    case 72: /* postponeOutput */
+        return JS_NewInt64(ctx, (int64_t) clcf->postpone_output);
+
+    case 73: /* typesHashMaxSize */
+        return JS_NewInt64(ctx, (int64_t) clcf->types_hash_max_size);
+
     }
 
     return JS_UNDEFINED;
@@ -1085,6 +1140,21 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("logNotFound",           ngx_js_location_get, NULL,          56),
     JS_CGETSET_MAGIC_DEF("logSubrequest",         ngx_js_location_get, NULL,          57),
     JS_CGETSET_MAGIC_DEF("recursiveErrorPages",   ngx_js_location_get, NULL,          58),
+    JS_CGETSET_MAGIC_DEF("clientBodyBufferSize",     ngx_js_location_get, NULL,       59),
+    JS_CGETSET_MAGIC_DEF("clientBodyInFileOnly",     ngx_js_location_get, NULL,       60),
+    JS_CGETSET_MAGIC_DEF("clientBodyInSingleBuffer", ngx_js_location_get, NULL,       61),
+    JS_CGETSET_MAGIC_DEF("resetTimedoutConnection",  ngx_js_location_get, NULL,       62),
+    JS_CGETSET_MAGIC_DEF("absoluteRedirect",         ngx_js_location_get, NULL,       63),
+    JS_CGETSET_MAGIC_DEF("serverNameInRedirect",     ngx_js_location_get, NULL,       64),
+    JS_CGETSET_MAGIC_DEF("portInRedirect",           ngx_js_location_get, NULL,       65),
+    JS_CGETSET_MAGIC_DEF("msiePadding",              ngx_js_location_get, NULL,       66),
+    JS_CGETSET_MAGIC_DEF("ifModifiedSince",          ngx_js_location_get, NULL,       67),
+    JS_CGETSET_MAGIC_DEF("maxRanges",                ngx_js_location_get, NULL,       68),
+    JS_CGETSET_MAGIC_DEF("authDelay",                ngx_js_location_get, NULL,       69),
+    JS_CGETSET_MAGIC_DEF("keepaliveTime",            ngx_js_location_get, NULL,       70),
+    JS_CGETSET_MAGIC_DEF("sendLowat",                ngx_js_location_get, NULL,       71),
+    JS_CGETSET_MAGIC_DEF("postponeOutput",           ngx_js_location_get, NULL,       72),
+    JS_CGETSET_MAGIC_DEF("typesHashMaxSize",         ngx_js_location_get, NULL,       73),
     JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page, NULL),
 };
 
