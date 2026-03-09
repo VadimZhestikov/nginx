@@ -434,6 +434,11 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
+    /* Install shared NginxRequest prototype for this context */
+    if (ngx_js_request_install_proto(ctx) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     /*
      * Store the cycle pointer in the context so callbacks (nginx.log,
      * getters, etc.) can reach it without a global variable.
