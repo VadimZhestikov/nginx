@@ -1544,6 +1544,303 @@ ngx_js_request_log(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * r.sendfile(path[, status])
+ *
+ *   path   — absolute filesystem path to the file
+ *   status — HTTP status code (default: 200)
+ *
+ * Detects the MIME type from the file extension using the nginx types {}
+ * map.  Uses nginx's open-file cache when configured.  Throws TypeError
+ * for missing / non-regular files, permission errors, and path issues.
+ */
+static JSValue
+ngx_js_request_sendfile(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t    *op;
+    ngx_http_request_t         *r;
+    const char                 *path_cstr;
+    size_t                      path_len;
+    ngx_str_t                   path;
+    u_char                     *pdata, *p, *last;
+    ngx_open_file_info_t        of;
+    ngx_http_core_loc_conf_t   *clcf;
+    ngx_buf_t                  *b;
+    ngx_chain_t                 out;
+    ngx_int_t                   rc;
+    ngx_uint_t                  status;
+    ngx_log_t                  *log;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "r.sendfile: expected path argument");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->responded) {
+        return JS_ThrowTypeError(ctx, "r.sendfile: already responded");
+    }
+
+    r   = op->r;
+    log = r->connection->log;
+
+    /* Parse optional status (default 200) */
+    status = NGX_HTTP_OK;
+    if (argc >= 2 && !JS_IsUndefined(argv[1])) {
+        int32_t  s;
+        if (JS_ToInt32(ctx, &s, argv[1]) < 0) {
+            return JS_EXCEPTION;
+        }
+        if (s < 100 || s > 999) {
+            return JS_ThrowRangeError(ctx, "r.sendfile: invalid status code");
+        }
+        status = (ngx_uint_t) s;
+    }
+
+    path_cstr = JS_ToCStringLen(ctx, &path_len, argv[0]);
+    if (!path_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    /* Copy path into pool so it outlives the JS string */
+    pdata = ngx_pnalloc(r->pool, path_len + 1);
+    if (!pdata) {
+        JS_FreeCString(ctx, path_cstr);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(pdata, path_cstr, path_len);
+    pdata[path_len] = '\0';
+    JS_FreeCString(ctx, path_cstr);
+
+    path.data = pdata;
+    path.len  = path_len;
+
+    /* Extract file extension (between last '.' and last '/') for MIME type */
+    last = pdata + path_len;
+    for (p = last - 1; p >= pdata; p--) {
+        if (*p == '.') {
+            r->exten.data = p + 1;
+            r->exten.len  = (size_t) (last - (p + 1));
+            break;
+        }
+        if (*p == '/') {
+            break;
+        }
+    }
+
+    /* Open file via nginx open-file cache */
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+
+    ngx_memzero(&of, sizeof(ngx_open_file_info_t));
+    of.read_ahead = clcf->read_ahead;
+    of.directio   = clcf->directio;
+    of.valid      = clcf->open_file_cache_valid;
+    of.min_uses   = clcf->open_file_cache_min_uses;
+    of.errors     = clcf->open_file_cache_errors;
+    of.events     = clcf->open_file_cache_events;
+
+    if (ngx_open_cached_file(clcf->open_file_cache, &path, &of, r->pool)
+        != NGX_OK)
+    {
+        switch (of.err) {
+        case 0:
+            return JS_ThrowTypeError(ctx,
+                                     "r.sendfile: internal open error: %s",
+                                     path.data);
+        case NGX_ENOENT:
+        case NGX_ENOTDIR:
+        case NGX_ENAMETOOLONG:
+            return JS_ThrowTypeError(ctx,
+                                     "r.sendfile: file not found: %s",
+                                     path.data);
+        case NGX_EACCES:
+            return JS_ThrowTypeError(ctx,
+                                     "r.sendfile: permission denied: %s",
+                                     path.data);
+        default:
+            return JS_ThrowTypeError(ctx,
+                                     "r.sendfile: open failed: %s",
+                                     path.data);
+        }
+    }
+
+    if (!of.is_file) {
+        return JS_ThrowTypeError(ctx,
+                                 "r.sendfile: not a regular file: %s",
+                                 path.data);
+    }
+
+    /* Build response headers */
+    r->headers_out.status             = status;
+    r->headers_out.content_length_n   = of.size;
+    r->headers_out.last_modified_time = of.mtime;
+
+    if (ngx_http_set_content_type(r) != NGX_OK) {
+        return JS_ThrowTypeError(ctx,
+                                 "r.sendfile: failed to set content-type");
+    }
+
+    /* Allocate buf and file struct before sending header */
+    b = ngx_calloc_buf(r->pool);
+    if (!b) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    b->file = ngx_pcalloc(r->pool, sizeof(ngx_file_t));
+    if (!b->file) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+        op->responded  = 1;
+        op->respond_rc = rc;
+        return JS_UNDEFINED;
+    }
+
+    b->file_pos       = 0;
+    b->file_last      = of.size;
+    b->in_file        = (b->file_last != 0) ? 1 : 0;
+    b->last_buf       = (r == r->main) ? 1 : 0;
+    b->last_in_chain  = 1;
+    b->sync           = (b->last_buf || b->in_file) ? 0 : 1;
+
+    b->file->fd       = of.fd;
+    b->file->name     = path;
+    b->file->log      = log;
+    b->file->directio = of.is_directio;
+
+    out.buf  = b;
+    out.next = NULL;
+
+    rc = ngx_http_output_filter(r, &out);
+    op->responded  = 1;
+    op->respond_rc = rc;
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * r.redirect(url[, code])
+ *
+ *   url  — Location header value (absolute URL or absolute path)
+ *   code — HTTP status code (default: 302)
+ *
+ * Sends a redirect response with an empty body.
+ */
+static JSValue
+ngx_js_request_redirect(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    const char               *url_cstr;
+    size_t                    url_len;
+    u_char                   *p;
+    ngx_table_elt_t          *loc_hdr;
+    ngx_buf_t                *b;
+    ngx_chain_t               out;
+    ngx_int_t                 rc;
+    ngx_uint_t                status;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "r.redirect: expected url argument");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->responded) {
+        return JS_ThrowTypeError(ctx, "r.redirect: already responded");
+    }
+
+    r = op->r;
+
+    /* Parse optional status (default 302) */
+    status = NGX_HTTP_MOVED_TEMPORARILY;
+    if (argc >= 2 && !JS_IsUndefined(argv[1])) {
+        int32_t  s;
+        if (JS_ToInt32(ctx, &s, argv[1]) < 0) {
+            return JS_EXCEPTION;
+        }
+        if (s < 300 || s > 399) {
+            return JS_ThrowRangeError(ctx,
+                                      "r.redirect: status must be 3xx");
+        }
+        status = (ngx_uint_t) s;
+    }
+
+    url_cstr = JS_ToCStringLen(ctx, &url_len, argv[0]);
+    if (!url_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    /* Copy URL into pool */
+    p = ngx_pnalloc(r->pool, url_len);
+    if (!p) {
+        JS_FreeCString(ctx, url_cstr);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(p, url_cstr, url_len);
+    JS_FreeCString(ctx, url_cstr);
+
+    /* Set Location header */
+    ngx_http_clear_location(r);
+
+    loc_hdr = ngx_list_push(&r->headers_out.headers);
+    if (!loc_hdr) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    loc_hdr->hash = 1;
+    loc_hdr->next = NULL;
+    ngx_str_set(&loc_hdr->key, "Location");
+    loc_hdr->value.data = p;
+    loc_hdr->value.len  = url_len;
+
+    r->headers_out.location          = loc_hdr;
+    r->headers_out.status            = status;
+    r->headers_out.content_length_n  = 0;
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+        op->responded  = 1;
+        op->respond_rc = rc;
+        return JS_UNDEFINED;
+    }
+
+    /* Empty body with last_buf */
+    b = ngx_calloc_buf(r->pool);
+    if (!b) {
+        op->responded  = 1;
+        op->respond_rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        return JS_UNDEFINED;
+    }
+
+    b->last_buf      = 1;
+    b->last_in_chain = 1;
+    b->sync          = 1;
+
+    out.buf  = b;
+    out.next = NULL;
+
+    rc = ngx_http_output_filter(r, &out);
+    op->responded  = 1;
+    op->respond_rc = rc;
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("method",        ngx_js_request_get, NULL,  0),
     JS_CGETSET_MAGIC_DEF("uri",           ngx_js_request_get, NULL,  1),
@@ -1572,6 +1869,8 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("variables",   ngx_js_request_get, NULL, 19),
     JS_CGETSET_MAGIC_DEF("body",        ngx_js_request_get, NULL, 20),
     JS_CFUNC_DEF("readBody",            0, ngx_js_request_read_body),
+    JS_CFUNC_DEF("sendfile",            1, ngx_js_request_sendfile),
+    JS_CFUNC_DEF("redirect",            1, ngx_js_request_redirect),
 };
 
 
