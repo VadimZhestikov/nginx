@@ -106,6 +106,10 @@ JSValue  ngx_js_wrap_dav(JSContext *ctx, ngx_http_dav_loc_conf_t *dlcf);
 /* Forward declaration from ngx_js_com_ssi.c */
 JSValue  ngx_js_wrap_ssi(JSContext *ctx, void *slcf);
 
+/* Forward declaration from ngx_js_com_userid.c */
+#include "../http/modules/ngx_http_userid_module.h"
+JSValue  ngx_js_wrap_userid(JSContext *ctx, ngx_http_userid_conf_t *ucf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -482,6 +486,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_ssi(ctx, sslcf);
     }
+
+    case 32: /* userid — NginxUserid wrapping userid conf */
+    {
+        ngx_http_userid_conf_t  *ucf;
+
+        ucf = clcf->loc_conf[ngx_http_userid_filter_module.ctx_index];
+        if (ucf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_userid(ctx, ucf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -678,6 +694,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("dav",             ngx_js_location_get, NULL,                30),
 #endif
     JS_CGETSET_MAGIC_DEF("ssi",             ngx_js_location_get, NULL,                31),
+    JS_CGETSET_MAGIC_DEF("userid",          ngx_js_location_get, NULL,                32),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1287,6 +1304,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
 #endif
 
     if (ngx_js_ssi_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_userid_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
