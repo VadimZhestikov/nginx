@@ -1204,10 +1204,30 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
 };
 
 
+ngx_int_t
+ngx_js_location_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_location_proto_funcs,
+                               countof(ngx_js_location_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_location_class_id, proto);
+    return NGX_OK;
+}
+
+
 JSValue
 ngx_js_wrap_location(JSContext *ctx, ngx_http_core_loc_conf_t *clcf)
 {
-    JSValue                    obj, proto;
+    JSValue                    obj;
     ngx_js_location_opaque_t  *op;
 
     op = js_mallocz(ctx, sizeof(ngx_js_location_opaque_t));
@@ -1217,14 +1237,7 @@ ngx_js_wrap_location(JSContext *ctx, ngx_http_core_loc_conf_t *clcf)
 
     op->clcf = clcf;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_location_proto_funcs,
-                               countof(ngx_js_location_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_location_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_location_class_id);
     if (JS_IsException(obj)) {
         js_free(ctx, op);
         return JS_EXCEPTION;
@@ -1655,11 +1668,31 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
 };
 
 
+ngx_int_t
+ngx_js_server_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_server_proto_funcs,
+                               countof(ngx_js_server_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_server_class_id, proto);
+    return NGX_OK;
+}
+
+
 static JSValue
 ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
     ngx_cycle_t *cycle)
 {
-    JSValue                    obj, proto;
+    JSValue                    obj;
     ngx_js_server_opaque_t    *op;
     ngx_http_server_name_t    *sn;
     ngx_uint_t                 n;
@@ -1701,14 +1734,7 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
         }
     }
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_server_proto_funcs,
-                               countof(ngx_js_server_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_server_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_server_class_id);
     if (JS_IsException(obj)) {
         js_free(ctx, op);
         return JS_EXCEPTION;
@@ -1824,7 +1850,7 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
  * Register the NginxServer and NginxLocation classes with this runtime.
  * Called by ngx_js_com_register_classes() from ngx_js_com.c.
  */
-static ngx_int_t
+ngx_int_t
 ngx_js_http_register_classes(JSRuntime *rt)
 {
     if (JS_NewClass(rt, ngx_js_server_class_id,   &ngx_js_server_class)   < 0
@@ -1991,18 +2017,11 @@ ngx_int_t
 ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
     ngx_cycle_t *cycle)
 {
-    JSRuntime                   *rt;
     JSValue                      http_obj, servers_arr;
     ngx_http_conf_ctx_t         *http_ctx;
     ngx_http_core_main_conf_t   *cmcf;
     ngx_http_core_srv_conf_t   **cscfp;
     ngx_uint_t                   i;
-
-    rt = JS_GetRuntime(ctx);
-
-    if (ngx_js_http_register_classes(rt) != NGX_OK) {
-        return NGX_ERROR;
-    }
 
     http_ctx = (ngx_http_conf_ctx_t *) cycle->conf_ctx[ngx_http_module.index];
     if (http_ctx == NULL) {

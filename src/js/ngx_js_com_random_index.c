@@ -82,11 +82,31 @@ ngx_js_random_index_register_class(JSRuntime *rt)
 }
 
 
+ngx_int_t
+ngx_js_random_index_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_random_index_proto_funcs,
+                               countof(ngx_js_random_index_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_random_index_class_id, proto);
+    return NGX_OK;
+}
+
+
 JSValue
 ngx_js_wrap_random_index(JSContext *ctx,
     ngx_http_random_index_loc_conf_t *rcf)
 {
-    JSValue                        obj, proto;
+    JSValue                        obj;
     ngx_js_random_index_opaque_t  *op;
 
     op = js_mallocz(ctx, sizeof(ngx_js_random_index_opaque_t));
@@ -96,14 +116,7 @@ ngx_js_wrap_random_index(JSContext *ctx,
 
     op->rcf = rcf;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_random_index_proto_funcs,
-                               countof(ngx_js_random_index_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_random_index_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_random_index_class_id);
     if (JS_IsException(obj)) {
         js_free(ctx, op);
         return JS_EXCEPTION;

@@ -1389,7 +1389,7 @@ ngx_js_sw_make_object(JSContext *ctx, ngx_js_sw_state_t *state,
     ngx_uint_t local_wi)
 {
     ngx_js_sw_opaque_t  *opaque;
-    JSValue              proto, obj;
+    JSValue              obj;
 
     opaque = ngx_alloc(sizeof(ngx_js_sw_opaque_t), ngx_cycle->log);
     if (opaque == NULL) {
@@ -1400,14 +1400,7 @@ ngx_js_sw_make_object(JSContext *ctx, ngx_js_sw_state_t *state,
     opaque->state    = state;
     opaque->local_wi = local_wi;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_sw_proto_funcs,
-                               countof(ngx_js_sw_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_sw_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_sw_class_id);
     if (JS_IsException(obj)) {
         ngx_free(opaque);
         return obj;
@@ -1949,6 +1942,23 @@ ngx_js_sw_install(JSContext *ctx)
                     &ngx_js_sw_port_class) < 0)
     {
         return NGX_ERROR;
+    }
+
+    /* Install shared prototype for the SharedWorker class */
+    {
+        JSValue  proto;
+
+        proto = JS_NewObject(ctx);
+        if (JS_IsException(proto)) {
+            return NGX_ERROR;
+        }
+
+        JS_SetPropertyFunctionList(ctx, proto,
+                                   ngx_js_sw_proto_funcs,
+                                   countof(ngx_js_sw_proto_funcs));
+
+        /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+        JS_SetClassProto(ctx, ngx_js_sw_class_id, proto);
     }
 
     global = JS_GetGlobalObject(ctx);

@@ -265,7 +265,7 @@ ngx_js_wt_sw_ctor(JSContext *ctx, JSValueConst new_target,
 {
     ngx_js_wthread_ctx_t  *tctx;
     ngx_js_wt_sw_t        *sw;
-    JSValue                proto, obj;
+    JSValue                obj;
     const char            *url_cstr;
     size_t                 url_len;
     int                    worker_fd;
@@ -308,14 +308,7 @@ ngx_js_wt_sw_ctor(JSContext *ctx, JSValueConst new_target,
     sw->next       = tctx->sw_list;
     tctx->sw_list  = sw;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_wt_sw_proto_funcs,
-                               countof(ngx_js_wt_sw_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_wt_sw_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_wt_sw_class_id);
     if (JS_IsException(obj)) {
         tctx->sw_list = sw->next;
         close(worker_fd);
@@ -750,6 +743,19 @@ ngx_js_worker_thread(void *arg)
                                        JS_CFUNC_constructor, 0));
 
     JS_FreeValue(ctx, global);
+
+    /* Install shared prototype for the wt_sw class in this context */
+    {
+        JSValue  proto;
+
+        proto = JS_NewObject(ctx);
+        if (!JS_IsException(proto)) {
+            JS_SetPropertyFunctionList(ctx, proto,
+                                       ngx_js_wt_sw_proto_funcs,
+                                       countof(ngx_js_wt_sw_proto_funcs));
+            JS_SetClassProto(ctx, ngx_js_wt_sw_class_id, proto);
+        }
+    }
 
     /* Read and evaluate the worker script */
     src = wt_read_file(state->script, &src_len);
@@ -1295,7 +1301,7 @@ ngx_js_worker_ctor(JSContext *ctx, JSValueConst new_target,
     ngx_js_worker_state_t  *state;
     ngx_js_worker_opaque_t *opaque;
     ngx_connection_t       *conn;
-    JSValue                 proto, obj;
+    JSValue                 obj;
     const char             *path_cstr;
     size_t                  path_len;
 
@@ -1419,14 +1425,7 @@ ngx_js_worker_ctor(JSContext *ctx, JSValueConst new_target,
 
     /* ---- Build the JS Worker object ---- */
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_worker_proto_funcs,
-                               countof(ngx_js_worker_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_worker_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_worker_class_id);
     if (JS_IsException(obj)) {
         /* Thread is running; send terminate to clean it up */
         pipe_send(&state->to_worker, NULL, 0, NULL, 0);
@@ -1475,6 +1474,40 @@ ngx_js_worker_install(JSContext *ctx)
                     &ngx_js_wt_sw_class) < 0)
     {
         return NGX_ERROR;
+    }
+
+    /* Install shared prototype for the Worker class */
+    {
+        JSValue  proto;
+
+        proto = JS_NewObject(ctx);
+        if (JS_IsException(proto)) {
+            return NGX_ERROR;
+        }
+
+        JS_SetPropertyFunctionList(ctx, proto,
+                                   ngx_js_worker_proto_funcs,
+                                   countof(ngx_js_worker_proto_funcs));
+
+        /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+        JS_SetClassProto(ctx, ngx_js_worker_class_id, proto);
+    }
+
+    /* Install shared prototype for the SharedWorker-in-Worker class */
+    {
+        JSValue  proto;
+
+        proto = JS_NewObject(ctx);
+        if (JS_IsException(proto)) {
+            return NGX_ERROR;
+        }
+
+        JS_SetPropertyFunctionList(ctx, proto,
+                                   ngx_js_wt_sw_proto_funcs,
+                                   countof(ngx_js_wt_sw_proto_funcs));
+
+        /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+        JS_SetClassProto(ctx, ngx_js_wt_sw_class_id, proto);
     }
 
     global = JS_GetGlobalObject(ctx);

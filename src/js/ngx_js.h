@@ -104,6 +104,9 @@ ngx_int_t  ngx_js_request_register_class(JSRuntime *rt);
 /* Install shared NginxRequest prototype in ctx (called once per new context) */
 ngx_int_t  ngx_js_request_install_proto(JSContext *ctx);
 
+/* Install shared NginxPendingServer prototype in ctx */
+ngx_int_t  ngx_js_pending_server_install_proto(JSContext *ctx);
+
 /* Content-phase handler; installed in clcf->handler by the JS setter */
 struct ngx_http_request_s;
 ngx_int_t  ngx_js_content_handler(struct ngx_http_request_s *r);

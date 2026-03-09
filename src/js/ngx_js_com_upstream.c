@@ -143,6 +143,26 @@ static const JSCFunctionListEntry ngx_js_peer_proto_funcs[] = {
 };
 
 
+ngx_int_t
+ngx_js_peer_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_peer_proto_funcs,
+                               countof(ngx_js_peer_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_peer_class_id, proto);
+    return NGX_OK;
+}
+
+
 /* ------------------------------------------------------------------ */
 /* NginxRRPeer — Phase 3 runtime RR peer wrapper                       */
 /* ------------------------------------------------------------------ */
@@ -309,11 +329,31 @@ static const JSCFunctionListEntry ngx_js_rr_peer_proto_funcs[] = {
 };
 
 
+ngx_int_t
+ngx_js_rr_peer_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_rr_peer_proto_funcs,
+                               countof(ngx_js_rr_peer_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_rr_peer_class_id, proto);
+    return NGX_OK;
+}
+
+
 static JSValue
 ngx_js_wrap_rr_peer(JSContext *ctx, ngx_http_upstream_rr_peers_t *peers,
     ngx_http_upstream_rr_peer_t *peer, ngx_uint_t backup)
 {
-    JSValue                   obj, proto;
+    JSValue                   obj;
     ngx_js_rr_peer_opaque_t  *op;
 
     op = js_mallocz(ctx, sizeof(ngx_js_rr_peer_opaque_t));
@@ -325,14 +365,7 @@ ngx_js_wrap_rr_peer(JSContext *ctx, ngx_http_upstream_rr_peers_t *peers,
     op->peer   = peer;
     op->backup = backup;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_rr_peer_proto_funcs,
-                               countof(ngx_js_rr_peer_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_rr_peer_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_rr_peer_class_id);
     if (JS_IsException(obj)) {
         js_free(ctx, op);
         return JS_EXCEPTION;
@@ -467,7 +500,7 @@ ngx_js_upstream_get_peers(JSContext *ctx, JSValueConst this_val, int magic)
 
     for (i = 0; i < op->uscf->servers->nelts; i++) {
         ngx_js_peer_opaque_t  *pop;
-        JSValue                obj, proto;
+        JSValue                obj;
 
         pop = js_mallocz(ctx, sizeof(ngx_js_peer_opaque_t));
         if (!pop) {
@@ -477,14 +510,7 @@ ngx_js_upstream_get_peers(JSContext *ctx, JSValueConst this_val, int magic)
 
         pop->srv = &srv[i];
 
-        proto = JS_NewObject(ctx);
-        JS_SetPropertyFunctionList(ctx, proto,
-                                   ngx_js_peer_proto_funcs,
-                                   countof(ngx_js_peer_proto_funcs));
-
-        obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_peer_class_id);
-        JS_FreeValue(ctx, proto);
-
+        obj = JS_NewObjectClass(ctx, ngx_js_peer_class_id);
         if (JS_IsException(obj)) {
             js_free(ctx, pop);
             JS_FreeValue(ctx, arr);
@@ -791,10 +817,30 @@ static const JSCFunctionListEntry ngx_js_upstream_proto_funcs[] = {
 };
 
 
+ngx_int_t
+ngx_js_upstream_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_upstream_proto_funcs,
+                               countof(ngx_js_upstream_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_upstream_class_id, proto);
+    return NGX_OK;
+}
+
+
 static JSValue
 ngx_js_wrap_upstream(JSContext *ctx, ngx_http_upstream_srv_conf_t *uscf)
 {
-    JSValue                    obj, proto;
+    JSValue                    obj;
     ngx_js_upstream_opaque_t  *op;
 
     op = js_mallocz(ctx, sizeof(ngx_js_upstream_opaque_t));
@@ -804,14 +850,7 @@ ngx_js_wrap_upstream(JSContext *ctx, ngx_http_upstream_srv_conf_t *uscf)
 
     op->uscf = uscf;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_upstream_proto_funcs,
-                               countof(ngx_js_upstream_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_upstream_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_upstream_class_id);
     if (JS_IsException(obj)) {
         js_free(ctx, op);
         return JS_EXCEPTION;
@@ -827,7 +866,7 @@ ngx_js_wrap_upstream(JSContext *ctx, ngx_http_upstream_srv_conf_t *uscf)
 /* ngx_js_upstream_com_install                                          */
 /* ------------------------------------------------------------------ */
 
-static ngx_int_t
+ngx_int_t
 ngx_js_upstream_register_classes(JSRuntime *rt)
 {
     if (JS_NewClass(rt, ngx_js_upstream_class_id, &ngx_js_upstream_class) < 0
@@ -849,18 +888,11 @@ ngx_int_t
 ngx_js_upstream_com_install(JSContext *ctx, JSValue http_obj,
     ngx_cycle_t *cycle)
 {
-    JSRuntime                      *rt;
     JSValue                         upstreams_arr;
     ngx_http_conf_ctx_t            *http_ctx;
     ngx_http_upstream_main_conf_t  *umcf;
     ngx_http_upstream_srv_conf_t  **uscfp;
     ngx_uint_t                      i;
-
-    rt = JS_GetRuntime(ctx);
-
-    if (ngx_js_upstream_register_classes(rt) != NGX_OK) {
-        return NGX_ERROR;
-    }
 
     upstreams_arr = JS_NewArray(ctx);
     if (JS_IsException(upstreams_arr)) {

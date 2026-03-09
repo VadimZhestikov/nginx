@@ -120,11 +120,31 @@ static const JSCFunctionListEntry ngx_js_charset_proto_funcs[] = {
 };
 
 
+ngx_int_t
+ngx_js_charset_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_charset_proto_funcs,
+                               countof(ngx_js_charset_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_charset_class_id, proto);
+    return NGX_OK;
+}
+
+
 JSValue
 ngx_js_wrap_charset(JSContext *ctx, ngx_http_charset_loc_conf_t *lcf,
     ngx_http_charset_main_conf_t *mcf)
 {
-    JSValue                   obj, proto;
+    JSValue                   obj;
     ngx_js_charset_opaque_t  *op;
 
     op = js_mallocz(ctx, sizeof(ngx_js_charset_opaque_t));
@@ -135,14 +155,7 @@ ngx_js_wrap_charset(JSContext *ctx, ngx_http_charset_loc_conf_t *lcf,
     op->lcf = lcf;
     op->mcf = mcf;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_charset_proto_funcs,
-                               countof(ngx_js_charset_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_charset_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_charset_class_id);
     if (JS_IsException(obj)) {
         js_free(ctx, op);
         return JS_EXCEPTION;

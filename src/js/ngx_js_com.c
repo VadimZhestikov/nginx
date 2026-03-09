@@ -201,10 +201,31 @@ static const JSCFunctionListEntry ngx_js_cycle_proto_funcs[] = {
 };
 
 
+static ngx_int_t
+ngx_js_cycle_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_cycle_proto_funcs,
+                               countof(ngx_js_cycle_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_cycle_class_id, proto);
+    return NGX_OK;
+}
+
+
 static JSValue
 ngx_js_wrap_cycle(JSContext *ctx, ngx_cycle_t *cycle)
 {
-    JSValue                obj, proto;
+    JSValue                obj;
     ngx_js_cycle_opaque_t *op;
 
     op = js_mallocz(ctx, sizeof(ngx_js_cycle_opaque_t));
@@ -214,14 +235,7 @@ ngx_js_wrap_cycle(JSContext *ctx, ngx_cycle_t *cycle)
 
     op->cycle = cycle;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_cycle_proto_funcs,
-                               countof(ngx_js_cycle_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_cycle_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_cycle_class_id);
     if (JS_IsException(obj)) {
         js_free(ctx, op);
         return JS_EXCEPTION;
@@ -427,15 +441,30 @@ ngx_js_com_register_classes(JSRuntime *rt)
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
-    JSValue  global, nginx_obj, cycle_obj;
+    JSRuntime  *rt;
+    JSValue     global, nginx_obj, cycle_obj;
 
-    /* Register classes for this runtime first */
-    if (ngx_js_com_register_classes(JS_GetRuntime(ctx)) != NGX_OK) {
+    rt = JS_GetRuntime(ctx);
+
+    /* Register ALL classes before installing any prototypes */
+    if (ngx_js_com_register_classes(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    /* Install shared NginxRequest prototype for this context */
+    if (ngx_js_http_register_classes(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_upstream_register_classes(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    /* Install shared prototypes now that all classes are registered */
     if (ngx_js_request_install_proto(ctx) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_com_install_protos(ctx) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -500,6 +529,61 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 
     JS_FreeValue(ctx, global);
 
+    return NGX_OK;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Install shared prototypes for all COM classes                        */
+/* ------------------------------------------------------------------ */
+
+ngx_int_t
+ngx_js_com_install_protos(JSContext *ctx)
+{
+    if (ngx_js_cycle_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_location_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_server_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_upstream_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_peer_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_rr_peer_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_proxy_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_ssl_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_gzip_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_headers_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_proxy_cache_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_rewrite_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_access_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_auth_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_limit_req_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_limit_conn_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_fastcgi_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_log_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+#if (NGX_HTTP_REALIP)
+    if (ngx_js_realip_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+#endif
+    if (ngx_js_charset_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_sub_filter_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_autoindex_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_referer_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+#if (NGX_HTTP_DAV)
+    if (ngx_js_dav_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+#endif
+    if (ngx_js_ssi_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_userid_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_addition_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_gunzip_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_slice_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_image_filter_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_xslt_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_secure_link_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_mp4_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_random_index_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_auth_request_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_gzip_static_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_memcached_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_scgi_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_uwsgi_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_mirror_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     return NGX_OK;
 }
 

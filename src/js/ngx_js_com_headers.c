@@ -194,10 +194,30 @@ static const JSCFunctionListEntry ngx_js_headers_proto_funcs[] = {
 };
 
 
+ngx_int_t
+ngx_js_headers_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_headers_proto_funcs,
+                               countof(ngx_js_headers_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_headers_class_id, proto);
+    return NGX_OK;
+}
+
+
 JSValue
 ngx_js_wrap_headers(JSContext *ctx, ngx_http_headers_conf_t *hcf)
 {
-    JSValue                  obj, proto;
+    JSValue                  obj;
     ngx_js_headers_opaque_t *op;
 
     op = js_mallocz(ctx, sizeof(ngx_js_headers_opaque_t));
@@ -207,14 +227,7 @@ ngx_js_wrap_headers(JSContext *ctx, ngx_http_headers_conf_t *hcf)
 
     op->hcf = hcf;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_headers_proto_funcs,
-                               countof(ngx_js_headers_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_headers_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_headers_class_id);
     if (JS_IsException(obj)) {
         js_free(ctx, op);
         return JS_EXCEPTION;

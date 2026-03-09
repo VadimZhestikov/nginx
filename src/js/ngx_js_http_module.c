@@ -3604,6 +3604,26 @@ static const JSCFunctionListEntry ngx_js_pending_server_proto_funcs[] = {
 };
 
 
+ngx_int_t
+ngx_js_pending_server_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_pending_server_proto_funcs,
+                               countof(ngx_js_pending_server_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_pending_server_class_id, proto);
+    return NGX_OK;
+}
+
+
 /*
  * Copy an ngx_str_t from a JS string into cf->pool.
  * Returns NGX_ERROR on allocation failure, NGX_OK otherwise.
@@ -3684,7 +3704,7 @@ ngx_js_http_add_server(JSContext *ctx, JSValueConst this_val,
 {
     ngx_js_pending_server_t   *ps;
     ngx_js_pending_server_t  **slot;
-    JSValue                    obj, proto, arr_val, item, len_val;
+    JSValue                    obj, arr_val, item, len_val;
     ngx_str_t                 *ns;
     ngx_js_pending_loc_t      *loc;
     ngx_pool_t                *pool;
@@ -3798,14 +3818,7 @@ ngx_js_http_add_server(JSContext *ctx, JSValueConst this_val,
     *slot = ps;
 
     /* Build and return PendingServer JS object */
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_pending_server_proto_funcs,
-                               countof(ngx_js_pending_server_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_pending_server_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_pending_server_class_id);
     if (JS_IsException(obj)) {
         return JS_EXCEPTION;
     }
@@ -4782,6 +4795,13 @@ ngx_js_init_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ngx_js_current_pending = &pending;
     ngx_js_current_cf      = cf;
+
+    if (ngx_js_pending_server_install_proto(ctx) != NGX_OK) {
+        JS_FreeContext(ctx);
+        js_std_free_handlers(rt);
+        JS_FreeRuntime(rt);
+        return NGX_CONF_ERROR;
+    }
 
     global = JS_GetGlobalObject(ctx);
 

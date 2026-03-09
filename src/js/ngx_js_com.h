@@ -69,6 +69,14 @@ extern JSClassID  ngx_js_mirror_class_id;       /* mirror loc conf       (Stage 
  * Must be called before any COM object is created in that runtime.
  */
 ngx_int_t  ngx_js_com_register_classes(JSRuntime *rt);
+ngx_int_t  ngx_js_http_register_classes(JSRuntime *rt);
+ngx_int_t  ngx_js_upstream_register_classes(JSRuntime *rt);
+
+/*
+ * Install shared prototypes for all COM classes into a JSContext.
+ * Must be called once per context after classes are registered.
+ */
+ngx_int_t  ngx_js_com_install_protos(JSContext *ctx);
 
 /*
  * Install nginx.http subtree into the nginx_obj JS object.
@@ -126,6 +134,54 @@ ngx_int_t  ngx_js_memcached_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_scgi_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_uwsgi_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_mirror_register_class(JSRuntime *rt);
+
+
+/*
+ * Install shared prototype for each COM class into a JSContext.
+ */
+ngx_int_t  ngx_js_location_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_server_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_upstream_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_peer_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_rr_peer_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_proxy_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_ssl_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_gzip_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_headers_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_proxy_cache_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_rewrite_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_access_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_auth_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_limit_req_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_limit_conn_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_fastcgi_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_log_install_proto(JSContext *ctx);
+#if (NGX_HTTP_REALIP)
+ngx_int_t  ngx_js_realip_install_proto(JSContext *ctx);
+#endif
+ngx_int_t  ngx_js_charset_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_sub_filter_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_autoindex_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_referer_install_proto(JSContext *ctx);
+#if (NGX_HTTP_DAV)
+ngx_int_t  ngx_js_dav_install_proto(JSContext *ctx);
+#endif
+ngx_int_t  ngx_js_ssi_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_userid_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_addition_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_gunzip_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_slice_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_image_filter_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_xslt_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_secure_link_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_mp4_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_random_index_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_auth_request_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_gzip_static_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_memcached_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_scgi_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_uwsgi_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_mirror_install_proto(JSContext *ctx);
 
 
 /*

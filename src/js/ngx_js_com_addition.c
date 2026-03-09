@@ -87,10 +87,30 @@ ngx_js_addition_register_class(JSRuntime *rt)
 }
 
 
+ngx_int_t
+ngx_js_addition_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_addition_proto_funcs,
+                               countof(ngx_js_addition_proto_funcs));
+
+    /* JS_SetClassProto takes ownership — no JS_FreeValue needed */
+    JS_SetClassProto(ctx, ngx_js_addition_class_id, proto);
+    return NGX_OK;
+}
+
+
 JSValue
 ngx_js_wrap_addition(JSContext *ctx, ngx_http_addition_conf_t *acf)
 {
-    JSValue                    obj, proto;
+    JSValue                    obj;
     ngx_js_addition_opaque_t  *op;
 
     op = js_mallocz(ctx, sizeof(ngx_js_addition_opaque_t));
@@ -100,14 +120,7 @@ ngx_js_wrap_addition(JSContext *ctx, ngx_http_addition_conf_t *acf)
 
     op->acf = acf;
 
-    proto = JS_NewObject(ctx);
-    JS_SetPropertyFunctionList(ctx, proto,
-                               ngx_js_addition_proto_funcs,
-                               countof(ngx_js_addition_proto_funcs));
-
-    obj = JS_NewObjectProtoClass(ctx, proto, ngx_js_addition_class_id);
-    JS_FreeValue(ctx, proto);
-
+    obj = JS_NewObjectClass(ctx, ngx_js_addition_class_id);
     if (JS_IsException(obj)) {
         js_free(ctx, op);
         return JS_EXCEPTION;
