@@ -70,6 +70,7 @@ static JSClassDef ngx_js_request_class = {
  *  16 — queryParams  (r/o object, %XX-decoded key/value pairs from r->args)
  *  17 — cookies      (r/o object, name/value pairs from Cookie header)
  *  18 — upstream     (r/o object or null, last upstream attempt metadata)
+ *  19 — variables    (r/w NginxRequestVariables exotic object)
  */
 /*
  * Build a plain JS object from one ngx_http_upstream_state_t entry:
@@ -406,6 +407,19 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
         return ngx_js_upstream_state_obj(ctx, st);
     }
 
+    case 19: /* variables — live r/w access to all nginx variables */
+    {
+        JSValue  vobj;
+
+        vobj = JS_NewObjectClass(ctx, ngx_js_req_vars_class_id);
+        if (JS_IsException(vobj)) {
+            return JS_EXCEPTION;
+        }
+
+        JS_SetOpaque(vobj, r);
+        return vobj;
+    }
+
     }
 
     return JS_UNDEFINED;
@@ -560,6 +574,316 @@ ngx_js_request_set_variable(JSContext *ctx, JSValueConst this_val,
                              "r.setVariable: variable \"%.*s\" is not settable",
                              (int) name.len, name.data);
 }
+
+
+/* ------------------------------------------------------------------ */
+/* NginxRequestVariables — exotic class for r.variables                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * r.variables is a live read/write object backed by cmcf->variables_hash
+ * and r->variables[].  Property get/set/has/enumerate are handled by
+ * exotic methods so any nginx variable name works as a JS property.
+ *
+ *   r.variables.uri           → string value or null if not_found
+ *   r.variables.my_var = "x"  → sets an indexed (CHANGEABLE) variable
+ *   "uri" in r.variables      → true
+ *   Object.keys(r.variables)  → array of all variable names
+ */
+
+static void
+ngx_js_req_vars_finalizer(JSRuntime *rt, JSValue val)
+{
+    /* opaque is ngx_http_request_t * — not heap-allocated by us */
+    (void) rt; (void) val;
+}
+
+
+/*
+ * Helper: convert JSAtom → ngx_str_t + ngx_hash_key.
+ * Caller must JS_FreeCString(ctx, name->data) when done.
+ * Returns NULL on error (exception already set).
+ */
+static const char *
+ngx_js_atom_to_ngx_str(JSContext *ctx, JSAtom prop,
+    ngx_str_t *name, ngx_uint_t *key)
+{
+    JSValue     name_js;
+    const char *cstr;
+    size_t      len;
+
+    name_js = JS_AtomToString(ctx, prop);
+    if (JS_IsException(name_js)) {
+        return NULL;
+    }
+
+    cstr = JS_ToCStringLen(ctx, &len, name_js);
+    JS_FreeValue(ctx, name_js);
+    if (!cstr) {
+        return NULL;
+    }
+
+    name->data = (u_char *) cstr;
+    name->len  = len;
+    *key = ngx_hash_key(name->data, name->len);
+
+    return cstr;
+}
+
+
+static JSValue
+ngx_js_req_vars_get_property(JSContext *ctx, JSValueConst obj, JSAtom prop,
+    JSValueConst receiver)
+{
+    ngx_http_request_t         *r;
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_variable_t        *v;
+    ngx_http_variable_value_t  *vv;
+    const char                 *cstr;
+    ngx_str_t                   name;
+    ngx_uint_t                  key;
+
+    r = JS_GetOpaque(obj, ngx_js_req_vars_class_id);
+    if (r == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    cstr = ngx_js_atom_to_ngx_str(ctx, prop, &name, &key);
+    if (!cstr) {
+        return JS_EXCEPTION;
+    }
+
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+    v = ngx_hash_find(&cmcf->variables_hash, key, name.data, name.len);
+    JS_FreeCString(ctx, cstr);
+
+    if (v == NULL) {
+        return JS_UNDEFINED;
+    }
+
+    if (v->flags & NGX_HTTP_VAR_INDEXED) {
+        vv = ngx_http_get_indexed_variable(r, v->index);
+        if (vv == NULL || vv->not_found) {
+            return JS_NULL;
+        }
+        return JS_NewStringLen(ctx, (const char *) vv->data, vv->len);
+    }
+
+    /* Non-indexed: use get_handler directly */
+    if (v->get_handler == NULL) {
+        return JS_NULL;
+    }
+
+    {
+        ngx_http_variable_value_t  tmp;
+        ngx_memzero(&tmp, sizeof(tmp));
+        if (v->get_handler(r, &tmp, v->data) != NGX_OK || tmp.not_found) {
+            return JS_NULL;
+        }
+        return JS_NewStringLen(ctx, (const char *) tmp.data, tmp.len);
+    }
+}
+
+
+static int
+ngx_js_req_vars_set_property(JSContext *ctx, JSValueConst obj, JSAtom prop,
+    JSValueConst val, JSValueConst receiver, int flags)
+{
+    ngx_http_request_t         *r;
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_variable_t        *v;
+    ngx_http_variable_value_t   vv;
+    const char                 *name_cstr, *val_cstr;
+    ngx_str_t                   name;
+    ngx_uint_t                  key;
+    size_t                      val_len;
+    u_char                     *p;
+
+    r = JS_GetOpaque(obj, ngx_js_req_vars_class_id);
+    if (r == NULL) {
+        return -1;
+    }
+
+    name_cstr = ngx_js_atom_to_ngx_str(ctx, prop, &name, &key);
+    if (!name_cstr) {
+        return -1;
+    }
+
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+    v = ngx_hash_find(&cmcf->variables_hash, key, name.data, name.len);
+    JS_FreeCString(ctx, name_cstr);
+
+    if (v == NULL) {
+        JS_ThrowTypeError(ctx, "r.variables: unknown variable");
+        return -1;
+    }
+
+    val_cstr = JS_ToCStringLen(ctx, &val_len, val);
+    if (!val_cstr) {
+        return -1;
+    }
+
+    p = ngx_palloc(r->pool, val_len + 1);
+    if (p == NULL) {
+        JS_FreeCString(ctx, val_cstr);
+        JS_ThrowOutOfMemory(ctx);
+        return -1;
+    }
+
+    ngx_memcpy(p, val_cstr, val_len);
+    p[val_len] = '\0';
+    JS_FreeCString(ctx, val_cstr);
+
+    if (v->set_handler) {
+        ngx_memzero(&vv, sizeof(ngx_http_variable_value_t));
+        vv.valid = 1;
+        vv.data  = p;
+        vv.len   = (ngx_uint_t) val_len;
+        v->set_handler(r, &vv, v->data);
+        return 1;
+    }
+
+    if (v->flags & NGX_HTTP_VAR_INDEXED) {
+        r->variables[v->index].len          = (ngx_uint_t) val_len;
+        r->variables[v->index].valid        = 1;
+        r->variables[v->index].no_cacheable = 0;
+        r->variables[v->index].not_found    = 0;
+        r->variables[v->index].data         = p;
+        return 1;
+    }
+
+    JS_ThrowTypeError(ctx, "r.variables: variable is not settable");
+    return -1;
+}
+
+
+static int
+ngx_js_req_vars_has_property(JSContext *ctx, JSValueConst obj, JSAtom prop)
+{
+    ngx_http_request_t         *r;
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_variable_t        *v;
+    const char                 *cstr;
+    ngx_str_t                   name;
+    ngx_uint_t                  key;
+
+    r = JS_GetOpaque(obj, ngx_js_req_vars_class_id);
+    if (r == NULL) {
+        return -1;
+    }
+
+    cstr = ngx_js_atom_to_ngx_str(ctx, prop, &name, &key);
+    if (!cstr) {
+        return -1;
+    }
+
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+    v = ngx_hash_find(&cmcf->variables_hash, key, name.data, name.len);
+    JS_FreeCString(ctx, cstr);
+
+    return (v != NULL) ? 1 : 0;
+}
+
+
+static int
+ngx_js_req_vars_get_own_property_names(JSContext *ctx, JSPropertyEnum **ptab,
+    uint32_t *plen, JSValueConst obj)
+{
+    ngx_http_request_t         *r;
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_hash_elt_t             *elt;
+    ngx_http_variable_t        *v;
+    JSPropertyEnum             *tab;
+    ngx_uint_t                  bi, count, i;
+
+    r = JS_GetOpaque(obj, ngx_js_req_vars_class_id);
+    if (r == NULL) {
+        return -1;
+    }
+
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+
+    /* Count all entries */
+    count = 0;
+    for (bi = 0; bi < cmcf->variables_hash.size; bi++) {
+        elt = cmcf->variables_hash.buckets[bi];
+        if (elt == NULL) { continue; }
+        while (elt->value != NULL) {
+            count++;
+            elt = (ngx_hash_elt_t *)
+                ngx_align_ptr(&elt->name[0] + elt->len, sizeof(void *));
+        }
+    }
+
+    tab = js_malloc(ctx, sizeof(JSPropertyEnum) * (count ? count : 1));
+    if (tab == NULL) {
+        return -1;
+    }
+
+    i = 0;
+    for (bi = 0; bi < cmcf->variables_hash.size; bi++) {
+        elt = cmcf->variables_hash.buckets[bi];
+        if (elt == NULL) { continue; }
+        while (elt->value != NULL) {
+            v = elt->value;
+            tab[i].atom = JS_NewAtomLen(ctx,
+                                        (const char *) v->name.data,
+                                        v->name.len);
+            tab[i].is_enumerable = 1;
+            i++;
+            elt = (ngx_hash_elt_t *)
+                ngx_align_ptr(&elt->name[0] + elt->len, sizeof(void *));
+        }
+    }
+
+    *ptab = tab;
+    *plen = (uint32_t) i;
+    return 0;
+}
+
+
+static int
+ngx_js_req_vars_get_own_property(JSContext *ctx, JSPropertyDescriptor *desc,
+    JSValueConst obj, JSAtom prop)
+{
+    JSValue  val;
+
+    val = ngx_js_req_vars_get_property(ctx, obj, prop, JS_UNDEFINED);
+    if (JS_IsUndefined(val)) {
+        return FALSE;
+    }
+
+    if (JS_IsException(val)) {
+        return -1;
+    }
+
+    if (desc) {
+        desc->flags  = JS_PROP_ENUMERABLE | JS_PROP_WRITABLE;
+        desc->value  = val;
+        desc->getter = JS_UNDEFINED;
+        desc->setter = JS_UNDEFINED;
+    } else {
+        JS_FreeValue(ctx, val);
+    }
+
+    return TRUE;
+}
+
+
+static JSClassExoticMethods ngx_js_req_vars_exotic = {
+    .get_own_property       = ngx_js_req_vars_get_own_property,
+    .get_own_property_names = ngx_js_req_vars_get_own_property_names,
+    .has_property           = ngx_js_req_vars_has_property,
+    .get_property           = ngx_js_req_vars_get_property,
+    .set_property           = ngx_js_req_vars_set_property,
+};
+
+
+static JSClassDef ngx_js_req_vars_class = {
+    "NginxRequestVariables",
+    .finalizer = ngx_js_req_vars_finalizer,
+    .exotic    = &ngx_js_req_vars_exotic,
+};
 
 
 /*
@@ -1045,6 +1369,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("queryParams", ngx_js_request_get, NULL, 16),
     JS_CGETSET_MAGIC_DEF("cookies",     ngx_js_request_get, NULL, 17),
     JS_CGETSET_MAGIC_DEF("upstream",    ngx_js_request_get, NULL, 18),
+    JS_CGETSET_MAGIC_DEF("variables",   ngx_js_request_get, NULL, 19),
 };
 
 
@@ -1052,6 +1377,10 @@ ngx_int_t
 ngx_js_request_register_class(JSRuntime *rt)
 {
     if (JS_NewClass(rt, ngx_js_request_class_id, &ngx_js_request_class) < 0) {
+        return NGX_ERROR;
+    }
+
+    if (JS_NewClass(rt, ngx_js_req_vars_class_id, &ngx_js_req_vars_class) < 0) {
         return NGX_ERROR;
     }
 

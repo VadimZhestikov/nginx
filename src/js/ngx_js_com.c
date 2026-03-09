@@ -28,6 +28,7 @@ JSClassID  ngx_js_upstream_class_id;
 JSClassID  ngx_js_peer_class_id;
 JSClassID  ngx_js_rr_peer_class_id;
 JSClassID  ngx_js_request_class_id;
+JSClassID  ngx_js_req_vars_class_id;
 JSClassID  ngx_js_proxy_class_id;
 JSClassID  ngx_js_ssl_class_id;
 JSClassID  ngx_js_gzip_class_id;
@@ -372,6 +373,7 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_peer_class_id);
         JS_NewClassID(&ngx_js_rr_peer_class_id);
         JS_NewClassID(&ngx_js_request_class_id);
+        JS_NewClassID(&ngx_js_req_vars_class_id);
         JS_NewClassID(&ngx_js_proxy_class_id);
         JS_NewClassID(&ngx_js_ssl_class_id);
         JS_NewClassID(&ngx_js_gzip_class_id);
