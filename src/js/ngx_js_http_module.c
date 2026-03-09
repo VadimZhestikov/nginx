@@ -68,6 +68,7 @@ static JSClassDef ngx_js_request_class = {
  *  14 — connection     (r/o object {id, requests, fd})
  *  15 — location      (r/o NginxLocation for the matched location)
  *  16 — queryParams  (r/o object, %XX-decoded key/value pairs from r->args)
+ *  17 — cookies      (r/o object, name/value pairs from Cookie header)
  */
 static JSValue
 ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -264,6 +265,89 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
         }
 
         return qobj;
+    }
+
+    case 17: /* cookies — name/value pairs from Cookie header(s) */
+    {
+        JSValue          cobj;
+        ngx_list_part_t *part;
+        ngx_table_elt_t *h;
+        ngx_uint_t       i;
+        u_char          *p, *end, *ns, *ne, *vs, *ve;
+        u_char           name_buf[256];
+        size_t           nlen;
+
+        static const u_char cookie_lc[] = "cookie";
+
+        cobj = JS_NewObject(ctx);
+
+        part = &r->headers_in.headers.part;
+        h    = part->elts;
+
+        for (i = 0; /* break below */; i++) {
+            if (i >= part->nelts) {
+                if (part->next == NULL) { break; }
+                part = part->next;
+                h    = part->elts;
+                i    = 0;
+            }
+
+            /* Skip headers that are not "cookie" */
+            if (h[i].key.len != sizeof(cookie_lc) - 1
+                || ngx_memcmp(h[i].lowcase_key, cookie_lc,
+                              sizeof(cookie_lc) - 1) != 0)
+            {
+                continue;
+            }
+
+            /* Parse "name=value; name2=value2; ..." */
+            p   = h[i].value.data;
+            end = h[i].value.data + h[i].value.len;
+
+            while (p < end) {
+
+                /* Skip leading whitespace / semicolons */
+                while (p < end && (*p == ' ' || *p == ';')) { p++; }
+                if (p >= end) { break; }
+
+                /* Cookie name: up to '=' or ';' */
+                ns = p;
+                while (p < end && *p != '=' && *p != ';') { p++; }
+                ne = p;
+
+                /* Trim trailing spaces from name */
+                while (ne > ns && *(ne - 1) == ' ') { ne--; }
+
+                /* Cookie value: after '=' up to ';' */
+                vs = ve = p;
+                if (p < end && *p == '=') {
+                    p++;
+                    vs = p;
+                    while (p < end && *p != ';') { p++; }
+                    ve = p;
+                    /* Trim surrounding spaces from value */
+                    while (vs < ve && *vs == ' ')        { vs++; }
+                    while (ve > vs && *(ve - 1) == ' ')  { ve--; }
+                }
+
+                if (ne == ns) { continue; }   /* empty name — skip */
+
+                /* NUL-terminate name for JS_SetPropertyStr */
+                nlen = (size_t)(ne - ns);
+                if (nlen >= sizeof(name_buf)) {
+                    nlen = sizeof(name_buf) - 1;
+                }
+                ngx_memcpy(name_buf, ns, nlen);
+                name_buf[nlen] = '\0';
+
+                JS_SetPropertyStr(ctx, cobj, (const char *) name_buf,
+                                  JS_NewStringLen(ctx,
+                                                  (const char *) vs,
+                                                  (size_t)(ve - vs)));
+            }
+        }
+
+        return cobj;
     }
 
     }
@@ -889,6 +973,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("subrequest",  1, ngx_js_request_subrequest),
     JS_CFUNC_DEF("log",         2, ngx_js_request_log),
     JS_CGETSET_MAGIC_DEF("queryParams", ngx_js_request_get, NULL, 16),
+    JS_CGETSET_MAGIC_DEF("cookies",     ngx_js_request_get, NULL, 17),
 };
 
 
