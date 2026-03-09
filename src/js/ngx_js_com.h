@@ -42,6 +42,7 @@ extern JSClassID  ngx_js_log_class_id;         /* access log conf  (Stage 13) */
 extern JSClassID  ngx_js_realip_class_id;      /* realip loc conf  (Stage 13) */
 extern JSClassID  ngx_js_charset_class_id;     /* charset loc conf (Stage 13) */
 extern JSClassID  ngx_js_sub_filter_class_id;  /* sub_filter loc conf (Stage 13) */
+extern JSClassID  ngx_js_autoindex_class_id;   /* autoindex loc conf  (Stage 13) */
 
 
 /*
@@ -85,6 +86,7 @@ ngx_int_t  ngx_js_realip_register_class(JSRuntime *rt);
 #endif
 ngx_int_t  ngx_js_charset_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_sub_filter_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_autoindex_register_class(JSRuntime *rt);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */
