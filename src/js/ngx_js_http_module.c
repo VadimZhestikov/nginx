@@ -360,6 +360,211 @@ ngx_js_request_set_variable(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * Subrequest context — allocated from the parent request's pool.
+ * Holds everything the post-subrequest callback and resume handler need.
+ */
+typedef struct {
+    JSContext        *ctx;
+    JSRuntime        *rt;
+    ngx_js_worker_t  *w;
+    JSValue           resolve;
+    JSValue           reject;
+} ngx_js_subreq_ctx_t;
+
+
+/*
+ * write_event_handler installed on the parent request by ngx_js_subreq_done.
+ * nginx calls this (via ngx_http_run_posted_requests) once the subrequest
+ * finalization machinery has fully unwound.  Safe to drain JS microtasks
+ * and finalize the parent here.
+ */
+static void
+ngx_js_subreq_resume(ngx_http_request_t *r)
+{
+    ngx_js_subreq_ctx_t  *sctx;
+    JSContext            *job_ctx;
+
+    sctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    if (sctx == NULL) {
+        return;
+    }
+
+    /* Restore the slot so a future subrequest on this request can reuse it */
+    ngx_http_set_ctx(r, NULL, ngx_js_http_module);
+
+    /* Restore a safe default write handler before we run user JS code */
+    r->write_event_handler = ngx_http_request_empty_handler;
+
+    /* Run continuations (r.respond() fires here) */
+    while (JS_ExecutePendingJob(sctx->rt, &job_ctx) > 0) { }
+
+    /* Finalize parent request once the top-level handler Promise settles */
+    ngx_js_async_check(sctx->w);
+}
+
+
+/*
+ * Post-subrequest callback: resolves the JS Promise with {status, body},
+ * then defers microtask drain + parent resumption to the next event loop
+ * iteration by hooking write_event_handler on the parent.
+ *
+ * After we return, nginx decrements r->main->count and posts the parent
+ * request (ngx_http_post_request at ngx_http_request.c:2768).
+ * ngx_http_run_posted_requests then calls write_event_handler — safely
+ * outside the subrequest finalization stack.
+ */
+static ngx_int_t
+ngx_js_subreq_done(ngx_http_request_t *sr, void *data, ngx_int_t rc)
+{
+    ngx_js_subreq_ctx_t  *sctx = data;
+    JSContext            *ctx  = sctx->ctx;
+    JSValue               result, arg;
+    u_char               *body_data;
+    size_t                body_len;
+
+    /* Collect buffered body from sr->out (NGX_HTTP_SUBREQUEST_IN_MEMORY) */
+    if (sr->out && sr->out->buf
+        && sr->out->buf->last > sr->out->buf->pos)
+    {
+        body_data = sr->out->buf->pos;
+        body_len  = (size_t)(sr->out->buf->last - sr->out->buf->pos);
+    } else {
+        body_data = (u_char *) "";
+        body_len  = 0;
+    }
+
+    /* Build {status, body} result object and resolve the awaited Promise */
+    arg = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, arg, "status",
+                      JS_NewInt32(ctx,
+                                  (int32_t) sr->headers_out.status));
+    JS_SetPropertyStr(ctx, arg, "body",
+                      JS_NewStringLen(ctx,
+                                      (const char *) body_data, body_len));
+
+    result = JS_Call(ctx, sctx->resolve, JS_UNDEFINED, 1, &arg);
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, arg);
+    JS_FreeValue(ctx, sctx->resolve);
+    JS_FreeValue(ctx, sctx->reject);
+
+    /*
+     * Stash sctx and redirect write_event_handler so ngx_js_subreq_resume
+     * is called from ngx_http_run_posted_requests after we return.
+     */
+    ngx_http_set_ctx(sr->main, sctx, ngx_js_http_module);
+    sr->main->write_event_handler = ngx_js_subreq_resume;
+
+    return NGX_OK;
+}
+
+
+/*
+ * req.subrequest(uri) → Promise<{status, body}>
+ *
+ * Issues an nginx internal subrequest to `uri` (no leading query string
+ * args; use "$uri?args" style if needed).  The response body is buffered
+ * in memory (NGX_HTTP_SUBREQUEST_IN_MEMORY).  The returned Promise
+ * resolves to a plain object {status: number, body: string}.
+ *
+ * Must be used with `await` inside an async handler.
+ */
+static JSValue
+ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t     *op;
+    ngx_http_request_t          *r;
+    ngx_js_worker_t             *w;
+    ngx_js_subreq_ctx_t         *sctx;
+    ngx_http_request_t          *sr;
+    ngx_http_post_subrequest_t  *psr;
+    JSValue                      resolving[2], promise;
+    const char                  *uri_cstr;
+    size_t                       uri_len;
+    ngx_str_t                    uri;
+    ngx_int_t                    rc;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "r.subrequest(uri): uri required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    r = op->r;
+
+    w = JS_GetContextOpaque(ctx);
+    if (!w) {
+        return JS_ThrowInternalError(ctx, "r.subrequest: no worker context");
+    }
+
+    /* Copy URI into the request pool so it outlives the JS string */
+    uri_cstr = JS_ToCStringLen(ctx, &uri_len, argv[0]);
+    if (!uri_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    uri.data = ngx_pnalloc(r->pool, uri_len);
+    if (!uri.data) {
+        JS_FreeCString(ctx, uri_cstr);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(uri.data, uri_cstr, uri_len);
+    uri.len = uri_len;
+    JS_FreeCString(ctx, uri_cstr);
+
+    /* Create Promise */
+    promise = JS_NewPromiseCapability(ctx, resolving);
+    if (JS_IsException(promise)) {
+        return promise;
+    }
+
+    /* Subrequest context in parent pool */
+    sctx = ngx_palloc(r->pool, sizeof(ngx_js_subreq_ctx_t));
+    if (!sctx) {
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    sctx->ctx     = ctx;
+    sctx->rt      = w->rt;
+    sctx->w       = w;
+    sctx->resolve = resolving[0];
+    sctx->reject  = resolving[1];
+
+    /* Post-subrequest callback in parent pool */
+    psr = ngx_palloc(r->pool, sizeof(ngx_http_post_subrequest_t));
+    if (!psr) {
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    psr->handler = ngx_js_subreq_done;
+    psr->data    = sctx;
+
+    rc = ngx_http_subrequest(r, &uri, NULL, &sr, psr,
+                             NGX_HTTP_SUBREQUEST_IN_MEMORY);
+    if (rc != NGX_OK) {
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowInternalError(ctx, "r.subrequest: failed (%ld)",
+                                     (long) rc);
+    }
+
+    return promise;
+}
+
+
+/*
  * req.respond(status, headers, body)
  *
  *   status  — HTTP status code (number)
@@ -559,6 +764,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("respond",     3, ngx_js_request_respond),
     JS_CFUNC_DEF("variable",    1, ngx_js_request_variable),
     JS_CFUNC_DEF("setVariable", 2, ngx_js_request_set_variable),
+    JS_CFUNC_DEF("subrequest",  1, ngx_js_request_subrequest),
 };
 
 
