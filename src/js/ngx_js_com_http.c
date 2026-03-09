@@ -137,6 +137,10 @@ JSValue  ngx_js_wrap_xslt(JSContext *ctx,
 JSValue  ngx_js_wrap_secure_link(JSContext *ctx,
     ngx_http_secure_link_conf_t *scf);
 
+/* Forward declaration from ngx_js_com_mp4.c */
+#include "../http/modules/ngx_http_mp4_module.h"
+JSValue  ngx_js_wrap_mp4(JSContext *ctx, ngx_http_mp4_conf_t *mcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -597,6 +601,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_secure_link(ctx, scf);
     }
+
+    case 39: /* mp4 — NginxMp4 wrapping mp4 loc conf */
+    {
+        ngx_http_mp4_conf_t  *mcf;
+
+        mcf = clcf->loc_conf[ngx_http_mp4_module.ctx_index];
+        if (mcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_mp4(ctx, mcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -800,6 +816,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("imageFilter",     ngx_js_location_get, NULL,                36),
     JS_CGETSET_MAGIC_DEF("xslt",            ngx_js_location_get, NULL,                37),
     JS_CGETSET_MAGIC_DEF("secureLink",      ngx_js_location_get, NULL,                38),
+    JS_CGETSET_MAGIC_DEF("mp4",             ngx_js_location_get, NULL,                39),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1437,6 +1454,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_secure_link_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_mp4_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
