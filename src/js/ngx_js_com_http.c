@@ -127,6 +127,11 @@ JSValue  ngx_js_wrap_slice(JSContext *ctx, ngx_http_slice_loc_conf_t *scf);
 JSValue  ngx_js_wrap_image_filter(JSContext *ctx,
     ngx_http_image_filter_conf_t *icf);
 
+/* Forward declaration from ngx_js_com_xslt.c */
+#include "../http/modules/ngx_http_xslt_filter_module.h"
+JSValue  ngx_js_wrap_xslt(JSContext *ctx,
+    ngx_http_xslt_filter_loc_conf_t *xcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -563,6 +568,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_image_filter(ctx, icf);
     }
+
+    case 37: /* xslt — NginxXslt wrapping xslt loc conf */
+    {
+        ngx_http_xslt_filter_loc_conf_t  *xcf;
+
+        xcf = clcf->loc_conf[ngx_http_xslt_filter_module.ctx_index];
+        if (xcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_xslt(ctx, xcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -764,6 +781,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("gunzip",          ngx_js_location_get, NULL,                34),
     JS_CGETSET_MAGIC_DEF("slice",           ngx_js_location_get, NULL,                35),
     JS_CGETSET_MAGIC_DEF("imageFilter",     ngx_js_location_get, NULL,                36),
+    JS_CGETSET_MAGIC_DEF("xslt",            ngx_js_location_get, NULL,                37),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1393,6 +1411,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_image_filter_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_xslt_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
