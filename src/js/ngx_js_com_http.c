@@ -1716,6 +1716,102 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
 
     JS_SetOpaque(obj, op);
 
+    /*
+     * Build the listen[] array for this server and set it as an eager
+     * property.  We identify HTTP listening sockets by comparing
+     * ls->handler to ngx_http_init_connection (declared in ngx_http.h).
+     * For each HTTP socket whose default_server == cscf, we add:
+     *   { addr, port, ssl, http2, default }
+     * The "default" flag is always true here (non-default servers sharing
+     * the same address are not yet discoverable via this API).
+     */
+    {
+        JSValue               listen_arr, entry;
+        ngx_listening_t      *ls;
+        ngx_uint_t            li, ai, idx;
+        ngx_http_port_t      *hport;
+        ngx_http_addr_conf_t *aconf;
+        u_char                addr_buf[NGX_SOCKADDR_STRLEN + 1];
+        ngx_str_t             sa_text;
+        in_port_t             port;
+
+        listen_arr = JS_NewArray(ctx);
+        idx        = 0;
+        ls         = cycle->listening.elts;
+
+        for (li = 0; li < cycle->listening.nelts; li++) {
+
+            /* Only HTTP sockets */
+            if (ls[li].handler != ngx_http_init_connection) {
+                continue;
+            }
+
+            if (ls[li].servers == NULL) {
+                continue;
+            }
+
+            /*
+             * At init_conf time ls->servers is ngx_http_port_t *, which
+             * holds an addrs array of ngx_http_in_addr_t (IPv4) or
+             * ngx_http_in6_addr_t (IPv6).  Each entry embeds an
+             * ngx_http_addr_conf_t with default_server, ssl, http2, etc.
+             * populated by ngx_http_add_addrs / ngx_http_add_addrs6.
+             */
+            hport = (ngx_http_port_t *) ls[li].servers;
+
+            if (hport->addrs == NULL || hport->naddrs == 0) {
+                continue;
+            }
+
+            /* Find the addr_conf where this server is the default */
+            aconf = NULL;
+            for (ai = 0; ai < hport->naddrs; ai++) {
+                ngx_http_addr_conf_t *ac;
+#if (NGX_HAVE_INET6)
+                if (ls[li].sockaddr->sa_family == AF_INET6) {
+                    ac = &((ngx_http_in6_addr_t *) hport->addrs)[ai].conf;
+                } else {
+#endif
+                    ac = &((ngx_http_in_addr_t *) hport->addrs)[ai].conf;
+#if (NGX_HAVE_INET6)
+                }
+#endif
+                if (ac->default_server == cscf) {
+                    aconf = ac;
+                    break;
+                }
+            }
+
+            if (aconf == NULL) {
+                continue;
+            }
+
+            port = ngx_inet_get_port(ls[li].sockaddr);
+
+            sa_text.data = addr_buf;
+            sa_text.len  = ngx_sock_ntop(ls[li].sockaddr, ls[li].socklen,
+                                          addr_buf, NGX_SOCKADDR_STRLEN, 0);
+
+            entry = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, entry, "addr",
+                              JS_NewStringLen(ctx,
+                                              (const char *) sa_text.data,
+                                              sa_text.len));
+            JS_SetPropertyStr(ctx, entry, "port",
+                              JS_NewInt32(ctx, (int32_t) port));
+            JS_SetPropertyStr(ctx, entry, "ssl",
+                              JS_NewBool(ctx, aconf->ssl));
+            JS_SetPropertyStr(ctx, entry, "http2",
+                              JS_NewBool(ctx, aconf->http2));
+            JS_SetPropertyStr(ctx, entry, "default",
+                              JS_NewBool(ctx, 1));
+
+            JS_SetPropertyUint32(ctx, listen_arr, (uint32_t) idx++, entry);
+        }
+
+        JS_SetPropertyStr(ctx, obj, "listen", listen_arr);
+    }
+
     return obj;
 }
 
