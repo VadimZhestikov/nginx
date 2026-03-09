@@ -21,12 +21,13 @@ typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
  * directives during ngx_conf_parse(), executed by init_conf().
  */
 typedef struct {
-    ngx_array_t         sources;              /* ngx_str_t: paths from js_source       */
-    JSRuntime          *rt;                   /* master-process QuickJS runtime         */
-    JSContext          *ctx;                  /* master-process QuickJS context         */
-    void               *worker;              /* ngx_js_worker_t* after fork            */
-    ngx_js_sw_state_t  *sw_list;             /* linked list of SharedWorker states     */
-    size_t              worker_memory_limit;  /* 0 = no limit; read from JS after eval */
+    ngx_array_t         sources;               /* ngx_str_t: paths from js_source        */
+    JSRuntime          *rt;                    /* master-process QuickJS runtime          */
+    JSContext          *ctx;                   /* master-process QuickJS context          */
+    void               *worker;               /* ngx_js_worker_t* after fork             */
+    ngx_js_sw_state_t  *sw_list;              /* linked list of SharedWorker states      */
+    size_t              worker_memory_limit;   /* 0 = no limit; read from JS after eval  */
+    size_t              worker_request_timeout;/* ms; 0 = no limit; interrupt on timeout */
 } ngx_js_conf_t;
 
 
@@ -50,8 +51,9 @@ typedef struct {
 typedef struct {
     JSRuntime           *rt;
     JSContext           *ctx;
-    ngx_js_async_ctx_t  *async_pending;   /* NULL or one suspended request */
-    ngx_js_sw_state_t   *local_sw_list;   /* dynamic SWs created post-fork  */
+    ngx_js_async_ctx_t  *async_pending;      /* NULL or one suspended request  */
+    ngx_js_sw_state_t   *local_sw_list;      /* dynamic SWs created post-fork  */
+    uint64_t             request_deadline_ms; /* 0 = none; CLOCK_MONOTONIC ms   */
 } ngx_js_worker_t;
 
 

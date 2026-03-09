@@ -3357,12 +3357,28 @@ ngx_js_content_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    /*
+     * Set per-request deadline if nginx.workerRequestTimeout is configured.
+     * The interrupt handler (ngx_js_interrupt_handler in ngx_js_module.c)
+     * polls this deadline every ~100 bytecodes and aborts JS execution when
+     * the deadline is exceeded.  Cleared after all synchronous JS finishes.
+     */
+    if (jcf->worker_request_timeout > 0) {
+        struct timespec  ts;
+
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        w->request_deadline_ms = (uint64_t) ts.tv_sec * 1000
+                                 + (uint64_t) ts.tv_nsec / 1000000
+                                 + jcf->worker_request_timeout;
+    }
+
     result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
 
     JS_FreeValue(ctx, fn);
 
-    /* Synchronous exception */
+    /* Synchronous exception (includes interrupt-on-timeout) */
     if (JS_IsException(result)) {
+        w->request_deadline_ms = 0;
         ngx_js_log_exception(ctx, r->connection->log);
         JS_FreeValue(ctx, result);
         JS_FreeValue(ctx, req_obj);
@@ -3408,6 +3424,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
                 JS_FreeValue(ctx, reason);
                 JS_FreeValue(ctx, result);
                 JS_FreeValue(ctx, req_obj);
+                w->request_deadline_ms = 0;
                 return NGX_HTTP_INTERNAL_SERVER_ERROR;
             }
 
@@ -3420,6 +3437,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
                                   "js: another async request already pending");
                     JS_FreeValue(ctx, result);
                     JS_FreeValue(ctx, req_obj);
+                    w->request_deadline_ms = 0;
                     return NGX_HTTP_INTERNAL_SERVER_ERROR;
                 }
 
@@ -3427,6 +3445,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
                 if (actx == NULL) {
                     JS_FreeValue(ctx, result);
                     JS_FreeValue(ctx, req_obj);
+                    w->request_deadline_ms = 0;
                     return NGX_HTTP_INTERNAL_SERVER_ERROR;
                 }
 
@@ -3439,6 +3458,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
 
                 JS_FreeValue(ctx, req_obj);
                 JS_FreeValue(ctx, result);
+                w->request_deadline_ms = 0;
                 return NGX_DONE;
             }
 
@@ -3456,6 +3476,8 @@ ngx_js_content_handler(ngx_http_request_t *r)
      * pattern is to return the rc to ngx_http_core_content_phase, which
      * calls ngx_http_finalize_request() exactly once.
      */
+    w->request_deadline_ms = 0;
+
     req_op   = JS_GetOpaque(req_obj, ngx_js_request_class_id);
     final_rc = (req_op && req_op->responded)
                ? req_op->respond_rc

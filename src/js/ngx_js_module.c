@@ -317,6 +317,7 @@ const JSSharedArrayBufferFunctions  ngx_js_sab_funcs = {
 static void *ngx_js_create_conf(ngx_cycle_t *cycle);
 static char *ngx_js_init_conf(ngx_cycle_t *cycle, void *conf);
 
+static int       ngx_js_interrupt_handler(JSRuntime *rt, void *opaque);
 static ngx_int_t ngx_js_init_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_master(ngx_cycle_t *cycle);
@@ -528,27 +529,36 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     }
 
     /*
-     * Read nginx.workerMemoryLimit back from JS (may have been set by
-     * a js_source script) and cache it in jcf so init_process() can
-     * apply it without touching the JS context after fork.
+     * Read nginx.workerMemoryLimit and nginx.workerRequestTimeout back
+     * from JS (may have been set by js_source scripts) and cache them
+     * in jcf so init_process() can apply them without touching the JS
+     * context after fork.
      */
     {
-        JSValue  global, nginx_obj, limit_val;
-        int64_t  limit;
+        JSValue  global, nginx_obj, val;
+        int64_t  n;
 
         global    = JS_GetGlobalObject(jcf->ctx);
         nginx_obj = JS_GetPropertyStr(jcf->ctx, global, "nginx");
-        limit_val = JS_GetPropertyStr(jcf->ctx, nginx_obj, "workerMemoryLimit");
-        JS_FreeValue(jcf->ctx, nginx_obj);
         JS_FreeValue(jcf->ctx, global);
 
-        if (!JS_IsException(limit_val) && !JS_IsUndefined(limit_val)
-            && JS_ToInt64(jcf->ctx, &limit, limit_val) == 0 && limit > 0)
+        val = JS_GetPropertyStr(jcf->ctx, nginx_obj, "workerMemoryLimit");
+        if (!JS_IsException(val) && !JS_IsUndefined(val)
+            && JS_ToInt64(jcf->ctx, &n, val) == 0 && n > 0)
         {
-            jcf->worker_memory_limit = (size_t) limit;
+            jcf->worker_memory_limit = (size_t) n;
         }
+        JS_FreeValue(jcf->ctx, val);
 
-        JS_FreeValue(jcf->ctx, limit_val);
+        val = JS_GetPropertyStr(jcf->ctx, nginx_obj, "workerRequestTimeout");
+        if (!JS_IsException(val) && !JS_IsUndefined(val)
+            && JS_ToInt64(jcf->ctx, &n, val) == 0 && n > 0)
+        {
+            jcf->worker_request_timeout = (size_t) n;
+        }
+        JS_FreeValue(jcf->ctx, val);
+
+        JS_FreeValue(jcf->ctx, nginx_obj);
     }
 
     /*
@@ -575,6 +585,33 @@ failed_rt:
     jcf->rt = NULL;
 
     return NGX_CONF_ERROR;
+}
+
+
+/*
+ * ngx_js_interrupt_handler — polled by QuickJS every ~100 bytecodes.
+ *
+ * Returns 1 to abort JS execution when the per-request deadline has
+ * passed.  The deadline (CLOCK_MONOTONIC milliseconds) is set in
+ * ngx_js_content_handler() before JS_Call and cleared afterwards.
+ * clock_gettime() is async-signal-safe and does not require the nginx
+ * event loop to be running, so it fires even inside a tight JS loop.
+ */
+static int
+ngx_js_interrupt_handler(JSRuntime *rt, void *opaque)
+{
+    ngx_js_worker_t  *w = opaque;
+    struct timespec   ts;
+    uint64_t          now_ms;
+
+    if (w->request_deadline_ms == 0) {
+        return 0;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
+
+    return now_ms >= w->request_deadline_ms ? 1 : 0;
 }
 
 
@@ -626,6 +663,10 @@ ngx_js_init_process(ngx_cycle_t *cycle)
         JS_ComputeMemoryUsage(w->rt, &mu);
         JS_SetMemoryLimit(w->rt,
                           (size_t) mu.malloc_size + jcf->worker_memory_limit);
+    }
+
+    if (jcf->worker_request_timeout > 0) {
+        JS_SetInterruptHandler(w->rt, ngx_js_interrupt_handler, w);
     }
 
     /*
