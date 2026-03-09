@@ -156,6 +156,11 @@ JSValue  ngx_js_wrap_auth_request(JSContext *ctx,
 JSValue  ngx_js_wrap_gzip_static(JSContext *ctx,
     ngx_http_gzip_static_conf_t *gcf);
 
+/* Forward declaration from ngx_js_com_memcached.c */
+#include "../http/modules/ngx_http_memcached_module.h"
+JSValue  ngx_js_wrap_memcached(JSContext *ctx,
+    ngx_http_memcached_loc_conf_t *mlcf);
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -664,6 +669,18 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 
         return ngx_js_wrap_gzip_static(ctx, gcf);
     }
+
+    case 43: /* memcached — NginxMemcached wrapping memcached loc conf */
+    {
+        ngx_http_memcached_loc_conf_t  *mlcf;
+
+        mlcf = clcf->loc_conf[ngx_http_memcached_module.ctx_index];
+        if (mlcf == NULL) {
+            return JS_NULL;
+        }
+
+        return ngx_js_wrap_memcached(ctx, mlcf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -871,6 +888,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("randomIndex",     ngx_js_location_get, NULL,                40),
     JS_CGETSET_MAGIC_DEF("authRequest",     ngx_js_location_get, NULL,                41),
     JS_CGETSET_MAGIC_DEF("gzipStatic",      ngx_js_location_get, NULL,                42),
+    JS_CGETSET_MAGIC_DEF("memcached",       ngx_js_location_get, NULL,                43),
     JS_CGETSET_DEF       ("errorPage",       ngx_js_location_get_error_page, NULL),
 };
 
@@ -1524,6 +1542,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_gzip_static_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_memcached_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 

@@ -36,6 +36,7 @@ ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
                  $ngx_addon_dir/ngx_js_com_random_index.c \
                  $ngx_addon_dir/ngx_js_com_auth_request.c \
                  $ngx_addon_dir/ngx_js_com_gzip_static.c \
+                 $ngx_addon_dir/ngx_js_com_memcached.c \
                  $ngx_addon_dir/ngx_js_http_module.c"
 ngx_module_deps="$ngx_addon_dir/ngx_js.h \
                  $ngx_addon_dir/ngx_js_com.h \
