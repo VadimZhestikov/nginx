@@ -201,6 +201,156 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 /*
+ * req.variable(name) → string | null
+ *
+ * Reads the nginx variable named `name` (without leading $) in the context
+ * of this request.  Returns null when the variable is not found or has no
+ * value.
+ */
+static JSValue
+ngx_js_request_variable(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t    *op;
+    ngx_http_request_t         *r;
+    ngx_http_variable_value_t  *vv;
+    ngx_str_t                   name;
+    const char                 *name_cstr;
+    size_t                      name_len;
+    ngx_uint_t                  key;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "r.variable: expected name argument");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    r = op->r;
+
+    name_cstr = JS_ToCStringLen(ctx, &name_len, argv[0]);
+    if (!name_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    name.data = (u_char *) name_cstr;
+    name.len  = name_len;
+
+    key = ngx_hash_key(name.data, name.len);
+    vv  = ngx_http_get_variable(r, &name, key);
+
+    JS_FreeCString(ctx, name_cstr);
+
+    if (vv == NULL || vv->not_found) {
+        return JS_NULL;
+    }
+
+    return JS_NewStringLen(ctx, (const char *) vv->data, vv->len);
+}
+
+
+/*
+ * req.setVariable(name, value) → undefined
+ *
+ * Sets the nginx variable named `name` (without leading $) to `value`.
+ * The variable must already be known to nginx (e.g. declared via `set`).
+ * Throws TypeError if the variable is unknown or not settable.
+ * The value is copied into the request pool.
+ */
+static JSValue
+ngx_js_request_set_variable(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t    *op;
+    ngx_http_request_t         *r;
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_variable_t        *v;
+    ngx_http_variable_value_t   vv;
+    ngx_str_t                   name;
+    const char                 *name_cstr, *val_cstr;
+    size_t                      name_len, val_len;
+    ngx_uint_t                  key;
+    u_char                     *p;
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx,
+                                 "r.setVariable: expected (name, value)");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    r = op->r;
+
+    name_cstr = JS_ToCStringLen(ctx, &name_len, argv[0]);
+    if (!name_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    val_cstr = JS_ToCStringLen(ctx, &val_len, argv[1]);
+    if (!val_cstr) {
+        JS_FreeCString(ctx, name_cstr);
+        return JS_EXCEPTION;
+    }
+
+    name.data = (u_char *) name_cstr;
+    name.len  = name_len;
+    key = ngx_hash_key(name.data, name.len);
+
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+    v = ngx_hash_find(&cmcf->variables_hash, key, name.data, name.len);
+
+    if (v == NULL) {
+        JS_FreeCString(ctx, val_cstr);
+        JS_FreeCString(ctx, name_cstr);
+        return JS_ThrowTypeError(ctx,
+                                 "r.setVariable: unknown variable \"%.*s\"",
+                                 (int) name_len, name_cstr);
+    }
+
+    /* copy value into request pool so it outlives the JS string */
+    p = ngx_palloc(r->pool, val_len + 1);
+    if (p == NULL) {
+        JS_FreeCString(ctx, val_cstr);
+        JS_FreeCString(ctx, name_cstr);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(p, val_cstr, val_len);
+    p[val_len] = '\0';
+
+    JS_FreeCString(ctx, val_cstr);
+    JS_FreeCString(ctx, name_cstr);
+
+    if (v->set_handler) {
+        ngx_memzero(&vv, sizeof(ngx_http_variable_value_t));
+        vv.valid = 1;
+        vv.data  = p;
+        vv.len   = (ngx_uint_t) val_len;
+        v->set_handler(r, &vv, v->data);
+        return JS_UNDEFINED;
+    }
+
+    if (v->flags & NGX_HTTP_VAR_INDEXED) {
+        r->variables[v->index].len          = (ngx_uint_t) val_len;
+        r->variables[v->index].valid        = 1;
+        r->variables[v->index].no_cacheable = 0;
+        r->variables[v->index].not_found    = 0;
+        r->variables[v->index].data         = p;
+        return JS_UNDEFINED;
+    }
+
+    return JS_ThrowTypeError(ctx,
+                             "r.setVariable: variable \"%.*s\" is not settable",
+                             (int) name.len, name.data);
+}
+
+
+/*
  * req.respond(status, headers, body)
  *
  *   status  — HTTP status code (number)
@@ -396,7 +546,9 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("remotePort",    ngx_js_request_get, NULL, 12),
     JS_CGETSET_MAGIC_DEF("scheme",        ngx_js_request_get, NULL, 13),
     JS_CGETSET_MAGIC_DEF("connection",    ngx_js_request_get, NULL, 14),
-    JS_CFUNC_DEF("respond", 3, ngx_js_request_respond),
+    JS_CFUNC_DEF("respond",     3, ngx_js_request_respond),
+    JS_CFUNC_DEF("variable",    1, ngx_js_request_variable),
+    JS_CFUNC_DEF("setVariable", 2, ngx_js_request_set_variable),
 };
 
 
