@@ -71,7 +71,12 @@ static JSClassDef ngx_js_request_class = {
  *  17 — cookies      (r/o object, name/value pairs from Cookie header)
  *  18 — upstream     (r/o object or null, last upstream attempt metadata)
  *  19 — variables    (r/w NginxRequestVariables exotic object)
+ *  20 — body         (r/o string or null — present only if already read)
  */
+
+/* Forward declaration — defined after ngx_js_request_set_variable */
+static JSValue ngx_js_collect_body(JSContext *ctx, ngx_http_request_t *r);
+
 /*
  * Build a plain JS object from one ngx_http_upstream_state_t entry:
  *   { status, responseTime, connectTime, bytesReceived, addr }
@@ -420,6 +425,9 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
         return vobj;
     }
 
+    case 20: /* body — request body string if already buffered, else null */
+        return ngx_js_collect_body(ctx, r);
+
     }
 
     return JS_UNDEFINED;
@@ -573,6 +581,198 @@ ngx_js_request_set_variable(JSContext *ctx, JSValueConst this_val,
     return JS_ThrowTypeError(ctx,
                              "r.setVariable: variable \"%.*s\" is not settable",
                              (int) name.len, name.data);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* r.body and r.readBody() — request body access                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Collect all in-memory chain bufs from r->request_body->bufs into a
+ * single JS string.  File-buffered data is skipped (counted as zero).
+ * Called both from the r.body getter and the body_done callback.
+ * Returns JS_NULL when there is no body.
+ */
+static JSValue
+ngx_js_collect_body(JSContext *ctx, ngx_http_request_t *r)
+{
+    ngx_http_request_body_t  *rb;
+    ngx_chain_t              *cl;
+    ngx_buf_t                *b;
+    size_t                    total;
+    u_char                   *buf, *p;
+    JSValue                   str;
+
+    rb = r->request_body;
+    if (rb == NULL || rb->bufs == NULL) {
+        return JS_NULL;
+    }
+
+    total = 0;
+    for (cl = rb->bufs; cl; cl = cl->next) {
+        b = cl->buf;
+        if (!b->in_file) {
+            total += (size_t) (b->last - b->pos);
+        }
+    }
+
+    if (total == 0) {
+        return JS_NewStringLen(ctx, "", 0);
+    }
+
+    buf = js_malloc(ctx, total);
+    if (!buf) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    p = buf;
+    for (cl = rb->bufs; cl; cl = cl->next) {
+        b = cl->buf;
+        if (!b->in_file) {
+            p = ngx_cpymem(p, b->pos, (size_t) (b->last - b->pos));
+        }
+    }
+
+    str = JS_NewStringLen(ctx, (const char *) buf, total);
+    js_free(ctx, buf);
+    return str;
+}
+
+
+/*
+ * Context stored via ngx_http_set_ctx for the async body-reading path.
+ */
+typedef struct {
+    JSContext        *ctx;
+    JSRuntime        *rt;
+    ngx_js_worker_t  *w;
+    JSValue           resolve;
+    JSValue           reject;
+} ngx_js_body_ctx_t;
+
+
+/*
+ * Callback fired by nginx when the request body has been fully read.
+ * Resolves the inner readBody() Promise, drains the QuickJS microtask
+ * queue (which resumes the outer async handler), then calls
+ * ngx_js_async_check to finalize the request if the outer Promise is
+ * settled.
+ */
+static void
+ngx_js_body_done(ngx_http_request_t *r)
+{
+    ngx_js_body_ctx_t  *bctx;
+    JSContext          *job_ctx;
+    JSValue             body;
+
+    bctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    ngx_http_set_ctx(r, NULL, ngx_js_http_module);
+
+    body = ngx_js_collect_body(bctx->ctx, r);
+
+    if (JS_IsException(body)) {
+        JSValue  err = JS_GetException(bctx->ctx);
+        JS_Call(bctx->ctx, bctx->reject, JS_UNDEFINED, 1, &err);
+        JS_FreeValue(bctx->ctx, err);
+    } else {
+        JS_Call(bctx->ctx, bctx->resolve, JS_UNDEFINED, 1, &body);
+        JS_FreeValue(bctx->ctx, body);
+    }
+
+    JS_FreeValue(bctx->ctx, bctx->resolve);
+    JS_FreeValue(bctx->ctx, bctx->reject);
+
+    while (JS_ExecutePendingJob(bctx->rt, &job_ctx) > 0) { }
+
+    /*
+     * ngx_js_async_check consumes the count added by the content handler's
+     * async-pending path.  The additional ngx_http_finalize_request below
+     * consumes the count added by ngx_http_read_client_request_body itself.
+     * Together they leave r->main->count at 1 (sync body path) or 0 (async
+     * body path), which triggers the normal keepalive / close logic.
+     */
+    ngx_js_async_check(bctx->w);
+    ngx_http_finalize_request(r, NGX_DONE);
+}
+
+
+/*
+ * r.readBody() → Promise<string>
+ *
+ * Triggers nginx body reading.  If the body is already buffered the
+ * Promise resolves in the same event-loop turn.  Otherwise nginx reads
+ * it asynchronously and ngx_js_body_done resolves the Promise later.
+ */
+static JSValue
+ngx_js_request_read_body(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    ngx_js_body_ctx_t        *bctx;
+    ngx_js_worker_t          *w;
+    JSValue                   promise, args[2];
+    ngx_int_t                 rc;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    r = op->r;
+    w = JS_GetContextOpaque(ctx);
+
+    /* Create resolve/reject pair */
+    promise = JS_NewPromiseCapability(ctx, args);
+    if (JS_IsException(promise)) {
+        return JS_EXCEPTION;
+    }
+
+    /* Body already available — resolve immediately */
+    if (r->request_body != NULL) {
+        JSValue  body = ngx_js_collect_body(ctx, r);
+        JS_Call(ctx, args[0], JS_UNDEFINED, 1, &body);
+        JS_FreeValue(ctx, body);
+        JS_FreeValue(ctx, args[0]);
+        JS_FreeValue(ctx, args[1]);
+        return promise;
+    }
+
+    bctx = ngx_palloc(r->pool, sizeof(ngx_js_body_ctx_t));
+    if (!bctx) {
+        JS_FreeValue(ctx, args[0]);
+        JS_FreeValue(ctx, args[1]);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    bctx->ctx     = ctx;
+    bctx->rt      = JS_GetRuntime(ctx);
+    bctx->w       = w;
+    bctx->resolve = args[0];
+    bctx->reject  = args[1];
+
+    ngx_http_set_ctx(r, bctx, ngx_js_http_module);
+
+    rc = ngx_http_read_client_request_body(r, ngx_js_body_done);
+
+    if (rc == NGX_ERROR || rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+        /* bctx is still in pool — body_done was not called, free manually */
+        ngx_http_set_ctx(r, NULL, ngx_js_http_module);
+        JS_FreeValue(ctx, bctx->resolve);
+        JS_FreeValue(ctx, bctx->reject);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowTypeError(ctx, "r.readBody: failed to initiate read");
+    }
+
+    /*
+     * NGX_OK: body was available, ngx_js_body_done already called and
+     * already cleared the module ctx.
+     * NGX_AGAIN: async read started; ngx_js_body_done will fire later.
+     * Either way the Promise will be resolved by the callback.
+     */
+    return promise;
 }
 
 
@@ -1370,6 +1570,8 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("cookies",     ngx_js_request_get, NULL, 17),
     JS_CGETSET_MAGIC_DEF("upstream",    ngx_js_request_get, NULL, 18),
     JS_CGETSET_MAGIC_DEF("variables",   ngx_js_request_get, NULL, 19),
+    JS_CGETSET_MAGIC_DEF("body",        ngx_js_request_get, NULL, 20),
+    JS_CFUNC_DEF("readBody",            0, ngx_js_request_read_body),
 };
 
 
