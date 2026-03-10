@@ -3358,18 +3358,47 @@ ngx_js_content_handler(ngx_http_request_t *r)
     }
 
     /*
-     * Set per-request deadline if nginx.workerRequestTimeout is configured.
-     * The interrupt handler (ngx_js_interrupt_handler in ngx_js_module.c)
-     * polls this deadline every ~100 bytecodes and aborts JS execution when
-     * the deadline is exceeded.  Cleared after all synchronous JS finishes.
+     * Read nginx.workerMemoryLimit and nginx.workerRequestTimeout live from
+     * JS before every JS_Call so that request handlers can reconfigure them
+     * at runtime and have the new value take effect on the next request.
+     *
+     * workerMemoryLimit: cap on additional heap growth above fork baseline.
+     *   0 → remove limit (set to SIZE_MAX).
+     * workerRequestTimeout: per-request JS execution deadline in ms.
+     *   0 → no deadline (interrupt handler is a no-op when deadline == 0).
      */
-    if (jcf->worker_request_timeout > 0) {
-        struct timespec  ts;
+    {
+        JSValue  global, nginx_obj, val;
+        int64_t  n;
 
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        w->request_deadline_ms = (uint64_t) ts.tv_sec * 1000
-                                 + (uint64_t) ts.tv_nsec / 1000000
-                                 + jcf->worker_request_timeout;
+        global    = JS_GetGlobalObject(ctx);
+        nginx_obj = JS_GetPropertyStr(ctx, global, "nginx");
+        JS_FreeValue(ctx, global);
+
+        val = JS_GetPropertyStr(ctx, nginx_obj, "workerMemoryLimit");
+        if (!JS_IsException(val)
+            && JS_ToInt64(ctx, &n, val) == 0 && n > 0)
+        {
+            JS_SetMemoryLimit(w->rt, w->baseline_malloc_size + (size_t) n);
+        } else {
+            JS_SetMemoryLimit(w->rt, (size_t) -1);  /* unlimited */
+        }
+        JS_FreeValue(ctx, val);
+
+        val = JS_GetPropertyStr(ctx, nginx_obj, "workerRequestTimeout");
+        if (!JS_IsException(val)
+            && JS_ToInt64(ctx, &n, val) == 0 && n > 0)
+        {
+            struct timespec  ts;
+
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            w->request_deadline_ms = (uint64_t) ts.tv_sec * 1000
+                                     + (uint64_t) ts.tv_nsec / 1000000
+                                     + (uint64_t) n;
+        }
+        JS_FreeValue(ctx, val);
+
+        JS_FreeValue(ctx, nginx_obj);
     }
 
     result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);

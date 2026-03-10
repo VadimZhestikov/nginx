@@ -2,6 +2,7 @@
 
 # Tests for nginx.workerRequestTimeout:
 #   - can be set from js_source; reads back the configured value
+#   - can be reconfigured from a request handler at runtime
 #   - interrupt fires on a tight loop, handler returns 500
 #   - worker survives the timeout and serves next request normally
 
@@ -16,7 +17,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(4);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(6);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -33,16 +34,17 @@ http {
         listen       127.0.0.1:8080;
         server_name  localhost;
 
-        location /read/    { }
-        location /loop/    { }
-        location /alive/   { }
+        location /read/     { }
+        location /set-short/ { }
+        location /loop/     { }
+        location /alive/    { }
     }
 }
 EOF
 
 $t->write_file('init.js', <<'JS');
-// Set workerRequestTimeout to 200 ms.
-nginx.workerRequestTimeout = 200;
+// Set workerRequestTimeout to 2000 ms from js_source.
+nginx.workerRequestTimeout = 2000;
 
 const locs = nginx.http.servers[0].locations;
 function loc(path, fn) {
@@ -52,6 +54,12 @@ function loc(path, fn) {
 
 // Read back the configured timeout.
 loc('/read/', r => {
+    r.respond(200, {}, String(nginx.workerRequestTimeout));
+});
+
+// Reconfigure timeout to 50 ms from a request handler.
+loc('/set-short/', r => {
+    nginx.workerRequestTimeout = 50;
     r.respond(200, {}, String(nginx.workerRequestTimeout));
 });
 
@@ -70,9 +78,11 @@ JS
 
 $t->run();
 
-like(http_get('/read/'),  qr/200.*200/s,  'workerRequestTimeout reads back 200 ms');
-like(http_get('/loop/'),  qr/500/s,       'infinite loop interrupted with 500');
-like(http_get('/alive/'), qr/200.*alive/s, 'worker alive after timeout');
-like(http_get('/read/'),  qr/200.*200/s,  'timeout value unchanged after interrupt');
+like(http_get('/read/'),      qr/200.*2000/s, 'workerRequestTimeout reads back 2000 ms from js_source');
+like(http_get('/set-short/'), qr/200.*50/s,   'request handler sets workerRequestTimeout to 50 ms');
+like(http_get('/read/'),      qr/200.*50/s,   'new timeout value visible on next request');
+like(http_get('/loop/'),      qr/500/s,       'infinite loop interrupted with 500 (50 ms timeout)');
+like(http_get('/alive/'),     qr/200.*alive/s, 'worker alive after timeout');
+like(http_get('/read/'),      qr/200.*50/s,   'timeout value unchanged after interrupt');
 
 $t->stop();

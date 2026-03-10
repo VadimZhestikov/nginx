@@ -529,39 +529,6 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     }
 
     /*
-     * Read nginx.workerMemoryLimit and nginx.workerRequestTimeout back
-     * from JS (may have been set by js_source scripts) and cache them
-     * in jcf so init_process() can apply them without touching the JS
-     * context after fork.
-     */
-    {
-        JSValue  global, nginx_obj, val;
-        int64_t  n;
-
-        global    = JS_GetGlobalObject(jcf->ctx);
-        nginx_obj = JS_GetPropertyStr(jcf->ctx, global, "nginx");
-        JS_FreeValue(jcf->ctx, global);
-
-        val = JS_GetPropertyStr(jcf->ctx, nginx_obj, "workerMemoryLimit");
-        if (!JS_IsException(val) && !JS_IsUndefined(val)
-            && JS_ToInt64(jcf->ctx, &n, val) == 0 && n > 0)
-        {
-            jcf->worker_memory_limit = (size_t) n;
-        }
-        JS_FreeValue(jcf->ctx, val);
-
-        val = JS_GetPropertyStr(jcf->ctx, nginx_obj, "workerRequestTimeout");
-        if (!JS_IsException(val) && !JS_IsUndefined(val)
-            && JS_ToInt64(jcf->ctx, &n, val) == 0 && n > 0)
-        {
-            jcf->worker_request_timeout = (size_t) n;
-        }
-        JS_FreeValue(jcf->ctx, val);
-
-        JS_FreeValue(jcf->ctx, nginx_obj);
-    }
-
-    /*
      * The master runtime stays alive until exit_master().  Worker
      * processes inherit it via fork() (copy-on-write) and use their
      * private copies; init_process() just wires w->rt / w->ctx to it.
@@ -651,23 +618,26 @@ ngx_js_init_process(ngx_cycle_t *cycle)
     w->ctx = jcf->ctx;
 
     /*
-     * Apply nginx.workerMemoryLimit if set by a js_source script.
-     * The value was cached in jcf->worker_memory_limit during init_conf
-     * (after all scripts ran) to avoid touching the JS context here.
-     * It is a cap on ADDITIONAL heap growth: baseline usage is measured
-     * right after fork and the limit is set to baseline + configured cap.
+     * Measure the runtime's heap footprint right after fork.  This baseline
+     * is stored in w->baseline_malloc_size so the content handler can compute
+     * the absolute memory limit as baseline + nginx.workerMemoryLimit on each
+     * request.  Both nginx.workerMemoryLimit and nginx.workerRequestTimeout
+     * are read live from the JS property before every JS_Call so that request
+     * handlers can reconfigure them at runtime.
      */
-    if (jcf->worker_memory_limit > 0) {
+    {
         JSMemoryUsage  mu;
 
         JS_ComputeMemoryUsage(w->rt, &mu);
-        JS_SetMemoryLimit(w->rt,
-                          (size_t) mu.malloc_size + jcf->worker_memory_limit);
+        w->baseline_malloc_size = (size_t) mu.malloc_size;
     }
 
-    if (jcf->worker_request_timeout > 0) {
-        JS_SetInterruptHandler(w->rt, ngx_js_interrupt_handler, w);
-    }
+    /*
+     * Always install the interrupt handler so that request handlers can
+     * set nginx.workerRequestTimeout at runtime and have it take effect
+     * immediately.  The handler is a no-op when request_deadline_ms == 0.
+     */
+    JS_SetInterruptHandler(w->rt, ngx_js_interrupt_handler, w);
 
     /*
      * Overwrite the context opaque (set to cycle in ngx_js_com_init) with
