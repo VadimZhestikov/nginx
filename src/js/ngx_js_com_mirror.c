@@ -88,9 +88,26 @@ ngx_js_mirror_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_mirror_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_mirror_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_mirror_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    if (magic == 1) { /* requestBody */
+        op->mlcf->request_body = JS_ToBool(ctx, val);
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_mirror_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("uris",        ngx_js_mirror_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("requestBody", ngx_js_mirror_get, NULL, 1),
+    JS_CGETSET_MAGIC_DEF("uris",        ngx_js_mirror_get, NULL,              0),
+    JS_CGETSET_MAGIC_DEF("requestBody", ngx_js_mirror_get, ngx_js_mirror_set, 1),
 };
 
 

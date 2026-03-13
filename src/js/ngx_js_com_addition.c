@@ -73,9 +73,50 @@ ngx_js_addition_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_addition_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_addition_opaque_t  *op;
+    ngx_http_addition_conf_t  *acf;
+    const char                *s;
+    size_t                     len;
+    u_char                    *p;
+    ngx_str_t                 *field;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_addition_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    acf = op->acf;
+
+    switch (magic) {
+    case 0:  field = &acf->before_body;  break;
+    case 1:  field = &acf->after_body;   break;
+    default: return JS_UNDEFINED;
+    }
+
+    s = JS_ToCStringLen(ctx, &len, val);
+    if (!s) { return JS_EXCEPTION; }
+
+    p = ngx_pnalloc(ngx_cycle->pool, len);
+    if (p == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(p, s, len);
+    JS_FreeCString(ctx, s);
+
+    field->data = p;
+    field->len  = len;
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_addition_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("addBeforeBody", ngx_js_addition_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("addAfterBody",  ngx_js_addition_get, NULL, 1),
+    JS_CGETSET_MAGIC_DEF("addBeforeBody", ngx_js_addition_get, ngx_js_addition_set, 0),
+    JS_CGETSET_MAGIC_DEF("addAfterBody",  ngx_js_addition_get, ngx_js_addition_set, 1),
 };
 
 
