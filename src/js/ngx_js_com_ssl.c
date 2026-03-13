@@ -376,6 +376,124 @@ ngx_js_ssl_set_protocols(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * setCertificate(certPath, keyPath) — swap the TLS certificate and private
+ * key on the live SSL_CTX.
+ *
+ * Calls SSL_CTX_use_certificate_chain_file() and SSL_CTX_use_PrivateKey_file()
+ * (PEM format), then SSL_CTX_check_private_key() to verify they match.
+ * Also replaces sscf->certificates and sscf->certificate_keys with single-
+ * element arrays so the COM certificate/certificateKey getters reflect the
+ * new paths.
+ *
+ * Takes effect for all new TLS handshakes; existing sessions are unaffected.
+ * Throws an Error on any failure (file not found, bad format, key mismatch).
+ */
+static JSValue
+ngx_js_ssl_set_certificate(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_ssl_opaque_t      *op;
+    ngx_http_ssl_srv_conf_t  *sscf;
+    const char               *cert_s, *key_s;
+    size_t                    cert_len, key_len;
+    u_char                   *cp, *kp;
+    ngx_array_t              *certs, *keys;
+    ngx_str_t                *sp;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_ssl_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    sscf = op->sscf;
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx,
+                                 "setCertificate: certPath and keyPath required");
+    }
+
+    cert_s = JS_ToCStringLen(ctx, &cert_len, argv[0]);
+    if (!cert_s) { return JS_EXCEPTION; }
+
+    key_s = JS_ToCStringLen(ctx, &key_len, argv[1]);
+    if (!key_s) {
+        JS_FreeCString(ctx, cert_s);
+        return JS_EXCEPTION;
+    }
+
+    if (sscf->ssl.ctx == NULL) {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCertificate: SSL context not initialised");
+    }
+
+    /* Load certificate chain (replaces primary cert + chain) */
+    if (SSL_CTX_use_certificate_chain_file(sscf->ssl.ctx, cert_s) != 1) {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCertificate: failed to load certificate");
+    }
+
+    /* Load private key */
+    if (SSL_CTX_use_PrivateKey_file(sscf->ssl.ctx, key_s,
+                                    SSL_FILETYPE_PEM) != 1)
+    {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCertificate: failed to load private key");
+    }
+
+    /* Verify key matches certificate */
+    if (SSL_CTX_check_private_key(sscf->ssl.ctx) != 1) {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCertificate: private key does not match"
+                                     " certificate");
+    }
+
+    /* Update COM-visible path arrays (replace with single-element arrays) */
+    cp = ngx_pnalloc(ngx_cycle->pool, cert_len + 1);
+    kp = ngx_pnalloc(ngx_cycle->pool, key_len + 1);
+
+    if (cp == NULL || kp == NULL) {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(cp, cert_s, cert_len);  cp[cert_len] = '\0';
+    ngx_memcpy(kp, key_s,  key_len);   kp[key_len]  = '\0';
+
+    JS_FreeCString(ctx, cert_s);
+    JS_FreeCString(ctx, key_s);
+
+    certs = ngx_array_create(ngx_cycle->pool, 1, sizeof(ngx_str_t));
+    keys  = ngx_array_create(ngx_cycle->pool, 1, sizeof(ngx_str_t));
+
+    if (certs == NULL || keys == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    sp = ngx_array_push(certs);
+    if (sp == NULL) { return JS_ThrowOutOfMemory(ctx); }
+    sp->data = cp;
+    sp->len  = cert_len;
+
+    sp = ngx_array_push(keys);
+    if (sp == NULL) { return JS_ThrowOutOfMemory(ctx); }
+    sp->data = kp;
+    sp->len  = key_len;
+
+    sscf->certificates    = certs;
+    sscf->certificate_keys = keys;
+
+    return JS_UNDEFINED;
+}
+
+
+/*
  * setCiphers(str) — update the OpenSSL cipher list on the live SSL_CTX.
  *
  * Calls SSL_CTX_set_cipher_list() on sscf->ssl.ctx; takes effect immediately
@@ -450,8 +568,9 @@ static const JSCFunctionListEntry ngx_js_ssl_proto_funcs[] = {
     JS_CGETSET_DEF       ("verify",              ngx_js_ssl_get_verify,         NULL),
     JS_CGETSET_DEF       ("certificate",         ngx_js_ssl_get_certificate,    NULL),
     JS_CGETSET_DEF       ("certificateKey",      ngx_js_ssl_get_certificate_key,NULL),
-    JS_CFUNC_DEF         ("setCiphers",     1,   ngx_js_ssl_set_ciphers),
-    JS_CFUNC_DEF         ("setProtocols",  1,   ngx_js_ssl_set_protocols),
+    JS_CFUNC_DEF         ("setCiphers",      1,   ngx_js_ssl_set_ciphers),
+    JS_CFUNC_DEF         ("setProtocols",   1,   ngx_js_ssl_set_protocols),
+    JS_CFUNC_DEF         ("setCertificate", 2,   ngx_js_ssl_set_certificate),
 };
 
 
