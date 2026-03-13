@@ -422,11 +422,16 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_scgi_class_id);
         JS_NewClassID(&ngx_js_uwsgi_class_id);
         JS_NewClassID(&ngx_js_mirror_class_id);
+        JS_NewClassID(&ngx_js_events_class_id);
         initialised = 1;
     }
 
     /* Register class definitions in THIS runtime */
     if (JS_NewClass(rt, ngx_js_cycle_class_id, &ngx_js_cycle_class) < 0) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_events_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -527,6 +532,21 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 
     JS_SetPropertyStr(ctx, nginx_obj, "cycle", cycle_obj);
 
+    /* nginx.events — events{} block configuration */
+    {
+        ngx_event_conf_t  *ecf;
+        JSValue            events_obj;
+
+        ecf = ngx_event_get_conf(cycle->conf_ctx, ngx_event_core_module);
+        events_obj = ngx_js_wrap_events(ctx, ecf);
+        if (JS_IsException(events_obj)) {
+            JS_FreeValue(ctx, nginx_obj);
+            JS_FreeValue(ctx, global);
+            return NGX_ERROR;
+        }
+        JS_SetPropertyStr(ctx, nginx_obj, "events", events_obj);
+    }
+
     /* nginx.http — servers[], upstreams[] (read-only Phase 1) */
     if (ngx_js_http_com_install(ctx, nginx_obj, cycle) != NGX_OK) {
         JS_FreeValue(ctx, nginx_obj);
@@ -605,6 +625,7 @@ ngx_js_com_install_protos(JSContext *ctx)
     if (ngx_js_scgi_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_uwsgi_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_mirror_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_events_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     return NGX_OK;
 }
 

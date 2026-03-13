@@ -62,6 +62,7 @@ extern JSClassID  ngx_js_memcached_class_id;    /* memcached loc conf    (Stage 
 extern JSClassID  ngx_js_scgi_class_id;         /* scgi loc conf         (Stage 13) */
 extern JSClassID  ngx_js_uwsgi_class_id;        /* uwsgi loc conf        (Stage 13) */
 extern JSClassID  ngx_js_mirror_class_id;       /* mirror loc conf       (Stage 13) */
+extern JSClassID  ngx_js_events_class_id;       /* nginx.events          (Stage 14) */
 
 
 /*
@@ -182,6 +183,8 @@ ngx_int_t  ngx_js_memcached_install_proto(JSContext *ctx);
 ngx_int_t  ngx_js_scgi_install_proto(JSContext *ctx);
 ngx_int_t  ngx_js_uwsgi_install_proto(JSContext *ctx);
 ngx_int_t  ngx_js_mirror_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_events_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_events_install_proto(JSContext *ctx);
 
 
 /*
@@ -193,6 +196,14 @@ ngx_int_t  ngx_js_mirror_install_proto(JSContext *ctx);
 struct ngx_http_core_loc_conf_s;
 JSValue  ngx_js_wrap_location(JSContext *ctx,
     struct ngx_http_core_loc_conf_s *clcf);
+
+
+/*
+ * ngx_js_com_events.c — create a NginxEvents wrapper.
+ * Include <ngx_event.h> before this header to get the full prototype;
+ * otherwise it is declared with void * for files that don't need events.
+ */
+JSValue  ngx_js_wrap_events(JSContext *ctx, void *ecf);
 
 
 #endif /* _NGX_JS_COM_H_INCLUDED_ */

@@ -40,6 +40,7 @@ ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
                  $ngx_addon_dir/ngx_js_com_scgi.c \
                  $ngx_addon_dir/ngx_js_com_uwsgi.c \
                  $ngx_addon_dir/ngx_js_com_mirror.c \
+                 $ngx_addon_dir/ngx_js_com_events.c \
                  $ngx_addon_dir/ngx_js_http_module.c"
 ngx_module_deps="$ngx_addon_dir/ngx_js.h \
                  $ngx_addon_dir/ngx_js_com.h \
