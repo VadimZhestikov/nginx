@@ -68,8 +68,41 @@ ngx_js_auth_request_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_auth_request_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_auth_request_opaque_t  *op;
+    const char                    *s;
+    size_t                         len;
+    u_char                        *p;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_auth_request_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    if (magic != 0) { return JS_UNDEFINED; }  /* only uri (0) is writable */
+
+    s = JS_ToCStringLen(ctx, &len, val);
+    if (!s) { return JS_EXCEPTION; }
+
+    p = ngx_pnalloc(ngx_cycle->pool, len);
+    if (p == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(p, s, len);
+    JS_FreeCString(ctx, s);
+
+    op->arcf->uri.data = p;
+    op->arcf->uri.len  = len;
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_auth_request_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("uri", ngx_js_auth_request_get, NULL, 0),
+    JS_CGETSET_MAGIC_DEF("uri", ngx_js_auth_request_get, ngx_js_auth_request_set, 0),
 };
 
 

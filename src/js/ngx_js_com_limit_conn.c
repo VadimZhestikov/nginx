@@ -137,11 +137,45 @@ ngx_js_limit_conn_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_limit_conn_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_limit_conn_opaque_t  *op;
+    const char                  *s;
+    int64_t                      n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_limit_conn_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    switch (magic) {
+    case 0: /* logLevel */
+        s = JS_ToCString(ctx, val);
+        if (!s) { return JS_EXCEPTION; }
+        if      (ngx_strcmp(s, "warn")   == 0) { op->lccf->log_level = 5; }
+        else if (ngx_strcmp(s, "notice") == 0) { op->lccf->log_level = 6; }
+        else if (ngx_strcmp(s, "info")   == 0) { op->lccf->log_level = 7; }
+        else                                   { op->lccf->log_level = 4; }
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    case 1: /* statusCode */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        op->lccf->status_code = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+    case 2: /* dryRun */
+        op->lccf->dry_run = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_limit_conn_proto_funcs[] = {
-    JS_CGETSET_DEF       ("limits",     ngx_js_limit_conn_get_limits, NULL),
-    JS_CGETSET_MAGIC_DEF ("logLevel",   ngx_js_limit_conn_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF ("statusCode", ngx_js_limit_conn_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF ("dryRun",     ngx_js_limit_conn_get, NULL, 2),
+    JS_CGETSET_DEF       ("limits",     ngx_js_limit_conn_get_limits,    NULL),
+    JS_CGETSET_MAGIC_DEF ("logLevel",   ngx_js_limit_conn_get, ngx_js_limit_conn_set, 0),
+    JS_CGETSET_MAGIC_DEF ("statusCode", ngx_js_limit_conn_get, ngx_js_limit_conn_set, 1),
+    JS_CGETSET_MAGIC_DEF ("dryRun",     ngx_js_limit_conn_get, ngx_js_limit_conn_set, 2),
 };
 
 

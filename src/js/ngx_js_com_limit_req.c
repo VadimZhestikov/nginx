@@ -153,12 +153,64 @@ ngx_js_limit_req_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+/*
+ * Helper: parse a log-level label string to NGX_LOG_* numeric value.
+ * Accepts "error"(4), "warn"(5), "notice"(6), "info"(7).
+ * Returns NGX_LOG_ERR (4) for anything unrecognised.
+ */
+static ngx_uint_t
+ngx_js_parse_log_level(const char *s)
+{
+    if (ngx_strcmp(s, "warn")   == 0) { return 5; }
+    if (ngx_strcmp(s, "notice") == 0) { return 6; }
+    if (ngx_strcmp(s, "info")   == 0) { return 7; }
+    return 4;  /* error */
+}
+
+
+static JSValue
+ngx_js_limit_req_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_limit_req_opaque_t  *op;
+    const char                 *s;
+    int64_t                     n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_limit_req_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    switch (magic) {
+    case 0: /* logLevel */
+        s = JS_ToCString(ctx, val);
+        if (!s) { return JS_EXCEPTION; }
+        op->lrcf->limit_log_level = ngx_js_parse_log_level(s);
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    case 1: /* delayLogLevel */
+        s = JS_ToCString(ctx, val);
+        if (!s) { return JS_EXCEPTION; }
+        op->lrcf->delay_log_level = ngx_js_parse_log_level(s);
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    case 2: /* statusCode */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        op->lrcf->status_code = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+    case 3: /* dryRun */
+        op->lrcf->dry_run = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_limit_req_proto_funcs[] = {
     JS_CGETSET_DEF       ("limits",        ngx_js_limit_req_get_limits, NULL),
-    JS_CGETSET_MAGIC_DEF ("logLevel",      ngx_js_limit_req_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF ("delayLogLevel", ngx_js_limit_req_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF ("statusCode",    ngx_js_limit_req_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF ("dryRun",        ngx_js_limit_req_get, NULL, 3),
+    JS_CGETSET_MAGIC_DEF ("logLevel",      ngx_js_limit_req_get, ngx_js_limit_req_set, 0),
+    JS_CGETSET_MAGIC_DEF ("delayLogLevel", ngx_js_limit_req_get, ngx_js_limit_req_set, 1),
+    JS_CGETSET_MAGIC_DEF ("statusCode",    ngx_js_limit_req_get, ngx_js_limit_req_set, 2),
+    JS_CGETSET_MAGIC_DEF ("dryRun",        ngx_js_limit_req_get, ngx_js_limit_req_set, 3),
 };
 
 

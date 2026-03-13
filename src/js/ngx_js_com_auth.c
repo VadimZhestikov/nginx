@@ -92,9 +92,56 @@ ngx_js_auth_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_auth_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_auth_opaque_t          *op;
+    ngx_http_complex_value_t     **field;
+    ngx_http_complex_value_t      *cv;
+    const char                    *s;
+    size_t                         len;
+    u_char                        *p;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_auth_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    switch (magic) {
+    case 0:  field = &op->alcf->realm;     break;
+    case 1:  field = &op->alcf->user_file; break;
+    default: return JS_UNDEFINED;
+    }
+
+    s = JS_ToCStringLen(ctx, &len, val);
+    if (!s) { return JS_EXCEPTION; }
+
+    cv = ngx_pcalloc(ngx_cycle->pool, sizeof(ngx_http_complex_value_t));
+    if (cv == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    p = ngx_pnalloc(ngx_cycle->pool, len);
+    if (p == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(p, s, len);
+    JS_FreeCString(ctx, s);
+
+    cv->value.data = p;
+    cv->value.len  = len;
+    /* lengths == NULL marks this as a literal (no nginx variables) */
+
+    *field = cv;
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_auth_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("realm",    ngx_js_auth_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("userFile", ngx_js_auth_get, NULL, 1),
+    JS_CGETSET_MAGIC_DEF("realm",    ngx_js_auth_get, ngx_js_auth_set, 0),
+    JS_CGETSET_MAGIC_DEF("userFile", ngx_js_auth_get, ngx_js_auth_set, 1),
 };
 
 
