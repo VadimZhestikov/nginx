@@ -1044,6 +1044,122 @@ ngx_js_location_get_error_page(JSContext *ctx, JSValueConst this_val)
 }
 
 
+/*
+ * location.errorPage = [{status, overwrite?, uri}, ...]
+ *
+ * Replaces clcf->error_pages with a new pool-allocated array.
+ * Each entry must have:
+ *   status    — number, the error code to match
+ *   uri       — string, the redirect URI (literal, no nginx variables)
+ *   overwrite — number (optional, default 0); 0 means keep original status
+ *
+ * Setting [] clears all error page rules.
+ * Pool memory only grows (old arrays are never freed).
+ */
+static JSValue
+ngx_js_location_set_error_page(JSContext *ctx, JSValueConst this_val,
+    JSValue val)
+{
+    ngx_js_location_opaque_t  *op;
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_array_t               *arr;
+    ngx_http_err_page_t       *ep;
+    JSValue                    entry, status_v, overwrite_v, uri_v, len_v;
+    const char                *uri;
+    size_t                     uri_len;
+    int64_t                    len, i, status, overwrite;
+    u_char                    *p;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (!JS_IsArray(ctx, val)) {
+        return JS_ThrowTypeError(ctx, "errorPage must be an array");
+    }
+
+    len_v = JS_GetPropertyStr(ctx, val, "length");
+    if (JS_ToInt64(ctx, &len, len_v) < 0) {
+        JS_FreeValue(ctx, len_v);
+        return JS_EXCEPTION;
+    }
+    JS_FreeValue(ctx, len_v);
+
+    clcf = op->clcf;
+
+    if (len == 0) {
+        clcf->error_pages = NULL;
+        return JS_UNDEFINED;
+    }
+
+    arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+                           sizeof(ngx_http_err_page_t));
+    if (!arr) {
+        return JS_EXCEPTION;
+    }
+
+    for (i = 0; i < len; i++) {
+        entry      = JS_GetPropertyUint32(ctx, val, (uint32_t) i);
+        status_v   = JS_GetPropertyStr(ctx, entry, "status");
+        overwrite_v = JS_GetPropertyStr(ctx, entry, "overwrite");
+        uri_v      = JS_GetPropertyStr(ctx, entry, "uri");
+        JS_FreeValue(ctx, entry);
+
+        if (JS_ToInt64(ctx, &status, status_v) < 0) {
+            JS_FreeValue(ctx, status_v);
+            JS_FreeValue(ctx, overwrite_v);
+            JS_FreeValue(ctx, uri_v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, status_v);
+
+        /* overwrite is optional — default 0 */
+        if (JS_IsUndefined(overwrite_v) || JS_IsNull(overwrite_v)) {
+            overwrite = 0;
+        } else if (JS_ToInt64(ctx, &overwrite, overwrite_v) < 0) {
+            JS_FreeValue(ctx, overwrite_v);
+            JS_FreeValue(ctx, uri_v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, overwrite_v);
+
+        uri = JS_ToCStringLen(ctx, &uri_len, uri_v);
+        JS_FreeValue(ctx, uri_v);
+        if (!uri) {
+            return JS_EXCEPTION;
+        }
+
+        ep = ngx_array_push(arr);
+        if (!ep) {
+            JS_FreeCString(ctx, uri);
+            return JS_EXCEPTION;
+        }
+
+        p = ngx_pnalloc(ngx_cycle->pool, uri_len);
+        if (!p) {
+            JS_FreeCString(ctx, uri);
+            return JS_EXCEPTION;
+        }
+
+        ngx_memcpy(p, uri, uri_len);
+        JS_FreeCString(ctx, uri);
+
+        ep->status              = (ngx_int_t) status;
+        ep->overwrite           = (ngx_int_t) overwrite;
+        ep->value.value.data    = p;
+        ep->value.value.len     = uri_len;
+        ep->value.lengths       = NULL;
+        ep->value.values        = NULL;
+        ep->value.flushes       = NULL;
+        ngx_memzero(&ep->args, sizeof(ep->args));
+    }
+
+    clcf->error_pages = arr;
+    return JS_UNDEFINED;
+}
+
+
 static JSValue
 ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     int magic)
@@ -1622,7 +1738,8 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("readAhead",                ngx_js_location_get, ngx_js_location_set, 77),
     JS_CGETSET_MAGIC_DEF("directio",                 ngx_js_location_get, ngx_js_location_set, 78),
     JS_CGETSET_MAGIC_DEF("directioAlignment",        ngx_js_location_get, ngx_js_location_set, 79),
-    JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page, NULL),
+    JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page,
+                                                   ngx_js_location_set_error_page),
 };
 
 
