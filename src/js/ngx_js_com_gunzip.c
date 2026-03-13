@@ -78,9 +78,26 @@ ngx_js_gunzip_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_gunzip_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_gunzip_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_gunzip_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    if (magic == 0) { /* enable */
+        op->gcf->enable = JS_ToBool(ctx, val);
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_gunzip_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("enable",  ngx_js_gunzip_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("buffers", ngx_js_gunzip_get, NULL, 1),
+    JS_CGETSET_MAGIC_DEF("enable",  ngx_js_gunzip_get, ngx_js_gunzip_set, 0),
+    JS_CGETSET_MAGIC_DEF("buffers", ngx_js_gunzip_get, NULL,              1),
 };
 
 

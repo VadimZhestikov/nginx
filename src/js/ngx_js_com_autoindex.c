@@ -84,11 +84,51 @@ ngx_js_autoindex_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_autoindex_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_autoindex_opaque_t  *op;
+    const char                 *s;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_autoindex_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    switch (magic) {
+    case 0: /* enable */
+        op->alcf->enable = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 1: /* format — "html" | "json" | "jsonp" | "xml" */
+        s = JS_ToCString(ctx, val);
+        if (!s) { return JS_EXCEPTION; }
+        if (ngx_strcmp(s, "json") == 0) {
+            op->alcf->format = NGX_HTTP_AUTOINDEX_JSON;
+        } else if (ngx_strcmp(s, "jsonp") == 0) {
+            op->alcf->format = NGX_HTTP_AUTOINDEX_JSONP;
+        } else if (ngx_strcmp(s, "xml") == 0) {
+            op->alcf->format = NGX_HTTP_AUTOINDEX_XML;
+        } else {
+            op->alcf->format = NGX_HTTP_AUTOINDEX_HTML;
+        }
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    case 2: /* localtime */
+        op->alcf->localtime = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 3: /* exactSize */
+        op->alcf->exact_size = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_autoindex_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("enable",    ngx_js_autoindex_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("format",    ngx_js_autoindex_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("localtime", ngx_js_autoindex_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("exactSize", ngx_js_autoindex_get, NULL, 3),
+    JS_CGETSET_MAGIC_DEF("enable",    ngx_js_autoindex_get, ngx_js_autoindex_set, 0),
+    JS_CGETSET_MAGIC_DEF("format",    ngx_js_autoindex_get, ngx_js_autoindex_set, 1),
+    JS_CGETSET_MAGIC_DEF("localtime", ngx_js_autoindex_get, ngx_js_autoindex_set, 2),
+    JS_CGETSET_MAGIC_DEF("exactSize", ngx_js_autoindex_get, ngx_js_autoindex_set, 3),
 };
 
 

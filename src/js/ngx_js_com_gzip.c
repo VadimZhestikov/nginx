@@ -87,6 +87,36 @@ ngx_js_gzip_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_gzip_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_gzip_opaque_t  *op;
+    int64_t                n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_gzip_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    switch (magic) {
+    case 0: /* enable */
+        op->gcf->enable = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 1: /* level */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        op->gcf->level = (ngx_int_t) n;
+        return JS_UNDEFINED;
+    case 2: /* minLength */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        op->gcf->min_length = (ssize_t) n;
+        return JS_UNDEFINED;
+    case 3: /* vary */
+        op->clcf->gzip_vary = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 /*
  * gzip.buffers — { num: N, size: N }
  */
@@ -181,10 +211,10 @@ ngx_js_gzip_get_proxied(JSContext *ctx, JSValueConst this_val)
 
 
 static const JSCFunctionListEntry ngx_js_gzip_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("enable",       ngx_js_gzip_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("level",        ngx_js_gzip_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("minLength",    ngx_js_gzip_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("vary",         ngx_js_gzip_get, NULL, 3),
+    JS_CGETSET_MAGIC_DEF("enable",       ngx_js_gzip_get, ngx_js_gzip_set, 0),
+    JS_CGETSET_MAGIC_DEF("level",        ngx_js_gzip_get, ngx_js_gzip_set, 1),
+    JS_CGETSET_MAGIC_DEF("minLength",    ngx_js_gzip_get, ngx_js_gzip_set, 2),
+    JS_CGETSET_MAGIC_DEF("vary",         ngx_js_gzip_get, ngx_js_gzip_set, 3),
     JS_CGETSET_DEF      ("buffers",      ngx_js_gzip_get_buffers,      NULL),
     JS_CGETSET_DEF      ("httpVersion",  ngx_js_gzip_get_http_version, NULL),
     JS_CGETSET_DEF      ("proxied",      ngx_js_gzip_get_proxied,      NULL),
