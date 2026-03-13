@@ -1661,6 +1661,111 @@ ngx_js_server_get_names(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 /*
+ * server.setNames(arr) — replace the server_name list at runtime.
+ *
+ * arr must be an array of strings.  The strings are copied into
+ * ngx_cycle->pool and stored in op->names / op->nnames, which is the
+ * source the COM names getter and name getter use.
+ *
+ * Also rebuilds cscf->server_names (the ngx_array_t used by
+ * nginx.http.rebuildVhostDispatch in Stage 5b) with the same values,
+ * using a fresh array in ngx_cycle->pool.
+ *
+ * Note: the change is visible via the COM getters immediately but does
+ * not affect request routing until Stage 5b's rebuildVhostDispatch()
+ * is called.
+ */
+static JSValue
+ngx_js_server_set_names(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t    *op;
+    ngx_http_core_srv_conf_t  *cscf;
+    JSValue                    arr;
+    uint32_t                   len, i;
+    ngx_str_t                 *names;
+    ngx_http_server_name_t    *sn;
+    const char                *s;
+    size_t                     slen;
+    u_char                    *p;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    cscf = op->cscf;
+
+    if (argc < 1 || !JS_IsArray(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "setNames: array argument required");
+    }
+
+    arr = argv[0];
+
+    {
+        JSValue lv = JS_GetPropertyStr(ctx, arr, "length");
+        if (JS_ToUint32(ctx, &len, lv) < 0) {
+            JS_FreeValue(ctx, lv);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, lv);
+    }
+
+    /* Allocate the new COM-visible names array */
+    if (len > 0) {
+        names = ngx_palloc(ngx_cycle->pool, len * sizeof(ngx_str_t));
+        if (names == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+    } else {
+        names = NULL;
+    }
+
+    /* Allocate the new cscf->server_names elts array for Stage 5b */
+    if (ngx_array_init(&cscf->server_names, ngx_cycle->pool,
+                       len ? len : 1,
+                       sizeof(ngx_http_server_name_t)) != NGX_OK)
+    {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    for (i = 0; i < len; i++) {
+        JSValue elem = JS_GetPropertyUint32(ctx, arr, i);
+        if (JS_IsException(elem)) { return JS_EXCEPTION; }
+
+        s = JS_ToCStringLen(ctx, &slen, elem);
+        JS_FreeValue(ctx, elem);
+        if (!s) { return JS_EXCEPTION; }
+
+        p = ngx_pnalloc(ngx_cycle->pool, slen + 1);
+        if (p == NULL) {
+            JS_FreeCString(ctx, s);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        ngx_memcpy(p, s, slen);
+        p[slen] = '\0';
+        JS_FreeCString(ctx, s);
+
+        names[i].data = p;
+        names[i].len  = slen;
+
+        sn = ngx_array_push(&cscf->server_names);
+        if (sn == NULL) { return JS_ThrowOutOfMemory(ctx); }
+
+        ngx_memzero(sn, sizeof(ngx_http_server_name_t));
+        sn->server    = cscf;
+        sn->name.data = p;
+        sn->name.len  = slen;
+    }
+
+    op->names  = names;
+    op->nnames = len;
+
+    return JS_UNDEFINED;
+}
+
+
+/*
  * nginx.http.servers[i].locations — JS Array of NginxLocation objects.
  */
 static JSValue
@@ -1716,6 +1821,7 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("name",                     ngx_js_server_get,                       NULL,              0),
     JS_CGETSET_MAGIC_DEF("root",                     ngx_js_server_get,                       ngx_js_server_set, 1),
     JS_CGETSET_MAGIC_DEF("names",                    ngx_js_server_get_names,                 NULL,              0),
+    JS_CFUNC_DEF        ("setNames",                 1, ngx_js_server_set_names),
     JS_CGETSET_MAGIC_DEF("locations",                ngx_js_server_get_locations,             NULL,              0),
     JS_CGETSET_MAGIC_DEF("clientHeaderBufferSize",   ngx_js_server_get,                       NULL,              2),
     JS_CGETSET_MAGIC_DEF("clientHeaderTimeout",      ngx_js_server_get,                       NULL,              3),
