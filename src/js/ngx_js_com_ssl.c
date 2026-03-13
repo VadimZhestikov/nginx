@@ -248,6 +248,67 @@ ngx_js_ssl_get_certificate_key(JSContext *ctx, JSValueConst this_val)
 }
 
 
+/*
+ * setCiphers(str) — update the OpenSSL cipher list on the live SSL_CTX.
+ *
+ * Calls SSL_CTX_set_cipher_list() on sscf->ssl.ctx; takes effect immediately
+ * for all new TLS handshakes on this server (existing sessions are unaffected).
+ * Also updates sscf->ciphers so the COM getter reflects the new value.
+ *
+ * Throws an Error if str contains no valid ciphers (OpenSSL returns 0).
+ */
+static JSValue
+ngx_js_ssl_set_ciphers(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_ssl_opaque_t      *op;
+    ngx_http_ssl_srv_conf_t  *sscf;
+    const char               *s;
+    size_t                    len;
+    u_char                   *p;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_ssl_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    sscf = op->sscf;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "setCiphers: string argument required");
+    }
+
+    s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) { return JS_EXCEPTION; }
+
+    if (sscf->ssl.ctx == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCiphers: SSL context not initialised");
+    }
+
+    /* Apply to the live SSL_CTX — new handshakes will use the updated list */
+    if (SSL_CTX_set_cipher_list(sscf->ssl.ctx, s) == 0) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCiphers: no valid ciphers in list");
+    }
+
+    /* Update the COM-visible conf string for the ciphers getter */
+    p = ngx_pnalloc(ngx_cycle->pool, len);
+    if (p == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(p, s, len);
+    JS_FreeCString(ctx, s);
+
+    sscf->ciphers.data = p;
+    sscf->ciphers.len  = len;
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_ssl_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("sessionTimeout",      ngx_js_ssl_get, NULL, 0),
     JS_CGETSET_MAGIC_DEF("sessionTickets",       ngx_js_ssl_get, NULL, 1),
@@ -262,6 +323,7 @@ static const JSCFunctionListEntry ngx_js_ssl_proto_funcs[] = {
     JS_CGETSET_DEF       ("verify",              ngx_js_ssl_get_verify,         NULL),
     JS_CGETSET_DEF       ("certificate",         ngx_js_ssl_get_certificate,    NULL),
     JS_CGETSET_DEF       ("certificateKey",      ngx_js_ssl_get_certificate_key,NULL),
+    JS_CFUNC_DEF         ("setCiphers",     1,   ngx_js_ssl_set_ciphers),
 };
 
 
