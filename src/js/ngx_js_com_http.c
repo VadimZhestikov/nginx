@@ -1184,9 +1184,352 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         clcf->default_type.len  = len;
         return JS_UNDEFINED;
 
+    case 48: /* satisfy — "all" | "any" */
+    {
+        const char *s;
+        size_t      slen;
+
+        s = JS_ToCStringLen(ctx, &slen, val);
+        if (!s) { return JS_EXCEPTION; }
+
+        if (slen == 3 && ngx_strncasecmp((u_char *) s, (u_char *) "all", 3) == 0) {
+            clcf->satisfy = NGX_HTTP_SATISFY_ALL;
+        } else if (slen == 3 && ngx_strncasecmp((u_char *) s, (u_char *) "any", 3) == 0) {
+            clcf->satisfy = NGX_HTTP_SATISFY_ANY;
+        } else {
+            JS_ThrowTypeError(ctx, "satisfy: expected \"all\" or \"any\"");
+            JS_FreeCString(ctx, s);
+            return JS_EXCEPTION;
+        }
+
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    }
+
+    case 49: /* limitExcept — string[] → bitmask */
+    {
+        static const struct { const char *name; uint32_t bit; } methods[] = {
+            { "GET",       NGX_HTTP_GET       },
+            { "HEAD",      NGX_HTTP_HEAD      },
+            { "POST",      NGX_HTTP_POST      },
+            { "PUT",       NGX_HTTP_PUT       },
+            { "DELETE",    NGX_HTTP_DELETE    },
+            { "MKCOL",     NGX_HTTP_MKCOL     },
+            { "COPY",      NGX_HTTP_COPY      },
+            { "MOVE",      NGX_HTTP_MOVE      },
+            { "OPTIONS",   NGX_HTTP_OPTIONS   },
+            { "PROPFIND",  NGX_HTTP_PROPFIND  },
+            { "PROPPATCH", NGX_HTTP_PROPPATCH },
+            { "LOCK",      NGX_HTTP_LOCK      },
+            { "UNLOCK",    NGX_HTTP_UNLOCK    },
+            { "PATCH",     NGX_HTTP_PATCH     },
+        };
+        ngx_uint_t  mask;
+        uint32_t    alen, i, j;
+        JSValue     elem;
+        const char *ms;
+        size_t      mlen;
+
+        if (!JS_IsArray(ctx, val)) {
+            return JS_ThrowTypeError(ctx, "limitExcept: array expected");
+        }
+
+        {
+            JSValue lv = JS_GetPropertyStr(ctx, val, "length");
+            if (JS_ToUint32(ctx, &alen, lv) < 0) {
+                JS_FreeValue(ctx, lv);
+                return JS_EXCEPTION;
+            }
+            JS_FreeValue(ctx, lv);
+        }
+
+        mask = 0;
+
+        for (i = 0; i < alen; i++) {
+            elem = JS_GetPropertyUint32(ctx, val, i);
+            if (JS_IsException(elem)) { return JS_EXCEPTION; }
+
+            ms = JS_ToCStringLen(ctx, &mlen, elem);
+            JS_FreeValue(ctx, elem);
+            if (!ms) { return JS_EXCEPTION; }
+
+            for (j = 0; j < countof(methods); j++) {
+                if (strlen(methods[j].name) == mlen
+                    && ngx_strncasecmp((u_char *) methods[j].name,
+                                       (u_char *) ms, mlen) == 0)
+                {
+                    mask |= methods[j].bit;
+                    break;
+                }
+            }
+
+            if (j == countof(methods)) {
+                JS_ThrowTypeError(ctx,
+                    "limitExcept: unknown method \"%s\"", ms);
+                JS_FreeCString(ctx, ms);
+                return JS_EXCEPTION;
+            }
+
+            JS_FreeCString(ctx, ms);
+        }
+
+        clcf->limit_except = mask;
+        return JS_UNDEFINED;
+    }
+
+    case 50: /* lingering — "off" | "on" | "always" */
+    {
+        const char *s;
+        size_t      slen;
+
+        s = JS_ToCStringLen(ctx, &slen, val);
+        if (!s) { return JS_EXCEPTION; }
+
+        if (slen == 3 && ngx_strncasecmp((u_char *) s, (u_char *) "off", 3) == 0) {
+            clcf->lingering_close = NGX_HTTP_LINGERING_OFF;
+        } else if (slen == 2 && ngx_strncasecmp((u_char *) s, (u_char *) "on", 2) == 0) {
+            clcf->lingering_close = NGX_HTTP_LINGERING_ON;
+        } else if (slen == 6 && ngx_strncasecmp((u_char *) s, (u_char *) "always", 6) == 0) {
+            clcf->lingering_close = NGX_HTTP_LINGERING_ALWAYS;
+        } else {
+            JS_ThrowTypeError(ctx,
+                "lingering: expected \"off\", \"on\", or \"always\"");
+            JS_FreeCString(ctx, s);
+            return JS_EXCEPTION;
+        }
+
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    }
+
+    case 51: /* lingeringTimeout — ms */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->lingering_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+
+    case 52: /* lingeringTime — ms */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->lingering_time = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+
+    case 53: /* resolverTimeout — ms */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->resolver_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+
+    case 54: /* chunkedTransferEncoding */
+        clcf->chunked_transfer_encoding = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 55: /* msieRefresh */
+        clcf->msie_refresh = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 56: /* logNotFound */
+        clcf->log_not_found = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 57: /* logSubrequest */
+        clcf->log_subrequest = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 58: /* recursiveErrorPages */
+        clcf->recursive_error_pages = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 59: /* clientBodyBufferSize — bytes */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->client_body_buffer_size = (size_t) n;
+        return JS_UNDEFINED;
+
+    case 60: /* clientBodyInFileOnly — "off" | "on" | "clean" */
+    {
+        const char *s;
+        size_t      slen;
+
+        s = JS_ToCStringLen(ctx, &slen, val);
+        if (!s) { return JS_EXCEPTION; }
+
+        if (slen == 3 && ngx_strncasecmp((u_char *) s, (u_char *) "off", 3) == 0) {
+            clcf->client_body_in_file_only = 0;
+        } else if (slen == 2 && ngx_strncasecmp((u_char *) s, (u_char *) "on", 2) == 0) {
+            clcf->client_body_in_file_only = 1;
+        } else if (slen == 5 && ngx_strncasecmp((u_char *) s, (u_char *) "clean", 5) == 0) {
+            clcf->client_body_in_file_only = 2;
+        } else {
+            JS_ThrowTypeError(ctx,
+                "clientBodyInFileOnly: expected \"off\", \"on\", or \"clean\"");
+            JS_FreeCString(ctx, s);
+            return JS_EXCEPTION;
+        }
+
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    }
+
+    case 61: /* clientBodyInSingleBuffer */
+        clcf->client_body_in_single_buffer = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 62: /* resetTimedoutConnection */
+        clcf->reset_timedout_connection = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 63: /* absoluteRedirect */
+        clcf->absolute_redirect = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 64: /* serverNameInRedirect */
+        clcf->server_name_in_redirect = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 65: /* portInRedirect */
+        clcf->port_in_redirect = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 66: /* msiePadding */
+        clcf->msie_padding = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 67: /* ifModifiedSince — "off" | "exact" | "before" */
+    {
+        const char *s;
+        size_t      slen;
+
+        s = JS_ToCStringLen(ctx, &slen, val);
+        if (!s) { return JS_EXCEPTION; }
+
+        if (slen == 3 && ngx_strncasecmp((u_char *) s, (u_char *) "off", 3) == 0) {
+            clcf->if_modified_since = NGX_HTTP_IMS_OFF;
+        } else if (slen == 5 && ngx_strncasecmp((u_char *) s, (u_char *) "exact", 5) == 0) {
+            clcf->if_modified_since = NGX_HTTP_IMS_EXACT;
+        } else if (slen == 6 && ngx_strncasecmp((u_char *) s, (u_char *) "before", 6) == 0) {
+            clcf->if_modified_since = NGX_HTTP_IMS_BEFORE;
+        } else {
+            JS_ThrowTypeError(ctx,
+                "ifModifiedSince: expected \"off\", \"exact\", or \"before\"");
+            JS_FreeCString(ctx, s);
+            return JS_EXCEPTION;
+        }
+
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    }
+
+    case 68: /* maxRanges */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->max_ranges = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 69: /* authDelay — ms */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->auth_delay = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+
     case 70: /* keepaliveTime — ngx_msec_t (ms) */
         if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
         clcf->keepalive_time = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+
+    case 71: /* sendLowat — bytes */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->send_lowat = (size_t) n;
+        return JS_UNDEFINED;
+
+    case 72: /* postponeOutput — bytes */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->postpone_output = (size_t) n;
+        return JS_UNDEFINED;
+
+    case 74: /* keepaliveDisable — string[] → bitmask */
+    {
+        ngx_uint_t  mask;
+        uint32_t    alen, i;
+        JSValue     elem;
+        const char *ms;
+        size_t      mlen;
+
+        if (!JS_IsArray(ctx, val)) {
+            return JS_ThrowTypeError(ctx, "keepaliveDisable: array expected");
+        }
+
+        {
+            JSValue lv = JS_GetPropertyStr(ctx, val, "length");
+            if (JS_ToUint32(ctx, &alen, lv) < 0) {
+                JS_FreeValue(ctx, lv);
+                return JS_EXCEPTION;
+            }
+            JS_FreeValue(ctx, lv);
+        }
+
+        mask = 0;
+
+        for (i = 0; i < alen; i++) {
+            elem = JS_GetPropertyUint32(ctx, val, i);
+            if (JS_IsException(elem)) { return JS_EXCEPTION; }
+
+            ms = JS_ToCStringLen(ctx, &mlen, elem);
+            JS_FreeValue(ctx, elem);
+            if (!ms) { return JS_EXCEPTION; }
+
+            if (mlen == 5 && ngx_strncasecmp((u_char *) ms,
+                                              (u_char *) "msie6", 5) == 0) {
+                mask |= NGX_HTTP_KEEPALIVE_DISABLE_MSIE6;
+            } else if (mlen == 6 && ngx_strncasecmp((u_char *) ms,
+                                                     (u_char *) "safari", 6) == 0) {
+                mask |= NGX_HTTP_KEEPALIVE_DISABLE_SAFARI;
+            } else {
+                JS_ThrowTypeError(ctx,
+                    "keepaliveDisable: unknown browser \"%s\"", ms);
+                JS_FreeCString(ctx, ms);
+                return JS_EXCEPTION;
+            }
+
+            JS_FreeCString(ctx, ms);
+        }
+
+        clcf->keepalive_disable = mask;
+        return JS_UNDEFINED;
+    }
+
+    case 75: /* keepaliveMinTimeout — ms */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->keepalive_min_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+
+    case 76: /* sendfileMaxChunk — bytes */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->sendfile_max_chunk = (off_t) n;
+        return JS_UNDEFINED;
+
+    case 77: /* readAhead — bytes */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->read_ahead = (size_t) n;
+        return JS_UNDEFINED;
+
+    case 78: /* directio — "off" | bytes */
+    {
+        const char *s;
+        size_t      slen;
+
+        s = JS_ToCStringLen(ctx, &slen, val);
+        if (!s) { return JS_EXCEPTION; }
+
+        if (slen == 3 && ngx_strncasecmp((u_char *) s, (u_char *) "off", 3) == 0) {
+            JS_FreeCString(ctx, s);
+            clcf->directio = NGX_OPEN_FILE_DIRECTIO_OFF;
+        } else {
+            JS_FreeCString(ctx, s);
+            if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+            clcf->directio = (off_t) n;
+        }
+
+        return JS_UNDEFINED;
+    }
+
+    case 79: /* directioAlignment — bytes */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->directio_alignment = (off_t) n;
         return JS_UNDEFINED;
     }
 
@@ -1247,38 +1590,38 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("uwsgi",           ngx_js_location_get, NULL,                45),
     JS_CGETSET_MAGIC_DEF("mirror",          ngx_js_location_get, NULL,                46),
     JS_CGETSET_MAGIC_DEF("tryFiles",        ngx_js_location_get, NULL,                47),
-    JS_CGETSET_MAGIC_DEF("satisfy",         ngx_js_location_get, NULL,                48),
-    JS_CGETSET_MAGIC_DEF("limitExcept",           ngx_js_location_get, NULL,          49),
-    JS_CGETSET_MAGIC_DEF("lingering",             ngx_js_location_get, NULL,          50),
-    JS_CGETSET_MAGIC_DEF("lingeringTimeout",      ngx_js_location_get, NULL,          51),
-    JS_CGETSET_MAGIC_DEF("lingeringTime",         ngx_js_location_get, NULL,          52),
-    JS_CGETSET_MAGIC_DEF("resolverTimeout",       ngx_js_location_get, NULL,          53),
-    JS_CGETSET_MAGIC_DEF("chunkedTransferEncoding", ngx_js_location_get, NULL,        54),
-    JS_CGETSET_MAGIC_DEF("msieRefresh",           ngx_js_location_get, NULL,          55),
-    JS_CGETSET_MAGIC_DEF("logNotFound",           ngx_js_location_get, NULL,          56),
-    JS_CGETSET_MAGIC_DEF("logSubrequest",         ngx_js_location_get, NULL,          57),
-    JS_CGETSET_MAGIC_DEF("recursiveErrorPages",   ngx_js_location_get, NULL,          58),
-    JS_CGETSET_MAGIC_DEF("clientBodyBufferSize",     ngx_js_location_get, NULL,       59),
-    JS_CGETSET_MAGIC_DEF("clientBodyInFileOnly",     ngx_js_location_get, NULL,       60),
-    JS_CGETSET_MAGIC_DEF("clientBodyInSingleBuffer", ngx_js_location_get, NULL,       61),
-    JS_CGETSET_MAGIC_DEF("resetTimedoutConnection",  ngx_js_location_get, NULL,       62),
-    JS_CGETSET_MAGIC_DEF("absoluteRedirect",         ngx_js_location_get, NULL,       63),
-    JS_CGETSET_MAGIC_DEF("serverNameInRedirect",     ngx_js_location_get, NULL,       64),
-    JS_CGETSET_MAGIC_DEF("portInRedirect",           ngx_js_location_get, NULL,       65),
-    JS_CGETSET_MAGIC_DEF("msiePadding",              ngx_js_location_get, NULL,       66),
-    JS_CGETSET_MAGIC_DEF("ifModifiedSince",          ngx_js_location_get, NULL,       67),
-    JS_CGETSET_MAGIC_DEF("maxRanges",                ngx_js_location_get, NULL,       68),
-    JS_CGETSET_MAGIC_DEF("authDelay",                ngx_js_location_get, NULL,       69),
+    JS_CGETSET_MAGIC_DEF("satisfy",         ngx_js_location_get, ngx_js_location_set, 48),
+    JS_CGETSET_MAGIC_DEF("limitExcept",           ngx_js_location_get, ngx_js_location_set, 49),
+    JS_CGETSET_MAGIC_DEF("lingering",             ngx_js_location_get, ngx_js_location_set, 50),
+    JS_CGETSET_MAGIC_DEF("lingeringTimeout",      ngx_js_location_get, ngx_js_location_set, 51),
+    JS_CGETSET_MAGIC_DEF("lingeringTime",         ngx_js_location_get, ngx_js_location_set, 52),
+    JS_CGETSET_MAGIC_DEF("resolverTimeout",       ngx_js_location_get, ngx_js_location_set, 53),
+    JS_CGETSET_MAGIC_DEF("chunkedTransferEncoding", ngx_js_location_get, ngx_js_location_set, 54),
+    JS_CGETSET_MAGIC_DEF("msieRefresh",           ngx_js_location_get, ngx_js_location_set, 55),
+    JS_CGETSET_MAGIC_DEF("logNotFound",           ngx_js_location_get, ngx_js_location_set, 56),
+    JS_CGETSET_MAGIC_DEF("logSubrequest",         ngx_js_location_get, ngx_js_location_set, 57),
+    JS_CGETSET_MAGIC_DEF("recursiveErrorPages",   ngx_js_location_get, ngx_js_location_set, 58),
+    JS_CGETSET_MAGIC_DEF("clientBodyBufferSize",     ngx_js_location_get, ngx_js_location_set, 59),
+    JS_CGETSET_MAGIC_DEF("clientBodyInFileOnly",     ngx_js_location_get, ngx_js_location_set, 60),
+    JS_CGETSET_MAGIC_DEF("clientBodyInSingleBuffer", ngx_js_location_get, ngx_js_location_set, 61),
+    JS_CGETSET_MAGIC_DEF("resetTimedoutConnection",  ngx_js_location_get, ngx_js_location_set, 62),
+    JS_CGETSET_MAGIC_DEF("absoluteRedirect",         ngx_js_location_get, ngx_js_location_set, 63),
+    JS_CGETSET_MAGIC_DEF("serverNameInRedirect",     ngx_js_location_get, ngx_js_location_set, 64),
+    JS_CGETSET_MAGIC_DEF("portInRedirect",           ngx_js_location_get, ngx_js_location_set, 65),
+    JS_CGETSET_MAGIC_DEF("msiePadding",              ngx_js_location_get, ngx_js_location_set, 66),
+    JS_CGETSET_MAGIC_DEF("ifModifiedSince",          ngx_js_location_get, ngx_js_location_set, 67),
+    JS_CGETSET_MAGIC_DEF("maxRanges",                ngx_js_location_get, ngx_js_location_set, 68),
+    JS_CGETSET_MAGIC_DEF("authDelay",                ngx_js_location_get, ngx_js_location_set, 69),
     JS_CGETSET_MAGIC_DEF("keepaliveTime",            ngx_js_location_get, ngx_js_location_set, 70),
-    JS_CGETSET_MAGIC_DEF("sendLowat",                ngx_js_location_get, NULL,       71),
-    JS_CGETSET_MAGIC_DEF("postponeOutput",           ngx_js_location_get, NULL,       72),
+    JS_CGETSET_MAGIC_DEF("sendLowat",                ngx_js_location_get, ngx_js_location_set, 71),
+    JS_CGETSET_MAGIC_DEF("postponeOutput",           ngx_js_location_get, ngx_js_location_set, 72),
     JS_CGETSET_MAGIC_DEF("typesHashMaxSize",         ngx_js_location_get, NULL,       73),
-    JS_CGETSET_MAGIC_DEF("keepaliveDisable",         ngx_js_location_get, NULL,       74),
-    JS_CGETSET_MAGIC_DEF("keepaliveMinTimeout",      ngx_js_location_get, NULL,       75),
-    JS_CGETSET_MAGIC_DEF("sendfileMaxChunk",         ngx_js_location_get, NULL,       76),
-    JS_CGETSET_MAGIC_DEF("readAhead",                ngx_js_location_get, NULL,       77),
-    JS_CGETSET_MAGIC_DEF("directio",                 ngx_js_location_get, NULL,       78),
-    JS_CGETSET_MAGIC_DEF("directioAlignment",        ngx_js_location_get, NULL,       79),
+    JS_CGETSET_MAGIC_DEF("keepaliveDisable",         ngx_js_location_get, ngx_js_location_set, 74),
+    JS_CGETSET_MAGIC_DEF("keepaliveMinTimeout",      ngx_js_location_get, ngx_js_location_set, 75),
+    JS_CGETSET_MAGIC_DEF("sendfileMaxChunk",         ngx_js_location_get, ngx_js_location_set, 76),
+    JS_CGETSET_MAGIC_DEF("readAhead",                ngx_js_location_get, ngx_js_location_set, 77),
+    JS_CGETSET_MAGIC_DEF("directio",                 ngx_js_location_get, ngx_js_location_set, 78),
+    JS_CGETSET_MAGIC_DEF("directioAlignment",        ngx_js_location_get, ngx_js_location_set, 79),
     JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page, NULL),
 };
 
@@ -1640,6 +1983,68 @@ ngx_js_server_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
 #endif
 
         return JS_UNDEFINED;
+
+    case 2: /* clientHeaderBufferSize — bytes */
+        if (JS_ToInt64(ctx, (int64_t *) &len, val) < 0) { return JS_EXCEPTION; }
+        cscf->client_header_buffer_size = (size_t) len;
+        return JS_UNDEFINED;
+
+    case 3: /* clientHeaderTimeout — ms */
+    {
+        int64_t  n;
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        cscf->client_header_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    }
+
+    case 4: /* ignoreInvalidHeaders */
+        cscf->ignore_invalid_headers = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 5: /* mergeSlashes */
+        cscf->merge_slashes = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 6: /* underscoresInHeaders */
+        cscf->underscores_in_headers = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 7: /* serverTokens — "off" | "on" | "build" */
+    {
+        const char  *s;
+        size_t       slen;
+
+        s = JS_ToCStringLen(ctx, &slen, val);
+        if (!s) { return JS_EXCEPTION; }
+
+        clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+
+        if (slen == 3 && ngx_strncasecmp((u_char *) s, (u_char *) "off", 3) == 0) {
+            clcf->server_tokens = NGX_HTTP_SERVER_TOKENS_OFF;
+        } else if (slen == 2 && ngx_strncasecmp((u_char *) s, (u_char *) "on", 2) == 0) {
+            clcf->server_tokens = NGX_HTTP_SERVER_TOKENS_ON;
+        } else if (slen == 5 && ngx_strncasecmp((u_char *) s, (u_char *) "build", 5) == 0) {
+            clcf->server_tokens = NGX_HTTP_SERVER_TOKENS_BUILD;
+        } else {
+            JS_ThrowTypeError(ctx,
+                "serverTokens: expected \"off\", \"on\", or \"build\"");
+            JS_FreeCString(ctx, s);
+            return JS_EXCEPTION;
+        }
+
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    }
+
+    case 8: /* connectionPoolSize — bytes */
+        if (JS_ToInt64(ctx, (int64_t *) &len, val) < 0) { return JS_EXCEPTION; }
+        cscf->connection_pool_size = (size_t) len;
+        return JS_UNDEFINED;
+
+    case 9: /* requestPoolSize — bytes */
+        if (JS_ToInt64(ctx, (int64_t *) &len, val) < 0) { return JS_EXCEPTION; }
+        cscf->request_pool_size = (size_t) len;
+        return JS_UNDEFINED;
     }
 
     return JS_UNDEFINED;
@@ -1840,14 +2245,14 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("names",                    ngx_js_server_get_names,                 NULL,              0),
     JS_CFUNC_DEF        ("setNames",                 1, ngx_js_server_set_names),
     JS_CGETSET_MAGIC_DEF("locations",                ngx_js_server_get_locations,             NULL,              0),
-    JS_CGETSET_MAGIC_DEF("clientHeaderBufferSize",   ngx_js_server_get,                       NULL,              2),
-    JS_CGETSET_MAGIC_DEF("clientHeaderTimeout",      ngx_js_server_get,                       NULL,              3),
-    JS_CGETSET_MAGIC_DEF("ignoreInvalidHeaders",     ngx_js_server_get,                       NULL,              4),
-    JS_CGETSET_MAGIC_DEF("mergeSlashes",             ngx_js_server_get,                       NULL,              5),
-    JS_CGETSET_MAGIC_DEF("underscoresInHeaders",     ngx_js_server_get,                       NULL,              6),
-    JS_CGETSET_MAGIC_DEF("serverTokens",             ngx_js_server_get,                       NULL,              7),
-    JS_CGETSET_MAGIC_DEF("connectionPoolSize",       ngx_js_server_get,                       NULL,              8),
-    JS_CGETSET_MAGIC_DEF("requestPoolSize",          ngx_js_server_get,                       NULL,              9),
+    JS_CGETSET_MAGIC_DEF("clientHeaderBufferSize",   ngx_js_server_get,                       ngx_js_server_set, 2),
+    JS_CGETSET_MAGIC_DEF("clientHeaderTimeout",      ngx_js_server_get,                       ngx_js_server_set, 3),
+    JS_CGETSET_MAGIC_DEF("ignoreInvalidHeaders",     ngx_js_server_get,                       ngx_js_server_set, 4),
+    JS_CGETSET_MAGIC_DEF("mergeSlashes",             ngx_js_server_get,                       ngx_js_server_set, 5),
+    JS_CGETSET_MAGIC_DEF("underscoresInHeaders",     ngx_js_server_get,                       ngx_js_server_set, 6),
+    JS_CGETSET_MAGIC_DEF("serverTokens",             ngx_js_server_get,                       ngx_js_server_set, 7),
+    JS_CGETSET_MAGIC_DEF("connectionPoolSize",       ngx_js_server_get,                       ngx_js_server_set, 8),
+    JS_CGETSET_MAGIC_DEF("requestPoolSize",          ngx_js_server_get,                       ngx_js_server_set, 9),
     JS_CGETSET_DEF       ("largeClientHeaderBuffers", ngx_js_server_get_large_client_hdr_bufs, NULL),
     JS_CGETSET_DEF       ("ssl",                      ngx_js_server_get_ssl,                   NULL),
 };
