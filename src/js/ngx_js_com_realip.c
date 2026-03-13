@@ -186,9 +186,27 @@ ngx_js_realip_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+/* recursive setter — magic 1 */
+static JSValue
+ngx_js_realip_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_realip_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_realip_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    if (magic == 1) { /* recursive */
+        op->rlcf->recursive = JS_ToBool(ctx, val);
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_realip_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("header",    ngx_js_realip_get,      NULL, 0),
-    JS_CGETSET_MAGIC_DEF("recursive", ngx_js_realip_get,      NULL, 1),
+    JS_CGETSET_MAGIC_DEF("header",    ngx_js_realip_get,      NULL,              0),
+    JS_CGETSET_MAGIC_DEF("recursive", ngx_js_realip_get,      ngx_js_realip_set, 1),
     JS_CGETSET_DEF       ("from",     ngx_js_realip_get_from, NULL),
 };
 

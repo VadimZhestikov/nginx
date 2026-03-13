@@ -133,6 +133,27 @@ ngx_js_proxy_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
     ucf = &op->plcf->upstream;
 
     switch (magic) {
+    case 1: /* httpVersion — "1.0" or "1.1" */
+    {
+        const char  *s;
+        size_t       slen;
+
+        s = JS_ToCStringLen(ctx, &slen, val);
+        if (!s) { return JS_EXCEPTION; }
+
+        if (slen == 3 && ngx_strncmp(s, "1.0", 3) == 0) {
+            op->plcf->http_version = NGX_HTTP_VERSION_10;
+        } else if (slen == 3 && ngx_strncmp(s, "1.1", 3) == 0) {
+            op->plcf->http_version = NGX_HTTP_VERSION_11;
+        } else {
+            JS_FreeCString(ctx, s);
+            return JS_ThrowTypeError(ctx,
+                        "httpVersion must be \"1.0\" or \"1.1\"");
+        }
+
+        JS_FreeCString(ctx, s);
+        return JS_UNDEFINED;
+    }
     case 2:  /* connectTimeout */
         if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
         ucf->connect_timeout = (ngx_msec_t) n;
@@ -153,6 +174,10 @@ ngx_js_proxy_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
         return JS_UNDEFINED;
     case 7:  /* interceptErrors */
         ucf->intercept_errors = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 8:  /* bufferSize */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->buffer_size = (size_t) n;
         return JS_UNDEFINED;
     case 9:  /* nextUpstreamTries */
         if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
@@ -322,14 +347,14 @@ ngx_js_proxy_get_cache(JSContext *ctx, JSValueConst this_val)
 
 static const JSCFunctionListEntry ngx_js_proxy_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("pass",                ngx_js_proxy_get, NULL,  0),
-    JS_CGETSET_MAGIC_DEF("httpVersion",         ngx_js_proxy_get, NULL,  1),
+    JS_CGETSET_MAGIC_DEF("httpVersion",         ngx_js_proxy_get, ngx_js_proxy_set,  1),
     JS_CGETSET_MAGIC_DEF("connectTimeout",      ngx_js_proxy_get, ngx_js_proxy_set,  2),
     JS_CGETSET_MAGIC_DEF("sendTimeout",         ngx_js_proxy_get, ngx_js_proxy_set,  3),
     JS_CGETSET_MAGIC_DEF("readTimeout",         ngx_js_proxy_get, ngx_js_proxy_set,  4),
     JS_CGETSET_MAGIC_DEF("buffering",           ngx_js_proxy_get, ngx_js_proxy_set,  5),
     JS_CGETSET_MAGIC_DEF("requestBuffering",    ngx_js_proxy_get, ngx_js_proxy_set,  6),
     JS_CGETSET_MAGIC_DEF("interceptErrors",     ngx_js_proxy_get, ngx_js_proxy_set,  7),
-    JS_CGETSET_MAGIC_DEF("bufferSize",          ngx_js_proxy_get, NULL,              8),
+    JS_CGETSET_MAGIC_DEF("bufferSize",          ngx_js_proxy_get, ngx_js_proxy_set,  8),
     JS_CGETSET_MAGIC_DEF("nextUpstreamTries",   ngx_js_proxy_get, ngx_js_proxy_set,  9),
     JS_CGETSET_MAGIC_DEF("nextUpstreamTimeout", ngx_js_proxy_get, ngx_js_proxy_set, 10),
     JS_CGETSET_DEF       ("buffers",            ngx_js_proxy_get_buffers,       NULL),

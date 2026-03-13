@@ -72,12 +72,35 @@ ngx_js_referer_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+/*
+ * noReferer / blockedReferer / serverNames setters (magics 0-2).
+ * hashMaxSize / hashBucketSize remain read-only (hash already built).
+ */
+static JSValue
+ngx_js_referer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_referer_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_referer_class_id);
+    if (op == NULL) { return JS_EXCEPTION; }
+
+    switch (magic) {
+    case 0: op->rlcf->no_referer      = JS_ToBool(ctx, val); return JS_UNDEFINED;
+    case 1: op->rlcf->blocked_referer = JS_ToBool(ctx, val); return JS_UNDEFINED;
+    case 2: op->rlcf->server_names    = JS_ToBool(ctx, val); return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_referer_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("noReferer",      ngx_js_referer_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("blockedReferer", ngx_js_referer_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("serverNames",    ngx_js_referer_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("hashMaxSize",    ngx_js_referer_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("hashBucketSize", ngx_js_referer_get, NULL, 4),
+    JS_CGETSET_MAGIC_DEF("noReferer",      ngx_js_referer_get, ngx_js_referer_set, 0),
+    JS_CGETSET_MAGIC_DEF("blockedReferer", ngx_js_referer_get, ngx_js_referer_set, 1),
+    JS_CGETSET_MAGIC_DEF("serverNames",    ngx_js_referer_get, ngx_js_referer_set, 2),
+    JS_CGETSET_MAGIC_DEF("hashMaxSize",    ngx_js_referer_get, NULL,               3),
+    JS_CGETSET_MAGIC_DEF("hashBucketSize", ngx_js_referer_get, NULL,               4),
 };
 
 

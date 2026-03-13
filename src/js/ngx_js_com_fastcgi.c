@@ -212,6 +212,26 @@ ngx_js_fastcgi_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     ucf = &op->flcf->upstream;
 
     switch (magic) {
+    case 1: /* index — string stored in pool */
+    {
+        const char  *s;
+        size_t       slen;
+        u_char      *p;
+
+        s = JS_ToCStringLen(ctx, &slen, val);
+        if (!s) { return JS_EXCEPTION; }
+        p = ngx_pnalloc(ngx_cycle->pool, slen + 1);
+        if (!p) { JS_FreeCString(ctx, s); return JS_EXCEPTION; }
+        ngx_memcpy(p, s, slen);
+        p[slen] = '\0';
+        JS_FreeCString(ctx, s);
+        op->flcf->index.data = p;
+        op->flcf->index.len  = slen;
+        return JS_UNDEFINED;
+    }
+    case 2: /* keepConn */
+        op->flcf->keep_conn = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
     case 3: /* connectTimeout */
         if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
         ucf->connect_timeout = (ngx_msec_t) n;
@@ -241,8 +261,8 @@ ngx_js_fastcgi_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 
 static const JSCFunctionListEntry ngx_js_fastcgi_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("pass",             ngx_js_fastcgi_get, NULL,              0),
-    JS_CGETSET_MAGIC_DEF("index",            ngx_js_fastcgi_get, NULL,              1),
-    JS_CGETSET_MAGIC_DEF("keepConn",         ngx_js_fastcgi_get, NULL,              2),
+    JS_CGETSET_MAGIC_DEF("index",            ngx_js_fastcgi_get, ngx_js_fastcgi_set, 1),
+    JS_CGETSET_MAGIC_DEF("keepConn",         ngx_js_fastcgi_get, ngx_js_fastcgi_set, 2),
     JS_CGETSET_MAGIC_DEF("connectTimeout",   ngx_js_fastcgi_get, ngx_js_fastcgi_set, 3),
     JS_CGETSET_MAGIC_DEF("sendTimeout",      ngx_js_fastcgi_get, ngx_js_fastcgi_set, 4),
     JS_CGETSET_MAGIC_DEF("readTimeout",      ngx_js_fastcgi_get, ngx_js_fastcgi_set, 5),

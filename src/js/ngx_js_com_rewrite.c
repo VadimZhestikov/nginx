@@ -80,11 +80,45 @@ ngx_js_rewrite_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+/*
+ * Magic values for ngx_js_rewrite_set:
+ *   0 — log
+ *   1 — uninitializedVariableWarn
+ *   2 — stackSize
+ *   (3 — hasRules is read-only: reflects compiled bytecode)
+ */
+static JSValue
+ngx_js_rewrite_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_rewrite_opaque_t  *op;
+    int64_t                   n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_rewrite_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    switch (magic) {
+    case 0: /* log */
+        op->rlcf->log = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 1: /* uninitializedVariableWarn */
+        op->rlcf->uninitialized_variable_warn = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 2: /* stackSize */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        op->rlcf->stack_size = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_rewrite_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("log",                       ngx_js_rewrite_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("uninitializedVariableWarn", ngx_js_rewrite_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("stackSize",                 ngx_js_rewrite_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("hasRules",                  ngx_js_rewrite_get, NULL, 3),
+    JS_CGETSET_MAGIC_DEF("log",                       ngx_js_rewrite_get, ngx_js_rewrite_set, 0),
+    JS_CGETSET_MAGIC_DEF("uninitializedVariableWarn", ngx_js_rewrite_get, ngx_js_rewrite_set, 1),
+    JS_CGETSET_MAGIC_DEF("stackSize",                 ngx_js_rewrite_get, ngx_js_rewrite_set, 2),
+    JS_CGETSET_MAGIC_DEF("hasRules",                  ngx_js_rewrite_get, NULL,               3),
 };
 
 

@@ -251,14 +251,77 @@ ngx_js_proxy_cache_get_use_stale(JSContext *ctx, JSValueConst this_val)
 }
 
 
+/*
+ * Magic values for ngx_js_proxy_cache_set (same as get):
+ *   0 — minUses
+ *   1 — lock
+ *   2 — lockTimeout       (ms)
+ *   3 — lockAge           (ms)
+ *   4 — revalidate
+ *   5 — convertHead
+ *   6 — backgroundUpdate
+ */
+static JSValue
+ngx_js_proxy_cache_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_proxy_cache_opaque_t  *op;
+    ngx_http_upstream_conf_t     *u;
+    int64_t                       n;
+    int                           b;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_proxy_cache_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    u = op->uconf;
+
+    switch (magic) {
+    case 0: /* minUses */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        u->cache_min_uses = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+    case 1: /* lock */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        u->cache_lock = b;
+        return JS_UNDEFINED;
+    case 2: /* lockTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        u->cache_lock_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 3: /* lockAge */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        u->cache_lock_age = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 4: /* revalidate */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        u->cache_revalidate = b;
+        return JS_UNDEFINED;
+    case 5: /* convertHead */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        u->cache_convert_head = b;
+        return JS_UNDEFINED;
+    case 6: /* backgroundUpdate */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        u->cache_background_update = b;
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_proxy_cache_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("minUses",           ngx_js_proxy_cache_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("lock",              ngx_js_proxy_cache_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("lockTimeout",       ngx_js_proxy_cache_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("lockAge",           ngx_js_proxy_cache_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("revalidate",        ngx_js_proxy_cache_get, NULL, 4),
-    JS_CGETSET_MAGIC_DEF("convertHead",       ngx_js_proxy_cache_get, NULL, 5),
-    JS_CGETSET_MAGIC_DEF("backgroundUpdate",  ngx_js_proxy_cache_get, NULL, 6),
+    JS_CGETSET_MAGIC_DEF("minUses",           ngx_js_proxy_cache_get, ngx_js_proxy_cache_set, 0),
+    JS_CGETSET_MAGIC_DEF("lock",              ngx_js_proxy_cache_get, ngx_js_proxy_cache_set, 1),
+    JS_CGETSET_MAGIC_DEF("lockTimeout",       ngx_js_proxy_cache_get, ngx_js_proxy_cache_set, 2),
+    JS_CGETSET_MAGIC_DEF("lockAge",           ngx_js_proxy_cache_get, ngx_js_proxy_cache_set, 3),
+    JS_CGETSET_MAGIC_DEF("revalidate",        ngx_js_proxy_cache_get, ngx_js_proxy_cache_set, 4),
+    JS_CGETSET_MAGIC_DEF("convertHead",       ngx_js_proxy_cache_get, ngx_js_proxy_cache_set, 5),
+    JS_CGETSET_MAGIC_DEF("backgroundUpdate",  ngx_js_proxy_cache_get, ngx_js_proxy_cache_set, 6),
     JS_CGETSET_DEF      ("zone",              ngx_js_proxy_cache_get_zone,       NULL),
     JS_CGETSET_DEF      ("methods",           ngx_js_proxy_cache_get_methods,    NULL),
     JS_CGETSET_DEF      ("valid",             ngx_js_proxy_cache_get_valid,      NULL),

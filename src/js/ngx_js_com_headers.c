@@ -184,11 +184,60 @@ ngx_js_headers_get_add_trailers(JSContext *ctx, JSValueConst this_val)
 }
 
 
+/*
+ * headersInherit / trailersInherit setter.
+ * Accepts "off", "on", or "merge".
+ *   Magic 2 — headersInherit
+ *   Magic 3 — trailersInherit
+ */
+static JSValue
+ngx_js_headers_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_headers_opaque_t  *op;
+    const char               *s;
+    size_t                    slen;
+    ngx_uint_t                v;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_headers_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    s = JS_ToCStringLen(ctx, &slen, val);
+    if (!s) { return JS_EXCEPTION; }
+
+    if (slen == 2 && ngx_strncasecmp((u_char *) s, (u_char *) "on", 2) == 0) {
+        v = NGX_HTTP_HEADERS_INHERIT_ON;
+    } else if (slen == 5
+               && ngx_strncasecmp((u_char *) s, (u_char *) "merge", 5) == 0)
+    {
+        v = NGX_HTTP_HEADERS_INHERIT_MERGE;
+    } else if (slen == 3
+               && ngx_strncasecmp((u_char *) s, (u_char *) "off", 3) == 0)
+    {
+        v = 0;
+    } else {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowTypeError(ctx,
+                    "inherit value must be \"off\", \"on\", or \"merge\"");
+    }
+
+    JS_FreeCString(ctx, s);
+
+    if (magic == 2) {
+        op->hcf->headers_inherit  = v;
+    } else {
+        op->hcf->trailers_inherit = v;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_headers_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("expires",         ngx_js_headers_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("expiresTime",     ngx_js_headers_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("headersInherit",  ngx_js_headers_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("trailersInherit", ngx_js_headers_get, NULL, 3),
+    JS_CGETSET_MAGIC_DEF("expires",         ngx_js_headers_get, NULL,                0),
+    JS_CGETSET_MAGIC_DEF("expiresTime",     ngx_js_headers_get, NULL,                1),
+    JS_CGETSET_MAGIC_DEF("headersInherit",  ngx_js_headers_get, ngx_js_headers_set,  2),
+    JS_CGETSET_MAGIC_DEF("trailersInherit", ngx_js_headers_get, ngx_js_headers_set,  3),
     JS_CGETSET_DEF      ("addHeaders",      ngx_js_headers_get_add_headers,  NULL),
     JS_CGETSET_DEF      ("addTrailers",     ngx_js_headers_get_add_trailers, NULL),
 };

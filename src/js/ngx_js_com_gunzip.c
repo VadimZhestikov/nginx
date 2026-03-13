@@ -83,12 +83,31 @@ ngx_js_gunzip_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     int magic)
 {
     ngx_js_gunzip_opaque_t  *op;
+    JSValue                  num_val, size_val;
+    int64_t                  num, size;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_gunzip_class_id);
     if (!op) { return JS_EXCEPTION; }
 
-    if (magic == 0) { /* enable */
+    switch (magic) {
+    case 0: /* enable */
         op->gcf->enable = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 1: /* buffers — { num, size } */
+        num_val  = JS_GetPropertyStr(ctx, val, "num");
+        size_val = JS_GetPropertyStr(ctx, val, "size");
+        if (JS_ToInt64(ctx, &num,  num_val)  < 0
+            || JS_ToInt64(ctx, &size, size_val) < 0)
+        {
+            JS_FreeValue(ctx, num_val);
+            JS_FreeValue(ctx, size_val);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, num_val);
+        JS_FreeValue(ctx, size_val);
+        op->gcf->bufs.num  = (ngx_uint_t) num;
+        op->gcf->bufs.size = (size_t) size;
+        return JS_UNDEFINED;
     }
 
     return JS_UNDEFINED;
@@ -97,7 +116,7 @@ ngx_js_gunzip_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 
 static const JSCFunctionListEntry ngx_js_gunzip_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("enable",  ngx_js_gunzip_get, ngx_js_gunzip_set, 0),
-    JS_CGETSET_MAGIC_DEF("buffers", ngx_js_gunzip_get, NULL,              1),
+    JS_CGETSET_MAGIC_DEF("buffers", ngx_js_gunzip_get, ngx_js_gunzip_set, 1),
 };
 
 
