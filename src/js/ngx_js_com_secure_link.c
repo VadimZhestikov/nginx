@@ -46,6 +46,52 @@ static JSClassDef ngx_js_secure_link_class = {
 
 
 static JSValue
+ngx_js_secure_link_set(JSContext *ctx, JSValueConst this_val,
+    JSValueConst val, int magic)
+{
+    ngx_js_secure_link_opaque_t  *op;
+    ngx_http_secure_link_conf_t  *scf;
+    const char                   *s;
+    size_t                        len;
+    u_char                       *p;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_secure_link_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    scf = op->scf;
+
+    switch (magic) {
+
+    case 0: /* secret */
+        s = JS_ToCStringLen(ctx, &len, val);
+        if (!s) {
+            return JS_EXCEPTION;
+        }
+
+        p = ngx_pnalloc(ngx_cycle->pool, len + 1);
+        if (p == NULL) {
+            JS_FreeCString(ctx, s);
+            JS_ThrowOutOfMemory(ctx);
+            return JS_EXCEPTION;
+        }
+
+        ngx_memcpy(p, s, len);
+        p[len] = '\0';
+        JS_FreeCString(ctx, s);
+
+        scf->secret.data = p;
+        scf->secret.len  = len;
+        return JS_UNDEFINED;
+
+    } /* switch */
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
 ngx_js_secure_link_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
     ngx_js_secure_link_opaque_t  *op;
@@ -87,9 +133,9 @@ ngx_js_secure_link_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 static const JSCFunctionListEntry ngx_js_secure_link_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("secret",   ngx_js_secure_link_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("variable", ngx_js_secure_link_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("md5",      ngx_js_secure_link_get, NULL, 2),
+    JS_CGETSET_MAGIC_DEF("secret",   ngx_js_secure_link_get, ngx_js_secure_link_set, 0),
+    JS_CGETSET_MAGIC_DEF("variable", ngx_js_secure_link_get, NULL,                   1),
+    JS_CGETSET_MAGIC_DEF("md5",      ngx_js_secure_link_get, NULL,                   2),
 };
 
 

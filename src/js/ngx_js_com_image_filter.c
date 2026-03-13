@@ -53,6 +53,133 @@ static JSClassDef ngx_js_image_filter_class = {
 
 
 static JSValue
+ngx_js_image_filter_set(JSContext *ctx, JSValueConst this_val,
+    JSValueConst val, int magic)
+{
+    ngx_js_image_filter_opaque_t  *op;
+    ngx_http_image_filter_conf_t  *icf;
+    int64_t                        n;
+    int                            b;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_image_filter_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    icf = op->icf;
+
+    switch (magic) {
+
+    case 0: /* action */
+    {
+        static const struct { const char *name; ngx_uint_t val; } map[] = {
+            { "off",    NGX_HTTP_IMAGE_OFF    },
+            { "test",   NGX_HTTP_IMAGE_TEST   },
+            { "size",   NGX_HTTP_IMAGE_SIZE   },
+            { "resize", NGX_HTTP_IMAGE_RESIZE },
+            { "crop",   NGX_HTTP_IMAGE_CROP   },
+            { "rotate", NGX_HTTP_IMAGE_ROTATE },
+        };
+        const char  *s;
+        size_t       len;
+        ngx_uint_t   i;
+
+        s = JS_ToCStringLen(ctx, &len, val);
+        if (!s) {
+            return JS_EXCEPTION;
+        }
+
+        for (i = 0; i < countof(map); i++) {
+            if (strlen(map[i].name) == len
+                && ngx_strncasecmp((u_char *) map[i].name,
+                                   (u_char *) s, len) == 0)
+            {
+                JS_FreeCString(ctx, s);
+                icf->filter = map[i].val;
+                return JS_UNDEFINED;
+            }
+        }
+
+        JS_ThrowTypeError(ctx, "imageFilter.action: unknown value \"%s\"", s);
+        JS_FreeCString(ctx, s);
+        return JS_EXCEPTION;
+    }
+
+    case 1: /* width */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "imageFilter.width must be >= 0");
+        }
+        icf->width = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 2: /* height */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "imageFilter.height must be >= 0");
+        }
+        icf->height = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 3: /* angle */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "imageFilter.angle must be >= 0");
+        }
+        icf->angle = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 4: /* jpegQuality */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "imageFilter.jpegQuality must be >= 0");
+        }
+        icf->jpeg_quality = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 5: /* webpQuality */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "imageFilter.webpQuality must be >= 0");
+        }
+        icf->webp_quality = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 6: /* sharpen */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "imageFilter.sharpen must be >= 0");
+        }
+        icf->sharpen = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 7: /* transparency */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        icf->transparency = (ngx_flag_t) b;
+        return JS_UNDEFINED;
+
+    case 8: /* interlace */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        icf->interlace = (ngx_flag_t) b;
+        return JS_UNDEFINED;
+
+    case 9: /* bufferSize */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "imageFilter.bufferSize must be >= 0");
+        }
+        icf->buffer_size = (size_t) n;
+        return JS_UNDEFINED;
+
+    } /* switch */
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
 ngx_js_image_filter_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
     ngx_js_image_filter_opaque_t  *op;
@@ -115,16 +242,16 @@ ngx_js_image_filter_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 static const JSCFunctionListEntry ngx_js_image_filter_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("action",       ngx_js_image_filter_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("width",        ngx_js_image_filter_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("height",       ngx_js_image_filter_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("angle",        ngx_js_image_filter_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("jpegQuality",  ngx_js_image_filter_get, NULL, 4),
-    JS_CGETSET_MAGIC_DEF("webpQuality",  ngx_js_image_filter_get, NULL, 5),
-    JS_CGETSET_MAGIC_DEF("sharpen",      ngx_js_image_filter_get, NULL, 6),
-    JS_CGETSET_MAGIC_DEF("transparency", ngx_js_image_filter_get, NULL, 7),
-    JS_CGETSET_MAGIC_DEF("interlace",    ngx_js_image_filter_get, NULL, 8),
-    JS_CGETSET_MAGIC_DEF("bufferSize",   ngx_js_image_filter_get, NULL, 9),
+    JS_CGETSET_MAGIC_DEF("action",       ngx_js_image_filter_get, ngx_js_image_filter_set, 0),
+    JS_CGETSET_MAGIC_DEF("width",        ngx_js_image_filter_get, ngx_js_image_filter_set, 1),
+    JS_CGETSET_MAGIC_DEF("height",       ngx_js_image_filter_get, ngx_js_image_filter_set, 2),
+    JS_CGETSET_MAGIC_DEF("angle",        ngx_js_image_filter_get, ngx_js_image_filter_set, 3),
+    JS_CGETSET_MAGIC_DEF("jpegQuality",  ngx_js_image_filter_get, ngx_js_image_filter_set, 4),
+    JS_CGETSET_MAGIC_DEF("webpQuality",  ngx_js_image_filter_get, ngx_js_image_filter_set, 5),
+    JS_CGETSET_MAGIC_DEF("sharpen",      ngx_js_image_filter_get, ngx_js_image_filter_set, 6),
+    JS_CGETSET_MAGIC_DEF("transparency", ngx_js_image_filter_get, ngx_js_image_filter_set, 7),
+    JS_CGETSET_MAGIC_DEF("interlace",    ngx_js_image_filter_get, ngx_js_image_filter_set, 8),
+    JS_CGETSET_MAGIC_DEF("bufferSize",   ngx_js_image_filter_get, ngx_js_image_filter_set, 9),
 };
 
 
