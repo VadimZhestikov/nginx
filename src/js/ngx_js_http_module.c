@@ -74,6 +74,9 @@ static JSClassDef ngx_js_request_class = {
  *  18 — upstream     (r/o object or null, last upstream attempt metadata)
  *  19 — variables    (r/w NginxRequestVariables exotic object)
  *  20 — body         (r/o string or null — present only if already read)
+ *  21 — serverAddr   (r/o string, local IP address)
+ *  22 — serverPort   (r/o number, local port)
+ *  23 — requestLength (r/o number, total bytes received for this request)
  */
 
 /* Forward declaration — defined after ngx_js_request_set_variable */
@@ -429,6 +432,31 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
 
     case 20: /* body — request body string if already buffered, else null */
         return ngx_js_collect_body(ctx, r);
+
+    case 21: /* serverAddr — local IP address as string */
+    {
+        u_char     addr[NGX_SOCKADDR_STRLEN];
+        ngx_str_t  s;
+
+        s.len  = NGX_SOCKADDR_STRLEN;
+        s.data = addr;
+
+        if (ngx_connection_local_sockaddr(r->connection, &s, 0) != NGX_OK) {
+            return JS_NewString(ctx, "");
+        }
+
+        return JS_NewStringLen(ctx, (const char *) s.data, s.len);
+    }
+
+    case 22: /* serverPort — local port number */
+        if (ngx_connection_local_sockaddr(r->connection, NULL, 0) != NGX_OK) {
+            return JS_NewInt32(ctx, 0);
+        }
+        return JS_NewInt32(ctx,
+                           (int32_t) ngx_inet_get_port(r->connection->local_sockaddr));
+
+    case 23: /* requestLength — total bytes received for this request */
+        return JS_NewInt64(ctx, (int64_t) r->request_length);
 
     }
 
@@ -3169,8 +3197,11 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("queryParams", ngx_js_request_get, NULL, 16),
     JS_CGETSET_MAGIC_DEF("cookies",     ngx_js_request_get, NULL, 17),
     JS_CGETSET_MAGIC_DEF("upstream",    ngx_js_request_get, NULL, 18),
-    JS_CGETSET_MAGIC_DEF("variables",   ngx_js_request_get, NULL, 19),
-    JS_CGETSET_MAGIC_DEF("body",        ngx_js_request_get, NULL, 20),
+    JS_CGETSET_MAGIC_DEF("variables",     ngx_js_request_get, NULL, 19),
+    JS_CGETSET_MAGIC_DEF("body",          ngx_js_request_get, NULL, 20),
+    JS_CGETSET_MAGIC_DEF("serverAddr",    ngx_js_request_get, NULL, 21),
+    JS_CGETSET_MAGIC_DEF("serverPort",    ngx_js_request_get, NULL, 22),
+    JS_CGETSET_MAGIC_DEF("requestLength", ngx_js_request_get, NULL, 23),
     JS_CFUNC_DEF("readBody",            0, ngx_js_request_read_body),
     JS_CFUNC_DEF("sendfile",            1, ngx_js_request_sendfile),
     JS_CFUNC_DEF("redirect",            1, ngx_js_request_redirect),
