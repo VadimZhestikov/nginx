@@ -231,10 +231,28 @@ ngx_js_charset_set(JSContext *ctx, JSValueConst this_val,
 }
 
 
+static JSValue
+ngx_js_charset_set_override(JSContext *ctx, JSValueConst this_val,
+    JSValueConst val, int magic)
+{
+    ngx_js_charset_opaque_t  *op;
+    int                       b;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_charset_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    b = JS_ToBool(ctx, val);
+    if (b < 0) { return JS_EXCEPTION; }
+
+    op->lcf->override_charset = (ngx_flag_t) b;
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_charset_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("charset",         ngx_js_charset_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("sourceCharset",   ngx_js_charset_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("overrideCharset", ngx_js_charset_get, NULL, 2),
+    JS_CGETSET_MAGIC_DEF("charset",         ngx_js_charset_get, NULL,                       0),
+    JS_CGETSET_MAGIC_DEF("sourceCharset",   ngx_js_charset_get, NULL,                       1),
+    JS_CGETSET_MAGIC_DEF("overrideCharset", ngx_js_charset_get, ngx_js_charset_set_override, 2),
     JS_CFUNC_DEF        ("setCharset",      2, ngx_js_charset_set),
 };
 

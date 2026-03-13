@@ -109,13 +109,75 @@ ngx_js_ssi_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_ssi_set(JSContext *ctx, JSValueConst this_val, JSValueConst val,
+    int magic)
+{
+    ngx_js_ssi_opaque_t  *op;
+    ngx_js_ssi_conf_t    *slcf;
+    int64_t               n;
+    int                   b;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_ssi_class_id);
+    if (op == NULL) { return JS_EXCEPTION; }
+
+    slcf = op->slcf;
+
+    switch (magic) {
+
+    case 0: /* enable */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        slcf->enable = (ngx_flag_t) b;
+        return JS_UNDEFINED;
+
+    case 1: /* silentErrors */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        slcf->silent_errors = (ngx_flag_t) b;
+        return JS_UNDEFINED;
+
+    case 2: /* ignoreRecycledBuffers */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        slcf->ignore_recycled_buffers = (ngx_flag_t) b;
+        return JS_UNDEFINED;
+
+    case 3: /* lastModified */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        slcf->last_modified = (ngx_flag_t) b;
+        return JS_UNDEFINED;
+
+    case 4: /* minFileChunk */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "ssi.minFileChunk must be >= 0");
+        }
+        slcf->min_file_chunk = (size_t) n;
+        return JS_UNDEFINED;
+
+    case 5: /* valueLen */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "ssi.valueLen must be >= 0");
+        }
+        slcf->value_len = (size_t) n;
+        return JS_UNDEFINED;
+
+    } /* switch */
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_ssi_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("enable",                ngx_js_ssi_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("silentErrors",          ngx_js_ssi_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("ignoreRecycledBuffers", ngx_js_ssi_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("lastModified",          ngx_js_ssi_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("minFileChunk",          ngx_js_ssi_get, NULL, 4),
-    JS_CGETSET_MAGIC_DEF("valueLen",              ngx_js_ssi_get, NULL, 5),
+    JS_CGETSET_MAGIC_DEF("enable",                ngx_js_ssi_get, ngx_js_ssi_set, 0),
+    JS_CGETSET_MAGIC_DEF("silentErrors",          ngx_js_ssi_get, ngx_js_ssi_set, 1),
+    JS_CGETSET_MAGIC_DEF("ignoreRecycledBuffers", ngx_js_ssi_get, ngx_js_ssi_set, 2),
+    JS_CGETSET_MAGIC_DEF("lastModified",          ngx_js_ssi_get, ngx_js_ssi_set, 3),
+    JS_CGETSET_MAGIC_DEF("minFileChunk",          ngx_js_ssi_get, ngx_js_ssi_set, 4),
+    JS_CGETSET_MAGIC_DEF("valueLen",              ngx_js_ssi_get, ngx_js_ssi_set, 5),
 };
 
 

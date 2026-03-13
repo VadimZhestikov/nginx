@@ -67,8 +67,37 @@ ngx_js_slice_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_slice_set(JSContext *ctx, JSValueConst this_val, JSValueConst val,
+    int magic)
+{
+    ngx_js_slice_opaque_t      *op;
+    ngx_http_slice_loc_conf_t  *scf;
+    int64_t                     n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_slice_class_id);
+    if (op == NULL) { return JS_EXCEPTION; }
+
+    scf = op->scf;
+
+    switch (magic) {
+
+    case 0: /* size */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "slice.size must be >= 0");
+        }
+        scf->size = (size_t) n;
+        return JS_UNDEFINED;
+
+    } /* switch */
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_slice_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("size", ngx_js_slice_get, NULL, 0),
+    JS_CGETSET_MAGIC_DEF("size", ngx_js_slice_get, ngx_js_slice_set, 0),
 };
 
 

@@ -109,11 +109,117 @@ ngx_js_dav_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_dav_set(JSContext *ctx, JSValueConst this_val, JSValueConst val,
+    int magic)
+{
+    ngx_js_dav_opaque_t      *op;
+    ngx_http_dav_loc_conf_t  *dlcf;
+    int64_t                   n;
+    int                       b;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_dav_class_id);
+    if (op == NULL) { return JS_EXCEPTION; }
+
+    dlcf = op->dlcf;
+
+    switch (magic) {
+
+    case 0: /* methods — array of strings → bitmask */
+    {
+        static const struct { const char *name; ngx_uint_t bit; } map[] = {
+            { "PUT",    NGX_HTTP_PUT    },
+            { "DELETE", NGX_HTTP_DELETE },
+            { "MKCOL",  NGX_HTTP_MKCOL  },
+            { "COPY",   NGX_HTTP_COPY   },
+            { "MOVE",   NGX_HTTP_MOVE   },
+        };
+        ngx_uint_t  mask;
+        uint32_t    len, i, j;
+        JSValue     arr, elem;
+        const char *s;
+        size_t      slen;
+
+        if (!JS_IsArray(ctx, val)) {
+            return JS_ThrowTypeError(ctx, "dav.methods: array expected");
+        }
+
+        {
+            JSValue lv = JS_GetPropertyStr(ctx, val, "length");
+            if (JS_ToUint32(ctx, &len, lv) < 0) {
+                JS_FreeValue(ctx, lv);
+                return JS_EXCEPTION;
+            }
+            JS_FreeValue(ctx, lv);
+        }
+
+        arr  = val;
+        mask = 0;
+
+        for (i = 0; i < len; i++) {
+            elem = JS_GetPropertyUint32(ctx, arr, i);
+            if (JS_IsException(elem)) { return JS_EXCEPTION; }
+
+            s = JS_ToCStringLen(ctx, &slen, elem);
+            JS_FreeValue(ctx, elem);
+            if (!s) { return JS_EXCEPTION; }
+
+            for (j = 0; j < countof(map); j++) {
+                if (strlen(map[j].name) == slen
+                    && ngx_strncasecmp((u_char *) map[j].name,
+                                       (u_char *) s, slen) == 0)
+                {
+                    mask |= map[j].bit;
+                    break;
+                }
+            }
+
+            if (j == countof(map)) {
+                JS_ThrowTypeError(ctx, "dav.methods: unknown method \"%s\"", s);
+                JS_FreeCString(ctx, s);
+                return JS_EXCEPTION;
+            }
+
+            JS_FreeCString(ctx, s);
+        }
+
+        dlcf->methods = mask;
+        return JS_UNDEFINED;
+    }
+
+    case 1: /* access */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "dav.access must be >= 0");
+        }
+        dlcf->access = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 2: /* minDeleteDepth */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "dav.minDeleteDepth must be >= 0");
+        }
+        dlcf->min_delete_depth = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 3: /* createFullPutPath */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        dlcf->create_full_put_path = (ngx_flag_t) b;
+        return JS_UNDEFINED;
+
+    } /* switch */
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_dav_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("methods",           ngx_js_dav_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("access",            ngx_js_dav_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("minDeleteDepth",    ngx_js_dav_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("createFullPutPath", ngx_js_dav_get, NULL, 3),
+    JS_CGETSET_MAGIC_DEF("methods",           ngx_js_dav_get, ngx_js_dav_set, 0),
+    JS_CGETSET_MAGIC_DEF("access",            ngx_js_dav_get, ngx_js_dav_set, 1),
+    JS_CGETSET_MAGIC_DEF("minDeleteDepth",    ngx_js_dav_get, ngx_js_dav_set, 2),
+    JS_CGETSET_MAGIC_DEF("createFullPutPath", ngx_js_dav_get, ngx_js_dav_set, 3),
 };
 
 

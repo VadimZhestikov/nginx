@@ -75,10 +75,54 @@ ngx_js_mp4_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_mp4_set(JSContext *ctx, JSValueConst this_val, JSValueConst val,
+    int magic)
+{
+    ngx_js_mp4_opaque_t  *op;
+    ngx_http_mp4_conf_t  *mcf;
+    int64_t               n;
+    int                   b;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_mp4_class_id);
+    if (op == NULL) { return JS_EXCEPTION; }
+
+    mcf = op->mcf;
+
+    switch (magic) {
+
+    case 0: /* bufferSize */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "mp4.bufferSize must be >= 0");
+        }
+        mcf->buffer_size = (size_t) n;
+        return JS_UNDEFINED;
+
+    case 1: /* maxBufferSize */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (n < 0) {
+            return JS_ThrowRangeError(ctx, "mp4.maxBufferSize must be >= 0");
+        }
+        mcf->max_buffer_size = (size_t) n;
+        return JS_UNDEFINED;
+
+    case 2: /* startKeyFrame */
+        b = JS_ToBool(ctx, val);
+        if (b < 0) { return JS_EXCEPTION; }
+        mcf->start_key_frame = (ngx_flag_t) b;
+        return JS_UNDEFINED;
+
+    } /* switch */
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_mp4_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("bufferSize",    ngx_js_mp4_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("maxBufferSize", ngx_js_mp4_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("startKeyFrame", ngx_js_mp4_get, NULL, 2),
+    JS_CGETSET_MAGIC_DEF("bufferSize",    ngx_js_mp4_get, ngx_js_mp4_set, 0),
+    JS_CGETSET_MAGIC_DEF("maxBufferSize", ngx_js_mp4_get, ngx_js_mp4_set, 1),
+    JS_CGETSET_MAGIC_DEF("startKeyFrame", ngx_js_mp4_get, ngx_js_mp4_set, 2),
 };
 
 
