@@ -87,13 +87,52 @@ ngx_js_uwsgi_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_uwsgi_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_uwsgi_opaque_t      *op;
+    ngx_http_uwsgi_loc_conf_t  *ucf;
+    int64_t                     n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_uwsgi_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    ucf = op->ucf;
+
+    switch (magic) {
+    case 0: /* connectTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->upstream.connect_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 1: /* sendTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->upstream.send_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 2: /* readTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->upstream.read_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 4: /* modifier1 */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->modifier1 = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+    case 5: /* modifier2 */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->modifier2 = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_uwsgi_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("connectTimeout", ngx_js_uwsgi_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("sendTimeout",    ngx_js_uwsgi_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("readTimeout",    ngx_js_uwsgi_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("bufferSize",     ngx_js_uwsgi_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("modifier1",      ngx_js_uwsgi_get, NULL, 4),
-    JS_CGETSET_MAGIC_DEF("modifier2",      ngx_js_uwsgi_get, NULL, 5),
+    JS_CGETSET_MAGIC_DEF("connectTimeout", ngx_js_uwsgi_get, ngx_js_uwsgi_set, 0),
+    JS_CGETSET_MAGIC_DEF("sendTimeout",    ngx_js_uwsgi_get, ngx_js_uwsgi_set, 1),
+    JS_CGETSET_MAGIC_DEF("readTimeout",    ngx_js_uwsgi_get, ngx_js_uwsgi_set, 2),
+    JS_CGETSET_MAGIC_DEF("bufferSize",     ngx_js_uwsgi_get, NULL,             3),
+    JS_CGETSET_MAGIC_DEF("modifier1",      ngx_js_uwsgi_get, ngx_js_uwsgi_set, 4),
+    JS_CGETSET_MAGIC_DEF("modifier2",      ngx_js_uwsgi_get, ngx_js_uwsgi_set, 5),
 };
 
 

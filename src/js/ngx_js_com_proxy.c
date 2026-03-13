@@ -120,6 +120,54 @@ ngx_js_proxy_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_proxy_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_proxy_opaque_t      *op;
+    ngx_http_upstream_conf_t   *ucf;
+    int64_t                     n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_proxy_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    ucf = &op->plcf->upstream;
+
+    switch (magic) {
+    case 2:  /* connectTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->connect_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 3:  /* sendTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->send_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 4:  /* readTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->read_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 5:  /* buffering */
+        ucf->buffering = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 6:  /* requestBuffering */
+        ucf->request_buffering = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 7:  /* interceptErrors */
+        ucf->intercept_errors = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 9:  /* nextUpstreamTries */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->next_upstream_tries = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+    case 10: /* nextUpstreamTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->next_upstream_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 /*
  * proxy.buffers — {num: N, size: S}.
  * Maps to proxy_buffers directive (ngx_bufs_t).
@@ -275,15 +323,15 @@ ngx_js_proxy_get_cache(JSContext *ctx, JSValueConst this_val)
 static const JSCFunctionListEntry ngx_js_proxy_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("pass",                ngx_js_proxy_get, NULL,  0),
     JS_CGETSET_MAGIC_DEF("httpVersion",         ngx_js_proxy_get, NULL,  1),
-    JS_CGETSET_MAGIC_DEF("connectTimeout",      ngx_js_proxy_get, NULL,  2),
-    JS_CGETSET_MAGIC_DEF("sendTimeout",         ngx_js_proxy_get, NULL,  3),
-    JS_CGETSET_MAGIC_DEF("readTimeout",         ngx_js_proxy_get, NULL,  4),
-    JS_CGETSET_MAGIC_DEF("buffering",           ngx_js_proxy_get, NULL,  5),
-    JS_CGETSET_MAGIC_DEF("requestBuffering",    ngx_js_proxy_get, NULL,  6),
-    JS_CGETSET_MAGIC_DEF("interceptErrors",     ngx_js_proxy_get, NULL,  7),
-    JS_CGETSET_MAGIC_DEF("bufferSize",          ngx_js_proxy_get, NULL,  8),
-    JS_CGETSET_MAGIC_DEF("nextUpstreamTries",   ngx_js_proxy_get, NULL,  9),
-    JS_CGETSET_MAGIC_DEF("nextUpstreamTimeout", ngx_js_proxy_get, NULL, 10),
+    JS_CGETSET_MAGIC_DEF("connectTimeout",      ngx_js_proxy_get, ngx_js_proxy_set,  2),
+    JS_CGETSET_MAGIC_DEF("sendTimeout",         ngx_js_proxy_get, ngx_js_proxy_set,  3),
+    JS_CGETSET_MAGIC_DEF("readTimeout",         ngx_js_proxy_get, ngx_js_proxy_set,  4),
+    JS_CGETSET_MAGIC_DEF("buffering",           ngx_js_proxy_get, ngx_js_proxy_set,  5),
+    JS_CGETSET_MAGIC_DEF("requestBuffering",    ngx_js_proxy_get, ngx_js_proxy_set,  6),
+    JS_CGETSET_MAGIC_DEF("interceptErrors",     ngx_js_proxy_get, ngx_js_proxy_set,  7),
+    JS_CGETSET_MAGIC_DEF("bufferSize",          ngx_js_proxy_get, NULL,              8),
+    JS_CGETSET_MAGIC_DEF("nextUpstreamTries",   ngx_js_proxy_get, ngx_js_proxy_set,  9),
+    JS_CGETSET_MAGIC_DEF("nextUpstreamTimeout", ngx_js_proxy_get, ngx_js_proxy_set, 10),
     JS_CGETSET_DEF       ("buffers",            ngx_js_proxy_get_buffers,       NULL),
     JS_CGETSET_DEF       ("nextUpstream",       ngx_js_proxy_get_next_upstream, NULL),
     JS_CGETSET_DEF       ("setHeader",          ngx_js_proxy_get_set_header,    NULL),

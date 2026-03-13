@@ -84,12 +84,44 @@ ngx_js_memcached_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_memcached_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_memcached_opaque_t      *op;
+    ngx_http_upstream_conf_t       *ucf;
+    int64_t                         n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_memcached_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    ucf = &op->mlcf->upstream;
+
+    switch (magic) {
+    case 0: /* connectTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->connect_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 1: /* sendTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->send_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 2: /* readTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        ucf->read_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_memcached_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("connectTimeout", ngx_js_memcached_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("sendTimeout",    ngx_js_memcached_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("readTimeout",    ngx_js_memcached_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("bufferSize",     ngx_js_memcached_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("gzipFlag",       ngx_js_memcached_get, NULL, 4),
+    JS_CGETSET_MAGIC_DEF("connectTimeout", ngx_js_memcached_get, ngx_js_memcached_set, 0),
+    JS_CGETSET_MAGIC_DEF("sendTimeout",    ngx_js_memcached_get, ngx_js_memcached_set, 1),
+    JS_CGETSET_MAGIC_DEF("readTimeout",    ngx_js_memcached_get, ngx_js_memcached_set, 2),
+    JS_CGETSET_MAGIC_DEF("bufferSize",     ngx_js_memcached_get, NULL,                3),
+    JS_CGETSET_MAGIC_DEF("gzipFlag",       ngx_js_memcached_get, NULL,                4),
 };
 
 
