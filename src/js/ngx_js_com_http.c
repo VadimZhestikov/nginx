@@ -1166,7 +1166,6 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 {
     ngx_js_location_opaque_t  *op;
     ngx_http_core_loc_conf_t  *clcf;
-    ngx_cycle_t               *cycle;
     const char                *cstr;
     size_t                     len;
     u_char                    *data;
@@ -1178,7 +1177,6 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     }
 
     clcf  = op->clcf;
-    cycle = (ngx_cycle_t *) JS_GetContextOpaque(ctx);
 
     switch (magic) {
     case 1: /* root */
@@ -1188,7 +1186,7 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         }
 
         len  = ngx_strlen(cstr);
-        data = ngx_pnalloc(cycle->pool, len + 1);
+        data = ngx_pnalloc(ngx_cycle->pool, len + 1);
         if (data == NULL) {
             JS_FreeCString(ctx, cstr);
             return JS_ThrowOutOfMemory(ctx);
@@ -1200,6 +1198,32 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         clcf->root.data    = data;
         clcf->root.len     = len;
         clcf->root_lengths = NULL;  /* mark as literal (no variables) */
+        return JS_UNDEFINED;
+
+    case 14: /* alias — only writable when the location uses alias directive */
+        if (clcf->alias == 0) {
+            return JS_ThrowTypeError(ctx,
+                "alias: location uses root, not alias; set .root instead");
+        }
+
+        cstr = JS_ToCString(ctx, val);
+        if (!cstr) {
+            return JS_EXCEPTION;
+        }
+
+        len  = ngx_strlen(cstr);
+        data = ngx_pnalloc(ngx_cycle->pool, len + 1);
+        if (data == NULL) {
+            JS_FreeCString(ctx, cstr);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        ngx_memcpy(data, cstr, len + 1);
+        JS_FreeCString(ctx, cstr);
+
+        clcf->root.data    = data;
+        clcf->root.len     = len;
+        clcf->root_lengths = NULL;
         return JS_UNDEFINED;
 
     case 2: /* handler — store function in __ngx_handlers__, save index */
@@ -1668,7 +1692,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("clientBodyTimeout",ngx_js_location_get, ngx_js_location_set,        11),
     JS_CGETSET_MAGIC_DEF("sendTimeout",      ngx_js_location_get, ngx_js_location_set,        12),
     JS_CGETSET_MAGIC_DEF("defaultType",      ngx_js_location_get, ngx_js_location_set,        13),
-    JS_CGETSET_MAGIC_DEF("alias",            ngx_js_location_get, NULL,                14),
+    JS_CGETSET_MAGIC_DEF("alias",            ngx_js_location_get, ngx_js_location_set, 14),
     JS_CGETSET_MAGIC_DEF("proxy",            ngx_js_location_get, NULL,                15),
     JS_CGETSET_MAGIC_DEF("gzip",             ngx_js_location_get, NULL,                16),
     JS_CGETSET_MAGIC_DEF("headers",          ngx_js_location_get, NULL,                17),
@@ -2041,7 +2065,6 @@ ngx_js_server_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
     ngx_js_server_opaque_t    *op;
     ngx_http_core_srv_conf_t  *cscf;
     ngx_http_core_loc_conf_t  *clcf;
-    ngx_cycle_t               *cycle;
     const char                *cstr;
     size_t                     len;
     u_char                    *old_data, *data;
@@ -2052,7 +2075,6 @@ ngx_js_server_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
     }
 
     cscf  = op->cscf;
-    cycle = (ngx_cycle_t *) JS_GetContextOpaque(ctx);
 
     switch (magic) {
     case 1: /* root — server's default location */
@@ -2062,7 +2084,7 @@ ngx_js_server_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
         }
 
         len  = ngx_strlen(cstr);
-        data = ngx_pnalloc(cycle->pool, len + 1);
+        data = ngx_pnalloc(ngx_cycle->pool, len + 1);
         if (data == NULL) {
             JS_FreeCString(ctx, cstr);
             return JS_ThrowOutOfMemory(ctx);

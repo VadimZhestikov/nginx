@@ -97,16 +97,83 @@ ngx_js_mirror_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     op = JS_GetOpaque2(ctx, this_val, ngx_js_mirror_class_id);
     if (!op) { return JS_EXCEPTION; }
 
-    if (magic == 1) { /* requestBody */
-        op->mlcf->request_body = JS_ToBool(ctx, val);
+    switch (magic) {
+
+    case 0: /* uris = ["string", ...] */
+    {
+        ngx_array_t  *arr;
+        ngx_str_t    *uri;
+        JSValue       len_v, item;
+        const char   *s;
+        size_t        slen;
+        int64_t       len, i;
+        u_char       *p;
+
+        if (!JS_IsArray(ctx, val)) {
+            return JS_ThrowTypeError(ctx, "mirror.uris must be an array");
+        }
+
+        len_v = JS_GetPropertyStr(ctx, val, "length");
+        if (JS_ToInt64(ctx, &len, len_v) < 0) {
+            JS_FreeValue(ctx, len_v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, len_v);
+
+        if (len == 0) {
+            op->mlcf->mirror = NULL;
+            return JS_UNDEFINED;
+        }
+
+        arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+                               sizeof(ngx_str_t));
+        if (!arr) {
+            return JS_EXCEPTION;
+        }
+
+        for (i = 0; i < len; i++) {
+            item = JS_GetPropertyUint32(ctx, val, (uint32_t) i);
+            s    = JS_ToCStringLen(ctx, &slen, item);
+            JS_FreeValue(ctx, item);
+
+            if (!s) {
+                return JS_EXCEPTION;
+            }
+
+            p = ngx_pnalloc(ngx_cycle->pool, slen);
+            if (!p) {
+                JS_FreeCString(ctx, s);
+                return JS_EXCEPTION;
+            }
+
+            ngx_memcpy(p, s, slen);
+            JS_FreeCString(ctx, s);
+
+            uri = ngx_array_push(arr);
+            if (!uri) {
+                return JS_EXCEPTION;
+            }
+
+            uri->data = p;
+            uri->len  = slen;
+        }
+
+        op->mlcf->mirror = arr;
+        return JS_UNDEFINED;
     }
+
+    case 1: /* requestBody */
+        op->mlcf->request_body = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    } /* switch */
 
     return JS_UNDEFINED;
 }
 
 
 static const JSCFunctionListEntry ngx_js_mirror_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("uris",        ngx_js_mirror_get, NULL,              0),
+    JS_CGETSET_MAGIC_DEF("uris",        ngx_js_mirror_get, ngx_js_mirror_set, 0),
     JS_CGETSET_MAGIC_DEF("requestBody", ngx_js_mirror_get, ngx_js_mirror_set, 1),
 };
 
