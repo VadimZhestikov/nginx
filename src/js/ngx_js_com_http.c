@@ -228,16 +228,17 @@ static JSClassDef ngx_js_location_class = {
  *   1  — root              (r/w: document root)
  *   2  — handler           (r/w: JS content handler function)
  *   3  — internal          (r/o: bool)
- *   4  — sendfile          (r/o: bool)
- *   5  — tcpNopush         (r/o: bool)
- *   6  — tcpNodelay        (r/o: bool)
- *   7  — etag              (r/o: bool)
- *   8  — keepaliveTimeout  (r/o: ms)
- *   9  — keepaliveRequests (r/o: count)
- *   10 — clientMaxBodySize (r/o: bytes)
- *   11 — clientBodyTimeout (r/o: ms)
- *   12 — sendTimeout       (r/o: ms)
- *   13 — defaultType       (r/o: string)
+ *   4  — sendfile          (r/w: bool)
+ *   5  — tcpNopush         (r/w: bool)
+ *   6  — tcpNodelay        (r/w: bool)
+ *   7  — etag              (r/w: bool)
+ *   8  — keepaliveTimeout  (r/w: ms)
+ *   9  — keepaliveRequests (r/w: count)
+ *   10 — clientMaxBodySize (r/w: bytes)
+ *   11 — clientBodyTimeout (r/w: ms)
+ *   12 — sendTimeout       (r/w: ms)
+ *   13 — defaultType       (r/w: string)
+ *   70 — keepaliveTime     (r/w: ms)
  *   14 — alias             (r/o: alias path, or null if root directive)
  *   15 — proxy             (r/o: NginxProxy for proxy_pass conf)
  *   16 — gzip              (r/o: NginxGzip for gzip conf, or null)
@@ -1036,6 +1037,7 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     const char                *cstr;
     size_t                     len;
     u_char                    *data;
+    int64_t                    n;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
     if (!op) {
@@ -1109,6 +1111,66 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         clcf->handler = ngx_js_content_handler;
         return JS_UNDEFINED;
     }
+
+    case 4: /* sendfile */
+        clcf->sendfile = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 5: /* tcpNopush */
+        clcf->tcp_nopush = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 6: /* tcpNodelay */
+        clcf->tcp_nodelay = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 7: /* etag */
+        clcf->etag = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+
+    case 8: /* keepaliveTimeout — ngx_msec_t (ms) */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->keepalive_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+
+    case 9: /* keepaliveRequests — ngx_uint_t */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->keepalive_requests = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+
+    case 10: /* clientMaxBodySize — off_t (bytes) */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->client_max_body_size = (off_t) n;
+        return JS_UNDEFINED;
+
+    case 11: /* clientBodyTimeout — ngx_msec_t (ms) */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->client_body_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+
+    case 12: /* sendTimeout — ngx_msec_t (ms) */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->send_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+
+    case 13: /* defaultType — ngx_str_t (dup to pool) */
+        cstr = JS_ToCStringLen(ctx, &len, val);
+        if (!cstr) { return JS_EXCEPTION; }
+        data = ngx_pnalloc(ngx_cycle->pool, len);
+        if (data == NULL) {
+            JS_FreeCString(ctx, cstr);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+        ngx_memcpy(data, cstr, len);
+        JS_FreeCString(ctx, cstr);
+        clcf->default_type.data = data;
+        clcf->default_type.len  = len;
+        return JS_UNDEFINED;
+
+    case 70: /* keepaliveTime — ngx_msec_t (ms) */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        clcf->keepalive_time = (ngx_msec_t) n;
+        return JS_UNDEFINED;
     }
 
     return JS_UNDEFINED;
@@ -1119,17 +1181,17 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("path",             ngx_js_location_get, NULL,                 0),
     JS_CGETSET_MAGIC_DEF("root",             ngx_js_location_get, ngx_js_location_set,  1),
     JS_CGETSET_MAGIC_DEF("handler",          ngx_js_location_get, ngx_js_location_set,  2),
-    JS_CGETSET_MAGIC_DEF("internal",         ngx_js_location_get, NULL,                 3),
-    JS_CGETSET_MAGIC_DEF("sendfile",         ngx_js_location_get, NULL,                 4),
-    JS_CGETSET_MAGIC_DEF("tcpNopush",        ngx_js_location_get, NULL,                 5),
-    JS_CGETSET_MAGIC_DEF("tcpNodelay",       ngx_js_location_get, NULL,                 6),
-    JS_CGETSET_MAGIC_DEF("etag",             ngx_js_location_get, NULL,                 7),
-    JS_CGETSET_MAGIC_DEF("keepaliveTimeout", ngx_js_location_get, NULL,                 8),
-    JS_CGETSET_MAGIC_DEF("keepaliveRequests",ngx_js_location_get, NULL,                 9),
-    JS_CGETSET_MAGIC_DEF("clientMaxBodySize",ngx_js_location_get, NULL,                10),
-    JS_CGETSET_MAGIC_DEF("clientBodyTimeout",ngx_js_location_get, NULL,                11),
-    JS_CGETSET_MAGIC_DEF("sendTimeout",      ngx_js_location_get, NULL,                12),
-    JS_CGETSET_MAGIC_DEF("defaultType",      ngx_js_location_get, NULL,                13),
+    JS_CGETSET_MAGIC_DEF("internal",         ngx_js_location_get, NULL,                        3),
+    JS_CGETSET_MAGIC_DEF("sendfile",         ngx_js_location_get, ngx_js_location_set,         4),
+    JS_CGETSET_MAGIC_DEF("tcpNopush",        ngx_js_location_get, ngx_js_location_set,         5),
+    JS_CGETSET_MAGIC_DEF("tcpNodelay",       ngx_js_location_get, ngx_js_location_set,         6),
+    JS_CGETSET_MAGIC_DEF("etag",             ngx_js_location_get, ngx_js_location_set,         7),
+    JS_CGETSET_MAGIC_DEF("keepaliveTimeout", ngx_js_location_get, ngx_js_location_set,         8),
+    JS_CGETSET_MAGIC_DEF("keepaliveRequests",ngx_js_location_get, ngx_js_location_set,         9),
+    JS_CGETSET_MAGIC_DEF("clientMaxBodySize",ngx_js_location_get, ngx_js_location_set,        10),
+    JS_CGETSET_MAGIC_DEF("clientBodyTimeout",ngx_js_location_get, ngx_js_location_set,        11),
+    JS_CGETSET_MAGIC_DEF("sendTimeout",      ngx_js_location_get, ngx_js_location_set,        12),
+    JS_CGETSET_MAGIC_DEF("defaultType",      ngx_js_location_get, ngx_js_location_set,        13),
     JS_CGETSET_MAGIC_DEF("alias",            ngx_js_location_get, NULL,                14),
     JS_CGETSET_MAGIC_DEF("proxy",            ngx_js_location_get, NULL,                15),
     JS_CGETSET_MAGIC_DEF("gzip",             ngx_js_location_get, NULL,                16),
@@ -1190,7 +1252,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("ifModifiedSince",          ngx_js_location_get, NULL,       67),
     JS_CGETSET_MAGIC_DEF("maxRanges",                ngx_js_location_get, NULL,       68),
     JS_CGETSET_MAGIC_DEF("authDelay",                ngx_js_location_get, NULL,       69),
-    JS_CGETSET_MAGIC_DEF("keepaliveTime",            ngx_js_location_get, NULL,       70),
+    JS_CGETSET_MAGIC_DEF("keepaliveTime",            ngx_js_location_get, ngx_js_location_set, 70),
     JS_CGETSET_MAGIC_DEF("sendLowat",                ngx_js_location_get, NULL,       71),
     JS_CGETSET_MAGIC_DEF("postponeOutput",           ngx_js_location_get, NULL,       72),
     JS_CGETSET_MAGIC_DEF("typesHashMaxSize",         ngx_js_location_get, NULL,       73),
