@@ -179,6 +179,23 @@ JSValue  ngx_js_wrap_mirror(JSContext *ctx,
 
 
 /* ------------------------------------------------------------------ */
+/* Persistent vhost map — built at init_conf, used by                  */
+/* nginx.http.rebuildVhostDispatch()                                   */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    ngx_http_addr_conf_t       *addr_conf;   /* runtime addr conf pointer   */
+    ngx_http_core_srv_conf_t  **servers;     /* cscf pointer array          */
+    ngx_uint_t                  nservers;
+} ngx_js_addr_entry_t;
+
+static ngx_uint_t           ngx_js_vhost_nentries;
+static ngx_js_addr_entry_t *ngx_js_vhost_entries;
+static ngx_uint_t           ngx_js_vhost_hash_max_size;
+static ngx_uint_t           ngx_js_vhost_hash_bucket_size;
+
+
+/* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -2011,6 +2028,211 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
 
 
 /* ------------------------------------------------------------------ */
+/*
+ * Wildcard key comparator for ngx_qsort, mirrors the static
+ * ngx_http_cmp_dns_wildcards() in ngx_http.c.
+ */
+static int ngx_libc_cdecl
+ngx_js_cmp_dns_wildcards(const void *one, const void *two)
+{
+    ngx_hash_key_t  *first, *second;
+
+    first  = (ngx_hash_key_t *) one;
+    second = (ngx_hash_key_t *) two;
+
+    return ngx_dns_strcmp(first->key.data, second->key.data);
+}
+
+
+/*
+ * nginx.http.rebuildVhostDispatch() — rebuild the server-name hash
+ * tables for every listening address that has multiple virtual hosts.
+ *
+ * For each entry in ngx_js_vhost_entries (built at init_conf from
+ * cmcf->ports before cf->temp_pool was destroyed), this function:
+ *   1. Creates a fresh ngx_hash_keys_arrays_t from the current
+ *      cscf->server_names arrays.
+ *   2. Builds hash/wc_head/wc_tail into ngx_cycle->pool.
+ *   3. Allocates a new ngx_http_virtual_names_t in ngx_cycle->pool
+ *      and assigns the rebuilt tables into it.
+ *   4. Atomically replaces addr_conf->virtual_names with the new vn.
+ *
+ * The replacement is safe inside a single-threaded nginx worker because
+ * all request processing is serialised on the event loop.  The update
+ * takes effect on the next request handled by this worker.
+ *
+ * Throws an Error on any internal failure (pool alloc or hash init).
+ */
+static JSValue
+ngx_js_http_rebuild_vhost_dispatch(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_uint_t                  i, s, n;
+    ngx_js_addr_entry_t        *entry;
+    ngx_http_core_srv_conf_t   *cscf;
+    ngx_http_server_name_t     *sn;
+    ngx_http_virtual_names_t   *vn;
+    ngx_hash_init_t             hash;
+    ngx_hash_keys_arrays_t      ha;
+    ngx_pool_t                 *temp_pool;
+    ngx_int_t                   rc;
+
+    for (i = 0; i < ngx_js_vhost_nentries; i++) {
+        entry = &ngx_js_vhost_entries[i];
+
+        temp_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, ngx_cycle->log);
+        if (temp_pool == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        ngx_memzero(&ha, sizeof(ngx_hash_keys_arrays_t));
+        ha.temp_pool = temp_pool;
+        ha.pool      = ngx_cycle->pool;
+
+        if (ngx_hash_keys_array_init(&ha, NGX_HASH_LARGE) != NGX_OK) {
+            ngx_destroy_pool(temp_pool);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        /* Add all server names from all servers sharing this address */
+        for (s = 0; s < entry->nservers; s++) {
+            cscf = entry->servers[s];
+            sn   = cscf->server_names.elts;
+
+            for (n = 0; n < cscf->server_names.nelts; n++) {
+#if (NGX_PCRE)
+                if (sn[n].regex) {
+                    continue;
+                }
+#endif
+                rc = ngx_hash_add_key(&ha, &sn[n].name, sn[n].server,
+                                      NGX_HASH_WILDCARD_KEY);
+
+                if (rc == NGX_ERROR) {
+                    ngx_destroy_pool(temp_pool);
+                    return JS_ThrowInternalError(ctx,
+                        "rebuildVhostDispatch: ngx_hash_add_key failed");
+                }
+
+                /* NGX_BUSY means a duplicate — warn but continue */
+                if (rc == NGX_BUSY) {
+                    ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                                  "JS rebuildVhostDispatch: duplicate "
+                                  "server name \"%V\", ignored",
+                                  &sn[n].name);
+                }
+            }
+        }
+
+        /* Allocate the new virtual_names in the cycle pool */
+        vn = ngx_pcalloc(ngx_cycle->pool, sizeof(ngx_http_virtual_names_t));
+        if (vn == NULL) {
+            ngx_destroy_pool(temp_pool);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        ngx_memzero(&hash, sizeof(ngx_hash_init_t));
+        hash.key         = ngx_hash_key_lc;
+        hash.max_size    = ngx_js_vhost_hash_max_size;
+        hash.bucket_size = ngx_js_vhost_hash_bucket_size;
+        hash.name        = "server_names_hash";
+        hash.pool        = ngx_cycle->pool;
+
+        if (ha.keys.nelts) {
+            hash.hash      = &vn->names.hash;
+            hash.temp_pool = NULL;
+
+            if (ngx_hash_init(&hash, ha.keys.elts, ha.keys.nelts) != NGX_OK) {
+                ngx_destroy_pool(temp_pool);
+                return JS_ThrowInternalError(ctx,
+                    "rebuildVhostDispatch: ngx_hash_init failed");
+            }
+        }
+
+        if (ha.dns_wc_head.nelts) {
+            ngx_qsort(ha.dns_wc_head.elts, ha.dns_wc_head.nelts,
+                      sizeof(ngx_hash_key_t), ngx_js_cmp_dns_wildcards);
+
+            hash.hash      = NULL;
+            hash.temp_pool = ha.temp_pool;
+
+            if (ngx_hash_wildcard_init(&hash, ha.dns_wc_head.elts,
+                                       ha.dns_wc_head.nelts) != NGX_OK)
+            {
+                ngx_destroy_pool(temp_pool);
+                return JS_ThrowInternalError(ctx,
+                    "rebuildVhostDispatch: ngx_hash_wildcard_init (head) failed");
+            }
+
+            vn->names.wc_head = (ngx_hash_wildcard_t *) hash.hash;
+        }
+
+        if (ha.dns_wc_tail.nelts) {
+            ngx_qsort(ha.dns_wc_tail.elts, ha.dns_wc_tail.nelts,
+                      sizeof(ngx_hash_key_t), ngx_js_cmp_dns_wildcards);
+
+            hash.hash      = NULL;
+            hash.temp_pool = ha.temp_pool;
+
+            if (ngx_hash_wildcard_init(&hash, ha.dns_wc_tail.elts,
+                                       ha.dns_wc_tail.nelts) != NGX_OK)
+            {
+                ngx_destroy_pool(temp_pool);
+                return JS_ThrowInternalError(ctx,
+                    "rebuildVhostDispatch: ngx_hash_wildcard_init (tail) failed");
+            }
+
+            vn->names.wc_tail = (ngx_hash_wildcard_t *) hash.hash;
+        }
+
+#if (NGX_PCRE)
+        /* Collect regex server names */
+        {
+            ngx_uint_t  nregex = 0;
+
+            for (s = 0; s < entry->nservers; s++) {
+                cscf = entry->servers[s];
+                sn   = cscf->server_names.elts;
+                for (n = 0; n < cscf->server_names.nelts; n++) {
+                    if (sn[n].regex) {
+                        nregex++;
+                    }
+                }
+            }
+
+            if (nregex) {
+                vn->nregex = nregex;
+                vn->regex  = ngx_palloc(ngx_cycle->pool,
+                                        nregex * sizeof(ngx_http_server_name_t));
+                if (vn->regex == NULL) {
+                    ngx_destroy_pool(temp_pool);
+                    return JS_ThrowOutOfMemory(ctx);
+                }
+
+                nregex = 0;
+                for (s = 0; s < entry->nservers; s++) {
+                    cscf = entry->servers[s];
+                    sn   = cscf->server_names.elts;
+                    for (n = 0; n < cscf->server_names.nelts; n++) {
+                        if (sn[n].regex) {
+                            vn->regex[nregex++] = sn[n];
+                        }
+                    }
+                }
+            }
+        }
+#endif
+
+        ngx_destroy_pool(temp_pool);
+
+        /* Atomic pointer replacement — takes effect on next request */
+        entry->addr_conf->virtual_names = vn;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 /* ngx_js_http_com_install                                              */
 /* ------------------------------------------------------------------ */
 
@@ -2302,6 +2524,12 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
         JS_SetPropertyStr(ctx, http_obj, "variables", vars_obj);
     }
 
+    /* nginx.http.rebuildVhostDispatch() */
+    JS_SetPropertyStr(ctx, http_obj, "rebuildVhostDispatch",
+                      JS_NewCFunction(ctx,
+                                      ngx_js_http_rebuild_vhost_dispatch,
+                                      "rebuildVhostDispatch", 0));
+
     /* nginx.http.upstreams[] — delegated to upstream COM */
     if (ngx_js_upstream_com_install(ctx, http_obj, cycle) != NGX_OK) {
         JS_FreeValue(ctx, http_obj);
@@ -2309,6 +2537,134 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
     }
 
     JS_SetPropertyStr(ctx, nginx_obj, "http", http_obj);
+
+    /*
+     * Build the persistent vhost map while cmcf->ports and cf->temp_pool
+     * are still valid (they are destroyed after ngx_init_cycle returns).
+     */
+    {
+        ngx_uint_t              p, a, s, li, ai, total;
+        ngx_http_conf_port_t   *ports;
+        ngx_http_conf_addr_t   *addr;
+        ngx_http_port_t        *hport;
+        ngx_http_addr_conf_t   *ac;
+        ngx_js_addr_entry_t    *entry;
+        ngx_listening_t        *ls;
+
+        ngx_js_vhost_nentries = 0;
+        ngx_js_vhost_entries  = NULL;
+
+        if (cmcf->ports != NULL) {
+            /* Count addressess that need virtual host dispatch */
+            total = 0;
+            ports = cmcf->ports->elts;
+            for (p = 0; p < cmcf->ports->nelts; p++) {
+                addr = ports[p].addrs.elts;
+                for (a = 0; a < ports[p].addrs.nelts; a++) {
+                    if (addr[a].servers.nelts > 1) {
+                        total++;
+                    }
+                }
+            }
+
+            if (total > 0) {
+                ngx_js_vhost_entries = ngx_palloc(cycle->pool,
+                                         total * sizeof(ngx_js_addr_entry_t));
+                if (ngx_js_vhost_entries == NULL) {
+                    JS_FreeValue(ctx, http_obj);
+                    return NGX_ERROR;
+                }
+            }
+
+            ngx_js_vhost_hash_max_size    = cmcf->server_names_hash_max_size;
+            ngx_js_vhost_hash_bucket_size = cmcf->server_names_hash_bucket_size;
+
+            ls = cycle->listening.elts;
+
+            for (p = 0; p < cmcf->ports->nelts; p++) {
+                addr = ports[p].addrs.elts;
+
+                for (a = 0; a < ports[p].addrs.nelts; a++) {
+                    if (addr[a].servers.nelts < 2) {
+                        continue;
+                    }
+
+                    /*
+                     * Find the runtime ngx_http_in_addr_t whose
+                     * default_server matches this conf_addr.
+                     * ngx_http_add_addrs() preserves index correspondence:
+                     * hport->addrs[j].conf.default_server == addr[j].default_server
+                     */
+                    ac = NULL;
+
+                    for (li = 0; li < cycle->listening.nelts; li++) {
+                        if (ls[li].handler != ngx_http_init_connection) {
+                            continue;
+                        }
+                        if (ls[li].servers == NULL) {
+                            continue;
+                        }
+
+                        hport = (ngx_http_port_t *) ls[li].servers;
+                        if (hport->addrs == NULL
+                            || a >= hport->naddrs)
+                        {
+                            continue;
+                        }
+
+                        for (ai = 0; ai < hport->naddrs; ai++) {
+                            ngx_http_addr_conf_t *tac;
+
+#if (NGX_HAVE_INET6)
+                            if (ls[li].sockaddr->sa_family == AF_INET6) {
+                                tac = &((ngx_http_in6_addr_t *)
+                                         hport->addrs)[ai].conf;
+                            } else {
+#endif
+                                tac = &((ngx_http_in_addr_t *)
+                                         hport->addrs)[ai].conf;
+#if (NGX_HAVE_INET6)
+                            }
+#endif
+
+                            if (tac->default_server
+                                == addr[a].default_server)
+                            {
+                                ac = tac;
+                                break;
+                            }
+                        }
+
+                        if (ac != NULL) {
+                            break;
+                        }
+                    }
+
+                    if (ac == NULL) {
+                        continue;
+                    }
+
+                    entry = &ngx_js_vhost_entries[ngx_js_vhost_nentries++];
+                    entry->addr_conf = ac;
+                    entry->nservers  = addr[a].servers.nelts;
+                    entry->servers   = ngx_palloc(cycle->pool,
+                                         entry->nservers
+                                         * sizeof(ngx_http_core_srv_conf_t *));
+                    if (entry->servers == NULL) {
+                        JS_FreeValue(ctx, http_obj);
+                        return NGX_ERROR;
+                    }
+
+                    {
+                        ngx_http_core_srv_conf_t **sp = addr[a].servers.elts;
+                        for (s = 0; s < entry->nservers; s++) {
+                            entry->servers[s] = sp[s];
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     return NGX_OK;
 }
