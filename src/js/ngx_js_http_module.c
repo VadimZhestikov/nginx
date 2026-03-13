@@ -3026,6 +3026,275 @@ ngx_js_request_write_head(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * r.setHeader(name, value)
+ *
+ * Stages a response header before the response is sent.  Must be called
+ * before r.respond(), r.writeHead(), or the first r.write().
+ *
+ * "content-type" is handled specially via headers_out.content_type.
+ * All other names are stored in headers_out.headers; an existing entry
+ * with the same name (case-insensitive) is updated in place; if none
+ * exists a new entry is appended.  Setting value to null or "" removes
+ * the header (equivalent to r.removeHeader).
+ */
+static JSValue
+ngx_js_request_set_header(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    const char               *name_cstr, *val_cstr;
+    size_t                    nlen, vlen;
+    ngx_list_part_t          *part;
+    ngx_table_elt_t          *h, *free_slot;
+    ngx_uint_t                i;
+    u_char                   *data;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->headers_sent || op->responded) {
+        return JS_ThrowTypeError(ctx, "r.setHeader: headers already sent");
+    }
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx,
+                                 "r.setHeader(name, value) requires 2 arguments");
+    }
+
+    name_cstr = JS_ToCStringLen(ctx, &nlen, argv[0]);
+    if (!name_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    r = op->r;
+
+    /* content-type lives in its own dedicated field */
+    if (ngx_strncasecmp((u_char *) name_cstr, (u_char *) "content-type",
+                        nlen) == 0 && nlen == 12)
+    {
+        JS_FreeCString(ctx, name_cstr);
+
+        if (JS_IsNull(argv[1]) || JS_IsUndefined(argv[1])) {
+            r->headers_out.content_type.len     = 0;
+            r->headers_out.content_type.data    = NULL;
+            r->headers_out.content_type_len     = 0;
+            return JS_UNDEFINED;
+        }
+
+        val_cstr = JS_ToCStringLen(ctx, &vlen, argv[1]);
+        if (!val_cstr) {
+            return JS_EXCEPTION;
+        }
+
+        data = ngx_pnalloc(r->pool, vlen + 1);
+        if (data) {
+            ngx_memcpy(data, val_cstr, vlen + 1);
+            r->headers_out.content_type.data = data;
+            r->headers_out.content_type.len  = vlen;
+            r->headers_out.content_type_len  = vlen;
+        }
+
+        JS_FreeCString(ctx, val_cstr);
+        return JS_UNDEFINED;
+    }
+
+    /* --- generic header: scan headers_out.headers for existing entry --- */
+
+    free_slot = NULL;
+
+    part = &r->headers_out.headers.part;
+    h    = part->elts;
+
+    for (i = 0; /* see break below */; i++) {
+
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            h    = part->elts;
+            i    = 0;
+        }
+
+        if (h[i].hash == 0) {
+            if (free_slot == NULL) {
+                free_slot = &h[i]; /* remember first cleared slot */
+            }
+            continue;
+        }
+
+        if (h[i].key.len == nlen
+            && ngx_strncasecmp(h[i].key.data, (u_char *) name_cstr, nlen) == 0)
+        {
+            /* found existing entry — remove or overwrite */
+            if (JS_IsNull(argv[1]) || JS_IsUndefined(argv[1])) {
+                h[i].hash = 0; /* mark as removed */
+                JS_FreeCString(ctx, name_cstr);
+                return JS_UNDEFINED;
+            }
+
+            val_cstr = JS_ToCStringLen(ctx, &vlen, argv[1]);
+            if (!val_cstr) {
+                JS_FreeCString(ctx, name_cstr);
+                return JS_EXCEPTION;
+            }
+
+            data = ngx_pnalloc(r->pool, vlen + 1);
+            if (data) {
+                ngx_memcpy(data, val_cstr, vlen + 1);
+                h[i].value.data = data;
+                h[i].value.len  = vlen;
+            }
+
+            JS_FreeCString(ctx, val_cstr);
+            JS_FreeCString(ctx, name_cstr);
+            return JS_UNDEFINED;
+        }
+    }
+
+    /* not found: if value is null/undefined, nothing to do */
+    if (JS_IsNull(argv[1]) || JS_IsUndefined(argv[1])) {
+        JS_FreeCString(ctx, name_cstr);
+        return JS_UNDEFINED;
+    }
+
+    val_cstr = JS_ToCStringLen(ctx, &vlen, argv[1]);
+    if (!val_cstr) {
+        JS_FreeCString(ctx, name_cstr);
+        return JS_EXCEPTION;
+    }
+
+    /* reuse a cleared slot if available, otherwise push a new one */
+    h = free_slot ? free_slot : ngx_list_push(&r->headers_out.headers);
+    if (h == NULL) {
+        JS_FreeCString(ctx, name_cstr);
+        JS_FreeCString(ctx, val_cstr);
+        return JS_UNDEFINED; /* OOM: silently skip */
+    }
+
+    h->key.data = ngx_pnalloc(r->pool, nlen + 1);
+    h->value.data = ngx_pnalloc(r->pool, vlen + 1);
+
+    if (h->key.data && h->value.data) {
+        ngx_memcpy(h->key.data, name_cstr, nlen + 1);
+        ngx_memcpy(h->value.data, val_cstr, vlen + 1);
+        h->key.len   = nlen;
+        h->value.len = vlen;
+        h->hash      = 1;
+    }
+
+    JS_FreeCString(ctx, name_cstr);
+    JS_FreeCString(ctx, val_cstr);
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * r.getHeader(name) → string | null
+ *
+ * Returns the value of a staged response header, or null if not set.
+ * Must be called before headers are sent.
+ */
+static JSValue
+ngx_js_request_get_header(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    const char               *name_cstr;
+    size_t                    nlen;
+    ngx_list_part_t          *part;
+    ngx_table_elt_t          *h;
+    ngx_uint_t                i;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "r.getHeader(name) requires 1 argument");
+    }
+
+    name_cstr = JS_ToCStringLen(ctx, &nlen, argv[0]);
+    if (!name_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    r = op->r;
+
+    if (ngx_strncasecmp((u_char *) name_cstr, (u_char *) "content-type",
+                        nlen) == 0 && nlen == 12)
+    {
+        JS_FreeCString(ctx, name_cstr);
+        if (r->headers_out.content_type.len == 0) {
+            return JS_NULL;
+        }
+        return JS_NewStringLen(ctx,
+                               (const char *) r->headers_out.content_type.data,
+                               r->headers_out.content_type.len);
+    }
+
+    part = &r->headers_out.headers.part;
+    h    = part->elts;
+
+    for (i = 0; /* see break */; i++) {
+
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            h    = part->elts;
+            i    = 0;
+        }
+
+        if (h[i].hash == 0) {
+            continue;
+        }
+
+        if (h[i].key.len == nlen
+            && ngx_strncasecmp(h[i].key.data, (u_char *) name_cstr, nlen) == 0)
+        {
+            JS_FreeCString(ctx, name_cstr);
+            return JS_NewStringLen(ctx,
+                                   (const char *) h[i].value.data,
+                                   h[i].value.len);
+        }
+    }
+
+    JS_FreeCString(ctx, name_cstr);
+    return JS_NULL;
+}
+
+
+/*
+ * r.removeHeader(name)
+ *
+ * Clears a staged response header.  Equivalent to r.setHeader(name, null).
+ */
+static JSValue
+ngx_js_request_remove_header(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue  null_argv[2];
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "r.removeHeader(name) requires 1 argument");
+    }
+
+    null_argv[0] = argv[0];
+    null_argv[1] = JS_NULL;
+
+    return ngx_js_request_set_header(ctx, this_val, 2, null_argv);
+}
+
+
+/*
  * r.write(chunk)
  *
  * Sends one body chunk.  If writeHead() has not been called, sends
@@ -3187,8 +3456,11 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("scheme",        ngx_js_request_get, NULL, 13),
     JS_CGETSET_MAGIC_DEF("connection",    ngx_js_request_get, NULL, 14),
     JS_CGETSET_MAGIC_DEF("location",      ngx_js_request_get, NULL, 15),
-    JS_CFUNC_DEF("respond",     3, ngx_js_request_respond),
-    JS_CFUNC_DEF("variable",    1, ngx_js_request_variable),
+    JS_CFUNC_DEF("respond",      3, ngx_js_request_respond),
+    JS_CFUNC_DEF("setHeader",    2, ngx_js_request_set_header),
+    JS_CFUNC_DEF("getHeader",    1, ngx_js_request_get_header),
+    JS_CFUNC_DEF("removeHeader", 1, ngx_js_request_remove_header),
+    JS_CFUNC_DEF("variable",     1, ngx_js_request_variable),
     JS_CFUNC_DEF("setVariable", 2, ngx_js_request_set_variable),
     JS_CFUNC_DEF("getVar",      1, ngx_js_request_variable),
     JS_CFUNC_DEF("setVar",      2, ngx_js_request_set_variable),
