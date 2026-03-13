@@ -121,10 +121,151 @@ ngx_js_sub_filter_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+/*
+ * Setter for once (magic=1) and lastModified (magic=2).
+ */
+static JSValue
+ngx_js_sub_filter_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_sub_filter_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_sub_filter_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    switch (magic) {
+    case 1: /* once */
+        op->slcf->once = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 2: /* lastModified */
+        op->slcf->last_modified = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * setPairs(arr) — replace sub_filter pairs at runtime.
+ *
+ * arr must be an array of {match: string, replacement: string} objects.
+ * Both strings are copied into ngx_cycle->pool as literal
+ * ngx_http_complex_value_t values (lengths = NULL → no nginx variables).
+ *
+ * After updating slcf->pairs we set slcf->dynamic = 1, which causes
+ * ngx_http_sub_filter_module to rebuild its KMP tables on the next
+ * request instead of reusing the static per-conf tables.
+ */
+static JSValue
+ngx_js_sub_filter_set_pairs(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_sub_filter_opaque_t  *op;
+    ngx_http_sub_loc_conf_t     *slcf;
+    ngx_array_t                 *pairs;
+    ngx_http_sub_pair_t         *pair;
+    JSValue                      arr, elem, mv, vv;
+    uint32_t                     len, i;
+    const char                  *ms, *vs;
+    size_t                       mlen, vlen;
+    u_char                      *mp, *vp;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_sub_filter_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    slcf = op->slcf;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "setPairs: array argument required");
+    }
+
+    arr = argv[0];
+    if (!JS_IsArray(ctx, arr)) {
+        return JS_ThrowTypeError(ctx, "setPairs: argument must be an array");
+    }
+
+    /* Determine array length */
+    {
+        JSValue lv = JS_GetPropertyStr(ctx, arr, "length");
+        if (JS_ToUint32(ctx, &len, lv) < 0) {
+            JS_FreeValue(ctx, lv);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, lv);
+    }
+
+    pairs = ngx_array_create(ngx_cycle->pool, len ? len : 1,
+                             sizeof(ngx_http_sub_pair_t));
+    if (pairs == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    for (i = 0; i < len; i++) {
+        elem = JS_GetPropertyUint32(ctx, arr, i);
+        if (JS_IsException(elem)) { return JS_EXCEPTION; }
+
+        mv = JS_GetPropertyStr(ctx, elem, "match");
+        vv = JS_GetPropertyStr(ctx, elem, "replacement");
+        JS_FreeValue(ctx, elem);
+
+        ms = JS_ToCStringLen(ctx, &mlen, mv);
+        vs = JS_ToCStringLen(ctx, &vlen, vv);
+        JS_FreeValue(ctx, mv);
+        JS_FreeValue(ctx, vv);
+
+        if (!ms || !vs) {
+            if (ms) { JS_FreeCString(ctx, ms); }
+            if (vs) { JS_FreeCString(ctx, vs); }
+            return JS_EXCEPTION;
+        }
+
+        mp = ngx_pnalloc(ngx_cycle->pool, mlen);
+        vp = ngx_pnalloc(ngx_cycle->pool, vlen);
+
+        if (mp == NULL || vp == NULL) {
+            JS_FreeCString(ctx, ms);
+            JS_FreeCString(ctx, vs);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        /*
+         * ngx_http_sub_filter_module stores match strings lowercased:
+         * the body scanner does ngx_tolower(c) on each input byte and
+         * compares against the stored byte, so the stored string must be
+         * lowercase for case-insensitive matching to work.
+         */
+        ngx_strlow(mp, (u_char *) ms, mlen);
+        ngx_memcpy(vp, vs, vlen);
+        JS_FreeCString(ctx, ms);
+        JS_FreeCString(ctx, vs);
+
+        pair = ngx_array_push(pairs);
+        if (pair == NULL) { return JS_ThrowOutOfMemory(ctx); }
+
+        ngx_memzero(pair, sizeof(ngx_http_sub_pair_t));
+
+        /* Literal match — lengths == NULL means no nginx variable expansion */
+        pair->match.value.data = mp;
+        pair->match.value.len  = mlen;
+
+        /* Literal replacement */
+        pair->value.value.data = vp;
+        pair->value.value.len  = vlen;
+    }
+
+    slcf->pairs   = pairs;
+    slcf->dynamic = 1;  /* trigger per-request KMP table rebuild */
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_sub_filter_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("pairs",        ngx_js_sub_filter_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("once",         ngx_js_sub_filter_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("lastModified", ngx_js_sub_filter_get, NULL, 2),
+    JS_CGETSET_MAGIC_DEF("pairs",        ngx_js_sub_filter_get, NULL,                  0),
+    JS_CGETSET_MAGIC_DEF("once",         ngx_js_sub_filter_get, ngx_js_sub_filter_set, 1),
+    JS_CGETSET_MAGIC_DEF("lastModified", ngx_js_sub_filter_get, ngx_js_sub_filter_set, 2),
+    JS_CFUNC_DEF        ("setPairs",     1, ngx_js_sub_filter_set_pairs),
 };
 
 
