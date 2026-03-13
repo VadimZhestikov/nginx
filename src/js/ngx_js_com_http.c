@@ -499,12 +499,12 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
         }
 
         /*
-         * Location getters are only invoked during init_conf script
-         * evaluation, when the context opaque is the current cycle pointer
-         * (set by ngx_js_com_init).  Use it to reach the correct main conf.
+         * Use ngx_cycle (the global pointer) rather than the context
+         * opaque: at request time the opaque is ngx_js_worker_t*, not
+         * ngx_cycle_t*, so dereferencing it as a cycle would crash.
          */
-        cycle = JS_GetContextOpaque(ctx);
-        csmcf = ngx_http_cycle_get_module_main_conf(cycle,
+        (void) cycle;
+        csmcf = ngx_http_cycle_get_module_main_conf(ngx_cycle,
                                                ngx_http_charset_filter_module);
 
         return ngx_js_wrap_charset(ctx, cslcf, csmcf);

@@ -113,10 +113,129 @@ ngx_js_charset_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+/*
+ * Resolve a JS string to a charset index in mcf->charsets.
+ *
+ * Rules:
+ *   "off"         → NGX_HTTP_CHARSET_OFF
+ *   other string  → find existing entry (case-insensitive) or add new one
+ *
+ * Returns NGX_ERROR on failure (sets JS exception); sets *out on success.
+ */
+static ngx_int_t
+ngx_js_charset_resolve(JSContext *ctx,
+    ngx_http_charset_main_conf_t *mcf, JSValueConst val, ngx_int_t *out)
+{
+    const char          *s;
+    size_t               len;
+    ngx_uint_t           i;
+    ngx_http_charset_t  *c;
+    u_char              *p;
+
+    s = JS_ToCStringLen(ctx, &len, val);
+    if (!s) { return NGX_ERROR; }
+
+    /* "off" disables charset conversion */
+    if (len == 3 && ngx_strncasecmp((u_char *) s, (u_char *) "off", 3) == 0) {
+        JS_FreeCString(ctx, s);
+        *out = NGX_HTTP_CHARSET_OFF;
+        return NGX_OK;
+    }
+
+    if (mcf == NULL) {
+        JS_FreeCString(ctx, s);
+        JS_ThrowInternalError(ctx, "setCharset: no charset main conf");
+        return NGX_ERROR;
+    }
+
+    /* Search existing charsets (case-insensitive) */
+    c = mcf->charsets.elts;
+    for (i = 0; i < mcf->charsets.nelts; i++) {
+        if (c[i].name.len == len
+            && ngx_strncasecmp(c[i].name.data, (u_char *) s, len) == 0)
+        {
+            JS_FreeCString(ctx, s);
+            *out = (ngx_int_t) i;
+            return NGX_OK;
+        }
+    }
+
+    /* Not found — add a new entry to mcf->charsets */
+    p = ngx_pnalloc(ngx_cycle->pool, len + 1);
+    if (p == NULL) {
+        JS_FreeCString(ctx, s);
+        JS_ThrowOutOfMemory(ctx);
+        return NGX_ERROR;
+    }
+    ngx_memcpy(p, s, len);
+    p[len] = '\0';
+    JS_FreeCString(ctx, s);
+
+    c = ngx_array_push(&mcf->charsets);
+    if (c == NULL) {
+        JS_ThrowOutOfMemory(ctx);
+        return NGX_ERROR;
+    }
+
+    c->tables = NULL;
+    c->name.data = p;
+    c->name.len  = len;
+    c->length    = 0;
+    c->utf8      = (ngx_strncasecmp(p, (u_char *) "utf-8", 5) == 0
+                    && len == 5) ? 1 : 0;
+
+    *out = (ngx_int_t) (mcf->charsets.nelts - 1);
+    return NGX_OK;
+}
+
+
+/*
+ * setCharset(charset, sourceCharset) — update charset and source_charset
+ * on the location config at runtime.
+ *
+ * Each argument may be:
+ *   null / undefined  → NGX_CONF_UNSET (not configured)
+ *   "off"             → NGX_HTTP_CHARSET_OFF (explicitly disabled)
+ *   string            → charset name; added to mcf->charsets if new
+ *
+ * The change is visible immediately via the charset/sourceCharset getters
+ * and takes effect for subsequent requests on this location.
+ */
+static JSValue
+ngx_js_charset_set(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_charset_opaque_t  *op;
+    ngx_int_t                 cs, src;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_charset_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx,
+            "setCharset: charset and sourceCharset arguments required");
+    }
+
+    if (ngx_js_charset_resolve(ctx, op->mcf, argv[0], &cs) != NGX_OK) {
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_js_charset_resolve(ctx, op->mcf, argv[1], &src) != NGX_OK) {
+        return JS_EXCEPTION;
+    }
+
+    op->lcf->charset        = cs;
+    op->lcf->source_charset = src;
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_charset_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("charset",         ngx_js_charset_get, NULL, 0),
     JS_CGETSET_MAGIC_DEF("sourceCharset",   ngx_js_charset_get, NULL, 1),
     JS_CGETSET_MAGIC_DEF("overrideCharset", ngx_js_charset_get, NULL, 2),
+    JS_CFUNC_DEF        ("setCharset",      2, ngx_js_charset_set),
 };
 
 
