@@ -3332,6 +3332,128 @@ ngx_js_request_remove_header(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * ngx_js_request_respond_typed — shared helper for r.json/text/html.
+ *
+ * Sends a complete response with a fixed content-type.  Status comes from
+ * argv[1] if provided (and not undefined/null), else from the staged
+ * r.statusCode, else 200.  Body is body_str (already a JS string value).
+ * content_type must be a NUL-terminated C string literal.
+ */
+static JSValue
+ngx_js_respond_typed(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv,
+    JSValue body_str, const char *content_type)
+{
+    JSValue  new_argv[3], result, ct_val, ct_argv[2];
+
+    /* stage the content-type header */
+    ct_argv[0] = JS_NewString(ctx, "content-type");
+    ct_val     = JS_NewString(ctx, content_type);
+    ct_argv[1] = ct_val;
+    ngx_js_request_set_header(ctx, this_val, 2, ct_argv);
+    JS_FreeValue(ctx, ct_argv[0]);
+    JS_FreeValue(ctx, ct_val);
+
+    /* status: argv[1] or staged or 200 */
+    new_argv[0] = (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1]))
+                  ? JS_DupValue(ctx, argv[1])
+                  : JS_UNDEFINED; /* respond() will use staged or default 200 */
+    new_argv[1] = JS_UNDEFINED;   /* no extra headers object */
+    new_argv[2] = JS_DupValue(ctx, body_str);
+
+    result = ngx_js_request_respond(ctx, this_val, 3, new_argv);
+
+    JS_FreeValue(ctx, new_argv[0]);
+    JS_FreeValue(ctx, new_argv[2]);
+    return result;
+}
+
+
+/*
+ * r.json(data[, status])
+ *
+ * Sends JSON.stringify(data) with Content-Type: application/json.
+ * status defaults to r.statusCode or 200.
+ */
+static JSValue
+ngx_js_request_json_respond(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue  global, json_obj, stringify_fn, json_str, result;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "r.json(data[, status]) requires at least 1 argument");
+    }
+
+    global      = JS_GetGlobalObject(ctx);
+    json_obj    = JS_GetPropertyStr(ctx, global, "JSON");
+    stringify_fn = JS_GetPropertyStr(ctx, json_obj, "stringify");
+    json_str    = JS_Call(ctx, stringify_fn, json_obj, 1, &argv[0]);
+    JS_FreeValue(ctx, stringify_fn);
+    JS_FreeValue(ctx, json_obj);
+    JS_FreeValue(ctx, global);
+
+    if (JS_IsException(json_str)) {
+        return JS_EXCEPTION;
+    }
+
+    result = ngx_js_respond_typed(ctx, this_val, argc, argv,
+                                   json_str, "application/json");
+    JS_FreeValue(ctx, json_str);
+    return result;
+}
+
+
+/*
+ * r.text(str[, status])
+ *
+ * Sends String(str) with Content-Type: text/plain.
+ */
+static JSValue
+ngx_js_request_text_respond(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue  str, result;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "r.text(str[, status]) requires at least 1 argument");
+    }
+
+    str    = JS_ToString(ctx, argv[0]);
+    result = ngx_js_respond_typed(ctx, this_val, argc, argv,
+                                   str, "text/plain");
+    JS_FreeValue(ctx, str);
+    return result;
+}
+
+
+/*
+ * r.html(str[, status])
+ *
+ * Sends String(str) with Content-Type: text/html.
+ */
+static JSValue
+ngx_js_request_html_respond(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue  str, result;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "r.html(str[, status]) requires at least 1 argument");
+    }
+
+    str    = JS_ToString(ctx, argv[0]);
+    result = ngx_js_respond_typed(ctx, this_val, argc, argv,
+                                   str, "text/html");
+    JS_FreeValue(ctx, str);
+    return result;
+}
+
+
+/*
  * r.write(chunk)
  *
  * Sends one body chunk.  If writeHead() has not been called, sends
@@ -3494,6 +3616,9 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("connection",    ngx_js_request_get, NULL, 14),
     JS_CGETSET_MAGIC_DEF("location",      ngx_js_request_get, NULL, 15),
     JS_CFUNC_DEF("respond",      0, ngx_js_request_respond),
+    JS_CFUNC_DEF("json",         1, ngx_js_request_json_respond),
+    JS_CFUNC_DEF("text",         1, ngx_js_request_text_respond),
+    JS_CFUNC_DEF("html",         1, ngx_js_request_html_respond),
     JS_CFUNC_DEF("setHeader",    2, ngx_js_request_set_header),
     JS_CFUNC_DEF("getHeader",    1, ngx_js_request_get_header),
     JS_CFUNC_DEF("removeHeader", 1, ngx_js_request_remove_header),
