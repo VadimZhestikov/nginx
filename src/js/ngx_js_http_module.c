@@ -74,9 +74,10 @@ static JSClassDef ngx_js_request_class = {
  *  18 — upstream     (r/o object or null, last upstream attempt metadata)
  *  19 — variables    (r/w NginxRequestVariables exotic object)
  *  20 — body         (r/o string or null — present only if already read)
- *  21 — serverAddr   (r/o string, local IP address)
- *  22 — serverPort   (r/o number, local port)
+ *  21 — serverAddr    (r/o string, local IP address)
+ *  22 — serverPort    (r/o number, local port)
  *  23 — requestLength (r/o number, total bytes received for this request)
+ *  24 — statusCode    (r/w number, response status; 0 when unset)
  */
 
 /* Forward declaration — defined after ngx_js_request_set_variable */
@@ -457,6 +458,40 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
 
     case 23: /* requestLength — total bytes received for this request */
         return JS_NewInt64(ctx, (int64_t) r->request_length);
+
+    case 24: /* statusCode — staged response status (0 if unset) */
+        return JS_NewInt32(ctx, (int32_t) r->headers_out.status);
+
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_request_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_request_opaque_t  *op;
+    int32_t                   n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    switch (magic) {
+
+    case 24: /* statusCode */
+        if (op->headers_sent || op->responded) {
+            return JS_ThrowTypeError(ctx,
+                                     "r.statusCode: headers already sent");
+        }
+        if (JS_ToInt32(ctx, &n, val) < 0) {
+            return JS_EXCEPTION;
+        }
+        op->r->headers_out.status = (ngx_uint_t) n;
+        return JS_UNDEFINED;
 
     }
 
@@ -1567,23 +1602,21 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    if (argc < 3) {
-        return JS_ThrowTypeError(ctx,
-                                 "respond(status, headers, body) "
-                                 "requires 3 arguments");
-    }
-
     r = op->r;
 
-    if (JS_ToInt32(ctx, &status, argv[0])) {
-        return JS_EXCEPTION;
+    /* status — argv[0] or r.statusCode or 200 */
+    if (argc >= 1 && !JS_IsUndefined(argv[0]) && !JS_IsNull(argv[0])) {
+        if (JS_ToInt32(ctx, &status, argv[0])) {
+            return JS_EXCEPTION;
+        }
+        r->headers_out.status = (ngx_uint_t) status;
+    } else if (r->headers_out.status == 0) {
+        r->headers_out.status = NGX_HTTP_OK;
     }
 
-    r->headers_out.status = (ngx_uint_t) status;
+    /* ---- Response headers from argv[1] JS object (optional) ---- */
 
-    /* ---- Response headers from argv[1] JS object ---- */
-
-    if (JS_IsObject(argv[1])
+    if (argc >= 2 && JS_IsObject(argv[1])
         && JS_GetOwnPropertyNames(ctx, &tab, &tab_len, argv[1],
                                   JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) >= 0)
     {
@@ -1644,14 +1677,18 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
         js_free(ctx, tab);
     }
 
-    /* ---- Body ---- */
+    /* ---- Body (optional; default empty string) ---- */
 
-    body_cstr = JS_ToCString(ctx, argv[2]);
-    if (!body_cstr) {
-        return JS_EXCEPTION;
+    if (argc >= 3 && !JS_IsUndefined(argv[2]) && !JS_IsNull(argv[2])) {
+        body_cstr = JS_ToCString(ctx, argv[2]);
+        if (!body_cstr) {
+            return JS_EXCEPTION;
+        }
+    } else {
+        body_cstr = NULL;
     }
 
-    body_len = ngx_strlen(body_cstr);
+    body_len = body_cstr ? ngx_strlen(body_cstr) : 0;
     r->headers_out.content_length_n = (off_t) body_len;
 
     /*
@@ -1664,7 +1701,7 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
 
     rc = ngx_http_send_header(r);
     if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
-        JS_FreeCString(ctx, body_cstr);
+        if (body_cstr) { JS_FreeCString(ctx, body_cstr); }
         op->respond_rc = rc;
         op->responded  = 1;
         return JS_UNDEFINED;
@@ -1679,7 +1716,7 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
     if (body_len > 0) {
         b = ngx_create_temp_buf(r->pool, body_len);
         if (b == NULL) {
-            JS_FreeCString(ctx, body_cstr);
+            if (body_cstr) { JS_FreeCString(ctx, body_cstr); }
             op->respond_rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             op->responded  = 1;
             return JS_UNDEFINED;
@@ -1690,7 +1727,7 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
     } else {
         b = ngx_calloc_buf(r->pool);
         if (b == NULL) {
-            JS_FreeCString(ctx, body_cstr);
+            if (body_cstr) { JS_FreeCString(ctx, body_cstr); }
             op->respond_rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             op->responded  = 1;
             return JS_UNDEFINED;
@@ -1700,7 +1737,7 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
     b->last_buf      = 1;
     b->last_in_chain = 1;
 
-    JS_FreeCString(ctx, body_cstr);
+    if (body_cstr) { JS_FreeCString(ctx, body_cstr); }
 
     out.buf  = b;
     out.next = NULL;
@@ -3456,7 +3493,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("scheme",        ngx_js_request_get, NULL, 13),
     JS_CGETSET_MAGIC_DEF("connection",    ngx_js_request_get, NULL, 14),
     JS_CGETSET_MAGIC_DEF("location",      ngx_js_request_get, NULL, 15),
-    JS_CFUNC_DEF("respond",      3, ngx_js_request_respond),
+    JS_CFUNC_DEF("respond",      0, ngx_js_request_respond),
     JS_CFUNC_DEF("setHeader",    2, ngx_js_request_set_header),
     JS_CFUNC_DEF("getHeader",    1, ngx_js_request_get_header),
     JS_CFUNC_DEF("removeHeader", 1, ngx_js_request_remove_header),
@@ -3471,9 +3508,10 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("upstream",    ngx_js_request_get, NULL, 18),
     JS_CGETSET_MAGIC_DEF("variables",     ngx_js_request_get, NULL, 19),
     JS_CGETSET_MAGIC_DEF("body",          ngx_js_request_get, NULL, 20),
-    JS_CGETSET_MAGIC_DEF("serverAddr",    ngx_js_request_get, NULL, 21),
-    JS_CGETSET_MAGIC_DEF("serverPort",    ngx_js_request_get, NULL, 22),
-    JS_CGETSET_MAGIC_DEF("requestLength", ngx_js_request_get, NULL, 23),
+    JS_CGETSET_MAGIC_DEF("serverAddr",    ngx_js_request_get, NULL,               21),
+    JS_CGETSET_MAGIC_DEF("serverPort",    ngx_js_request_get, NULL,               22),
+    JS_CGETSET_MAGIC_DEF("requestLength", ngx_js_request_get, NULL,               23),
+    JS_CGETSET_MAGIC_DEF("statusCode",    ngx_js_request_get, ngx_js_request_set, 24),
     JS_CFUNC_DEF("readBody",            0, ngx_js_request_read_body),
     JS_CFUNC_DEF("sendfile",            1, ngx_js_request_sendfile),
     JS_CFUNC_DEF("redirect",            1, ngx_js_request_redirect),
