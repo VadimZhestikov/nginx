@@ -249,6 +249,133 @@ ngx_js_ssl_get_certificate_key(JSContext *ctx, JSValueConst this_val)
 
 
 /*
+ * setProtocols(arr) — update the enabled TLS protocol versions on the live
+ * SSL_CTX.
+ *
+ * arr must be an array of strings, each one of: "SSLv2", "SSLv3", "TLSv1",
+ * "TLSv1.1", "TLSv1.2", "TLSv1.3".  Unknown strings are silently ignored.
+ * Throws TypeError if the argument is not an array.
+ *
+ * Mirrors the logic in ngx_ssl_create(): clears all SSL_OP_NO_* version bits,
+ * then sets SSL_OP_NO_<proto> for each version absent from the new list.
+ * Also updates sscf->protocols so the COM protocols getter stays consistent.
+ */
+static JSValue
+ngx_js_ssl_set_protocols(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    static const struct {
+        const char  *name;
+        ngx_uint_t   flag;
+    } protos[] = {
+        { "SSLv2",   NGX_SSL_SSLv2   },
+        { "SSLv3",   NGX_SSL_SSLv3   },
+        { "TLSv1",   NGX_SSL_TLSv1   },
+        { "TLSv1.1", NGX_SSL_TLSv1_1 },
+        { "TLSv1.2", NGX_SSL_TLSv1_2 },
+        { "TLSv1.3", NGX_SSL_TLSv1_3 },
+        { NULL, 0 }
+    };
+
+    ngx_js_ssl_opaque_t      *op;
+    ngx_http_ssl_srv_conf_t  *sscf;
+    JSValue                   arr, elem;
+    uint32_t                  len, i;
+    ngx_uint_t                mask, j;
+    const char               *s;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_ssl_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    sscf = op->sscf;
+
+    if (argc < 1 || !JS_IsArray(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "setProtocols: array argument required");
+    }
+
+    if (sscf->ssl.ctx == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "setProtocols: SSL context not initialised");
+    }
+
+    arr = argv[0];
+
+    {
+        JSValue lv = JS_GetPropertyStr(ctx, arr, "length");
+        if (JS_ToUint32(ctx, &len, lv) < 0) {
+            JS_FreeValue(ctx, lv);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, lv);
+    }
+
+    /* Build the protocol bitmask from the JS array */
+    mask = 0;
+
+    for (i = 0; i < len; i++) {
+        elem = JS_GetPropertyUint32(ctx, arr, i);
+        if (JS_IsException(elem)) { return JS_EXCEPTION; }
+
+        s = JS_ToCString(ctx, elem);
+        JS_FreeValue(ctx, elem);
+        if (!s) { return JS_EXCEPTION; }
+
+        for (j = 0; protos[j].name != NULL; j++) {
+            if (ngx_strcmp(s, protos[j].name) == 0) {
+                mask |= protos[j].flag;
+                break;
+            }
+        }
+
+        JS_FreeCString(ctx, s);
+    }
+
+    /*
+     * Apply to the live SSL_CTX.  Mirror ngx_ssl_create() exactly:
+     * clear all NO_* version bits then set NO_<proto> for each absent version.
+     */
+    SSL_CTX_clear_options(sscf->ssl.ctx,
+                          SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
+
+    if (!(mask & NGX_SSL_SSLv2)) {
+        SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_SSLv2);
+    }
+    if (!(mask & NGX_SSL_SSLv3)) {
+        SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_SSLv3);
+    }
+    if (!(mask & NGX_SSL_TLSv1)) {
+        SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1);
+    }
+
+#ifdef SSL_OP_NO_TLSv1_1
+    SSL_CTX_clear_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_1);
+    if (!(mask & NGX_SSL_TLSv1_1)) {
+        SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_1);
+    }
+#endif
+
+#ifdef SSL_OP_NO_TLSv1_2
+    SSL_CTX_clear_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_2);
+    if (!(mask & NGX_SSL_TLSv1_2)) {
+        SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_2);
+    }
+#endif
+
+#ifdef SSL_OP_NO_TLSv1_3
+    SSL_CTX_clear_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_3);
+    if (!(mask & NGX_SSL_TLSv1_3)) {
+        SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_3);
+    }
+#endif
+
+    sscf->protocols = mask;
+
+    return JS_UNDEFINED;
+}
+
+
+/*
  * setCiphers(str) — update the OpenSSL cipher list on the live SSL_CTX.
  *
  * Calls SSL_CTX_set_cipher_list() on sscf->ssl.ctx; takes effect immediately
@@ -324,6 +451,7 @@ static const JSCFunctionListEntry ngx_js_ssl_proto_funcs[] = {
     JS_CGETSET_DEF       ("certificate",         ngx_js_ssl_get_certificate,    NULL),
     JS_CGETSET_DEF       ("certificateKey",      ngx_js_ssl_get_certificate_key,NULL),
     JS_CFUNC_DEF         ("setCiphers",     1,   ngx_js_ssl_set_ciphers),
+    JS_CFUNC_DEF         ("setProtocols",  1,   ngx_js_ssl_set_protocols),
 };
 
 
