@@ -3307,6 +3307,7 @@ ngx_http_core_regex_location(ngx_conf_t *cf, ngx_http_core_loc_conf_t *clcf,
     }
 
     clcf->name = *regex;
+    clcf->nocase = caseless;
 
     return NGX_OK;
 

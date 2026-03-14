@@ -321,6 +321,7 @@ struct ngx_http_core_loc_conf_s {
 
     unsigned      exact_match:1;
     unsigned      noregex:1;
+    unsigned      nocase:1;    /* ~* (case-insensitive regex) */
 
     unsigned      auto_redirect:1;
 #if (NGX_HTTP_GZIP)

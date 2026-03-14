@@ -974,6 +974,24 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 79: /* directioAlignment — bytes */
         return JS_NewInt64(ctx, (int64_t) clcf->directio_alignment);
 
+    case 80: /* matchType — location modifier as string */
+#if (NGX_PCRE)
+        if (clcf->regex) {
+            return JS_NewString(ctx, clcf->nocase ? "regexCaseInsensitive"
+                                                  : "regex");
+        }
+#endif
+        if (clcf->exact_match) {
+            return JS_NewString(ctx, "exact");
+        }
+        if (clcf->noregex) {
+            return JS_NewString(ctx, "preferentialPrefix");
+        }
+        if (clcf->named) {
+            return JS_NewString(ctx, "named");
+        }
+        return JS_NewString(ctx, "prefix");
+
     }
 
     return JS_UNDEFINED;
@@ -1762,6 +1780,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("readAhead",                ngx_js_location_get, ngx_js_location_set, 77),
     JS_CGETSET_MAGIC_DEF("directio",                 ngx_js_location_get, ngx_js_location_set, 78),
     JS_CGETSET_MAGIC_DEF("directioAlignment",        ngx_js_location_get, ngx_js_location_set, 79),
+    JS_CGETSET_MAGIC_DEF("matchType",                ngx_js_location_get, NULL,                80),
     JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page,
                                                    ngx_js_location_set_error_page),
 };
@@ -2333,7 +2352,9 @@ static JSValue
 ngx_js_server_get_locations(JSContext *ctx, JSValueConst this_val, int magic)
 {
     ngx_js_server_opaque_t    *op;
-    ngx_http_core_loc_conf_t  *clcf;
+    ngx_http_core_loc_conf_t  *clcf, **named;
+    JSValue                    arr;
+    uint32_t                   idx;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
     if (!op) {
@@ -2341,8 +2362,28 @@ ngx_js_server_get_locations(JSContext *ctx, JSValueConst this_val, int magic)
     }
 
     clcf = op->cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+    arr = ngx_js_build_locations(ctx, clcf);
+    if (JS_IsException(arr)) {
+        return arr;
+    }
 
-    return ngx_js_build_locations(ctx, clcf);
+    /* append named locations (@name) kept in cscf->named_locations[] */
+    named = op->cscf->named_locations;
+    if (named) {
+        JSValue  len_val = JS_GetPropertyStr(ctx, arr, "length");
+        if (JS_IsException(len_val)) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
+        JS_ToUint32(ctx, &idx, len_val);
+        JS_FreeValue(ctx, len_val);
+        for (; *named; named++) {
+            JS_SetPropertyUint32(ctx, arr, idx++,
+                                 ngx_js_wrap_location(ctx, *named));
+        }
+    }
+
+    return arr;
 }
 
 
