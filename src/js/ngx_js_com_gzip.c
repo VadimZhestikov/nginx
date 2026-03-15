@@ -60,14 +60,14 @@ static JSClassDef ngx_js_gzip_class = {
 
 
 /*
- * Magic values for ngx_js_gzip_get:
+ * Magic values for ngx_js_gzip_get_core:
  *   0 — enable
  *   1 — level
  *   2 — minLength
  *   3 — vary
  */
 static JSValue
-ngx_js_gzip_get(JSContext *ctx, JSValueConst this_val, int magic)
+ngx_js_gzip_get_core(JSContext *ctx, JSValueConst this_val, int magic)
 {
     ngx_js_gzip_opaque_t  *op;
 
@@ -88,7 +88,8 @@ ngx_js_gzip_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 static JSValue
-ngx_js_gzip_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+ngx_js_gzip_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
 {
     ngx_js_gzip_opaque_t  *op;
     int64_t                n;
@@ -111,6 +112,115 @@ ngx_js_gzip_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
     case 3: /* vary */
         op->clcf->gzip_vary = JS_ToBool(ctx, val);
         return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * Snapshot-aware getter wrapper: if read_mode=LOCAL and the opaque conf
+ * belongs to the current request's location, temporarily swap BOTH op->gcf
+ * and op->clcf to the snapshotted copies.
+ */
+static JSValue
+ngx_js_gzip_get(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_gzip_opaque_t      *op;
+    ngx_js_worker_t           *w;
+    ngx_http_request_t        *r;
+    ngx_js_req_ctx_t          *rctx;
+    ngx_http_gzip_conf_t      *orig_gcf;
+    ngx_http_core_loc_conf_t  *orig_clcf;
+    JSValue                    ret;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_gzip_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    w    = JS_GetContextOpaque(ctx);
+    r    = (w != NULL) ? w->current_request : NULL;
+    rctx = (r != NULL) ? ngx_http_get_module_ctx(r, ngx_js_http_module) : NULL;
+
+    if (rctx != NULL && (rctx->read_mode & NGX_JS_WRITE_LOCAL)
+        && ngx_js_is_own_conf(r, rctx,
+               ngx_http_gzip_filter_module.ctx_index, op->gcf))
+    {
+        orig_gcf  = op->gcf;
+        orig_clcf = op->clcf;
+        op->gcf   = r->loc_conf[ngx_http_gzip_filter_module.ctx_index];
+        /* clcf may also be snapshotted (for gzip_vary) */
+        if (rctx->core_clcf_snapshotted) {
+            op->clcf = r->loc_conf[ngx_http_core_module.ctx_index];
+        }
+        ret       = ngx_js_gzip_get_core(ctx, this_val, magic);
+        op->gcf   = orig_gcf;
+        op->clcf  = orig_clcf;
+        return ret;
+    }
+
+    return ngx_js_gzip_get_core(ctx, this_val, magic);
+}
+
+
+/*
+ * Snapshot-aware setter wrapper.
+ */
+static JSValue
+ngx_js_gzip_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_gzip_opaque_t      *op;
+    ngx_js_worker_t           *w;
+    ngx_http_request_t        *r;
+    ngx_js_req_ctx_t          *rctx;
+    ngx_http_gzip_conf_t      *orig_gcf;
+    ngx_http_core_loc_conf_t  *orig_clcf;
+    uint32_t                   wmode;
+    int                        need_global, need_local;
+    JSValue                    ret;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_gzip_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    w     = JS_GetContextOpaque(ctx);
+    r     = (w != NULL) ? w->current_request : NULL;
+    rctx  = (r != NULL) ? ngx_http_get_module_ctx(r, ngx_js_http_module) : NULL;
+    wmode = (rctx != NULL) ? rctx->write_mode : NGX_JS_WRITE_GLOBAL;
+
+    need_global = (wmode & NGX_JS_WRITE_GLOBAL) != 0;
+    need_local  = (wmode & NGX_JS_WRITE_LOCAL)  != 0;
+
+    if (need_local) {
+        if (!ngx_js_is_own_conf(r, rctx,
+                ngx_http_gzip_filter_module.ctx_index, op->gcf))
+        {
+            need_local = 0;
+        }
+    }
+
+    if (need_local) {
+        /* Snapshot gzip module conf */
+        if (ngx_js_ensure_module_snapshot(r, &ngx_http_gzip_filter_module,
+                sizeof(ngx_http_gzip_conf_t)) != NGX_OK) {
+            return JS_ThrowInternalError(ctx, "gzip snapshot alloc failed");
+        }
+        /* Snapshot core conf for gzip_vary */
+        if (ngx_js_ensure_core_snapshot(r) != NGX_OK) {
+            return JS_ThrowInternalError(ctx,
+                                         "gzip core snapshot alloc failed");
+        }
+        orig_gcf  = op->gcf;
+        orig_clcf = op->clcf;
+        op->gcf   = r->loc_conf[ngx_http_gzip_filter_module.ctx_index];
+        op->clcf  = r->loc_conf[ngx_http_core_module.ctx_index];
+        ret       = ngx_js_gzip_set_core(ctx, this_val, val, magic);
+        op->gcf   = orig_gcf;
+        op->clcf  = orig_clcf;
+        if (!need_global || JS_IsException(ret)) { return ret; }
+        JS_FreeValue(ctx, ret);
+    }
+
+    if (need_global) {
+        return ngx_js_gzip_set_core(ctx, this_val, val, magic);
     }
 
     return JS_UNDEFINED;

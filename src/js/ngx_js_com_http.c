@@ -1859,6 +1859,22 @@ ngx_js_location_fn_set_write_mode(JSContext *ctx, JSValueConst this_val,
     }
 
     op->write_mode = mode;
+
+    /* Propagate to request-level write_mode for sub-object inheritance */
+    {
+        ngx_js_worker_t   *w;
+        ngx_js_req_ctx_t  *rctx;
+
+        w = JS_GetContextOpaque(ctx);
+        if (w && w->current_request) {
+            rctx = ngx_http_get_module_ctx(w->current_request,
+                                            ngx_js_http_module);
+            if (rctx) {
+                rctx->write_mode = mode;
+            }
+        }
+    }
+
     return JS_UNDEFINED;
 }
 
@@ -1889,6 +1905,22 @@ ngx_js_location_fn_set_read_mode(JSContext *ctx, JSValueConst this_val,
     }
 
     op->read_mode = mode;
+
+    /* Propagate to request-level read_mode for sub-object inheritance */
+    {
+        ngx_js_worker_t   *w;
+        ngx_js_req_ctx_t  *rctx;
+
+        w = JS_GetContextOpaque(ctx);
+        if (w && w->current_request) {
+            rctx = ngx_http_get_module_ctx(w->current_request,
+                                            ngx_js_http_module);
+            if (rctx) {
+                rctx->read_mode = mode;
+            }
+        }
+    }
+
     return JS_UNDEFINED;
 }
 

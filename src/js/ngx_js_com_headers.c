@@ -62,14 +62,14 @@ ngx_js_headers_inherit_str(ngx_uint_t v)
 
 
 /*
- * Magic values for ngx_js_headers_get:
+ * Magic values for ngx_js_headers_get_core:
  *   0 — expires          (string)
  *   1 — expiresTime      (number, seconds)
  *   2 — headersInherit   (string)
  *   3 — trailersInherit  (string)
  */
 static JSValue
-ngx_js_headers_get(JSContext *ctx, JSValueConst this_val, int magic)
+ngx_js_headers_get_core(JSContext *ctx, JSValueConst this_val, int magic)
 {
     static const char *expire_modes[] = {
         "off", "epoch", "max", "access", "modified", "daily", "unset"
@@ -191,7 +191,7 @@ ngx_js_headers_get_add_trailers(JSContext *ctx, JSValueConst this_val)
  *   Magic 3 — trailersInherit
  */
 static JSValue
-ngx_js_headers_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+ngx_js_headers_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
     int magic)
 {
     ngx_js_headers_opaque_t  *op;
@@ -227,6 +227,97 @@ ngx_js_headers_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         op->hcf->headers_inherit  = v;
     } else {
         op->hcf->trailers_inherit = v;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * Snapshot-aware getter wrapper.
+ */
+static JSValue
+ngx_js_headers_get(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_headers_opaque_t  *op;
+    ngx_js_worker_t          *w;
+    ngx_http_request_t       *r;
+    ngx_js_req_ctx_t         *rctx;
+    ngx_http_headers_conf_t  *orig_hcf;
+    JSValue                   ret;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_headers_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    w    = JS_GetContextOpaque(ctx);
+    r    = (w != NULL) ? w->current_request : NULL;
+    rctx = (r != NULL) ? ngx_http_get_module_ctx(r, ngx_js_http_module) : NULL;
+
+    if (rctx != NULL && (rctx->read_mode & NGX_JS_WRITE_LOCAL)
+        && ngx_js_is_own_conf(r, rctx,
+               ngx_http_headers_filter_module.ctx_index, op->hcf))
+    {
+        orig_hcf = op->hcf;
+        op->hcf  = r->loc_conf[ngx_http_headers_filter_module.ctx_index];
+        ret      = ngx_js_headers_get_core(ctx, this_val, magic);
+        op->hcf  = orig_hcf;
+        return ret;
+    }
+
+    return ngx_js_headers_get_core(ctx, this_val, magic);
+}
+
+
+/*
+ * Snapshot-aware setter wrapper.
+ */
+static JSValue
+ngx_js_headers_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_headers_opaque_t  *op;
+    ngx_js_worker_t          *w;
+    ngx_http_request_t       *r;
+    ngx_js_req_ctx_t         *rctx;
+    ngx_http_headers_conf_t  *orig_hcf;
+    uint32_t                  wmode;
+    int                       need_global, need_local;
+    JSValue                   ret;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_headers_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    w     = JS_GetContextOpaque(ctx);
+    r     = (w != NULL) ? w->current_request : NULL;
+    rctx  = (r != NULL) ? ngx_http_get_module_ctx(r, ngx_js_http_module) : NULL;
+    wmode = (rctx != NULL) ? rctx->write_mode : NGX_JS_WRITE_GLOBAL;
+
+    need_global = (wmode & NGX_JS_WRITE_GLOBAL) != 0;
+    need_local  = (wmode & NGX_JS_WRITE_LOCAL)  != 0;
+
+    if (need_local) {
+        if (!ngx_js_is_own_conf(r, rctx,
+                ngx_http_headers_filter_module.ctx_index, op->hcf))
+        {
+            need_local = 0;  /* cross-location: global only */
+        }
+    }
+
+    if (need_local) {
+        if (ngx_js_ensure_module_snapshot(r, &ngx_http_headers_filter_module,
+                sizeof(ngx_http_headers_conf_t)) != NGX_OK) {
+            return JS_ThrowInternalError(ctx, "headers snapshot alloc failed");
+        }
+        orig_hcf = op->hcf;
+        op->hcf  = r->loc_conf[ngx_http_headers_filter_module.ctx_index];
+        ret      = ngx_js_headers_set_core(ctx, this_val, val, magic);
+        op->hcf  = orig_hcf;
+        if (!need_global || JS_IsException(ret)) { return ret; }
+        JS_FreeValue(ctx, ret);
+    }
+
+    if (need_global) {
+        return ngx_js_headers_set_core(ctx, this_val, val, magic);
     }
 
     return JS_UNDEFINED;

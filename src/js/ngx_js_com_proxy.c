@@ -60,7 +60,7 @@ static JSClassDef ngx_js_proxy_class = {
 
 
 /*
- * Magic values for ngx_js_proxy_get:
+ * Magic values for ngx_js_proxy_get_core:
  *   0  — pass
  *   1  — httpVersion
  *   2  — connectTimeout
@@ -74,7 +74,7 @@ static JSClassDef ngx_js_proxy_class = {
  *   10 — nextUpstreamTimeout
  */
 static JSValue
-ngx_js_proxy_get(JSContext *ctx, JSValueConst this_val, int magic)
+ngx_js_proxy_get_core(JSContext *ctx, JSValueConst this_val, int magic)
 {
     ngx_js_proxy_opaque_t      *op;
     ngx_http_proxy_loc_conf_t  *plcf;
@@ -121,7 +121,8 @@ ngx_js_proxy_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 static JSValue
-ngx_js_proxy_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+ngx_js_proxy_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
 {
     ngx_js_proxy_opaque_t      *op;
     ngx_http_upstream_conf_t   *ucf;
@@ -187,6 +188,99 @@ ngx_js_proxy_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
         if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
         ucf->next_upstream_timeout = (ngx_msec_t) n;
         return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * Snapshot-aware getter wrapper: if read_mode=LOCAL and the opaque conf
+ * belongs to the current request's location, temporarily redirect op->plcf
+ * to the snapshotted copy before delegating to ngx_js_proxy_get_core.
+ */
+static JSValue
+ngx_js_proxy_get(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_proxy_opaque_t     *op;
+    ngx_js_worker_t           *w;
+    ngx_http_request_t        *r;
+    ngx_js_req_ctx_t          *rctx;
+    ngx_http_proxy_loc_conf_t *orig_plcf;
+    JSValue                    ret;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_proxy_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    w    = JS_GetContextOpaque(ctx);
+    r    = (w != NULL) ? w->current_request : NULL;
+    rctx = (r != NULL) ? ngx_http_get_module_ctx(r, ngx_js_http_module) : NULL;
+
+    if (rctx != NULL && (rctx->read_mode & NGX_JS_WRITE_LOCAL)
+        && ngx_js_is_own_conf(r, rctx, ngx_http_proxy_module.ctx_index,
+                              op->plcf))
+    {
+        orig_plcf = op->plcf;
+        op->plcf  = r->loc_conf[ngx_http_proxy_module.ctx_index];
+        ret       = ngx_js_proxy_get_core(ctx, this_val, magic);
+        op->plcf  = orig_plcf;
+        return ret;
+    }
+
+    return ngx_js_proxy_get_core(ctx, this_val, magic);
+}
+
+
+/*
+ * Snapshot-aware setter wrapper: writes to the local snapshot and/or the
+ * global conf depending on rctx->write_mode.
+ */
+static JSValue
+ngx_js_proxy_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_proxy_opaque_t     *op;
+    ngx_js_worker_t           *w;
+    ngx_http_request_t        *r;
+    ngx_js_req_ctx_t          *rctx;
+    ngx_http_proxy_loc_conf_t *orig_plcf;
+    uint32_t                   wmode;
+    int                        need_global, need_local;
+    JSValue                    ret;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_proxy_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    w     = JS_GetContextOpaque(ctx);
+    r     = (w != NULL) ? w->current_request : NULL;
+    rctx  = (r != NULL) ? ngx_http_get_module_ctx(r, ngx_js_http_module) : NULL;
+    wmode = (rctx != NULL) ? rctx->write_mode : NGX_JS_WRITE_GLOBAL;
+
+    need_global = (wmode & NGX_JS_WRITE_GLOBAL) != 0;
+    need_local  = (wmode & NGX_JS_WRITE_LOCAL)  != 0;
+
+    if (need_local) {
+        if (!ngx_js_is_own_conf(r, rctx,
+                ngx_http_proxy_module.ctx_index, op->plcf))
+        {
+            need_local = 0;  /* cross-location: global only */
+        }
+    }
+
+    if (need_local) {
+        if (ngx_js_ensure_module_snapshot(r, &ngx_http_proxy_module,
+                sizeof(ngx_http_proxy_loc_conf_t)) != NGX_OK) {
+            return JS_ThrowInternalError(ctx, "proxy snapshot alloc failed");
+        }
+        orig_plcf = op->plcf;
+        op->plcf  = r->loc_conf[ngx_http_proxy_module.ctx_index];
+        ret       = ngx_js_proxy_set_core(ctx, this_val, val, magic);
+        op->plcf  = orig_plcf;
+        if (!need_global || JS_IsException(ret)) { return ret; }
+        JS_FreeValue(ctx, ret);
+    }
+
+    if (need_global) {
+        return ngx_js_proxy_set_core(ctx, this_val, val, magic);
     }
 
     return JS_UNDEFINED;

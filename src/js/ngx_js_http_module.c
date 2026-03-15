@@ -706,16 +706,6 @@ ngx_js_collect_body(JSContext *ctx, ngx_http_request_t *r)
 
 
 /*
- * Request-lifetime context stored via ngx_http_set_ctx(ngx_js_http_module).
- * Allocated in r->pool at content-handler entry; lives for the full request.
- */
-typedef struct {
-    unsigned  loc_conf_snapshotted:1;   /* r->loc_conf points to pool copy    */
-    unsigned  core_clcf_snapshotted:1;  /* core loc_conf deep-copied to pool  */
-} ngx_js_req_ctx_t;
-
-
-/*
  * Context stored via ngx_http_set_ctx for the async body-reading path.
  * Temporarily replaces ngx_js_req_ctx_t in the module-ctx slot; restored
  * in ngx_js_body_done.
@@ -3874,6 +3864,87 @@ ngx_js_ensure_core_snapshot(ngx_http_request_t *r)
 }
 
 
+/*
+ * Deep-copy an arbitrary module's loc_conf struct into r->pool and update
+ * r->loc_conf[module->ctx_index].  Idempotent — safe to call many times.
+ */
+ngx_int_t
+ngx_js_ensure_module_snapshot(ngx_http_request_t *r,
+    ngx_module_t *module, size_t conf_size)
+{
+    ngx_js_req_ctx_t      *rctx;
+    ngx_js_module_snap_t  *snap;
+    void                  *orig, *copy;
+    ngx_uint_t             idx;
+
+    if (ngx_js_ensure_snapshot(r) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    if (rctx == NULL) {
+        return NGX_OK;  /* no request context — no-op */
+    }
+
+    idx  = module->ctx_index;
+    orig = r->loc_conf[idx];
+
+    for (snap = rctx->snapped; snap; snap = snap->next) {
+        if (snap->ctx_index == idx) {
+            return NGX_OK;  /* already snapshotted */
+        }
+    }
+
+    copy = ngx_palloc(r->pool, conf_size);
+    if (copy == NULL) {
+        return NGX_ERROR;
+    }
+    ngx_memcpy(copy, orig, conf_size);
+    r->loc_conf[idx] = copy;
+
+    snap = ngx_palloc(r->pool, sizeof(ngx_js_module_snap_t));
+    if (snap == NULL) {
+        return NGX_ERROR;
+    }
+    snap->ctx_index = idx;
+    snap->orig      = orig;
+    snap->next      = rctx->snapped;
+    rctx->snapped   = snap;
+
+    return NGX_OK;
+}
+
+
+/*
+ * Returns 1 if op_conf is the current request's own conf for this module.
+ * Either r->loc_conf[ctx_index] == op_conf (not yet snapshotted — direct
+ * match), or the snap list records that op_conf was the original.
+ * Returns 0 for cross-location access.
+ */
+int
+ngx_js_is_own_conf(ngx_http_request_t *r, ngx_js_req_ctx_t *rctx,
+    ngx_uint_t ctx_index, void *op_conf)
+{
+    ngx_js_module_snap_t *snap;
+
+    if (r->loc_conf[ctx_index] == op_conf) {
+        return 1;  /* not yet snapshotted — direct match */
+    }
+
+    if (rctx == NULL) {
+        return 0;
+    }
+
+    for (snap = rctx->snapped; snap; snap = snap->next) {
+        if (snap->ctx_index == ctx_index && snap->orig == op_conf) {
+            return 1;  /* already snapshotted from this conf */
+        }
+    }
+
+    return 0;
+}
+
+
 /* ------------------------------------------------------------------ */
 /* Content handler — called by NGINX in each worker process            */
 /* ------------------------------------------------------------------ */
@@ -3907,6 +3978,9 @@ ngx_js_content_handler(ngx_http_request_t *r)
     if (rctx == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
+    rctx->write_mode = NGX_JS_WRITE_GLOBAL;
+    rctx->read_mode  = NGX_JS_WRITE_GLOBAL;
+    /* rctx->snapped = NULL is already done by pcalloc */
     ngx_http_set_ctx(r, rctx, ngx_js_http_module);
 
     ctx      = w->ctx;

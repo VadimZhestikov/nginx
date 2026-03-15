@@ -51,14 +51,14 @@ static JSClassDef ngx_js_rewrite_class = {
 
 
 /*
- * Magic values for ngx_js_rewrite_get:
+ * Magic values for ngx_js_rewrite_get_core:
  *   0 — log
  *   1 — uninitializedVariableWarn
  *   2 — stackSize
  *   3 — hasRules
  */
 static JSValue
-ngx_js_rewrite_get(JSContext *ctx, JSValueConst this_val, int magic)
+ngx_js_rewrite_get_core(JSContext *ctx, JSValueConst this_val, int magic)
 {
     ngx_js_rewrite_opaque_t  *op;
 
@@ -88,7 +88,7 @@ ngx_js_rewrite_get(JSContext *ctx, JSValueConst this_val, int magic)
  *   (3 — hasRules is read-only: reflects compiled bytecode)
  */
 static JSValue
-ngx_js_rewrite_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+ngx_js_rewrite_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
     int magic)
 {
     ngx_js_rewrite_opaque_t  *op;
@@ -108,6 +108,97 @@ ngx_js_rewrite_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
         op->rlcf->stack_size = (ngx_uint_t) n;
         return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * Snapshot-aware getter wrapper.
+ */
+static JSValue
+ngx_js_rewrite_get(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_rewrite_opaque_t       *op;
+    ngx_js_worker_t               *w;
+    ngx_http_request_t            *r;
+    ngx_js_req_ctx_t              *rctx;
+    ngx_http_rewrite_loc_conf_t   *orig_rlcf;
+    JSValue                        ret;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_rewrite_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    w    = JS_GetContextOpaque(ctx);
+    r    = (w != NULL) ? w->current_request : NULL;
+    rctx = (r != NULL) ? ngx_http_get_module_ctx(r, ngx_js_http_module) : NULL;
+
+    if (rctx != NULL && (rctx->read_mode & NGX_JS_WRITE_LOCAL)
+        && ngx_js_is_own_conf(r, rctx,
+               ngx_http_rewrite_module.ctx_index, op->rlcf))
+    {
+        orig_rlcf = op->rlcf;
+        op->rlcf  = r->loc_conf[ngx_http_rewrite_module.ctx_index];
+        ret       = ngx_js_rewrite_get_core(ctx, this_val, magic);
+        op->rlcf  = orig_rlcf;
+        return ret;
+    }
+
+    return ngx_js_rewrite_get_core(ctx, this_val, magic);
+}
+
+
+/*
+ * Snapshot-aware setter wrapper.
+ */
+static JSValue
+ngx_js_rewrite_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_rewrite_opaque_t       *op;
+    ngx_js_worker_t               *w;
+    ngx_http_request_t            *r;
+    ngx_js_req_ctx_t              *rctx;
+    ngx_http_rewrite_loc_conf_t   *orig_rlcf;
+    uint32_t                       wmode;
+    int                            need_global, need_local;
+    JSValue                        ret;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_rewrite_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    w     = JS_GetContextOpaque(ctx);
+    r     = (w != NULL) ? w->current_request : NULL;
+    rctx  = (r != NULL) ? ngx_http_get_module_ctx(r, ngx_js_http_module) : NULL;
+    wmode = (rctx != NULL) ? rctx->write_mode : NGX_JS_WRITE_GLOBAL;
+
+    need_global = (wmode & NGX_JS_WRITE_GLOBAL) != 0;
+    need_local  = (wmode & NGX_JS_WRITE_LOCAL)  != 0;
+
+    if (need_local) {
+        if (!ngx_js_is_own_conf(r, rctx,
+                ngx_http_rewrite_module.ctx_index, op->rlcf))
+        {
+            need_local = 0;  /* cross-location: global only */
+        }
+    }
+
+    if (need_local) {
+        if (ngx_js_ensure_module_snapshot(r, &ngx_http_rewrite_module,
+                sizeof(ngx_http_rewrite_loc_conf_t)) != NGX_OK) {
+            return JS_ThrowInternalError(ctx, "rewrite snapshot alloc failed");
+        }
+        orig_rlcf = op->rlcf;
+        op->rlcf  = r->loc_conf[ngx_http_rewrite_module.ctx_index];
+        ret       = ngx_js_rewrite_set_core(ctx, this_val, val, magic);
+        op->rlcf  = orig_rlcf;
+        if (!need_global || JS_IsException(ret)) { return ret; }
+        JS_FreeValue(ctx, ret);
+    }
+
+    if (need_global) {
+        return ngx_js_rewrite_set_core(ctx, this_val, val, magic);
     }
 
     return JS_UNDEFINED;

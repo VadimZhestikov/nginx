@@ -69,6 +69,31 @@ typedef struct {
 
 
 /*
+ * Per-module snapshot entry — linked list of conf structs that have been
+ * deep-copied into r->pool for the current request.
+ */
+typedef struct ngx_js_module_snap_s {
+    ngx_uint_t                      ctx_index;  /* module->ctx_index */
+    void                           *orig;       /* original global conf ptr */
+    struct ngx_js_module_snap_s    *next;
+} ngx_js_module_snap_t;
+
+
+/*
+ * Per-request JS context — allocated in r->pool, stored via ngx_http_set_ctx.
+ * Tracks which conf structs have been snapshotted, and the active write/read
+ * mode (set by r.location.setWriteMode / setReadMode).
+ */
+typedef struct {
+    unsigned               loc_conf_snapshotted:1;  /* r->loc_conf array copied */
+    unsigned               core_clcf_snapshotted:1; /* core loc_conf deep-copied */
+    uint32_t               write_mode;  /* NGX_JS_WRITE_GLOBAL by default */
+    uint32_t               read_mode;   /* NGX_JS_WRITE_GLOBAL by default */
+    ngx_js_module_snap_t  *snapped;     /* per-module snapshot linked list */
+} ngx_js_req_ctx_t;
+
+
+/*
  * Per-location JS handler config owned by ngx_js_http_module.
  * handler_idx == -1 means no JS handler is set for this location.
  * Otherwise it is an index into the global __ngx_handlers__ array
@@ -143,6 +168,24 @@ ngx_int_t  ngx_js_ensure_snapshot(struct ngx_http_request_s *r);
  * affecting the shared config.  Subsequent calls are no-ops.
  */
 ngx_int_t  ngx_js_ensure_core_snapshot(struct ngx_http_request_s *r);
+
+/*
+ * Deep-copy a module's loc_conf struct into r->pool and update
+ * r->loc_conf[module->ctx_index].  Idempotent (no-op on repeat calls
+ * for the same module).  Calls ngx_js_ensure_snapshot internally.
+ * Returns NGX_OK or NGX_ERROR on alloc failure.
+ */
+ngx_int_t  ngx_js_ensure_module_snapshot(struct ngx_http_request_s *r,
+    ngx_module_t *module, size_t conf_size);
+
+/*
+ * Returns 1 if op_conf is the current request's own conf for this module:
+ * either r->loc_conf[ctx_index] == op_conf (not yet snapshotted), or
+ * the snap list records that the current snapshot was made from op_conf.
+ * Returns 0 for cross-location access.
+ */
+int  ngx_js_is_own_conf(struct ngx_http_request_s *r,
+    ngx_js_req_ctx_t *rctx, ngx_uint_t ctx_index, void *op_conf);
 
 /*
  * Inspect the promise of a suspended async request and finalize it if
