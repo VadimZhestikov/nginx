@@ -706,14 +706,26 @@ ngx_js_collect_body(JSContext *ctx, ngx_http_request_t *r)
 
 
 /*
- * Context stored via ngx_http_set_ctx for the async body-reading path.
+ * Request-lifetime context stored via ngx_http_set_ctx(ngx_js_http_module).
+ * Allocated in r->pool at content-handler entry; lives for the full request.
  */
 typedef struct {
-    JSContext        *ctx;
-    JSRuntime        *rt;
-    ngx_js_worker_t  *w;
-    JSValue           resolve;
-    JSValue           reject;
+    unsigned  loc_conf_snapshotted:1;  /* r->loc_conf points to pool copy */
+} ngx_js_req_ctx_t;
+
+
+/*
+ * Context stored via ngx_http_set_ctx for the async body-reading path.
+ * Temporarily replaces ngx_js_req_ctx_t in the module-ctx slot; restored
+ * in ngx_js_body_done.
+ */
+typedef struct {
+    JSContext          *ctx;
+    JSRuntime          *rt;
+    ngx_js_worker_t    *w;
+    JSValue             resolve;
+    JSValue             reject;
+    ngx_js_req_ctx_t   *rctx;    /* saved req-ctx; restored in body_done */
 } ngx_js_body_ctx_t;
 
 
@@ -732,7 +744,9 @@ ngx_js_body_done(ngx_http_request_t *r)
     JSValue             body;
 
     bctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
-    ngx_http_set_ctx(r, NULL, ngx_js_http_module);
+    ngx_http_set_ctx(r, bctx->rctx, ngx_js_http_module);  /* restore req ctx */
+
+    bctx->w->current_request = r;
 
     body = ngx_js_collect_body(bctx->ctx, r);
 
@@ -759,6 +773,8 @@ ngx_js_body_done(ngx_http_request_t *r)
      */
     ngx_js_async_check(bctx->w);
     ngx_http_finalize_request(r, NGX_DONE);
+
+    bctx->w->current_request = NULL;
 }
 
 
@@ -817,6 +833,7 @@ ngx_js_request_read_body(JSContext *ctx, JSValueConst this_val,
     bctx->w       = w;
     bctx->resolve = args[0];
     bctx->reject  = args[1];
+    bctx->rctx    = ngx_http_get_module_ctx(r, ngx_js_http_module);
 
     ngx_http_set_ctx(r, bctx, ngx_js_http_module);
 
@@ -824,7 +841,7 @@ ngx_js_request_read_body(JSContext *ctx, JSValueConst this_val,
 
     if (rc == NGX_ERROR || rc >= NGX_HTTP_SPECIAL_RESPONSE) {
         /* bctx is still in pool — body_done was not called, free manually */
-        ngx_http_set_ctx(r, NULL, ngx_js_http_module);
+        ngx_http_set_ctx(r, bctx->rctx, ngx_js_http_module);  /* restore */
         JS_FreeValue(ctx, bctx->resolve);
         JS_FreeValue(ctx, bctx->reject);
         JS_FreeValue(ctx, promise);
@@ -1830,6 +1847,9 @@ ngx_js_sleep_timer_handler(ngx_event_t *ev)
     JSValue                ret;
     JSContext             *job_ctx;
 
+    t->w->current_request = t->w->async_pending
+                            ? t->w->async_pending->r : NULL;
+
     ret = JS_Call(t->ctx, t->resolve, JS_UNDEFINED, 0, NULL);
     JS_FreeValue(t->ctx, ret);
     JS_FreeValue(t->ctx, t->resolve);
@@ -1838,6 +1858,8 @@ ngx_js_sleep_timer_handler(ngx_event_t *ev)
     while (JS_ExecutePendingJob(t->rt, &job_ctx) > 0) { }
 
     ngx_js_async_check(t->w);
+
+    t->w->current_request = NULL;
 }
 
 
@@ -3775,6 +3797,47 @@ ngx_js_async_check(ngx_js_worker_t *w)
 
 
 /* ------------------------------------------------------------------ */
+/* Per-request loc_conf snapshot                                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Allocate a private copy of the r->loc_conf pointer array in r->pool
+ * so that subsequent setters can replace individual module-conf pointers
+ * without affecting other requests.  Idempotent — safe to call many times.
+ *
+ * Individual setters should call this first, then deep-copy their own
+ * module's loc_conf struct and update r->loc_conf[module.ctx_index].
+ *
+ * Must only be called while w->current_request == r.
+ */
+ngx_int_t
+ngx_js_ensure_snapshot(ngx_http_request_t *r)
+{
+    ngx_js_req_ctx_t  *rctx;
+    void             **new_lc;
+    size_t             sz;
+
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    if (rctx == NULL || rctx->loc_conf_snapshotted) {
+        return NGX_OK;
+    }
+
+    sz     = ngx_http_max_module * sizeof(void *);
+    new_lc = ngx_palloc(r->pool, sz);
+    if (new_lc == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(new_lc, r->loc_conf, sz);
+    r->loc_conf = new_lc;
+
+    rctx->loc_conf_snapshotted = 1;
+
+    return NGX_OK;
+}
+
+
+/* ------------------------------------------------------------------ */
 /* Content handler — called by NGINX in each worker process            */
 /* ------------------------------------------------------------------ */
 
@@ -3784,6 +3847,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
     ngx_js_conf_t            *jcf;
     ngx_js_loc_conf_t        *jlcf;
     ngx_js_worker_t          *w;
+    ngx_js_req_ctx_t         *rctx;
     JSContext                *ctx;
     JSValue                   global, registry, fn, req_obj, result;
     ngx_js_request_opaque_t  *req_op;
@@ -3800,6 +3864,13 @@ ngx_js_content_handler(ngx_http_request_t *r)
                       "js: worker runtime not available");
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
+
+    /* Allocate the request-lifetime JS context; lives for the full request */
+    rctx = ngx_pcalloc(r->pool, sizeof(ngx_js_req_ctx_t));
+    if (rctx == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    ngx_http_set_ctx(r, rctx, ngx_js_http_module);
 
     ctx      = w->ctx;
     global   = JS_GetGlobalObject(ctx);
@@ -3867,12 +3938,14 @@ ngx_js_content_handler(ngx_http_request_t *r)
         JS_FreeValue(ctx, nginx_obj);
     }
 
+    w->current_request = r;
     result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
 
     JS_FreeValue(ctx, fn);
 
     /* Synchronous exception (includes interrupt-on-timeout) */
     if (JS_IsException(result)) {
+        w->current_request = NULL;
         w->request_deadline_ms = 0;
         ngx_js_log_exception(ctx, r->connection->log);
         JS_FreeValue(ctx, result);
@@ -3919,6 +3992,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
                 JS_FreeValue(ctx, reason);
                 JS_FreeValue(ctx, result);
                 JS_FreeValue(ctx, req_obj);
+                w->current_request = NULL;
                 w->request_deadline_ms = 0;
                 return NGX_HTTP_INTERNAL_SERVER_ERROR;
             }
@@ -3932,6 +4006,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
                                   "js: another async request already pending");
                     JS_FreeValue(ctx, result);
                     JS_FreeValue(ctx, req_obj);
+                    w->current_request = NULL;
                     w->request_deadline_ms = 0;
                     return NGX_HTTP_INTERNAL_SERVER_ERROR;
                 }
@@ -3940,6 +4015,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
                 if (actx == NULL) {
                     JS_FreeValue(ctx, result);
                     JS_FreeValue(ctx, req_obj);
+                    w->current_request = NULL;
                     w->request_deadline_ms = 0;
                     return NGX_HTTP_INTERNAL_SERVER_ERROR;
                 }
@@ -3953,6 +4029,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
 
                 JS_FreeValue(ctx, req_obj);
                 JS_FreeValue(ctx, result);
+                w->current_request = NULL;  /* request suspended; no JS running */
                 w->request_deadline_ms = 0;
                 return NGX_DONE;
             }
@@ -3971,6 +4048,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
      * pattern is to return the rc to ngx_http_core_content_phase, which
      * calls ngx_http_finalize_request() exactly once.
      */
+    w->current_request = NULL;
     w->request_deadline_ms = 0;
 
     req_op   = JS_GetOpaque(req_obj, ngx_js_request_class_id);

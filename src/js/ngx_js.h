@@ -47,13 +47,25 @@ typedef struct {
  * Workers never share a JSRuntime — QuickJS is not thread-safe.
  */
 typedef struct {
-    JSRuntime           *rt;
-    JSContext           *ctx;
-    ngx_js_async_ctx_t  *async_pending;       /* NULL or one suspended request  */
-    ngx_js_sw_state_t   *local_sw_list;       /* dynamic SWs created post-fork  */
-    uint64_t             request_deadline_ms;  /* 0 = none; CLOCK_MONOTONIC ms   */
-    size_t               baseline_malloc_size; /* rt malloc_size right after fork */
+    JSRuntime               *rt;
+    JSContext               *ctx;
+    ngx_js_async_ctx_t      *async_pending;       /* NULL or one suspended request  */
+    ngx_js_sw_state_t       *local_sw_list;       /* dynamic SWs created post-fork  */
+    uint64_t                 request_deadline_ms;  /* 0 = none; CLOCK_MONOTONIC ms   */
+    size_t                   baseline_malloc_size; /* rt malloc_size right after fork */
+    struct ngx_http_request_s *current_request;    /* non-NULL while JS runs in req  */
 } ngx_js_worker_t;
+
+
+/*
+ * Write-mode flags for COM property setters.
+ * NGX_JS_WRITE_GLOBAL — write to the shared (global) config struct only.
+ * NGX_JS_WRITE_LOCAL  — write to the per-request snapshot only.
+ * NGX_JS_WRITE_BOTH   — write to both (default assignment behaviour).
+ */
+#define NGX_JS_WRITE_GLOBAL  0x01u
+#define NGX_JS_WRITE_LOCAL   0x02u
+#define NGX_JS_WRITE_BOTH    (NGX_JS_WRITE_GLOBAL | NGX_JS_WRITE_LOCAL)
 
 
 /*
@@ -112,6 +124,17 @@ ngx_int_t  ngx_js_pending_server_install_proto(JSContext *ctx);
 /* Content-phase handler; installed in clcf->handler by the JS setter */
 struct ngx_http_request_s;
 ngx_int_t  ngx_js_content_handler(struct ngx_http_request_s *r);
+
+/*
+ * Ensure a per-request snapshot of r->loc_conf exists.
+ * On first call: allocates a private copy of the loc_conf pointer array in
+ * r->pool and marks the request as snapshotted so subsequent calls are
+ * no-ops.  Individual setters deep-copy their own module conf struct after
+ * calling this.
+ * Returns NGX_OK on success or NGX_ERROR on allocation failure.
+ * Must only be called while w->current_request == r.
+ */
+ngx_int_t  ngx_js_ensure_snapshot(struct ngx_http_request_s *r);
 
 /*
  * Inspect the promise of a suspended async request and finalize it if

@@ -300,6 +300,9 @@ ngx_js_timer_handler(ngx_event_t *ev)
     JSValue          ret;
     JSContext       *job_ctx;
 
+    t->w->current_request = t->w->async_pending
+                            ? t->w->async_pending->r : NULL;
+
     /* Resolve the awaited Promise, re-queuing the async body as a microtask */
     ret = JS_Call(t->ctx, t->resolve, JS_UNDEFINED, 0, NULL);
     JS_FreeValue(t->ctx, ret);
@@ -311,6 +314,8 @@ ngx_js_timer_handler(ngx_event_t *ev)
 
     /* Finalize any suspended nginx request whose promise has now settled */
     ngx_js_async_check(t->w);
+
+    t->w->current_request = NULL;
 
     ngx_free(t);
 }
