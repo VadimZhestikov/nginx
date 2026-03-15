@@ -137,6 +137,14 @@ ngx_int_t  ngx_js_content_handler(struct ngx_http_request_s *r);
 ngx_int_t  ngx_js_ensure_snapshot(struct ngx_http_request_s *r);
 
 /*
+ * Ensure the ngx_http_core_loc_conf_t for r has been deep-copied into r->pool.
+ * Calls ngx_js_ensure_snapshot first (idempotent), then copies the core
+ * loc_conf struct so individual fields can be modified per-request without
+ * affecting the shared config.  Subsequent calls are no-ops.
+ */
+ngx_int_t  ngx_js_ensure_core_snapshot(struct ngx_http_request_s *r);
+
+/*
  * Inspect the promise of a suspended async request and finalize it if
  * the promise has settled.  Called from the timer handler in ngx_js_com.c.
  */

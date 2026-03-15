@@ -710,7 +710,8 @@ ngx_js_collect_body(JSContext *ctx, ngx_http_request_t *r)
  * Allocated in r->pool at content-handler entry; lives for the full request.
  */
 typedef struct {
-    unsigned  loc_conf_snapshotted:1;  /* r->loc_conf points to pool copy */
+    unsigned  loc_conf_snapshotted:1;   /* r->loc_conf points to pool copy    */
+    unsigned  core_clcf_snapshotted:1;  /* core loc_conf deep-copied to pool  */
 } ngx_js_req_ctx_t;
 
 
@@ -3832,6 +3833,42 @@ ngx_js_ensure_snapshot(ngx_http_request_t *r)
     r->loc_conf = new_lc;
 
     rctx->loc_conf_snapshotted = 1;
+
+    return NGX_OK;
+}
+
+
+/*
+ * Deep-copy ngx_http_core_loc_conf_t into r->pool so JS setters can modify
+ * per-request fields without affecting concurrent requests.  Calls
+ * ngx_js_ensure_snapshot first; both are idempotent.
+ */
+ngx_int_t
+ngx_js_ensure_core_snapshot(ngx_http_request_t *r)
+{
+    ngx_js_req_ctx_t          *rctx;
+    ngx_http_core_loc_conf_t  *orig, *copy;
+
+    if (ngx_js_ensure_snapshot(r) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    if (rctx == NULL || rctx->core_clcf_snapshotted) {
+        return NGX_OK;
+    }
+
+    orig = r->loc_conf[ngx_http_core_module.ctx_index];
+
+    copy = ngx_palloc(r->pool, sizeof(ngx_http_core_loc_conf_t));
+    if (copy == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(copy, orig, sizeof(ngx_http_core_loc_conf_t));
+
+    r->loc_conf[ngx_http_core_module.ctx_index] = copy;
+    rctx->core_clcf_snapshotted = 1;
 
     return NGX_OK;
 }

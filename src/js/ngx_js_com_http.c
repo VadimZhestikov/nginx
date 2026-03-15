@@ -218,6 +218,8 @@ static JSValue ngx_js_wrap_server(JSContext *ctx,
 
 typedef struct {
     ngx_http_core_loc_conf_t  *clcf;
+    uint32_t                   write_mode;  /* NGX_JS_WRITE_GLOBAL/LOCAL/BOTH */
+    uint32_t                   read_mode;   /* NGX_JS_WRITE_GLOBAL or LOCAL   */
 } ngx_js_location_opaque_t;
 
 
@@ -237,6 +239,39 @@ static JSClassDef ngx_js_location_class = {
     "NginxLocation",
     .finalizer = ngx_js_location_finalizer
 };
+
+
+/*
+ * Parse "global", "local", or "both" into an NGX_JS_WRITE_* bitmask.
+ * Returns NGX_OK on success, NGX_ERROR (with JS exception set) on failure.
+ */
+static ngx_int_t
+ngx_js_parse_rw_mode(JSContext *ctx, JSValueConst mode_val, uint32_t *out)
+{
+    const char  *s;
+    size_t       slen;
+
+    s = JS_ToCStringLen(ctx, &slen, mode_val);
+    if (!s) {
+        return NGX_ERROR;
+    }
+
+    if (slen == 6 && ngx_strncmp(s, "global", 6) == 0) {
+        *out = NGX_JS_WRITE_GLOBAL;
+    } else if (slen == 5 && ngx_strncmp(s, "local", 5) == 0) {
+        *out = NGX_JS_WRITE_LOCAL;
+    } else if (slen == 4 && ngx_strncmp(s, "both", 4) == 0) {
+        *out = NGX_JS_WRITE_BOTH;
+    } else {
+        JS_ThrowTypeError(ctx, "invalid mode \"%s\": expected \"global\", "
+                          "\"local\", or \"both\"", s);
+        JS_FreeCString(ctx, s);
+        return NGX_ERROR;
+    }
+
+    JS_FreeCString(ctx, s);
+    return NGX_OK;
+}
 
 
 /*
@@ -269,13 +304,29 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
     ngx_js_location_opaque_t  *op;
     ngx_http_core_loc_conf_t  *clcf;
+    ngx_js_worker_t           *w;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
     if (!op) {
         return JS_EXCEPTION;
     }
 
-    clcf = op->clcf;
+    /*
+     * Read-mode routing:
+     *   LOCAL (default) — prefer the per-request snapshot when available;
+     *                     falls back to the shared global struct automatically
+     *                     because r->loc_conf[idx] == op->clcf until a snapshot
+     *                     is taken.
+     *   GLOBAL          — always read from the shared struct.
+     */
+    if (op->read_mode & NGX_JS_WRITE_LOCAL) {
+        w = JS_GetContextOpaque(ctx);
+        clcf = (w && w->current_request)
+               ? w->current_request->loc_conf[ngx_http_core_module.ctx_index]
+               : op->clcf;
+    } else {
+        clcf = op->clcf;
+    }
 
     switch (magic) {
     case 0: /* path */
@@ -1178,8 +1229,13 @@ ngx_js_location_set_error_page(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * Core setter — writes to whatever op->clcf points at.  Never called
+ * directly by QuickJS; the ngx_js_location_set wrapper below routes to
+ * this function once or twice (for global and/or local targets).
+ */
 static JSValue
-ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+ngx_js_location_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
     int magic)
 {
     ngx_js_location_opaque_t  *op;
@@ -1695,6 +1751,243 @@ ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 }
 
 
+/*
+ * Write-mode routing wrapper — called by QuickJS for every property
+ * assignment on a NginxLocation object.
+ *
+ * Depending on op->write_mode it invokes ngx_js_location_set_core()
+ * once (global only / local only) or twice (both), temporarily swapping
+ * op->clcf to point at the appropriate target.
+ *
+ * "local" writes deep-copy ngx_http_core_loc_conf_t into r->pool first
+ * (via ngx_js_ensure_core_snapshot); if there is no current request
+ * context the mode falls back to "global".
+ *
+ * The handler setter (magic == 2) always writes globally because it
+ * wires nginx's content-phase dispatch mechanism and must be visible
+ * to all future requests, not just the current one.
+ */
+static JSValue
+ngx_js_location_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_location_opaque_t  *op;
+    ngx_http_core_loc_conf_t  *orig_clcf, *local_clcf;
+    ngx_js_worker_t           *w;
+    uint32_t                   wm;
+    int                        need_global, need_local;
+    JSValue                    ret;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    orig_clcf = op->clcf;
+    wm        = op->write_mode;
+
+    /* handler wires nginx dispatch — always global regardless of write_mode */
+    if (magic == 2) {
+        return ngx_js_location_set_core(ctx, this_val, val, magic);
+    }
+
+    need_global = (wm & NGX_JS_WRITE_GLOBAL) != 0;
+    need_local  = (wm & NGX_JS_WRITE_LOCAL)  != 0;
+
+    local_clcf = NULL;
+
+    if (need_local) {
+        w = JS_GetContextOpaque(ctx);
+
+        if (w && w->current_request) {
+            if (ngx_js_ensure_core_snapshot(w->current_request) != NGX_OK) {
+                return JS_ThrowOutOfMemory(ctx);
+            }
+            local_clcf = w->current_request->loc_conf[
+                             ngx_http_core_module.ctx_index];
+        } else {
+            /* no request context — silently fall back to global */
+            need_local  = 0;
+            need_global = 1;
+        }
+    }
+
+    ret = JS_UNDEFINED;
+
+    if (need_local) {
+        op->clcf = local_clcf;
+        ret = ngx_js_location_set_core(ctx, this_val, val, magic);
+        op->clcf = orig_clcf;
+        if (JS_IsException(ret)) {
+            return ret;
+        }
+        JS_FreeValue(ctx, ret);
+        ret = JS_UNDEFINED;
+    }
+
+    if (need_global) {
+        /* op->clcf already points at the global struct */
+        ret = ngx_js_location_set_core(ctx, this_val, val, magic);
+    }
+
+    return ret;
+}
+
+
+/*
+ * setWriteMode(mode) — sets the default write target for '=' assignments.
+ * mode: "global" | "local" | "both"
+ */
+static JSValue
+ngx_js_location_fn_set_write_mode(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+    uint32_t                   mode;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "setWriteMode: mode argument required");
+    }
+
+    if (ngx_js_parse_rw_mode(ctx, argv[0], &mode) != NGX_OK) {
+        return JS_EXCEPTION;
+    }
+
+    op->write_mode = mode;
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * setReadMode(mode) — sets the default read source for property access.
+ * mode: "global" | "local"
+ * ("both" is accepted but treated as "local" — reads return one value)
+ */
+static JSValue
+ngx_js_location_fn_set_read_mode(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+    uint32_t                   mode;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "setReadMode: mode argument required");
+    }
+
+    if (ngx_js_parse_rw_mode(ctx, argv[0], &mode) != NGX_OK) {
+        return JS_EXCEPTION;
+    }
+
+    op->read_mode = mode;
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * setProperty(name, value[, mode]) — explicit write with an optional mode
+ * override.  Temporarily sets write_mode, invokes the normal setter via
+ * JS_SetPropertyStr (which calls ngx_js_location_set through QuickJS),
+ * then restores the original write_mode.
+ */
+static JSValue
+ngx_js_location_fn_set_property(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+    const char                *name;
+    uint32_t                   saved_mode, mode;
+    int                        rc;
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "setProperty: name and value required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
+
+    saved_mode = op->write_mode;
+
+    if (argc >= 3 && !JS_IsUndefined(argv[2])) {
+        if (ngx_js_parse_rw_mode(ctx, argv[2], &mode) != NGX_OK) {
+            JS_FreeCString(ctx, name);
+            return JS_EXCEPTION;
+        }
+        op->write_mode = mode;
+    }
+
+    rc = JS_SetPropertyStr(ctx, this_val, name, JS_DupValue(ctx, argv[1]));
+    op->write_mode = saved_mode;
+    JS_FreeCString(ctx, name);
+
+    if (rc < 0) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * getProperty(name[, mode]) — explicit read with an optional mode override.
+ */
+static JSValue
+ngx_js_location_fn_get_property(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+    const char                *name;
+    uint32_t                   saved_mode, mode;
+    JSValue                    ret;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "getProperty: name argument required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
+
+    saved_mode = op->read_mode;
+
+    if (argc >= 2 && !JS_IsUndefined(argv[1])) {
+        if (ngx_js_parse_rw_mode(ctx, argv[1], &mode) != NGX_OK) {
+            JS_FreeCString(ctx, name);
+            return JS_EXCEPTION;
+        }
+        op->read_mode = mode;
+    }
+
+    ret = JS_GetPropertyStr(ctx, this_val, name);
+    op->read_mode = saved_mode;
+    JS_FreeCString(ctx, name);
+
+    return ret;
+}
+
+
 static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("path",             ngx_js_location_get, NULL,                 0),
     JS_CGETSET_MAGIC_DEF("root",             ngx_js_location_get, ngx_js_location_set,  1),
@@ -1783,6 +2076,12 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("matchType",                ngx_js_location_get, NULL,                80),
     JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page,
                                                    ngx_js_location_set_error_page),
+
+    /* Per-request snapshot read/write control */
+    JS_CFUNC_DEF("setWriteMode",  1, ngx_js_location_fn_set_write_mode),
+    JS_CFUNC_DEF("setReadMode",   1, ngx_js_location_fn_set_read_mode),
+    JS_CFUNC_DEF("setProperty",   2, ngx_js_location_fn_set_property),
+    JS_CFUNC_DEF("getProperty",   1, ngx_js_location_fn_get_property),
 };
 
 
@@ -1817,7 +2116,9 @@ ngx_js_wrap_location(JSContext *ctx, ngx_http_core_loc_conf_t *clcf)
         return JS_EXCEPTION;
     }
 
-    op->clcf = clcf;
+    op->clcf       = clcf;
+    op->write_mode = NGX_JS_WRITE_GLOBAL; /* default: global writes (backward-compat) */
+    op->read_mode  = NGX_JS_WRITE_GLOBAL; /* default: read from global struct */
 
     obj = JS_NewObjectClass(ctx, ngx_js_location_class_id);
     if (JS_IsException(obj)) {
