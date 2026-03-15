@@ -49,7 +49,7 @@ http {
 }
 EOF
 
-$t->write_file('fetch_handler.js', <<'JS');
+$t->write_file_expand('fetch_handler.js', <<'EOF');
 (function() {
     const locs = nginx.http.servers[0].locations;
     function set(path, fn) {
@@ -91,7 +91,7 @@ function backend201(r) {
 }
 
 /* frontends */
-const PORT = 8080;
+const PORT = %%PORT_8080%%;
 
 async function fetchGet(r) {
     const res = await r.fetch('http://127.0.0.1:' + PORT + '/backend_hello');
@@ -116,7 +116,7 @@ async function fetchPost(r) {
     });
     r.respond(200, {'content-type': 'text/plain'}, res.body);
 }
-JS
+EOF
 
 $t->try_run('no js module')->plan(8);
 

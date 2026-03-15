@@ -68,12 +68,14 @@ JS
 
 $t->run();
 
+my $port = port(8080);
+
 # ---- GET /info/ ----
 my $r0 = http_get('/info/');
-like($r0, qr/"serverAddr":"[^"]+"/,     'serverAddr is a non-empty string');
+like($r0, qr/"serverAddr":"[^"]+"/,       'serverAddr is a non-empty string');
 like($r0, qr/"serverAddr":"127\.0\.0\.1"/, 'serverAddr equals 127.0.0.1');
-like($r0, qr/"serverPort":[1-9]/,       'serverPort > 0');
-like($r0, qr/"serverPort":8080/,        'serverPort equals 8080');
+like($r0, qr/"serverPort":[1-9]/,          'serverPort > 0');
+like($r0, qr/"serverPort":$port/,          "serverPort equals $port");
 like($r0, qr/"requestLength":[1-9]/,    'requestLength > 0 for GET');
 
 # ---- POST /post/ with body ----
@@ -97,6 +99,6 @@ ok($post_len > $get_len, 'POST requestLength > GET requestLength');
 # a second GET — no JS exception should bubble up and break the handler.
 my $r2 = http_get('/info/');
 like($r2, qr/"serverAddr":"127\.0\.0\.1"/, 'serverAddr still correct (read-only)');
-like($r2, qr/"serverPort":8080/,           'serverPort still correct (read-only)');
+like($r2, qr/"serverPort":$port/,          'serverPort still correct (read-only)');
 
 $t->stop();
