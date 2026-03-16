@@ -70,7 +70,8 @@ static JSClassDef  ngx_js_stream_server_class = {
 };
 
 
-/* magic: 0=serverName */
+/* magic: 0=serverName 1=tcpNodelay 2=prereadBufferSize
+ *        3=prereadTimeout 4=resolverTimeout 5=proxyProtocolTimeout */
 static JSValue
 ngx_js_stream_server_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
@@ -88,6 +89,16 @@ ngx_js_stream_server_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 0:   /* serverName */
         return JS_NewStringLen(ctx, (char *) cscf->server_name.data,
                                cscf->server_name.len);
+    case 1:   /* tcpNodelay */
+        return JS_NewBool(ctx, cscf->tcp_nodelay);
+    case 2:   /* prereadBufferSize */
+        return JS_NewInt64(ctx, (int64_t) cscf->preread_buffer_size);
+    case 3:   /* prereadTimeout */
+        return JS_NewInt64(ctx, (int64_t) cscf->preread_timeout);
+    case 4:   /* resolverTimeout */
+        return JS_NewInt64(ctx, (int64_t) cscf->resolver_timeout);
+    case 5:   /* proxyProtocolTimeout */
+        return JS_NewInt64(ctx, (int64_t) cscf->proxy_protocol_timeout);
     }
 
     return JS_UNDEFINED;
@@ -95,7 +106,12 @@ ngx_js_stream_server_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 static const JSCFunctionListEntry  ngx_js_stream_server_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("serverName", ngx_js_stream_server_get, NULL, 0),
+    JS_CGETSET_MAGIC_DEF("serverName",           ngx_js_stream_server_get, NULL, 0),
+    JS_CGETSET_MAGIC_DEF("tcpNodelay",           ngx_js_stream_server_get, NULL, 1),
+    JS_CGETSET_MAGIC_DEF("prereadBufferSize",    ngx_js_stream_server_get, NULL, 2),
+    JS_CGETSET_MAGIC_DEF("prereadTimeout",       ngx_js_stream_server_get, NULL, 3),
+    JS_CGETSET_MAGIC_DEF("resolverTimeout",      ngx_js_stream_server_get, NULL, 4),
+    JS_CGETSET_MAGIC_DEF("proxyProtocolTimeout", ngx_js_stream_server_get, NULL, 5),
 };
 
 
