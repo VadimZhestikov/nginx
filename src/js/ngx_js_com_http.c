@@ -2248,6 +2248,19 @@ typedef struct {
 } ngx_js_loc_entry_t;
 
 
+#if (NGX_PCRE)
+/*
+ * One entry in the ordered regex location list.
+ * caseless mirrors the ~* modifier; dynamic marks JS-added entries.
+ */
+typedef struct {
+    ngx_http_core_loc_conf_t  *clcf;
+    unsigned                   caseless:1;  /* 1 = ~* (case-insensitive) */
+    unsigned                   dynamic:1;   /* 1 = added by addLocation */
+} ngx_js_regex_entry_t;
+#endif
+
+
 typedef struct {
     ngx_http_core_srv_conf_t  *cscf;
     ngx_cycle_t               *cycle;
@@ -2272,11 +2285,12 @@ typedef struct {
      *              snapshotted at wrap time + dynamic ones appended at add
      *              time).  Used as the source for BST rebuilds.
      * regex_locs  — ordered list of ALL regex locations (static + dynamic).
+     *              Element type: ngx_js_regex_entry_t (NGX_PCRE only).
      */
     ngx_pool_t                *dyn_pool;
     ngx_pool_t                *tree_pool;
     ngx_array_t                prefix_locs;  /* ngx_js_loc_entry_t[] */
-    ngx_array_t                regex_locs;   /* ngx_http_core_loc_conf_t *[] */
+    ngx_array_t                regex_locs;   /* ngx_js_regex_entry_t[] */
 } ngx_js_server_opaque_t;
 
 
@@ -2575,7 +2589,9 @@ ngx_js_rebuild_loc_tree(ngx_js_server_opaque_t *op, ngx_log_t *log)
     ngx_http_location_tree_node_t *new_root;
     ngx_http_core_loc_conf_t      *root_clcf;
 #if (NGX_PCRE)
-    ngx_http_core_loc_conf_t     **rloc_arr, **rp;
+    ngx_http_core_loc_conf_t     **rloc_arr;
+    ngx_js_regex_entry_t          *re;
+    ngx_uint_t                     ri;
 #endif
 
     pool = ngx_create_pool(4096, log);
@@ -2645,7 +2661,7 @@ swap:
     root_clcf->static_locations = new_root;
 
 #if (NGX_PCRE)
-    /* Rebuild regex_locations array */
+    /* Rebuild regex_locations array from op->regex_locs[] */
     if (op->regex_locs.nelts > 0) {
 
         rloc_arr = ngx_palloc(pool,
@@ -2655,9 +2671,10 @@ swap:
             return NGX_ERROR;
         }
 
-        rp = (ngx_http_core_loc_conf_t **) op->regex_locs.elts;
-        ngx_memcpy(rloc_arr, rp,
-                   op->regex_locs.nelts * sizeof(ngx_http_core_loc_conf_t *));
+        re = (ngx_js_regex_entry_t *) op->regex_locs.elts;
+        for (ri = 0; ri < op->regex_locs.nelts; ri++) {
+            rloc_arr[ri] = re[ri].clcf;
+        }
         rloc_arr[op->regex_locs.nelts] = NULL;
 
         root_clcf->regex_locations = rloc_arr;
@@ -2705,12 +2722,20 @@ ngx_js_find_prefix_clcf(ngx_js_server_opaque_t *op, const char *path)
 
 
 /*
- * srv.addLocation(pattern [, {template: '/existing-path'}])
+ * srv.addLocation(pattern [, opts])
  *
  * Supported pattern prefixes (whitespace after prefix is optional):
  *   "= /path"   — exact match
  *   "^~ /path"  — preferential prefix (disables regex scan on match)
+ *   "~ /regex"  — case-sensitive PCRE regex
+ *   "~* /regex" — case-insensitive PCRE regex
  *   "/path"     — normal prefix
+ *
+ * opts:
+ *   template: '/existing-path'  — copy settings from an existing location
+ *   index: N                    — regex only: insert at position N in the
+ *                                 regex array (0 = first checked, default
+ *                                 = append at end)
  *
  * Returns the new NginxLocation object so the caller can set
  *   loc.handler, loc.root, etc. immediately.
@@ -2723,11 +2748,18 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
     ngx_http_core_loc_conf_t  *new_clcf, *tmpl_clcf, *srv_clcf;
     ngx_js_loc_conf_t         *jlcf;
     ngx_js_loc_entry_t        *entry;
+#if (NGX_PCRE)
+    ngx_js_regex_entry_t      *re_entry;
+#endif
     JSValue                    opts, tmpl_val;
     const char                *pat_str, *tmpl_path;
     ngx_str_t                  name;
     u_char                    *p;
     int                        exact_match, noregex;
+#if (NGX_PCRE)
+    int                        is_regex, caseless;
+    ngx_int_t                  regex_index;  /* insert position; -1 = append */
+#endif
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
     if (!op) {
@@ -2755,6 +2787,10 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
 
     exact_match = 0;
     noregex     = 0;
+#if (NGX_PCRE)
+    is_regex    = 0;
+    caseless    = 0;
+#endif
 
     /* Detect "= " prefix */
     if (p[0] == '=' && p[1] == ' ') {
@@ -2768,12 +2804,26 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
         p += 3;
         while (*p == ' ') { p++; }
 
-    /* Detect "~" or "~*" — not supported yet */
+#if (NGX_PCRE)
+    /* Detect "~* " prefix — case-insensitive regex */
+    } else if (p[0] == '~' && p[1] == '*' && p[2] == ' ') {
+        is_regex = 1;
+        caseless = 1;
+        p += 3;
+        while (*p == ' ') { p++; }
+
+    /* Detect "~ " prefix — case-sensitive regex */
+    } else if (p[0] == '~' && p[1] == ' ') {
+        is_regex = 1;
+        caseless = 0;
+        p += 2;
+        while (*p == ' ') { p++; }
+#else
     } else if (p[0] == '~') {
         JS_FreeCString(ctx, pat_str);
         return JS_ThrowTypeError(ctx,
-            "addLocation: regex locations (~, ~*) not yet supported;"
-            " use a prefix or exact pattern");
+            "addLocation: regex locations require PCRE support");
+#endif
     }
 
     name.len  = ngx_strlen(p);
@@ -2788,12 +2838,14 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
 
     JS_FreeCString(ctx, pat_str);
 
-    /* Look up optional template */
+    /* Look up optional template (and index for regex locations) */
     tmpl_clcf = NULL;
+#if (NGX_PCRE)
+    regex_index = -1;  /* default: append at end */
+#endif
 
     if (argc >= 2 && JS_IsObject(argv[1])) {
-        opts = argv[1];
-
+        opts     = argv[1];
         tmpl_val = JS_GetPropertyStr(ctx, opts, "template");
         if (!JS_IsUndefined(tmpl_val) && !JS_IsNull(tmpl_val)) {
             tmpl_path = JS_ToCString(ctx, tmpl_val);
@@ -2803,6 +2855,18 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
             }
         }
         JS_FreeValue(ctx, tmpl_val);
+#if (NGX_PCRE)
+        {
+            JSValue  idx_val = JS_GetPropertyStr(ctx, opts, "index");
+            if (!JS_IsUndefined(idx_val)) {
+                int32_t  iv;
+                if (JS_ToInt32(ctx, &iv, idx_val) == 0) {
+                    regex_index = (ngx_int_t) iv;
+                }
+            }
+            JS_FreeValue(ctx, idx_val);
+        }
+#endif
     }
 
     /* Server's default (implicit "/") loc_conf — used as fallback template */
@@ -2828,13 +2892,48 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
     new_clcf->named        = 0;
     new_clcf->noname       = 0;
 #if (NGX_PCRE)
-    new_clcf->regex        = NULL;
+    new_clcf->regex        = NULL;  /* set below for regex locations */
 #endif
     new_clcf->static_locations = NULL;
 #if (NGX_PCRE)
     new_clcf->regex_locations  = NULL;
 #endif
     new_clcf->handler = NULL;
+
+#if (NGX_PCRE)
+    /* Compile the regex pattern for ~ and ~* locations */
+    if (is_regex) {
+        ngx_regex_compile_t   rc;
+        u_char                err_buf[128];
+        ngx_http_regex_t     *re;
+
+        ngx_memzero(&rc, sizeof(rc));
+        rc.pattern  = name;
+        rc.pool     = op->dyn_pool;
+        rc.options  = caseless ? NGX_REGEX_CASELESS : 0;
+        rc.err.data = err_buf;
+        rc.err.len  = sizeof(err_buf) - 1;
+
+        if (ngx_regex_compile(&rc) != NGX_OK) {
+            return JS_ThrowInternalError(ctx,
+                "addLocation: regex compile failed: %*s",
+                (int) rc.err.len, rc.err.data);
+        }
+
+        re = ngx_palloc(op->dyn_pool, sizeof(ngx_http_regex_t));
+        if (re == NULL) {
+            return JS_EXCEPTION;
+        }
+
+        re->regex      = rc.regex;
+        re->ncaptures  = 0;       /* no variable captures for JS routing */
+        re->variables  = NULL;
+        re->nvariables = 0;
+        re->name       = name;
+
+        new_clcf->regex = re;
+    }
+#endif
 
     /* Fresh loc_conf pointer array (shared module conf pointers, except JS).
      * Source priority: template's loc_conf → server ctx loc_conf.
@@ -2877,21 +2976,65 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
     jlcf->handler_idx = -1;
     new_clcf->loc_conf[ngx_js_http_module.ctx_index] = jlcf;
 
-    /* Append to prefix_locs[] */
-    entry = ngx_array_push(&op->prefix_locs);
-    if (entry == NULL) {
-        return JS_EXCEPTION;
-    }
+#if (NGX_PCRE)
+    if (is_regex) {
+        ngx_int_t  insert_at;
+        ngx_uint_t nelts;
 
-    entry->clcf     = new_clcf;
-    entry->is_exact = exact_match;
-    entry->dynamic  = 1;
+        /* Grow the array by one slot at the END, then memmove if needed */
+        re_entry = ngx_array_push(&op->regex_locs);
+        if (re_entry == NULL) {
+            return JS_EXCEPTION;
+        }
 
-    /* Rebuild the live location tree */
-    if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
-        op->prefix_locs.nelts--;  /* roll back the push */
-        return JS_EXCEPTION;
+        nelts = op->regex_locs.nelts;   /* after push, so >= 1 */
+
+        /* Clamp index: negative or beyond nelts-1 → append (already there) */
+        if (regex_index < 0 || regex_index >= (ngx_int_t)(nelts - 1)) {
+            insert_at = (ngx_int_t)(nelts - 1);  /* last slot = appended */
+        } else {
+            insert_at = regex_index;
+        }
+
+        if (insert_at < (ngx_int_t)(nelts - 1)) {
+            /* Shift elements [insert_at .. nelts-2] forward by one */
+            re_entry = (ngx_js_regex_entry_t *) op->regex_locs.elts;
+            ngx_memmove(&re_entry[insert_at + 1], &re_entry[insert_at],
+                        (nelts - 1 - (ngx_uint_t) insert_at)
+                        * sizeof(ngx_js_regex_entry_t));
+            re_entry = &re_entry[insert_at];
+        }
+        /* re_entry now points to the slot we own */
+        re_entry->clcf     = new_clcf;
+        re_entry->caseless = caseless;
+        re_entry->dynamic  = 1;
+
+        /* Rebuild (regex_locations only needs pool; BST unchanged but cheap) */
+        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+            op->regex_locs.nelts--;   /* roll back */
+            return JS_EXCEPTION;
+        }
+
+    } else {
+#endif
+        /* Append to prefix_locs[] */
+        entry = ngx_array_push(&op->prefix_locs);
+        if (entry == NULL) {
+            return JS_EXCEPTION;
+        }
+
+        entry->clcf     = new_clcf;
+        entry->is_exact = exact_match;
+        entry->dynamic  = 1;
+
+        /* Rebuild the live location tree */
+        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+            op->prefix_locs.nelts--;  /* roll back the push */
+            return JS_EXCEPTION;
+        }
+#if (NGX_PCRE)
     }
+#endif
 
     return ngx_js_wrap_location(ctx, new_clcf);
 }
@@ -2900,14 +3043,18 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
 /*
  * srv.removeLocation(pattern)
  *
- * Removes the location matching pattern from the live BST.
- * pattern syntax is the same as addLocation:
+ * Removes the location matching pattern from the live BST / regex array.
+ * Pattern syntax is the same as addLocation:
  *   "= /path"   — exact match
  *   "^~ /path"  — preferential prefix
+ *   "~ /regex"  — case-sensitive regex
+ *   "~* /regex" — case-insensitive regex
  *   "/path"     — normal prefix
  *
+ * Regex removal matches by pattern string only (first match wins if the
+ * same pattern appears more than once).
+ *
  * Returns true if a location was found and removed, false otherwise.
- * Only prefix/exact locations can be removed here (regex support is future).
  */
 static JSValue
 ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
@@ -2920,6 +3067,10 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
     ngx_str_t                  name;
     ngx_uint_t                 i;
     int                        exact_match;
+#if (NGX_PCRE)
+    int                        is_regex;
+    ngx_js_regex_entry_t      *re;
+#endif
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
     if (!op) {
@@ -2936,11 +3087,14 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    /* Trim leading whitespace and parse modifier — same logic as addLocation */
+    /* Trim leading whitespace and parse modifier */
     p = (u_char *) pat_str;
     while (*p == ' ') { p++; }
 
     exact_match = 0;
+#if (NGX_PCRE)
+    is_regex    = 0;
+#endif
 
     if (p[0] == '=' && p[1] == ' ') {
         exact_match = 1;
@@ -2948,20 +3102,68 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
         while (*p == ' ') { p++; }
 
     } else if (p[0] == '^' && p[1] == '~' && p[2] == ' ') {
-        /* noregex flag doesn't affect removal matching — just strip prefix */
         p += 3;
         while (*p == ' ') { p++; }
 
+#if (NGX_PCRE)
+    } else if (p[0] == '~' && p[1] == '*' && p[2] == ' ') {
+        is_regex = 1;
+        p += 3;
+        while (*p == ' ') { p++; }
+
+    } else if (p[0] == '~' && p[1] == ' ') {
+        is_regex = 1;
+        p += 2;
+        while (*p == ' ') { p++; }
+#else
     } else if (p[0] == '~') {
         JS_FreeCString(ctx, pat_str);
         return JS_ThrowTypeError(ctx,
-            "removeLocation: regex locations not yet supported");
+            "removeLocation: regex locations require PCRE support");
+#endif
     }
 
     name.len  = ngx_strlen(p);
     name.data = (u_char *) p;
 
-    /* Find matching entry in prefix_locs[] */
+#if (NGX_PCRE)
+    if (is_regex) {
+        /* Search regex_locs[] by pattern name string */
+        re = (ngx_js_regex_entry_t *) op->regex_locs.elts;
+
+        for (i = 0; i < op->regex_locs.nelts; i++) {
+            if (re[i].clcf->name.len == name.len
+                && ngx_memcmp(re[i].clcf->name.data,
+                              name.data, name.len) == 0)
+            {
+                break;
+            }
+        }
+
+        JS_FreeCString(ctx, pat_str);
+
+        if (i == op->regex_locs.nelts) {
+            return JS_FALSE;   /* not found */
+        }
+
+        /* Splice out */
+        if (i < op->regex_locs.nelts - 1) {
+            ngx_memmove(&re[i], &re[i + 1],
+                        (op->regex_locs.nelts - i - 1)
+                        * sizeof(ngx_js_regex_entry_t));
+        }
+        op->regex_locs.nelts--;
+
+        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+            op->regex_locs.nelts++;
+            return JS_EXCEPTION;
+        }
+
+        return JS_TRUE;
+    }
+#endif
+
+    /* Prefix / exact-match path */
     e = op->prefix_locs.elts;
 
     for (i = 0; i < op->prefix_locs.nelts; i++) {
@@ -3613,7 +3815,12 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
     }
 
     if (ngx_array_init(&op->regex_locs, op->dyn_pool, 4,
-                       sizeof(ngx_http_core_loc_conf_t *)) != NGX_OK)
+#if (NGX_PCRE)
+                       sizeof(ngx_js_regex_entry_t)
+#else
+                       sizeof(void *)
+#endif
+                       ) != NGX_OK)
     {
         ngx_destroy_pool(op->dyn_pool);
         js_free(ctx, op);
@@ -3624,7 +3831,7 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
         ngx_http_core_loc_conf_t  *root_clcf;
 #if (NGX_PCRE)
         ngx_http_core_loc_conf_t **rloc;
-        ngx_http_core_loc_conf_t **rp;
+        ngx_js_regex_entry_t      *re;
 #endif
 
         root_clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
@@ -3633,13 +3840,15 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
 #if (NGX_PCRE)
         if (root_clcf->regex_locations) {
             for (rloc = root_clcf->regex_locations; *rloc; rloc++) {
-                rp = ngx_array_push(&op->regex_locs);
-                if (rp == NULL) {
+                re = ngx_array_push(&op->regex_locs);
+                if (re == NULL) {
                     ngx_destroy_pool(op->dyn_pool);
                     js_free(ctx, op);
                     return JS_EXCEPTION;
                 }
-                *rp = *rloc;
+                re->clcf     = *rloc;
+                re->caseless = 0;   /* can't determine from compiled handle */
+                re->dynamic  = 0;
             }
         }
 #endif
