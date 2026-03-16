@@ -3954,6 +3954,213 @@ ngx_js_server_get_ssl(JSContext *ctx, JSValueConst this_val)
 }
 
 
+/*
+ * srv.clone(newName)
+ *
+ * Creates an independent deep copy of this server under a new server_name.
+ *
+ * Unlike nginx.http.addServer({template}) which starts with empty locations,
+ * clone() copies the full current location tree — prefix, regex, and named
+ * locations (both static and dynamic) — so the new server inherits all
+ * existing handlers and configuration.
+ *
+ * The copy is structural: each location in the clone initially points to
+ * the same ngx_http_core_loc_conf_t as the source (same handler, same
+ * config values).  addLocation() on the clone creates new, independent
+ * entries; modifying shared locations via .handler = fn affects both
+ * servers.
+ *
+ * The clone is added to every ngx_js_vhost_entries[] slot.  Call
+ * nginx.http.rebuildVhostDispatch() afterwards to activate routing.
+ *
+ * Returns the new NginxServer JS wrapper.
+ */
+static JSValue
+ngx_js_server_fn_clone(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t     *src_op, *new_op;
+    ngx_http_core_srv_conf_t   *src_cscf, *new_cscf;
+    ngx_http_core_loc_conf_t   *src_root, *new_root;
+    ngx_http_conf_ctx_t        *new_ctx;
+    void                      **new_loc_conf, **new_srv_conf;
+    ngx_http_server_name_t     *sn;
+    ngx_js_addr_entry_t        *entry;
+    ngx_http_core_srv_conf_t  **new_servers;
+    ngx_cycle_t                *cycle;
+    JSValue                     srv_obj, global, nginx_obj, http_obj;
+    JSValue                     servers_arr, lv;
+    const char                 *name_str;
+    size_t                      name_len;
+    uint32_t                    servers_len;
+    ngx_uint_t                  i;
+
+    src_op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!src_op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "clone: new server name required");
+    }
+
+    name_str = JS_ToCStringLen(ctx, &name_len, argv[0]);
+    if (name_str == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    src_cscf = src_op->cscf;
+    src_root = src_cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+    cycle    = src_op->cycle;
+
+    /* allocate new cscf as a shallow copy */
+    new_cscf = ngx_palloc(cycle->pool, sizeof(ngx_http_core_srv_conf_t));
+    if (new_cscf == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    *new_cscf = *src_cscf;
+
+    /* new loc_conf[]: copy all module slots */
+    new_loc_conf = ngx_palloc(cycle->pool,
+                              sizeof(void *) * ngx_http_max_module);
+    if (new_loc_conf == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(new_loc_conf, src_cscf->ctx->loc_conf,
+               sizeof(void *) * ngx_http_max_module);
+
+    /*
+     * new root clcf: copy source root INCLUDING its current location-tree
+     * pointers (static_locations, regex_locations).  ngx_js_wrap_server
+     * will snapshot these into new_op->prefix_locs / regex_locs /
+     * named_locs, and the subsequent ngx_js_rebuild_loc_tree call will
+     * replace them with an independent fresh BST.
+     */
+    new_root = ngx_palloc(cycle->pool, sizeof(ngx_http_core_loc_conf_t));
+    if (new_root == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    *new_root = *src_root;
+    new_root->loc_conf = new_loc_conf;
+    new_loc_conf[ngx_http_core_module.ctx_index] = new_root;
+
+    /* new srv_conf[]: copy all module slots, override core slot */
+    new_srv_conf = ngx_palloc(cycle->pool,
+                              sizeof(void *) * ngx_http_max_module);
+    if (new_srv_conf == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(new_srv_conf, src_cscf->ctx->srv_conf,
+               sizeof(void *) * ngx_http_max_module);
+    new_srv_conf[ngx_http_core_module.ctx_index] = new_cscf;
+
+    /* wire up the new conf context */
+    new_ctx = ngx_palloc(cycle->pool, sizeof(ngx_http_conf_ctx_t));
+    if (new_ctx == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    new_ctx->main_conf = src_cscf->ctx->main_conf;
+    new_ctx->srv_conf  = new_srv_conf;
+    new_ctx->loc_conf  = new_loc_conf;
+    new_cscf->ctx = new_ctx;
+
+    /* server_names: fresh array with just the new name */
+    if (ngx_array_init(&new_cscf->server_names, cycle->pool, 1,
+                       sizeof(ngx_http_server_name_t)) != NGX_OK)
+    {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    sn = ngx_array_push(&new_cscf->server_names);
+    if (sn == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memzero(sn, sizeof(ngx_http_server_name_t));
+    sn->name.len  = name_len;
+    sn->name.data = ngx_pnalloc(cycle->pool, name_len);
+    if (sn->name.data == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(sn->name.data, name_str, name_len);
+    sn->server = new_cscf;
+
+    JS_FreeCString(ctx, name_str);
+
+    /*
+     * Wrap: ngx_js_wrap_server snapshots new_root->static_locations
+     * (= source's current BST), new_root->regex_locations, and
+     * new_cscf->named_locations into the new opaque's snapshot arrays.
+     */
+    srv_obj = ngx_js_wrap_server(ctx, new_cscf, cycle);
+    if (JS_IsException(srv_obj)) {
+        return srv_obj;
+    }
+
+    /*
+     * Rebuild the location tree so the clone has its own independent BST,
+     * regex array, and named_locations pointer — not sharing with source.
+     */
+    new_op = JS_GetOpaque(srv_obj, ngx_js_server_class_id);
+    if (new_op != NULL
+        && ngx_js_rebuild_loc_tree(new_op, cycle->log) != NGX_OK)
+    {
+        JS_FreeValue(ctx, srv_obj);
+        return JS_ThrowInternalError(ctx, "clone: rebuild_loc_tree failed");
+    }
+
+    /* ensure nnames is populated for removeServer() in worker context */
+    if (new_op != NULL && new_op->nnames == 0 && sn->name.len > 0) {
+        new_op->names = ngx_palloc(cycle->pool, sizeof(ngx_str_t));
+        if (new_op->names != NULL) {
+            new_op->names[0] = sn->name;
+            new_op->nnames   = 1;
+        }
+    }
+
+    /* add new_cscf to every vhost dispatch entry */
+    for (i = 0; i < ngx_js_vhost_nentries; i++) {
+        entry = &ngx_js_vhost_entries[i];
+        new_servers = ngx_palloc(cycle->pool,
+                         (entry->nservers + 1)
+                         * sizeof(ngx_http_core_srv_conf_t *));
+        if (new_servers == NULL) {
+            JS_FreeValue(ctx, srv_obj);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+        ngx_memcpy(new_servers, entry->servers,
+                   entry->nservers * sizeof(ngx_http_core_srv_conf_t *));
+        new_servers[entry->nservers] = new_cscf;
+        entry->servers  = new_servers;
+        entry->nservers++;
+    }
+
+    /* append to nginx.http.servers[] */
+    global     = JS_GetGlobalObject(ctx);
+    nginx_obj  = JS_GetPropertyStr(ctx, global, "nginx");
+    http_obj   = JS_GetPropertyStr(ctx, nginx_obj, "http");
+    servers_arr = JS_GetPropertyStr(ctx, http_obj, "servers");
+    lv = JS_GetPropertyStr(ctx, servers_arr, "length");
+    JS_ToUint32(ctx, &servers_len, lv);
+    JS_FreeValue(ctx, lv);
+    JS_SetPropertyUint32(ctx, servers_arr, servers_len,
+                         JS_DupValue(ctx, srv_obj));
+    JS_FreeValue(ctx, servers_arr);
+    JS_FreeValue(ctx, http_obj);
+    JS_FreeValue(ctx, nginx_obj);
+    JS_FreeValue(ctx, global);
+
+    return srv_obj;
+}
+
+
 static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("name",                     ngx_js_server_get,                       NULL,              0),
     JS_CGETSET_MAGIC_DEF("root",                     ngx_js_server_get,                       ngx_js_server_set, 1),
@@ -3972,6 +4179,7 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_DEF       ("ssl",                      ngx_js_server_get_ssl,                   NULL),
     JS_CFUNC_DEF         ("addLocation",              1, ngx_js_server_fn_add_location),
     JS_CFUNC_DEF         ("removeLocation",           1, ngx_js_server_fn_remove_location),
+    JS_CFUNC_DEF         ("clone",                    1, ngx_js_server_fn_clone),
 };
 
 
