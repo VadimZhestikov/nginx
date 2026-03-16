@@ -63,8 +63,10 @@ extern JSClassID  ngx_js_scgi_class_id;         /* scgi loc conf         (Stage 
 extern JSClassID  ngx_js_uwsgi_class_id;        /* uwsgi loc conf        (Stage 13) */
 extern JSClassID  ngx_js_mirror_class_id;       /* mirror loc conf       (Stage 13) */
 extern JSClassID  ngx_js_events_class_id;       /* nginx.events          (Stage 14) */
-extern JSClassID  ngx_js_socket_class_id;           /* nginx.createSocket()  (Stage 52) */
-extern JSClassID  ngx_js_http_listener_class_id;   /* nginx.http.attach()   (Stage 52) */
+extern JSClassID  ngx_js_socket_class_id;             /* nginx.createSocket()     (Stage 52) */
+extern JSClassID  ngx_js_http_listener_class_id;     /* nginx.http.attach()      (Stage 52) */
+extern JSClassID  ngx_js_stream_server_class_id;     /* nginx.stream.servers[]   (Stage 52G) */
+extern JSClassID  ngx_js_stream_listener_class_id;   /* nginx.stream.attach()    (Stage 52G) */
 
 
 /*
@@ -193,6 +195,10 @@ ngx_int_t  ngx_js_socket_install(JSContext *ctx, JSValue nginx_obj);
 ngx_int_t  ngx_js_listener_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_listener_install_proto(JSContext *ctx);
 ngx_int_t  ngx_js_listener_install(JSContext *ctx, JSValue http_obj);
+ngx_int_t  ngx_js_stream_listener_register_classes(JSRuntime *rt);
+ngx_int_t  ngx_js_stream_listener_install_protos(JSContext *ctx);
+ngx_int_t  ngx_js_stream_install(JSContext *ctx, JSValue nginx_obj,
+    ngx_cycle_t *cycle);
 
 
 /*
