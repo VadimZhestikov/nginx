@@ -103,8 +103,77 @@ ngx_js_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+/* ------------------------------------------------------------------ */
+/* listener.addServer(srv) — Phase C implementation                    */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_listener_add_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_listener_opaque_t      *op;
+    ngx_js_http_listener_state_t  *st;
+    ngx_http_core_srv_conf_t      *cscf;
+    ngx_cycle_t                   *cycle;
+
+    /* Phase C: pre-fork only */
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "listener.addServer: post-fork not yet supported");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_http_listener_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->handle >= NGX_JS_LISTENER_REG_MAX
+        || ngx_js_listener_reg[op->handle] == NULL)
+    {
+        return JS_ThrowInternalError(ctx, "NginxHttpListener: invalid handle");
+    }
+
+    st = ngx_js_listener_reg[op->handle];
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "listener.addServer: NginxServer argument required");
+    }
+
+    cscf = ngx_js_server_get_cscf(argv[0], &cycle);
+    if (cscf == NULL) {
+        return JS_ThrowTypeError(ctx,
+            "listener.addServer: argument must be a NginxServer object");
+    }
+
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx,
+            "listener.addServer: server has no associated cycle");
+    }
+
+    if (st->activated) {
+        return JS_ThrowInternalError(ctx,
+            "listener.addServer: listener already activated");
+    }
+
+    /* Wire the cscf into both the state and the routing structures */
+    st->default_server           = cscf;
+    st->addr.conf.default_server = cscf;
+
+    if (ngx_js_listener_activate(st, cycle) != NGX_OK) {
+        st->default_server           = NULL;
+        st->addr.conf.default_server = NULL;
+        return JS_ThrowInternalError(ctx,
+            "listener.addServer: activation failed");
+    }
+
+    return JS_DupValue(ctx, argv[0]);
+}
+
+
 static const JSCFunctionListEntry  ngx_js_listener_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("address", ngx_js_listener_get, NULL, 0),
+    JS_CGETSET_MAGIC_DEF("address",   ngx_js_listener_get,    NULL, 0),
+    JS_CFUNC_DEF(        "addServer", 1, ngx_js_listener_add_server),
 };
 
 

@@ -3918,6 +3918,30 @@ static JSClassDef ngx_js_server_class = {
 };
 
 
+/* ------------------------------------------------------------------ */
+/* Public accessor — Stage 52 Phase C                                  */
+/* Returns the cscf* from a NginxServer JS object, NULL on failure.    */
+/* If cycle_out is non-NULL, *cycle_out is set to op->cycle.           */
+/* ------------------------------------------------------------------ */
+
+ngx_http_core_srv_conf_t *
+ngx_js_server_get_cscf(JSValueConst srv, ngx_cycle_t **cycle_out)
+{
+    ngx_js_server_opaque_t  *op;
+
+    op = JS_GetOpaque(srv, ngx_js_server_class_id);
+    if (op == NULL) {
+        return NULL;
+    }
+
+    if (cycle_out != NULL) {
+        *cycle_out = op->cycle;
+    }
+
+    return op->cscf;
+}
+
+
 /*
  * Magic values for ngx_js_server_get / ngx_js_server_set:
  *   0 — name                    (r/o: first server_name, or "" if none)

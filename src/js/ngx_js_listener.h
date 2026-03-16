@@ -96,5 +96,14 @@ ngx_int_t  ngx_js_listener_install(JSContext *ctx, JSValue http_obj);
 ngx_int_t  ngx_js_listener_activate(ngx_js_http_listener_state_t *st,
     ngx_cycle_t *cycle);
 
+/*
+ * Extract the ngx_http_core_srv_conf_t* from a NginxServer JS object.
+ * Returns NULL if val is not a NginxServer.
+ * If cycle_out is non-NULL, *cycle_out receives the server's cycle pointer.
+ * Stage 52 Phase C — implemented in ngx_js_com_http.c.
+ */
+ngx_http_core_srv_conf_t *ngx_js_server_get_cscf(JSValueConst srv,
+    ngx_cycle_t **cycle_out);
+
 
 #endif /* _NGX_JS_LISTENER_H_INCLUDED_ */
