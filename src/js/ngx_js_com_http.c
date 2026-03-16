@@ -2838,7 +2838,48 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
 
     JS_FreeCString(ctx, pat_str);
 
-    /* Look up optional template (and index for regex locations) */
+    /*
+     * Duplicate detection: if a location with the same name (and same
+     * is_exact / regex type) already exists, return the existing wrapper
+     * rather than adding a second entry.  This makes addLocation idempotent
+     * — calling it twice safely returns the same location object.
+     */
+#if (NGX_PCRE)
+    if (is_regex) {
+        ngx_js_regex_entry_t  *dup_re;
+        ngx_uint_t             di;
+
+        dup_re = (ngx_js_regex_entry_t *) op->regex_locs.elts;
+        for (di = 0; di < op->regex_locs.nelts; di++) {
+            if (dup_re[di].clcf->name.len == name.len
+                && ngx_memcmp(dup_re[di].clcf->name.data,
+                              name.data, name.len) == 0)
+            {
+                return ngx_js_wrap_location(ctx, dup_re[di].clcf);
+            }
+        }
+    } else {
+#endif
+    {
+        ngx_js_loc_entry_t  *dup_e;
+        ngx_uint_t           di;
+
+        dup_e = (ngx_js_loc_entry_t *) op->prefix_locs.elts;
+        for (di = 0; di < op->prefix_locs.nelts; di++) {
+            if (dup_e[di].clcf->name.len == name.len
+                && dup_e[di].is_exact == (unsigned) exact_match
+                && ngx_memcmp(dup_e[di].clcf->name.data,
+                              name.data, name.len) == 0)
+            {
+                return ngx_js_wrap_location(ctx, dup_e[di].clcf);
+            }
+        }
+    }
+#if (NGX_PCRE)
+    }
+#endif
+
+    /* Look up optional template (and ordering for regex locations) */
     tmpl_clcf = NULL;
 #if (NGX_PCRE)
     regex_index = -1;  /* default: append at end */
@@ -2856,15 +2897,70 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
         }
         JS_FreeValue(ctx, tmpl_val);
 #if (NGX_PCRE)
+        /*
+         * index: N — absolute insert position (0 = first checked)
+         * before: pattern — insert before the named regex location
+         * after:  pattern — insert after  the named regex location
+         * (before/after are ignored when index is also given)
+         */
         {
-            JSValue  idx_val = JS_GetPropertyStr(ctx, opts, "index");
+            JSValue  idx_val    = JS_GetPropertyStr(ctx, opts, "index");
+            JSValue  before_val = JS_GetPropertyStr(ctx, opts, "before");
+            JSValue  after_val  = JS_GetPropertyStr(ctx, opts, "after");
+
             if (!JS_IsUndefined(idx_val)) {
                 int32_t  iv;
                 if (JS_ToInt32(ctx, &iv, idx_val) == 0) {
                     regex_index = (ngx_int_t) iv;
                 }
+            } else {
+                /* before/after: find the named regex entry */
+                JSValue      rel_val = !JS_IsUndefined(before_val)
+                                       ? before_val : after_val;
+                int          is_after = !JS_IsUndefined(after_val)
+                                        && JS_IsUndefined(before_val);
+
+                if (!JS_IsUndefined(rel_val)) {
+                    const char           *rel_str;
+                    const u_char         *rp;
+                    ngx_js_regex_entry_t *re_arr;
+                    ngx_uint_t            ri;
+                    size_t                rlen;
+
+                    rel_str = JS_ToCString(ctx, rel_val);
+                    if (rel_str) {
+                        rp = (const u_char *) rel_str;
+                        while (*rp == ' ') { rp++; }
+                        /* strip any modifier prefix */
+                        if (rp[0]=='~' && rp[1]=='*' && rp[2]==' ') {
+                            rp += 3; while (*rp == ' ') { rp++; }
+                        } else if (rp[0]=='~' && rp[1]==' ') {
+                            rp += 2; while (*rp == ' ') { rp++; }
+                        } else if (rp[0]=='=' && rp[1]==' ') {
+                            rp += 2; while (*rp == ' ') { rp++; }
+                        } else if (rp[0]=='^' && rp[1]=='~' && rp[2]==' ') {
+                            rp += 3; while (*rp == ' ') { rp++; }
+                        }
+                        rlen   = ngx_strlen(rp);
+                        re_arr = (ngx_js_regex_entry_t *) op->regex_locs.elts;
+                        for (ri = 0; ri < op->regex_locs.nelts; ri++) {
+                            if (re_arr[ri].clcf->name.len == rlen
+                                && ngx_memcmp(re_arr[ri].clcf->name.data,
+                                              rp, rlen) == 0)
+                            {
+                                regex_index = (ngx_int_t) ri
+                                              + (is_after ? 1 : 0);
+                                break;
+                            }
+                        }
+                        JS_FreeCString(ctx, rel_str);
+                    }
+                }
             }
+
             JS_FreeValue(ctx, idx_val);
+            JS_FreeValue(ctx, before_val);
+            JS_FreeValue(ctx, after_val);
         }
 #endif
     }
