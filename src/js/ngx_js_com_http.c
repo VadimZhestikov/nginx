@@ -199,14 +199,29 @@ static ngx_uint_t           ngx_js_vhost_hash_bucket_size;
 /* Forward declarations                                                 */
 /* ------------------------------------------------------------------ */
 
+/*
+ * ngx_js_server_opaque_t is defined later in the file (server section).
+ * Forward-declare only the tag so ngx_js_location_opaque_t can hold
+ * a back-pointer to it.
+ */
+typedef struct ngx_js_server_opaque_s ngx_js_server_opaque_t;
+
 JSValue ngx_js_wrap_location(JSContext *ctx,
     ngx_http_core_loc_conf_t *clcf);
+static JSValue ngx_js_wrap_location_ex(JSContext *ctx,
+    ngx_http_core_loc_conf_t *clcf, ngx_js_server_opaque_t *srv_op);
 
 static void ngx_js_collect_locations(JSContext *ctx, JSValue arr,
-    ngx_http_location_tree_node_t *node, uint32_t *idx);
+    ngx_http_location_tree_node_t *node, uint32_t *idx,
+    ngx_js_server_opaque_t *srv_op);
 
 static JSValue ngx_js_build_locations(JSContext *ctx,
-    ngx_http_core_loc_conf_t *root_clcf);
+    ngx_http_core_loc_conf_t *root_clcf, ngx_js_server_opaque_t *srv_op);
+
+static JSValue ngx_js_location_fn_add_location(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv);
+static JSValue ngx_js_location_fn_remove_location(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv);
 
 static JSValue ngx_js_wrap_server(JSContext *ctx,
     ngx_http_core_srv_conf_t *cscf, ngx_cycle_t *cycle);
@@ -220,6 +235,13 @@ typedef struct {
     ngx_http_core_loc_conf_t  *clcf;
     uint32_t                   write_mode;  /* NGX_JS_WRITE_GLOBAL/LOCAL/BOTH */
     uint32_t                   read_mode;   /* NGX_JS_WRITE_GLOBAL or LOCAL   */
+    /*
+     * Back-pointer to the owning server's opaque.  Set by wrap_location_ex
+     * when the location is created in a server context (init_conf or
+     * addLocation).  NULL for locations wrapped from r.location (read-only).
+     * Enables loc.addLocation() / loc.removeLocation() on nested paths.
+     */
+    ngx_js_server_opaque_t    *srv_op;
 } ngx_js_location_opaque_t;
 
 
@@ -2161,10 +2183,14 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
                                                    ngx_js_location_set_error_page),
 
     /* Per-request snapshot read/write control */
-    JS_CFUNC_DEF("setWriteMode",  1, ngx_js_location_fn_set_write_mode),
-    JS_CFUNC_DEF("setReadMode",   1, ngx_js_location_fn_set_read_mode),
-    JS_CFUNC_DEF("setProperty",   2, ngx_js_location_fn_set_property),
-    JS_CFUNC_DEF("getProperty",   1, ngx_js_location_fn_get_property),
+    JS_CFUNC_DEF("setWriteMode",   1, ngx_js_location_fn_set_write_mode),
+    JS_CFUNC_DEF("setReadMode",    1, ngx_js_location_fn_set_read_mode),
+    JS_CFUNC_DEF("setProperty",    2, ngx_js_location_fn_set_property),
+    JS_CFUNC_DEF("getProperty",    1, ngx_js_location_fn_get_property),
+
+    /* Nested-location management (requires srv_op; not on r.location) */
+    JS_CFUNC_DEF("addLocation",    1, ngx_js_location_fn_add_location),
+    JS_CFUNC_DEF("removeLocation", 1, ngx_js_location_fn_remove_location),
 };
 
 
@@ -2191,6 +2217,18 @@ ngx_js_location_install_proto(JSContext *ctx)
 JSValue
 ngx_js_wrap_location(JSContext *ctx, ngx_http_core_loc_conf_t *clcf)
 {
+    return ngx_js_wrap_location_ex(ctx, clcf, NULL);
+}
+
+
+/*
+ * Like ngx_js_wrap_location but also stores the owning server opaque,
+ * enabling loc.addLocation() / loc.removeLocation() on the result.
+ */
+static JSValue
+ngx_js_wrap_location_ex(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
+    ngx_js_server_opaque_t *srv_op)
+{
     JSValue                    obj;
     ngx_js_location_opaque_t  *op;
 
@@ -2200,8 +2238,9 @@ ngx_js_wrap_location(JSContext *ctx, ngx_http_core_loc_conf_t *clcf)
     }
 
     op->clcf       = clcf;
-    op->write_mode = NGX_JS_WRITE_GLOBAL; /* default: global writes (backward-compat) */
-    op->read_mode  = NGX_JS_WRITE_GLOBAL; /* default: read from global struct */
+    op->write_mode = NGX_JS_WRITE_GLOBAL;
+    op->read_mode  = NGX_JS_WRITE_GLOBAL;
+    op->srv_op     = srv_op;
 
     obj = JS_NewObjectClass(ctx, ngx_js_location_class_id);
     if (JS_IsException(obj)) {
@@ -2218,44 +2257,48 @@ ngx_js_wrap_location(JSContext *ctx, ngx_http_core_loc_conf_t *clcf)
 /*
  * Recursively walk the static location tree and append a NginxLocation
  * object for every exact or inclusive entry found.
+ * srv_op is the owning server opaque (may be NULL for plain wraps).
  */
 static void
 ngx_js_collect_locations(JSContext *ctx, JSValue arr,
-    ngx_http_location_tree_node_t *node, uint32_t *idx)
+    ngx_http_location_tree_node_t *node, uint32_t *idx,
+    ngx_js_server_opaque_t *srv_op)
 {
     if (node == NULL) {
         return;
     }
 
     /* left subtree */
-    ngx_js_collect_locations(ctx, arr, node->left, idx);
+    ngx_js_collect_locations(ctx, arr, node->left, idx, srv_op);
 
     /* this node's exact match (= prefix) */
     if (node->exact) {
         JS_SetPropertyUint32(ctx, arr, (*idx)++,
-                             ngx_js_wrap_location(ctx, node->exact));
+                             ngx_js_wrap_location_ex(ctx, node->exact, srv_op));
     }
 
     /* this node's inclusive (prefix) match */
     if (node->inclusive) {
         JS_SetPropertyUint32(ctx, arr, (*idx)++,
-                             ngx_js_wrap_location(ctx, node->inclusive));
+                             ngx_js_wrap_location_ex(ctx, node->inclusive, srv_op));
     }
 
     /* child subtree (shared prefix children) */
-    ngx_js_collect_locations(ctx, arr, node->tree, idx);
+    ngx_js_collect_locations(ctx, arr, node->tree, idx, srv_op);
 
     /* right subtree */
-    ngx_js_collect_locations(ctx, arr, node->right, idx);
+    ngx_js_collect_locations(ctx, arr, node->right, idx, srv_op);
 }
 
 
 /*
  * Build a JS Array of NginxLocation objects for a server's default
  * root location config (which holds the static_locations tree).
+ * srv_op is stored in every returned NginxLocation for loc.addLocation().
  */
 static JSValue
-ngx_js_build_locations(JSContext *ctx, ngx_http_core_loc_conf_t *root_clcf)
+ngx_js_build_locations(JSContext *ctx, ngx_http_core_loc_conf_t *root_clcf,
+    ngx_js_server_opaque_t *srv_op)
 {
     JSValue   arr;
     uint32_t  idx;
@@ -2273,12 +2316,13 @@ ngx_js_build_locations(JSContext *ctx, ngx_http_core_loc_conf_t *root_clcf)
 
         for (rloc = root_clcf->regex_locations; *rloc; rloc++) {
             JS_SetPropertyUint32(ctx, arr, idx++,
-                                 ngx_js_wrap_location(ctx, *rloc));
+                                 ngx_js_wrap_location_ex(ctx, *rloc, srv_op));
         }
     }
 #endif
 
-    ngx_js_collect_locations(ctx, arr, root_clcf->static_locations, &idx);
+    ngx_js_collect_locations(ctx, arr, root_clcf->static_locations, &idx,
+                             srv_op);
 
     return arr;
 }
@@ -2312,7 +2356,7 @@ typedef struct {
 #endif
 
 
-typedef struct {
+struct ngx_js_server_opaque_s {
     ngx_http_core_srv_conf_t  *cscf;
     ngx_cycle_t               *cycle;
     /*
@@ -2343,7 +2387,7 @@ typedef struct {
     ngx_array_t                prefix_locs;  /* ngx_js_loc_entry_t[] */
     ngx_array_t                regex_locs;   /* ngx_js_regex_entry_t[] */
     ngx_array_t                named_locs;   /* ngx_js_loc_entry_t[] (@name) */
-} ngx_js_server_opaque_t;
+};
 
 
 /* ------------------------------------------------------------------ *
@@ -2817,10 +2861,9 @@ ngx_js_find_prefix_clcf(ngx_js_server_opaque_t *op, const char *path)
  *   loc.handler, loc.root, etc. immediately.
  */
 static JSValue
-ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
+ngx_js_do_add_location(JSContext *ctx, ngx_js_server_opaque_t *op,
     int argc, JSValueConst *argv)
 {
-    ngx_js_server_opaque_t    *op;
     ngx_http_core_loc_conf_t  *new_clcf, *tmpl_clcf, *srv_clcf;
     ngx_js_loc_conf_t         *jlcf;
     ngx_js_loc_entry_t        *entry;
@@ -2836,11 +2879,6 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
     int                        is_regex, caseless;
     ngx_int_t                  regex_index;  /* insert position; -1 = append */
 #endif
-
-    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
-    if (!op) {
-        return JS_EXCEPTION;
-    }
 
     if (op->dyn_pool == NULL) {
         return JS_ThrowInternalError(ctx,
@@ -2937,7 +2975,7 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
                 && ngx_memcmp(dup_e[di].clcf->name.data,
                               name.data, name.len) == 0)
             {
-                return ngx_js_wrap_location(ctx, dup_e[di].clcf);
+                return ngx_js_wrap_location_ex(ctx, dup_e[di].clcf, op);
             }
         }
     }
@@ -2952,7 +2990,7 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
                 && ngx_memcmp(dup_re[di].clcf->name.data,
                               name.data, name.len) == 0)
             {
-                return ngx_js_wrap_location(ctx, dup_re[di].clcf);
+                return ngx_js_wrap_location_ex(ctx, dup_re[di].clcf, op);
             }
         }
     } else {
@@ -2968,7 +3006,7 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
                 && ngx_memcmp(dup_e[di].clcf->name.data,
                               name.data, name.len) == 0)
             {
-                return ngx_js_wrap_location(ctx, dup_e[di].clcf);
+                return ngx_js_wrap_location_ex(ctx, dup_e[di].clcf, op);
             }
         }
     }
@@ -3247,7 +3285,25 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
     }
 #endif
 
-    return ngx_js_wrap_location(ctx, new_clcf);
+    return ngx_js_wrap_location_ex(ctx, new_clcf, op);
+}
+
+
+/*
+ * srv.addLocation(pattern [, opts]) — public JS method on NginxServer.
+ */
+static JSValue
+ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_do_add_location(ctx, op, argc, argv);
 }
 
 
@@ -3268,10 +3324,9 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
  * Returns true if a location was found and removed, false otherwise.
  */
 static JSValue
-ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
+ngx_js_do_remove_location(JSContext *ctx, ngx_js_server_opaque_t *op,
     int argc, JSValueConst *argv)
 {
-    ngx_js_server_opaque_t    *op;
     ngx_js_loc_entry_t        *e;
     const char                *pat_str;
     u_char                    *p;
@@ -3282,11 +3337,6 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
     int                        is_regex;
     ngx_js_regex_entry_t      *re;
 #endif
-
-    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
-    if (!op) {
-        return JS_EXCEPTION;
-    }
 
     if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx,
@@ -3442,6 +3492,80 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
     }
 
     return JS_TRUE;
+}
+
+
+/*
+ * srv.removeLocation(pattern) — public JS method on NginxServer.
+ */
+static JSValue
+ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_do_remove_location(ctx, op, argc, argv);
+}
+
+
+/*
+ * loc.addLocation(pattern [, opts])
+ *
+ * Delegates to the server-level addLocation logic.  The new location is
+ * added to the server's flat prefix_locs[] snapshot; the BST builder
+ * automatically groups it under the parent via shared-prefix nesting.
+ *
+ * Requires the location to have been obtained from server.locations[]
+ * or a prior srv.addLocation() call.  Not available on r.location.
+ */
+static JSValue
+ngx_js_location_fn_add_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *loc_op;
+
+    loc_op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!loc_op) {
+        return JS_EXCEPTION;
+    }
+
+    if (loc_op->srv_op == NULL) {
+        return JS_ThrowTypeError(ctx,
+            "addLocation: not available on r.location (read-only context)");
+    }
+
+    return ngx_js_do_add_location(ctx, loc_op->srv_op, argc, argv);
+}
+
+
+/*
+ * loc.removeLocation(pattern)
+ *
+ * Delegates to the server-level removeLocation logic.
+ * Same constraints as loc.addLocation().
+ */
+static JSValue
+ngx_js_location_fn_remove_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *loc_op;
+
+    loc_op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!loc_op) {
+        return JS_EXCEPTION;
+    }
+
+    if (loc_op->srv_op == NULL) {
+        return JS_ThrowTypeError(ctx,
+            "removeLocation: not available on r.location (read-only context)");
+    }
+
+    return ngx_js_do_remove_location(ctx, loc_op->srv_op, argc, argv);
 }
 
 
@@ -3897,7 +4021,7 @@ ngx_js_server_get_locations(JSContext *ctx, JSValueConst this_val, int magic)
     }
 
     clcf = op->cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
-    arr = ngx_js_build_locations(ctx, clcf);
+    arr = ngx_js_build_locations(ctx, clcf, op);
     if (JS_IsException(arr)) {
         return arr;
     }
@@ -3914,7 +4038,7 @@ ngx_js_server_get_locations(JSContext *ctx, JSValueConst this_val, int magic)
         JS_FreeValue(ctx, len_val);
         for (; *named; named++) {
             JS_SetPropertyUint32(ctx, arr, idx++,
-                                 ngx_js_wrap_location(ctx, *named));
+                                 ngx_js_wrap_location_ex(ctx, *named, op));
         }
     }
 
