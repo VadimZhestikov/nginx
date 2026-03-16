@@ -2897,6 +2897,105 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * srv.removeLocation(pattern)
+ *
+ * Removes the location matching pattern from the live BST.
+ * pattern syntax is the same as addLocation:
+ *   "= /path"   — exact match
+ *   "^~ /path"  — preferential prefix
+ *   "/path"     — normal prefix
+ *
+ * Returns true if a location was found and removed, false otherwise.
+ * Only prefix/exact locations can be removed here (regex support is future).
+ */
+static JSValue
+ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t    *op;
+    ngx_js_loc_entry_t        *e;
+    const char                *pat_str;
+    u_char                    *p;
+    ngx_str_t                  name;
+    ngx_uint_t                 i;
+    int                        exact_match;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "removeLocation: first argument must be a pattern string");
+    }
+
+    pat_str = JS_ToCString(ctx, argv[0]);
+    if (!pat_str) {
+        return JS_EXCEPTION;
+    }
+
+    /* Trim leading whitespace and parse modifier — same logic as addLocation */
+    p = (u_char *) pat_str;
+    while (*p == ' ') { p++; }
+
+    exact_match = 0;
+
+    if (p[0] == '=' && p[1] == ' ') {
+        exact_match = 1;
+        p += 2;
+        while (*p == ' ') { p++; }
+
+    } else if (p[0] == '^' && p[1] == '~' && p[2] == ' ') {
+        /* noregex flag doesn't affect removal matching — just strip prefix */
+        p += 3;
+        while (*p == ' ') { p++; }
+
+    } else if (p[0] == '~') {
+        JS_FreeCString(ctx, pat_str);
+        return JS_ThrowTypeError(ctx,
+            "removeLocation: regex locations not yet supported");
+    }
+
+    name.len  = ngx_strlen(p);
+    name.data = (u_char *) p;
+
+    /* Find matching entry in prefix_locs[] */
+    e = op->prefix_locs.elts;
+
+    for (i = 0; i < op->prefix_locs.nelts; i++) {
+        if (e[i].clcf->name.len == name.len
+            && e[i].is_exact == (unsigned) exact_match
+            && ngx_memcmp(e[i].clcf->name.data, name.data, name.len) == 0)
+        {
+            break;
+        }
+    }
+
+    JS_FreeCString(ctx, pat_str);
+
+    if (i == op->prefix_locs.nelts) {
+        return JS_FALSE;   /* not found */
+    }
+
+    /* Splice the entry out of prefix_locs[] */
+    if (i < op->prefix_locs.nelts - 1) {
+        ngx_memmove(&e[i], &e[i + 1],
+                    (op->prefix_locs.nelts - i - 1) * sizeof(*e));
+    }
+    op->prefix_locs.nelts--;
+
+    /* Rebuild the live location tree */
+    if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+        op->prefix_locs.nelts++;   /* roll back (entry data still intact) */
+        return JS_EXCEPTION;
+    }
+
+    return JS_TRUE;
+}
+
+
 static void
 ngx_js_server_finalizer(JSRuntime *rt, JSValue val)
 {
@@ -3423,6 +3522,7 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_DEF       ("largeClientHeaderBuffers", ngx_js_server_get_large_client_hdr_bufs, NULL),
     JS_CGETSET_DEF       ("ssl",                      ngx_js_server_get_ssl,                   NULL),
     JS_CFUNC_DEF         ("addLocation",              1, ngx_js_server_fn_add_location),
+    JS_CFUNC_DEF         ("removeLocation",           1, ngx_js_server_fn_remove_location),
 };
 
 
