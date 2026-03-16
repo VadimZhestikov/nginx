@@ -99,10 +99,63 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+/* ------------------------------------------------------------------ */
+/* sock.close() — Phase E implementation                               */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_socket_close(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_socket_opaque_t  *op;
+    ngx_js_socket_state_t   *st;
+
+    /* Phase E: pre-fork only */
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "sock.close: post-fork worker close not yet supported");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_socket_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->handle >= NGX_JS_SOCKET_REG_MAX
+        || ngx_js_socket_reg[op->handle] == NULL)
+    {
+        return JS_ThrowInternalError(ctx,
+            "sock.close: socket already closed or invalid");
+    }
+
+    st = ngx_js_socket_reg[op->handle];
+
+    if (st->in_listening) {
+        return JS_ThrowInternalError(ctx,
+            "sock.close: cannot close a socket already added to"
+            " cycle->listening — call addServer() activates the socket"
+            " for nginx workers");
+    }
+
+    /* Close the OS file descriptor */
+    if (st->fd >= 0) {
+        (void) close(st->fd);
+        st->fd = -1;
+    }
+
+    /* Remove from registry and free the state */
+    ngx_js_socket_reg[op->handle] = NULL;
+    ngx_free(st);
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry  ngx_js_socket_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("address", ngx_js_socket_get, NULL, 0),
     JS_CGETSET_MAGIC_DEF("port",    ngx_js_socket_get, NULL, 1),
     JS_CGETSET_MAGIC_DEF("fd",      ngx_js_socket_get, NULL, 2),
+    JS_CFUNC_DEF(        "close",   0, ngx_js_socket_close),
 };
 
 

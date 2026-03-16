@@ -560,7 +560,8 @@ ngx_js_listener_activate(ngx_js_http_listener_state_t *st,
     ngx_rbtree_init(&ls->rbtree, &ls->sentinel, ngx_udp_rbtree_insert_value);
 #endif
 
-    st->activated = 1;
+    sock->in_listening = 1;
+    st->activated      = 1;
     return NGX_OK;
 }
 

@@ -25,11 +25,16 @@
  * Allocated with ngx_alloc() before fork so the block lives on the heap
  * and is copy-on-write shared across all worker processes at the same
  * virtual address.  Workers only ever read these fields.
+ *
+ * in_listening: set by ngx_js_listener_activate() when the socket fd is
+ *   pushed into cycle->listening.  Prevents sock.close() from closing a
+ *   socket already being used by nginx workers (Phase E).
  */
 typedef struct {
-    int       fd;        /* OS socket fd (bound + listening)         */
-    uint16_t  port;      /* port in host byte order                  */
-    char      addr[64];  /* display string, e.g. "127.0.0.1:9000"   */
+    int       fd;              /* OS socket fd (bound + listening)         */
+    uint16_t  port;            /* port in host byte order                  */
+    char      addr[64];        /* display string, e.g. "127.0.0.1:9000"   */
+    unsigned  in_listening:1;  /* 1 after addServer() activates this fd    */
 } ngx_js_socket_state_t;
 
 
