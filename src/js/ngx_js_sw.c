@@ -789,6 +789,38 @@ sw_read_file(const char *path, size_t *out_len)
 
 
 /* ------------------------------------------------------------------ */
+/* SW thread helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Rebuild the global `clients` array in the SW JS context from the
+ * currently-connected ports (tctx->ports[i] != JS_UNDEFINED).
+ * Called immediately before invoking the global onmessage handler so
+ * that `clients` is always fresh when the script runs.
+ */
+static void
+ngx_js_sw_refresh_clients(JSContext *ctx, ngx_js_sw_thread_ctx_t *tctx)
+{
+    JSValue    global, clients;
+    uint32_t   idx, i;
+
+    clients = JS_NewArray(ctx);
+    idx     = 0;
+
+    for (i = 0; i < (uint32_t) tctx->state->nchannels; i++) {
+        if (!JS_IsUndefined(tctx->ports[i])) {
+            JS_SetPropertyUint32(ctx, clients, idx++,
+                                 JS_DupValue(ctx, tctx->ports[i]));
+        }
+    }
+
+    global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "clients", clients);  /* consumes clients */
+    JS_FreeValue(ctx, global);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* SW thread entry                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -1063,10 +1095,41 @@ ngx_js_sw_thread(void *arg)
                         JS_FreeValue(ctx, call_ret);
                         JS_FreeValue(ctx, event_obj);
                     } else {
-                        JS_FreeValue(ctx, data);
+                        /* per-port onmessage not set — try global onmessage */
+                        goto global_onmessage;
                     }
                 } else {
-                    JS_FreeValue(ctx, data);
+                global_onmessage:
+                    {
+                        JSValue  global_fn, g;
+
+                        g         = JS_GetGlobalObject(ctx);
+                        global_fn = JS_GetPropertyStr(ctx, g, "onmessage");
+                        JS_FreeValue(ctx, g);
+
+                        if (JS_IsFunction(ctx, global_fn)) {
+                            ngx_js_sw_refresh_clients(ctx, tctx);
+                            call_ret = JS_Call(ctx, global_fn,
+                                               JS_UNDEFINED, 1, &data);
+                            if (JS_IsException(call_ret)) {
+                                JSValue exc = JS_GetException(ctx);
+                                JSValue str = JS_ToString(ctx, exc);
+                                const char *cs = JS_ToCString(ctx, str);
+                                if (cs) {
+                                    ngx_log_error(NGX_LOG_ERR,
+                                        ngx_cycle->log, 0,
+                                        "js SharedWorker onmessage: %s", cs);
+                                    JS_FreeCString(ctx, cs);
+                                }
+                                JS_FreeValue(ctx, str);
+                                JS_FreeValue(ctx, exc);
+                            }
+                            JS_FreeValue(ctx, call_ret);
+                        }
+
+                        JS_FreeValue(ctx, global_fn);
+                        JS_FreeValue(ctx, data);
+                    }
                 }
 
                 while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
@@ -1363,8 +1426,15 @@ ngx_js_sw_set_onmessage(JSContext *ctx, JSValueConst this_val,
     JS_FreeValue(ctx, ws->on_message);
     ws->on_message = JS_DupValue(ctx, val);
 
-    /* Activate on first setter call (ensures connect is sent) */
-    if (ws->conn == NULL) {
+    /*
+     * Activate on first setter call if the event loop is ready.
+     * During init_process the connection pool is not yet initialised
+     * (ngx_event_process_init runs after ngx_js_init_process); attempting
+     * activation there produces a spurious "worker_connections not enough"
+     * alert.  The lazy path in ngx_js_sw_post_message handles activation
+     * on the first actual postMessage() call instead.
+     */
+    if (ws->conn == NULL && ngx_cycle->free_connections != NULL) {
         ngx_js_sw_activate(ctx, op->state, wi);
     }
 
