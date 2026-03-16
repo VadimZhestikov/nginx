@@ -1,0 +1,100 @@
+
+/*
+ * Copyright (C) nginx JS contributors
+ *
+ * ngx_js_listener.h — NginxHttpListener: an HTTP pipeline binding
+ * created via nginx.http.attach(sock).
+ *
+ * Stage 52 Phase B.
+ *
+ * An NginxHttpListener wraps a NginxSocket and the routing structures
+ * needed to wire it into nginx's HTTP connection pipeline.  The OS socket
+ * is already bound and listening; this object represents the HTTP-layer
+ * configuration (virtual host routing, default server, etc.).
+ *
+ * The ngx_listening_t entry is NOT pushed into cycle->listening until
+ * listener.addServer() sets a valid default_server (Phase C).  Until then
+ * the socket accepts OS-level TCP connections but nginx workers do not
+ * process them.
+ */
+
+#ifndef _NGX_JS_LISTENER_H_INCLUDED_
+#define _NGX_JS_LISTENER_H_INCLUDED_
+
+#include <ngx_config.h>
+#include <ngx_core.h>
+#include <ngx_event.h>
+#include <ngx_http.h>
+#include <quickjs.h>
+#include "ngx_js_socket.h"
+
+
+#define NGX_JS_LISTENER_REG_MAX  32
+
+
+/*
+ * State for one JS-managed HTTP listener.
+ *
+ * Allocated with ngx_alloc() before fork; COW-shared across workers.
+ * Fields are filled in two phases:
+ *   attach()    — fills fd, sockaddr, port/addr routing structs
+ *   addServer() — fills default_server, pool_size, log, then activates
+ */
+typedef struct {
+    /* Back-reference to the socket */
+    uint32_t                  socket_handle;
+
+    /* HTTP routing structures */
+    ngx_http_port_t           port;          /* contains addrs pointer */
+    ngx_http_in_addr_t        addr;          /* single IPv4 addr entry */
+
+    /* Reusable sockaddr (pointed to by ls->sockaddr after activate) */
+    struct sockaddr_in        sin;
+
+    /* Display string — pointed to by ls->addr_text.data after activate */
+    u_char                    addr_text_buf[NGX_INET_ADDRSTRLEN + 8];
+    size_t                    addr_text_len;
+
+    /* Set by addServer() (Phase C) */
+    ngx_http_core_srv_conf_t *default_server;  /* NULL until addServer() */
+
+    unsigned                  activated:1;     /* 1 after cycle->listening push */
+} ngx_js_http_listener_state_t;
+
+
+/*
+ * Global listener registry — parallel to ngx_js_socket_reg.
+ * Allocated in master before fork; COW-shared with workers.
+ */
+extern ngx_js_http_listener_state_t *ngx_js_listener_reg[NGX_JS_LISTENER_REG_MAX];
+
+
+/*
+ * Register the NginxHttpListener class in a JSRuntime.
+ * Called from ngx_js_com_register_classes().
+ */
+ngx_int_t  ngx_js_listener_register_class(JSRuntime *rt);
+
+/*
+ * Install the shared NginxHttpListener prototype in a JSContext.
+ * Called from ngx_js_com_install_protos().
+ */
+ngx_int_t  ngx_js_listener_install_proto(JSContext *ctx);
+
+/*
+ * Install nginx.http.attach() into the http_obj JS object.
+ * Called from ngx_js_http_com_install() in ngx_js_com_http.c.
+ */
+ngx_int_t  ngx_js_listener_install(JSContext *ctx, JSValue http_obj);
+
+/*
+ * Push the pre-filled ngx_listening_t into cycle->listening.
+ * Sets pool_size and log fields from the default_server.
+ * Must be called after addServer() sets default_server.
+ * Only valid in the master process (before fork).
+ */
+ngx_int_t  ngx_js_listener_activate(ngx_js_http_listener_state_t *st,
+    ngx_cycle_t *cycle);
+
+
+#endif /* _NGX_JS_LISTENER_H_INCLUDED_ */

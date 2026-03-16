@@ -59,5 +59,11 @@ ngx_int_t  ngx_js_socket_install_proto(JSContext *ctx);
  */
 ngx_int_t  ngx_js_socket_install(JSContext *ctx, JSValue nginx_obj);
 
+/*
+ * Extract the socket handle (registry index) from a NginxSocket JS value.
+ * Returns NGX_JS_SOCKET_REG_MAX on failure (wrong class or invalid handle).
+ */
+uint32_t   ngx_js_socket_get_handle(JSValueConst sock);
+
 
 #endif /* _NGX_JS_SOCKET_H_INCLUDED_ */

@@ -309,6 +309,20 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
 }
 
 
+uint32_t
+ngx_js_socket_get_handle(JSValueConst sock)
+{
+    ngx_js_socket_opaque_t  *op;
+
+    op = JS_GetOpaque(sock, ngx_js_socket_class_id);
+    if (op == NULL) {
+        return (uint32_t) NGX_JS_SOCKET_REG_MAX;
+    }
+
+    return op->handle;
+}
+
+
 ngx_int_t
 ngx_js_socket_install(JSContext *ctx, JSValue nginx_obj)
 {

@@ -24,6 +24,7 @@
 #include <cutils.h>
 #include "ngx_js.h"
 #include "ngx_js_com.h"
+#include "ngx_js_listener.h"
 
 #if (NGX_HTTP_SSL)
 #include <ngx_http_ssl_module.h>
@@ -6163,6 +6164,12 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
 
     /* nginx.http.upstreams[] — delegated to upstream COM */
     if (ngx_js_upstream_com_install(ctx, http_obj, cycle) != NGX_OK) {
+        JS_FreeValue(ctx, http_obj);
+        return NGX_ERROR;
+    }
+
+    /* nginx.http.attach(sock) — Stage 52 Phase B */
+    if (ngx_js_listener_install(ctx, http_obj) != NGX_OK) {
         JS_FreeValue(ctx, http_obj);
         return NGX_ERROR;
     }
