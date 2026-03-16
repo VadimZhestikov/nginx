@@ -4444,6 +4444,388 @@ ngx_js_http_rebuild_vhost_dispatch(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * nginx.http.addServer(name [, opts])
+ *
+ * Creates a new virtual server and registers it in every
+ * ngx_js_vhost_entries[] slot so that rebuildVhostDispatch() will
+ * include it in the server-name hash.
+ *
+ * opts.template — name of an existing server to copy configuration
+ *   defaults from; defaults to the first server in nginx.http.servers[].
+ *
+ * Returns the new NginxServer JS wrapper.  Call
+ * nginx.http.rebuildVhostDispatch() afterwards to activate routing.
+ */
+static JSValue
+ngx_js_http_add_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    const char                 *name_str, *tmpl_name;
+    size_t                      name_len, tmpl_name_len;
+    ngx_http_conf_ctx_t        *http_ctx;
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_core_srv_conf_t  **cscfp, *tmpl_cscf, *new_cscf;
+    ngx_http_core_loc_conf_t   *tmpl_root, *new_root;
+    ngx_http_conf_ctx_t        *new_ctx;
+    void                      **new_loc_conf, **new_srv_conf;
+    ngx_http_server_name_t     *sn;
+    ngx_js_addr_entry_t        *entry;
+    ngx_http_core_srv_conf_t  **new_servers;
+    ngx_js_server_opaque_t     *op;
+    ngx_cycle_t                *cycle;
+    JSValue                     srv_obj, servers_arr, s0, lv;
+    uint32_t                    servers_len;
+    ngx_uint_t                  i, ni;
+    ngx_int_t                   tmpl_idx;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "addServer: server name (string) required");
+    }
+
+    name_str = JS_ToCStringLen(ctx, &name_len, argv[0]);
+    if (name_str == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    /*
+     * Get the cycle pointer from the first server's opaque.
+     * We cannot use ngx_cycle here because during init_conf it still
+     * points to the old cycle (ngx_cycle is updated in main() only after
+     * ngx_init_cycle() returns).  The cycle passed to ngx_js_http_com_install
+     * is stored in every server opaque's op->cycle.
+     */
+    servers_arr = JS_GetPropertyStr(ctx, this_val, "servers");
+    lv          = JS_GetPropertyStr(ctx, servers_arr, "length");
+    JS_ToUint32(ctx, &servers_len, lv);
+    JS_FreeValue(ctx, lv);
+
+    if (servers_len == 0) {
+        JS_FreeValue(ctx, servers_arr);
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowInternalError(ctx, "addServer: no existing servers");
+    }
+
+    s0    = JS_GetPropertyUint32(ctx, servers_arr, 0);
+    op    = JS_GetOpaque(s0, ngx_js_server_class_id);
+    cycle = op ? op->cycle : NULL;
+    JS_FreeValue(ctx, s0);
+
+    if (cycle == NULL) {
+        JS_FreeValue(ctx, servers_arr);
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowInternalError(ctx, "addServer: cycle unavailable");
+    }
+
+    http_ctx = (ngx_http_conf_ctx_t *)
+                   cycle->conf_ctx[ngx_http_module.index];
+    if (http_ctx == NULL) {
+        JS_FreeValue(ctx, servers_arr);
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowInternalError(ctx, "addServer: no http{} block");
+    }
+
+    cmcf  = http_ctx->main_conf[ngx_http_core_module.ctx_index];
+    cscfp = cmcf->servers.elts;
+
+    /* find template server: opts.template string → search servers[]; else 0 */
+    tmpl_idx = 0;
+
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+        JSValue tmpl_val = JS_GetPropertyStr(ctx, argv[1], "template");
+
+        if (!JS_IsUndefined(tmpl_val) && !JS_IsNull(tmpl_val)) {
+            tmpl_name = JS_ToCStringLen(ctx, &tmpl_name_len, tmpl_val);
+            if (tmpl_name) {
+                for (i = 0; i < servers_len; i++) {
+                    JSValue s = JS_GetPropertyUint32(ctx, servers_arr, i);
+                    op = JS_GetOpaque(s, ngx_js_server_class_id);
+                    if (op) {
+                        for (ni = 0; ni < op->nnames; ni++) {
+                            if (op->names[ni].len == tmpl_name_len
+                                && ngx_strncasecmp(op->names[ni].data,
+                                       (u_char *) tmpl_name,
+                                       tmpl_name_len) == 0)
+                            {
+                                tmpl_idx = (ngx_int_t) i;
+                                break;
+                            }
+                        }
+                    }
+                    JS_FreeValue(ctx, s);
+                    if ((ngx_uint_t) tmpl_idx == i && tmpl_idx > 0) {
+                        break;
+                    }
+                }
+                JS_FreeCString(ctx, tmpl_name);
+            }
+        }
+
+        JS_FreeValue(ctx, tmpl_val);
+    }
+
+    JS_FreeValue(ctx, servers_arr);
+
+    tmpl_cscf = cscfp[tmpl_idx];
+    tmpl_root = tmpl_cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+
+    /* allocate a new cscf as a shallow copy of the template */
+    new_cscf = ngx_palloc(cycle->pool, sizeof(ngx_http_core_srv_conf_t));
+    if (new_cscf == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    *new_cscf = *tmpl_cscf;
+    new_cscf->named_locations = NULL;  /* fresh server has no named locs */
+
+    /* new loc_conf[] array: copy all module slots, then override core */
+    new_loc_conf = ngx_palloc(cycle->pool,
+                              sizeof(void *) * ngx_http_max_module);
+    if (new_loc_conf == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(new_loc_conf, tmpl_cscf->ctx->loc_conf,
+               sizeof(void *) * ngx_http_max_module);
+
+    /* new root clcf: copy template, clear dynamic-location-tree fields */
+    new_root = ngx_palloc(cycle->pool, sizeof(ngx_http_core_loc_conf_t));
+    if (new_root == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    *new_root = *tmpl_root;
+    new_root->static_locations = NULL;
+    new_root->regex_locations  = NULL;
+    new_root->loc_conf         = new_loc_conf;
+    /* self-reference required by ngx_http_core_find_location */
+    new_loc_conf[ngx_http_core_module.ctx_index] = new_root;
+
+    /* new srv_conf[] array: copy all module slots, then override core */
+    new_srv_conf = ngx_palloc(cycle->pool,
+                              sizeof(void *) * ngx_http_max_module);
+    if (new_srv_conf == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(new_srv_conf, tmpl_cscf->ctx->srv_conf,
+               sizeof(void *) * ngx_http_max_module);
+    new_srv_conf[ngx_http_core_module.ctx_index] = new_cscf;
+
+    /* wire up the new conf context */
+    new_ctx = ngx_palloc(cycle->pool, sizeof(ngx_http_conf_ctx_t));
+    if (new_ctx == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    new_ctx->main_conf = tmpl_cscf->ctx->main_conf;
+    new_ctx->srv_conf  = new_srv_conf;
+    new_ctx->loc_conf  = new_loc_conf;
+    new_cscf->ctx = new_ctx;
+
+    /* server_names: fresh array with just the one new name in cycle->pool */
+    if (ngx_array_init(&new_cscf->server_names, cycle->pool, 1,
+                       sizeof(ngx_http_server_name_t)) != NGX_OK)
+    {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    sn = ngx_array_push(&new_cscf->server_names);
+    if (sn == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memzero(sn, sizeof(ngx_http_server_name_t));
+    sn->name.len  = name_len;
+    sn->name.data = ngx_pnalloc(cycle->pool, name_len);
+    if (sn->name.data == NULL) {
+        JS_FreeCString(ctx, name_str);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(sn->name.data, name_str, name_len);
+    sn->server = new_cscf;
+
+    JS_FreeCString(ctx, name_str);
+
+    /* add new_cscf to every vhost dispatch entry */
+    for (i = 0; i < ngx_js_vhost_nentries; i++) {
+        entry = &ngx_js_vhost_entries[i];
+        new_servers = ngx_palloc(cycle->pool,
+                         (entry->nservers + 1)
+                         * sizeof(ngx_http_core_srv_conf_t *));
+        if (new_servers == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+        ngx_memcpy(new_servers, entry->servers,
+                   entry->nservers * sizeof(ngx_http_core_srv_conf_t *));
+        new_servers[entry->nservers] = new_cscf;
+        entry->servers  = new_servers;
+        entry->nservers++;
+    }
+
+    /* wrap as JS NginxServer object */
+    srv_obj = ngx_js_wrap_server(ctx, new_cscf, cycle);
+    if (JS_IsException(srv_obj)) {
+        return srv_obj;
+    }
+
+    /* For dynamic servers added in master context op->nnames is already set
+     * by ngx_js_wrap_server.  In worker context (nnames==0) we copy the name
+     * into op->names so removeServer() can match by name. */
+    op = JS_GetOpaque(srv_obj, ngx_js_server_class_id);
+    if (op != NULL && op->nnames == 0 && sn->name.len > 0) {
+        op->names = ngx_palloc(cycle->pool, sizeof(ngx_str_t));
+        if (op->names != NULL) {
+            op->names[0] = sn->name;
+            op->nnames   = 1;
+        }
+    }
+
+    /* append to nginx.http.servers[] */
+    servers_arr = JS_GetPropertyStr(ctx, this_val, "servers");
+    lv = JS_GetPropertyStr(ctx, servers_arr, "length");
+    JS_ToUint32(ctx, &servers_len, lv);
+    JS_FreeValue(ctx, lv);
+    JS_SetPropertyUint32(ctx, servers_arr, servers_len,
+                         JS_DupValue(ctx, srv_obj));
+    JS_FreeValue(ctx, servers_arr);
+
+    return srv_obj;
+}
+
+
+/*
+ * nginx.http.removeServer(name)
+ *
+ * Removes the first server whose primary server_name equals name
+ * (case-insensitive) from nginx.http.servers[] and from every
+ * ngx_js_vhost_entries[] slot.
+ *
+ * Returns true if found and removed, false if not found.
+ * Call nginx.http.rebuildVhostDispatch() afterwards to update routing.
+ */
+static JSValue
+ngx_js_http_remove_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    const char                 *name_str;
+    size_t                      name_len;
+    JSValue                     servers_arr, lv;
+    uint32_t                    servers_len, found_idx;
+    ngx_js_server_opaque_t     *found_op;
+    ngx_http_core_srv_conf_t   *found_cscf;
+    ngx_js_addr_entry_t        *entry;
+    ngx_http_core_srv_conf_t  **new_servers;
+    ngx_cycle_t                *cycle;
+    ngx_uint_t                  i, j, k;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "removeServer: server name (string) required");
+    }
+
+    name_str = JS_ToCStringLen(ctx, &name_len, argv[0]);
+    if (name_str == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    /* find the server in nginx.http.servers[] by name */
+    servers_arr = JS_GetPropertyStr(ctx, this_val, "servers");
+    lv = JS_GetPropertyStr(ctx, servers_arr, "length");
+    JS_ToUint32(ctx, &servers_len, lv);
+    JS_FreeValue(ctx, lv);
+
+    found_op   = NULL;
+    found_cscf = NULL;
+    found_idx  = (uint32_t) -1;
+
+    for (i = 0; i < servers_len; i++) {
+        JSValue                 s  = JS_GetPropertyUint32(ctx, servers_arr, i);
+        ngx_js_server_opaque_t *op = JS_GetOpaque(s, ngx_js_server_class_id);
+        ngx_uint_t              ni;
+
+        if (op) {
+            for (ni = 0; ni < op->nnames; ni++) {
+                if (op->names[ni].len == name_len
+                    && ngx_strncasecmp(op->names[ni].data,
+                                       (u_char *) name_str, name_len) == 0)
+                {
+                    found_op   = op;
+                    found_cscf = op->cscf;
+                    found_idx  = (uint32_t) i;
+                    break;
+                }
+            }
+        }
+
+        JS_FreeValue(ctx, s);
+
+        if (found_op != NULL) {
+            break;
+        }
+    }
+
+    JS_FreeCString(ctx, name_str);
+
+    if (found_op == NULL) {
+        JS_FreeValue(ctx, servers_arr);
+        return JS_FALSE;
+    }
+
+    cycle = found_op->cycle;
+
+    /* splice found_cscf from every vhost dispatch entry */
+    for (i = 0; i < ngx_js_vhost_nentries; i++) {
+        entry = &ngx_js_vhost_entries[i];
+
+        for (j = 0; j < entry->nservers; j++) {
+            if (entry->servers[j] != found_cscf) {
+                continue;
+            }
+
+            if (entry->nservers == 1) {
+                entry->servers  = NULL;
+                entry->nservers = 0;
+                break;
+            }
+
+            new_servers = ngx_palloc(cycle->pool,
+                             (entry->nservers - 1)
+                             * sizeof(ngx_http_core_srv_conf_t *));
+            if (new_servers == NULL) {
+                JS_FreeValue(ctx, servers_arr);
+                return JS_ThrowOutOfMemory(ctx);
+            }
+
+            for (k = 0; k < j; k++) {
+                new_servers[k] = entry->servers[k];
+            }
+            for (k = j + 1; k < entry->nservers; k++) {
+                new_servers[k - 1] = entry->servers[k];
+            }
+
+            entry->servers  = new_servers;
+            entry->nservers--;
+            break;
+        }
+    }
+
+    /* splice the JS object from nginx.http.servers[] */
+    for (i = found_idx; i + 1 < servers_len; i++) {
+        JSValue next = JS_GetPropertyUint32(ctx, servers_arr, i + 1);
+        JS_SetPropertyUint32(ctx, servers_arr, i, next);
+    }
+    JS_SetPropertyStr(ctx, servers_arr, "length",
+                      JS_NewUint32(ctx, servers_len - 1));
+
+    JS_FreeValue(ctx, servers_arr);
+
+    return JS_TRUE;
+}
+
+
 /* ngx_js_http_com_install                                              */
 /* ------------------------------------------------------------------ */
 
@@ -4740,6 +5122,16 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
                       JS_NewCFunction(ctx,
                                       ngx_js_http_rebuild_vhost_dispatch,
                                       "rebuildVhostDispatch", 0));
+
+    /* nginx.http.addServer() / removeServer() */
+    JS_SetPropertyStr(ctx, http_obj, "addServer",
+                      JS_NewCFunction(ctx,
+                                      ngx_js_http_add_server,
+                                      "addServer", 1));
+    JS_SetPropertyStr(ctx, http_obj, "removeServer",
+                      JS_NewCFunction(ctx,
+                                      ngx_js_http_remove_server,
+                                      "removeServer", 1));
 
     /* nginx.http.upstreams[] — delegated to upstream COM */
     if (ngx_js_upstream_com_install(ctx, http_obj, cycle) != NGX_OK) {
