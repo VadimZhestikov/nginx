@@ -1043,6 +1043,56 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
         }
         return JS_NewString(ctx, "prefix");
 
+    case 81: /* pattern — full pattern string including modifier prefix */
+        /*
+         * Unlike path (which returns clcf->name without modifier),
+         * pattern reconstructs the complete pattern usable as the first
+         * argument to addLocation() / removeLocation():
+         *   prefix              → "/foo"
+         *   exact match         → "= /foo"
+         *   preferential-prefix → "^~ /foo"
+         *   case-sensitive regex→ "~ /regex"
+         *   case-insensitive    → "~* /regex"
+         *   named               → "@name"  (@ is already in clcf->name)
+         */
+        {
+            const char  *pfx;
+            size_t       pfx_len;
+            u_char      *buf;
+            JSValue      s;
+
+#if (NGX_PCRE)
+            if (clcf->regex) {
+                pfx     = clcf->nocase ? "~* " : "~ ";
+                pfx_len = clcf->nocase ? 3 : 2;
+                goto pattern_with_prefix;
+            }
+#endif
+            if (clcf->exact_match) {
+                pfx = "= "; pfx_len = 2;
+                goto pattern_with_prefix;
+            }
+            if (clcf->noregex) {
+                pfx = "^~ "; pfx_len = 3;
+                goto pattern_with_prefix;
+            }
+            /* plain prefix or @named — name is already the full pattern */
+            return JS_NewStringLen(ctx, (const char *) clcf->name.data,
+                                   clcf->name.len);
+
+        pattern_with_prefix:
+            buf = js_malloc(ctx, pfx_len + clcf->name.len);
+            if (buf == NULL) {
+                return JS_EXCEPTION;
+            }
+            ngx_memcpy(buf, pfx, pfx_len);
+            ngx_memcpy(buf + pfx_len, clcf->name.data, clcf->name.len);
+            s = JS_NewStringLen(ctx, (const char *) buf,
+                                pfx_len + clcf->name.len);
+            js_free(ctx, buf);
+            return s;
+        }
+
     }
 
     return JS_UNDEFINED;
@@ -2106,6 +2156,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("directio",                 ngx_js_location_get, ngx_js_location_set, 78),
     JS_CGETSET_MAGIC_DEF("directioAlignment",        ngx_js_location_get, ngx_js_location_set, 79),
     JS_CGETSET_MAGIC_DEF("matchType",                ngx_js_location_get, NULL,                80),
+    JS_CGETSET_MAGIC_DEF("pattern",                 ngx_js_location_get, NULL,                81),
     JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page,
                                                    ngx_js_location_set_error_page),
 
