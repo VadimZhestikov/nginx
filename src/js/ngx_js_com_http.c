@@ -2237,6 +2237,17 @@ ngx_js_build_locations(JSContext *ctx, ngx_http_core_loc_conf_t *root_clcf)
 /* NginxServer wrapper                                                  */
 /* ------------------------------------------------------------------ */
 
+/*
+ * One snapshot entry for a prefix / exact location.
+ * Used to rebuild the static location BST after addLocation / removeLocation.
+ */
+typedef struct {
+    ngx_http_core_loc_conf_t  *clcf;
+    unsigned                   is_exact:1;  /* 1 = exact match (lq->exact) */
+    unsigned                   dynamic:1;   /* 1 = added by addLocation */
+} ngx_js_loc_entry_t;
+
+
 typedef struct {
     ngx_http_core_srv_conf_t  *cscf;
     ngx_cycle_t               *cycle;
@@ -2248,7 +2259,642 @@ typedef struct {
      */
     ngx_str_t                 *names;
     ngx_uint_t                 nnames;
+
+    /*
+     * Dynamic location infrastructure.
+     *
+     * dyn_pool   — long-lived pool for new clcf structs and loc_conf arrays;
+     *              freed only at server finalizer time.
+     * tree_pool  — rebuilt on every addLocation/removeLocation call; holds
+     *              ngx_http_location_queue_t items and BST nodes only.
+     *              NULL until the first addLocation is called.
+     * prefix_locs — flat snapshot of ALL prefix/exact locations (static ones
+     *              snapshotted at wrap time + dynamic ones appended at add
+     *              time).  Used as the source for BST rebuilds.
+     * regex_locs  — ordered list of ALL regex locations (static + dynamic).
+     */
+    ngx_pool_t                *dyn_pool;
+    ngx_pool_t                *tree_pool;
+    ngx_array_t                prefix_locs;  /* ngx_js_loc_entry_t[] */
+    ngx_array_t                regex_locs;   /* ngx_http_core_loc_conf_t *[] */
 } ngx_js_server_opaque_t;
+
+
+/* ------------------------------------------------------------------ *
+ * Location tree building helpers                                       *
+ *                                                                      *
+ * These are independent re-implementations of the three static         *
+ * functions in ngx_http.c that build the static location BST.         *
+ * They use ngx_pool_t* / ngx_log_t* instead of ngx_conf_t*.           *
+ * ------------------------------------------------------------------ */
+
+static ngx_int_t
+ngx_js_cmp_locations(const ngx_queue_t *one, const ngx_queue_t *two)
+{
+    ngx_int_t                   rc;
+    ngx_http_core_loc_conf_t   *first, *second;
+    ngx_http_location_queue_t  *lq1, *lq2;
+
+    lq1 = (ngx_http_location_queue_t *) one;
+    lq2 = (ngx_http_location_queue_t *) two;
+
+    first  = lq1->exact ? lq1->exact : lq1->inclusive;
+    second = lq2->exact ? lq2->exact : lq2->inclusive;
+
+    if (first->noname && !second->noname) {
+        return 1;
+    }
+
+    if (!first->noname && second->noname) {
+        return -1;
+    }
+
+    if (first->noname || second->noname) {
+        return 0;
+    }
+
+    if (first->named && !second->named) {
+        return 1;
+    }
+
+    if (!first->named && second->named) {
+        return -1;
+    }
+
+    if (first->named && second->named) {
+        return ngx_strcmp(first->name.data, second->name.data);
+    }
+
+#if (NGX_PCRE)
+
+    if (first->regex && !second->regex) {
+        return 1;
+    }
+
+    if (!first->regex && second->regex) {
+        return -1;
+    }
+
+    if (first->regex || second->regex) {
+        return 0;
+    }
+
+#endif
+
+    rc = ngx_filename_cmp(first->name.data, second->name.data,
+                          ngx_min(first->name.len, second->name.len) + 1);
+
+    if (rc == 0 && !first->exact_match && second->exact_match) {
+        return 1;
+    }
+
+    return rc;
+}
+
+
+static ngx_int_t
+ngx_js_join_exact_locations(ngx_log_t *log, ngx_queue_t *locations)
+{
+    ngx_queue_t                *q, *x;
+    ngx_http_location_queue_t  *lq, *lx;
+
+    q = ngx_queue_head(locations);
+
+    while (q != ngx_queue_last(locations)) {
+
+        x = ngx_queue_next(q);
+
+        lq = (ngx_http_location_queue_t *) q;
+        lx = (ngx_http_location_queue_t *) x;
+
+        if (lq->name->len == lx->name->len
+            && ngx_filename_cmp(lq->name->data, lx->name->data, lx->name->len)
+               == 0)
+        {
+            if ((lq->exact && lx->exact) || (lq->inclusive && lx->inclusive)) {
+                ngx_log_error(NGX_LOG_WARN, log, 0,
+                              "duplicate dynamic location \"%V\" ignored",
+                              lx->name);
+                ngx_queue_remove(x);
+                continue;
+            }
+
+            lq->inclusive = lx->inclusive;
+
+            ngx_queue_remove(x);
+
+            continue;
+        }
+
+        q = ngx_queue_next(q);
+    }
+
+    return NGX_OK;
+}
+
+
+static void
+ngx_js_create_locations_list(ngx_queue_t *locations, ngx_queue_t *q)
+{
+    u_char                     *name;
+    size_t                      len;
+    ngx_queue_t                *x, tail;
+    ngx_http_location_queue_t  *lq, *lx;
+
+    if (q == ngx_queue_last(locations)) {
+        return;
+    }
+
+    lq = (ngx_http_location_queue_t *) q;
+
+    if (lq->inclusive == NULL) {
+        ngx_js_create_locations_list(locations, ngx_queue_next(q));
+        return;
+    }
+
+    len  = lq->name->len;
+    name = lq->name->data;
+
+    for (x = ngx_queue_next(q);
+         x != ngx_queue_sentinel(locations);
+         x = ngx_queue_next(x))
+    {
+        lx = (ngx_http_location_queue_t *) x;
+
+        if (len > lx->name->len
+            || ngx_filename_cmp(name, lx->name->data, len) != 0)
+        {
+            break;
+        }
+    }
+
+    q = ngx_queue_next(q);
+
+    if (q == x) {
+        ngx_js_create_locations_list(locations, x);
+        return;
+    }
+
+    ngx_queue_split(locations, q, &tail);
+    ngx_queue_add(&lq->list, &tail);
+
+    if (x == ngx_queue_sentinel(locations)) {
+        ngx_js_create_locations_list(&lq->list, ngx_queue_head(&lq->list));
+        return;
+    }
+
+    ngx_queue_split(&lq->list, x, &tail);
+    ngx_queue_add(locations, &tail);
+
+    ngx_js_create_locations_list(&lq->list, ngx_queue_head(&lq->list));
+    ngx_js_create_locations_list(locations, x);
+}
+
+
+static ngx_http_location_tree_node_t *
+ngx_js_create_locations_tree(ngx_pool_t *pool, ngx_queue_t *locations,
+    size_t prefix)
+{
+    size_t                          len;
+    ngx_queue_t                    *q, tail;
+    ngx_http_location_queue_t      *lq;
+    ngx_http_location_tree_node_t  *node;
+
+    q  = ngx_queue_middle(locations);
+    lq = (ngx_http_location_queue_t *) q;
+    len = lq->name->len - prefix;
+
+    node = ngx_palloc(pool,
+                      offsetof(ngx_http_location_tree_node_t, name) + len);
+    if (node == NULL) {
+        return NULL;
+    }
+
+    node->left      = NULL;
+    node->right     = NULL;
+    node->tree      = NULL;
+    node->exact     = lq->exact;
+    node->inclusive = lq->inclusive;
+
+    node->auto_redirect = (u_char) (
+        (lq->exact     && lq->exact->auto_redirect) ||
+        (lq->inclusive && lq->inclusive->auto_redirect));
+
+    node->len = (u_short) len;
+    ngx_memcpy(node->name, &lq->name->data[prefix], len);
+
+    ngx_queue_split(locations, q, &tail);
+
+    if (ngx_queue_empty(locations)) {
+        goto inclusive;
+    }
+
+    node->left = ngx_js_create_locations_tree(pool, locations, prefix);
+    if (node->left == NULL) {
+        return NULL;
+    }
+
+    ngx_queue_remove(q);
+
+    if (ngx_queue_empty(&tail)) {
+        goto inclusive;
+    }
+
+    node->right = ngx_js_create_locations_tree(pool, &tail, prefix);
+    if (node->right == NULL) {
+        return NULL;
+    }
+
+inclusive:
+
+    if (ngx_queue_empty(&lq->list)) {
+        return node;
+    }
+
+    node->tree = ngx_js_create_locations_tree(pool, &lq->list, prefix + len);
+    if (node->tree == NULL) {
+        return NULL;
+    }
+
+    return node;
+}
+
+
+/*
+ * Recursively walk the static BST and add every (clcf, is_exact) pair
+ * into op->prefix_locs as a non-dynamic snapshot entry.
+ */
+static void
+ngx_js_snapshot_bst(ngx_js_server_opaque_t *op,
+    ngx_http_location_tree_node_t *node)
+{
+    ngx_js_loc_entry_t  *e;
+
+    if (node == NULL) {
+        return;
+    }
+
+    ngx_js_snapshot_bst(op, node->left);
+
+    if (node->exact) {
+        e = ngx_array_push(&op->prefix_locs);
+        if (e) {
+            e->clcf     = node->exact;
+            e->is_exact = 1;
+            e->dynamic  = 0;
+        }
+    }
+
+    if (node->inclusive) {
+        e = ngx_array_push(&op->prefix_locs);
+        if (e) {
+            e->clcf     = node->inclusive;
+            e->is_exact = 0;
+            e->dynamic  = 0;
+        }
+    }
+
+    ngx_js_snapshot_bst(op, node->tree);
+    ngx_js_snapshot_bst(op, node->right);
+}
+
+
+/*
+ * Rebuild the static location BST from op->prefix_locs[] and the
+ * regex_locations array from op->regex_locs[].  Atomically swaps
+ * root_clcf->static_locations and root_clcf->regex_locations.
+ */
+static ngx_int_t
+ngx_js_rebuild_loc_tree(ngx_js_server_opaque_t *op, ngx_log_t *log)
+{
+    ngx_pool_t                    *pool;
+    ngx_queue_t                    locations;
+    ngx_uint_t                     i;
+    ngx_js_loc_entry_t            *e;
+    ngx_http_location_queue_t     *lq;
+    ngx_http_location_tree_node_t *new_root;
+    ngx_http_core_loc_conf_t      *root_clcf;
+#if (NGX_PCRE)
+    ngx_http_core_loc_conf_t     **rloc_arr, **rp;
+#endif
+
+    pool = ngx_create_pool(4096, log);
+    if (pool == NULL) {
+        return NGX_ERROR;
+    }
+
+    /* Build a location queue from prefix_locs[] */
+
+    ngx_queue_init(&locations);
+
+    e = op->prefix_locs.elts;
+
+    for (i = 0; i < op->prefix_locs.nelts; i++) {
+
+        lq = ngx_palloc(pool, sizeof(ngx_http_location_queue_t));
+        if (lq == NULL) {
+            ngx_destroy_pool(pool);
+            return NGX_ERROR;
+        }
+
+        ngx_memzero(lq, sizeof(*lq));
+        ngx_queue_init(&lq->list);
+
+        if (e[i].is_exact) {
+            lq->exact     = e[i].clcf;
+            lq->inclusive = NULL;
+        } else {
+            lq->exact     = NULL;
+            lq->inclusive = e[i].clcf;
+        }
+
+        lq->name      = &e[i].clcf->name;
+        lq->file_name = (u_char *) "dynamic";
+        lq->line      = 0;
+
+        ngx_queue_insert_tail(&locations, &lq->queue);
+    }
+
+    if (ngx_queue_empty(&locations)) {
+        new_root = NULL;
+        goto swap;
+    }
+
+    /* Sort, join exact pairs, build list structure, build BST */
+
+    ngx_queue_sort(&locations, ngx_js_cmp_locations);
+
+    if (ngx_js_join_exact_locations(log, &locations) != NGX_OK) {
+        ngx_destroy_pool(pool);
+        return NGX_ERROR;
+    }
+
+    ngx_js_create_locations_list(&locations, ngx_queue_head(&locations));
+
+    new_root = ngx_js_create_locations_tree(pool, &locations, 0);
+    if (new_root == NULL) {
+        ngx_destroy_pool(pool);
+        return NGX_ERROR;
+    }
+
+swap:
+
+    root_clcf = op->cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+
+    /* Swap BST root */
+    root_clcf->static_locations = new_root;
+
+#if (NGX_PCRE)
+    /* Rebuild regex_locations array */
+    if (op->regex_locs.nelts > 0) {
+
+        rloc_arr = ngx_palloc(pool,
+            (op->regex_locs.nelts + 1) * sizeof(ngx_http_core_loc_conf_t *));
+        if (rloc_arr == NULL) {
+            ngx_destroy_pool(pool);
+            return NGX_ERROR;
+        }
+
+        rp = (ngx_http_core_loc_conf_t **) op->regex_locs.elts;
+        ngx_memcpy(rloc_arr, rp,
+                   op->regex_locs.nelts * sizeof(ngx_http_core_loc_conf_t *));
+        rloc_arr[op->regex_locs.nelts] = NULL;
+
+        root_clcf->regex_locations = rloc_arr;
+
+    } else {
+        root_clcf->regex_locations = NULL;
+    }
+#endif
+
+    /* Free the previous tree pool (if we own it; never free cycle->pool) */
+    if (op->tree_pool) {
+        ngx_destroy_pool(op->tree_pool);
+    }
+
+    op->tree_pool = pool;
+
+    return NGX_OK;
+}
+
+
+/*
+ * Find a prefix/exact clcf by path string in op->prefix_locs[].
+ * Returns NULL if not found.
+ */
+static ngx_http_core_loc_conf_t *
+ngx_js_find_prefix_clcf(ngx_js_server_opaque_t *op, const char *path)
+{
+    ngx_uint_t           i;
+    ngx_js_loc_entry_t  *e;
+    size_t               plen;
+
+    plen = ngx_strlen(path);
+    e    = op->prefix_locs.elts;
+
+    for (i = 0; i < op->prefix_locs.nelts; i++) {
+        if (e[i].clcf->name.len == plen
+            && ngx_strncmp(e[i].clcf->name.data, path, plen) == 0)
+        {
+            return e[i].clcf;
+        }
+    }
+
+    return NULL;
+}
+
+
+/*
+ * srv.addLocation(pattern [, {template: '/existing-path'}])
+ *
+ * Supported pattern prefixes (whitespace after prefix is optional):
+ *   "= /path"   — exact match
+ *   "^~ /path"  — preferential prefix (disables regex scan on match)
+ *   "/path"     — normal prefix
+ *
+ * Returns the new NginxLocation object so the caller can set
+ *   loc.handler, loc.root, etc. immediately.
+ */
+static JSValue
+ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t    *op;
+    ngx_http_core_loc_conf_t  *new_clcf, *tmpl_clcf, *srv_clcf;
+    ngx_js_loc_conf_t         *jlcf;
+    ngx_js_loc_entry_t        *entry;
+    JSValue                    opts, tmpl_val;
+    const char                *pat_str, *tmpl_path;
+    ngx_str_t                  name;
+    u_char                    *p;
+    int                        exact_match, noregex;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->dyn_pool == NULL) {
+        return JS_ThrowInternalError(ctx,
+            "addLocation: dynamic pool not initialised");
+    }
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "addLocation: first argument must be a pattern string");
+    }
+
+    pat_str = JS_ToCString(ctx, argv[0]);
+    if (!pat_str) {
+        return JS_EXCEPTION;
+    }
+
+    /* Trim leading whitespace */
+    p = (u_char *) pat_str;
+    while (*p == ' ') { p++; }
+
+    exact_match = 0;
+    noregex     = 0;
+
+    /* Detect "= " prefix */
+    if (p[0] == '=' && p[1] == ' ') {
+        exact_match = 1;
+        p += 2;
+        while (*p == ' ') { p++; }
+
+    /* Detect "^~ " prefix */
+    } else if (p[0] == '^' && p[1] == '~' && p[2] == ' ') {
+        noregex = 1;
+        p += 3;
+        while (*p == ' ') { p++; }
+
+    /* Detect "~" or "~*" — not supported yet */
+    } else if (p[0] == '~') {
+        JS_FreeCString(ctx, pat_str);
+        return JS_ThrowTypeError(ctx,
+            "addLocation: regex locations (~, ~*) not yet supported;"
+            " use a prefix or exact pattern");
+    }
+
+    name.len  = ngx_strlen(p);
+    name.data = ngx_pnalloc(op->dyn_pool, name.len + 1);
+    if (name.data == NULL) {
+        JS_FreeCString(ctx, pat_str);
+        return JS_EXCEPTION;
+    }
+
+    ngx_memcpy(name.data, p, name.len);
+    name.data[name.len] = '\0';
+
+    JS_FreeCString(ctx, pat_str);
+
+    /* Look up optional template */
+    tmpl_clcf = NULL;
+
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+        opts = argv[1];
+
+        tmpl_val = JS_GetPropertyStr(ctx, opts, "template");
+        if (!JS_IsUndefined(tmpl_val) && !JS_IsNull(tmpl_val)) {
+            tmpl_path = JS_ToCString(ctx, tmpl_val);
+            if (tmpl_path) {
+                tmpl_clcf = ngx_js_find_prefix_clcf(op, tmpl_path);
+                JS_FreeCString(ctx, tmpl_path);
+            }
+        }
+        JS_FreeValue(ctx, tmpl_val);
+    }
+
+    /* Server's default (implicit "/") loc_conf — used as fallback template */
+    srv_clcf = op->cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+
+    /* Allocate and initialise the new clcf */
+    new_clcf = ngx_palloc(op->dyn_pool, sizeof(ngx_http_core_loc_conf_t));
+    if (new_clcf == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (tmpl_clcf) {
+        ngx_memcpy(new_clcf, tmpl_clcf, sizeof(ngx_http_core_loc_conf_t));
+    } else {
+        ngx_memcpy(new_clcf, srv_clcf, sizeof(ngx_http_core_loc_conf_t));
+    }
+
+    /* Override identity fields */
+    new_clcf->name         = name;
+    new_clcf->escaped_name = name;
+    new_clcf->exact_match  = exact_match;
+    new_clcf->noregex      = noregex;
+    new_clcf->named        = 0;
+    new_clcf->noname       = 0;
+#if (NGX_PCRE)
+    new_clcf->regex        = NULL;
+#endif
+    new_clcf->static_locations = NULL;
+#if (NGX_PCRE)
+    new_clcf->regex_locations  = NULL;
+#endif
+    new_clcf->handler = NULL;
+
+    /* Fresh loc_conf pointer array (shared module conf pointers, except JS).
+     * Source priority: template's loc_conf → server ctx loc_conf.
+     * Use op->cscf->ctx->loc_conf directly (not srv_clcf->loc_conf) because
+     * the server root clcf's loc_conf field may be NULL after merge. */
+    {
+        void **base = (tmpl_clcf && tmpl_clcf->loc_conf)
+                      ? tmpl_clcf->loc_conf
+                      : op->cscf->ctx->loc_conf;
+
+        new_clcf->loc_conf = ngx_palloc(op->dyn_pool,
+                                        sizeof(void *) * ngx_http_max_module);
+        if (new_clcf->loc_conf == NULL) {
+            return JS_EXCEPTION;
+        }
+
+        if (base) {
+            ngx_memcpy(new_clcf->loc_conf, base,
+                       sizeof(void *) * ngx_http_max_module);
+        } else {
+            ngx_memzero(new_clcf->loc_conf,
+                        sizeof(void *) * ngx_http_max_module);
+        }
+
+        /*
+         * CRITICAL: loc_conf[core_idx] must point to new_clcf itself,
+         * not to srv_clcf.  ngx_http_core_find_location uses this slot
+         * to get pclcf->static_locations for nested location search.
+         * If it pointed to srv_clcf, the search would loop back into the
+         * top-level BST and recurse infinitely → stack overflow → SIGSEGV.
+         */
+        new_clcf->loc_conf[ngx_http_core_module.ctx_index] = new_clcf;
+    }
+
+    /* Fresh ngx_js_loc_conf_t — handler_idx starts at -1 (no handler) */
+    jlcf = ngx_pcalloc(op->dyn_pool, sizeof(ngx_js_loc_conf_t));
+    if (jlcf == NULL) {
+        return JS_EXCEPTION;
+    }
+    jlcf->handler_idx = -1;
+    new_clcf->loc_conf[ngx_js_http_module.ctx_index] = jlcf;
+
+    /* Append to prefix_locs[] */
+    entry = ngx_array_push(&op->prefix_locs);
+    if (entry == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    entry->clcf     = new_clcf;
+    entry->is_exact = exact_match;
+    entry->dynamic  = 1;
+
+    /* Rebuild the live location tree */
+    if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+        op->prefix_locs.nelts--;  /* roll back the push */
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_wrap_location(ctx, new_clcf);
+}
 
 
 static void
@@ -2258,6 +2904,14 @@ ngx_js_server_finalizer(JSRuntime *rt, JSValue val)
 
     op = JS_GetOpaque(val, ngx_js_server_class_id);
     if (op) {
+        if (op->tree_pool) {
+            ngx_destroy_pool(op->tree_pool);
+            op->tree_pool = NULL;
+        }
+        if (op->dyn_pool) {
+            ngx_destroy_pool(op->dyn_pool);
+            op->dyn_pool = NULL;
+        }
         js_free_rt(rt, op);
     }
 }
@@ -2768,6 +3422,7 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("requestPoolSize",          ngx_js_server_get,                       ngx_js_server_set, 9),
     JS_CGETSET_DEF       ("largeClientHeaderBuffers", ngx_js_server_get_large_client_hdr_bufs, NULL),
     JS_CGETSET_DEF       ("ssl",                      ngx_js_server_get_ssl,                   NULL),
+    JS_CFUNC_DEF         ("addLocation",              1, ngx_js_server_fn_add_location),
 };
 
 
@@ -2837,8 +3492,65 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
         }
     }
 
+    /*
+     * Initialise the dynamic location pool and snapshot all existing
+     * prefix/exact locations from the static BST into op->prefix_locs[].
+     * This lets ngx_js_rebuild_loc_tree reconstruct the full tree from
+     * scratch when addLocation is called later.
+     */
+    op->dyn_pool = ngx_create_pool(4096, cycle->log);
+    if (op->dyn_pool == NULL) {
+        js_free(ctx, op);
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_array_init(&op->prefix_locs, op->dyn_pool, 16,
+                       sizeof(ngx_js_loc_entry_t)) != NGX_OK)
+    {
+        ngx_destroy_pool(op->dyn_pool);
+        js_free(ctx, op);
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_array_init(&op->regex_locs, op->dyn_pool, 4,
+                       sizeof(ngx_http_core_loc_conf_t *)) != NGX_OK)
+    {
+        ngx_destroy_pool(op->dyn_pool);
+        js_free(ctx, op);
+        return JS_EXCEPTION;
+    }
+
+    {
+        ngx_http_core_loc_conf_t  *root_clcf;
+#if (NGX_PCRE)
+        ngx_http_core_loc_conf_t **rloc;
+        ngx_http_core_loc_conf_t **rp;
+#endif
+
+        root_clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+
+        /* Snapshot regex locations first (preserve their order) */
+#if (NGX_PCRE)
+        if (root_clcf->regex_locations) {
+            for (rloc = root_clcf->regex_locations; *rloc; rloc++) {
+                rp = ngx_array_push(&op->regex_locs);
+                if (rp == NULL) {
+                    ngx_destroy_pool(op->dyn_pool);
+                    js_free(ctx, op);
+                    return JS_EXCEPTION;
+                }
+                *rp = *rloc;
+            }
+        }
+#endif
+
+        /* Snapshot prefix/exact locations from the static BST */
+        ngx_js_snapshot_bst(op, root_clcf->static_locations);
+    }
+
     obj = JS_NewObjectClass(ctx, ngx_js_server_class_id);
     if (JS_IsException(obj)) {
+        ngx_destroy_pool(op->dyn_pool);
         js_free(ctx, op);
         return JS_EXCEPTION;
     }
