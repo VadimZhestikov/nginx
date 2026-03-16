@@ -93,15 +93,21 @@ static JSClassDef ngx_js_cycle_class = {
 
 /*
  * Magic values for ngx_js_cycle_get / ngx_js_cycle_set:
- *   0 — hostname      (r/o string)
- *   1 — prefix        (r/o string, conf_prefix — config directory)
- *   2 — workers       (r/w number)
- *   3 — confFile      (r/o string, full config file path)
- *   4 — errorLog      (r/o string, error log path)
- *   5 — installPrefix (r/o string, installation prefix, cycle->prefix)
- *   6 — pid           (r/o string, pid file path)
- *   7 — connectionN   (r/o number, max connections per worker)
- *   8 — daemon        (r/o boolean)
+ *   0 — hostname          (r/o string)
+ *   1 — prefix            (r/o string, conf_prefix — config directory)
+ *   2 — workers           (r/w number)
+ *   3 — confFile          (r/o string, full config file path)
+ *   4 — errorLog          (r/o string, error log path)
+ *   5 — installPrefix     (r/o string, installation prefix, cycle->prefix)
+ *   6 — pid               (r/o string, pid file path)
+ *   7 — connectionN       (r/o number, max connections per worker)
+ *   8 — daemon            (r/o boolean)
+ *   9 — master            (r/o boolean, master_process on/off)
+ *  10 — timerResolution   (r/o ms, timer_resolution; 0 = disabled)
+ *  11 — shutdownTimeout   (r/o ms, worker_shutdown_timeout; 0 = disabled)
+ *  12 — priority          (r/o number, worker_priority nice value)
+ *  13 — rlimitNofile      (r/o number, worker_rlimit_nofile; -1 if unset)
+ *  14 — workingDirectory  (r/o string, working_directory; "" if unset)
  */
 static JSValue
 ngx_js_cycle_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -158,6 +164,37 @@ ngx_js_cycle_get(JSContext *ctx, JSValueConst this_val, int magic)
                                                ngx_core_module);
         return JS_NewBool(ctx, (int) ccf->daemon);
 
+    case 9: /* master — master_process on/off */
+        ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
+                                               ngx_core_module);
+        return JS_NewBool(ctx, (int) ccf->master);
+
+    case 10: /* timerResolution — ms (0 = disabled) */
+        ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
+                                               ngx_core_module);
+        return JS_NewInt64(ctx, (int64_t) ccf->timer_resolution);
+
+    case 11: /* shutdownTimeout — ms (0 = disabled) */
+        ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
+                                               ngx_core_module);
+        return JS_NewInt64(ctx, (int64_t) ccf->shutdown_timeout);
+
+    case 12: /* priority — worker_priority (nice value, 0 = default) */
+        ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
+                                               ngx_core_module);
+        return JS_NewInt32(ctx, (int32_t) ccf->priority);
+
+    case 13: /* rlimitNofile — worker_rlimit_nofile (-1 if unset) */
+        ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
+                                               ngx_core_module);
+        return JS_NewInt64(ctx, (int64_t) ccf->rlimit_nofile);
+
+    case 14: /* workingDirectory — working_directory ("" if unset) */
+        ccf = (ngx_core_conf_t *) ngx_get_conf(op->cycle->conf_ctx,
+                                               ngx_core_module);
+        return JS_NewStringLen(ctx,
+                               (const char *) ccf->working_directory.data,
+                               ccf->working_directory.len);
     }
 
     return JS_UNDEFINED;
@@ -199,8 +236,14 @@ static const JSCFunctionListEntry ngx_js_cycle_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("errorLog",      ngx_js_cycle_get, NULL,             4),
     JS_CGETSET_MAGIC_DEF("installPrefix", ngx_js_cycle_get, NULL,             5),
     JS_CGETSET_MAGIC_DEF("pid",           ngx_js_cycle_get, NULL,             6),
-    JS_CGETSET_MAGIC_DEF("connectionN",   ngx_js_cycle_get, NULL,             7),
-    JS_CGETSET_MAGIC_DEF("daemon",        ngx_js_cycle_get, NULL,             8),
+    JS_CGETSET_MAGIC_DEF("connectionN",       ngx_js_cycle_get, NULL,             7),
+    JS_CGETSET_MAGIC_DEF("daemon",            ngx_js_cycle_get, NULL,             8),
+    JS_CGETSET_MAGIC_DEF("master",            ngx_js_cycle_get, NULL,             9),
+    JS_CGETSET_MAGIC_DEF("timerResolution",   ngx_js_cycle_get, NULL,            10),
+    JS_CGETSET_MAGIC_DEF("shutdownTimeout",   ngx_js_cycle_get, NULL,            11),
+    JS_CGETSET_MAGIC_DEF("priority",          ngx_js_cycle_get, NULL,            12),
+    JS_CGETSET_MAGIC_DEF("rlimitNofile",      ngx_js_cycle_get, NULL,            13),
+    JS_CGETSET_MAGIC_DEF("workingDirectory",  ngx_js_cycle_get, NULL,            14),
 };
 
 
