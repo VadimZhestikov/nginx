@@ -229,6 +229,9 @@ static JSValue ngx_js_location_fn_clone(JSContext *ctx,
 static JSValue ngx_js_http_fn_match(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 
+static JSValue ngx_js_server_fn_find_location(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv);
+
 static JSValue ngx_js_wrap_server(JSContext *ctx,
     ngx_http_core_srv_conf_t *cscf, ngx_cycle_t *cycle);
 
@@ -4633,6 +4636,7 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CFUNC_DEF         ("addLocation",              1, ngx_js_server_fn_add_location),
     JS_CFUNC_DEF         ("removeLocation",           1, ngx_js_server_fn_remove_location),
     JS_CFUNC_DEF         ("clone",                    1, ngx_js_server_fn_clone),
+    JS_CFUNC_DEF         ("findLocation",             1, ngx_js_server_fn_find_location),
 };
 
 
@@ -5484,6 +5488,147 @@ ngx_js_http_remove_server(JSContext *ctx, JSValueConst this_val,
     JS_FreeValue(ctx, servers_arr);
 
     return JS_TRUE;
+}
+
+
+/*
+ * srv.findLocation(pattern)
+ *
+ * Returns the NginxLocation whose pattern exactly equals the given string,
+ * or null if no such location exists on this server.
+ *
+ * Pattern syntax is identical to addLocation():
+ *   "/path"        — plain prefix
+ *   "= /path"      — exact match
+ *   "^~ /path"     — preferential prefix
+ *   "~ /regex"     — case-sensitive regex
+ *   "~* /regex"    — case-insensitive regex
+ *   "@name"        — named location
+ */
+static JSValue
+ngx_js_server_fn_find_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t    *op;
+    const char                *pat_str;
+    u_char                    *p;
+    ngx_str_t                  name;
+    int                        exact_match, noregex, is_named;
+#if (NGX_PCRE)
+    int                        is_regex;
+#endif
+    ngx_js_loc_entry_t        *pe;
+    ngx_uint_t                 i;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "findLocation: pattern string required");
+    }
+
+    pat_str = JS_ToCString(ctx, argv[0]);
+    if (pat_str == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    /* Parse modifier prefix — same logic as ngx_js_do_add_location */
+    p = (u_char *) pat_str;
+    while (*p == ' ') { p++; }
+
+    exact_match = 0;
+    noregex     = 0;
+    is_named    = 0;
+#if (NGX_PCRE)
+    is_regex    = 0;
+#endif
+
+    if (p[0] == '@') {
+        is_named = 1;
+
+    } else if (p[0] == '=' && p[1] == ' ') {
+        exact_match = 1;
+        p += 2;
+        while (*p == ' ') { p++; }
+
+    } else if (p[0] == '^' && p[1] == '~' && p[2] == ' ') {
+        noregex = 1;
+        p += 3;
+        while (*p == ' ') { p++; }
+
+#if (NGX_PCRE)
+    } else if (p[0] == '~' && p[1] == '*' && p[2] == ' ') {
+        is_regex = 1;
+        p += 3;
+        while (*p == ' ') { p++; }
+
+    } else if (p[0] == '~' && p[1] == ' ') {
+        is_regex = 1;
+        p += 2;
+        while (*p == ' ') { p++; }
+#endif
+    }
+
+    name.data = p;
+    name.len  = ngx_strlen(p);
+
+    JS_FreeCString(ctx, pat_str);
+
+#if (NGX_PCRE)
+    /* Scan regex_locs[] */
+    if (is_regex) {
+        ngx_js_regex_entry_t  *re = op->regex_locs.elts;
+        for (i = 0; i < op->regex_locs.nelts; i++) {
+            ngx_http_core_loc_conf_t  *clcf = re[i].clcf;
+            if (clcf->name.len == name.len
+                && ngx_memcmp(clcf->name.data, name.data, name.len) == 0)
+            {
+                return ngx_js_wrap_location_ex(ctx, clcf, op);
+            }
+        }
+        return JS_NULL;
+    }
+#endif
+
+    /* Scan named_locs[] */
+    if (is_named) {
+        pe = op->named_locs.elts;
+        for (i = 0; i < op->named_locs.nelts; i++) {
+            ngx_http_core_loc_conf_t  *clcf = pe[i].clcf;
+            if (clcf->name.len == name.len
+                && ngx_memcmp(clcf->name.data, name.data, name.len) == 0)
+            {
+                return ngx_js_wrap_location_ex(ctx, clcf, op);
+            }
+        }
+        return JS_NULL;
+    }
+
+    /* Scan prefix_locs[] (exact, noregex, and plain prefix) */
+    pe = op->prefix_locs.elts;
+    for (i = 0; i < op->prefix_locs.nelts; i++) {
+        ngx_http_core_loc_conf_t  *clcf = pe[i].clcf;
+
+        if ((int) clcf->exact_match != exact_match) {
+            continue;
+        }
+        if ((int) clcf->noregex != noregex) {
+            continue;
+        }
+        if (clcf->name.len != name.len) {
+            continue;
+        }
+        if (ngx_memcmp(clcf->name.data, name.data, name.len) != 0) {
+            continue;
+        }
+
+        return ngx_js_wrap_location_ex(ctx, clcf, op);
+    }
+
+    return JS_NULL;
 }
 
 
