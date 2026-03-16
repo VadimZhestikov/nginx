@@ -2342,6 +2342,7 @@ typedef struct {
     ngx_pool_t                *tree_pool;
     ngx_array_t                prefix_locs;  /* ngx_js_loc_entry_t[] */
     ngx_array_t                regex_locs;   /* ngx_js_regex_entry_t[] */
+    ngx_array_t                named_locs;   /* ngx_js_loc_entry_t[] (@name) */
 } ngx_js_server_opaque_t;
 
 
@@ -2735,6 +2736,30 @@ swap:
     }
 #endif
 
+    /* Rebuild cscf->named_locations from op->named_locs[] */
+    {
+        ngx_js_loc_entry_t        *ne;
+        ngx_http_core_loc_conf_t **nloc_arr;
+        ngx_uint_t                 ni;
+
+        if (op->named_locs.nelts > 0) {
+            nloc_arr = ngx_palloc(pool,
+                (op->named_locs.nelts + 1) * sizeof(ngx_http_core_loc_conf_t *));
+            if (nloc_arr == NULL) {
+                ngx_destroy_pool(pool);
+                return NGX_ERROR;
+            }
+            ne = (ngx_js_loc_entry_t *) op->named_locs.elts;
+            for (ni = 0; ni < op->named_locs.nelts; ni++) {
+                nloc_arr[ni] = ne[ni].clcf;
+            }
+            nloc_arr[op->named_locs.nelts] = NULL;
+            op->cscf->named_locations = nloc_arr;
+        } else {
+            op->cscf->named_locations = NULL;
+        }
+    }
+
     /* Free the previous tree pool (if we own it; never free cycle->pool) */
     if (op->tree_pool) {
         ngx_destroy_pool(op->tree_pool);
@@ -2806,7 +2831,7 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
     const char                *pat_str, *tmpl_path;
     ngx_str_t                  name;
     u_char                    *p;
-    int                        exact_match, noregex;
+    int                        exact_match, noregex, is_named;
 #if (NGX_PCRE)
     int                        is_regex, caseless;
     ngx_int_t                  regex_index;  /* insert position; -1 = append */
@@ -2838,39 +2863,46 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
 
     exact_match = 0;
     noregex     = 0;
+    is_named    = 0;
 #if (NGX_PCRE)
     is_regex    = 0;
     caseless    = 0;
 #endif
 
+    /* Detect "@name" — named location */
+    if (p[0] == '@') {
+        is_named = 1;
+        /* name keeps the '@' prefix (that is how nginx stores it) */
+    }
+
     /* Detect "= " prefix */
-    if (p[0] == '=' && p[1] == ' ') {
+    if (!is_named && p[0] == '=' && p[1] == ' ') {
         exact_match = 1;
         p += 2;
         while (*p == ' ') { p++; }
 
     /* Detect "^~ " prefix */
-    } else if (p[0] == '^' && p[1] == '~' && p[2] == ' ') {
+    } else if (!is_named && p[0] == '^' && p[1] == '~' && p[2] == ' ') {
         noregex = 1;
         p += 3;
         while (*p == ' ') { p++; }
 
 #if (NGX_PCRE)
     /* Detect "~* " prefix — case-insensitive regex */
-    } else if (p[0] == '~' && p[1] == '*' && p[2] == ' ') {
+    } else if (!is_named && p[0] == '~' && p[1] == '*' && p[2] == ' ') {
         is_regex = 1;
         caseless = 1;
         p += 3;
         while (*p == ' ') { p++; }
 
     /* Detect "~ " prefix — case-sensitive regex */
-    } else if (p[0] == '~' && p[1] == ' ') {
+    } else if (!is_named && p[0] == '~' && p[1] == ' ') {
         is_regex = 1;
         caseless = 0;
         p += 2;
         while (*p == ' ') { p++; }
 #else
-    } else if (p[0] == '~') {
+    } else if (!is_named && p[0] == '~') {
         JS_FreeCString(ctx, pat_str);
         return JS_ThrowTypeError(ctx,
             "addLocation: regex locations require PCRE support");
@@ -2895,8 +2927,22 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
      * rather than adding a second entry.  This makes addLocation idempotent
      * — calling it twice safely returns the same location object.
      */
+    if (is_named) {
+        ngx_js_loc_entry_t  *dup_e;
+        ngx_uint_t           di;
+
+        dup_e = (ngx_js_loc_entry_t *) op->named_locs.elts;
+        for (di = 0; di < op->named_locs.nelts; di++) {
+            if (dup_e[di].clcf->name.len == name.len
+                && ngx_memcmp(dup_e[di].clcf->name.data,
+                              name.data, name.len) == 0)
+            {
+                return ngx_js_wrap_location(ctx, dup_e[di].clcf);
+            }
+        }
+    }
 #if (NGX_PCRE)
-    if (is_regex) {
+    else if (is_regex) {
         ngx_js_regex_entry_t  *dup_re;
         ngx_uint_t             di;
 
@@ -2911,7 +2957,7 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
         }
     } else {
 #endif
-    {
+    if (!is_named) {
         ngx_js_loc_entry_t  *dup_e;
         ngx_uint_t           di;
 
@@ -3036,7 +3082,7 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
     new_clcf->escaped_name = name;
     new_clcf->exact_match  = exact_match;
     new_clcf->noregex      = noregex;
-    new_clcf->named        = 0;
+    new_clcf->named        = is_named;
     new_clcf->noname       = 0;
 #if (NGX_PCRE)
     new_clcf->regex        = NULL;  /* set below for regex locations */
@@ -3164,20 +3210,38 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
 
     } else {
 #endif
-        /* Append to prefix_locs[] */
-        entry = ngx_array_push(&op->prefix_locs);
-        if (entry == NULL) {
-            return JS_EXCEPTION;
-        }
+        if (is_named) {
+            /* Append to named_locs[] */
+            entry = ngx_array_push(&op->named_locs);
+            if (entry == NULL) {
+                return JS_EXCEPTION;
+            }
 
-        entry->clcf     = new_clcf;
-        entry->is_exact = exact_match;
-        entry->dynamic  = 1;
+            entry->clcf     = new_clcf;
+            entry->is_exact = 0;
+            entry->dynamic  = 1;
 
-        /* Rebuild the live location tree */
-        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
-            op->prefix_locs.nelts--;  /* roll back the push */
-            return JS_EXCEPTION;
+            if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+                op->named_locs.nelts--;
+                return JS_EXCEPTION;
+            }
+
+        } else {
+            /* Append to prefix_locs[] */
+            entry = ngx_array_push(&op->prefix_locs);
+            if (entry == NULL) {
+                return JS_EXCEPTION;
+            }
+
+            entry->clcf     = new_clcf;
+            entry->is_exact = exact_match;
+            entry->dynamic  = 1;
+
+            /* Rebuild the live location tree */
+            if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+                op->prefix_locs.nelts--;  /* roll back the push */
+                return JS_EXCEPTION;
+            }
         }
 #if (NGX_PCRE)
     }
@@ -3213,7 +3277,7 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
     u_char                    *p;
     ngx_str_t                  name;
     ngx_uint_t                 i;
-    int                        exact_match;
+    int                        exact_match, is_named;
 #if (NGX_PCRE)
     int                        is_regex;
     ngx_js_regex_entry_t      *re;
@@ -3239,11 +3303,15 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
     while (*p == ' ') { p++; }
 
     exact_match = 0;
+    is_named    = 0;
 #if (NGX_PCRE)
     is_regex    = 0;
 #endif
 
-    if (p[0] == '=' && p[1] == ' ') {
+    if (p[0] == '@') {
+        is_named = 1;   /* name keeps the '@' */
+
+    } else if (p[0] == '=' && p[1] == ' ') {
         exact_match = 1;
         p += 2;
         while (*p == ' ') { p++; }
@@ -3272,6 +3340,38 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
 
     name.len  = ngx_strlen(p);
     name.data = (u_char *) p;
+
+    /* Named location removal */
+    if (is_named) {
+        e = (ngx_js_loc_entry_t *) op->named_locs.elts;
+
+        for (i = 0; i < op->named_locs.nelts; i++) {
+            if (e[i].clcf->name.len == name.len
+                && ngx_memcmp(e[i].clcf->name.data, name.data, name.len) == 0)
+            {
+                break;
+            }
+        }
+
+        JS_FreeCString(ctx, pat_str);
+
+        if (i == op->named_locs.nelts) {
+            return JS_FALSE;   /* not found */
+        }
+
+        if (i < op->named_locs.nelts - 1) {
+            ngx_memmove(&e[i], &e[i + 1],
+                        (op->named_locs.nelts - i - 1) * sizeof(*e));
+        }
+        op->named_locs.nelts--;
+
+        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+            op->named_locs.nelts++;
+            return JS_EXCEPTION;
+        }
+
+        return JS_TRUE;
+    }
 
 #if (NGX_PCRE)
     if (is_regex) {
@@ -3974,12 +4074,22 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
         return JS_EXCEPTION;
     }
 
+    if (ngx_array_init(&op->named_locs, op->dyn_pool, 4,
+                       sizeof(ngx_js_loc_entry_t)) != NGX_OK)
+    {
+        ngx_destroy_pool(op->dyn_pool);
+        js_free(ctx, op);
+        return JS_EXCEPTION;
+    }
+
     {
         ngx_http_core_loc_conf_t  *root_clcf;
 #if (NGX_PCRE)
         ngx_http_core_loc_conf_t **rloc;
         ngx_js_regex_entry_t      *re;
 #endif
+        ngx_http_core_loc_conf_t **nloc;
+        ngx_js_loc_entry_t        *ne;
 
         root_clcf = cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
 
@@ -3999,6 +4109,21 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
             }
         }
 #endif
+
+        /* Snapshot named locations */
+        if (cscf->named_locations) {
+            for (nloc = cscf->named_locations; *nloc; nloc++) {
+                ne = ngx_array_push(&op->named_locs);
+                if (ne == NULL) {
+                    ngx_destroy_pool(op->dyn_pool);
+                    js_free(ctx, op);
+                    return JS_EXCEPTION;
+                }
+                ne->clcf     = *nloc;
+                ne->is_exact = 0;
+                ne->dynamic  = 0;
+            }
+        }
 
         /* Snapshot prefix/exact locations from the static BST */
         ngx_js_snapshot_bst(op, root_clcf->static_locations);
