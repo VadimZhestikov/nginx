@@ -19,7 +19,8 @@
 #include "ngx_js_socket.h"
 
 
-#define NGX_JS_STREAM_LISTENER_REG_MAX  32
+#define NGX_JS_STREAM_LISTENER_REG_MAX      32
+#define NGX_JS_STREAM_LISTENER_VSERVERS_MAX 16
 
 
 /*
@@ -47,6 +48,11 @@ typedef struct {
 
     /* Set by addServer() */
     ngx_stream_core_srv_conf_t   *default_server;   /* NULL until addServer() */
+    ngx_cycle_t                  *cycle;             /* cycle used for activation */
+
+    /* Set by addVirtualServer() — SNI routing */
+    ngx_stream_core_srv_conf_t   *vservers[NGX_JS_STREAM_LISTENER_VSERVERS_MAX];
+    ngx_uint_t                    nvservers;
 
     unsigned                      activated:1;       /* 1 after cycle->listening push */
 } ngx_js_stream_listener_state_t;
