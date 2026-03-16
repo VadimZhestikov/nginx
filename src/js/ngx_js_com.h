@@ -67,6 +67,10 @@ extern JSClassID  ngx_js_socket_class_id;             /* nginx.createSocket()   
 extern JSClassID  ngx_js_http_listener_class_id;     /* nginx.http.attach()      (Stage 52) */
 extern JSClassID  ngx_js_stream_server_class_id;     /* nginx.stream.servers[]   (Stage 52G) */
 extern JSClassID  ngx_js_stream_listener_class_id;   /* nginx.stream.attach()    (Stage 52G) */
+extern JSClassID  ngx_js_stream_proxy_class_id;      /* server.proxy             (Stage 53)  */
+extern JSClassID  ngx_js_stream_upstream_class_id;   /* nginx.stream.upstreams[] (Stage 53)  */
+extern JSClassID  ngx_js_stream_peer_class_id;       /* stream config-phase peer (Stage 53)  */
+extern JSClassID  ngx_js_stream_rr_peer_class_id;    /* stream runtime RR peer   (Stage 53)  */
 
 
 /*
@@ -199,6 +203,9 @@ ngx_int_t  ngx_js_stream_listener_register_classes(JSRuntime *rt);
 ngx_int_t  ngx_js_stream_listener_install_protos(JSContext *ctx);
 ngx_int_t  ngx_js_stream_install(JSContext *ctx, JSValue nginx_obj,
     ngx_cycle_t *cycle);
+ngx_int_t  ngx_js_stream_upstream_register_classes(JSRuntime *rt);
+ngx_int_t  ngx_js_stream_upstream_com_install(JSContext *ctx,
+    JSValue stream_obj, ngx_cycle_t *cycle);
 
 
 /*

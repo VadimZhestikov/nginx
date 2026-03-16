@@ -478,6 +478,10 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_http_listener_class_id);
         JS_NewClassID(&ngx_js_stream_server_class_id);
         JS_NewClassID(&ngx_js_stream_listener_class_id);
+        JS_NewClassID(&ngx_js_stream_proxy_class_id);
+        JS_NewClassID(&ngx_js_stream_upstream_class_id);
+        JS_NewClassID(&ngx_js_stream_peer_class_id);
+        JS_NewClassID(&ngx_js_stream_rr_peer_class_id);
         initialised = 1;
     }
 
@@ -597,6 +601,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     }
 
     if (ngx_js_upstream_register_classes(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_stream_upstream_register_classes(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
