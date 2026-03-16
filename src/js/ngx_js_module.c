@@ -646,6 +646,51 @@ ngx_js_init_process(ngx_cycle_t *cycle)
      */
     JS_SetContextOpaque(w->ctx, w);
 
+    /*
+     * Run any functions registered via nginx.broadcast() during init_conf.
+     * The context opaque is already the worker pointer at this point, so
+     * callbacks have access to the full worker environment.
+     */
+    {
+        JSValue    global, nginx_obj, queue, len_val, fn, ret;
+        JSContext *job_ctx;
+        uint32_t   len, i;
+
+        global    = JS_GetGlobalObject(w->ctx);
+        nginx_obj = JS_GetPropertyStr(w->ctx, global, "nginx");
+        JS_FreeValue(w->ctx, global);
+
+        if (!JS_IsException(nginx_obj) && !JS_IsUndefined(nginx_obj)) {
+            queue = JS_GetPropertyStr(w->ctx, nginx_obj, "__broadcast_queue");
+            JS_FreeValue(w->ctx, nginx_obj);
+
+            if (!JS_IsException(queue) && !JS_IsUndefined(queue)) {
+                len_val = JS_GetPropertyStr(w->ctx, queue, "length");
+                JS_ToUint32(w->ctx, &len, len_val);
+                JS_FreeValue(w->ctx, len_val);
+
+                for (i = 0; i < len; i++) {
+                    fn  = JS_GetPropertyUint32(w->ctx, queue, i);
+                    ret = JS_Call(w->ctx, fn, JS_UNDEFINED, 0, NULL);
+                    JS_FreeValue(w->ctx, fn);
+
+                    if (JS_IsException(ret)) {
+                        ngx_js_log_exception(w->ctx, cycle->log);
+                    }
+                    JS_FreeValue(w->ctx, ret);
+
+                    /* drain microtasks (e.g. resolved Promises in fn) */
+                    while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { }
+                }
+            }
+
+            JS_FreeValue(w->ctx, queue);
+
+        } else {
+            JS_FreeValue(w->ctx, nginx_obj);
+        }
+    }
+
     jcf->worker = w;
 
     return NGX_OK;

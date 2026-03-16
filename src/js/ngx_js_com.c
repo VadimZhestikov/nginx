@@ -445,6 +445,75 @@ ngx_js_com_register_classes(JSRuntime *rt)
 
 
 /* ------------------------------------------------------------------ */
+/* nginx.broadcast(fn)                                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * nginx.broadcast(fn)
+ *
+ * Registers a function to be called in every nginx worker process.
+ *
+ * MASTER / INIT-CONF CONTEXT (called from top-level js_source code):
+ *   fn is appended to nginx.__broadcast_queue.  After the master process
+ *   forks, each worker calls every queued function during init_process
+ *   (with the worker context opaque already set).  This lets js_source
+ *   scripts perform per-worker initialisation that requires the full
+ *   worker environment (e.g. using nginx.setTimeout, inspecting
+ *   request-level objects).
+ *
+ * WORKER CONTEXT (called from a request handler):
+ *   fn is called immediately in the current worker.  No deferred
+ *   execution or IPC to other workers is performed.
+ *
+ * Returns undefined.
+ */
+static JSValue
+ngx_js_broadcast(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue   queue, fn, len_val, ret;
+    uint32_t  len;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "broadcast: argument must be a function");
+    }
+
+    fn = argv[0];
+
+    /* Worker context: call fn immediately in this worker */
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        ret = JS_Call(ctx, fn, JS_UNDEFINED, 0, NULL);
+        if (JS_IsException(ret)) {
+            return ret;
+        }
+        JS_FreeValue(ctx, ret);
+        return JS_UNDEFINED;
+    }
+
+    /* Master/init context: append fn to nginx.__broadcast_queue */
+    queue = JS_GetPropertyStr(ctx, this_val, "__broadcast_queue");
+    if (JS_IsException(queue)) {
+        return queue;
+    }
+
+    len_val = JS_GetPropertyStr(ctx, queue, "length");
+    if (JS_IsException(len_val)) {
+        JS_FreeValue(ctx, queue);
+        return len_val;
+    }
+
+    JS_ToUint32(ctx, &len, len_val);
+    JS_FreeValue(ctx, len_val);
+
+    JS_SetPropertyUint32(ctx, queue, len, JS_DupValue(ctx, fn));
+    JS_FreeValue(ctx, queue);
+
+    return JS_UNDEFINED;
+}
+
+
+/* ------------------------------------------------------------------ */
 /* ngx_js_com_init — main entry point called from ngx_js_module.c      */
 /* ------------------------------------------------------------------ */
 
@@ -500,6 +569,12 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     /* nginx.log(level, msg) */
     JS_SetPropertyStr(ctx, nginx_obj, "log",
                       JS_NewCFunction(ctx, ngx_js_log, "log", 2));
+
+    /* nginx.broadcast(fn) — per-worker startup callbacks */
+    JS_SetPropertyStr(ctx, nginx_obj, "broadcast",
+                      JS_NewCFunction(ctx, ngx_js_broadcast, "broadcast", 1));
+    JS_SetPropertyStr(ctx, nginx_obj, "__broadcast_queue",
+                      JS_NewArray(ctx));
 
     /* nginx.setTimeout(ms) — returns a Promise resolved by an NGINX timer */
     JS_SetPropertyStr(ctx, nginx_obj, "setTimeout",
