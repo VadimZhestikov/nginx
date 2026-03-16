@@ -18,6 +18,7 @@
 
 #include <ngx_config.h>
 #include <ngx_core.h>
+#include <math.h>
 #include <ngx_http.h>
 #include <ngx_http_proxy_module.h>
 #include <cutils.h>
@@ -221,6 +222,8 @@ static JSValue ngx_js_build_locations(JSContext *ctx,
 static JSValue ngx_js_location_fn_add_location(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 static JSValue ngx_js_location_fn_remove_location(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv);
+static JSValue ngx_js_location_fn_clone(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 
 static JSValue ngx_js_wrap_server(JSContext *ctx,
@@ -2191,6 +2194,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     /* Nested-location management (requires srv_op; not on r.location) */
     JS_CFUNC_DEF("addLocation",    1, ngx_js_location_fn_add_location),
     JS_CFUNC_DEF("removeLocation", 1, ngx_js_location_fn_remove_location),
+    JS_CFUNC_DEF("clone",          1, ngx_js_location_fn_clone),
 };
 
 
@@ -2631,6 +2635,77 @@ inclusive:
 
 
 /*
+ * Count the nesting depth of a location path.
+ *
+ *   /api           → 1
+ *   /api/v1        → 2
+ *   /api/v1/detail → 3
+ *
+ * Named (@name) and regex patterns don't start with '/' and return 1
+ * (they are always server-level).
+ */
+static ngx_uint_t
+ngx_js_path_depth(const ngx_str_t *name)
+{
+    ngx_uint_t  depth;
+    size_t      i;
+
+    if (name->len == 0) {
+        return 0;
+    }
+
+    depth = 1;
+    for (i = 1; i < name->len; i++) {
+        if (name->data[i] == '/') {
+            depth++;
+        }
+    }
+
+    return depth;
+}
+
+
+/*
+ * Parse the "depth" option from a JS opts object.
+ * Returns NGX_MAX_UINT32_VALUE when depth is absent, Infinity, or NaN
+ * (treated as "unlimited").
+ */
+static ngx_uint_t
+ngx_js_parse_depth_opt(JSContext *ctx, JSValueConst opts)
+{
+    JSValue     depth_val;
+    double      depth_d;
+    ngx_uint_t  depth;
+
+    if (JS_IsUndefined(opts) || !JS_IsObject(opts)) {
+        return NGX_MAX_UINT32_VALUE;
+    }
+
+    depth_val = JS_GetPropertyStr(ctx, opts, "depth");
+
+    if (JS_IsUndefined(depth_val) || JS_IsNull(depth_val)) {
+        JS_FreeValue(ctx, depth_val);
+        return NGX_MAX_UINT32_VALUE;
+    }
+
+    if (JS_ToFloat64(ctx, &depth_d, depth_val) != 0) {
+        JS_FreeValue(ctx, depth_val);
+        return NGX_MAX_UINT32_VALUE;
+    }
+
+    JS_FreeValue(ctx, depth_val);
+
+    if (isnan(depth_d) || isinf(depth_d) || depth_d < 0) {
+        return NGX_MAX_UINT32_VALUE;
+    }
+
+    depth = (ngx_uint_t) depth_d;
+
+    return depth;
+}
+
+
+/*
  * Recursively walk the static BST and add every (clcf, is_exact) pair
  * into op->prefix_locs as a non-dynamic snapshot entry.
  */
@@ -2666,6 +2741,49 @@ ngx_js_snapshot_bst(ngx_js_server_opaque_t *op,
 
     ngx_js_snapshot_bst(op, node->tree);
     ngx_js_snapshot_bst(op, node->right);
+}
+
+
+/*
+ * Filter op->prefix_locs[], op->regex_locs[], and op->named_locs[] in-place,
+ * keeping only entries whose nesting depth does not exceed depth_limit.
+ *
+ *   depth_limit = 0                 → remove everything (empty server)
+ *   depth_limit = 1                 → keep only top-level paths (/foo)
+ *   depth_limit = NGX_MAX_UINT32_VALUE → keep all (no-op)
+ */
+static void
+ngx_js_depth_filter_locs(ngx_js_server_opaque_t *op, ngx_uint_t depth_limit)
+{
+    ngx_js_loc_entry_t    *pe;
+    ngx_uint_t             i, j, d;
+
+    if (depth_limit == NGX_MAX_UINT32_VALUE) {
+        return;  /* unlimited — nothing to do */
+    }
+
+    /* Filter prefix_locs[] */
+    pe = op->prefix_locs.elts;
+    j  = 0;
+    for (i = 0; i < op->prefix_locs.nelts; i++) {
+        d = ngx_js_path_depth(&pe[i].clcf->name);
+        if (d <= depth_limit) {
+            pe[j++] = pe[i];
+        }
+    }
+    op->prefix_locs.nelts = j;
+
+#if (NGX_PCRE)
+    /* regex_locs are always depth 1 — remove all if depth_limit == 0 */
+    if (depth_limit == 0) {
+        op->regex_locs.nelts = 0;
+    }
+#endif
+
+    /* named_locs are always depth 1 */
+    if (depth_limit == 0) {
+        op->named_locs.nelts = 0;
+    }
 }
 
 
@@ -3569,6 +3687,204 @@ ngx_js_location_fn_remove_location(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * loc.clone(newPattern [, {depth: N}])
+ *
+ * Creates a new prefix location at newPattern that is a shallow copy of
+ * this location (same handler, same config values).
+ *
+ * If depth > 0, child locations from the same server whose paths start
+ * with this location's path are also copied with the source prefix
+ * replaced by newPattern.  E.g., cloning /api → /v2 with depth:1
+ * additionally creates /v2/v1 (copy of /api/v1), /v2/v2 (copy of /api/v2).
+ *
+ * depth:0 (default when omitted) = only the location itself, no children.
+ * depth:N = copy children up to N levels of relative nesting.
+ * depth:Infinity = copy all descendants.
+ *
+ * Returns the new NginxLocation object.
+ */
+static JSValue
+ngx_js_location_fn_clone(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t   *loc_op;
+    ngx_js_server_opaque_t     *srv_op;
+    ngx_http_core_loc_conf_t   *src_clcf, *new_clcf, *child_clcf;
+    ngx_js_loc_entry_t         *src_entries, *entry;
+    const char                 *pat_str;
+    u_char                     *p, *new_child_data;
+    ngx_str_t                   new_name;
+    ngx_uint_t                  i, n_snap, depth_limit, rel_depth;
+    size_t                      suffix_len, new_child_len;
+
+    loc_op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!loc_op) {
+        return JS_EXCEPTION;
+    }
+
+    if (loc_op->srv_op == NULL) {
+        return JS_ThrowTypeError(ctx,
+            "clone: not available on r.location (read-only context)");
+    }
+
+    srv_op   = loc_op->srv_op;
+    src_clcf = loc_op->clcf;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "clone: first argument must be a pattern string");
+    }
+
+    pat_str = JS_ToCString(ctx, argv[0]);
+    if (!pat_str) {
+        return JS_EXCEPTION;
+    }
+
+    /* Trim leading whitespace; only plain prefix patterns supported */
+    p = (u_char *) pat_str;
+    while (*p == ' ') { p++; }
+
+    if (p[0] == '=' || p[0] == '^' || p[0] == '~' || p[0] == '@') {
+        JS_FreeCString(ctx, pat_str);
+        return JS_ThrowTypeError(ctx,
+            "clone: only plain prefix patterns supported");
+    }
+
+    new_name.len  = ngx_strlen(p);
+    new_name.data = ngx_pnalloc(srv_op->dyn_pool, new_name.len + 1);
+    if (new_name.data == NULL) {
+        JS_FreeCString(ctx, pat_str);
+        return JS_EXCEPTION;
+    }
+    ngx_memcpy(new_name.data, p, new_name.len);
+    new_name.data[new_name.len] = '\0';
+    JS_FreeCString(ctx, pat_str);
+
+    /* depth:0 is the default (no children) */
+    depth_limit = ngx_js_parse_depth_opt(ctx,
+                                         argc >= 2 ? argv[1] : JS_UNDEFINED);
+    if (depth_limit == NGX_MAX_UINT32_VALUE && argc < 2) {
+        depth_limit = 0;  /* omitted → depth:0 (location only, no children) */
+    }
+
+    /* Idempotency: return existing if newPattern already in prefix_locs[] */
+    {
+        ngx_js_loc_entry_t  *dup_e = srv_op->prefix_locs.elts;
+        ngx_uint_t           di;
+
+        for (di = 0; di < srv_op->prefix_locs.nelts; di++) {
+            if (dup_e[di].clcf->name.len == new_name.len
+                && !dup_e[di].is_exact
+                && ngx_memcmp(dup_e[di].clcf->name.data,
+                              new_name.data, new_name.len) == 0)
+            {
+                return ngx_js_wrap_location_ex(ctx, dup_e[di].clcf, srv_op);
+            }
+        }
+    }
+
+    /* Create the new location as a shallow copy of source */
+    new_clcf = ngx_palloc(srv_op->dyn_pool, sizeof(ngx_http_core_loc_conf_t));
+    if (new_clcf == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    *new_clcf        = *src_clcf;
+    new_clcf->name   = new_name;
+    new_clcf->noname = 0;
+    new_clcf->named  = 0;
+    new_clcf->exact_match = 0;
+    new_clcf->noregex     = 0;
+
+    entry = ngx_array_push(&srv_op->prefix_locs);
+    if (entry == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    entry->clcf     = new_clcf;
+    entry->is_exact = 0;
+    entry->dynamic  = 1;
+
+    /*
+     * Copy children: iterate the snapshot taken before we pushed the new
+     * entry (n_snap) so we don't process our own entry.  For each source
+     * child whose path starts with src_clcf->name and whose relative
+     * depth ≤ depth_limit, create a repathied copy.
+     */
+    if (depth_limit > 0 && src_clcf->name.len > 0) {
+
+        n_snap     = srv_op->prefix_locs.nelts - 1; /* entries before push */
+        src_entries = srv_op->prefix_locs.elts;
+
+        for (i = 0; i < n_snap; i++) {
+            ngx_http_core_loc_conf_t  *ce;
+            ngx_str_t                  rel;
+
+            ce = src_entries[i].clcf;
+
+            /* Must be strictly longer than source and share the prefix */
+            if (ce->name.len <= src_clcf->name.len) {
+                continue;
+            }
+            if (ngx_memcmp(ce->name.data,
+                           src_clcf->name.data, src_clcf->name.len) != 0)
+            {
+                continue;
+            }
+            if (ce->name.data[src_clcf->name.len] != '/') {
+                continue;
+            }
+
+            /* Relative depth: count slashes in the suffix part */
+            rel.data = ce->name.data + src_clcf->name.len;
+            rel.len  = ce->name.len  - src_clcf->name.len;
+            rel_depth = ngx_js_path_depth(&rel);
+
+            if (rel_depth > depth_limit) {
+                continue;
+            }
+
+            /* Build repathied name: newPattern + suffix */
+            suffix_len     = ce->name.len - src_clcf->name.len;
+            new_child_len  = new_name.len + suffix_len;
+            new_child_data = ngx_pnalloc(srv_op->dyn_pool,
+                                         new_child_len + 1);
+            if (new_child_data == NULL) {
+                return JS_ThrowOutOfMemory(ctx);
+            }
+            ngx_memcpy(new_child_data, new_name.data, new_name.len);
+            ngx_memcpy(new_child_data + new_name.len,
+                       ce->name.data + src_clcf->name.len, suffix_len);
+            new_child_data[new_child_len] = '\0';
+
+            child_clcf = ngx_palloc(srv_op->dyn_pool,
+                                    sizeof(ngx_http_core_loc_conf_t));
+            if (child_clcf == NULL) {
+                return JS_ThrowOutOfMemory(ctx);
+            }
+            *child_clcf           = *ce;
+            child_clcf->name.data = new_child_data;
+            child_clcf->name.len  = new_child_len;
+            child_clcf->noname    = 0;
+
+            entry = ngx_array_push(&srv_op->prefix_locs);
+            if (entry == NULL) {
+                return JS_ThrowOutOfMemory(ctx);
+            }
+            entry->clcf     = child_clcf;
+            entry->is_exact = src_entries[i].is_exact;
+            entry->dynamic  = 1;
+        }
+    }
+
+    /* Rebuild the live BST with the new location(s) */
+    if (ngx_js_rebuild_loc_tree(srv_op, srv_op->cycle->log) != NGX_OK) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_wrap_location_ex(ctx, new_clcf, srv_op);
+}
+
+
 static void
 ngx_js_server_finalizer(JSRuntime *rt, JSValue val)
 {
@@ -4231,13 +4547,23 @@ ngx_js_server_fn_clone(JSContext *ctx, JSValueConst this_val,
     /*
      * Rebuild the location tree so the clone has its own independent BST,
      * regex array, and named_locations pointer — not sharing with source.
+     * Then apply optional depth filter before the final rebuild.
      */
     new_op = JS_GetOpaque(srv_obj, ngx_js_server_class_id);
-    if (new_op != NULL
-        && ngx_js_rebuild_loc_tree(new_op, cycle->log) != NGX_OK)
-    {
-        JS_FreeValue(ctx, srv_obj);
-        return JS_ThrowInternalError(ctx, "clone: rebuild_loc_tree failed");
+    if (new_op != NULL) {
+        ngx_uint_t  depth_limit;
+
+        /* Parse {depth: N} from second argument (if given) */
+        depth_limit = ngx_js_parse_depth_opt(ctx,
+                                             argc >= 2 ? argv[1] : JS_UNDEFINED);
+
+        /* Filter snapshot arrays to the requested depth */
+        ngx_js_depth_filter_locs(new_op, depth_limit);
+
+        if (ngx_js_rebuild_loc_tree(new_op, cycle->log) != NGX_OK) {
+            JS_FreeValue(ctx, srv_obj);
+            return JS_ThrowInternalError(ctx, "clone: rebuild_loc_tree failed");
+        }
     }
 
     /* ensure nnames is populated for removeServer() in worker context */
