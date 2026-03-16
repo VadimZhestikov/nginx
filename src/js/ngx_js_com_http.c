@@ -226,6 +226,9 @@ static JSValue ngx_js_location_fn_remove_location(JSContext *ctx,
 static JSValue ngx_js_location_fn_clone(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 
+static JSValue ngx_js_http_fn_match(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv);
+
 static JSValue ngx_js_wrap_server(JSContext *ctx,
     ngx_http_core_srv_conf_t *cscf, ngx_cycle_t *cycle);
 
@@ -5484,6 +5487,223 @@ ngx_js_http_remove_server(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * nginx.http.match(uri [, serverName])
+ *
+ * Simulates nginx location-matching for the given URI on the named server
+ * (default: first server) and returns the matching NginxLocation object,
+ * or null if no location matches.
+ *
+ * Matching order mirrors nginx:
+ *   1. Exact match (= /path)
+ *   2. Longest preferential-prefix (^~ /path) — skips regex if found
+ *   3. Ordered regex locations (~ / ~*)
+ *   4. Longest plain-prefix match
+ *   5. null
+ */
+static JSValue
+ngx_js_http_fn_match(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    const char              *uri_cstr, *srv_cstr;
+    size_t                   uri_len, srv_len;
+    ngx_str_t                uri_str;
+    JSValue                  servers_arr, lv, srv_obj;
+    uint32_t                 servers_len, i;
+    ngx_js_server_opaque_t  *srv_op;
+    ngx_js_loc_entry_t      *pe;
+    ngx_http_core_loc_conf_t *exact_clcf, *best_prefix_clcf, *best_noregex_clcf;
+    size_t                   best_prefix_len, best_noregex_len;
+    int                      skip_regex;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "match: uri (string) required");
+    }
+
+    uri_cstr = JS_ToCStringLen(ctx, &uri_len, argv[0]);
+    if (uri_cstr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    srv_cstr = NULL;
+    srv_len  = 0;
+    if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        srv_cstr = JS_ToCStringLen(ctx, &srv_len, argv[1]);
+        if (srv_cstr == NULL) {
+            JS_FreeCString(ctx, uri_cstr);
+            return JS_EXCEPTION;
+        }
+    }
+
+    uri_str.data = (u_char *) uri_cstr;
+    uri_str.len  = uri_len;
+
+    /* Find the target server */
+    servers_arr = JS_GetPropertyStr(ctx, this_val, "servers");
+    lv = JS_GetPropertyStr(ctx, servers_arr, "length");
+    JS_ToUint32(ctx, &servers_len, lv);
+    JS_FreeValue(ctx, lv);
+
+    srv_op  = NULL;
+    srv_obj = JS_UNDEFINED;
+
+    for (i = 0; i < servers_len; i++) {
+        JSValue                 s  = JS_GetPropertyUint32(ctx, servers_arr, i);
+        ngx_js_server_opaque_t *op = JS_GetOpaque(s, ngx_js_server_class_id);
+
+        if (op == NULL) {
+            JS_FreeValue(ctx, s);
+            continue;
+        }
+
+        if (srv_cstr == NULL) {
+            /* no server name given — use first server */
+            srv_op  = op;
+            srv_obj = s;
+            break;
+        }
+
+        ngx_uint_t ni;
+        for (ni = 0; ni < op->nnames; ni++) {
+            if (op->names[ni].len == srv_len
+                && ngx_strncasecmp(op->names[ni].data,
+                                   (u_char *) srv_cstr, srv_len) == 0)
+            {
+                srv_op  = op;
+                srv_obj = s;
+                break;
+            }
+        }
+
+        if (srv_op != NULL) {
+            break;
+        }
+
+        JS_FreeValue(ctx, s);
+    }
+
+    JS_FreeValue(ctx, servers_arr);
+
+    if (srv_cstr != NULL) {
+        JS_FreeCString(ctx, srv_cstr);
+    }
+
+    if (srv_op == NULL) {
+        JS_FreeCString(ctx, uri_cstr);
+        return JS_NULL;
+    }
+
+    /* Phase 1: scan prefix_locs[] for exact / best-prefix / best-noregex */
+    exact_clcf       = NULL;
+    best_prefix_clcf = NULL;
+    best_noregex_clcf = NULL;
+    best_prefix_len  = 0;
+    best_noregex_len = 0;
+    skip_regex       = 0;
+
+    pe = srv_op->prefix_locs.elts;
+
+    for (i = 0; i < (uint32_t) srv_op->prefix_locs.nelts; i++) {
+        ngx_http_core_loc_conf_t  *clcf = pe[i].clcf;
+        ngx_str_t                 *name = &clcf->name;
+
+        if (clcf->named) {
+            continue;
+        }
+
+        if (clcf->exact_match) {
+            if (name->len == uri_len
+                && ngx_memcmp(name->data, uri_cstr, uri_len) == 0)
+            {
+                exact_clcf = clcf;
+                break;
+            }
+            continue;
+        }
+
+        /* prefix match: uri must start with name */
+        if (uri_len < name->len) {
+            continue;
+        }
+        if (ngx_memcmp(name->data, uri_cstr, name->len) != 0) {
+            continue;
+        }
+
+        if (clcf->noregex) {
+            if (name->len > best_noregex_len) {
+                best_noregex_len  = name->len;
+                best_noregex_clcf = clcf;
+            }
+        } else {
+            if (name->len > best_prefix_len) {
+                best_prefix_len  = name->len;
+                best_prefix_clcf = clcf;
+            }
+        }
+    }
+
+    /* Step 1: exact match wins immediately */
+    if (exact_clcf != NULL) {
+        JS_FreeValue(ctx, srv_obj);
+        JS_FreeCString(ctx, uri_cstr);
+        return ngx_js_wrap_location_ex(ctx, exact_clcf, srv_op);
+    }
+
+    /* Step 2: preferential-prefix (^~) beats regex if it's longer than
+     *         any plain prefix found so far */
+    if (best_noregex_clcf != NULL
+        && best_noregex_len >= best_prefix_len)
+    {
+        skip_regex = 1;
+    }
+
+    if (skip_regex) {
+        JS_FreeValue(ctx, srv_obj);
+        JS_FreeCString(ctx, uri_cstr);
+        return ngx_js_wrap_location_ex(ctx, best_noregex_clcf, srv_op);
+    }
+
+#if (NGX_PCRE)
+    /* Step 3: first matching regex location */
+    {
+        ngx_js_regex_entry_t  *re = srv_op->regex_locs.elts;
+        ngx_uint_t             nre = srv_op->regex_locs.nelts;
+        ngx_uint_t             j;
+        ngx_int_t              n;
+
+        for (j = 0; j < nre; j++) {
+            int                        captures[3];
+            ngx_http_core_loc_conf_t  *clcf = re[j].clcf;
+            if (clcf->regex == NULL) {
+                continue;
+            }
+            n = ngx_regex_exec(clcf->regex->regex, &uri_str, captures, 3);
+            if (n >= 0) {
+                JS_FreeValue(ctx, srv_obj);
+                JS_FreeCString(ctx, uri_cstr);
+                return ngx_js_wrap_location_ex(ctx, clcf, srv_op);
+            }
+        }
+    }
+#endif
+
+    JS_FreeValue(ctx, srv_obj);
+    JS_FreeCString(ctx, uri_cstr);
+
+    /* Step 4: longest plain prefix (may be NULL → return null) */
+    if (best_prefix_clcf != NULL) {
+        return ngx_js_wrap_location_ex(ctx, best_prefix_clcf, srv_op);
+    }
+
+    /* Step 5: also return the best noregex if that's all we have */
+    if (best_noregex_clcf != NULL) {
+        return ngx_js_wrap_location_ex(ctx, best_noregex_clcf, srv_op);
+    }
+
+    return JS_NULL;
+}
+
+
 /* ngx_js_http_com_install                                              */
 /* ------------------------------------------------------------------ */
 
@@ -5790,6 +6010,11 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
                       JS_NewCFunction(ctx,
                                       ngx_js_http_remove_server,
                                       "removeServer", 1));
+
+    /* nginx.http.match(uri [, serverName]) */
+    JS_SetPropertyStr(ctx, http_obj, "match",
+                      JS_NewCFunction(ctx, ngx_js_http_fn_match,
+                                      "match", 1));
 
     /* nginx.http.upstreams[] — delegated to upstream COM */
     if (ngx_js_upstream_com_install(ctx, http_obj, cycle) != NGX_OK) {
