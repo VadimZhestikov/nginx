@@ -29,16 +29,18 @@
 #include "ngx_js_socket.h"
 
 
-#define NGX_JS_LISTENER_REG_MAX  32
+#define NGX_JS_LISTENER_REG_MAX      32
+#define NGX_JS_LISTENER_VSERVERS_MAX 32
 
 
 /*
  * State for one JS-managed HTTP listener.
  *
  * Allocated with ngx_alloc() before fork; COW-shared across workers.
- * Fields are filled in two phases:
- *   attach()    — fills fd, sockaddr, port/addr routing structs
- *   addServer() — fills default_server, pool_size, log, then activates
+ * Fields are filled in phases:
+ *   attach()           — fills fd, sockaddr, port/addr routing structs
+ *   addServer()        — fills default_server, activates (Phase C)
+ *   addVirtualServer() — extends vservers[], rebuilds virtual_names (Phase D)
  */
 typedef struct {
     /* Back-reference to the socket */
@@ -57,6 +59,10 @@ typedef struct {
 
     /* Set by addServer() (Phase C) */
     ngx_http_core_srv_conf_t *default_server;  /* NULL until addServer() */
+
+    /* Virtual servers — set by addVirtualServer() (Phase D) */
+    ngx_http_core_srv_conf_t *vservers[NGX_JS_LISTENER_VSERVERS_MAX];
+    ngx_uint_t                nvservers;
 
     unsigned                  activated:1;     /* 1 after cycle->listening push */
 } ngx_js_http_listener_state_t;

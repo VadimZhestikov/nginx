@@ -2,21 +2,29 @@
 /*
  * Copyright (C) nginx JS contributors
  *
- * Stage 52 Phase B — nginx.http.attach(sock)
+ * Stage 52 Phases B-D — nginx.http.attach(sock) + listener methods
  *
- * Wires a NginxSocket into nginx's HTTP connection pipeline by building
- * the routing structures (ngx_http_port_t / ngx_http_in_addr_t /
- * ngx_http_addr_conf_t) and preparing the ngx_listening_t template.
+ * Phase B — nginx.http.attach(sock):
+ *   Wires a NginxSocket into nginx's HTTP connection pipeline by building
+ *   the routing structures (ngx_http_port_t / ngx_http_in_addr_t /
+ *   ngx_http_addr_conf_t) and preparing the ngx_listening_t template.
  *
- * The socket is NOT added to cycle->listening here; that is deferred
- * to ngx_js_listener_activate() which is called by addServer() (Phase C)
- * once a valid default_server is available.
+ * Phase C — listener.addServer(srv):
+ *   Sets the default_server on the listener and activates it by pushing
+ *   the ngx_listening_t into cycle->listening.
  *
- * JS API (Phase B):
+ * Phase D — listener.addVirtualServer(srv):
+ *   Adds an additional server for Host-header routing.  The virtual_names
+ *   hash (ngx_http_virtual_names_t) is rebuilt from all vservers[] entries
+ *   and stored in addr_conf->virtual_names so workers see the updated table
+ *   after fork.
+ *
+ * JS API:
  *
  *   const listener = nginx.http.attach(sock);
- *   listener.address    // "host:port" string (same as sock.address)
- *   listener.socket     // the NginxSocket that was attached
+ *   listener.address                    // "host:port" string
+ *   listener.addServer(srv)             // activate with default server
+ *   listener.addVirtualServer(srv)      // add named virtual host
  */
 
 #include <ngx_config.h>
@@ -104,6 +112,258 @@ ngx_js_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 /* ------------------------------------------------------------------ */
+/* ngx_js_listener_build_vnames — Phase D helper                       */
+/*                                                                     */
+/* Builds ngx_http_virtual_names_t from st->vservers[] and installs it */
+/* in st->addr.conf.virtual_names.  Hash tables are allocated in       */
+/* cycle->pool; a temporary pool is used for ngx_hash_keys_arrays_t.  */
+/* ------------------------------------------------------------------ */
+
+static int
+ngx_js_cmp_dns_wildcards(const void *one, const void *two)
+{
+    ngx_hash_key_t  *first, *second;
+
+    first  = (ngx_hash_key_t *) one;
+    second = (ngx_hash_key_t *) two;
+
+    return ngx_dns_strcmp(first->key.data, second->key.data);
+}
+
+
+static ngx_int_t
+ngx_js_listener_build_vnames(ngx_js_http_listener_state_t *st,
+    ngx_cycle_t *cycle)
+{
+    ngx_uint_t                  s, n;
+    ngx_http_core_srv_conf_t   *cscf;
+    ngx_http_server_name_t     *sn;
+    ngx_http_virtual_names_t   *vn;
+    ngx_http_conf_ctx_t        *http_ctx;
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_hash_init_t             hash;
+    ngx_hash_keys_arrays_t      ha;
+    ngx_pool_t                 *temp_pool;
+    ngx_int_t                   rc;
+
+    if (st->nvservers == 0) {
+        st->addr.conf.virtual_names = NULL;
+        return NGX_OK;
+    }
+
+    http_ctx = (ngx_http_conf_ctx_t *)
+                   cycle->conf_ctx[ngx_http_module.index];
+    cmcf     = http_ctx->main_conf[ngx_http_core_module.ctx_index];
+
+    temp_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, cycle->log);
+    if (temp_pool == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memzero(&ha, sizeof(ngx_hash_keys_arrays_t));
+    ha.temp_pool = temp_pool;
+    ha.pool      = cycle->pool;
+
+    if (ngx_hash_keys_array_init(&ha, NGX_HASH_LARGE) != NGX_OK) {
+        ngx_destroy_pool(temp_pool);
+        return NGX_ERROR;
+    }
+
+    for (s = 0; s < st->nvservers; s++) {
+        cscf = st->vservers[s];
+        sn   = cscf->server_names.elts;
+
+        for (n = 0; n < cscf->server_names.nelts; n++) {
+#if (NGX_PCRE)
+            if (sn[n].regex) {
+                continue;
+            }
+#endif
+            rc = ngx_hash_add_key(&ha, &sn[n].name, sn[n].server,
+                                  NGX_HASH_WILDCARD_KEY);
+            if (rc == NGX_ERROR) {
+                ngx_destroy_pool(temp_pool);
+                return NGX_ERROR;
+            }
+
+            if (rc == NGX_BUSY) {
+                ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                              "JS listener: duplicate server name \"%V\","
+                              " ignored", &sn[n].name);
+            }
+        }
+    }
+
+    vn = ngx_pcalloc(cycle->pool, sizeof(ngx_http_virtual_names_t));
+    if (vn == NULL) {
+        ngx_destroy_pool(temp_pool);
+        return NGX_ERROR;
+    }
+
+    ngx_memzero(&hash, sizeof(ngx_hash_init_t));
+    hash.key         = ngx_hash_key_lc;
+    hash.max_size    = cmcf->server_names_hash_max_size;
+    hash.bucket_size = cmcf->server_names_hash_bucket_size;
+    hash.name        = "js_listener_server_names_hash";
+    hash.pool        = cycle->pool;
+
+    if (ha.keys.nelts) {
+        hash.hash      = &vn->names.hash;
+        hash.temp_pool = NULL;
+
+        if (ngx_hash_init(&hash, ha.keys.elts, ha.keys.nelts) != NGX_OK) {
+            ngx_destroy_pool(temp_pool);
+            return NGX_ERROR;
+        }
+    }
+
+    if (ha.dns_wc_head.nelts) {
+        ngx_qsort(ha.dns_wc_head.elts, ha.dns_wc_head.nelts,
+                  sizeof(ngx_hash_key_t), ngx_js_cmp_dns_wildcards);
+
+        hash.hash      = NULL;
+        hash.temp_pool = ha.temp_pool;
+
+        if (ngx_hash_wildcard_init(&hash, ha.dns_wc_head.elts,
+                                   ha.dns_wc_head.nelts) != NGX_OK)
+        {
+            ngx_destroy_pool(temp_pool);
+            return NGX_ERROR;
+        }
+
+        vn->names.wc_head = (ngx_hash_wildcard_t *) hash.hash;
+    }
+
+    if (ha.dns_wc_tail.nelts) {
+        ngx_qsort(ha.dns_wc_tail.elts, ha.dns_wc_tail.nelts,
+                  sizeof(ngx_hash_key_t), ngx_js_cmp_dns_wildcards);
+
+        hash.hash      = NULL;
+        hash.temp_pool = ha.temp_pool;
+
+        if (ngx_hash_wildcard_init(&hash, ha.dns_wc_tail.elts,
+                                   ha.dns_wc_tail.nelts) != NGX_OK)
+        {
+            ngx_destroy_pool(temp_pool);
+            return NGX_ERROR;
+        }
+
+        vn->names.wc_tail = (ngx_hash_wildcard_t *) hash.hash;
+    }
+
+#if (NGX_PCRE)
+    {
+        ngx_uint_t  nregex = 0;
+
+        for (s = 0; s < st->nvservers; s++) {
+            cscf = st->vservers[s];
+            sn   = cscf->server_names.elts;
+            for (n = 0; n < cscf->server_names.nelts; n++) {
+                if (sn[n].regex) {
+                    nregex++;
+                }
+            }
+        }
+
+        if (nregex) {
+            vn->nregex = nregex;
+            vn->regex  = ngx_palloc(cycle->pool,
+                                    nregex * sizeof(ngx_http_server_name_t));
+            if (vn->regex == NULL) {
+                ngx_destroy_pool(temp_pool);
+                return NGX_ERROR;
+            }
+
+            nregex = 0;
+            for (s = 0; s < st->nvservers; s++) {
+                cscf = st->vservers[s];
+                sn   = cscf->server_names.elts;
+                for (n = 0; n < cscf->server_names.nelts; n++) {
+                    if (sn[n].regex) {
+                        vn->regex[nregex++] = sn[n];
+                    }
+                }
+            }
+        }
+    }
+#endif
+
+    ngx_destroy_pool(temp_pool);
+
+    st->addr.conf.virtual_names = vn;
+    return NGX_OK;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* listener.addVirtualServer(srv) — Phase D implementation             */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_listener_add_virtual_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_listener_opaque_t      *op;
+    ngx_js_http_listener_state_t  *st;
+    ngx_http_core_srv_conf_t      *cscf;
+    ngx_cycle_t                   *cycle;
+
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "listener.addVirtualServer: post-fork not yet supported");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_http_listener_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->handle >= NGX_JS_LISTENER_REG_MAX
+        || ngx_js_listener_reg[op->handle] == NULL)
+    {
+        return JS_ThrowInternalError(ctx, "NginxHttpListener: invalid handle");
+    }
+
+    st = ngx_js_listener_reg[op->handle];
+
+    if (!st->activated) {
+        return JS_ThrowInternalError(ctx,
+            "listener.addVirtualServer: call addServer() first to activate"
+            " the listener");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "listener.addVirtualServer: NginxServer argument required");
+    }
+
+    cscf = ngx_js_server_get_cscf(argv[0], &cycle);
+    if (cscf == NULL) {
+        return JS_ThrowTypeError(ctx,
+            "listener.addVirtualServer: argument must be a NginxServer"
+            " object");
+    }
+
+    if (st->nvservers >= NGX_JS_LISTENER_VSERVERS_MAX) {
+        return JS_ThrowInternalError(ctx,
+            "listener.addVirtualServer: virtual server limit reached"
+            " (max %d)", NGX_JS_LISTENER_VSERVERS_MAX);
+    }
+
+    st->vservers[st->nvservers++] = cscf;
+
+    if (ngx_js_listener_build_vnames(st, cycle) != NGX_OK) {
+        st->nvservers--;
+        st->vservers[st->nvservers] = NULL;
+        return JS_ThrowInternalError(ctx,
+            "listener.addVirtualServer: failed to build virtual names hash");
+    }
+
+    return JS_DupValue(ctx, argv[0]);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* listener.addServer(srv) — Phase C implementation                    */
 /* ------------------------------------------------------------------ */
 
@@ -172,8 +432,9 @@ ngx_js_listener_add_server(JSContext *ctx, JSValueConst this_val,
 
 
 static const JSCFunctionListEntry  ngx_js_listener_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("address",   ngx_js_listener_get,    NULL, 0),
-    JS_CFUNC_DEF(        "addServer", 1, ngx_js_listener_add_server),
+    JS_CGETSET_MAGIC_DEF("address",          ngx_js_listener_get,              NULL, 0),
+    JS_CFUNC_DEF(        "addServer",        1, ngx_js_listener_add_server),
+    JS_CFUNC_DEF(        "addVirtualServer", 1, ngx_js_listener_add_virtual_server),
 };
 
 
