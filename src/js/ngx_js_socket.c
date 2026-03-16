@@ -32,6 +32,7 @@
 #include "ngx_js_com.h"
 #include "ngx_js.h"
 #include "ngx_js_socket.h"
+#include "ngx_js_sw.h"
 
 
 JSClassID              ngx_js_socket_class_id;
@@ -269,12 +270,6 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
     uint32_t                 handle;
     ngx_js_socket_state_t   *st;
 
-    /* Phase A: only valid before fork (master / init_conf context). */
-    if (ngx_process == NGX_PROCESS_WORKER) {
-        return JS_ThrowInternalError(ctx,
-            "createSocket: post-fork worker creation not yet supported");
-    }
-
     if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx,
             "createSocket: expected string argument 'host:port'");
@@ -311,49 +306,66 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
             NGX_JS_SOCKET_REG_MAX);
     }
 
-    /* Create the TCP socket. */
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        return JS_ThrowInternalError(ctx,
-            "createSocket: socket() failed: %s", strerror(errno));
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        /*
+         * Phase F: post-fork worker — ask the master's manager thread to
+         * create the socket and hand the fd back via SCM_RIGHTS.
+         */
+        fd = ngx_js_socket_mgr_create(addr_str, ngx_strlen(addr_str));
+        if (fd < 0) {
+            return JS_ThrowInternalError(ctx,
+                "createSocket: manager failed to create socket for '%s'",
+                addr_str);
+        }
+
+    } else {
+        /* Pre-fork (master / init_conf): create socket directly. */
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) {
+            return JS_ThrowInternalError(ctx,
+                "createSocket: socket() failed: %s", strerror(errno));
+        }
+
+        opt = 1;
+        (void) setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+        ngx_memzero(&sin, sizeof(sin));
+        sin.sin_family = AF_INET;
+        sin.sin_port   = htons(port);
+
+        if (inet_pton(AF_INET, host, &sin.sin_addr) != 1) {
+            close(fd);
+            return JS_ThrowTypeError(ctx,
+                "createSocket: invalid IPv4 address '%s'", host);
+        }
+
+        if (bind(fd, (struct sockaddr *) &sin, sizeof(sin)) < 0) {
+            saved = errno;
+            close(fd);
+            return JS_ThrowInternalError(ctx,
+                "createSocket: bind('%s') failed: %s",
+                addr_str, strerror(saved));
+        }
+
+        if (listen(fd, 511) < 0) {
+            saved = errno;
+            close(fd);
+            return JS_ThrowInternalError(ctx,
+                "createSocket: listen() failed: %s", strerror(saved));
+        }
     }
 
-    opt = 1;
-    (void) setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    ngx_memzero(&sin, sizeof(sin));
-    sin.sin_family = AF_INET;
-    sin.sin_port   = htons(port);
-
-    if (inet_pton(AF_INET, host, &sin.sin_addr) != 1) {
-        close(fd);
-        return JS_ThrowTypeError(ctx,
-            "createSocket: invalid IPv4 address '%s'", host);
-    }
-
-    if (bind(fd, (struct sockaddr *) &sin, sizeof(sin)) < 0) {
-        saved = errno;
-        close(fd);
-        return JS_ThrowInternalError(ctx,
-            "createSocket: bind('%s') failed: %s", addr_str, strerror(saved));
-    }
-
-    if (listen(fd, 511) < 0) {
-        saved = errno;
-        close(fd);
-        return JS_ThrowInternalError(ctx,
-            "createSocket: listen() failed: %s", strerror(saved));
-    }
-
-    /* Allocate state on the heap (survives fork; COW-shared). */
+    /* Allocate state.  Pre-fork: ngx_alloc() → COW-shared heap.
+     * Post-fork: same allocator but memory is worker-private (no fork after). */
     st = ngx_alloc(sizeof(ngx_js_socket_state_t), ngx_cycle->log);
     if (st == NULL) {
         close(fd);
         return JS_ThrowInternalError(ctx, "createSocket: ngx_alloc failed");
     }
 
-    st->fd   = fd;
-    st->port = port;
+    st->fd          = fd;
+    st->port        = port;
+    st->in_listening = 0;
     ngx_cpystrn((u_char *) st->addr, (u_char *) addr_str, sizeof(st->addr));
 
     ngx_js_socket_reg[handle] = st;

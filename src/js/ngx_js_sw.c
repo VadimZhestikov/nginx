@@ -55,6 +55,9 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
 #include <cutils.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
@@ -2174,6 +2177,217 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
 /* ------------------------------------------------------------------ */
 
 /*
+ * ------------------------------------------------------------------ *
+ * Phase F — manager-side createSocket handler                         *
+ *                                                                     *
+ * Extended command protocol (url_len == 0 sentinel):                  *
+ *   Worker → manager: [0:u32][cmd_type:u32][worker_idx:u32]           *
+ *                     [addr_len:u32][addr:bytes]                      *
+ *   plus SCM_RIGHTS carrying one reply socket fd.                     *
+ *                                                                     *
+ *   Manager → worker: [status:u8]  (0=ok, 1=err)                     *
+ *   plus SCM_RIGHTS carrying the new socket fd (on success).          *
+ *                                                                     *
+ * cmd_type values:                                                     *
+ *   NGX_JS_MGR_CMD_CREATE_SOCKET (1) — bind+listen on the given addr  *
+ * ------------------------------------------------------------------ */
+
+#define NGX_JS_MGR_CMD_CREATE_SOCKET  1u
+
+/* Extended command header: [0:u32][cmd_type:u32][worker_idx:u32] */
+#define NGX_JS_MGR_EXT_HDR  (3 * sizeof(uint32_t))
+
+/* Maximum address string length for createSocket (e.g. "127.0.0.1:9000") */
+#define NGX_JS_MGR_ADDR_MAX  63
+
+
+/*
+ * Manager-side: create a bound+listening TCP socket for the given
+ * "host:port" address string.  Returns the fd on success, -1 on failure.
+ * Called from inside the manager thread (blocking socket calls are fine).
+ */
+static int
+ngx_js_mgr_do_create_socket(const char *addr_str)
+{
+    char                host[48];
+    const char         *colon;
+    size_t              host_len;
+    long                port;
+    char               *endp;
+    struct sockaddr_in  sin;
+    int                 fd, opt, saved;
+
+    /* Parse "host:port" */
+    colon = strrchr(addr_str, ':');
+    if (colon == NULL) {
+        return -1;
+    }
+
+    host_len = (size_t) (colon - addr_str);
+    if (host_len == 0 || host_len >= sizeof(host)) {
+        return -1;
+    }
+
+    ngx_memcpy(host, addr_str, host_len);
+    host[host_len] = '\0';
+
+    port = strtol(colon + 1, &endp, 10);
+    if (*endp != '\0' || port < 1 || port > 65535) {
+        return -1;
+    }
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+
+    opt = 1;
+    (void) setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    ngx_memzero(&sin, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port   = htons((uint16_t) port);
+
+    if (inet_pton(AF_INET, host, &sin.sin_addr) != 1) {
+        close(fd);
+        return -1;
+    }
+
+    if (bind(fd, (struct sockaddr *) &sin, sizeof(sin)) < 0) {
+        saved = errno;
+        close(fd);
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, saved,
+                      "JS manager: createSocket bind(\"%s\") failed",
+                      addr_str);
+        return -1;
+    }
+
+    if (listen(fd, 511) < 0) {
+        saved = errno;
+        close(fd);
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, saved,
+                      "JS manager: createSocket listen() failed");
+        return -1;
+    }
+
+    return fd;
+}
+
+
+/*
+ * Worker-side: send a createSocket request to the manager thread and
+ * block until the manager replies with the new socket fd.
+ * Returns the new fd on success, -1 on failure.
+ * Safe to call from a worker main process (same blocking pattern as
+ * the dynamic SharedWorker round-trip).
+ */
+int
+ngx_js_socket_mgr_create(const char *addr_str, size_t addr_len)
+{
+    int      reply_fds[2];
+    int      recv_fd;
+    uint32_t zero, cmd_type, worker_idx32, addr_len32;
+    uint8_t *cmdbuf;
+    size_t   cmdbuf_len;
+    uint8_t  status;
+    struct msghdr  msg;
+    struct iovec   iov;
+    union {
+        char            buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_snd;
+    union {
+        char            buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_rcv;
+    struct cmsghdr *cmh;
+    ssize_t         n;
+
+    if (sw_cmd_fds[1] < 0) {
+        return -1;   /* manager not running */
+    }
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, reply_fds) != 0) {
+        return -1;
+    }
+
+    /*
+     * Command buffer: [0:u32][cmd_type:u32][worker_idx:u32][addr_len:u32]
+     *                 [addr:bytes]
+     */
+    zero         = 0;
+    cmd_type     = NGX_JS_MGR_CMD_CREATE_SOCKET;
+    worker_idx32 = (uint32_t) ngx_worker;
+    addr_len32   = (uint32_t) addr_len;
+    cmdbuf_len   = NGX_JS_MGR_EXT_HDR + sizeof(uint32_t) + addr_len;
+
+    cmdbuf = ngx_alloc(cmdbuf_len, ngx_cycle->log);
+    if (cmdbuf == NULL) {
+        close(reply_fds[0]);
+        close(reply_fds[1]);
+        return -1;
+    }
+
+    ngx_memcpy(cmdbuf,                      &zero,         sizeof(uint32_t));
+    ngx_memcpy(cmdbuf +   sizeof(uint32_t), &cmd_type,     sizeof(uint32_t));
+    ngx_memcpy(cmdbuf + 2*sizeof(uint32_t), &worker_idx32, sizeof(uint32_t));
+    ngx_memcpy(cmdbuf + 3*sizeof(uint32_t), &addr_len32,   sizeof(uint32_t));
+    ngx_memcpy(cmdbuf + 4*sizeof(uint32_t), addr_str,      addr_len);
+
+    iov.iov_base = cmdbuf;
+    iov.iov_len  = cmdbuf_len;
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_snd.buf;
+    msg.msg_controllen = sizeof(cmsg_snd.buf);
+
+    cmh             = CMSG_FIRSTHDR(&msg);
+    cmh->cmsg_level = SOL_SOCKET;
+    cmh->cmsg_type  = SCM_RIGHTS;
+    cmh->cmsg_len   = CMSG_LEN(sizeof(int));
+    ngx_memcpy(CMSG_DATA(cmh), &reply_fds[1], sizeof(int));
+
+    n = sendmsg(sw_cmd_fds[1], &msg, 0);
+    ngx_free(cmdbuf);
+    close(reply_fds[1]);
+
+    if (n < 0) {
+        close(reply_fds[0]);
+        return -1;
+    }
+
+    /* Block until manager replies with status + fd */
+    iov.iov_base = &status;
+    iov.iov_len  = 1;
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_rcv.buf;
+    msg.msg_controllen = sizeof(cmsg_rcv.buf);
+
+    n = recvmsg(reply_fds[0], &msg, 0);
+    close(reply_fds[0]);
+
+    recv_fd = -1;
+    if (n >= 1 && status == 0) {
+        cmh = CMSG_FIRSTHDR(&msg);
+        if (cmh != NULL
+            && cmh->cmsg_level == SOL_SOCKET
+            && cmh->cmsg_type  == SCM_RIGHTS
+            && cmh->cmsg_len   == CMSG_LEN(sizeof(int)))
+        {
+            ngx_memcpy(&recv_fd, CMSG_DATA(cmh), sizeof(int));
+        }
+    }
+
+    return recv_fd;   /* -1 means failure */
+}
+
+
+/*
  * ngx_js_sw_manager_thread — runs in the master process; receives
  * "create SharedWorker" requests from worker processes via sw_cmd_fds[0].
  *
@@ -2267,6 +2481,90 @@ ngx_js_sw_manager_thread(void *arg)
         ngx_memcpy(&url_len,    cmdbuf,                    sizeof(uint32_t));
         ngx_memcpy(&worker_idx, cmdbuf + sizeof(uint32_t), sizeof(uint32_t));
 
+        /* url_len == 0: Phase F extended command */
+        if (url_len == 0) {
+            uint32_t  cmd_type, addr_len;
+            char      addr_buf[NGX_JS_MGR_ADDR_MAX + 1];
+            int       new_fd;
+
+            /* Minimum message: [0][cmd_type][worker_idx] + [addr_len][addr] */
+            if ((ssize_t) n < (ssize_t)(NGX_JS_MGR_EXT_HDR + sizeof(uint32_t)))
+            {
+                close(reply_fd);
+                continue;
+            }
+
+            ngx_memcpy(&cmd_type, cmdbuf + sizeof(uint32_t), sizeof(uint32_t));
+            /* worker_idx already parsed above */
+
+            if (cmd_type == NGX_JS_MGR_CMD_CREATE_SOCKET) {
+                ngx_memcpy(&addr_len,
+                           cmdbuf + 3 * sizeof(uint32_t), sizeof(uint32_t));
+
+                if (addr_len == 0 || addr_len > NGX_JS_MGR_ADDR_MAX
+                    || (ssize_t) n < (ssize_t)(NGX_JS_MGR_EXT_HDR
+                                               + sizeof(uint32_t) + addr_len))
+                {
+                    status = 1;
+                    iov.iov_base = &status;
+                    iov.iov_len  = 1;
+                    ngx_memzero(&msg, sizeof(msg));
+                    msg.msg_iov    = &iov;
+                    msg.msg_iovlen = 1;
+                    (void) sendmsg(reply_fd, &msg, 0);
+                    close(reply_fd);
+                    continue;
+                }
+
+                ngx_memcpy(addr_buf,
+                           cmdbuf + 4 * sizeof(uint32_t), addr_len);
+                addr_buf[addr_len] = '\0';
+
+                new_fd = ngx_js_mgr_do_create_socket(addr_buf);
+
+                /* Send reply: status byte + fd on success */
+                status = (new_fd < 0) ? 1 : 0;
+                iov.iov_base = &status;
+                iov.iov_len  = 1;
+
+                ngx_memzero(&msg, sizeof(msg));
+                msg.msg_iov    = &iov;
+                msg.msg_iovlen = 1;
+
+                if (new_fd >= 0) {
+                    msg.msg_control    = cmsg_snd.buf;
+                    msg.msg_controllen = sizeof(cmsg_snd.buf);
+
+                    cmh             = CMSG_FIRSTHDR(&msg);
+                    cmh->cmsg_level = SOL_SOCKET;
+                    cmh->cmsg_type  = SCM_RIGHTS;
+                    cmh->cmsg_len   = CMSG_LEN(sizeof(int));
+                    ngx_memcpy(CMSG_DATA(cmh), &new_fd, sizeof(int));
+                }
+
+                (void) sendmsg(reply_fd, &msg, 0);
+                close(reply_fd);
+
+                /* Master closes its copy; worker now owns the fd */
+                if (new_fd >= 0) {
+                    close(new_fd);
+                }
+            } else {
+                /* Unknown extended command — send error */
+                status = 1;
+                iov.iov_base = &status;
+                iov.iov_len  = 1;
+                ngx_memzero(&msg, sizeof(msg));
+                msg.msg_iov    = &iov;
+                msg.msg_iovlen = 1;
+                (void) sendmsg(reply_fd, &msg, 0);
+                close(reply_fd);
+            }
+
+            continue;
+        }
+
+        /* url_len > 0: existing SharedWorker request */
         if (url_len > NGX_JS_SW_URL_MAX
             || (ssize_t)(NGX_JS_SW_CMD_HDR + url_len) > n)
         {

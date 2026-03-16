@@ -76,5 +76,14 @@ void  ngx_js_sw_exit_master(ngx_js_conf_t *jcf);
 ngx_int_t  ngx_js_sw_manager_start(ngx_js_conf_t *jcf,
     ngx_cycle_t *cycle);
 
+/*
+ * Ask the manager thread (running in the master process) to create a
+ * bound + listening TCP socket for the given "host:port" address string.
+ * Blocks until the manager replies.
+ * Returns the new socket fd on success, -1 on failure.
+ * Only valid when called from a worker process after fork.
+ */
+int  ngx_js_socket_mgr_create(const char *addr_str, size_t addr_len);
+
 
 #endif /* _NGX_JS_SW_H_INCLUDED_ */
