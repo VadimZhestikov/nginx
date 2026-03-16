@@ -63,6 +63,7 @@ extern JSClassID  ngx_js_scgi_class_id;         /* scgi loc conf         (Stage 
 extern JSClassID  ngx_js_uwsgi_class_id;        /* uwsgi loc conf        (Stage 13) */
 extern JSClassID  ngx_js_mirror_class_id;       /* mirror loc conf       (Stage 13) */
 extern JSClassID  ngx_js_events_class_id;       /* nginx.events          (Stage 14) */
+extern JSClassID  ngx_js_socket_class_id;       /* nginx.createSocket()  (Stage 52) */
 
 
 /*
@@ -185,6 +186,9 @@ ngx_int_t  ngx_js_uwsgi_install_proto(JSContext *ctx);
 ngx_int_t  ngx_js_mirror_install_proto(JSContext *ctx);
 ngx_int_t  ngx_js_events_register_class(JSRuntime *rt);
 ngx_int_t  ngx_js_events_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_socket_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_socket_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_socket_install(JSContext *ctx, JSValue nginx_obj);
 
 
 /*

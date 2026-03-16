@@ -14,6 +14,7 @@
 #include "ngx_js_com.h"
 #include "ngx_js_worker.h"
 #include "ngx_js_sw.h"
+#include "ngx_js_socket.h"
 
 
 /* ------------------------------------------------------------------ */
@@ -428,6 +429,7 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_uwsgi_class_id);
         JS_NewClassID(&ngx_js_mirror_class_id);
         JS_NewClassID(&ngx_js_events_class_id);
+        JS_NewClassID(&ngx_js_socket_class_id);
         initialised = 1;
     }
 
@@ -437,6 +439,10 @@ ngx_js_com_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_events_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_socket_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -634,6 +640,13 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
+    /* nginx.createSocket('host:port') — Stage 52 */
+    if (ngx_js_socket_install(ctx, nginx_obj) != NGX_OK) {
+        JS_FreeValue(ctx, nginx_obj);
+        JS_FreeValue(ctx, global);
+        return NGX_ERROR;
+    }
+
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
 
     /* global Worker constructor */
@@ -706,6 +719,7 @@ ngx_js_com_install_protos(JSContext *ctx)
     if (ngx_js_uwsgi_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_mirror_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_events_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_socket_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     return NGX_OK;
 }
 
