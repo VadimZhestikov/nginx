@@ -35,6 +35,7 @@
 #include "../../stream/ngx_stream_ssl_module.h"
 JSValue  ngx_js_wrap_stream_ssl(JSContext *ctx, ngx_stream_ssl_srv_conf_t *sscf);
 #endif
+#include "ngx_js_stream_module.h"
 
 
 /* ------------------------------------------------------------------ */
@@ -88,7 +89,8 @@ static JSClassDef  ngx_js_stream_server_class = {
  *               3=prereadTimeout 4=resolverTimeout 5=proxyProtocolTimeout
  *               6=proxy (NginxStreamProxy)  7=access (NginxStreamAccess)
  *               8=ssl (NginxStreamSSL)
- * Setter magic: 1-5 (serverName, proxy, access, and ssl are read-only)
+ * Setter magic: 1-5 r/w fields; 9=handler (write-only, stores in __ngx_handlers__)
+ * (serverName, proxy, access, and ssl are read-only)
  */
 static JSValue
 ngx_js_stream_server_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -187,6 +189,44 @@ ngx_js_stream_server_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
         cscf->proxy_protocol_timeout = (ngx_msec_t) n;
         return JS_UNDEFINED;
+
+    case 9: /* handler — session handler function */
+    {
+        JSValue                    global, registry, len_val;
+        uint32_t                   idx;
+        ngx_js_stream_srv_conf_t  *jscf;
+
+        if (!JS_IsFunction(ctx, val)) {
+            return JS_ThrowTypeError(ctx,
+                                     "server.handler: expected a function");
+        }
+
+        global   = JS_GetGlobalObject(ctx);
+        registry = JS_GetPropertyStr(ctx, global, "__ngx_handlers__");
+
+        if (!JS_IsArray(ctx, registry)) {
+            JS_FreeValue(ctx, registry);
+            registry = JS_NewArray(ctx);
+            JS_SetPropertyStr(ctx, global, "__ngx_handlers__",
+                              JS_DupValue(ctx, registry));
+        }
+
+        JS_FreeValue(ctx, global);
+
+        len_val = JS_GetPropertyStr(ctx, registry, "length");
+        JS_ToUint32(ctx, &idx, len_val);
+        JS_FreeValue(ctx, len_val);
+
+        JS_SetPropertyUint32(ctx, registry, idx, JS_DupValue(ctx, val));
+        JS_FreeValue(ctx, registry);
+
+        jscf = cscf->ctx->srv_conf[ngx_js_stream_module.ctx_index];
+        jscf->handler_idx = (ngx_int_t) idx;
+
+        /* Wire the stream content handler. */
+        cscf->handler = ngx_js_stream_content_handler;
+        return JS_UNDEFINED;
+    }
     }
 
     return JS_UNDEFINED;
@@ -203,6 +243,7 @@ static const JSCFunctionListEntry  ngx_js_stream_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("proxy",                ngx_js_stream_server_get, NULL,                     6),
     JS_CGETSET_MAGIC_DEF("access",               ngx_js_stream_server_get, NULL,                     7),
     JS_CGETSET_MAGIC_DEF("ssl",                  ngx_js_stream_server_get, NULL,                     8),
+    JS_CGETSET_MAGIC_DEF("handler",              NULL, ngx_js_stream_server_set,                     9),
 };
 
 

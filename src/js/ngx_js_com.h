@@ -73,6 +73,7 @@ extern JSClassID  ngx_js_stream_peer_class_id;       /* stream config-phase peer
 extern JSClassID  ngx_js_stream_rr_peer_class_id;    /* stream runtime RR peer   (Stage 53)  */
 extern JSClassID  ngx_js_stream_access_class_id;    /* stream server access     (Stage C)   */
 extern JSClassID  ngx_js_stream_ssl_class_id;       /* stream server SSL        (Stage D)   */
+extern JSClassID  ngx_js_stream_session_class_id;   /* stream session handler   (Stage E)   */
 
 
 /*
@@ -220,6 +221,15 @@ ngx_int_t  ngx_js_stream_ssl_install_proto(JSContext *ctx);
  * no struct tag); callers must #include "../../stream/ngx_stream_ssl_module.h"
  * and then declare: JSValue ngx_js_wrap_stream_ssl(JSContext *,
  *                              ngx_stream_ssl_srv_conf_t *); */
+
+ngx_int_t  ngx_js_stream_session_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_stream_session_install_proto(JSContext *ctx);
+
+/* ngx_stream_session_t is a tagged struct — forward declaration works. */
+struct ngx_stream_session_s;
+JSValue    ngx_js_wrap_stream_session(JSContext *ctx,
+    struct ngx_stream_session_s *s,
+    ngx_int_t *pending_code_p, ngx_uint_t *did_finalize_p);
 
 
 /*

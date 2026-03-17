@@ -45,6 +45,7 @@ ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
                  $ngx_addon_dir/ngx_js_listener.c \
                  $ngx_addon_dir/ngx_js_stream_listener.c \
                  $ngx_addon_dir/ngx_js_com_stream_upstream.c \
+                 $ngx_addon_dir/ngx_js_stream_module.c \
                  $ngx_addon_dir/ngx_js_http_module.c"
 ngx_module_deps="$ngx_addon_dir/ngx_js.h \
                  $ngx_addon_dir/ngx_js_com.h \
@@ -52,7 +53,8 @@ ngx_module_deps="$ngx_addon_dir/ngx_js.h \
                  $ngx_addon_dir/ngx_js_sw.h \
                  $ngx_addon_dir/ngx_js_socket.h \
                  $ngx_addon_dir/ngx_js_listener.h \
-                 $ngx_addon_dir/ngx_js_stream_listener.h"
+                 $ngx_addon_dir/ngx_js_stream_listener.h \
+                 $ngx_addon_dir/ngx_js_stream_module.h"
 ngx_module_libs=-lpthread
 
 . auto/module
@@ -62,6 +64,16 @@ ngx_module_libs=-lpthread
 # in ngx_modules[], so its postconf runs last → our filter is first in chain.
 ngx_module_type=HTTP_FILTER
 ngx_module_name="ngx_js_http_module"
+ngx_module_srcs=
+ngx_module_deps=
+ngx_module_libs=
+
+. auto/module
+
+# Stream module: provides per-server JS handler config and session class.
+# Source is compiled above as part of ngx_js_module srcs.
+ngx_module_type=STREAM
+ngx_module_name="ngx_js_stream_module"
 ngx_module_srcs=
 ngx_module_deps=
 ngx_module_libs=
