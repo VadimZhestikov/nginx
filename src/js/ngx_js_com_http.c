@@ -2850,6 +2850,102 @@ ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
 }
 
 
+/*
+ * Run all JS body filters for jlcf's location (whole-body mode).
+ *
+ * Each filter is called as  fn(r, bodyString) → new_body_string | undefined.
+ * If a filter returns a string, it replaces the current body for subsequent
+ * filters.  Non-string returns (undefined, null, ...) are ignored.
+ * Exceptions are logged and the filter is skipped; the body is unchanged.
+ *
+ * out_body is always written (copy of body if no filter modifies it).
+ */
+ngx_int_t
+ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
+    ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf,
+    ngx_str_t *body, ngx_str_t *out_body)
+{
+    ngx_js_filter_entry_t  *elts;
+    JSValue                 req_obj, fn, body_val, result, args[2];
+    JSContext              *job_ctx;
+    const char             *str;
+    size_t                  slen;
+    ngx_uint_t              i;
+    u_char                 *p;
+
+    req_obj = ngx_js_wrap_request(ctx, r);
+    if (JS_IsException(req_obj)) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        *out_body = *body;
+        return NGX_ERROR;
+    }
+
+    body_val = JS_NewStringLen(ctx, (const char *) body->data, body->len);
+
+    elts = jlcf->body_filters->elts;
+
+    for (i = 0; i < jlcf->body_filters->nelts; i++) {
+        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+
+        if (!JS_IsFunction(ctx, fn)) {
+            JS_FreeValue(ctx, fn);
+            continue;
+        }
+
+        args[0] = req_obj;
+        args[1] = body_val;
+
+        result = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
+        JS_FreeValue(ctx, fn);
+
+        while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+
+        if (JS_IsException(result)) {
+            ngx_js_log_exception(ctx, r->connection->log);
+            JS_FreeValue(ctx, result);
+            continue;
+        }
+
+        /* String return → replace body for next filter */
+        if (JS_IsString(result)) {
+            JS_FreeValue(ctx, body_val);
+            body_val = result;
+        } else {
+            JS_FreeValue(ctx, result);
+        }
+    }
+
+    /* Materialise final body_val into r->pool */
+    str = JS_ToCStringLen(ctx, &slen, body_val);
+    JS_FreeValue(ctx, body_val);
+    JS_FreeValue(ctx, req_obj);
+
+    if (str == NULL) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        *out_body = *body;
+        return NGX_ERROR;
+    }
+
+    if (slen > 0) {
+        p = ngx_pnalloc(r->pool, slen);
+        if (p == NULL) {
+            JS_FreeCString(ctx, str);
+            *out_body = *body;
+            return NGX_ERROR;
+        }
+        ngx_memcpy(p, str, slen);
+        out_body->data = p;
+        out_body->len  = slen;
+    } else {
+        out_body->data = (u_char *) "";
+        out_body->len  = 0;
+    }
+
+    JS_FreeCString(ctx, str);
+    return NGX_OK;
+}
+
+
 static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("path",             ngx_js_location_get, NULL,                 0),
     JS_CGETSET_MAGIC_DEF("root",             ngx_js_location_get, ngx_js_location_set,  1),

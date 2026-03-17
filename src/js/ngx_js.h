@@ -90,6 +90,8 @@ typedef struct {
     uint32_t               write_mode;  /* NGX_JS_WRITE_GLOBAL by default */
     uint32_t               read_mode;   /* NGX_JS_WRITE_GLOBAL by default */
     ngx_js_module_snap_t  *snapped;     /* per-module snapshot linked list */
+    ngx_chain_t           *body_bufs;      /* accumulated response body (E1) */
+    ngx_chain_t          **body_bufs_last; /* tail pointer into body_bufs list */
 } ngx_js_req_ctx_t;
 
 
@@ -178,6 +180,17 @@ JSValue  ngx_js_wrap_request(JSContext *ctx, struct ngx_http_request_s *r);
  */
 ngx_int_t  ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
     struct ngx_http_request_s *r, ngx_js_loc_conf_t *jlcf);
+
+/*
+ * Run all JS body filters registered for jlcf's location (whole-body mode).
+ * body     — the flat response body to transform.
+ * out_body — receives the transformed body (allocated in r->pool).
+ * If all filters return undefined/null, out_body == *body unchanged.
+ * Returns NGX_OK or NGX_ERROR.
+ */
+ngx_int_t  ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
+    struct ngx_http_request_s *r, ngx_js_loc_conf_t *jlcf,
+    ngx_str_t *body, ngx_str_t *out_body);
 
 /* Install shared NginxPendingServer prototype in ctx */
 ngx_int_t  ngx_js_pending_server_install_proto(JSContext *ctx);

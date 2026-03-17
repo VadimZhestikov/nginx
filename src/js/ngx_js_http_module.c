@@ -39,12 +39,27 @@ ngx_js_header_filter(ngx_http_request_t *r)
 
     jlcf = ngx_http_get_module_loc_conf(r, ngx_js_http_module);
 
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    w   = jcf->worker;
+
+    /*
+     * If body filters exist for this location, suppress Content-Length so
+     * nginx uses chunked encoding — the body length may change after JS
+     * transformation.  Do this unconditionally, even if header filters are
+     * absent, so the body filter can always write a new length-unknown body.
+     */
+    if (r == r->main
+        && jlcf->body_filters != NULL
+        && jlcf->body_filters->nelts > 0
+        && w != NULL && w->ctx != NULL)
+    {
+        r->headers_out.content_length_n = -1;
+        ngx_http_clear_content_length(r);
+    }
+
     if (jlcf->header_filters == NULL || jlcf->header_filters->nelts == 0) {
         return ngx_js_next_header_filter(r);
     }
-
-    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
-    w   = jcf->worker;
 
     if (w == NULL || w->ctx == NULL) {
         return ngx_js_next_header_filter(r);
@@ -68,7 +83,147 @@ ngx_js_header_filter(ngx_http_request_t *r)
 static ngx_int_t
 ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
-    return ngx_js_next_body_filter(r, in);
+    ngx_js_conf_t      *jcf;
+    ngx_js_loc_conf_t  *jlcf;
+    ngx_js_worker_t    *w;
+    ngx_js_req_ctx_t   *rctx;
+    ngx_chain_t        *cl, *link, *out;
+    ngx_buf_t          *b;
+    ngx_str_t           body, new_body;
+    u_char             *p;
+    size_t              total;
+    int                 last, was_set;
+
+    /* Only intercept the main request */
+    if (r != r->main) {
+        return ngx_js_next_body_filter(r, in);
+    }
+
+    jlcf = ngx_http_get_module_loc_conf(r, ngx_js_http_module);
+
+    if (jlcf->body_filters == NULL || jlcf->body_filters->nelts == 0) {
+        return ngx_js_next_body_filter(r, in);
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    w   = jcf->worker;
+
+    if (w == NULL || w->ctx == NULL) {
+        return ngx_js_next_body_filter(r, in);
+    }
+
+    /* Get or create the per-request context */
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    if (rctx == NULL) {
+        rctx = ngx_pcalloc(r->pool, sizeof(ngx_js_req_ctx_t));
+        if (rctx == NULL) {
+            return NGX_ERROR;
+        }
+        rctx->write_mode     = NGX_JS_WRITE_GLOBAL;
+        rctx->read_mode      = NGX_JS_WRITE_GLOBAL;
+        rctx->body_bufs_last = &rctx->body_bufs;
+        ngx_http_set_ctx(r, rctx, ngx_js_http_module);
+    }
+
+    if (rctx->body_bufs_last == NULL) {
+        rctx->body_bufs_last = &rctx->body_bufs;
+    }
+
+    /* Scan for last_buf flag */
+    last = 0;
+    for (cl = in; cl; cl = cl->next) {
+        if (cl->buf->last_buf) {
+            last = 1;
+        }
+    }
+
+    /* Accumulate chain links into body_bufs (data stays in existing bufs) */
+    for (cl = in; cl; cl = cl->next) {
+        link = ngx_alloc_chain_link(r->pool);
+        if (link == NULL) {
+            return NGX_ERROR;
+        }
+        link->buf  = cl->buf;
+        link->next = NULL;
+        *rctx->body_bufs_last = link;
+        rctx->body_bufs_last  = &link->next;
+    }
+
+    if (!last) {
+        return NGX_OK;  /* more chunks incoming — keep accumulating */
+    }
+
+    /* Flatten all accumulated in-memory buffers into a single ngx_str_t */
+    total = 0;
+    for (cl = rctx->body_bufs; cl; cl = cl->next) {
+        b = cl->buf;
+        if (ngx_buf_in_memory(b)) {
+            total += (size_t)(b->last - b->pos);
+        }
+    }
+
+    if (total > 0) {
+        p = ngx_pnalloc(r->pool, total);
+        if (p == NULL) {
+            return NGX_ERROR;
+        }
+        body.data = p;
+        body.len  = total;
+        for (cl = rctx->body_bufs; cl; cl = cl->next) {
+            b = cl->buf;
+            if (ngx_buf_in_memory(b)) {
+                p = ngx_copy(p, b->pos, (size_t)(b->last - b->pos));
+            }
+        }
+    } else {
+        body.data = (u_char *) "";
+        body.len  = 0;
+    }
+
+    /* Run JS body filters */
+    was_set = (w->current_request == r);
+    if (!was_set) {
+        w->current_request = r;
+    }
+
+    new_body = body;
+    ngx_js_body_filters_run(w->ctx, w->rt, r, jlcf, &body, &new_body);
+
+    if (!was_set) {
+        w->current_request = NULL;
+    }
+
+    /* Reset accumulation state for request reuse */
+    rctx->body_bufs      = NULL;
+    rctx->body_bufs_last = NULL;
+
+    /* Build a single output buffer with the (possibly modified) body */
+    b = ngx_calloc_buf(r->pool);
+    if (b == NULL) {
+        return NGX_ERROR;
+    }
+
+    b->last_buf = 1;
+
+    if (new_body.len > 0) {
+        b->pos    = new_body.data;
+        b->last   = new_body.data + new_body.len;
+        b->memory = 1;
+    } else {
+        /* Zero-length body: emit a sync/flush marker so the write filter
+         * finalises the chunked response without triggering the "zero size
+         * buf in writer" alert that a memory buf with pos==last would cause. */
+        b->sync = 1;
+    }
+
+    out = ngx_alloc_chain_link(r->pool);
+    if (out == NULL) {
+        return NGX_ERROR;
+    }
+    out->buf  = b;
+    out->next = NULL;
+
+    return ngx_js_next_body_filter(r, out);
 }
 
 
@@ -4042,8 +4197,9 @@ ngx_js_content_handler(ngx_http_request_t *r)
     if (rctx == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-    rctx->write_mode = NGX_JS_WRITE_GLOBAL;
-    rctx->read_mode  = NGX_JS_WRITE_GLOBAL;
+    rctx->write_mode     = NGX_JS_WRITE_GLOBAL;
+    rctx->read_mode      = NGX_JS_WRITE_GLOBAL;
+    rctx->body_bufs_last = &rctx->body_bufs;
     /* rctx->snapped = NULL is already done by pcalloc */
     ngx_http_set_ctx(r, rctx, ngx_js_http_module);
 
