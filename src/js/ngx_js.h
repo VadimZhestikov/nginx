@@ -94,14 +94,33 @@ typedef struct {
 
 
 /*
+ * One entry in a per-location header/body filter list.
+ * name is empty (len==0) for unnamed filters.
+ * priority controls auto-insertion order (lower = runs first, default 50).
+ */
+#define NGX_JS_FILTER_PRIORITY_DEFAULT  50
+
+typedef struct {
+    JSValue     fn;
+    ngx_str_t   name;
+    ngx_int_t   priority;
+} ngx_js_filter_entry_t;
+
+
+/*
  * Per-location JS handler config owned by ngx_js_http_module.
  * handler_idx == -1 means no JS handler is set for this location.
  * Otherwise it is an index into the global __ngx_handlers__ array
  * that was populated by location.handler = <function> assignments
  * during the config phase.
+ *
+ * header_filters / body_filters: NULL means no filters for this location.
+ * On first write the parent list is deep-copied (copy-on-first-write).
  */
 typedef struct {
-    ngx_int_t  handler_idx;
+    ngx_int_t    handler_idx;
+    ngx_array_t *header_filters;   /* ngx_js_filter_entry_t[] */
+    ngx_array_t *body_filters;     /* ngx_js_filter_entry_t[] */
 } ngx_js_loc_conf_t;
 
 

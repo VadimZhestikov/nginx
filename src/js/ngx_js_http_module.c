@@ -22,6 +22,41 @@
 
 
 /* ------------------------------------------------------------------ */
+/* Filter chain                                                         */
+/* ------------------------------------------------------------------ */
+
+static ngx_http_output_header_filter_pt  ngx_js_next_header_filter;
+static ngx_http_output_body_filter_pt    ngx_js_next_body_filter;
+
+
+static ngx_int_t
+ngx_js_header_filter(ngx_http_request_t *r)
+{
+    return ngx_js_next_header_filter(r);
+}
+
+
+static ngx_int_t
+ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
+{
+    return ngx_js_next_body_filter(r, in);
+}
+
+
+static ngx_int_t
+ngx_js_filter_init(ngx_conf_t *cf)
+{
+    ngx_js_next_header_filter = ngx_http_top_header_filter;
+    ngx_http_top_header_filter = ngx_js_header_filter;
+
+    ngx_js_next_body_filter = ngx_http_top_body_filter;
+    ngx_http_top_body_filter = ngx_js_body_filter;
+
+    return NGX_OK;
+}
+
+
+/* ------------------------------------------------------------------ */
 /* NginxRequest class                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -5579,9 +5614,44 @@ ngx_js_create_loc_conf(ngx_conf_t *cf)
         return NULL;
     }
 
-    jlcf->handler_idx = -1;  /* unset */
+    jlcf->handler_idx    = -1;   /* unset */
+    jlcf->header_filters = NULL;
+    jlcf->body_filters   = NULL;
 
     return jlcf;
+}
+
+
+/*
+ * Deep-copy a filter list from src into a new array in pool.
+ * ctx is needed to bump JSValue refcounts.
+ * Returns the new array, or NULL on allocation failure.
+ */
+static __attribute__((unused)) ngx_array_t *
+ngx_js_copy_filter_list(JSContext *ctx, ngx_pool_t *pool, ngx_array_t *src)
+{
+    ngx_array_t           *dst;
+    ngx_js_filter_entry_t *se, *de;
+    ngx_uint_t             i;
+
+    dst = ngx_array_create(pool, src->nelts ? src->nelts : 4,
+                           sizeof(ngx_js_filter_entry_t));
+    if (dst == NULL) {
+        return NULL;
+    }
+
+    se = src->elts;
+    for (i = 0; i < src->nelts; i++) {
+        de = ngx_array_push(dst);
+        if (de == NULL) {
+            return NULL;
+        }
+        de->fn       = JS_DupValue(ctx, se[i].fn);
+        de->name     = se[i].name;
+        de->priority = se[i].priority;
+    }
+
+    return dst;
 }
 
 
@@ -5593,6 +5663,16 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     if (conf->handler_idx == -1) {
         conf->handler_idx = prev->handler_idx;
+    }
+
+    /* inherit parent filter lists (pointer copy — copy-on-first-write
+     * happens in the JS setter when the child adds its own filter) */
+    if (conf->header_filters == NULL) {
+        conf->header_filters = prev->header_filters;
+    }
+
+    if (conf->body_filters == NULL) {
+        conf->body_filters = prev->body_filters;
     }
 
     return NGX_CONF_OK;
@@ -5630,7 +5710,7 @@ static ngx_command_t  ngx_js_http_commands[] = {
 
 static ngx_http_module_t  ngx_js_http_module_ctx = {
     NULL,                       /* preconfiguration  */
-    NULL,                       /* postconfiguration */
+    ngx_js_filter_init,         /* postconfiguration */
     NULL,                       /* create main configuration */
     NULL,                       /* init main configuration   */
     NULL,                       /* create server configuration */
