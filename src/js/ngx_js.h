@@ -54,6 +54,8 @@ typedef struct {
     uint64_t                 request_deadline_ms;  /* 0 = none; CLOCK_MONOTONIC ms   */
     size_t                   baseline_malloc_size; /* rt malloc_size right after fork */
     struct ngx_http_request_s *current_request;    /* non-NULL while JS runs in req  */
+    ngx_array_t             *dispatching_hdr_arr;  /* set during header filter loop  */
+    ngx_array_t             *dispatching_body_arr; /* set during body filter loop    */
 } ngx_js_worker_t;
 
 

@@ -2492,6 +2492,45 @@ ngx_js_parse_add_filter_opts(JSContext *ctx, JSValueConst opts_val,
  * Core add logic shared by addHeaderFilter and addBodyFilter.
  * is_body: 0 = header list, 1 = body list.
  */
+/*
+ * If the filter array *listp is currently being iterated by the dispatch loop
+ * (w->dispatching_*_arr matches), COW it before any mutation so the loop's
+ * pre-captured elts pointer stays valid.  Called from add_impl and remove_impl.
+ * After this call, *listp and *own are updated; ensure_own is then a no-op.
+ */
+static ngx_int_t
+ngx_js_filter_predispatch_cow(JSContext *ctx, ngx_array_t **listp,
+    ngx_uint_t *own, ngx_pool_t *pool, int is_body)
+{
+    ngx_js_worker_t  *w;
+    ngx_array_t      *dispatching, *arr;
+
+    w = JS_GetContextOpaque(ctx);
+    if (w == NULL) {
+        return NGX_OK;
+    }
+
+    dispatching = is_body ? w->dispatching_body_arr : w->dispatching_hdr_arr;
+
+    if (dispatching == NULL || dispatching != *listp) {
+        return NGX_OK;
+    }
+
+    /* The array is being iterated — give jlcf a fresh copy */
+    arr = (*listp != NULL)
+        ? ngx_js_copy_filter_list(pool, *listp)
+        : ngx_array_create(pool, 4, sizeof(ngx_js_filter_entry_t));
+
+    if (arr == NULL) {
+        return NGX_ERROR;
+    }
+
+    *listp = arr;
+    *own   = 1;
+    return NGX_OK;
+}
+
+
 static JSValue
 ngx_js_filter_add_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
     int is_body, JSValue fn, ngx_js_add_filter_opts_t *opts)
@@ -2505,6 +2544,12 @@ ngx_js_filter_add_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
     jlcf  = clcf->loc_conf[ngx_js_http_module.ctx_index];
     listp = is_body ? &jlcf->body_filters   : &jlcf->header_filters;
     own   = is_body ? &jlcf->own_body_filters : &jlcf->own_header_filters;
+
+    if (ngx_js_filter_predispatch_cow(ctx, listp, own, jlcf->pool, is_body)
+        != NGX_OK)
+    {
+        return JS_ThrowOutOfMemory(ctx);
+    }
 
     if (ngx_js_filter_ensure_own(listp, own, jlcf->pool) != NGX_OK) {
         return JS_ThrowOutOfMemory(ctx);
@@ -2640,6 +2685,12 @@ ngx_js_filter_remove_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
     idx = ngx_js_filter_find(ctx, *listp, ref);
     if (idx < 0) {
         return JS_UNDEFINED;  /* no-op */
+    }
+
+    if (ngx_js_filter_predispatch_cow(ctx, listp, own, jlcf->pool, is_body)
+        != NGX_OK)
+    {
+        return JS_ThrowOutOfMemory(ctx);
     }
 
     if (ngx_js_filter_ensure_own(listp, own, jlcf->pool) != NGX_OK) {
@@ -2812,7 +2863,8 @@ ngx_int_t
 ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
     ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf)
 {
-    ngx_js_filter_entry_t  *snap;
+    ngx_js_filter_entry_t  *elts;
+    ngx_js_worker_t        *w;
     JSValue                 req_obj, fn, result;
     JSContext              *job_ctx;
     ngx_uint_t              i, nelts;
@@ -2824,25 +2876,20 @@ ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
     }
 
     /*
-     * Snapshot the filter list before iterating.  A filter callback may call
-     * addHeaderFilter / removeHeaderFilter on this location; snapshotting
-     * ensures:
-     *   - newly added filters do not run in the current dispatch
-     *   - removed filters are skipped via the unregistered fn_idx check below
-     *   - array reallocation by add does not invalidate our pointer
-     * The snapshot lives in r->pool and is freed with the request.
+     * Pre-capture nelts and elts, then mark the array as "dispatching".
+     * If a filter callback calls addHeaderFilter / removeHeaderFilter, the
+     * mutator detects the flag and COWs jlcf->header_filters to a new array
+     * before touching it, leaving the array pointed to by elts unchanged.
+     * Removed filters have their fn_idx unregistered; JS_IsFunction returns
+     * false for those entries so they are skipped.
      */
-    nelts = jlcf->header_filters->nelts;
-    snap  = ngx_pnalloc(r->pool, nelts * sizeof(ngx_js_filter_entry_t));
-    if (snap == NULL) {
-        JS_FreeValue(ctx, req_obj);
-        return NGX_ERROR;
-    }
-    ngx_memcpy(snap, jlcf->header_filters->elts,
-               nelts * sizeof(ngx_js_filter_entry_t));
+    w                      = JS_GetContextOpaque(ctx);
+    w->dispatching_hdr_arr = jlcf->header_filters;
+    nelts                  = jlcf->header_filters->nelts;
+    elts                   = jlcf->header_filters->elts;
 
     for (i = 0; i < nelts; i++) {
-        fn = ngx_js_filter_get_fn(ctx, snap[i].fn_idx);
+        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
 
         if (!JS_IsFunction(ctx, fn)) {
             /* fn_idx was unregistered (filter removed during dispatch) */
@@ -2861,6 +2908,8 @@ ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
 
         JS_FreeValue(ctx, result);
     }
+
+    w->dispatching_hdr_arr = NULL;
 
     JS_FreeValue(ctx, req_obj);
     return NGX_OK;
@@ -2882,7 +2931,8 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
     ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf,
     ngx_str_t *body, ngx_str_t *out_body)
 {
-    ngx_js_filter_entry_t  *snap;
+    ngx_js_filter_entry_t  *elts;
+    ngx_js_worker_t        *w;
     JSValue                 req_obj, fn, body_val, result, args[2];
     JSContext              *job_ctx;
     const char             *str;
@@ -2899,20 +2949,14 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
 
     body_val = JS_NewStringLen(ctx, (const char *) body->data, body->len);
 
-    /* Snapshot for the same reentrancy reasons as ngx_js_header_filters_run */
-    nelts = jlcf->body_filters->nelts;
-    snap  = ngx_pnalloc(r->pool, nelts * sizeof(ngx_js_filter_entry_t));
-    if (snap == NULL) {
-        JS_FreeValue(ctx, body_val);
-        JS_FreeValue(ctx, req_obj);
-        *out_body = *body;
-        return NGX_ERROR;
-    }
-    ngx_memcpy(snap, jlcf->body_filters->elts,
-               nelts * sizeof(ngx_js_filter_entry_t));
+    /* Same dispatching-flag approach as ngx_js_header_filters_run */
+    w                       = JS_GetContextOpaque(ctx);
+    w->dispatching_body_arr = jlcf->body_filters;
+    nelts                   = jlcf->body_filters->nelts;
+    elts                    = jlcf->body_filters->elts;
 
     for (i = 0; i < nelts; i++) {
-        fn = ngx_js_filter_get_fn(ctx, snap[i].fn_idx);
+        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
 
         if (!JS_IsFunction(ctx, fn)) {
             JS_FreeValue(ctx, fn);
@@ -2941,6 +2985,8 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
             JS_FreeValue(ctx, result);
         }
     }
+
+    w->dispatching_body_arr = NULL;
 
     /* Materialise final body_val into r->pool */
     str = JS_ToCStringLen(ctx, &slen, body_val);
