@@ -233,6 +233,26 @@ JSValue    ngx_js_wrap_stream_session(JSContext *ctx,
 
 
 /*
+ * F1 — socket enumeration.
+ *
+ * ngx_js_socket_server_by_name_fn — JSCFunctionData bound to a name_map
+ *   object.  data[0] = { lowercaseName: serverWrapper, ... }.
+ *   Returns the server wrapper or JS_NULL.
+ *
+ * ngx_js_http_socket_entries / ngx_js_stream_socket_entries — append socket
+ *   entry objects to arr for HTTP / stream listening sockets.  *idx is
+ *   advanced by the number of entries added (caller initialises to 0).
+ */
+JSValue  ngx_js_socket_server_by_name_fn(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv,
+    int magic, JSValue *func_data);
+void  ngx_js_http_socket_entries(JSContext *ctx, JSValue arr,
+    ngx_cycle_t *cycle, ngx_uint_t *idx);
+void  ngx_js_stream_socket_entries(JSContext *ctx, JSValue arr,
+    ngx_cycle_t *cycle, ngx_uint_t *idx);
+
+
+/*
  * Wrap a single ngx_http_core_loc_conf_t into a NginxLocation JS object.
  * Used by ngx_js_http_module.c to implement r.location.
  * ngx_http_core_loc_conf_t is defined in <ngx_http.h>; callers must

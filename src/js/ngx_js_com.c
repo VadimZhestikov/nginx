@@ -95,6 +95,50 @@ static JSClassDef ngx_js_cycle_class = {
 
 
 /*
+ * serverByName(name) — JSCFunctionData, bound per socket entry.
+ * func_data[0] = { lowercaseName: serverWrapper, ... }
+ */
+JSValue
+ngx_js_socket_server_by_name_fn(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv, int magic, JSValue *func_data)
+{
+    const char  *cstr;
+    size_t       clen;
+    u_char      *lc;
+    JSValue      result;
+
+    if (argc < 1 || JS_IsUndefined(argv[0]) || JS_IsNull(argv[0])) {
+        return JS_NULL;
+    }
+
+    cstr = JS_ToCStringLen(ctx, &clen, argv[0]);
+    if (!cstr) {
+        return JS_EXCEPTION;
+    }
+
+    lc = js_malloc(ctx, clen + 1);
+    if (!lc) {
+        JS_FreeCString(ctx, cstr);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_strlow(lc, (u_char *) cstr, clen);
+    lc[clen] = '\0';
+    JS_FreeCString(ctx, cstr);
+
+    result = JS_GetPropertyStr(ctx, func_data[0], (const char *) lc);
+    js_free(ctx, lc);
+
+    if (JS_IsUndefined(result)) {
+        JS_FreeValue(ctx, result);
+        return JS_NULL;
+    }
+
+    return result;
+}
+
+
+/*
  * Magic values for ngx_js_cycle_get / ngx_js_cycle_set:
  *   0 — hostname          (r/o string)
  *   1 — prefix            (r/o string, conf_prefix — config directory)
@@ -111,6 +155,7 @@ static JSClassDef ngx_js_cycle_class = {
  *  12 — priority          (r/o number, worker_priority nice value)
  *  13 — rlimitNofile      (r/o number, worker_rlimit_nofile; -1 if unset)
  *  14 — workingDirectory  (r/o string, working_directory; "" if unset)
+ *  15 — sockets           (r/o array, snapshot of cycle->listening)
  */
 static JSValue
 ngx_js_cycle_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -198,6 +243,23 @@ ngx_js_cycle_get(JSContext *ctx, JSValueConst this_val, int magic)
         return JS_NewStringLen(ctx,
                                (const char *) ccf->working_directory.data,
                                ccf->working_directory.len);
+
+    case 15: /* sockets — snapshot array from cycle->listening */
+    {
+        JSValue     arr;
+        ngx_uint_t  idx;
+
+        arr = JS_NewArray(ctx);
+        if (JS_IsException(arr)) {
+            return arr;
+        }
+
+        idx = 0;
+        ngx_js_http_socket_entries(ctx, arr, op->cycle, &idx);
+        ngx_js_stream_socket_entries(ctx, arr, op->cycle, &idx);
+
+        return arr;
+    }
     }
 
     return JS_UNDEFINED;
@@ -247,6 +309,7 @@ static const JSCFunctionListEntry ngx_js_cycle_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("priority",          ngx_js_cycle_get, NULL,            12),
     JS_CGETSET_MAGIC_DEF("rlimitNofile",      ngx_js_cycle_get, NULL,            13),
     JS_CGETSET_MAGIC_DEF("workingDirectory",  ngx_js_cycle_get, NULL,            14),
+    JS_CGETSET_MAGIC_DEF("sockets",           ngx_js_cycle_get, NULL,            15),
 };
 
 

@@ -6803,6 +6803,205 @@ ngx_js_http_fn_match(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ================================================================== */
+/* F1 — nginx.cycle.sockets[] / nginx.http.sockets[] HTTP entries     */
+/* ================================================================== */
+
+void
+ngx_js_http_socket_entries(JSContext *ctx, JSValue arr,
+    ngx_cycle_t *cycle, ngx_uint_t *idx)
+{
+    ngx_uint_t                 li, ai, ji, vi;
+    ngx_listening_t           *ls;
+    ngx_http_port_t           *hport;
+    ngx_http_addr_conf_t      *ac;
+    ngx_http_core_srv_conf_t  *cscf;
+    ngx_http_server_name_t    *sn;
+    JSValue                    entry, names_arr, name_map, srv_obj, fn;
+    ngx_js_http_listener_state_t *st;
+    uint32_t                   js_handle;
+    ngx_uint_t                 nnames;
+    u_char                    *lc_key;
+    /* deduplication of cscf pointers across addrs in static sockets */
+    ngx_http_core_srv_conf_t  *seen_cscf[64];
+    ngx_uint_t                 n_seen;
+    ngx_uint_t                 already_seen;
+
+    if (cycle->listening.nelts == 0) {
+        return;
+    }
+
+    ls = cycle->listening.elts;
+
+    for (li = 0; li < cycle->listening.nelts; li++) {
+
+        if (ls[li].handler != ngx_http_init_connection) {
+            continue;
+        }
+
+        entry     = JS_NewObject(ctx);
+        names_arr = JS_NewArray(ctx);
+        name_map  = JS_NewObject(ctx);
+
+        JS_SetPropertyStr(ctx, entry, "address",
+                          JS_NewStringLen(ctx,
+                              (const char *) ls[li].addr_text.data,
+                              ls[li].addr_text.len));
+        JS_SetPropertyStr(ctx, entry, "fd",
+                          JS_NewInt32(ctx, (int32_t) ls[li].fd));
+        JS_SetPropertyStr(ctx, entry, "type",
+                          JS_NewString(ctx,
+                              ls[li].type == SOCK_DGRAM ? "udp" : "tcp"));
+        JS_SetPropertyStr(ctx, entry, "open",
+                          JS_NewBool(ctx, (int) ls[li].open));
+        JS_SetPropertyStr(ctx, entry, "reuseport",
+                          JS_NewBool(ctx, (int) ls[li].reuseport));
+        JS_SetPropertyStr(ctx, entry, "wildcard",
+                          JS_NewBool(ctx, (int) ls[li].wildcard));
+        JS_SetPropertyStr(ctx, entry, "protocol",
+                          JS_NewString(ctx, "http"));
+
+        /* detect JS-created socket */
+        js_handle = NGX_JS_SOCKET_REG_MAX;
+        for (ji = 0; ji < NGX_JS_SOCKET_REG_MAX; ji++) {
+            if (ngx_js_socket_reg[ji] != NULL
+                && ngx_js_socket_reg[ji]->fd == ls[li].fd)
+            {
+                js_handle = (uint32_t) ji;
+                break;
+            }
+        }
+        JS_SetPropertyStr(ctx, entry, "jsCreated",
+                          JS_NewBool(ctx,
+                              (int) (js_handle < NGX_JS_SOCKET_REG_MAX)));
+        JS_SetPropertyStr(ctx, entry, "jsHandle",
+                          JS_NewInt32(ctx,
+                              js_handle < NGX_JS_SOCKET_REG_MAX
+                                  ? (int32_t) js_handle : -1));
+
+        nnames  = 0;
+        n_seen  = 0;
+
+        if (js_handle < NGX_JS_SOCKET_REG_MAX) {
+            /* JS-created: look up HTTP listener registry */
+            st = NULL;
+            for (ji = 0; ji < NGX_JS_LISTENER_REG_MAX; ji++) {
+                if (ngx_js_listener_reg[ji] != NULL
+                    && ngx_js_listener_reg[ji]->socket_handle == js_handle)
+                {
+                    st = ngx_js_listener_reg[ji];
+                    break;
+                }
+            }
+
+            if (st != NULL && st->default_server != NULL) {
+                /* default server names */
+                cscf = st->default_server;
+                sn   = cscf->server_names.elts;
+                for (ji = 0; ji < cscf->server_names.nelts; ji++) {
+                    JS_SetPropertyUint32(ctx, names_arr, nnames++,
+                        JS_NewStringLen(ctx,
+                            (const char *) sn[ji].name.data,
+                            sn[ji].name.len));
+                    lc_key = js_malloc(ctx, sn[ji].name.len + 1);
+                    if (lc_key) {
+                        ngx_strlow(lc_key, sn[ji].name.data, sn[ji].name.len);
+                        lc_key[sn[ji].name.len] = '\0';
+                        srv_obj = ngx_js_wrap_server(ctx, cscf, cycle);
+                        JS_SetPropertyStr(ctx, name_map,
+                                          (const char *) lc_key, srv_obj);
+                        js_free(ctx, lc_key);
+                    }
+                }
+
+                /* virtual server names */
+                for (vi = 0; vi < st->nvservers; vi++) {
+                    cscf = st->vservers[vi];
+                    sn   = cscf->server_names.elts;
+                    for (ji = 0; ji < cscf->server_names.nelts; ji++) {
+                        JS_SetPropertyUint32(ctx, names_arr, nnames++,
+                            JS_NewStringLen(ctx,
+                                (const char *) sn[ji].name.data,
+                                sn[ji].name.len));
+                        lc_key = js_malloc(ctx, sn[ji].name.len + 1);
+                        if (lc_key) {
+                            ngx_strlow(lc_key, sn[ji].name.data,
+                                       sn[ji].name.len);
+                            lc_key[sn[ji].name.len] = '\0';
+                            srv_obj = ngx_js_wrap_server(ctx, cscf, cycle);
+                            JS_SetPropertyStr(ctx, name_map,
+                                              (const char *) lc_key, srv_obj);
+                            js_free(ctx, lc_key);
+                        }
+                    }
+                }
+            }
+
+        } else if (ls[li].servers != NULL) {
+            /* static socket: walk hport->addrs[], dedup by cscf */
+            hport = (ngx_http_port_t *) ls[li].servers;
+
+            for (ai = 0; ai < hport->naddrs; ai++) {
+#if (NGX_HAVE_INET6)
+                if (ls[li].sockaddr->sa_family == AF_INET6) {
+                    ac = &((ngx_http_in6_addr_t *) hport->addrs)[ai].conf;
+                } else {
+#endif
+                    ac = &((ngx_http_in_addr_t *) hport->addrs)[ai].conf;
+#if (NGX_HAVE_INET6)
+                }
+#endif
+
+                cscf = ac->default_server;
+                if (cscf == NULL) {
+                    continue;
+                }
+
+                already_seen = 0;
+                for (vi = 0; vi < n_seen; vi++) {
+                    if (seen_cscf[vi] == cscf) {
+                        already_seen = 1;
+                        break;
+                    }
+                }
+                if (already_seen) {
+                    continue;
+                }
+                if (n_seen < 64) {
+                    seen_cscf[n_seen++] = cscf;
+                }
+
+                sn = cscf->server_names.elts;
+                for (ji = 0; ji < cscf->server_names.nelts; ji++) {
+                    JS_SetPropertyUint32(ctx, names_arr, nnames++,
+                        JS_NewStringLen(ctx,
+                            (const char *) sn[ji].name.data,
+                            sn[ji].name.len));
+                    lc_key = js_malloc(ctx, sn[ji].name.len + 1);
+                    if (lc_key) {
+                        ngx_strlow(lc_key, sn[ji].name.data, sn[ji].name.len);
+                        lc_key[sn[ji].name.len] = '\0';
+                        srv_obj = ngx_js_wrap_server(ctx, cscf, cycle);
+                        JS_SetPropertyStr(ctx, name_map,
+                                          (const char *) lc_key, srv_obj);
+                        js_free(ctx, lc_key);
+                    }
+                }
+            }
+        }
+
+        JS_SetPropertyStr(ctx, entry, "serverNames", names_arr);
+
+        fn = JS_NewCFunctionData(ctx, ngx_js_socket_server_by_name_fn,
+                                 1, 0, 1, &name_map);
+        JS_FreeValue(ctx, name_map);
+        JS_SetPropertyStr(ctx, entry, "serverByName", fn);
+
+        JS_SetPropertyUint32(ctx, arr, (*idx)++, entry);
+    }
+}
+
+
 /* ngx_js_http_com_install                                              */
 /* ------------------------------------------------------------------ */
 
@@ -7125,6 +7324,18 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
     if (ngx_js_listener_install(ctx, http_obj) != NGX_OK) {
         JS_FreeValue(ctx, http_obj);
         return NGX_ERROR;
+    }
+
+    /* nginx.http.sockets[] — F1 */
+    {
+        JSValue     socks_arr;
+        ngx_uint_t  sidx = 0;
+
+        socks_arr = JS_NewArray(ctx);
+        if (!JS_IsException(socks_arr)) {
+            ngx_js_http_socket_entries(ctx, socks_arr, cycle, &sidx);
+            JS_SetPropertyStr(ctx, http_obj, "sockets", socks_arr);
+        }
     }
 
     JS_SetPropertyStr(ctx, nginx_obj, "http", http_obj);

@@ -1052,6 +1052,181 @@ ngx_js_stream_attach(JSContext *ctx, JSValueConst this_val,
 
 
 /* ================================================================== */
+/* F1 — nginx.cycle.sockets[] / nginx.stream.sockets[] stream entries */
+/* ================================================================== */
+
+void
+ngx_js_stream_socket_entries(JSContext *ctx, JSValue arr,
+    ngx_cycle_t *cycle, ngx_uint_t *idx)
+{
+    ngx_uint_t                        li, ai, ji;
+    ngx_listening_t                  *ls;
+    ngx_stream_port_t                *sport;
+    ngx_stream_addr_conf_t           *ac;
+    ngx_stream_core_srv_conf_t       *cscf;
+    JSValue                           entry, names_arr, name_map, srv_obj, fn;
+    ngx_js_stream_listener_state_t   *st;
+    uint32_t                          js_handle;
+    ngx_uint_t                        nnames;
+    u_char                           *lc_key;
+
+    if (cycle->listening.nelts == 0) {
+        return;
+    }
+
+    ls = cycle->listening.elts;
+
+    for (li = 0; li < cycle->listening.nelts; li++) {
+
+        if (ls[li].handler != ngx_stream_init_connection) {
+            continue;
+        }
+
+        entry     = JS_NewObject(ctx);
+        names_arr = JS_NewArray(ctx);
+        name_map  = JS_NewObject(ctx);
+
+        JS_SetPropertyStr(ctx, entry, "address",
+                          JS_NewStringLen(ctx,
+                              (const char *) ls[li].addr_text.data,
+                              ls[li].addr_text.len));
+        JS_SetPropertyStr(ctx, entry, "fd",
+                          JS_NewInt32(ctx, (int32_t) ls[li].fd));
+        JS_SetPropertyStr(ctx, entry, "type",
+                          JS_NewString(ctx,
+                              ls[li].type == SOCK_DGRAM ? "udp" : "tcp"));
+        JS_SetPropertyStr(ctx, entry, "open",
+                          JS_NewBool(ctx, (int) ls[li].open));
+        JS_SetPropertyStr(ctx, entry, "reuseport",
+                          JS_NewBool(ctx, (int) ls[li].reuseport));
+        JS_SetPropertyStr(ctx, entry, "wildcard",
+                          JS_NewBool(ctx, (int) ls[li].wildcard));
+        JS_SetPropertyStr(ctx, entry, "protocol",
+                          JS_NewString(ctx, "stream"));
+
+        /* detect JS-created socket */
+        js_handle = NGX_JS_SOCKET_REG_MAX;
+        for (ji = 0; ji < NGX_JS_SOCKET_REG_MAX; ji++) {
+            if (ngx_js_socket_reg[ji] != NULL
+                && ngx_js_socket_reg[ji]->fd == ls[li].fd)
+            {
+                js_handle = (uint32_t) ji;
+                break;
+            }
+        }
+        JS_SetPropertyStr(ctx, entry, "jsCreated",
+                          JS_NewBool(ctx,
+                              (int) (js_handle < NGX_JS_SOCKET_REG_MAX)));
+        JS_SetPropertyStr(ctx, entry, "jsHandle",
+                          JS_NewInt32(ctx,
+                              js_handle < NGX_JS_SOCKET_REG_MAX
+                                  ? (int32_t) js_handle : -1));
+
+        nnames = 0;
+
+        if (js_handle < NGX_JS_SOCKET_REG_MAX) {
+            /* JS-created: look up stream listener registry */
+            st = NULL;
+            for (ji = 0; ji < NGX_JS_STREAM_LISTENER_REG_MAX; ji++) {
+                if (ngx_js_stream_listener_reg[ji] != NULL
+                    && ngx_js_stream_listener_reg[ji]->socket_handle
+                       == js_handle)
+                {
+                    st = ngx_js_stream_listener_reg[ji];
+                    break;
+                }
+            }
+
+            if (st != NULL && st->default_server != NULL) {
+                cscf = st->default_server;
+                if (cscf->server_name.len > 0) {
+                    JS_SetPropertyUint32(ctx, names_arr, nnames++,
+                        JS_NewStringLen(ctx,
+                            (const char *) cscf->server_name.data,
+                            cscf->server_name.len));
+                    lc_key = js_malloc(ctx, cscf->server_name.len + 1);
+                    if (lc_key) {
+                        ngx_strlow(lc_key, cscf->server_name.data,
+                                   cscf->server_name.len);
+                        lc_key[cscf->server_name.len] = '\0';
+                        srv_obj = ngx_js_wrap_stream_server(ctx, cscf, cycle);
+                        JS_SetPropertyStr(ctx, name_map,
+                                          (const char *) lc_key, srv_obj);
+                        js_free(ctx, lc_key);
+                    }
+                }
+
+                for (ai = 0; ai < st->nvservers; ai++) {
+                    cscf = st->vservers[ai];
+                    if (cscf->server_name.len == 0) {
+                        continue;
+                    }
+                    JS_SetPropertyUint32(ctx, names_arr, nnames++,
+                        JS_NewStringLen(ctx,
+                            (const char *) cscf->server_name.data,
+                            cscf->server_name.len));
+                    lc_key = js_malloc(ctx, cscf->server_name.len + 1);
+                    if (lc_key) {
+                        ngx_strlow(lc_key, cscf->server_name.data,
+                                   cscf->server_name.len);
+                        lc_key[cscf->server_name.len] = '\0';
+                        srv_obj = ngx_js_wrap_stream_server(ctx, cscf, cycle);
+                        JS_SetPropertyStr(ctx, name_map,
+                                          (const char *) lc_key, srv_obj);
+                        js_free(ctx, lc_key);
+                    }
+                }
+            }
+
+        } else if (ls[li].servers != NULL) {
+            /* static socket: walk sport->addrs[] */
+            sport = (ngx_stream_port_t *) ls[li].servers;
+
+            for (ai = 0; ai < sport->naddrs; ai++) {
+#if (NGX_HAVE_INET6)
+                if (ls[li].sockaddr->sa_family == AF_INET6) {
+                    ac = &((ngx_stream_in6_addr_t *) sport->addrs)[ai].conf;
+                } else {
+#endif
+                    ac = &((ngx_stream_in_addr_t *) sport->addrs)[ai].conf;
+#if (NGX_HAVE_INET6)
+                }
+#endif
+                cscf = ac->default_server;
+                if (cscf == NULL || cscf->server_name.len == 0) {
+                    continue;
+                }
+
+                JS_SetPropertyUint32(ctx, names_arr, nnames++,
+                    JS_NewStringLen(ctx,
+                        (const char *) cscf->server_name.data,
+                        cscf->server_name.len));
+                lc_key = js_malloc(ctx, cscf->server_name.len + 1);
+                if (lc_key) {
+                    ngx_strlow(lc_key, cscf->server_name.data,
+                               cscf->server_name.len);
+                    lc_key[cscf->server_name.len] = '\0';
+                    srv_obj = ngx_js_wrap_stream_server(ctx, cscf, cycle);
+                    JS_SetPropertyStr(ctx, name_map,
+                                      (const char *) lc_key, srv_obj);
+                    js_free(ctx, lc_key);
+                }
+            }
+        }
+
+        JS_SetPropertyStr(ctx, entry, "serverNames", names_arr);
+
+        fn = JS_NewCFunctionData(ctx, ngx_js_socket_server_by_name_fn,
+                                 1, 0, 1, &name_map);
+        JS_FreeValue(ctx, name_map);
+        JS_SetPropertyStr(ctx, entry, "serverByName", fn);
+
+        JS_SetPropertyUint32(ctx, arr, (*idx)++, entry);
+    }
+}
+
+
+/* ================================================================== */
 /* nginx.stream object — servers[] + attach()                         */
 /* ================================================================== */
 
@@ -1120,6 +1295,18 @@ ngx_js_stream_install(JSContext *ctx, JSValue nginx_obj, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, stream_obj, "attach",
                       JS_NewCFunction(ctx, ngx_js_stream_attach,
                                       "attach", 1));
+
+    /* nginx.stream.sockets[] — F1 */
+    {
+        JSValue     socks_arr;
+        ngx_uint_t  sidx = 0;
+
+        socks_arr = JS_NewArray(ctx);
+        if (!JS_IsException(socks_arr)) {
+            ngx_js_stream_socket_entries(ctx, socks_arr, cycle, &sidx);
+            JS_SetPropertyStr(ctx, stream_obj, "sockets", socks_arr);
+        }
+    }
 
     JS_SetPropertyStr(ctx, nginx_obj, "stream", stream_obj);
     return NGX_OK;
