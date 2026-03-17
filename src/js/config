@@ -57,8 +57,10 @@ ngx_module_libs=-lpthread
 
 . auto/module
 
-# HTTP module lives in the same source tree; register it separately
-ngx_module_type=HTTP
+# HTTP module lives in the same source tree; register it separately.
+# HTTP_FILTER type places ngx_js_http_module after all standard filter modules
+# in ngx_modules[], so its postconf runs last → our filter is first in chain.
+ngx_module_type=HTTP_FILTER
 ngx_module_name="ngx_js_http_module"
 ngx_module_srcs=
 ngx_module_deps=

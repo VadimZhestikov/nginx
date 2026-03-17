@@ -2206,17 +2206,18 @@ ngx_js_filter_unregister_fn(JSContext *ctx, uint32_t fn_idx)
  * Ensure *listp is owned by this conf (copy-on-first-write).
  * Creates a new empty array if *listp is NULL.
  * Sets *own = 1 on success.
+ * pool must be the location's own pool (jlcf->pool) to avoid use-after-free.
  */
 static ngx_int_t
-ngx_js_filter_ensure_own(ngx_array_t **listp, ngx_uint_t *own)
+ngx_js_filter_ensure_own(ngx_array_t **listp, ngx_uint_t *own,
+    ngx_pool_t *pool)
 {
     ngx_array_t  *arr;
 
     if (*own) {
         /* already ours — create if still NULL */
         if (*listp == NULL) {
-            arr = ngx_array_create(ngx_cycle->pool, 4,
-                                   sizeof(ngx_js_filter_entry_t));
+            arr = ngx_array_create(pool, 4, sizeof(ngx_js_filter_entry_t));
             if (arr == NULL) {
                 return NGX_ERROR;
             }
@@ -2227,10 +2228,9 @@ ngx_js_filter_ensure_own(ngx_array_t **listp, ngx_uint_t *own)
 
     /* COW: copy parent's entries into a new array */
     if (*listp == NULL) {
-        arr = ngx_array_create(ngx_cycle->pool, 4,
-                               sizeof(ngx_js_filter_entry_t));
+        arr = ngx_array_create(pool, 4, sizeof(ngx_js_filter_entry_t));
     } else {
-        arr = ngx_js_copy_filter_list(ngx_cycle->pool, *listp);
+        arr = ngx_js_copy_filter_list(pool, *listp);
     }
 
     if (arr == NULL) {
@@ -2386,7 +2386,7 @@ typedef struct {
 
 static ngx_int_t
 ngx_js_parse_add_filter_opts(JSContext *ctx, JSValueConst opts_val,
-    ngx_js_add_filter_opts_t *opts)
+    ngx_js_add_filter_opts_t *opts, ngx_pool_t *pool)
 {
     JSValue     v;
     const char *s;
@@ -2420,7 +2420,7 @@ ngx_js_parse_add_filter_opts(JSContext *ctx, JSValueConst opts_val,
             JS_FreeValue(ctx, v);
             return NGX_ERROR;
         }
-        opts->name.data = ngx_pnalloc(ngx_cycle->pool, slen);
+        opts->name.data = ngx_pnalloc(pool, slen);
         if (opts->name.data == NULL) {
             JS_FreeCString(ctx, s);
             JS_FreeValue(ctx, v);
@@ -2506,7 +2506,7 @@ ngx_js_filter_add_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
     listp = is_body ? &jlcf->body_filters   : &jlcf->header_filters;
     own   = is_body ? &jlcf->own_body_filters : &jlcf->own_header_filters;
 
-    if (ngx_js_filter_ensure_own(listp, own) != NGX_OK) {
+    if (ngx_js_filter_ensure_own(listp, own, jlcf->pool) != NGX_OK) {
         return JS_ThrowOutOfMemory(ctx);
     }
 
@@ -2568,11 +2568,14 @@ ngx_js_location_fn_add_header_filter(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    if (ngx_js_parse_add_filter_opts(ctx,
-                                     argc > 1 ? argv[1] : JS_UNDEFINED,
-                                     &opts) != NGX_OK)
     {
-        return JS_EXCEPTION;
+        ngx_js_loc_conf_t *jlcf = op->clcf->loc_conf[ngx_js_http_module.ctx_index];
+        if (ngx_js_parse_add_filter_opts(ctx,
+                                         argc > 1 ? argv[1] : JS_UNDEFINED,
+                                         &opts, jlcf->pool) != NGX_OK)
+        {
+            return JS_EXCEPTION;
+        }
     }
 
     ret = ngx_js_filter_add_impl(ctx, op->clcf, 0, argv[0], &opts);
@@ -2600,11 +2603,14 @@ ngx_js_location_fn_add_body_filter(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    if (ngx_js_parse_add_filter_opts(ctx,
-                                     argc > 1 ? argv[1] : JS_UNDEFINED,
-                                     &opts) != NGX_OK)
     {
-        return JS_EXCEPTION;
+        ngx_js_loc_conf_t *jlcf = op->clcf->loc_conf[ngx_js_http_module.ctx_index];
+        if (ngx_js_parse_add_filter_opts(ctx,
+                                         argc > 1 ? argv[1] : JS_UNDEFINED,
+                                         &opts, jlcf->pool) != NGX_OK)
+        {
+            return JS_EXCEPTION;
+        }
     }
 
     ret = ngx_js_filter_add_impl(ctx, op->clcf, 1, argv[0], &opts);
@@ -2636,7 +2642,7 @@ ngx_js_filter_remove_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
         return JS_UNDEFINED;  /* no-op */
     }
 
-    if (ngx_js_filter_ensure_own(listp, own) != NGX_OK) {
+    if (ngx_js_filter_ensure_own(listp, own, jlcf->pool) != NGX_OK) {
         return JS_ThrowOutOfMemory(ctx);
     }
 
@@ -2795,6 +2801,52 @@ ngx_js_location_get_filter_list(JSContext *ctx, JSValueConst this_val,
     }
 
     return arr;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Filter dispatch (called from ngx_js_http_module.c filter hooks)      */
+/* ------------------------------------------------------------------ */
+
+ngx_int_t
+ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
+    ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf)
+{
+    ngx_js_filter_entry_t  *elts;
+    JSValue                 req_obj, fn, result;
+    JSContext              *job_ctx;
+    ngx_uint_t              i;
+
+    req_obj = ngx_js_wrap_request(ctx, r);
+    if (JS_IsException(req_obj)) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        return NGX_ERROR;
+    }
+
+    elts = jlcf->header_filters->elts;
+
+    for (i = 0; i < jlcf->header_filters->nelts; i++) {
+        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+
+        if (!JS_IsFunction(ctx, fn)) {
+            JS_FreeValue(ctx, fn);
+            continue;
+        }
+
+        result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
+        JS_FreeValue(ctx, fn);
+
+        while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+
+        if (JS_IsException(result)) {
+            ngx_js_log_exception(ctx, r->connection->log);
+        }
+
+        JS_FreeValue(ctx, result);
+    }
+
+    JS_FreeValue(ctx, req_obj);
+    return NGX_OK;
 }
 
 

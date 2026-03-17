@@ -32,6 +32,35 @@ static ngx_http_output_body_filter_pt    ngx_js_next_body_filter;
 static ngx_int_t
 ngx_js_header_filter(ngx_http_request_t *r)
 {
+    ngx_js_conf_t      *jcf;
+    ngx_js_loc_conf_t  *jlcf;
+    ngx_js_worker_t    *w;
+    int                 was_set;
+
+    jlcf = ngx_http_get_module_loc_conf(r, ngx_js_http_module);
+
+    if (jlcf->header_filters == NULL || jlcf->header_filters->nelts == 0) {
+        return ngx_js_next_header_filter(r);
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    w   = jcf->worker;
+
+    if (w == NULL || w->ctx == NULL) {
+        return ngx_js_next_header_filter(r);
+    }
+
+    was_set = (w->current_request == r);
+    if (!was_set) {
+        w->current_request = r;
+    }
+
+    ngx_js_header_filters_run(w->ctx, w->rt, r, jlcf);
+
+    if (!was_set) {
+        w->current_request = NULL;
+    }
+
     return ngx_js_next_header_filter(r);
 }
 
@@ -5619,6 +5648,7 @@ ngx_js_create_loc_conf(ngx_conf_t *cf)
     jlcf->body_filters       = NULL;
     jlcf->own_header_filters = 1;  /* NULL is "owned" */
     jlcf->own_body_filters   = 1;
+    jlcf->pool               = cf->pool;
 
     return jlcf;
 }

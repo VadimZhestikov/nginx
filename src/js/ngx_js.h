@@ -125,6 +125,7 @@ typedef struct {
     ngx_array_t *body_filters;        /* ngx_js_filter_entry_t[] */
     ngx_uint_t   own_header_filters;  /* 1 = owned; 0 = inherited */
     ngx_uint_t   own_body_filters;
+    ngx_pool_t  *pool;  /* cf->pool from create_loc_conf; used for filter allocs */
 } ngx_js_loc_conf_t;
 
 
@@ -165,6 +166,18 @@ ngx_int_t  ngx_js_request_register_class(JSRuntime *rt);
 
 /* Install shared NginxRequest prototype in ctx (called once per new context) */
 ngx_int_t  ngx_js_request_install_proto(JSContext *ctx);
+
+/* Wrap an ngx_http_request_t as a JS NginxRequest object */
+JSValue  ngx_js_wrap_request(JSContext *ctx, struct ngx_http_request_s *r);
+
+/*
+ * Run all JS header/body filters registered for jlcf's location.
+ * Filters are called synchronously; exceptions are logged and skipped.
+ * For body filters, body is the flattened response body (whole-body mode).
+ * Returns NGX_OK or NGX_ERROR.
+ */
+ngx_int_t  ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
+    struct ngx_http_request_s *r, ngx_js_loc_conf_t *jlcf);
 
 /* Install shared NginxPendingServer prototype in ctx */
 ngx_int_t  ngx_js_pending_server_install_proto(JSContext *ctx);
