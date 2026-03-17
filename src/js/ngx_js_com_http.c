@@ -2102,6 +2102,702 @@ ngx_js_location_fn_get_property(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* Filter list management                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Deep-copy src into a new array allocated in pool.
+ * Entries are plain structs (fn_idx is just a uint32) — no refcount needed.
+ */
+static ngx_array_t *
+ngx_js_copy_filter_list(ngx_pool_t *pool, ngx_array_t *src)
+{
+    ngx_array_t           *dst;
+    ngx_js_filter_entry_t *se, *de;
+    ngx_uint_t             i;
+
+    dst = ngx_array_create(pool, src->nelts ? src->nelts : 4,
+                           sizeof(ngx_js_filter_entry_t));
+    if (dst == NULL) {
+        return NULL;
+    }
+
+    se = src->elts;
+    for (i = 0; i < src->nelts; i++) {
+        de = ngx_array_push(dst);
+        if (de == NULL) {
+            return NULL;
+        }
+        *de = se[i];
+    }
+
+    return dst;
+}
+
+
+/*
+ * Return the global __ngx_filters__ array, creating it if absent.
+ * Caller must JS_FreeValue the returned value.
+ */
+static JSValue
+ngx_js_get_filter_registry(JSContext *ctx)
+{
+    JSValue  global, registry;
+
+    global   = JS_GetGlobalObject(ctx);
+    registry = JS_GetPropertyStr(ctx, global, "__ngx_filters__");
+
+    if (!JS_IsArray(ctx, registry)) {
+        JS_FreeValue(ctx, registry);
+        registry = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, global, "__ngx_filters__",
+                          JS_DupValue(ctx, registry));
+    }
+
+    JS_FreeValue(ctx, global);
+    return registry;
+}
+
+
+/* Append fn to __ngx_filters__, return its index. */
+static uint32_t
+ngx_js_filter_register_fn(JSContext *ctx, JSValue fn)
+{
+    JSValue   registry, len_val;
+    uint32_t  idx;
+
+    registry = ngx_js_get_filter_registry(ctx);
+    len_val  = JS_GetPropertyStr(ctx, registry, "length");
+    JS_ToUint32(ctx, &idx, len_val);
+    JS_FreeValue(ctx, len_val);
+    JS_SetPropertyUint32(ctx, registry, idx, JS_DupValue(ctx, fn));
+    JS_FreeValue(ctx, registry);
+    return idx;
+}
+
+
+/* Retrieve fn at fn_idx from __ngx_filters__. Caller must JS_FreeValue. */
+static JSValue
+ngx_js_filter_get_fn(JSContext *ctx, uint32_t fn_idx)
+{
+    JSValue  registry, fn;
+
+    registry = ngx_js_get_filter_registry(ctx);
+    fn       = JS_GetPropertyUint32(ctx, registry, fn_idx);
+    JS_FreeValue(ctx, registry);
+    return fn;
+}
+
+
+/* Set __ngx_filters__[fn_idx] = null (releases the GC root for that slot). */
+static void
+ngx_js_filter_unregister_fn(JSContext *ctx, uint32_t fn_idx)
+{
+    JSValue  registry;
+
+    registry = ngx_js_get_filter_registry(ctx);
+    JS_SetPropertyUint32(ctx, registry, fn_idx, JS_NULL);
+    JS_FreeValue(ctx, registry);
+}
+
+
+/*
+ * Ensure *listp is owned by this conf (copy-on-first-write).
+ * Creates a new empty array if *listp is NULL.
+ * Sets *own = 1 on success.
+ */
+static ngx_int_t
+ngx_js_filter_ensure_own(ngx_array_t **listp, ngx_uint_t *own)
+{
+    ngx_array_t  *arr;
+
+    if (*own) {
+        /* already ours — create if still NULL */
+        if (*listp == NULL) {
+            arr = ngx_array_create(ngx_cycle->pool, 4,
+                                   sizeof(ngx_js_filter_entry_t));
+            if (arr == NULL) {
+                return NGX_ERROR;
+            }
+            *listp = arr;
+        }
+        return NGX_OK;
+    }
+
+    /* COW: copy parent's entries into a new array */
+    if (*listp == NULL) {
+        arr = ngx_array_create(ngx_cycle->pool, 4,
+                               sizeof(ngx_js_filter_entry_t));
+    } else {
+        arr = ngx_js_copy_filter_list(ngx_cycle->pool, *listp);
+    }
+
+    if (arr == NULL) {
+        return NGX_ERROR;
+    }
+
+    *listp = arr;
+    *own   = 1;
+    return NGX_OK;
+}
+
+
+/*
+ * Find an entry in list matching ref (string name or function reference).
+ * Returns 0-based index or -1 if not found.
+ */
+static ngx_int_t
+ngx_js_filter_find(JSContext *ctx, ngx_array_t *list, JSValueConst ref)
+{
+    ngx_js_filter_entry_t  *elts;
+    ngx_uint_t              i;
+    const char             *name;
+    size_t                  nlen;
+    JSValue                 fn;
+    int                     eq;
+
+    if (list == NULL || list->nelts == 0) {
+        return -1;
+    }
+
+    elts = list->elts;
+
+    if (JS_IsString(ref)) {
+        name = JS_ToCStringLen(ctx, &nlen, ref);
+        if (!name) {
+            return -1;
+        }
+        for (i = 0; i < list->nelts; i++) {
+            if (elts[i].name.len == nlen
+                && ngx_strncmp(elts[i].name.data, (u_char *) name, nlen) == 0)
+            {
+                JS_FreeCString(ctx, name);
+                return (ngx_int_t) i;
+            }
+        }
+        JS_FreeCString(ctx, name);
+        return -1;
+    }
+
+    if (JS_IsFunction(ctx, ref)) {
+        for (i = 0; i < list->nelts; i++) {
+            fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+            eq = JS_StrictEq(ctx, fn, ref);
+            JS_FreeValue(ctx, fn);
+            if (eq) {
+                return (ngx_int_t) i;
+            }
+        }
+        return -1;
+    }
+
+    return -1;
+}
+
+
+/*
+ * Insert entry at pos, shifting later entries right.
+ * pos must be in [0, arr->nelts] (inclusive — append when pos == nelts).
+ */
+static ngx_int_t
+ngx_js_filter_insert_at(ngx_array_t *arr, ngx_uint_t pos,
+    ngx_js_filter_entry_t *entry)
+{
+    ngx_js_filter_entry_t  *elts, *slot;
+
+    slot = ngx_array_push(arr);
+    if (slot == NULL) {
+        return NGX_ERROR;
+    }
+
+    elts = arr->elts;
+
+    if (pos < arr->nelts - 1) {
+        ngx_memmove(elts + pos + 1, elts + pos,
+                    (arr->nelts - 1 - pos) * sizeof(ngx_js_filter_entry_t));
+    }
+
+    elts[pos] = *entry;
+    return NGX_OK;
+}
+
+
+/* Remove entry at pos, shifting later entries left; unregisters fn. */
+static void
+ngx_js_filter_remove_at(JSContext *ctx, ngx_array_t *arr, ngx_uint_t pos)
+{
+    ngx_js_filter_entry_t  *elts;
+
+    elts = arr->elts;
+    ngx_js_filter_unregister_fn(ctx, elts[pos].fn_idx);
+
+    if (pos < arr->nelts - 1) {
+        ngx_memmove(elts + pos, elts + pos + 1,
+                    (arr->nelts - 1 - pos) * sizeof(ngx_js_filter_entry_t));
+    }
+
+    arr->nelts--;
+}
+
+
+/*
+ * Build a plain JS object { name, priority, fn } for one entry.
+ * Returns JS_EXCEPTION on failure.
+ */
+static JSValue
+ngx_js_filter_entry_to_obj(JSContext *ctx, ngx_js_filter_entry_t *e)
+{
+    JSValue  obj, fn, name_val;
+
+    obj = JS_NewObject(ctx);
+    if (JS_IsException(obj)) {
+        return obj;
+    }
+
+    fn = ngx_js_filter_get_fn(ctx, e->fn_idx);
+
+    if (e->name.len > 0) {
+        name_val = JS_NewStringLen(ctx, (const char *) e->name.data, e->name.len);
+    } else {
+        name_val = JS_NULL;
+    }
+
+    JS_SetPropertyStr(ctx, obj, "name",     name_val);
+    JS_SetPropertyStr(ctx, obj, "priority", JS_NewInt32(ctx, e->priority));
+    JS_SetPropertyStr(ctx, obj, "fn",       fn);
+
+    return obj;
+}
+
+
+/*
+ * Options parsed from the optional second argument of addHeaderFilter /
+ * addBodyFilter.
+ */
+typedef struct {
+    ngx_str_t  name;        /* empty if not provided */
+    ngx_int_t  priority;    /* NGX_JS_FILTER_PRIORITY_DEFAULT if not provided */
+    JSValue    before_ref;  /* JS_UNDEFINED if not provided */
+    JSValue    after_ref;   /* JS_UNDEFINED if not provided */
+    ngx_int_t  insert_idx;  /* -1 if not provided */
+} ngx_js_add_filter_opts_t;
+
+
+static ngx_int_t
+ngx_js_parse_add_filter_opts(JSContext *ctx, JSValueConst opts_val,
+    ngx_js_add_filter_opts_t *opts)
+{
+    JSValue     v;
+    const char *s;
+    size_t      slen;
+    int32_t     i32;
+
+    opts->name.len   = 0;
+    opts->name.data  = NULL;
+    opts->priority   = NGX_JS_FILTER_PRIORITY_DEFAULT;
+    opts->before_ref = JS_UNDEFINED;
+    opts->after_ref  = JS_UNDEFINED;
+    opts->insert_idx = -1;
+
+    if (JS_IsUndefined(opts_val) || JS_IsNull(opts_val)) {
+        return NGX_OK;
+    }
+
+    if (!JS_IsObject(opts_val)) {
+        JS_ThrowTypeError(ctx, "addFilter: opts must be an object");
+        return NGX_ERROR;
+    }
+
+    /* name */
+    v = JS_GetPropertyStr(ctx, opts_val, "name");
+    if (JS_IsException(v)) {
+        return NGX_ERROR;
+    }
+    if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+        s = JS_ToCStringLen(ctx, &slen, v);
+        if (!s) {
+            JS_FreeValue(ctx, v);
+            return NGX_ERROR;
+        }
+        opts->name.data = ngx_pnalloc(ngx_cycle->pool, slen);
+        if (opts->name.data == NULL) {
+            JS_FreeCString(ctx, s);
+            JS_FreeValue(ctx, v);
+            return NGX_ERROR;
+        }
+        ngx_memcpy(opts->name.data, s, slen);
+        opts->name.len = slen;
+        JS_FreeCString(ctx, s);
+    }
+    JS_FreeValue(ctx, v);
+
+    /* priority */
+    v = JS_GetPropertyStr(ctx, opts_val, "priority");
+    if (JS_IsException(v)) {
+        return NGX_ERROR;
+    }
+    if (!JS_IsUndefined(v)) {
+        if (JS_ToInt32(ctx, &i32, v)) {
+            JS_FreeValue(ctx, v);
+            return NGX_ERROR;
+        }
+        opts->priority = (ngx_int_t) i32;
+    }
+    JS_FreeValue(ctx, v);
+
+    /* index */
+    v = JS_GetPropertyStr(ctx, opts_val, "index");
+    if (JS_IsException(v)) {
+        return NGX_ERROR;
+    }
+    if (!JS_IsUndefined(v)) {
+        if (JS_ToInt32(ctx, &i32, v)) {
+            JS_FreeValue(ctx, v);
+            return NGX_ERROR;
+        }
+        opts->insert_idx = (ngx_int_t) i32;
+    }
+    JS_FreeValue(ctx, v);
+
+    /* before */
+    v = JS_GetPropertyStr(ctx, opts_val, "before");
+    if (JS_IsException(v)) {
+        return NGX_ERROR;
+    }
+    if (!JS_IsUndefined(v)) {
+        opts->before_ref = v;  /* caller frees */
+    } else {
+        JS_FreeValue(ctx, v);
+    }
+
+    /* after */
+    v = JS_GetPropertyStr(ctx, opts_val, "after");
+    if (JS_IsException(v)) {
+        JS_FreeValue(ctx, opts->before_ref);
+        opts->before_ref = JS_UNDEFINED;
+        return NGX_ERROR;
+    }
+    if (!JS_IsUndefined(v)) {
+        opts->after_ref = v;  /* caller frees */
+    } else {
+        JS_FreeValue(ctx, v);
+    }
+
+    return NGX_OK;
+}
+
+
+/*
+ * Core add logic shared by addHeaderFilter and addBodyFilter.
+ * is_body: 0 = header list, 1 = body list.
+ */
+static JSValue
+ngx_js_filter_add_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
+    int is_body, JSValue fn, ngx_js_add_filter_opts_t *opts)
+{
+    ngx_js_loc_conf_t     *jlcf;
+    ngx_array_t          **listp;
+    ngx_uint_t            *own;
+    ngx_js_filter_entry_t  entry;
+    ngx_uint_t             pos, i;
+
+    jlcf  = clcf->loc_conf[ngx_js_http_module.ctx_index];
+    listp = is_body ? &jlcf->body_filters   : &jlcf->header_filters;
+    own   = is_body ? &jlcf->own_body_filters : &jlcf->own_header_filters;
+
+    if (ngx_js_filter_ensure_own(listp, own) != NGX_OK) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    entry.fn_idx   = ngx_js_filter_register_fn(ctx, fn);
+    entry.name     = opts->name;
+    entry.priority = opts->priority;
+
+    /* Determine insertion position (precedence: index > before/after > priority) */
+    if (opts->insert_idx >= 0) {
+        pos = (ngx_uint_t) opts->insert_idx;
+        if (pos > (*listp)->nelts) {
+            pos = (*listp)->nelts;
+        }
+
+    } else if (!JS_IsUndefined(opts->before_ref)) {
+        ngx_int_t found = ngx_js_filter_find(ctx, *listp, opts->before_ref);
+        pos = (found >= 0) ? (ngx_uint_t) found : (*listp)->nelts;
+
+    } else if (!JS_IsUndefined(opts->after_ref)) {
+        ngx_int_t found = ngx_js_filter_find(ctx, *listp, opts->after_ref);
+        pos = (found >= 0) ? (ngx_uint_t) found + 1 : (*listp)->nelts;
+
+    } else {
+        /* priority-based insertion: find first entry with higher priority */
+        pos = (*listp)->nelts;  /* default: append */
+        ngx_js_filter_entry_t *elts = (*listp)->elts;
+        for (i = 0; i < (*listp)->nelts; i++) {
+            if (elts[i].priority > opts->priority) {
+                pos = i;
+                break;
+            }
+        }
+    }
+
+    if (ngx_js_filter_insert_at(*listp, pos, &entry) != NGX_OK) {
+        ngx_js_filter_unregister_fn(ctx, entry.fn_idx);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_location_fn_add_header_filter(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+    ngx_js_add_filter_opts_t   opts;
+    JSValue                    ret;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "addHeaderFilter: first argument must be a function");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_js_parse_add_filter_opts(ctx,
+                                     argc > 1 ? argv[1] : JS_UNDEFINED,
+                                     &opts) != NGX_OK)
+    {
+        return JS_EXCEPTION;
+    }
+
+    ret = ngx_js_filter_add_impl(ctx, op->clcf, 0, argv[0], &opts);
+    JS_FreeValue(ctx, opts.before_ref);
+    JS_FreeValue(ctx, opts.after_ref);
+    return ret;
+}
+
+
+static JSValue
+ngx_js_location_fn_add_body_filter(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+    ngx_js_add_filter_opts_t   opts;
+    JSValue                    ret;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "addBodyFilter: first argument must be a function");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_js_parse_add_filter_opts(ctx,
+                                     argc > 1 ? argv[1] : JS_UNDEFINED,
+                                     &opts) != NGX_OK)
+    {
+        return JS_EXCEPTION;
+    }
+
+    ret = ngx_js_filter_add_impl(ctx, op->clcf, 1, argv[0], &opts);
+    JS_FreeValue(ctx, opts.before_ref);
+    JS_FreeValue(ctx, opts.after_ref);
+    return ret;
+}
+
+
+/*
+ * Core remove logic shared by removeHeaderFilter and removeBodyFilter.
+ * ref is a string name or function reference.
+ */
+static JSValue
+ngx_js_filter_remove_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
+    int is_body, JSValueConst ref)
+{
+    ngx_js_loc_conf_t  *jlcf;
+    ngx_array_t       **listp;
+    ngx_uint_t         *own;
+    ngx_int_t           idx;
+
+    jlcf  = clcf->loc_conf[ngx_js_http_module.ctx_index];
+    listp = is_body ? &jlcf->body_filters   : &jlcf->header_filters;
+    own   = is_body ? &jlcf->own_body_filters : &jlcf->own_header_filters;
+
+    idx = ngx_js_filter_find(ctx, *listp, ref);
+    if (idx < 0) {
+        return JS_UNDEFINED;  /* no-op */
+    }
+
+    if (ngx_js_filter_ensure_own(listp, own) != NGX_OK) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    /* Re-find after potential COW copy */
+    idx = ngx_js_filter_find(ctx, *listp, ref);
+    if (idx >= 0) {
+        ngx_js_filter_remove_at(ctx, *listp, (ngx_uint_t) idx);
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_location_fn_remove_header_filter(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "removeHeaderFilter: argument required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_filter_remove_impl(ctx, op->clcf, 0, argv[0]);
+}
+
+
+static JSValue
+ngx_js_location_fn_remove_body_filter(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+                                 "removeBodyFilter: argument required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_filter_remove_impl(ctx, op->clcf, 1, argv[0]);
+}
+
+
+/*
+ * getHeaderFilter(ref) / getBodyFilter(ref) — return entry object or null.
+ */
+static JSValue
+ngx_js_filter_get_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
+    int is_body, JSValueConst ref)
+{
+    ngx_js_loc_conf_t     *jlcf;
+    ngx_array_t           *list;
+    ngx_int_t              idx;
+
+    jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+    list = is_body ? jlcf->body_filters : jlcf->header_filters;
+
+    idx = ngx_js_filter_find(ctx, list, ref);
+    if (idx < 0) {
+        return JS_NULL;
+    }
+
+    return ngx_js_filter_entry_to_obj(ctx,
+                                      &((ngx_js_filter_entry_t *) list->elts)[idx]);
+}
+
+
+static JSValue
+ngx_js_location_fn_get_header_filter(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "getHeaderFilter: argument required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_filter_get_impl(ctx, op->clcf, 0, argv[0]);
+}
+
+
+static JSValue
+ngx_js_location_fn_get_body_filter(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "getBodyFilter: argument required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_filter_get_impl(ctx, op->clcf, 1, argv[0]);
+}
+
+
+/*
+ * headerFilters / bodyFilters getter — returns a snapshot JS array of
+ * { name, priority, fn } objects.  magic: 0 = header, 1 = body.
+ */
+static JSValue
+ngx_js_location_get_filter_list(JSContext *ctx, JSValueConst this_val,
+    int magic)
+{
+    ngx_js_location_opaque_t  *op;
+    ngx_js_loc_conf_t         *jlcf;
+    ngx_array_t               *list;
+    ngx_js_filter_entry_t     *elts;
+    JSValue                    arr, obj;
+    ngx_uint_t                 i;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    jlcf = op->clcf->loc_conf[ngx_js_http_module.ctx_index];
+    list = magic ? jlcf->body_filters : jlcf->header_filters;
+
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) {
+        return arr;
+    }
+
+    if (list == NULL) {
+        return arr;
+    }
+
+    elts = list->elts;
+    for (i = 0; i < list->nelts; i++) {
+        obj = ngx_js_filter_entry_to_obj(ctx, &elts[i]);
+        if (JS_IsException(obj)) {
+            JS_FreeValue(ctx, arr);
+            return obj;
+        }
+        JS_SetPropertyUint32(ctx, arr, i, obj);
+    }
+
+    return arr;
+}
+
+
 static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("path",             ngx_js_location_get, NULL,                 0),
     JS_CGETSET_MAGIC_DEF("root",             ngx_js_location_get, ngx_js_location_set,  1),
@@ -2202,6 +2898,18 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CFUNC_DEF("addLocation",    1, ngx_js_location_fn_add_location),
     JS_CFUNC_DEF("removeLocation", 1, ngx_js_location_fn_remove_location),
     JS_CFUNC_DEF("clone",          1, ngx_js_location_fn_clone),
+
+    /* Filter list management */
+    JS_CGETSET_MAGIC_DEF("headerFilters", ngx_js_location_get_filter_list,
+                          NULL, 0),
+    JS_CGETSET_MAGIC_DEF("bodyFilters",   ngx_js_location_get_filter_list,
+                          NULL, 1),
+    JS_CFUNC_DEF("addHeaderFilter",    1, ngx_js_location_fn_add_header_filter),
+    JS_CFUNC_DEF("addBodyFilter",      1, ngx_js_location_fn_add_body_filter),
+    JS_CFUNC_DEF("removeHeaderFilter", 1, ngx_js_location_fn_remove_header_filter),
+    JS_CFUNC_DEF("removeBodyFilter",   1, ngx_js_location_fn_remove_body_filter),
+    JS_CFUNC_DEF("getHeaderFilter",    1, ngx_js_location_fn_get_header_filter),
+    JS_CFUNC_DEF("getBodyFilter",      1, ngx_js_location_fn_get_body_filter),
 };
 
 

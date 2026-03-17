@@ -95,13 +95,14 @@ typedef struct {
 
 /*
  * One entry in a per-location header/body filter list.
- * name is empty (len==0) for unnamed filters.
+ * fn_idx is an index into the global __ngx_filters__ JS array (keeps fn
+ * GC-reachable).  name is empty (len==0) for unnamed filters.
  * priority controls auto-insertion order (lower = runs first, default 50).
  */
 #define NGX_JS_FILTER_PRIORITY_DEFAULT  50
 
 typedef struct {
-    JSValue     fn;
+    uint32_t    fn_idx;   /* index into global __ngx_filters__ array */
     ngx_str_t   name;
     ngx_int_t   priority;
 } ngx_js_filter_entry_t;
@@ -115,12 +116,15 @@ typedef struct {
  * during the config phase.
  *
  * header_filters / body_filters: NULL means no filters for this location.
- * On first write the parent list is deep-copied (copy-on-first-write).
+ * own_header_filters / own_body_filters: 1 = array belongs to this conf,
+ * 0 = pointer inherited from parent (copy-on-first-write on next mutation).
  */
 typedef struct {
-    ngx_int_t    handler_idx;
-    ngx_array_t *header_filters;   /* ngx_js_filter_entry_t[] */
-    ngx_array_t *body_filters;     /* ngx_js_filter_entry_t[] */
+    ngx_int_t   handler_idx;
+    ngx_array_t *header_filters;      /* ngx_js_filter_entry_t[] */
+    ngx_array_t *body_filters;        /* ngx_js_filter_entry_t[] */
+    ngx_uint_t   own_header_filters;  /* 1 = owned; 0 = inherited */
+    ngx_uint_t   own_body_filters;
 } ngx_js_loc_conf_t;
 
 

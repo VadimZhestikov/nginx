@@ -5614,45 +5614,15 @@ ngx_js_create_loc_conf(ngx_conf_t *cf)
         return NULL;
     }
 
-    jlcf->handler_idx    = -1;   /* unset */
-    jlcf->header_filters = NULL;
-    jlcf->body_filters   = NULL;
+    jlcf->handler_idx        = -1;  /* unset */
+    jlcf->header_filters     = NULL;
+    jlcf->body_filters       = NULL;
+    jlcf->own_header_filters = 1;  /* NULL is "owned" */
+    jlcf->own_body_filters   = 1;
 
     return jlcf;
 }
 
-
-/*
- * Deep-copy a filter list from src into a new array in pool.
- * ctx is needed to bump JSValue refcounts.
- * Returns the new array, or NULL on allocation failure.
- */
-static __attribute__((unused)) ngx_array_t *
-ngx_js_copy_filter_list(JSContext *ctx, ngx_pool_t *pool, ngx_array_t *src)
-{
-    ngx_array_t           *dst;
-    ngx_js_filter_entry_t *se, *de;
-    ngx_uint_t             i;
-
-    dst = ngx_array_create(pool, src->nelts ? src->nelts : 4,
-                           sizeof(ngx_js_filter_entry_t));
-    if (dst == NULL) {
-        return NULL;
-    }
-
-    se = src->elts;
-    for (i = 0; i < src->nelts; i++) {
-        de = ngx_array_push(dst);
-        if (de == NULL) {
-            return NULL;
-        }
-        de->fn       = JS_DupValue(ctx, se[i].fn);
-        de->name     = se[i].name;
-        de->priority = se[i].priority;
-    }
-
-    return dst;
-}
 
 
 static char *
@@ -5665,14 +5635,17 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->handler_idx = prev->handler_idx;
     }
 
-    /* inherit parent filter lists (pointer copy — copy-on-first-write
-     * happens in the JS setter when the child adds its own filter) */
-    if (conf->header_filters == NULL) {
-        conf->header_filters = prev->header_filters;
+    /* Inherit parent filter lists (pointer copy).
+     * own_* = 0 marks the pointer as borrowed; the JS setter triggers
+     * copy-on-first-write before any mutation. */
+    if (conf->header_filters == NULL && prev->header_filters != NULL) {
+        conf->header_filters     = prev->header_filters;
+        conf->own_header_filters = 0;
     }
 
-    if (conf->body_filters == NULL) {
-        conf->body_filters = prev->body_filters;
+    if (conf->body_filters == NULL && prev->body_filters != NULL) {
+        conf->body_filters     = prev->body_filters;
+        conf->own_body_filters = 0;
     }
 
     return NGX_CONF_OK;
