@@ -2,7 +2,7 @@
 /*
  * Copyright (C) nginx JS contributors
  *
- * Stream upstream COM layer — Stage 53.
+ * Stream upstream COM layer — Stage 53 / Stage A.
  *
  * NginxStreamPeer     — config-phase peer (ngx_stream_upstream_server_t)
  * NginxStreamRRPeer   — runtime RR peer   (ngx_stream_upstream_rr_peer_t)
@@ -13,6 +13,8 @@
  * nginx.stream.upstreams[i].peers[]
  *   .address / .weight / .maxFails / .failTimeout / .maxConns / .down
  *   .backup / .conns / .server / .fails  (RR only)
+ * nginx.stream.upstreams[i].addPeer(addr[, opts])
+ * nginx.stream.upstreams[i].removePeer(addr)
  */
 
 #include <ngx_config.h>
@@ -489,10 +491,288 @@ ngx_js_stream_upstream_get_peers(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * nginx.stream.upstreams[i].addPeer(addr[, opts])
+ *
+ * addr  — "IP:port" string
+ * opts  — optional object:
+ *           weight      (default 1)
+ *           maxFails    (default 1)
+ *           failTimeout (default 10, in seconds)
+ *           down        (default false)
+ *           backup      (default false — adds to backup group if true)
+ *
+ * Allocates a new ngx_stream_upstream_rr_peer_t from cycle->pool and
+ * links it into the upstream's RR peer list.
+ */
+static JSValue
+ngx_js_stream_upstream_add_peer(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_stream_upstream_opaque_t  *op;
+    ngx_stream_upstream_rr_peers_t   *peers;
+    ngx_stream_upstream_rr_peer_t    *peer, *tail;
+    const char                       *addr_cstr;
+    ngx_url_t                         u;
+    ngx_int_t                         weight, max_fails, is_backup;
+    time_t                            fail_timeout;
+    ngx_uint_t                        down;
+    JSValue                           opts, v;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "addPeer: address argument required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_upstream_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->uscf->peer.data == NULL) {
+        return JS_ThrowTypeError(ctx,
+                                 "addPeer: upstream RR data not initialised");
+    }
+
+    /* Parse address */
+    addr_cstr = JS_ToCString(ctx, argv[0]);
+    if (!addr_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    ngx_memzero(&u, sizeof(ngx_url_t));
+    u.url.data   = (u_char *) addr_cstr;
+    u.url.len    = ngx_strlen(addr_cstr);
+    u.no_resolve = 1;
+
+    if (ngx_parse_url(ngx_cycle->pool, &u) != NGX_OK || u.naddrs == 0) {
+        JS_FreeCString(ctx, addr_cstr);
+        return JS_ThrowTypeError(ctx, "addPeer: invalid address");
+    }
+
+    JS_FreeCString(ctx, addr_cstr);
+
+    /* Defaults */
+    weight       = 1;
+    max_fails    = 1;
+    fail_timeout = 10;
+    down         = 0;
+    is_backup    = 0;
+
+    /* Parse opts */
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+        opts = argv[1];
+
+        v = JS_GetPropertyStr(ctx, opts, "weight");
+        if (!JS_IsUndefined(v)) {
+            int32_t w;
+            if (JS_ToInt32(ctx, &w, v) == 0 && w > 0) {
+                weight = w;
+            }
+        }
+        JS_FreeValue(ctx, v);
+
+        v = JS_GetPropertyStr(ctx, opts, "maxFails");
+        if (!JS_IsUndefined(v)) {
+            int32_t mf;
+            if (JS_ToInt32(ctx, &mf, v) == 0 && mf >= 0) {
+                max_fails = mf;
+            }
+        }
+        JS_FreeValue(ctx, v);
+
+        v = JS_GetPropertyStr(ctx, opts, "failTimeout");
+        if (!JS_IsUndefined(v)) {
+            int32_t ft;
+            if (JS_ToInt32(ctx, &ft, v) == 0 && ft >= 0) {
+                fail_timeout = (time_t) ft;
+            }
+        }
+        JS_FreeValue(ctx, v);
+
+        v = JS_GetPropertyStr(ctx, opts, "down");
+        if (!JS_IsUndefined(v)) {
+            down = (ngx_uint_t) JS_ToBool(ctx, v);
+        }
+        JS_FreeValue(ctx, v);
+
+        v = JS_GetPropertyStr(ctx, opts, "backup");
+        if (!JS_IsUndefined(v)) {
+            is_backup = JS_ToBool(ctx, v);
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    peers = (ngx_stream_upstream_rr_peers_t *) op->uscf->peer.data;
+
+    /* For backup peers, use the backup group (peers->next) */
+    if (is_backup) {
+        if (peers->next == NULL) {
+            /* Create backup group on demand */
+            peers->next = ngx_pcalloc(ngx_cycle->pool,
+                                      sizeof(ngx_stream_upstream_rr_peers_t));
+            if (peers->next == NULL) {
+                return JS_ThrowOutOfMemory(ctx);
+            }
+            peers->next->name = peers->name;
+        }
+        peers = peers->next;
+    }
+
+    peer = ngx_pcalloc(ngx_cycle->pool,
+                       sizeof(ngx_stream_upstream_rr_peer_t));
+    if (peer == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    peer->sockaddr = ngx_pcalloc(ngx_cycle->pool, u.addrs[0].socklen);
+    if (peer->sockaddr == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(peer->sockaddr, u.addrs[0].sockaddr, u.addrs[0].socklen);
+    peer->socklen = u.addrs[0].socklen;
+
+    peer->name   = u.addrs[0].name;
+    peer->server = u.addrs[0].name;
+
+    peer->weight           = (ngx_uint_t) weight;
+    peer->effective_weight = (ngx_int_t)  weight;
+    peer->current_weight   = 0;
+    peer->max_fails        = (ngx_uint_t) max_fails;
+    peer->fail_timeout     = fail_timeout;
+    peer->max_conns        = 0;
+    peer->down             = down;
+
+    /* Link peer at tail of the list under wlock */
+    ngx_stream_upstream_rr_peers_wlock(peers);
+
+    if (peers->peer == NULL) {
+        peers->peer = peer;
+    } else {
+        for (tail = peers->peer; tail->next; tail = tail->next) { /* void */ }
+        tail->next = peer;
+    }
+
+    peers->number++;
+    peers->total_weight += (ngx_uint_t) weight;
+    if (!down) {
+        peers->tries++;
+    }
+    peers->weighted = (peers->total_weight != peers->number);
+    peers->single   = (peers->number == 1);
+
+    ngx_stream_upstream_rr_peers_unlock(peers);
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * nginx.stream.upstreams[i].removePeer(addr)
+ *
+ * addr — "IP:port" string matching peer->name
+ *
+ * Searches primary and backup groups.  Unlinks the peer and updates
+ * group counters.  For zone-backed upstreams calls
+ * ngx_stream_upstream_rr_peer_free_locked; for pool-allocated peers
+ * the memory stays in the pool.
+ */
+static JSValue
+ngx_js_stream_upstream_remove_peer(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_stream_upstream_opaque_t  *op;
+    ngx_stream_upstream_rr_peers_t   *peers, *pg;
+    ngx_stream_upstream_rr_peer_t    *p, **pp;
+    const char                       *addr_cstr;
+    ngx_str_t                         addr;
+    ngx_int_t                         found;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "removePeer: address argument required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_upstream_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->uscf->peer.data == NULL) {
+        return JS_ThrowTypeError(ctx,
+                                 "removePeer: upstream RR data not initialised");
+    }
+
+    addr_cstr = JS_ToCString(ctx, argv[0]);
+    if (!addr_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    addr.data = (u_char *) addr_cstr;
+    addr.len  = ngx_strlen(addr_cstr);
+
+    peers = (ngx_stream_upstream_rr_peers_t *) op->uscf->peer.data;
+    found = 0;
+
+    for (pg = peers; pg && !found; pg = pg->next) {
+
+        ngx_stream_upstream_rr_peers_wlock(pg);
+
+        pp = &pg->peer;
+
+        while (*pp) {
+            p = *pp;
+
+            if (p->name.len == addr.len
+                && ngx_memcmp(p->name.data, addr.data, addr.len) == 0)
+            {
+                /* Unlink */
+                *pp = p->next;
+
+                pg->number--;
+                pg->total_weight -= (ngx_uint_t) p->weight;
+                if (!p->down) {
+                    pg->tries--;
+                }
+                if (pg->number > 0) {
+                    pg->weighted = (pg->total_weight != pg->number);
+                    pg->single   = (pg->number == 1);
+                } else {
+                    pg->weighted = 0;
+                    pg->single   = 0;
+                }
+
+                /* Free peer memory if zone-backed */
+                if (pg->shpool) {
+                    ngx_shmtx_lock(&pg->shpool->mutex);
+                    ngx_stream_upstream_rr_peer_free_locked(pg, p);
+                    ngx_shmtx_unlock(&pg->shpool->mutex);
+                }
+
+                found = 1;
+                break;
+            }
+
+            pp = &p->next;
+        }
+
+        ngx_stream_upstream_rr_peers_unlock(pg);
+    }
+
+    JS_FreeCString(ctx, addr_cstr);
+
+    if (!found) {
+        return JS_ThrowTypeError(ctx, "removePeer: peer not found");
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry  ngx_js_stream_upstream_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("name",  ngx_js_stream_upstream_get,       NULL, 0),
     JS_CGETSET_MAGIC_DEF("zone",  ngx_js_stream_upstream_get,       NULL, 1),
     JS_CGETSET_MAGIC_DEF("peers", ngx_js_stream_upstream_get_peers, NULL, 0),
+    JS_CFUNC_DEF("addPeer",    1, ngx_js_stream_upstream_add_peer),
+    JS_CFUNC_DEF("removePeer", 1, ngx_js_stream_upstream_remove_peer),
 };
 
 
