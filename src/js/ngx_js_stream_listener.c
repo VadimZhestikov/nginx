@@ -78,9 +78,12 @@ static JSClassDef  ngx_js_stream_server_class = {
 };
 
 
-/* magic: 0=serverName 1=tcpNodelay 2=prereadBufferSize
- *        3=prereadTimeout 4=resolverTimeout 5=proxyProtocolTimeout
- *        6=proxy (NginxStreamProxy) */
+/*
+ * Getter magic: 0=serverName 1=tcpNodelay 2=prereadBufferSize
+ *               3=prereadTimeout 4=resolverTimeout 5=proxyProtocolTimeout
+ *               6=proxy (NginxStreamProxy)
+ * Setter magic: 1-5 (serverName and proxy are read-only)
+ */
 static JSValue
 ngx_js_stream_server_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
@@ -121,14 +124,55 @@ ngx_js_stream_server_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+static JSValue
+ngx_js_stream_server_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_stream_server_opaque_t  *op;
+    ngx_stream_core_srv_conf_t     *cscf;
+    int64_t                         n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_server_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    cscf = op->cscf;
+
+    switch (magic) {
+    case 1: /* tcpNodelay */
+        cscf->tcp_nodelay = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 2: /* prereadBufferSize */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        cscf->preread_buffer_size = (size_t) n;
+        return JS_UNDEFINED;
+    case 3: /* prereadTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        cscf->preread_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 4: /* resolverTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        cscf->resolver_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 5: /* proxyProtocolTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        cscf->proxy_protocol_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry  ngx_js_stream_server_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("serverName",           ngx_js_stream_server_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("tcpNodelay",           ngx_js_stream_server_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("prereadBufferSize",    ngx_js_stream_server_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("prereadTimeout",       ngx_js_stream_server_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("resolverTimeout",      ngx_js_stream_server_get, NULL, 4),
-    JS_CGETSET_MAGIC_DEF("proxyProtocolTimeout", ngx_js_stream_server_get, NULL, 5),
-    JS_CGETSET_MAGIC_DEF("proxy",                ngx_js_stream_server_get, NULL, 6),
+    JS_CGETSET_MAGIC_DEF("serverName",           ngx_js_stream_server_get, NULL,                     0),
+    JS_CGETSET_MAGIC_DEF("tcpNodelay",           ngx_js_stream_server_get, ngx_js_stream_server_set, 1),
+    JS_CGETSET_MAGIC_DEF("prereadBufferSize",    ngx_js_stream_server_get, ngx_js_stream_server_set, 2),
+    JS_CGETSET_MAGIC_DEF("prereadTimeout",       ngx_js_stream_server_get, ngx_js_stream_server_set, 3),
+    JS_CGETSET_MAGIC_DEF("resolverTimeout",      ngx_js_stream_server_get, ngx_js_stream_server_set, 4),
+    JS_CGETSET_MAGIC_DEF("proxyProtocolTimeout", ngx_js_stream_server_get, ngx_js_stream_server_set, 5),
+    JS_CGETSET_MAGIC_DEF("proxy",                ngx_js_stream_server_get, NULL,                     6),
 };
 
 
@@ -205,18 +249,19 @@ static JSClassDef  ngx_js_stream_proxy_class = {
 
 
 /*
- * Magic values for ngx_js_stream_proxy_get:
- *   0 — connectTimeout      (ms)
- *   1 — timeout             (ms)
- *   2 — nextUpstreamTimeout (ms)
- *   3 — bufferSize          (bytes)
- *   4 — requests            (r/o)
- *   5 — responses           (r/o)
- *   6 — nextUpstreamTries   (r/o)
- *   7 — nextUpstream        (boolean)
- *   8 — proxyProtocol       (boolean)
- *   9 — halfClose           (boolean)
- *  10 — socketKeepalive     (boolean)
+ * Magic values for ngx_js_stream_proxy_get / ngx_js_stream_proxy_set:
+ *   0 — connectTimeout      (ms)       writable
+ *   1 — timeout             (ms)       writable
+ *   2 — nextUpstreamTimeout (ms)       writable
+ *   3 — bufferSize          (bytes)    writable
+ *   4 — requests            (count)    read-only (runtime stat)
+ *   5 — responses           (count)    read-only (runtime stat)
+ *   6 — nextUpstreamTries   (count)    writable
+ *   7 — nextUpstream        (boolean)  writable
+ *   8 — proxyProtocol       (boolean)  writable
+ *   9 — halfClose           (boolean)  writable
+ *  10 — socketKeepalive     (boolean)  writable
+ *  11 — pass                (string)   read-only (upstream name / "dynamic")
  */
 static JSValue
 ngx_js_stream_proxy_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -243,6 +288,72 @@ ngx_js_stream_proxy_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 8:  return JS_NewBool(ctx,  (int) pscf->proxy_protocol);
     case 9:  return JS_NewBool(ctx,  (int) pscf->half_close);
     case 10: return JS_NewBool(ctx,  (int) pscf->socket_keepalive);
+    case 11: /* pass — upstream name or "dynamic" */
+        if (pscf->upstream != NULL) {
+            return JS_NewStringLen(ctx,
+                                   (const char *) pscf->upstream->host.data,
+                                   pscf->upstream->host.len);
+        }
+        if (pscf->upstream_value != NULL) {
+            return JS_NewString(ctx, "dynamic");
+        }
+        return JS_NULL;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_stream_proxy_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_stream_proxy_opaque_t  *op;
+    ngx_stream_proxy_srv_conf_t   *pscf;
+    int64_t                        n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_proxy_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    pscf = op->pscf;
+
+    switch (magic) {
+    case 0: /* connectTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        pscf->connect_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 1: /* timeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        pscf->timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 2: /* nextUpstreamTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        pscf->next_upstream_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    case 3: /* bufferSize */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        pscf->buffer_size = (size_t) n;
+        return JS_UNDEFINED;
+    /* case 4: requests  — r/o runtime stat */
+    /* case 5: responses — r/o runtime stat */
+    case 6: /* nextUpstreamTries */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        pscf->next_upstream_tries = (ngx_uint_t) n;
+        return JS_UNDEFINED;
+    case 7: /* nextUpstream */
+        pscf->next_upstream = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 8: /* proxyProtocol */
+        pscf->proxy_protocol = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 9: /* halfClose */
+        pscf->half_close = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
+    case 10: /* socketKeepalive */
+        pscf->socket_keepalive = JS_ToBool(ctx, val);
+        return JS_UNDEFINED;
     }
 
     return JS_UNDEFINED;
@@ -250,17 +361,18 @@ ngx_js_stream_proxy_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 static const JSCFunctionListEntry  ngx_js_stream_proxy_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("connectTimeout",      ngx_js_stream_proxy_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("timeout",             ngx_js_stream_proxy_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("nextUpstreamTimeout", ngx_js_stream_proxy_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("bufferSize",          ngx_js_stream_proxy_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("requests",            ngx_js_stream_proxy_get, NULL, 4),
-    JS_CGETSET_MAGIC_DEF("responses",           ngx_js_stream_proxy_get, NULL, 5),
-    JS_CGETSET_MAGIC_DEF("nextUpstreamTries",   ngx_js_stream_proxy_get, NULL, 6),
-    JS_CGETSET_MAGIC_DEF("nextUpstream",        ngx_js_stream_proxy_get, NULL, 7),
-    JS_CGETSET_MAGIC_DEF("proxyProtocol",       ngx_js_stream_proxy_get, NULL, 8),
-    JS_CGETSET_MAGIC_DEF("halfClose",           ngx_js_stream_proxy_get, NULL, 9),
-    JS_CGETSET_MAGIC_DEF("socketKeepalive",     ngx_js_stream_proxy_get, NULL, 10),
+    JS_CGETSET_MAGIC_DEF("connectTimeout",      ngx_js_stream_proxy_get, ngx_js_stream_proxy_set,  0),
+    JS_CGETSET_MAGIC_DEF("timeout",             ngx_js_stream_proxy_get, ngx_js_stream_proxy_set,  1),
+    JS_CGETSET_MAGIC_DEF("nextUpstreamTimeout", ngx_js_stream_proxy_get, ngx_js_stream_proxy_set,  2),
+    JS_CGETSET_MAGIC_DEF("bufferSize",          ngx_js_stream_proxy_get, ngx_js_stream_proxy_set,  3),
+    JS_CGETSET_MAGIC_DEF("requests",            ngx_js_stream_proxy_get, NULL,                     4),
+    JS_CGETSET_MAGIC_DEF("responses",           ngx_js_stream_proxy_get, NULL,                     5),
+    JS_CGETSET_MAGIC_DEF("nextUpstreamTries",   ngx_js_stream_proxy_get, ngx_js_stream_proxy_set,  6),
+    JS_CGETSET_MAGIC_DEF("nextUpstream",        ngx_js_stream_proxy_get, ngx_js_stream_proxy_set,  7),
+    JS_CGETSET_MAGIC_DEF("proxyProtocol",       ngx_js_stream_proxy_get, ngx_js_stream_proxy_set,  8),
+    JS_CGETSET_MAGIC_DEF("halfClose",           ngx_js_stream_proxy_get, ngx_js_stream_proxy_set,  9),
+    JS_CGETSET_MAGIC_DEF("socketKeepalive",     ngx_js_stream_proxy_get, ngx_js_stream_proxy_set, 10),
+    JS_CGETSET_MAGIC_DEF("pass",                ngx_js_stream_proxy_get, NULL,                    11),
 };
 
 
