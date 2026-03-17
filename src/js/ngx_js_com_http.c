@@ -2812,10 +2812,10 @@ ngx_int_t
 ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
     ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf)
 {
-    ngx_js_filter_entry_t  *elts;
+    ngx_js_filter_entry_t  *snap;
     JSValue                 req_obj, fn, result;
     JSContext              *job_ctx;
-    ngx_uint_t              i;
+    ngx_uint_t              i, nelts;
 
     req_obj = ngx_js_wrap_request(ctx, r);
     if (JS_IsException(req_obj)) {
@@ -2823,12 +2823,29 @@ ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
         return NGX_ERROR;
     }
 
-    elts = jlcf->header_filters->elts;
+    /*
+     * Snapshot the filter list before iterating.  A filter callback may call
+     * addHeaderFilter / removeHeaderFilter on this location; snapshotting
+     * ensures:
+     *   - newly added filters do not run in the current dispatch
+     *   - removed filters are skipped via the unregistered fn_idx check below
+     *   - array reallocation by add does not invalidate our pointer
+     * The snapshot lives in r->pool and is freed with the request.
+     */
+    nelts = jlcf->header_filters->nelts;
+    snap  = ngx_pnalloc(r->pool, nelts * sizeof(ngx_js_filter_entry_t));
+    if (snap == NULL) {
+        JS_FreeValue(ctx, req_obj);
+        return NGX_ERROR;
+    }
+    ngx_memcpy(snap, jlcf->header_filters->elts,
+               nelts * sizeof(ngx_js_filter_entry_t));
 
-    for (i = 0; i < jlcf->header_filters->nelts; i++) {
-        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+    for (i = 0; i < nelts; i++) {
+        fn = ngx_js_filter_get_fn(ctx, snap[i].fn_idx);
 
         if (!JS_IsFunction(ctx, fn)) {
+            /* fn_idx was unregistered (filter removed during dispatch) */
             JS_FreeValue(ctx, fn);
             continue;
         }
@@ -2865,12 +2882,12 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
     ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf,
     ngx_str_t *body, ngx_str_t *out_body)
 {
-    ngx_js_filter_entry_t  *elts;
+    ngx_js_filter_entry_t  *snap;
     JSValue                 req_obj, fn, body_val, result, args[2];
     JSContext              *job_ctx;
     const char             *str;
     size_t                  slen;
-    ngx_uint_t              i;
+    ngx_uint_t              i, nelts;
     u_char                 *p;
 
     req_obj = ngx_js_wrap_request(ctx, r);
@@ -2882,10 +2899,20 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
 
     body_val = JS_NewStringLen(ctx, (const char *) body->data, body->len);
 
-    elts = jlcf->body_filters->elts;
+    /* Snapshot for the same reentrancy reasons as ngx_js_header_filters_run */
+    nelts = jlcf->body_filters->nelts;
+    snap  = ngx_pnalloc(r->pool, nelts * sizeof(ngx_js_filter_entry_t));
+    if (snap == NULL) {
+        JS_FreeValue(ctx, body_val);
+        JS_FreeValue(ctx, req_obj);
+        *out_body = *body;
+        return NGX_ERROR;
+    }
+    ngx_memcpy(snap, jlcf->body_filters->elts,
+               nelts * sizeof(ngx_js_filter_entry_t));
 
-    for (i = 0; i < jlcf->body_filters->nelts; i++) {
-        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+    for (i = 0; i < nelts; i++) {
+        fn = ngx_js_filter_get_fn(ctx, snap[i].fn_idx);
 
         if (!JS_IsFunction(ctx, fn)) {
             JS_FreeValue(ctx, fn);
