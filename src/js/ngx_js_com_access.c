@@ -2,7 +2,10 @@
 /*
  * Copyright (C) nginx JS contributors
  *
- * HTTP COM layer — Stage 11a: access module location configuration.
+ * HTTP + Stream COM layer — access module configuration.
+ *
+ * Stage 11a: HTTP location access (NginxAccess)
+ * Stage C:   Stream server access  (NginxStreamAccess)
  *
  * Exposes location.access as a NginxAccess object:
  *
@@ -22,10 +25,12 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <ngx_stream.h>
 #include <cutils.h>
 #include "ngx_js.h"
 #include "ngx_js_com.h"
 #include "../http/modules/ngx_http_access_module.h"
+#include "../stream/ngx_stream_access_module.h"
 
 
 typedef struct {
@@ -680,5 +685,519 @@ ngx_int_t
 ngx_js_access_register_class(JSRuntime *rt)
 {
     return JS_NewClass(rt, ngx_js_access_class_id, &ngx_js_access_class) < 0
+           ? NGX_ERROR : NGX_OK;
+}
+
+
+/* ================================================================== */
+/* NginxStreamAccess — stream server access rules (Stage C)            */
+/* ================================================================== */
+
+/*
+ * Wraps ngx_stream_access_srv_conf_t.  The CIDR parsing helpers
+ * (ngx_js_parse_ipv4_cidr / ngx_js_parse_ipv6_cidr) and the IPv6
+ * entry formatter are shared with the HTTP access class above.
+ *
+ *   rules      [{deny:bool, cidr:string}]  IPv4   r/w
+ *   rules6     [{deny:bool, cidr:string}]  IPv6   r/w
+ *   rulesUnix  [{deny:bool}]               Unix   r/w
+ */
+
+typedef struct {
+    ngx_stream_access_srv_conf_t  *ascf;
+} ngx_js_stream_access_opaque_t;
+
+
+static void
+ngx_js_stream_access_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_stream_access_opaque_t  *op;
+
+    op = JS_GetOpaque(val, ngx_js_stream_access_class_id);
+    if (op) {
+        js_free_rt(rt, op);
+    }
+}
+
+
+static JSClassDef  ngx_js_stream_access_class = {
+    "NginxStreamAccess",
+    .finalizer = ngx_js_stream_access_finalizer
+};
+
+
+static JSValue
+ngx_js_stream_access_get_rules(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_stream_access_opaque_t  *op;
+    JSValue                         arr;
+    ngx_stream_access_rule_t       *rule;
+    ngx_uint_t                      i;
+    JSValue                         obj;
+    u_char                          buf[NGX_INET_ADDRSTRLEN + sizeof("/32")];
+    size_t                          slen;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_access_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    arr = JS_NewArray(ctx);
+
+    if (op->ascf->rules == NULL) {
+        return arr;
+    }
+
+    rule = op->ascf->rules->elts;
+
+    for (i = 0; i < op->ascf->rules->nelts; i++) {
+        obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "deny",
+                          JS_NewBool(ctx, (int) rule[i].deny));
+
+        if (rule[i].mask == 0 && rule[i].addr == 0) {
+            JS_SetPropertyStr(ctx, obj, "cidr", JS_NewString(ctx, "all"));
+        } else {
+            slen = ngx_inet_ntop(AF_INET, &rule[i].addr, buf,
+                                 NGX_INET_ADDRSTRLEN);
+            if (rule[i].mask != 0xffffffffu) {
+                slen += ngx_snprintf(buf + slen, sizeof("/32"), "/%ui",
+                                     ngx_js_popcount32(rule[i].mask))
+                        - buf - slen;
+            }
+            JS_SetPropertyStr(ctx, obj, "cidr",
+                              JS_NewStringLen(ctx, (const char *) buf, slen));
+        }
+
+        JS_SetPropertyUint32(ctx, arr, (uint32_t) i, obj);
+    }
+
+    return arr;
+}
+
+
+static JSValue
+ngx_js_stream_access_set_rules(JSContext *ctx, JSValueConst this_val,
+    JSValue val)
+{
+    ngx_js_stream_access_opaque_t  *op;
+    ngx_array_t                    *arr;
+    ngx_stream_access_rule_t       *rule;
+    JSValue                         entry, deny_v, cidr_v, len_v;
+    const char                     *cidr;
+    size_t                          cidr_len;
+    int64_t                         len, i;
+    int                             b;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_access_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (!JS_IsArray(ctx, val)) {
+        return JS_ThrowTypeError(ctx, "rules must be an array");
+    }
+
+    len_v = JS_GetPropertyStr(ctx, val, "length");
+    if (JS_ToInt64(ctx, &len, len_v) < 0) {
+        JS_FreeValue(ctx, len_v);
+        return JS_EXCEPTION;
+    }
+    JS_FreeValue(ctx, len_v);
+
+    if (len == 0) {
+        op->ascf->rules = NULL;
+        return JS_UNDEFINED;
+    }
+
+    arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+                           sizeof(ngx_stream_access_rule_t));
+    if (!arr) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    for (i = 0; i < len; i++) {
+        entry  = JS_GetPropertyUint32(ctx, val, (uint32_t) i);
+        deny_v = JS_GetPropertyStr(ctx, entry, "deny");
+        cidr_v = JS_GetPropertyStr(ctx, entry, "cidr");
+        JS_FreeValue(ctx, entry);
+
+        b = JS_ToBool(ctx, deny_v);
+        JS_FreeValue(ctx, deny_v);
+        if (b < 0) {
+            JS_FreeValue(ctx, cidr_v);
+            return JS_EXCEPTION;
+        }
+
+        cidr = JS_ToCStringLen(ctx, &cidr_len, cidr_v);
+        JS_FreeValue(ctx, cidr_v);
+        if (!cidr) {
+            return JS_EXCEPTION;
+        }
+
+        rule = ngx_array_push(arr);
+        if (!rule) {
+            JS_FreeCString(ctx, cidr);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        rule->deny = (ngx_uint_t) b;
+
+        if (ngx_js_parse_ipv4_cidr(cidr, cidr_len,
+                                   &rule->addr, &rule->mask) != NGX_OK)
+        {
+            JS_FreeCString(ctx, cidr);
+            return JS_ThrowTypeError(ctx, "invalid IPv4 CIDR: \"%s\"", cidr);
+        }
+
+        JS_FreeCString(ctx, cidr);
+    }
+
+    op->ascf->rules = arr;
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_stream_access_get_rules6(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_stream_access_opaque_t  *op;
+    JSValue                         arr;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_access_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    arr = JS_NewArray(ctx);
+
+#if (NGX_HAVE_INET6)
+    {
+        ngx_stream_access_rule6_t  *rule6;
+        ngx_uint_t                  i;
+
+        if (op->ascf->rules6 == NULL) {
+            return arr;
+        }
+
+        rule6 = op->ascf->rules6->elts;
+
+        for (i = 0; i < op->ascf->rules6->nelts; i++) {
+            JSValue     entry;
+            u_char      buf[NGX_INET6_ADDRSTRLEN + sizeof("/128")];
+            size_t      slen;
+            uint32_t   *w;
+            ngx_uint_t  prefix, j;
+
+            entry = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, entry, "deny",
+                              JS_NewBool(ctx, (int) rule6[i].deny));
+
+            w = (uint32_t *) rule6[i].mask.s6_addr;
+            if (w[0] == 0 && w[1] == 0 && w[2] == 0 && w[3] == 0
+                && ((uint32_t *) rule6[i].addr.s6_addr)[0] == 0
+                && ((uint32_t *) rule6[i].addr.s6_addr)[1] == 0
+                && ((uint32_t *) rule6[i].addr.s6_addr)[2] == 0
+                && ((uint32_t *) rule6[i].addr.s6_addr)[3] == 0)
+            {
+                JS_SetPropertyStr(ctx, entry, "cidr",
+                                  JS_NewString(ctx, "all"));
+                JS_SetPropertyUint32(ctx, arr, (uint32_t) i, entry);
+                continue;
+            }
+
+            slen = ngx_inet6_ntop(rule6[i].addr.s6_addr, buf,
+                                  NGX_INET6_ADDRSTRLEN);
+
+            prefix = 0;
+            for (j = 0; j < 4; j++) {
+                prefix += ngx_js_popcount32(w[j]);
+            }
+
+            if (prefix < 128) {
+                slen += ngx_snprintf(buf + slen, sizeof("/128"), "/%ui",
+                                     prefix) - buf - slen;
+            }
+
+            JS_SetPropertyStr(ctx, entry, "cidr",
+                              JS_NewStringLen(ctx, (const char *) buf, slen));
+            JS_SetPropertyUint32(ctx, arr, (uint32_t) i, entry);
+        }
+    }
+#endif
+
+    return arr;
+}
+
+
+static JSValue
+ngx_js_stream_access_set_rules6(JSContext *ctx, JSValueConst this_val,
+    JSValue val)
+{
+    ngx_js_stream_access_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_access_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (!JS_IsArray(ctx, val)) {
+        return JS_ThrowTypeError(ctx, "rules6 must be an array");
+    }
+
+#if (NGX_HAVE_INET6)
+    {
+        ngx_array_t               *arr;
+        ngx_stream_access_rule6_t *rule;
+        JSValue                    entry, deny_v, cidr_v, len_v;
+        const char                *cidr;
+        size_t                     cidr_len;
+        int64_t                    len, i;
+        int                        b;
+
+        len_v = JS_GetPropertyStr(ctx, val, "length");
+        if (JS_ToInt64(ctx, &len, len_v) < 0) {
+            JS_FreeValue(ctx, len_v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, len_v);
+
+        if (len == 0) {
+            op->ascf->rules6 = NULL;
+            return JS_UNDEFINED;
+        }
+
+        arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+                               sizeof(ngx_stream_access_rule6_t));
+        if (!arr) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        for (i = 0; i < len; i++) {
+            entry  = JS_GetPropertyUint32(ctx, val, (uint32_t) i);
+            deny_v = JS_GetPropertyStr(ctx, entry, "deny");
+            cidr_v = JS_GetPropertyStr(ctx, entry, "cidr");
+            JS_FreeValue(ctx, entry);
+
+            b = JS_ToBool(ctx, deny_v);
+            JS_FreeValue(ctx, deny_v);
+            if (b < 0) {
+                JS_FreeValue(ctx, cidr_v);
+                return JS_EXCEPTION;
+            }
+
+            cidr = JS_ToCStringLen(ctx, &cidr_len, cidr_v);
+            JS_FreeValue(ctx, cidr_v);
+            if (!cidr) {
+                return JS_EXCEPTION;
+            }
+
+            rule = ngx_array_push(arr);
+            if (!rule) {
+                JS_FreeCString(ctx, cidr);
+                return JS_ThrowOutOfMemory(ctx);
+            }
+
+            rule->deny = (ngx_uint_t) b;
+
+            if (ngx_js_parse_ipv6_cidr(cidr, cidr_len,
+                                       &rule->addr, &rule->mask) != NGX_OK)
+            {
+                JS_FreeCString(ctx, cidr);
+                return JS_ThrowTypeError(ctx,
+                                         "invalid IPv6 CIDR: \"%s\"", cidr);
+            }
+
+            JS_FreeCString(ctx, cidr);
+        }
+
+        op->ascf->rules6 = arr;
+    }
+#endif
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_stream_access_get_rules_unix(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_stream_access_opaque_t  *op;
+    JSValue                         arr;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_access_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    arr = JS_NewArray(ctx);
+
+#if (NGX_HAVE_UNIX_DOMAIN)
+    {
+        ngx_stream_access_rule_un_t  *rule_un;
+        JSValue                       entry;
+        ngx_uint_t                    i;
+
+        if (op->ascf->rules_un == NULL) {
+            return arr;
+        }
+
+        rule_un = op->ascf->rules_un->elts;
+
+        for (i = 0; i < op->ascf->rules_un->nelts; i++) {
+            entry = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, entry, "deny",
+                              JS_NewBool(ctx, (int) rule_un[i].deny));
+            JS_SetPropertyUint32(ctx, arr, (uint32_t) i, entry);
+        }
+    }
+#endif
+
+    return arr;
+}
+
+
+static JSValue
+ngx_js_stream_access_set_rules_unix(JSContext *ctx, JSValueConst this_val,
+    JSValue val)
+{
+    ngx_js_stream_access_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_access_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (!JS_IsArray(ctx, val)) {
+        return JS_ThrowTypeError(ctx, "rulesUnix must be an array");
+    }
+
+#if (NGX_HAVE_UNIX_DOMAIN)
+    {
+        ngx_array_t                 *arr;
+        ngx_stream_access_rule_un_t *rule;
+        JSValue                      entry, deny_v, len_v;
+        int64_t                      len, i;
+        int                          b;
+
+        len_v = JS_GetPropertyStr(ctx, val, "length");
+        if (JS_ToInt64(ctx, &len, len_v) < 0) {
+            JS_FreeValue(ctx, len_v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, len_v);
+
+        if (len == 0) {
+            op->ascf->rules_un = NULL;
+            return JS_UNDEFINED;
+        }
+
+        arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+                               sizeof(ngx_stream_access_rule_un_t));
+        if (!arr) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        for (i = 0; i < len; i++) {
+            entry  = JS_GetPropertyUint32(ctx, val, (uint32_t) i);
+            deny_v = JS_GetPropertyStr(ctx, entry, "deny");
+            JS_FreeValue(ctx, entry);
+
+            b = JS_ToBool(ctx, deny_v);
+            JS_FreeValue(ctx, deny_v);
+            if (b < 0) {
+                return JS_EXCEPTION;
+            }
+
+            rule = ngx_array_push(arr);
+            if (!rule) {
+                return JS_ThrowOutOfMemory(ctx);
+            }
+
+            rule->deny = (ngx_uint_t) b;
+        }
+
+        op->ascf->rules_un = arr;
+    }
+#endif
+
+    return JS_UNDEFINED;
+}
+
+
+static const JSCFunctionListEntry  ngx_js_stream_access_proto_funcs[] = {
+    JS_CGETSET_DEF("rules",
+                   ngx_js_stream_access_get_rules,
+                   ngx_js_stream_access_set_rules),
+#if (NGX_HAVE_INET6)
+    JS_CGETSET_DEF("rules6",
+                   ngx_js_stream_access_get_rules6,
+                   ngx_js_stream_access_set_rules6),
+#else
+    JS_CGETSET_DEF("rules6",
+                   ngx_js_stream_access_get_rules6,
+                   NULL),
+#endif
+#if (NGX_HAVE_UNIX_DOMAIN)
+    JS_CGETSET_DEF("rulesUnix",
+                   ngx_js_stream_access_get_rules_unix,
+                   ngx_js_stream_access_set_rules_unix),
+#else
+    JS_CGETSET_DEF("rulesUnix",
+                   ngx_js_stream_access_get_rules_unix,
+                   NULL),
+#endif
+};
+
+
+ngx_int_t
+ngx_js_stream_access_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_stream_access_proto_funcs,
+                               countof(ngx_js_stream_access_proto_funcs));
+
+    JS_SetClassProto(ctx, ngx_js_stream_access_class_id, proto);
+    return NGX_OK;
+}
+
+
+JSValue
+ngx_js_wrap_stream_access(JSContext *ctx,
+    ngx_stream_access_srv_conf_t *ascf)
+{
+    JSValue                         obj;
+    ngx_js_stream_access_opaque_t  *op;
+
+    op = js_mallocz(ctx, sizeof(ngx_js_stream_access_opaque_t));
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    op->ascf = ascf;
+
+    obj = JS_NewObjectClass(ctx, ngx_js_stream_access_class_id);
+    if (JS_IsException(obj)) {
+        js_free(ctx, op);
+        return JS_EXCEPTION;
+    }
+
+    JS_SetOpaque(obj, op);
+    return obj;
+}
+
+
+ngx_int_t
+ngx_js_stream_access_register_class(JSRuntime *rt)
+{
+    return JS_NewClass(rt, ngx_js_stream_access_class_id,
+                       &ngx_js_stream_access_class) < 0
            ? NGX_ERROR : NGX_OK;
 }

@@ -30,6 +30,7 @@
 #include "ngx_js_socket.h"
 #include "ngx_js_stream_listener.h"
 #include "../../stream/ngx_stream_proxy_module.h"
+#include "../../stream/ngx_stream_access_module.h"
 
 
 /* ------------------------------------------------------------------ */
@@ -81,8 +82,8 @@ static JSClassDef  ngx_js_stream_server_class = {
 /*
  * Getter magic: 0=serverName 1=tcpNodelay 2=prereadBufferSize
  *               3=prereadTimeout 4=resolverTimeout 5=proxyProtocolTimeout
- *               6=proxy (NginxStreamProxy)
- * Setter magic: 1-5 (serverName and proxy are read-only)
+ *               6=proxy (NginxStreamProxy)  7=access (NginxStreamAccess)
+ * Setter magic: 1-5 (serverName, proxy, and access are read-only)
  */
 static JSValue
 ngx_js_stream_server_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -118,6 +119,16 @@ ngx_js_stream_server_get(JSContext *ctx, JSValueConst this_val, int magic)
             return JS_NULL;
         }
         return ngx_js_wrap_stream_proxy(ctx, pscf, op->cycle);
+    case 7:   /* access — NginxStreamAccess */
+    {
+        ngx_stream_access_srv_conf_t  *ascf;
+
+        ascf = cscf->ctx->srv_conf[ngx_stream_access_module.ctx_index];
+        if (ascf == NULL) {
+            return JS_NULL;
+        }
+        return ngx_js_wrap_stream_access(ctx, ascf);
+    }
     }
 
     return JS_UNDEFINED;
@@ -173,6 +184,7 @@ static const JSCFunctionListEntry  ngx_js_stream_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("resolverTimeout",      ngx_js_stream_server_get, ngx_js_stream_server_set, 4),
     JS_CGETSET_MAGIC_DEF("proxyProtocolTimeout", ngx_js_stream_server_get, ngx_js_stream_server_set, 5),
     JS_CGETSET_MAGIC_DEF("proxy",                ngx_js_stream_server_get, NULL,                     6),
+    JS_CGETSET_MAGIC_DEF("access",               ngx_js_stream_server_get, NULL,                     7),
 };
 
 
