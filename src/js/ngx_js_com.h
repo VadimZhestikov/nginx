@@ -72,6 +72,7 @@ extern JSClassID  ngx_js_stream_upstream_class_id;   /* nginx.stream.upstreams[]
 extern JSClassID  ngx_js_stream_peer_class_id;       /* stream config-phase peer (Stage 53)  */
 extern JSClassID  ngx_js_stream_rr_peer_class_id;    /* stream runtime RR peer   (Stage 53)  */
 extern JSClassID  ngx_js_stream_access_class_id;    /* stream server access     (Stage C)   */
+extern JSClassID  ngx_js_stream_ssl_class_id;       /* stream server SSL        (Stage D)   */
 
 
 /*
@@ -213,6 +214,12 @@ ngx_int_t  ngx_js_stream_access_install_proto(JSContext *ctx);
 struct ngx_stream_access_srv_conf_s;
 JSValue    ngx_js_wrap_stream_access(JSContext *ctx,
     struct ngx_stream_access_srv_conf_s *ascf);
+ngx_int_t  ngx_js_stream_ssl_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_stream_ssl_install_proto(JSContext *ctx);
+/* ngx_js_wrap_stream_ssl() requires ngx_stream_ssl_srv_conf_t (anonymous struct,
+ * no struct tag); callers must #include "../../stream/ngx_stream_ssl_module.h"
+ * and then declare: JSValue ngx_js_wrap_stream_ssl(JSContext *,
+ *                              ngx_stream_ssl_srv_conf_t *); */
 
 
 /*

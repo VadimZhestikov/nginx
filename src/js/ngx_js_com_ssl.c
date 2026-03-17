@@ -2,26 +2,34 @@
 /*
  * Copyright (C) nginx JS contributors
  *
- * HTTP COM layer — Stage 6: SSL server configuration.
+ * HTTP + Stream COM layer — Stage 6 / Stage D: SSL server configuration.
  *
  * Exposes server.ssl as a NginxSSL object (or null for non-SSL servers):
  *
- *   protocols            string[]   active TLS versions
- *   ciphers              string     OpenSSL cipher string
- *   certificate          string[]   certificate file paths
- *   certificateKey       string[]   certificate key file paths
- *   sessionTimeout       number     session timeout (seconds)
- *   sessionTickets       bool       TLS session tickets enabled
- *   preferServerCiphers  bool       ssl_prefer_server_ciphers
- *   verify               string     client verify: "off"|"on"|"optional"|"optional_no_ca"
- *   verifyDepth          number     client certificate chain depth
- *   clientCertificate    string     client CA cert path (or "")
- *   trustedCertificate   string     trusted CA cert path (or "")
- *   ecdhCurve            string     ECDH curve name
- *   dhparam              string     DH params file path (or "")
+ * NginxSSL (HTTP):
+ *   protocols            string[]   active TLS versions                 r/w*
+ *   ciphers              string     OpenSSL cipher string                r/w*
+ *   certificate          string[]   certificate file paths               r/w*
+ *   certificateKey       string[]   certificate key file paths           r/w*
+ *   sessionTimeout       number     session timeout (seconds)            r/w
+ *   sessionTickets       bool       TLS session tickets enabled          r/w
+ *   preferServerCiphers  bool       ssl_prefer_server_ciphers            r/w
+ *   verify               string     client verify mode                   r/o
+ *   verifyDepth          number     client certificate chain depth       r/w
+ *   clientCertificate    string     client CA cert path (or "")          r/o
+ *   trustedCertificate   string     trusted CA cert path (or "")         r/o
+ *   ecdhCurve            string     ECDH curve name                      r/o
+ *   dhparam              string     DH params file path (or "")          r/o
+ *   setProtocols(arr)    method     update enabled TLS version set
+ *   setCiphers(str)      method     update cipher list on live SSL_CTX
+ *   setCertificate(c,k)  method     hot-swap certificate + private key
+ *   (* r/w via dedicated setter method above)
  *
- * The entire file is wrapped in #if (NGX_HTTP_SSL) so that it compiles
- * safely when nginx is built without --with-http_ssl_module.
+ * NginxStreamSSL (Stream):  same API + handshakeTimeout (r/w)
+ *
+ * The HTTP section is wrapped in #if (NGX_HTTP_SSL); stream in
+ * #if (NGX_STREAM_SSL), so the file compiles safely when either
+ * module is absent.
  */
 
 #include <ngx_config.h>
@@ -102,6 +110,78 @@ ngx_js_ssl_get(JSContext *ctx, JSValueConst this_val, int magic)
                                    sscf->ecdh_curve.len);
     case 8: return JS_NewStringLen(ctx, (const char *) sscf->dhparam.data,
                                    sscf->dhparam.len);
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * Setters for simple scalar properties that also need an SSL_CTX call.
+ * Magic matches ngx_js_ssl_get:
+ *   0 — sessionTimeout      SSL_CTX_set_timeout()
+ *   1 — sessionTickets       SSL_OP_NO_TICKET
+ *   2 — preferServerCiphers  SSL_OP_CIPHER_SERVER_PREFERENCE
+ *   3 — verifyDepth          SSL_CTX_set_verify_depth()
+ */
+static JSValue
+ngx_js_ssl_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+{
+    ngx_js_ssl_opaque_t      *op;
+    ngx_http_ssl_srv_conf_t  *sscf;
+    int64_t                   n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_ssl_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    sscf = op->sscf;
+
+    switch (magic) {
+    case 0: /* sessionTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        sscf->session_timeout = (time_t) n;
+        if (sscf->ssl.ctx != NULL) {
+            SSL_CTX_set_timeout(sscf->ssl.ctx, (long) n);
+        }
+        return JS_UNDEFINED;
+
+    case 1: /* sessionTickets */
+        n = JS_ToBool(ctx, val);
+        if (n < 0) { return JS_EXCEPTION; }
+        sscf->session_tickets = (ngx_flag_t) n;
+        if (sscf->ssl.ctx != NULL) {
+            if (n) {
+                SSL_CTX_clear_options(sscf->ssl.ctx, SSL_OP_NO_TICKET);
+            } else {
+                SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TICKET);
+            }
+        }
+        return JS_UNDEFINED;
+
+    case 2: /* preferServerCiphers */
+        n = JS_ToBool(ctx, val);
+        if (n < 0) { return JS_EXCEPTION; }
+        sscf->prefer_server_ciphers = (ngx_flag_t) n;
+        if (sscf->ssl.ctx != NULL) {
+            if (n) {
+                SSL_CTX_set_options(sscf->ssl.ctx,
+                                    SSL_OP_CIPHER_SERVER_PREFERENCE);
+            } else {
+                SSL_CTX_clear_options(sscf->ssl.ctx,
+                                      SSL_OP_CIPHER_SERVER_PREFERENCE);
+            }
+        }
+        return JS_UNDEFINED;
+
+    case 3: /* verifyDepth */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        sscf->verify_depth = (ngx_uint_t) n;
+        if (sscf->ssl.ctx != NULL) {
+            SSL_CTX_set_verify_depth(sscf->ssl.ctx, (int) n);
+        }
+        return JS_UNDEFINED;
     }
 
     return JS_UNDEFINED;
@@ -555,15 +635,15 @@ ngx_js_ssl_set_ciphers(JSContext *ctx, JSValueConst this_val,
 
 
 static const JSCFunctionListEntry ngx_js_ssl_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("sessionTimeout",      ngx_js_ssl_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("sessionTickets",       ngx_js_ssl_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("preferServerCiphers",  ngx_js_ssl_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("verifyDepth",          ngx_js_ssl_get, NULL, 3),
-    JS_CGETSET_MAGIC_DEF("ciphers",              ngx_js_ssl_get, NULL, 4),
-    JS_CGETSET_MAGIC_DEF("clientCertificate",    ngx_js_ssl_get, NULL, 5),
-    JS_CGETSET_MAGIC_DEF("trustedCertificate",   ngx_js_ssl_get, NULL, 6),
-    JS_CGETSET_MAGIC_DEF("ecdhCurve",            ngx_js_ssl_get, NULL, 7),
-    JS_CGETSET_MAGIC_DEF("dhparam",              ngx_js_ssl_get, NULL, 8),
+    JS_CGETSET_MAGIC_DEF("sessionTimeout",      ngx_js_ssl_get, ngx_js_ssl_set, 0),
+    JS_CGETSET_MAGIC_DEF("sessionTickets",       ngx_js_ssl_get, ngx_js_ssl_set, 1),
+    JS_CGETSET_MAGIC_DEF("preferServerCiphers",  ngx_js_ssl_get, ngx_js_ssl_set, 2),
+    JS_CGETSET_MAGIC_DEF("verifyDepth",          ngx_js_ssl_get, ngx_js_ssl_set, 3),
+    JS_CGETSET_MAGIC_DEF("ciphers",              ngx_js_ssl_get, NULL,           4),
+    JS_CGETSET_MAGIC_DEF("clientCertificate",    ngx_js_ssl_get, NULL,           5),
+    JS_CGETSET_MAGIC_DEF("trustedCertificate",   ngx_js_ssl_get, NULL,           6),
+    JS_CGETSET_MAGIC_DEF("ecdhCurve",            ngx_js_ssl_get, NULL,           7),
+    JS_CGETSET_MAGIC_DEF("dhparam",              ngx_js_ssl_get, NULL,           8),
     JS_CGETSET_DEF       ("protocols",           ngx_js_ssl_get_protocols,      NULL),
     JS_CGETSET_DEF       ("verify",              ngx_js_ssl_get_verify,         NULL),
     JS_CGETSET_DEF       ("certificate",         ngx_js_ssl_get_certificate,    NULL),
@@ -632,4 +712,619 @@ ngx_js_ssl_register_class(JSRuntime *rt)
 #else
     return NGX_OK;
 #endif
+}
+
+
+/* ================================================================== */
+/* NginxStreamSSL — stream server TLS configuration (Stage D)         */
+/* ================================================================== */
+
+#if (NGX_STREAM_SSL)
+
+#include <ngx_stream_ssl_module.h>
+
+typedef struct {
+    ngx_stream_ssl_srv_conf_t  *sscf;
+} ngx_js_stream_ssl_opaque_t;
+
+
+static void
+ngx_js_stream_ssl_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_stream_ssl_opaque_t  *op;
+
+    op = JS_GetOpaque(val, ngx_js_stream_ssl_class_id);
+    if (op) {
+        js_free_rt(rt, op);
+    }
+}
+
+
+static JSClassDef  ngx_js_stream_ssl_class = {
+    "NginxStreamSSL",
+    .finalizer = ngx_js_stream_ssl_finalizer
+};
+
+
+/*
+ * Magic values for ngx_js_stream_ssl_get / ngx_js_stream_ssl_set:
+ *   0 — sessionTimeout      writable (SSL_CTX_set_timeout)
+ *   1 — sessionTickets       writable (SSL_OP_NO_TICKET)
+ *   2 — preferServerCiphers  writable (SSL_OP_CIPHER_SERVER_PREFERENCE)
+ *   3 — verifyDepth          writable (SSL_CTX_set_verify_depth)
+ *   4 — ciphers              r/o (use setCiphers())
+ *   5 — clientCertificate    r/o string
+ *   6 — trustedCertificate   r/o string
+ *   7 — ecdhCurve            r/o string
+ *   8 — dhparam              r/o string
+ *   9 — handshakeTimeout     writable (stream-only, ms)
+ */
+static JSValue
+ngx_js_stream_ssl_get(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_stream_ssl_opaque_t  *op;
+    ngx_stream_ssl_srv_conf_t   *sscf;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_ssl_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    sscf = op->sscf;
+
+    switch (magic) {
+    case 0: return JS_NewInt64(ctx, (int64_t) sscf->session_timeout);
+    case 1: return JS_NewBool(ctx,  (int) sscf->session_tickets);
+    case 2: return JS_NewBool(ctx,  (int) sscf->prefer_server_ciphers);
+    case 3: return JS_NewInt64(ctx, (int64_t) sscf->verify_depth);
+    case 4: return JS_NewStringLen(ctx, (const char *) sscf->ciphers.data,
+                                   sscf->ciphers.len);
+    case 5: return JS_NewStringLen(ctx,
+                                   (const char *) sscf->client_certificate.data,
+                                   sscf->client_certificate.len);
+    case 6: return JS_NewStringLen(ctx,
+                                   (const char *) sscf->trusted_certificate.data,
+                                   sscf->trusted_certificate.len);
+    case 7: return JS_NewStringLen(ctx, (const char *) sscf->ecdh_curve.data,
+                                   sscf->ecdh_curve.len);
+    case 8: return JS_NewStringLen(ctx, (const char *) sscf->dhparam.data,
+                                   sscf->dhparam.len);
+    case 9: return JS_NewInt64(ctx, (int64_t) sscf->handshake_timeout);
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_stream_ssl_set(JSContext *ctx, JSValueConst this_val, JSValue val,
+    int magic)
+{
+    ngx_js_stream_ssl_opaque_t  *op;
+    ngx_stream_ssl_srv_conf_t   *sscf;
+    int64_t                      n;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_ssl_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    sscf = op->sscf;
+
+    switch (magic) {
+    case 0: /* sessionTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        sscf->session_timeout = (time_t) n;
+        if (sscf->ssl.ctx != NULL) {
+            SSL_CTX_set_timeout(sscf->ssl.ctx, (long) n);
+        }
+        return JS_UNDEFINED;
+
+    case 1: /* sessionTickets */
+        n = JS_ToBool(ctx, val);
+        if (n < 0) { return JS_EXCEPTION; }
+        sscf->session_tickets = (ngx_flag_t) n;
+        if (sscf->ssl.ctx != NULL) {
+            if (n) {
+                SSL_CTX_clear_options(sscf->ssl.ctx, SSL_OP_NO_TICKET);
+            } else {
+                SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TICKET);
+            }
+        }
+        return JS_UNDEFINED;
+
+    case 2: /* preferServerCiphers */
+        n = JS_ToBool(ctx, val);
+        if (n < 0) { return JS_EXCEPTION; }
+        sscf->prefer_server_ciphers = (ngx_flag_t) n;
+        if (sscf->ssl.ctx != NULL) {
+            if (n) {
+                SSL_CTX_set_options(sscf->ssl.ctx,
+                                    SSL_OP_CIPHER_SERVER_PREFERENCE);
+            } else {
+                SSL_CTX_clear_options(sscf->ssl.ctx,
+                                      SSL_OP_CIPHER_SERVER_PREFERENCE);
+            }
+        }
+        return JS_UNDEFINED;
+
+    case 3: /* verifyDepth */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        sscf->verify_depth = (ngx_uint_t) n;
+        if (sscf->ssl.ctx != NULL) {
+            SSL_CTX_set_verify_depth(sscf->ssl.ctx, (int) n);
+        }
+        return JS_UNDEFINED;
+
+    case 9: /* handshakeTimeout */
+        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        sscf->handshake_timeout = (ngx_msec_t) n;
+        return JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/* ssl.protocols */
+static JSValue
+ngx_js_stream_ssl_get_protocols(JSContext *ctx, JSValueConst this_val)
+{
+    static const struct {
+        ngx_uint_t   flag;
+        const char  *name;
+    } protos[] = {
+        { NGX_SSL_SSLv2,   "SSLv2"   },
+        { NGX_SSL_SSLv3,   "SSLv3"   },
+        { NGX_SSL_TLSv1,   "TLSv1"   },
+        { NGX_SSL_TLSv1_1, "TLSv1.1" },
+        { NGX_SSL_TLSv1_2, "TLSv1.2" },
+        { NGX_SSL_TLSv1_3, "TLSv1.3" },
+        { 0, NULL }
+    };
+
+    ngx_js_stream_ssl_opaque_t  *op;
+    JSValue                      arr;
+    ngx_uint_t                   mask, i;
+    uint32_t                     idx;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_ssl_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    arr  = JS_NewArray(ctx);
+    mask = op->sscf->protocols;
+    idx  = 0;
+
+    for (i = 0; protos[i].name != NULL; i++) {
+        if (mask & protos[i].flag) {
+            JS_SetPropertyUint32(ctx, arr, idx++,
+                                 JS_NewString(ctx, protos[i].name));
+        }
+    }
+
+    return arr;
+}
+
+
+/* ssl.verify */
+static JSValue
+ngx_js_stream_ssl_get_verify(JSContext *ctx, JSValueConst this_val)
+{
+    static const char  *modes[] = {
+        "off", "on", "optional", "optional_no_ca"
+    };
+
+    ngx_js_stream_ssl_opaque_t  *op;
+    ngx_uint_t                   v;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_ssl_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    v = op->sscf->verify;
+    if (v > 3) { v = 0; }
+
+    return JS_NewString(ctx, modes[v]);
+}
+
+
+/* ssl.certificate */
+static JSValue
+ngx_js_stream_ssl_get_certificate(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_stream_ssl_opaque_t  *op;
+    JSValue                      arr;
+    ngx_str_t                   *cert;
+    ngx_uint_t                   i;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_ssl_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    arr = JS_NewArray(ctx);
+
+    if (op->sscf->certificates == NULL) {
+        return arr;
+    }
+
+    cert = op->sscf->certificates->elts;
+
+    for (i = 0; i < op->sscf->certificates->nelts; i++) {
+        JS_SetPropertyUint32(ctx, arr, (uint32_t) i,
+                             JS_NewStringLen(ctx,
+                                             (const char *) cert[i].data,
+                                             cert[i].len));
+    }
+
+    return arr;
+}
+
+
+/* ssl.certificateKey */
+static JSValue
+ngx_js_stream_ssl_get_certificate_key(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_stream_ssl_opaque_t  *op;
+    JSValue                      arr;
+    ngx_str_t                   *key;
+    ngx_uint_t                   i;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_ssl_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    arr = JS_NewArray(ctx);
+
+    if (op->sscf->certificate_keys == NULL) {
+        return arr;
+    }
+
+    key = op->sscf->certificate_keys->elts;
+
+    for (i = 0; i < op->sscf->certificate_keys->nelts; i++) {
+        JS_SetPropertyUint32(ctx, arr, (uint32_t) i,
+                             JS_NewStringLen(ctx,
+                                             (const char *) key[i].data,
+                                             key[i].len));
+    }
+
+    return arr;
+}
+
+
+/* setProtocols(arr) — update enabled TLS versions on the live SSL_CTX */
+static JSValue
+ngx_js_stream_ssl_set_protocols(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    static const struct {
+        const char  *name;
+        ngx_uint_t   flag;
+    } protos[] = {
+        { "SSLv2",   NGX_SSL_SSLv2   },
+        { "SSLv3",   NGX_SSL_SSLv3   },
+        { "TLSv1",   NGX_SSL_TLSv1   },
+        { "TLSv1.1", NGX_SSL_TLSv1_1 },
+        { "TLSv1.2", NGX_SSL_TLSv1_2 },
+        { "TLSv1.3", NGX_SSL_TLSv1_3 },
+        { NULL, 0 }
+    };
+
+    ngx_js_stream_ssl_opaque_t  *op;
+    ngx_stream_ssl_srv_conf_t   *sscf;
+    JSValue                      arr, elem;
+    uint32_t                     len, i;
+    ngx_uint_t                   mask, j;
+    const char                  *s;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_ssl_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    sscf = op->sscf;
+
+    if (argc < 1 || !JS_IsArray(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx, "setProtocols: array argument required");
+    }
+
+    if (sscf->ssl.ctx == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "setProtocols: SSL context not initialised");
+    }
+
+    arr = argv[0];
+    {
+        JSValue lv = JS_GetPropertyStr(ctx, arr, "length");
+        if (JS_ToUint32(ctx, &len, lv) < 0) {
+            JS_FreeValue(ctx, lv);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, lv);
+    }
+
+    mask = 0;
+    for (i = 0; i < len; i++) {
+        elem = JS_GetPropertyUint32(ctx, arr, i);
+        if (JS_IsException(elem)) { return JS_EXCEPTION; }
+        s = JS_ToCString(ctx, elem);
+        JS_FreeValue(ctx, elem);
+        if (!s) { return JS_EXCEPTION; }
+        for (j = 0; protos[j].name != NULL; j++) {
+            if (ngx_strcmp(s, protos[j].name) == 0) {
+                mask |= protos[j].flag;
+                break;
+            }
+        }
+        JS_FreeCString(ctx, s);
+    }
+
+    SSL_CTX_clear_options(sscf->ssl.ctx,
+                          SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
+    if (!(mask & NGX_SSL_SSLv2)) { SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_SSLv2); }
+    if (!(mask & NGX_SSL_SSLv3)) { SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_SSLv3); }
+    if (!(mask & NGX_SSL_TLSv1)) { SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1); }
+#ifdef SSL_OP_NO_TLSv1_1
+    SSL_CTX_clear_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_1);
+    if (!(mask & NGX_SSL_TLSv1_1)) { SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_1); }
+#endif
+#ifdef SSL_OP_NO_TLSv1_2
+    SSL_CTX_clear_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_2);
+    if (!(mask & NGX_SSL_TLSv1_2)) { SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_2); }
+#endif
+#ifdef SSL_OP_NO_TLSv1_3
+    SSL_CTX_clear_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_3);
+    if (!(mask & NGX_SSL_TLSv1_3)) { SSL_CTX_set_options(sscf->ssl.ctx, SSL_OP_NO_TLSv1_3); }
+#endif
+
+    sscf->protocols = mask;
+    return JS_UNDEFINED;
+}
+
+
+/* setCiphers(str) — update cipher list on the live SSL_CTX */
+static JSValue
+ngx_js_stream_ssl_set_ciphers(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_stream_ssl_opaque_t  *op;
+    ngx_stream_ssl_srv_conf_t   *sscf;
+    const char                  *s;
+    size_t                       len;
+    u_char                      *p;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_ssl_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    sscf = op->sscf;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "setCiphers: string argument required");
+    }
+
+    s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) { return JS_EXCEPTION; }
+
+    if (sscf->ssl.ctx == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCiphers: SSL context not initialised");
+    }
+
+    if (SSL_CTX_set_cipher_list(sscf->ssl.ctx, s) == 0) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowInternalError(ctx, "setCiphers: no valid ciphers in list");
+    }
+
+    p = ngx_pnalloc(ngx_cycle->pool, len);
+    if (p == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(p, s, len);
+    JS_FreeCString(ctx, s);
+
+    sscf->ciphers.data = p;
+    sscf->ciphers.len  = len;
+
+    return JS_UNDEFINED;
+}
+
+
+/* setCertificate(certPath, keyPath) — hot-swap TLS certificate */
+static JSValue
+ngx_js_stream_ssl_set_certificate(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_stream_ssl_opaque_t  *op;
+    ngx_stream_ssl_srv_conf_t   *sscf;
+    const char                  *cert_s, *key_s;
+    size_t                       cert_len, key_len;
+    u_char                      *cp, *kp;
+    ngx_array_t                 *certs, *keys;
+    ngx_str_t                   *sp;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_ssl_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    sscf = op->sscf;
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx,
+                                 "setCertificate: certPath and keyPath required");
+    }
+
+    cert_s = JS_ToCStringLen(ctx, &cert_len, argv[0]);
+    if (!cert_s) { return JS_EXCEPTION; }
+
+    key_s = JS_ToCStringLen(ctx, &key_len, argv[1]);
+    if (!key_s) {
+        JS_FreeCString(ctx, cert_s);
+        return JS_EXCEPTION;
+    }
+
+    if (sscf->ssl.ctx == NULL) {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCertificate: SSL context not initialised");
+    }
+
+    if (SSL_CTX_use_certificate_chain_file(sscf->ssl.ctx, cert_s) != 1) {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCertificate: failed to load certificate");
+    }
+
+    if (SSL_CTX_use_PrivateKey_file(sscf->ssl.ctx, key_s,
+                                    SSL_FILETYPE_PEM) != 1)
+    {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCertificate: failed to load private key");
+    }
+
+    if (SSL_CTX_check_private_key(sscf->ssl.ctx) != 1) {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowInternalError(ctx,
+                                     "setCertificate: private key does not match"
+                                     " certificate");
+    }
+
+    cp = ngx_pnalloc(ngx_cycle->pool, cert_len + 1);
+    kp = ngx_pnalloc(ngx_cycle->pool, key_len + 1);
+
+    if (cp == NULL || kp == NULL) {
+        JS_FreeCString(ctx, cert_s);
+        JS_FreeCString(ctx, key_s);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(cp, cert_s, cert_len);  cp[cert_len] = '\0';
+    ngx_memcpy(kp, key_s,  key_len);   kp[key_len]  = '\0';
+
+    JS_FreeCString(ctx, cert_s);
+    JS_FreeCString(ctx, key_s);
+
+    certs = ngx_array_create(ngx_cycle->pool, 1, sizeof(ngx_str_t));
+    keys  = ngx_array_create(ngx_cycle->pool, 1, sizeof(ngx_str_t));
+
+    if (certs == NULL || keys == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    sp = ngx_array_push(certs);
+    if (sp == NULL) { return JS_ThrowOutOfMemory(ctx); }
+    sp->data = cp;  sp->len = cert_len;
+
+    sp = ngx_array_push(keys);
+    if (sp == NULL) { return JS_ThrowOutOfMemory(ctx); }
+    sp->data = kp;  sp->len = key_len;
+
+    sscf->certificates    = certs;
+    sscf->certificate_keys = keys;
+
+    return JS_UNDEFINED;
+}
+
+
+static const JSCFunctionListEntry  ngx_js_stream_ssl_proto_funcs[] = {
+    JS_CGETSET_MAGIC_DEF("sessionTimeout",
+                         ngx_js_stream_ssl_get, ngx_js_stream_ssl_set, 0),
+    JS_CGETSET_MAGIC_DEF("sessionTickets",
+                         ngx_js_stream_ssl_get, ngx_js_stream_ssl_set, 1),
+    JS_CGETSET_MAGIC_DEF("preferServerCiphers",
+                         ngx_js_stream_ssl_get, ngx_js_stream_ssl_set, 2),
+    JS_CGETSET_MAGIC_DEF("verifyDepth",
+                         ngx_js_stream_ssl_get, ngx_js_stream_ssl_set, 3),
+    JS_CGETSET_MAGIC_DEF("ciphers",
+                         ngx_js_stream_ssl_get, NULL,                   4),
+    JS_CGETSET_MAGIC_DEF("clientCertificate",
+                         ngx_js_stream_ssl_get, NULL,                   5),
+    JS_CGETSET_MAGIC_DEF("trustedCertificate",
+                         ngx_js_stream_ssl_get, NULL,                   6),
+    JS_CGETSET_MAGIC_DEF("ecdhCurve",
+                         ngx_js_stream_ssl_get, NULL,                   7),
+    JS_CGETSET_MAGIC_DEF("dhparam",
+                         ngx_js_stream_ssl_get, NULL,                   8),
+    JS_CGETSET_MAGIC_DEF("handshakeTimeout",
+                         ngx_js_stream_ssl_get, ngx_js_stream_ssl_set,  9),
+    JS_CGETSET_DEF       ("protocols",
+                          ngx_js_stream_ssl_get_protocols, NULL),
+    JS_CGETSET_DEF       ("verify",
+                          ngx_js_stream_ssl_get_verify, NULL),
+    JS_CGETSET_DEF       ("certificate",
+                          ngx_js_stream_ssl_get_certificate, NULL),
+    JS_CGETSET_DEF       ("certificateKey",
+                          ngx_js_stream_ssl_get_certificate_key, NULL),
+    JS_CFUNC_DEF         ("setCiphers",     1, ngx_js_stream_ssl_set_ciphers),
+    JS_CFUNC_DEF         ("setProtocols",   1, ngx_js_stream_ssl_set_protocols),
+    JS_CFUNC_DEF         ("setCertificate", 2, ngx_js_stream_ssl_set_certificate),
+};
+
+
+JSValue
+ngx_js_wrap_stream_ssl(JSContext *ctx, ngx_stream_ssl_srv_conf_t *sscf)
+{
+    JSValue                      obj;
+    ngx_js_stream_ssl_opaque_t  *op;
+
+    op = js_mallocz(ctx, sizeof(ngx_js_stream_ssl_opaque_t));
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    op->sscf = sscf;
+
+    obj = JS_NewObjectClass(ctx, ngx_js_stream_ssl_class_id);
+    if (JS_IsException(obj)) {
+        js_free(ctx, op);
+        return JS_EXCEPTION;
+    }
+
+    JS_SetOpaque(obj, op);
+    return obj;
+}
+
+#endif /* NGX_STREAM_SSL */
+
+
+ngx_int_t
+ngx_js_stream_ssl_register_class(JSRuntime *rt)
+{
+#if (NGX_STREAM_SSL)
+    return JS_NewClass(rt, ngx_js_stream_ssl_class_id,
+                       &ngx_js_stream_ssl_class) < 0
+           ? NGX_ERROR : NGX_OK;
+#else
+    return NGX_OK;
+#endif
+}
+
+
+ngx_int_t
+ngx_js_stream_ssl_install_proto(JSContext *ctx)
+{
+#if (NGX_STREAM_SSL)
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_stream_ssl_proto_funcs,
+                               countof(ngx_js_stream_ssl_proto_funcs));
+
+    JS_SetClassProto(ctx, ngx_js_stream_ssl_class_id, proto);
+#endif
+    return NGX_OK;
 }
