@@ -186,12 +186,55 @@ ngx_js_socket_close(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* sock.broadcast() — Phase F4: deliver socket fd to all other workers */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_socket_broadcast(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_socket_opaque_t  *op;
+    ngx_js_socket_state_t   *st;
+    int                      rc;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_socket_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->handle >= NGX_JS_SOCKET_REG_MAX
+        || ngx_js_socket_reg[op->handle] == NULL)
+    {
+        return JS_ThrowInternalError(ctx,
+            "sock.broadcast: socket already closed or invalid");
+    }
+
+    if (ngx_process != NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "sock.broadcast: only valid in worker processes");
+    }
+
+    st = ngx_js_socket_reg[op->handle];
+
+    rc = ngx_js_socket_mgr_broadcast(op->handle, st->addr,
+                                     ngx_strlen(st->addr));
+    if (rc < 0) {
+        return JS_ThrowInternalError(ctx,
+            "sock.broadcast: manager failed to distribute socket to workers");
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry  ngx_js_socket_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("address",  ngx_js_socket_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("port",     ngx_js_socket_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("fd",       ngx_js_socket_get, NULL, 2),
-    JS_CGETSET_MAGIC_DEF("listener", ngx_js_socket_get, NULL, 3),
-    JS_CFUNC_DEF(        "close",    0, ngx_js_socket_close),
+    JS_CGETSET_MAGIC_DEF("address",   ngx_js_socket_get, NULL, 0),
+    JS_CGETSET_MAGIC_DEF("port",      ngx_js_socket_get, NULL, 1),
+    JS_CGETSET_MAGIC_DEF("fd",        ngx_js_socket_get, NULL, 2),
+    JS_CGETSET_MAGIC_DEF("listener",  ngx_js_socket_get, NULL, 3),
+    JS_CFUNC_DEF(        "close",     0, ngx_js_socket_close),
+    JS_CFUNC_DEF(        "broadcast", 0, ngx_js_socket_broadcast),
 };
 
 

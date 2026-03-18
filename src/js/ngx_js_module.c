@@ -17,8 +17,10 @@
 
 #include <ngx_config.h>
 #include <ngx_core.h>
+#include <ngx_event.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/socket.h>
 #include <pthread.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
@@ -322,6 +324,7 @@ static int       ngx_js_interrupt_handler(JSRuntime *rt, void *opaque);
 static ngx_int_t ngx_js_init_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_master(ngx_cycle_t *cycle);
+static void      ngx_js_bcast_recv_handler(ngx_event_t *ev);
 
 static char   *ngx_js_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -583,6 +586,220 @@ ngx_js_interrupt_handler(JSRuntime *rt, void *opaque)
 }
 
 
+/* ------------------------------------------------------------------ */
+/* F4 — bcast fd event handler                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Context stored in conn->data for the bcast fd nginx connection.
+ * Allocated in cycle->pool so no explicit free is needed.
+ */
+typedef struct {
+    ngx_js_worker_t  *w;
+} ngx_js_bcast_ctx_t;
+
+
+/*
+ * Called by nginx event loop when bcast_fds[ngx_worker][1] becomes readable.
+ * Drains all pending broadcast messages, creates per-worker socket state for
+ * each received socket fd, and calls nginx.onSocket(sock) if registered.
+ */
+static void
+ngx_js_bcast_recv_handler(ngx_event_t *ev)
+{
+    ngx_connection_t       *conn;
+    ngx_js_bcast_ctx_t     *bctx;
+    ngx_js_worker_t        *w;
+    JSContext              *ctx, *job_ctx;
+    uint8_t                 recv_body[NGX_JS_BCAST_MAX + 1];
+    char                    cmsg_buf[CMSG_SPACE(sizeof(int))];
+    struct iovec            iov;
+    struct msghdr           mh;
+    ssize_t                 n;
+    uint32_t               *hdr32;
+    uint32_t                handle, addr_len;
+    char                   *addr_ptr;
+    int                     recv_fd;
+    struct cmsghdr         *cmh;
+    ngx_js_socket_state_t  *st;
+    ngx_uint_t              i;
+    const char             *colon;
+    long                    port;
+    JSValue                 global, nginx_obj, on_sock, sock_val, ret;
+
+    conn = ev->data;
+    bctx = conn->data;
+    w    = bctx->w;
+    ctx  = w->ctx;
+
+    for ( ;; ) {
+        iov.iov_base = recv_body;
+        iov.iov_len  = sizeof(recv_body) - 1;  /* leave room for NUL */
+
+        ngx_memzero(&mh, sizeof(mh));
+        mh.msg_iov        = &iov;
+        mh.msg_iovlen     = 1;
+        mh.msg_control    = cmsg_buf;
+        mh.msg_controllen = sizeof(cmsg_buf);
+
+        n = recvmsg(conn->fd, &mh, MSG_DONTWAIT);
+        if (n <= 0) {
+            break;
+        }
+
+        if ((size_t) n < NGX_JS_BCAST_HDR || (mh.msg_flags & MSG_TRUNC)) {
+            continue;
+        }
+
+        hdr32    = (uint32_t *)(void *) recv_body;
+        handle   = hdr32[0];
+        addr_len = hdr32[1];
+
+        if (addr_len == 0 || addr_len > 63
+            || (size_t) n < NGX_JS_BCAST_HDR + addr_len)
+        {
+            continue;
+        }
+
+        addr_ptr          = (char *) recv_body + NGX_JS_BCAST_HDR;
+        addr_ptr[addr_len] = '\0';
+
+        /* Extract socket fd from SCM_RIGHTS */
+        recv_fd = -1;
+        cmh = CMSG_FIRSTHDR(&mh);
+        if (cmh != NULL
+            && cmh->cmsg_level == SOL_SOCKET
+            && cmh->cmsg_type  == SCM_RIGHTS
+            && cmh->cmsg_len   == CMSG_LEN(sizeof(int)))
+        {
+            ngx_memcpy(&recv_fd, CMSG_DATA(cmh), sizeof(int));
+        }
+
+        if (recv_fd < 0) {
+            continue;
+        }
+
+        if (handle >= NGX_JS_SOCKET_REG_MAX) {
+            close(recv_fd);
+            continue;
+        }
+
+        if (ngx_js_socket_reg[handle] != NULL) {
+            /* Slot already occupied — log warning and discard */
+            ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                          "js: bcast: handle %uD already occupied,"
+                          " closing received fd", handle);
+            close(recv_fd);
+            continue;
+        }
+
+        /* Parse port from "host:port" */
+        colon = strrchr(addr_ptr, ':');
+        port  = (colon != NULL) ? strtol(colon + 1, NULL, 10) : 0;
+
+        st = ngx_alloc(sizeof(ngx_js_socket_state_t), ngx_cycle->log);
+        if (st == NULL) {
+            close(recv_fd);
+            continue;
+        }
+
+        st->fd          = recv_fd;
+        st->port        = (uint16_t) port;
+        st->in_listening = 0;
+        ngx_cpystrn((u_char *) st->addr, (u_char *) addr_ptr,
+                    sizeof(st->addr));
+
+        ngx_js_socket_reg[handle] = st;
+
+        /* Register in worker-local registry for cleanup */
+        for (i = 0; i < NGX_JS_LOCAL_SOCKET_REG_MAX; i++) {
+            if (w->local_socket_reg[i] == NULL) {
+                w->local_socket_reg[i] = st;
+                break;
+            }
+        }
+
+        /* Call nginx.onSocket(sock) if registered */
+        global    = JS_GetGlobalObject(ctx);
+        nginx_obj = JS_GetPropertyStr(ctx, global, "nginx");
+        JS_FreeValue(ctx, global);
+
+        if (!JS_IsException(nginx_obj) && !JS_IsUndefined(nginx_obj)) {
+            on_sock = JS_GetPropertyStr(ctx, nginx_obj, "onSocket");
+            JS_FreeValue(ctx, nginx_obj);
+
+            if (JS_IsFunction(ctx, on_sock)) {
+                sock_val = ngx_js_socket_wrap(ctx, handle);
+                if (!JS_IsException(sock_val)) {
+                    ret = JS_Call(ctx, on_sock, JS_UNDEFINED, 1, &sock_val);
+                    JS_FreeValue(ctx, sock_val);
+                    if (JS_IsException(ret)) {
+                        ngx_js_log_exception(ctx, ngx_cycle->log);
+                    }
+                    JS_FreeValue(ctx, ret);
+                }
+            }
+
+            JS_FreeValue(ctx, on_sock);
+
+        } else {
+            JS_FreeValue(ctx, nginx_obj);
+        }
+    }
+
+    while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { }
+
+    ngx_js_async_check(w);
+}
+
+
+/*
+ * ngx_js_bcast_ensure_active — register the per-worker bcast event handler
+ * in the nginx epoll/kqueue event loop.  Idempotent; no-op if already done
+ * or if no bcast fd is available.
+ *
+ * Must only be called from inside the worker's event loop (e.g., from a
+ * request content handler), after ngx_event_process_init() has run and
+ * ngx_cycle->free_connections is non-NULL.
+ */
+void
+ngx_js_bcast_ensure_active(ngx_js_worker_t *w)
+{
+    ngx_connection_t    *bcast_conn;
+    ngx_js_bcast_ctx_t  *bcast_ctx;
+
+    if (w == NULL || w->bcast_conn != NULL || w->bcast_fd < 0) {
+        return;   /* already active, no fd, or no worker */
+    }
+
+    bcast_ctx = ngx_alloc(sizeof(ngx_js_bcast_ctx_t), ngx_cycle->log);
+    if (bcast_ctx == NULL) {
+        return;
+    }
+
+    bcast_ctx->w = w;
+
+    bcast_conn = ngx_get_connection(w->bcast_fd, ngx_cycle->log);
+    if (bcast_conn == NULL) {
+        ngx_free(bcast_ctx);
+        return;
+    }
+
+    bcast_conn->data          = bcast_ctx;
+    bcast_conn->read->handler = ngx_js_bcast_recv_handler;
+    bcast_conn->read->log     = ngx_cycle->log;
+
+    if (ngx_add_event(bcast_conn->read, NGX_READ_EVENT, 0) != NGX_OK) {
+        ngx_free_connection(bcast_conn);
+        bcast_conn->fd = (ngx_socket_t) -1;
+        ngx_free(bcast_ctx);
+        return;
+    }
+
+    w->bcast_conn = bcast_conn;
+}
+
+
 /*
  * ngx_js_init_process — called in each worker after fork().
  *
@@ -694,6 +911,16 @@ ngx_js_init_process(ngx_cycle_t *cycle)
 
     jcf->worker = w;
 
+    /*
+     * F4: store the per-worker bcast fd but do NOT register the event
+     * here.  ngx_event_process_init (which initialises free_connections)
+     * runs AFTER ngx_js_init_process, so ngx_get_connection would fail.
+     * Lazy activation is done on the first request via
+     * ngx_js_bcast_ensure_active().
+     */
+    w->bcast_fd   = ngx_js_sw_get_bcast_fd((ngx_uint_t) ngx_worker);
+    w->bcast_conn = NULL;
+
     return NGX_OK;
 }
 
@@ -736,6 +963,20 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
 
         ngx_free(st);
         w->local_socket_reg[i] = NULL;
+    }
+
+    /* F4: deregister bcast event handler */
+    if (w->bcast_conn != NULL) {
+        ngx_js_bcast_ctx_t  *bcast_ctx = w->bcast_conn->data;
+
+        ngx_del_event(w->bcast_conn->read, NGX_READ_EVENT, 0);
+        ngx_free_connection(w->bcast_conn);
+        w->bcast_conn->fd = (ngx_socket_t) -1;
+        w->bcast_conn     = NULL;
+
+        if (bcast_ctx != NULL) {
+            ngx_free(bcast_ctx);
+        }
     }
 
     ngx_js_sw_exit_process(cycle, jcf);

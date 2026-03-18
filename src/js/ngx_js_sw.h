@@ -20,6 +20,14 @@
 #define NGX_JS_SW_MSG_CONNECT  1u
 #define NGX_JS_SW_MSG_TERM     2u
 
+/*
+ * F4 — bcast message layout (master → worker via per-worker socketpair):
+ *   [handle:u32][addr_len:u32][addr:bytes]
+ * SCM_RIGHTS carries the socket fd.
+ */
+#define NGX_JS_BCAST_HDR  (2 * sizeof(uint32_t))
+#define NGX_JS_BCAST_MAX  (NGX_JS_BCAST_HDR + 64)
+
 
 /*
  * Install the global SharedWorker constructor into ctx.
@@ -84,6 +92,23 @@ ngx_int_t  ngx_js_sw_manager_start(ngx_js_conf_t *jcf,
  * Only valid when called from a worker process after fork.
  */
 int  ngx_js_socket_mgr_create(const char *addr_str, size_t addr_len);
+
+/*
+ * Broadcast socket handle to all other workers via per-worker bcast sockets.
+ * The socket must already be in ngx_js_socket_reg[handle] in this worker.
+ * Blocks until the manager confirms delivery to all workers.
+ * Returns 0 on success, -1 on failure.
+ * Only valid when called from a worker process after fork.
+ */
+int  ngx_js_socket_mgr_broadcast(uint32_t handle,
+    const char *addr_str, size_t addr_len);
+
+/*
+ * Return the worker-readable end of the per-worker broadcast socketpair.
+ * Used by ngx_js_init_process() to register the bcast event handler.
+ * Returns -1 if the broadcast infrastructure is not available.
+ */
+int  ngx_js_sw_get_bcast_fd(ngx_uint_t wi);
 
 
 #endif /* _NGX_JS_SW_H_INCLUDED_ */

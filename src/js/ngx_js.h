@@ -69,6 +69,13 @@ typedef struct {
      * to close sockets that were never activated (in_listening == 0).
      */
     ngx_js_socket_state_t   *local_socket_reg[NGX_JS_LOCAL_SOCKET_REG_MAX];
+    /*
+     * F4 — broadcast socket fd (bcast_fds[ngx_worker][1]).
+     * Stored at init_process; event is activated lazily on first request
+     * to avoid calling ngx_get_connection before ngx_event_process_init.
+     */
+    int                      bcast_fd;
+    ngx_connection_t        *bcast_conn;  /* non-NULL after activation */
 } ngx_js_worker_t;
 
 
@@ -152,6 +159,14 @@ extern ngx_module_t  ngx_js_http_module;
 
 /* COM initialisation — installs nginx.* into ctx's global object */
 ngx_int_t  ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle);
+
+/*
+ * F4 — lazily activate the per-worker bcast event handler.
+ * Safe to call multiple times (no-op if already activated).
+ * Must only be called from within the worker's nginx event loop
+ * (i.e., after ngx_event_process_init has run).
+ */
+void  ngx_js_bcast_ensure_active(ngx_js_worker_t *w);
 
 /*
  * config.write(text) — feeds config text back into ngx_conf_parse() via a

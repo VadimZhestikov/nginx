@@ -4192,6 +4192,9 @@ ngx_js_content_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    /* F4: lazily activate the bcast event handler on first request */
+    ngx_js_bcast_ensure_active(w);
+
     /* Allocate the request-lifetime JS context; lives for the full request */
     rctx = ngx_pcalloc(r->pool, sizeof(ngx_js_req_ctx_t));
     if (rctx == NULL) {
