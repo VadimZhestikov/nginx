@@ -661,6 +661,106 @@ ngx_js_broadcast(JSContext *ctx, JSValueConst this_val,
 
 
 /* ------------------------------------------------------------------ */
+/* nginx.suspendAcceptance() / nginx.resumeAcceptance()                */
+/* Phase 1: per-worker connection acceptance control.                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ngx_js_disable_accept_events — removes all listening socket read events
+ * from this worker's event loop.  Equivalent to the static
+ * ngx_disable_accept_events(cycle, 1) in ngx_event_accept.c.
+ *
+ * New TCP connections continue to queue in the OS SYN backlog (up to
+ * net.core.somaxconn) and will be accepted once resumeAcceptance() is
+ * called.  With multiple workers, other workers continue accepting
+ * normally.
+ */
+static ngx_int_t
+ngx_js_disable_accept_events(ngx_cycle_t *cycle)
+{
+    ngx_uint_t         i;
+    ngx_listening_t   *ls;
+    ngx_connection_t  *c;
+
+    ls = cycle->listening.elts;
+
+    for (i = 0; i < cycle->listening.nelts; i++) {
+        c = ls[i].connection;
+
+        if (c == NULL || !c->read->active) {
+            continue;
+        }
+
+        if (ngx_del_event(c->read, NGX_READ_EVENT, NGX_DISABLE_EVENT)
+            == NGX_ERROR)
+        {
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
+}
+
+
+/*
+ * nginx.suspendAcceptance()
+ *
+ * Removes all listening socket read events from this worker's nginx event
+ * loop.  Incoming TCP connections queue in the OS backlog; other workers
+ * (if any) continue accepting normally.  Only callable from worker context.
+ *
+ * Use-case: wrap a batch of COM mutations that must be applied atomically
+ * from the request handler's perspective:
+ *
+ *   nginx.suspendAcceptance();
+ *   nginx.http.upstreams[0].peers[0].weight = 200;
+ *   nginx.http.servers[0].ssl.cert = '/etc/ssl/new.pem';
+ *   nginx.resumeAcceptance();
+ *
+ * For cross-worker atomic batches use Phase 2 (nginx.suspendAllWorkers).
+ */
+static JSValue
+ngx_js_suspend_acceptance(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    if (ngx_process != NGX_PROCESS_WORKER) {
+        return JS_ThrowTypeError(ctx,
+            "suspendAcceptance: only callable from worker process");
+    }
+
+    if (ngx_js_disable_accept_events((ngx_cycle_t *) ngx_cycle) != NGX_OK) {
+        return JS_ThrowInternalError(ctx, "suspendAcceptance: failed");
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * nginx.resumeAcceptance()
+ *
+ * Re-adds listening socket read events that were removed by
+ * suspendAcceptance().  No-op if acceptance was not suspended.
+ * Only callable from worker context.
+ */
+static JSValue
+ngx_js_resume_acceptance(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    if (ngx_process != NGX_PROCESS_WORKER) {
+        return JS_ThrowTypeError(ctx,
+            "resumeAcceptance: only callable from worker process");
+    }
+
+    if (ngx_enable_accept_events((ngx_cycle_t *) ngx_cycle) != NGX_OK) {
+        return JS_ThrowInternalError(ctx, "resumeAcceptance: failed");
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/* ------------------------------------------------------------------ */
 /* ngx_js_com_init — main entry point called from ngx_js_module.c      */
 /* ------------------------------------------------------------------ */
 
@@ -731,6 +831,14 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "setTimeout",
                       JS_NewCFunction(ctx, ngx_js_nginx_set_timeout,
                                       "setTimeout", 1));
+
+    /* nginx.suspendAcceptance() / nginx.resumeAcceptance() — Phase 1 */
+    JS_SetPropertyStr(ctx, nginx_obj, "suspendAcceptance",
+                      JS_NewCFunction(ctx, ngx_js_suspend_acceptance,
+                                      "suspendAcceptance", 0));
+    JS_SetPropertyStr(ctx, nginx_obj, "resumeAcceptance",
+                      JS_NewCFunction(ctx, ngx_js_resume_acceptance,
+                                      "resumeAcceptance", 0));
 
     /*
      * nginx.workerMemoryLimit — per-worker JS heap cap in bytes (0 = none).
