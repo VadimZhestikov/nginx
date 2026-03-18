@@ -126,7 +126,7 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 /* ------------------------------------------------------------------ */
-/* sock.close() — Phase E implementation                               */
+/* sock.close() — Phase E (pre-fork) + F3 (worker)                    */
 /* ------------------------------------------------------------------ */
 
 static JSValue
@@ -135,12 +135,8 @@ ngx_js_socket_close(JSContext *ctx, JSValueConst this_val,
 {
     ngx_js_socket_opaque_t  *op;
     ngx_js_socket_state_t   *st;
-
-    /* Phase E: pre-fork only */
-    if (ngx_process == NGX_PROCESS_WORKER) {
-        return JS_ThrowInternalError(ctx,
-            "sock.close: post-fork worker close not yet supported");
-    }
+    ngx_js_worker_t         *w;
+    ngx_uint_t               i;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_socket_class_id);
     if (!op) {
@@ -169,9 +165,22 @@ ngx_js_socket_close(JSContext *ctx, JSValueConst this_val,
         st->fd = -1;
     }
 
-    /* Remove from registry and free the state */
+    /* Remove from global registry and free the state */
     ngx_js_socket_reg[op->handle] = NULL;
     ngx_free(st);
+
+    /* F3: also remove from the worker-local registry if in a worker */
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        w = JS_GetContextOpaque(ctx);
+        if (w != NULL) {
+            for (i = 0; i < NGX_JS_LOCAL_SOCKET_REG_MAX; i++) {
+                if (w->local_socket_reg[i] == st) {
+                    w->local_socket_reg[i] = NULL;
+                    break;
+                }
+            }
+        }
+    }
 
     return JS_UNDEFINED;
 }
@@ -295,6 +304,8 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
     int                      fd, opt, i, saved;
     uint32_t                 handle;
     ngx_js_socket_state_t   *st;
+    ngx_js_worker_t         *w         = NULL;
+    ngx_uint_t               local_slot = NGX_JS_LOCAL_SOCKET_REG_MAX;
 
     if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx,
@@ -342,6 +353,27 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
             return JS_ThrowInternalError(ctx,
                 "createSocket: manager failed to create socket for '%s'",
                 addr_str);
+        }
+
+        /*
+         * F3: verify there is a free slot in the worker-local registry
+         * before allocating state, so we can always track this socket.
+         */
+        w = JS_GetContextOpaque(ctx);
+        local_slot = NGX_JS_LOCAL_SOCKET_REG_MAX;
+        if (w != NULL) {
+            for (i = 0; i < NGX_JS_LOCAL_SOCKET_REG_MAX; i++) {
+                if (w->local_socket_reg[i] == NULL) {
+                    local_slot = (ngx_uint_t) i;
+                    break;
+                }
+            }
+            if (local_slot == NGX_JS_LOCAL_SOCKET_REG_MAX) {
+                close(fd);
+                return JS_ThrowInternalError(ctx,
+                    "createSocket: worker-local socket registry full"
+                    " (max %d)", NGX_JS_LOCAL_SOCKET_REG_MAX);
+            }
         }
 
     } else {
@@ -395,6 +427,13 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
     ngx_cpystrn((u_char *) st->addr, (u_char *) addr_str, sizeof(st->addr));
 
     ngx_js_socket_reg[handle] = st;
+
+    /* F3: register in worker-local registry for cleanup tracking */
+    if (ngx_process == NGX_PROCESS_WORKER && w != NULL
+        && local_slot < NGX_JS_LOCAL_SOCKET_REG_MAX)
+    {
+        w->local_socket_reg[local_slot] = st;
+    }
 
     return ngx_js_socket_wrap(ctx, handle);
 }

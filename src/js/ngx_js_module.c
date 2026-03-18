@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
+#include "ngx_js_socket.h"
 #include "ngx_js_sw.h"
 
 
@@ -700,14 +701,41 @@ ngx_js_init_process(ngx_cycle_t *cycle)
 static void
 ngx_js_exit_process(ngx_cycle_t *cycle)
 {
-    ngx_js_conf_t   *jcf;
-    ngx_js_worker_t *w;
+    ngx_js_conf_t         *jcf;
+    ngx_js_worker_t       *w;
+    ngx_uint_t             i;
+    ngx_js_socket_state_t *st;
 
     jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
 
     w = jcf->worker;
     if (w == NULL) {
         return;
+    }
+
+    /*
+     * F3: close any worker-local sockets that were never activated.
+     * Activated sockets (in_listening == 1) are nginx's responsibility
+     * — their fd lives in cycle->listening and nginx will close them.
+     * Unactivated sockets are this worker's private resource; leak them
+     * and the fd is lost until the process exits.
+     */
+    for (i = 0; i < NGX_JS_LOCAL_SOCKET_REG_MAX; i++) {
+        st = w->local_socket_reg[i];
+        if (st == NULL) {
+            continue;
+        }
+
+        if (!st->in_listening && st->fd >= 0) {
+            (void) close(st->fd);
+            st->fd = -1;
+            ngx_log_debug1(NGX_LOG_DEBUG_CORE, cycle->log, 0,
+                           "js: exit_process: closed worker-local socket %i",
+                           (ngx_int_t) i);
+        }
+
+        ngx_free(st);
+        w->local_socket_reg[i] = NULL;
     }
 
     ngx_js_sw_exit_process(cycle, jcf);

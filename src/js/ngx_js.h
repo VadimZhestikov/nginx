@@ -15,6 +15,12 @@
 struct ngx_js_sw_state_s;
 typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
 
+/* Forward declaration for socket state (ngx_js_socket.h) */
+struct ngx_js_socket_state_s;
+typedef struct ngx_js_socket_state_s ngx_js_socket_state_t;
+
+#define NGX_JS_LOCAL_SOCKET_REG_MAX  32
+
 /*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).
  * Allocated in cycle->pool via create_conf; populated by js_source
@@ -56,6 +62,13 @@ typedef struct {
     struct ngx_http_request_s *current_request;    /* non-NULL while JS runs in req  */
     ngx_array_t             *dispatching_hdr_arr;  /* set during header filter loop  */
     ngx_array_t             *dispatching_body_arr; /* set during body filter loop    */
+    /*
+     * F3 — Worker-local socket registry.
+     * Parallel to ngx_js_socket_reg[] but scoped to this worker process.
+     * Populated when createSocket() runs post-fork; used by exit_process
+     * to close sockets that were never activated (in_listening == 0).
+     */
+    ngx_js_socket_state_t   *local_socket_reg[NGX_JS_LOCAL_SOCKET_REG_MAX];
 } ngx_js_worker_t;
 
 

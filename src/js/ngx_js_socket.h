@@ -30,7 +30,7 @@
  *   pushed into cycle->listening.  Prevents sock.close() from closing a
  *   socket already being used by nginx workers (Phase E).
  */
-typedef struct {
+typedef struct ngx_js_socket_state_s {
     int       fd;              /* OS socket fd (bound + listening)         */
     uint16_t  port;            /* port in host byte order                  */
     char      addr[64];        /* display string, e.g. "127.0.0.1:9000"   */
