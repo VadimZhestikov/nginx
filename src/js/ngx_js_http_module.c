@@ -1831,6 +1831,16 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
 
     r = op->r;
 
+    /*
+     * The nginx request may have been abandoned (op->r set to NULL in the
+     * content handler's "async_pending already set" error path).  If the
+     * async continuation eventually reaches req.respond() after the nginx
+     * request was already finalized, silently discard — do not dereference r.
+     */
+    if (r == NULL) {
+        return JS_UNDEFINED;
+    }
+
     /* status — argv[0] or r.statusCode or 200 */
     if (argc >= 1 && !JS_IsUndefined(argv[0]) && !JS_IsNull(argv[0])) {
         if (JS_ToInt32(ctx, &status, argv[0])) {
@@ -4336,8 +4346,26 @@ ngx_js_content_handler(ngx_http_request_t *r)
                 ngx_js_async_ctx_t  *actx;
 
                 if (w->async_pending != NULL) {
+                    ngx_js_request_opaque_t  *op2;
+
                     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                                   "js: another async request already pending");
+
+                    /*
+                     * Null out op->r before freeing the JS values.  The async
+                     * handler ran to its first await and may have registered
+                     * epoll events (e.g. a suspendAllWorkers reply_fd).  When
+                     * those events fire they will resume the continuation,
+                     * which can call req.respond() — by then nginx will have
+                     * finalized the request and freed r.  Setting r = NULL
+                     * causes ngx_js_request_respond to discard the call safely
+                     * instead of dereferencing freed memory.
+                     */
+                    op2 = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+                    if (op2 != NULL) {
+                        op2->r = NULL;
+                    }
+
                     JS_FreeValue(ctx, result);
                     JS_FreeValue(ctx, req_obj);
                     w->current_request = NULL;
