@@ -111,5 +111,11 @@ ngx_int_t  ngx_js_listener_activate(ngx_js_http_listener_state_t *st,
 ngx_http_core_srv_conf_t *ngx_js_server_get_cscf(JSValueConst srv,
     ngx_cycle_t **cycle_out);
 
+/*
+ * Wrap a listener registry slot in a JS NginxHttpListener object.
+ * F2 — called from ngx_js_socket.c for NginxSocket.listener getter.
+ */
+JSValue  ngx_js_wrap_listener(JSContext *ctx, uint32_t handle);
+
 
 #endif /* _NGX_JS_LISTENER_H_INCLUDED_ */

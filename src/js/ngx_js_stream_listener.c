@@ -500,7 +500,7 @@ static JSClassDef  ngx_js_stream_listener_class = {
 };
 
 
-/* magic: 0=address */
+/* magic: 0=address  1=socket  2=serverNames */
 static JSValue
 ngx_js_stream_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
@@ -525,6 +525,46 @@ ngx_js_stream_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 0:   /* address */
         return JS_NewStringLen(ctx, (char *) st->addr_text_buf,
                                st->addr_text_len);
+
+    case 1:   /* socket — NginxSocket back-reference */
+        return ngx_js_socket_wrap(ctx, st->socket_handle);
+
+    case 2:   /* serverNames[] */
+    {
+        JSValue                       arr;
+        ngx_uint_t                    idx, s, n;
+        ngx_stream_core_srv_conf_t   *cscf;
+        ngx_stream_server_name_t     *sn;
+
+        arr = JS_NewArray(ctx);
+        if (JS_IsException(arr)) {
+            return arr;
+        }
+
+        idx = 0;
+
+        if (st->default_server != NULL) {
+            cscf = st->default_server;
+            sn   = cscf->server_names.elts;
+            for (n = 0; n < cscf->server_names.nelts; n++) {
+                JS_SetPropertyUint32(ctx, arr, idx++,
+                    JS_NewStringLen(ctx, (char *) sn[n].name.data,
+                                   sn[n].name.len));
+            }
+        }
+
+        for (s = 0; s < st->nvservers; s++) {
+            cscf = st->vservers[s];
+            sn   = cscf->server_names.elts;
+            for (n = 0; n < cscf->server_names.nelts; n++) {
+                JS_SetPropertyUint32(ctx, arr, idx++,
+                    JS_NewStringLen(ctx, (char *) sn[n].name.data,
+                                   sn[n].name.len));
+            }
+        }
+
+        return arr;
+    }
     }
 
     return JS_UNDEFINED;
@@ -913,14 +953,115 @@ ngx_js_stream_listener_add_virtual_server(JSContext *ctx,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* listener.serverByName(name) — F2 cross-reference                   */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_stream_listener_server_by_name(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_stream_listener_opaque_t  *op;
+    ngx_js_stream_listener_state_t   *st;
+    ngx_stream_core_srv_conf_t       *cscf;
+    ngx_stream_server_name_t         *sn;
+    const char                       *query;
+    char                             *lc;
+    size_t                            qlen, i;
+    ngx_uint_t                        s, n;
+    int                               found;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_listener_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->handle >= NGX_JS_STREAM_LISTENER_REG_MAX
+        || ngx_js_stream_listener_reg[op->handle] == NULL)
+    {
+        return JS_ThrowInternalError(ctx,
+            "NginxStreamListener: invalid handle");
+    }
+
+    st = ngx_js_stream_listener_reg[op->handle];
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "listener.serverByName: string argument required");
+    }
+
+    query = JS_ToCString(ctx, argv[0]);
+    if (!query) {
+        return JS_EXCEPTION;
+    }
+
+    qlen = strlen(query);
+    lc   = js_malloc(ctx, qlen + 1);
+    if (!lc) {
+        JS_FreeCString(ctx, query);
+        return JS_EXCEPTION;
+    }
+
+    for (i = 0; i < qlen; i++) {
+        lc[i] = (char) ngx_tolower((u_char) query[i]);
+    }
+    lc[qlen] = '\0';
+    JS_FreeCString(ctx, query);
+
+    cscf  = NULL;
+    found = 0;
+
+    if (st->default_server != NULL) {
+        sn = st->default_server->server_names.elts;
+        for (n = 0; n < st->default_server->server_names.nelts; n++) {
+            if (sn[n].name.len == qlen
+                && ngx_strncasecmp(sn[n].name.data,
+                                   (u_char *) lc, qlen) == 0)
+            {
+                cscf  = st->default_server;
+                found = 1;
+                break;
+            }
+        }
+    }
+
+    if (!found) {
+        for (s = 0; s < st->nvservers && !found; s++) {
+            sn = st->vservers[s]->server_names.elts;
+            for (n = 0; n < st->vservers[s]->server_names.nelts; n++) {
+                if (sn[n].name.len == qlen
+                    && ngx_strncasecmp(sn[n].name.data,
+                                       (u_char *) lc, qlen) == 0)
+                {
+                    cscf  = st->vservers[s];
+                    found = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    js_free(ctx, lc);
+
+    if (!found) {
+        return JS_NULL;
+    }
+
+    return ngx_js_wrap_stream_server(ctx, cscf, (ngx_cycle_t *) ngx_cycle);
+}
+
+
 static const JSCFunctionListEntry  ngx_js_stream_listener_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("address",            ngx_js_stream_listener_get,              NULL, 0),
+    JS_CGETSET_MAGIC_DEF("socket",             ngx_js_stream_listener_get,              NULL, 1),
+    JS_CGETSET_MAGIC_DEF("serverNames",        ngx_js_stream_listener_get,              NULL, 2),
+    JS_CFUNC_DEF(        "serverByName",       1, ngx_js_stream_listener_server_by_name),
     JS_CFUNC_DEF(        "addServer",          1, ngx_js_stream_listener_add_server),
     JS_CFUNC_DEF(        "addVirtualServer",   1, ngx_js_stream_listener_add_virtual_server),
 };
 
 
-static JSValue
+JSValue
 ngx_js_wrap_stream_listener(JSContext *ctx, uint32_t handle)
 {
     JSValue                           obj;

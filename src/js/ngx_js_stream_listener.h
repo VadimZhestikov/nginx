@@ -92,5 +92,11 @@ ngx_int_t  ngx_js_stream_install(JSContext *ctx, JSValue nginx_obj,
 ngx_stream_core_srv_conf_t *ngx_js_stream_server_get_cscf(JSValueConst srv,
     ngx_cycle_t **cycle_out);
 
+/*
+ * Wrap a stream listener registry slot in a JS NginxStreamListener object.
+ * F2 — called from ngx_js_socket.c for NginxSocket.listener getter.
+ */
+JSValue  ngx_js_wrap_stream_listener(JSContext *ctx, uint32_t handle);
+
 
 #endif /* _NGX_JS_STREAM_LISTENER_H_INCLUDED_ */

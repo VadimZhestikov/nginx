@@ -233,9 +233,8 @@ static JSValue ngx_js_http_fn_match(JSContext *ctx,
 static JSValue ngx_js_server_fn_find_location(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 
-static JSValue ngx_js_wrap_server(JSContext *ctx,
+JSValue ngx_js_wrap_server(JSContext *ctx,
     ngx_http_core_srv_conf_t *cscf, ngx_cycle_t *cycle);
-
 
 /* ------------------------------------------------------------------ */
 /* NginxLocation wrapper                                                */
@@ -5614,7 +5613,7 @@ ngx_js_server_install_proto(JSContext *ctx)
 }
 
 
-static JSValue
+JSValue
 ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
     ngx_cycle_t *cycle)
 {

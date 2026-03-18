@@ -32,6 +32,8 @@
 #include "ngx_js_com.h"
 #include "ngx_js.h"
 #include "ngx_js_socket.h"
+#include "ngx_js_listener.h"
+#include "ngx_js_stream_listener.h"
 #include "ngx_js_sw.h"
 
 
@@ -68,7 +70,7 @@ static JSClassDef  ngx_js_socket_class = {
 
 /* ------------------------------------------------------------------ */
 /* NginxSocket property getters                                         */
-/* magic: 0=address, 1=port, 2=fd                                      */
+/* magic: 0=address, 1=port, 2=fd, 3=listener                         */
 /* ------------------------------------------------------------------ */
 
 static JSValue
@@ -94,6 +96,29 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 0:  return JS_NewString(ctx, st->addr);
     case 1:  return JS_NewInt32(ctx, (int32_t) st->port);
     case 2:  return JS_NewInt32(ctx, (int32_t) st->fd);
+
+    case 3:  /* listener — NginxHttpListener | NginxStreamListener | null */
+    {
+        ngx_uint_t  i;
+
+        for (i = 0; i < NGX_JS_LISTENER_REG_MAX; i++) {
+            if (ngx_js_listener_reg[i] != NULL
+                && ngx_js_listener_reg[i]->socket_handle == op->handle)
+            {
+                return ngx_js_wrap_listener(ctx, (uint32_t) i);
+            }
+        }
+
+        for (i = 0; i < NGX_JS_STREAM_LISTENER_REG_MAX; i++) {
+            if (ngx_js_stream_listener_reg[i] != NULL
+                && ngx_js_stream_listener_reg[i]->socket_handle == op->handle)
+            {
+                return ngx_js_wrap_stream_listener(ctx, (uint32_t) i);
+            }
+        }
+
+        return JS_NULL;
+    }
     }
 
     return JS_UNDEFINED;
@@ -153,10 +178,11 @@ ngx_js_socket_close(JSContext *ctx, JSValueConst this_val,
 
 
 static const JSCFunctionListEntry  ngx_js_socket_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("address", ngx_js_socket_get, NULL, 0),
-    JS_CGETSET_MAGIC_DEF("port",    ngx_js_socket_get, NULL, 1),
-    JS_CGETSET_MAGIC_DEF("fd",      ngx_js_socket_get, NULL, 2),
-    JS_CFUNC_DEF(        "close",   0, ngx_js_socket_close),
+    JS_CGETSET_MAGIC_DEF("address",  ngx_js_socket_get, NULL, 0),
+    JS_CGETSET_MAGIC_DEF("port",     ngx_js_socket_get, NULL, 1),
+    JS_CGETSET_MAGIC_DEF("fd",       ngx_js_socket_get, NULL, 2),
+    JS_CGETSET_MAGIC_DEF("listener", ngx_js_socket_get, NULL, 3),
+    JS_CFUNC_DEF(        "close",    0, ngx_js_socket_close),
 };
 
 
@@ -191,8 +217,8 @@ ngx_js_socket_install_proto(JSContext *ctx)
 /* Wrap a registry slot in a JS NginxSocket object                     */
 /* ------------------------------------------------------------------ */
 
-static JSValue
-ngx_js_wrap_socket(JSContext *ctx, uint32_t handle)
+JSValue
+ngx_js_socket_wrap(JSContext *ctx, uint32_t handle)
 {
     JSValue                  obj;
     ngx_js_socket_opaque_t  *op;
@@ -370,7 +396,7 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
 
     ngx_js_socket_reg[handle] = st;
 
-    return ngx_js_wrap_socket(ctx, handle);
+    return ngx_js_socket_wrap(ctx, handle);
 }
 
 

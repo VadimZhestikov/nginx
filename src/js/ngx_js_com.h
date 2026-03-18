@@ -262,7 +262,6 @@ struct ngx_http_core_loc_conf_s;
 JSValue  ngx_js_wrap_location(JSContext *ctx,
     struct ngx_http_core_loc_conf_s *clcf);
 
-
 /*
  * ngx_js_com_events.c — create a NginxEvents wrapper.
  * Include <ngx_event.h> before this header to get the full prototype;

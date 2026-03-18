@@ -70,5 +70,12 @@ ngx_int_t  ngx_js_socket_install(JSContext *ctx, JSValue nginx_obj);
  */
 uint32_t   ngx_js_socket_get_handle(JSValueConst sock);
 
+/*
+ * Wrap a registry slot handle in a JS NginxSocket object.
+ * F2 — called from ngx_js_listener.c and ngx_js_stream_listener.c for
+ * the listener.socket cross-reference getter.
+ */
+JSValue    ngx_js_socket_wrap(JSContext *ctx, uint32_t handle);
+
 
 #endif /* _NGX_JS_SOCKET_H_INCLUDED_ */
