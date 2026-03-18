@@ -675,7 +675,7 @@ ngx_js_broadcast(JSContext *ctx, JSValueConst this_val,
  * called.  With multiple workers, other workers continue accepting
  * normally.
  */
-static ngx_int_t
+ngx_int_t
 ngx_js_disable_accept_events(ngx_cycle_t *cycle)
 {
     ngx_uint_t         i;
@@ -761,6 +761,181 @@ ngx_js_resume_acceptance(JSContext *ctx, JSValueConst this_val,
 
 
 /* ------------------------------------------------------------------ */
+/* Phase 2 — nginx.suspendAllWorkers() / nginx.resumeAllWorkers()      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Context for the accept-control reply fd event handler.
+ * Allocated with ngx_alloc; freed by the handler after the Promise resolves.
+ */
+typedef struct {
+    JSContext        *ctx;
+    JSRuntime        *rt;
+    ngx_js_worker_t  *w;
+    JSValue           resolve;
+    JSValue           reject;
+    ngx_connection_t *conn;
+} ngx_js_accept_ctrl_ctx_t;
+
+
+/*
+ * Called when the manager has broadcast the suspend/resume command to all
+ * workers, collected their acks, and written 1 byte on reply_fd.
+ * Resolves the awaited Promise so the async handler resumes.
+ */
+static void
+ngx_js_accept_ctrl_reply_handler(ngx_event_t *ev)
+{
+    ngx_connection_t          *conn;
+    ngx_js_accept_ctrl_ctx_t  *actx;
+    uint8_t                    ack;
+    JSValue                    ret;
+    JSContext                 *job_ctx;
+
+    conn = ev->data;
+    actx = conn->data;
+
+    (void) recv(conn->fd, &ack, 1, MSG_DONTWAIT);
+
+    actx->w->current_request = actx->w->async_pending
+                                ? actx->w->async_pending->r : NULL;
+
+    /* Resolve the Promise — async handler body resumes as a microtask */
+    ret = JS_Call(actx->ctx, actx->resolve, JS_UNDEFINED, 0, NULL);
+    JS_FreeValue(actx->ctx, ret);
+    JS_FreeValue(actx->ctx, actx->resolve);
+    JS_FreeValue(actx->ctx, actx->reject);
+
+    while (JS_ExecutePendingJob(actx->rt, &job_ctx) > 0) { }
+    ngx_js_async_check(actx->w);
+
+    actx->w->current_request = NULL;
+
+    /* Clean up the reply fd connection */
+    ngx_del_event(conn->read, NGX_READ_EVENT, NGX_CLOSE_EVENT);
+    ngx_free_connection(conn);
+    conn->fd = (ngx_socket_t) -1;
+
+    ngx_free(actx);
+}
+
+
+/*
+ * Common implementation for suspendAllWorkers() and resumeAllWorkers().
+ * Sends cmd_type to the manager, registers the reply fd in the event loop,
+ * and returns a Promise that resolves when all workers have acked.
+ */
+static JSValue
+ngx_js_make_accept_ctrl_promise(JSContext *ctx, uint32_t cmd_type)
+{
+    ngx_js_worker_t           *w;
+    int                        reply_fd;
+    JSValue                    resolving[2], promise;
+    ngx_connection_t          *conn;
+    ngx_js_accept_ctrl_ctx_t  *actx;
+
+    if (ngx_process != NGX_PROCESS_WORKER) {
+        return JS_ThrowTypeError(ctx,
+            "suspendAllWorkers/resumeAllWorkers: only callable from worker");
+    }
+
+    w = JS_GetContextOpaque(ctx);
+    if (w == NULL) {
+        return JS_ThrowInternalError(ctx, "no worker context");
+    }
+
+    reply_fd = ngx_js_mgr_accept_control(cmd_type);
+    if (reply_fd < 0) {
+        return JS_ThrowInternalError(ctx,
+            "accept control: manager unavailable");
+    }
+
+    promise = JS_NewPromiseCapability(ctx, resolving);
+    if (JS_IsException(promise)) {
+        close(reply_fd);
+        return promise;
+    }
+
+    actx = ngx_alloc(sizeof(ngx_js_accept_ctrl_ctx_t), ngx_cycle->log);
+    if (actx == NULL) {
+        close(reply_fd);
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowInternalError(ctx, "accept control: alloc failed");
+    }
+
+    conn = ngx_get_connection(reply_fd, ngx_cycle->log);
+    if (conn == NULL) {
+        close(reply_fd);
+        ngx_free(actx);
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowInternalError(ctx, "accept control: no connection slot");
+    }
+
+    actx->ctx     = ctx;
+    actx->rt      = w->rt;
+    actx->w       = w;
+    actx->resolve = resolving[0];
+    actx->reject  = resolving[1];
+    actx->conn    = conn;
+
+    conn->data          = actx;
+    conn->read->handler = ngx_js_accept_ctrl_reply_handler;
+    conn->read->log     = ngx_cycle->log;
+
+    if (ngx_add_event(conn->read, NGX_READ_EVENT, 0) != NGX_OK) {
+        ngx_free_connection(conn);
+        conn->fd = (ngx_socket_t) -1;
+        ngx_free(actx);
+        JS_FreeValue(ctx, resolving[0]);
+        JS_FreeValue(ctx, resolving[1]);
+        JS_FreeValue(ctx, promise);
+        return JS_ThrowInternalError(ctx, "accept control: add event failed");
+    }
+
+    return promise;
+}
+
+
+/*
+ * nginx.suspendAllWorkers()
+ *
+ * Returns a Promise that resolves after every worker has disabled its
+ * accept events.  The manager broadcasts the suspend command and waits
+ * for acks (with a 500ms timeout) before resolving.
+ *
+ *   await nginx.suspendAllWorkers();
+ *   // all workers suspended; make batch COM mutations here
+ *   await nginx.resumeAllWorkers();
+ */
+static JSValue
+ngx_js_suspend_all_workers(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    return ngx_js_make_accept_ctrl_promise(ctx,
+                                           NGX_JS_MGR_CMD_SUSPEND_ACCEPT);
+}
+
+
+/*
+ * nginx.resumeAllWorkers()
+ *
+ * Returns a Promise that resolves after every worker has re-enabled its
+ * accept events.
+ */
+static JSValue
+ngx_js_resume_all_workers(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    return ngx_js_make_accept_ctrl_promise(ctx,
+                                           NGX_JS_MGR_CMD_RESUME_ACCEPT);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* ngx_js_com_init — main entry point called from ngx_js_module.c      */
 /* ------------------------------------------------------------------ */
 
@@ -840,6 +1015,14 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                       JS_NewCFunction(ctx, ngx_js_resume_acceptance,
                                       "resumeAcceptance", 0));
 
+    /* nginx.suspendAllWorkers() / nginx.resumeAllWorkers() — Phase 2 */
+    JS_SetPropertyStr(ctx, nginx_obj, "suspendAllWorkers",
+                      JS_NewCFunction(ctx, ngx_js_suspend_all_workers,
+                                      "suspendAllWorkers", 0));
+    JS_SetPropertyStr(ctx, nginx_obj, "resumeAllWorkers",
+                      JS_NewCFunction(ctx, ngx_js_resume_all_workers,
+                                      "resumeAllWorkers", 0));
+
     /*
      * nginx.workerMemoryLimit — per-worker JS heap cap in bytes (0 = none).
      * js_source scripts write this value; init_process reads it and calls
@@ -908,6 +1091,30 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     }
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
+
+    /*
+     * nginx.withSuspendedAcceptance(fn) — convenience wrapper (pure JS).
+     * Suspends all workers, awaits fn(), then resumes regardless of throw.
+     */
+    {
+        static const char  script[] =
+            "(function(){"
+            "  const s = nginx.suspendAllWorkers.bind(nginx);"
+            "  const r = nginx.resumeAllWorkers.bind(nginx);"
+            "  nginx.withSuspendedAcceptance = async function(fn){"
+            "    await s();"
+            "    try{ await fn(); }finally{ await r(); }"
+            "  };"
+            "})();";
+        JSValue  ret;
+
+        ret = JS_Eval(ctx, script, sizeof(script) - 1,
+                      "<com-init>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(ret)) {
+            ngx_js_log_exception(ctx, cycle->log);
+        }
+        JS_FreeValue(ctx, ret);
+    }
 
     /* global Worker constructor */
     if (ngx_js_worker_install(ctx) != NGX_OK) {

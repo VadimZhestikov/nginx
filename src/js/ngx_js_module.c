@@ -647,11 +647,31 @@ ngx_js_bcast_recv_handler(ngx_event_t *ev)
             break;
         }
 
-        if ((size_t) n < NGX_JS_BCAST_HDR || (mh.msg_flags & MSG_TRUNC)) {
+        if (n < 1 || (mh.msg_flags & MSG_TRUNC)) {
             continue;
         }
 
-        hdr32    = (uint32_t *)(void *) recv_body;
+        /* Dispatch on the type byte (Phase 2 bcast format) */
+
+        if (recv_body[0] == NGX_JS_BCAST_TYPE_SUSPEND) {
+            (void) ngx_js_disable_accept_events((ngx_cycle_t *) ngx_cycle);
+            (void) send(conn->fd, "\x01", 1, 0);  /* ack to manager */
+            continue;
+        }
+
+        if (recv_body[0] == NGX_JS_BCAST_TYPE_RESUME) {
+            (void) ngx_enable_accept_events((ngx_cycle_t *) ngx_cycle);
+            (void) send(conn->fd, "\x01", 1, 0);  /* ack to manager */
+            continue;
+        }
+
+        /* NGX_JS_BCAST_TYPE_SOCKET: socket delivery */
+
+        if ((size_t) n < NGX_JS_BCAST_HDR) {
+            continue;
+        }
+
+        hdr32    = (uint32_t *)(void *)(recv_body + 1);  /* skip type byte */
         handle   = hdr32[0];
         addr_len = hdr32[1];
 
@@ -661,7 +681,7 @@ ngx_js_bcast_recv_handler(ngx_event_t *ev)
             continue;
         }
 
-        addr_ptr          = (char *) recv_body + NGX_JS_BCAST_HDR;
+        addr_ptr           = (char *) recv_body + NGX_JS_BCAST_HDR;
         addr_ptr[addr_len] = '\0';
 
         /* Extract socket fd from SCM_RIGHTS */

@@ -54,6 +54,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -536,6 +537,7 @@ __thread int  ngx_js_sw_thread_active;
 
 static void *ngx_js_sw_thread(void *arg);
 static void *ngx_js_sw_manager_thread(void *arg);
+static void  ngx_js_mgr_bcast_ctrl(uint8_t bcast_type, int reply_fd);
 static ngx_int_t ngx_js_sw_activate(JSContext *ctx,
     ngx_js_sw_state_t *state, ngx_uint_t wi);
 static JSValue ngx_js_sw_request_dynamic(JSContext *ctx,
@@ -2193,8 +2195,7 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
  *   NGX_JS_MGR_CMD_CREATE_SOCKET (1) — bind+listen on the given addr  *
  * ------------------------------------------------------------------ */
 
-#define NGX_JS_MGR_CMD_CREATE_SOCKET     1u
-#define NGX_JS_MGR_CMD_BROADCAST_SOCKET  2u
+/* NGX_JS_MGR_CMD_* are defined in ngx_js_sw.h */
 
 /* Extended command header: [0:u32][cmd_type:u32][worker_idx:u32] */
 #define NGX_JS_MGR_EXT_HDR  (3 * sizeof(uint32_t))
@@ -2518,17 +2519,22 @@ ngx_js_sw_manager_thread(void *arg)
             char      addr_buf[NGX_JS_MGR_ADDR_MAX + 1];
             int       new_fd;
 
-            /* Minimum message: [0][cmd_type][worker_idx] + [addr_len][addr] */
-            if ((ssize_t) n < (ssize_t)(NGX_JS_MGR_EXT_HDR + sizeof(uint32_t)))
-            {
+            /* Minimum message: [0:u32][cmd_type:u32][worker_idx:u32] */
+            if ((ssize_t) n < (ssize_t) NGX_JS_MGR_EXT_HDR) {
                 close(reply_fd);
                 continue;
             }
 
             ngx_memcpy(&cmd_type, cmdbuf + sizeof(uint32_t), sizeof(uint32_t));
-            /* worker_idx already parsed above */
+            /* worker_idx is at cmdbuf[8..11]; used by commands that need it */
 
             if (cmd_type == NGX_JS_MGR_CMD_CREATE_SOCKET) {
+                if ((ssize_t) n < (ssize_t)(NGX_JS_MGR_EXT_HDR
+                                            + sizeof(uint32_t)))
+                {
+                    close(reply_fd);
+                    continue;
+                }
                 ngx_memcpy(&addr_len,
                            cmdbuf + 3 * sizeof(uint32_t), sizeof(uint32_t));
 
@@ -2586,12 +2592,15 @@ ngx_js_sw_manager_thread(void *arg)
                  * Command body (after EXT_HDR): [handle:u32][addr_len:u32]
                  *                               [addr:bytes]
                  * SCM_RIGHTS carries [sock_fd, reply_fd] (n_recv_fds == 2).
+                 * Bcast message: [type:u8][handle:u32][addr_len:u32][addr]
+                 *                + SCM_RIGHTS(sock_fd).
                  */
                 uint32_t   b_handle, b_addr_len;
                 char       b_addr[65];
                 int        b_sock_fd;
                 ngx_uint_t wi;
-                uint32_t   b_hdr[2];
+                uint32_t   b_worker_idx;
+                uint8_t    b_hdr_buf[1 + 2 * sizeof(uint32_t)];
                 union {
                     char            buf[CMSG_SPACE(sizeof(int))];
                     struct cmsghdr  hdr;
@@ -2599,6 +2608,17 @@ ngx_js_sw_manager_thread(void *arg)
                 struct cmsghdr  *bc;
                 struct iovec     bc_iov[2];
                 struct msghdr    bc_msg;
+
+                /* Need: EXT_HDR + handle(u32) + addr_len(u32) */
+                if ((ssize_t) n < (ssize_t)(NGX_JS_MGR_EXT_HDR
+                                            + 2 * sizeof(uint32_t)))
+                {
+                    if (n_recv_fds >= 1 && recv_fds[0] >= 0) {
+                        close(recv_fds[0]);
+                    }
+                    close(reply_fd);
+                    continue;
+                }
 
                 if (n_recv_fds != 2 || recv_fds[0] < 0) {
                     status = 1;
@@ -2615,14 +2635,9 @@ ngx_js_sw_manager_thread(void *arg)
                 b_sock_fd = recv_fds[0];
                 /* reply_fd already set from n_recv_fds - 1 == recv_fds[1] */
 
-                /* Need: EXT_HDR + handle(u32) + addr_len(u32) */
-                if ((ssize_t) n < (ssize_t)(NGX_JS_MGR_EXT_HDR
-                                            + 2 * sizeof(uint32_t)))
-                {
-                    close(b_sock_fd);
-                    close(reply_fd);
-                    continue;
-                }
+                /* Actual requesting worker_idx is at EXT_HDR[8..11] */
+                ngx_memcpy(&b_worker_idx,
+                           cmdbuf + 2 * sizeof(uint32_t), sizeof(uint32_t));
 
                 ngx_memcpy(&b_handle,
                            cmdbuf + NGX_JS_MGR_EXT_HDR,
@@ -2646,19 +2661,21 @@ ngx_js_sw_manager_thread(void *arg)
                            b_addr_len);
                 b_addr[b_addr_len] = '\0';
 
-                /* Distribute fd to all workers except the sender */
-                b_hdr[0] = b_handle;
-                b_hdr[1] = b_addr_len;
+                /* Distribute fd to all workers except the sender.
+                 * Bcast header: [type:u8=SOCKET][handle:u32][addr_len:u32] */
+                b_hdr_buf[0] = NGX_JS_BCAST_TYPE_SOCKET;
+                ngx_memcpy(b_hdr_buf + 1, &b_handle,   sizeof(uint32_t));
+                ngx_memcpy(b_hdr_buf + 5, &b_addr_len, sizeof(uint32_t));
 
                 for (wi = 0; wi < bcast_nworkers; wi++) {
-                    if (wi == (ngx_uint_t) worker_idx) {
+                    if (wi == (ngx_uint_t) b_worker_idx) {
                         continue;
                     }
                     if (bcast_fds[wi][0] < 0) {
                         continue;
                     }
 
-                    bc_iov[0].iov_base = b_hdr;
+                    bc_iov[0].iov_base = b_hdr_buf;
                     bc_iov[0].iov_len  = NGX_JS_BCAST_HDR;
                     bc_iov[1].iov_base = b_addr;
                     bc_iov[1].iov_len  = b_addr_len;
@@ -2689,6 +2706,21 @@ ngx_js_sw_manager_thread(void *arg)
                 msg.msg_iovlen = 1;
                 (void) sendmsg(reply_fd, &msg, 0);
                 close(reply_fd);
+
+            } else if (cmd_type == NGX_JS_MGR_CMD_SUSPEND_ACCEPT
+                       || cmd_type == NGX_JS_MGR_CMD_RESUME_ACCEPT)
+            {
+                /*
+                 * Phase 2 — broadcast suspend/resume to all workers,
+                 * collect acks, then reply to the requesting worker.
+                 */
+                uint8_t  bcast_type;
+
+                bcast_type = (cmd_type == NGX_JS_MGR_CMD_SUSPEND_ACCEPT)
+                             ? NGX_JS_BCAST_TYPE_SUSPEND
+                             : NGX_JS_BCAST_TYPE_RESUME;
+
+                ngx_js_mgr_bcast_ctrl(bcast_type, reply_fd);
 
             } else {
                 /* Unknown extended command — send error */
@@ -3068,4 +3100,170 @@ ngx_js_socket_mgr_broadcast(uint32_t handle, const char *addr_str,
     }
 
     return 0;
+}
+
+
+/*
+ * ngx_js_mgr_bcast_ctrl — called from the manager thread.
+ *
+ * Broadcasts a 1-byte control message (bcast_type) to every worker via
+ * bcast_fds[wi][0], then waits (with a 500ms timeout) for a 1-byte ack
+ * from each worker.  Workers that do not ack within the window (e.g.
+ * because their bcast event handler has not been activated yet) are
+ * skipped — they will process the message when they eventually activate.
+ * Finally, sends a 1-byte success reply on reply_fd and closes it.
+ */
+static void
+ngx_js_mgr_bcast_ctrl(uint8_t bcast_type, int reply_fd)
+{
+    ngx_uint_t      wi;
+    uint8_t         ctrl_msg[1];
+    struct iovec    bc_iov;
+    struct msghdr   bc_mh;
+    fd_set          rfds, rfds_cur;
+    int             max_fd;
+    struct timeval  tv;
+    ngx_uint_t      pending;
+    uint8_t         ack;
+    uint8_t         status;
+    struct iovec    iov;
+    struct msghdr   msg;
+
+    ctrl_msg[0] = bcast_type;
+
+    bc_iov.iov_base = ctrl_msg;
+    bc_iov.iov_len  = 1;
+
+    /* Broadcast to all workers */
+    for (wi = 0; wi < bcast_nworkers; wi++) {
+        if (bcast_fds[wi][0] < 0) {
+            continue;
+        }
+
+        ngx_memzero(&bc_mh, sizeof(bc_mh));
+        bc_mh.msg_iov    = &bc_iov;
+        bc_mh.msg_iovlen = 1;
+
+        (void) sendmsg(bcast_fds[wi][0], &bc_mh, 0);
+    }
+
+    /* Collect acks with a 500ms total timeout (select loop) */
+    FD_ZERO(&rfds);
+    max_fd  = 0;
+    pending = 0;
+
+    for (wi = 0; wi < bcast_nworkers; wi++) {
+        if (bcast_fds[wi][0] >= 0) {
+            FD_SET(bcast_fds[wi][0], &rfds);
+            if (bcast_fds[wi][0] > max_fd) {
+                max_fd = bcast_fds[wi][0];
+            }
+            pending++;
+        }
+    }
+
+    while (pending > 0) {
+        tv.tv_sec  = 0;
+        tv.tv_usec = 500000;   /* 500ms per select call */
+        rfds_cur   = rfds;
+
+        if (select(max_fd + 1, &rfds_cur, NULL, NULL, &tv) <= 0) {
+            break;   /* timeout or error — proceed with partial acks */
+        }
+
+        for (wi = 0; wi < bcast_nworkers; wi++) {
+            if (bcast_fds[wi][0] < 0) {
+                continue;
+            }
+            if (!FD_ISSET(bcast_fds[wi][0], &rfds_cur)) {
+                continue;
+            }
+
+            if (recv(bcast_fds[wi][0], &ack, 1, MSG_DONTWAIT) == 1) {
+                FD_CLR(bcast_fds[wi][0], &rfds);
+                pending--;
+            }
+        }
+    }
+
+    /* Reply success to requesting worker */
+    status = 0;
+    iov.iov_base = &status;
+    iov.iov_len  = 1;
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov    = &iov;
+    msg.msg_iovlen = 1;
+
+    (void) sendmsg(reply_fd, &msg, 0);
+    close(reply_fd);
+}
+
+
+/*
+ * ngx_js_mgr_accept_control — worker-side: send SUSPEND or RESUME command
+ * to the manager.
+ *
+ * Creates a reply socketpair, sends the command body (NGX_JS_MGR_EXT_HDR
+ * bytes) with the write end via SCM_RIGHTS to the manager, closes the
+ * write end, and returns the read end.  The caller must register the read
+ * end with the nginx event system; the fd becomes readable when the manager
+ * has broadcast the command and collected worker acks.
+ *
+ * Returns the reply fd on success, -1 on failure.
+ */
+int
+ngx_js_mgr_accept_control(uint32_t cmd_type)
+{
+    int       reply_fds[2];
+    uint32_t  zero, worker_idx32;
+    uint8_t   cmdbuf[NGX_JS_MGR_EXT_HDR];
+    struct msghdr  msg;
+    struct iovec   iov;
+    union {
+        char            buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_snd;
+    struct cmsghdr *cmh;
+    ssize_t         n;
+
+    if (sw_cmd_fds[1] < 0) {
+        return -1;   /* manager not running */
+    }
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, reply_fds) != 0) {
+        return -1;
+    }
+
+    zero         = 0;
+    worker_idx32 = (uint32_t) ngx_worker;
+
+    ngx_memcpy(cmdbuf,                       &zero,         sizeof(uint32_t));
+    ngx_memcpy(cmdbuf +   sizeof(uint32_t),  &cmd_type,     sizeof(uint32_t));
+    ngx_memcpy(cmdbuf + 2*sizeof(uint32_t),  &worker_idx32, sizeof(uint32_t));
+
+    iov.iov_base = cmdbuf;
+    iov.iov_len  = sizeof(cmdbuf);
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_snd.buf;
+    msg.msg_controllen = sizeof(cmsg_snd.buf);
+
+    cmh             = CMSG_FIRSTHDR(&msg);
+    cmh->cmsg_level = SOL_SOCKET;
+    cmh->cmsg_type  = SCM_RIGHTS;
+    cmh->cmsg_len   = CMSG_LEN(sizeof(int));
+    ngx_memcpy(CMSG_DATA(cmh), &reply_fds[1], sizeof(int));
+
+    n = sendmsg(sw_cmd_fds[1], &msg, 0);
+    close(reply_fds[1]);
+
+    if (n < 0) {
+        close(reply_fds[0]);
+        return -1;
+    }
+
+    return reply_fds[0];
 }

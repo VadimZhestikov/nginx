@@ -20,12 +20,27 @@
 #define NGX_JS_SW_MSG_CONNECT  1u
 #define NGX_JS_SW_MSG_TERM     2u
 
+/* Manager command types (worker → manager via sw_cmd_fds) */
+#define NGX_JS_MGR_CMD_CREATE_SOCKET     1u
+#define NGX_JS_MGR_CMD_BROADCAST_SOCKET  2u
+#define NGX_JS_MGR_CMD_SUSPEND_ACCEPT    3u
+#define NGX_JS_MGR_CMD_RESUME_ACCEPT     4u
+
 /*
- * F4 — bcast message layout (master → worker via per-worker socketpair):
- *   [handle:u32][addr_len:u32][addr:bytes]
- * SCM_RIGHTS carries the socket fd.
+ * Bcast message layout (master → worker via per-worker socketpair).
+ * Every message begins with a 1-byte type discriminator:
+ *
+ *   Type 0x01 (SOCKET):  [type:u8][handle:u32][addr_len:u32][addr:bytes]
+ *                        SCM_RIGHTS carries the socket fd.
+ *   Type 0x02 (SUSPEND): [type:u8]   — disable acceptance, send ack
+ *   Type 0x03 (RESUME):  [type:u8]   — re-enable acceptance, send ack
  */
-#define NGX_JS_BCAST_HDR  (2 * sizeof(uint32_t))
+#define NGX_JS_BCAST_TYPE_SOCKET   0x01u
+#define NGX_JS_BCAST_TYPE_SUSPEND  0x02u
+#define NGX_JS_BCAST_TYPE_RESUME   0x03u
+
+/* Minimum header for a SOCKET-delivery bcast: type + handle + addr_len */
+#define NGX_JS_BCAST_HDR  (1 + 2 * sizeof(uint32_t))
 #define NGX_JS_BCAST_MAX  (NGX_JS_BCAST_HDR + 64)
 
 
@@ -102,6 +117,17 @@ int  ngx_js_socket_mgr_create(const char *addr_str, size_t addr_len);
  */
 int  ngx_js_socket_mgr_broadcast(uint32_t handle,
     const char *addr_str, size_t addr_len);
+
+/*
+ * Phase 2 — send a SUSPEND_ACCEPT or RESUME_ACCEPT command to the manager.
+ * The manager broadcasts the corresponding bcast control message to all
+ * workers, waits for their acks, then writes 1 byte on the returned fd.
+ * Caller must register the returned fd with the nginx event system and
+ * resolve the corresponding JS Promise when the fd becomes readable.
+ * cmd_type must be NGX_JS_MGR_CMD_SUSPEND_ACCEPT or _RESUME_ACCEPT.
+ * Returns the reply fd on success, -1 on failure.
+ */
+int  ngx_js_mgr_accept_control(uint32_t cmd_type);
 
 /*
  * Return the worker-readable end of the per-worker broadcast socketpair.

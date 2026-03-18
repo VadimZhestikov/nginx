@@ -161,6 +161,14 @@ extern ngx_module_t  ngx_js_http_module;
 ngx_int_t  ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle);
 
 /*
+ * Phase 1/2 — remove all listening socket read events from this worker's
+ * event loop.  Equivalent to nginx's internal ngx_disable_accept_events
+ * (cycle, 1) but implemented locally since that function is file-static.
+ * Returns NGX_OK or NGX_ERROR.
+ */
+ngx_int_t  ngx_js_disable_accept_events(ngx_cycle_t *cycle);
+
+/*
  * F4 — lazily activate the per-worker bcast event handler.
  * Safe to call multiple times (no-op if already activated).
  * Must only be called from within the worker's nginx event loop
