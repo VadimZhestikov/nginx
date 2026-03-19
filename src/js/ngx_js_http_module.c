@@ -3334,6 +3334,10 @@ ngx_js_request_set_header(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
+    if (op->r == NULL) {
+        return JS_UNDEFINED;  /* request abandoned (async_pending conflict) */
+    }
+
     if (op->headers_sent || op->responded) {
         return JS_ThrowTypeError(ctx, "r.setHeader: headers already sent");
     }
