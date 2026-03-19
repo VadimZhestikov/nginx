@@ -41,11 +41,14 @@ typedef struct {
  */
 struct ngx_http_request_s;
 
-typedef struct {
+typedef struct ngx_js_async_ctx_s  ngx_js_async_ctx_t;
+
+struct ngx_js_async_ctx_s {
     struct ngx_http_request_s  *r;
     JSValue                     req_obj;   /* DupValue'd from content handler */
     JSValue                     promise;   /* outer handler Promise */
-} ngx_js_async_ctx_t;
+    ngx_js_async_ctx_t         *next;      /* intrusive list in async_pending */
+};
 
 
 /*
@@ -55,7 +58,7 @@ typedef struct {
 typedef struct {
     JSRuntime               *rt;
     JSContext               *ctx;
-    ngx_js_async_ctx_t      *async_pending;       /* NULL or one suspended request  */
+    ngx_js_async_ctx_t      *async_pending;       /* list of suspended requests      */
     ngx_js_sw_state_t       *local_sw_list;       /* dynamic SWs created post-fork  */
     uint64_t                 request_deadline_ms;  /* 0 = none; CLOCK_MONOTONIC ms   */
     size_t                   baseline_malloc_size; /* rt malloc_size right after fork */

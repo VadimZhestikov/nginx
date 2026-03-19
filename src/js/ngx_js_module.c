@@ -1002,17 +1002,21 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
     ngx_js_sw_exit_process(cycle, jcf);
 
     /*
-     * If a worker is shut down while an async request is still pending
-     * (e.g. a handler that never resolves), the DupValue'd req_obj and
-     * promise in async_pending must be explicitly freed before
-     * JS_FreeContext / JS_FreeRuntime, otherwise QuickJS asserts
-     * "list_empty(&rt->gc_obj_list)" — the objects are still alive in the
-     * GC list but nobody decrements their refcount through the normal
-     * ngx_js_async_check path.
+     * If the worker shuts down while async requests are still pending
+     * (e.g. handlers that never resolve), the DupValue'd req_obj and
+     * promise for each must be explicitly freed before JS_FreeContext /
+     * JS_FreeRuntime, otherwise QuickJS asserts
+     * "list_empty(&rt->gc_obj_list)".
      */
-    if (w->async_pending != NULL && w->ctx != NULL) {
-        JS_FreeValue(w->ctx, w->async_pending->req_obj);
-        JS_FreeValue(w->ctx, w->async_pending->promise);
+    if (w->ctx != NULL) {
+        ngx_js_async_ctx_t  *actx, *next;
+
+        for (actx = w->async_pending; actx != NULL; actx = next) {
+            next = actx->next;
+            JS_FreeValue(w->ctx, actx->req_obj);
+            JS_FreeValue(w->ctx, actx->promise);
+        }
+
         w->async_pending = NULL;
     }
 

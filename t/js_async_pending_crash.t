@@ -1,30 +1,22 @@
 #!/usr/bin/perl
 
-# Regression test: worker must not crash when a second async request arrives
-# while another async request is already pending on the same worker.
+# Regression test: worker must not crash when multiple async requests run
+# concurrently on the same worker.
 #
-# The crash scenario (now fixed):
+# The historical crash scenario (pre-fix):
 #   1. Worker has w->async_pending set (first async request is suspended).
-#   2. A second async request arrives on the same worker.
-#   3. The handler runs to its first `await`, registering epoll events
-#      (e.g. a suspendAllWorkers reply_fd).
-#   4. Content handler detects the conflict, frees result/req_obj, returns 500.
-#   5. Nginx finalises the second request, freeing r.
-#   6. The reply_fd event fires later, resumes the abandoned continuation.
-#   7. Continuation calls req.respond() → accesses freed r → SIGSEGV (old).
+#   2. A second async request arrives; handler runs to its first `await`,
+#      registering epoll events (e.g. a suspendAllWorkers reply_fd).
+#   3. Content handler rejected the second request with 500, freed req_obj.
+#   4. The reply_fd event fired later, resumed the abandoned continuation.
+#   5. Continuation called req.respond() → accessed freed r → SIGSEGV.
 #
-# Fix: null op->r in the error path; guard ngx_js_request_respond against
-# op->r == NULL so the continuation discards the call safely.
+# With concurrent async support, both requests now succeed.  This test
+# verifies the worker stays alive and serves correct responses throughout.
 #
-# How we guarantee the conflict:
-#   /slow/  — async handler that never resolves (holds async_pending).
-#   /probe/ — synchronous handler; responding 200 proves that /slow/ was
-#             already processed (nginx is single-threaded; connections are
-#             served in accept-queue order, so when /probe/ responds the
-#             worker must have already set async_pending for /slow/).
-#   /fast_async/ — async handler calling suspendAllWorkers(); sent after
-#                 /probe/ confirms /slow/ is pending.  Must get 500 and
-#                 must NOT crash the worker.
+# /slow/        — async, never resolves (keeps one slot in async_pending list)
+# /probe/       — sync FIFO barrier
+# /fast_async/  — async + suspendAllWorkers; now gets 200, not 500
 
 use warnings;
 use strict;
@@ -41,9 +33,8 @@ select STDOUT; $| = 1;
 
 my $t = Test::Nginx->new()->has(qw/http/)->plan(5);
 
-# The /slow/ handler never resolves — its nginx connection is intentionally
-# left open until shutdown, which produces the standard "open socket left in
-# connection" alert.  This is expected behaviour in this test.
+# The /slow/ handler never resolves — its connection is left open until
+# shutdown, producing the expected "open socket left in connection" alert.
 $t->todo_alerts();
 
 $t->write_file_expand('nginx.conf', <<'EOF');
@@ -78,27 +69,24 @@ $t->write_file('apc_init.js', <<'JS');
         if (l) { l.handler = fn; }
     }
 
-    /* Async handler that never settles — holds async_pending forever. */
+    /* Async handler that never settles — stays in async_pending list. */
     set('/slow/', async function(req) {
         await new Promise(function() { /* intentionally never resolves */ });
         req.respond(200, {}, 'slow');
     });
 
     /*
-     * Synchronous probe — used as a FIFO barrier: nginx's event loop is
-     * single-threaded and serves connections in accept-queue order.  When
-     * /probe/ responds, /slow/ was necessarily processed (and async_pending
-     * set) in the same worker before /probe/ was accepted.
+     * Synchronous probe — FIFO barrier: when /probe/ responds, /slow/ was
+     * already processed and is in the async_pending list.
      */
     set('/probe/', function(req) {
         req.respond(200, {'content-type': 'text/plain'}, 'probe ok');
     });
 
     /*
-     * Async handler that calls suspendAllWorkers() (registers an epoll
-     * event for the reply_fd) then responds.  When it lands on a worker
-     * with async_pending already set it must get 500 — and crucially the
-     * worker must not crash when the reply_fd fires later.
+     * Async handler that calls suspendAllWorkers() then responds.
+     * Previously this got 500 when async_pending was already set;
+     * now it runs concurrently and must return 200.
      */
     set('/fast_async/', async function(req) {
         await nginx.suspendAllWorkers();
@@ -114,8 +102,7 @@ JS
 
 $t->run();
 
-# Open a raw socket for /slow/.  Do NOT read its response — the connection
-# keeps the async request alive so async_pending stays set.
+# Open a raw socket for /slow/ and keep it open.
 my $slow = IO::Socket::INET->new(
     PeerAddr => '127.0.0.1',
     PeerPort => port(8080),
@@ -124,23 +111,18 @@ my $slow = IO::Socket::INET->new(
 
 syswrite $slow, "GET /slow/ HTTP/1.0\r\nHost: localhost\r\n\r\n";
 
-# /probe/ is synchronous and nginx serves connections FIFO.  By the time
-# http_get('/probe/') returns, /slow/ was already processed and
-# w->async_pending is set on the single worker.
+# /probe/ confirms async_pending list is non-empty.
 http_get('/probe/');
 
-# Now send a conflicting async request.  It must get an error (500) but
-# must NOT crash the worker (was a SIGSEGV before the fix).
+# Second async request — now runs concurrently, must succeed with 200.
 my $r = http_get('/fast_async/');
-like($r, qr/500/, 'conflict: second async request gets 500');
+like($r, qr/200.*fast ok/s, 'concurrent: second async request succeeds');
 
-# Worker must still be alive and serving after the conflict.
-like(http_get('/check/'), qr/200 OK/,  'worker alive after conflict');
+like(http_get('/check/'), qr/200 OK/,  'worker alive after concurrent async');
 like(http_get('/check/'), qr/alive/,   'check body ok');
 
 close $slow;
 
-# After the slow connection closes the worker should fully recover.
 select undef, undef, undef, 0.1;
 like(http_get('/check/'), qr/200 OK/,  'worker alive after slow close');
 like(http_get('/check/'), qr/alive/,   'check body after slow close');

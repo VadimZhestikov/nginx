@@ -2067,9 +2067,6 @@ ngx_js_sleep_timer_handler(ngx_event_t *ev)
     JSValue                ret;
     JSContext             *job_ctx;
 
-    t->w->current_request = t->w->async_pending
-                            ? t->w->async_pending->r : NULL;
-
     ret = JS_Call(t->ctx, t->resolve, JS_UNDEFINED, 0, NULL);
     JS_FreeValue(t->ctx, ret);
     JS_FreeValue(t->ctx, t->resolve);
@@ -2078,8 +2075,6 @@ ngx_js_sleep_timer_handler(ngx_event_t *ev)
     while (JS_ExecutePendingJob(t->rt, &job_ctx) > 0) { }
 
     ngx_js_async_check(t->w);
-
-    t->w->current_request = NULL;
 }
 
 
@@ -3335,7 +3330,7 @@ ngx_js_request_set_header(JSContext *ctx, JSValueConst this_val,
     }
 
     if (op->r == NULL) {
-        return JS_UNDEFINED;  /* request abandoned (async_pending conflict) */
+        return JS_UNDEFINED;  /* request already finalized */
     }
 
     if (op->headers_sent || op->responded) {
@@ -3967,55 +3962,55 @@ ngx_js_wrap_request(JSContext *ctx, ngx_http_request_t *r)
 void
 ngx_js_async_check(ngx_js_worker_t *w)
 {
-    ngx_js_async_ctx_t       *actx;
+    ngx_js_async_ctx_t       *actx, **pp;
     ngx_js_request_opaque_t  *req_op;
     JSContext                *ctx;
     JSValue                   reason, str;
     const char               *cstr;
 
-    actx = w->async_pending;
-    if (actx == NULL) {
-        return;
-    }
-
     ctx = w->ctx;
+    pp  = &w->async_pending;
 
-    switch (JS_PromiseState(ctx, actx->promise)) {
+    while (*pp != NULL) {
+        actx = *pp;
 
-    case JS_PROMISE_FULFILLED:
-        w->async_pending = NULL;
-        req_op = JS_GetOpaque(actx->req_obj, ngx_js_request_class_id);
-        if (req_op == NULL || !req_op->responded) {
-            ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
-                          "js: async handler fulfilled without calling "
-                          "req.respond()");
+        switch (JS_PromiseState(ctx, actx->promise)) {
+
+        case JS_PROMISE_FULFILLED:
+            *pp  = actx->next;
+            req_op = JS_GetOpaque(actx->req_obj, ngx_js_request_class_id);
+            if (req_op == NULL || !req_op->responded) {
+                ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
+                              "js: async handler fulfilled without calling "
+                              "req.respond()");
+            }
+            JS_FreeValue(ctx, actx->req_obj);
+            JS_FreeValue(ctx, actx->promise);
+            ngx_http_finalize_request(actx->r, NGX_DONE);
+            break;
+
+        case JS_PROMISE_REJECTED:
+            *pp    = actx->next;
+            reason = JS_PromiseResult(ctx, actx->promise);
+            str    = JS_ToString(ctx, reason);
+            cstr   = JS_ToCString(ctx, str);
+            if (cstr) {
+                ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
+                              "js async exception: %s", cstr);
+                JS_FreeCString(ctx, cstr);
+            }
+            JS_FreeValue(ctx, str);
+            JS_FreeValue(ctx, reason);
+            JS_FreeValue(ctx, actx->req_obj);
+            JS_FreeValue(ctx, actx->promise);
+            actx->r->headers_out.status = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            ngx_http_finalize_request(actx->r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+            break;
+
+        case JS_PROMISE_PENDING:
+            pp = &actx->next;  /* still waiting; advance to next entry */
+            break;
         }
-        JS_FreeValue(ctx, actx->req_obj);
-        JS_FreeValue(ctx, actx->promise);
-        ngx_http_finalize_request(actx->r, NGX_DONE);
-        break;
-
-    case JS_PROMISE_REJECTED:
-        w->async_pending = NULL;
-        reason = JS_PromiseResult(ctx, actx->promise);
-        str    = JS_ToString(ctx, reason);
-        cstr   = JS_ToCString(ctx, str);
-        if (cstr) {
-            ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
-                          "js async exception: %s", cstr);
-            JS_FreeCString(ctx, cstr);
-        }
-        JS_FreeValue(ctx, str);
-        JS_FreeValue(ctx, reason);
-        JS_FreeValue(ctx, actx->req_obj);
-        JS_FreeValue(ctx, actx->promise);
-        actx->r->headers_out.status = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        ngx_http_finalize_request(actx->r, NGX_HTTP_INTERNAL_SERVER_ERROR);
-        break;
-
-    case JS_PROMISE_PENDING:
-        /* still waiting; another timer will call ngx_js_async_check later */
-        break;
     }
 }
 
@@ -4349,34 +4344,6 @@ ngx_js_content_handler(ngx_http_request_t *r)
             {
                 ngx_js_async_ctx_t  *actx;
 
-                if (w->async_pending != NULL) {
-                    ngx_js_request_opaque_t  *op2;
-
-                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                                  "js: another async request already pending");
-
-                    /*
-                     * Null out op->r before freeing the JS values.  The async
-                     * handler ran to its first await and may have registered
-                     * epoll events (e.g. a suspendAllWorkers reply_fd).  When
-                     * those events fire they will resume the continuation,
-                     * which can call req.respond() — by then nginx will have
-                     * finalized the request and freed r.  Setting r = NULL
-                     * causes ngx_js_request_respond to discard the call safely
-                     * instead of dereferencing freed memory.
-                     */
-                    op2 = JS_GetOpaque(req_obj, ngx_js_request_class_id);
-                    if (op2 != NULL) {
-                        op2->r = NULL;
-                    }
-
-                    JS_FreeValue(ctx, result);
-                    JS_FreeValue(ctx, req_obj);
-                    w->current_request = NULL;
-                    w->request_deadline_ms = 0;
-                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
-                }
-
                 actx = ngx_pcalloc(r->pool, sizeof(ngx_js_async_ctx_t));
                 if (actx == NULL) {
                     JS_FreeValue(ctx, result);
@@ -4390,7 +4357,9 @@ ngx_js_content_handler(ngx_http_request_t *r)
                 actx->req_obj = JS_DupValue(ctx, req_obj);
                 actx->promise = JS_DupValue(ctx, result);
 
-                w->async_pending = actx;
+                /* push to front of async_pending list */
+                actx->next        = w->async_pending;
+                w->async_pending  = actx;
                 r->main->count++;
 
                 JS_FreeValue(ctx, req_obj);

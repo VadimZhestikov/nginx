@@ -412,9 +412,6 @@ ngx_js_timer_handler(ngx_event_t *ev)
     JSValue          ret;
     JSContext       *job_ctx;
 
-    t->w->current_request = t->w->async_pending
-                            ? t->w->async_pending->r : NULL;
-
     /* Resolve the awaited Promise, re-queuing the async body as a microtask */
     ret = JS_Call(t->ctx, t->resolve, JS_UNDEFINED, 0, NULL);
     JS_FreeValue(t->ctx, ret);
@@ -424,10 +421,8 @@ ngx_js_timer_handler(ngx_event_t *ev)
     /* Drain microtasks — async body runs, calls req.respond() */
     while (JS_ExecutePendingJob(t->rt, &job_ctx) > 0) { }
 
-    /* Finalize any suspended nginx request whose promise has now settled */
+    /* Finalize any suspended nginx requests whose promise has now settled */
     ngx_js_async_check(t->w);
-
-    t->w->current_request = NULL;
 
     ngx_free(t);
 }
@@ -797,9 +792,6 @@ ngx_js_accept_ctrl_reply_handler(ngx_event_t *ev)
 
     (void) recv(conn->fd, &ack, 1, MSG_DONTWAIT);
 
-    actx->w->current_request = actx->w->async_pending
-                                ? actx->w->async_pending->r : NULL;
-
     /* Resolve the Promise — async handler body resumes as a microtask */
     ret = JS_Call(actx->ctx, actx->resolve, JS_UNDEFINED, 0, NULL);
     JS_FreeValue(actx->ctx, ret);
@@ -808,8 +800,6 @@ ngx_js_accept_ctrl_reply_handler(ngx_event_t *ev)
 
     while (JS_ExecutePendingJob(actx->rt, &job_ctx) > 0) { }
     ngx_js_async_check(actx->w);
-
-    actx->w->current_request = NULL;
 
     /* Clean up the reply fd connection */
     ngx_del_event(conn->read, NGX_READ_EVENT, NGX_CLOSE_EVENT);
