@@ -130,6 +130,7 @@ ngx_js_body_filter_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
     ngx_js_req_ctx_t *rctx, ngx_js_loc_conf_t *jlcf, ngx_uint_t start_idx)
 {
     ngx_str_t  out_body;
+    ngx_int_t  rc;
     int        was_set;
 
     was_set = (w->current_request == r);
@@ -138,12 +139,22 @@ ngx_js_body_filter_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
     }
 
     out_body = rctx->wb_body;
-    ngx_js_body_filters_run(w->ctx, w->rt, r, jlcf,
-                            &rctx->wb_body, &out_body);
+    rc = ngx_js_body_filters_run(w->ctx, w->rt, r, jlcf,
+                                 &rctx->wb_body, &out_body, start_idx);
     rctx->wb_body = out_body;
 
     if (!was_set) {
         w->current_request = NULL;
+    }
+
+    if (rc == NGX_AGAIN) {
+        /* async suspension: keep request alive until promise settles */
+        r->main->count++;
+        return NGX_AGAIN;
+    }
+
+    if (rc == NGX_ERROR) {
+        return NGX_ERROR;
     }
 
     return ngx_js_body_emit_wb(r, rctx);
@@ -267,7 +278,16 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     rctx->body_bufs      = NULL;
     rctx->body_bufs_last = NULL;
 
-    return ngx_js_body_filter_run_from(w, r, rctx, jlcf, 0);
+    {
+        ngx_int_t  rc = ngx_js_body_filter_run_from(w, r, rctx, jlcf, 0);
+
+        if (rc == NGX_AGAIN) {
+            /* async suspended: count already incremented in run_from */
+            return NGX_DONE;
+        }
+
+        return rc;
+    }
 }
 
 
@@ -1026,6 +1046,7 @@ ngx_js_body_done(ngx_http_request_t *r)
      * body path), which triggers the normal keepalive / close logic.
      */
     ngx_js_async_check(bctx->w);
+    ngx_js_bf_async_check(bctx->w);
     ngx_http_finalize_request(r, NGX_DONE);
 
     bctx->w->current_request = NULL;
@@ -1463,6 +1484,7 @@ ngx_js_subreq_resume(ngx_http_request_t *r)
 
     /* Finalize parent request once the top-level handler Promise settles */
     ngx_js_async_check(sctx->w);
+    ngx_js_bf_async_check(sctx->w);
 }
 
 
@@ -2119,6 +2141,7 @@ ngx_js_sleep_timer_handler(ngx_event_t *ev)
     while (JS_ExecutePendingJob(t->rt, &job_ctx) > 0) { }
 
     ngx_js_async_check(t->w);
+    ngx_js_bf_async_check(t->w);
 }
 
 
@@ -2243,6 +2266,7 @@ ngx_js_fetch_resume_handler(ngx_event_t *ev)
     while (JS_ExecutePendingJob(fctx->rt, &job_ctx) > 0) { }
 
     ngx_js_async_check(fctx->w);
+    ngx_js_bf_async_check(fctx->w);
 }
 
 
@@ -3996,6 +4020,100 @@ ngx_js_wrap_request(JSContext *ctx, ngx_http_request_t *r)
     JS_SetOpaque(obj, op);
 
     return obj;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Async body filter check — resume suspended wholeBodyAsync filters    */
+/* ------------------------------------------------------------------ */
+
+void
+ngx_js_bf_async_check(ngx_js_worker_t *w)
+{
+    ngx_js_bf_pending_t  *bf_p, **pp;
+    ngx_js_req_ctx_t     *rctx;
+    ngx_js_loc_conf_t    *jlcf;
+    JSContext            *ctx;
+    JSValue               result, reason, str;
+    const char           *cs;
+    size_t                slen;
+    u_char               *p;
+    ngx_int_t             rc;
+
+    ctx = w->ctx;
+    pp  = &w->bf_pending;
+
+    while (*pp != NULL) {
+        bf_p = *pp;
+
+        switch (JS_PromiseState(ctx, bf_p->promise)) {
+
+        case JS_PROMISE_FULFILLED:
+            *pp = bf_p->next;
+
+            rctx = ngx_http_get_module_ctx(bf_p->r, ngx_js_http_module);
+            jlcf = ngx_http_get_module_loc_conf(bf_p->r, ngx_js_http_module);
+
+            /* Update wb_body with the resolved value if it is a string. */
+            result = JS_PromiseResult(ctx, bf_p->promise);
+            if (JS_IsString(result)) {
+                cs = JS_ToCStringLen(ctx, &slen, result);
+                if (cs) {
+                    if (slen > 0) {
+                        p = ngx_pnalloc(bf_p->r->pool, slen);
+                        if (p) {
+                            ngx_memcpy(p, cs, slen);
+                            rctx->wb_body.data = p;
+                            rctx->wb_body.len  = slen;
+                        }
+                    } else {
+                        rctx->wb_body.data = (u_char *) "";
+                        rctx->wb_body.len  = 0;
+                    }
+                    JS_FreeCString(ctx, cs);
+                }
+            }
+            JS_FreeValue(ctx, result);
+            JS_FreeValue(ctx, bf_p->promise);
+
+            rc = ngx_js_body_filter_run_from(bf_p->w, bf_p->r, rctx,
+                                             jlcf, bf_p->resume_idx);
+
+            /*
+             * Release this suspension's hold on the request.
+             * If run_from returned NGX_AGAIN it already incremented count
+             * for the new suspension, so NGX_DONE here is a net no-op on
+             * the count (new +1, this -1).  If NGX_OK/NGX_ERROR the body
+             * was emitted or an error logged; NGX_DONE releases the last
+             * hold and finalises the request.
+             */
+            (void) rc;
+            ngx_http_finalize_request(bf_p->r, NGX_DONE);
+            break;
+
+        case JS_PROMISE_REJECTED:
+            *pp = bf_p->next;
+
+            reason = JS_PromiseResult(ctx, bf_p->promise);
+            str    = JS_ToString(ctx, reason);
+            cs     = JS_ToCString(ctx, str);
+            if (cs) {
+                ngx_log_error(NGX_LOG_ERR, bf_p->r->connection->log, 0,
+                              "js: async body filter rejected: %s", cs);
+                JS_FreeCString(ctx, cs);
+            }
+            JS_FreeValue(ctx, str);
+            JS_FreeValue(ctx, reason);
+            JS_FreeValue(ctx, bf_p->promise);
+
+            ngx_http_finalize_request(bf_p->r, NGX_ERROR);
+            break;
+
+        case JS_PROMISE_PENDING:
+            pp = &bf_p->next;
+            break;
+        }
+    }
 }
 
 

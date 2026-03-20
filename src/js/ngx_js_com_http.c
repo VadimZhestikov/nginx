@@ -3008,19 +3008,53 @@ ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
  *
  * out_body is always written (copy of body if no filter modifies it).
  */
+/* Materialise a JSValue string into r->pool and write to *dst. */
+static ngx_int_t
+ngx_js_body_val_to_str(JSContext *ctx, ngx_http_request_t *r,
+    JSValue body_val, ngx_str_t *dst)
+{
+    const char  *str;
+    size_t       slen;
+    u_char      *p;
+
+    str = JS_ToCStringLen(ctx, &slen, body_val);
+    if (str == NULL) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        return NGX_ERROR;
+    }
+
+    if (slen > 0) {
+        p = ngx_pnalloc(r->pool, slen);
+        if (p == NULL) {
+            JS_FreeCString(ctx, str);
+            return NGX_ERROR;
+        }
+        ngx_memcpy(p, str, slen);
+        dst->data = p;
+        dst->len  = slen;
+    } else {
+        dst->data = (u_char *) "";
+        dst->len  = 0;
+    }
+
+    JS_FreeCString(ctx, str);
+    return NGX_OK;
+}
+
+
 ngx_int_t
 ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
     ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf,
-    ngx_str_t *body, ngx_str_t *out_body)
+    ngx_str_t *body, ngx_str_t *out_body, ngx_uint_t start_idx)
 {
     ngx_js_filter_entry_t  *elts;
     ngx_js_worker_t        *w;
+    ngx_js_req_ctx_t       *rctx;
+    ngx_js_bf_pending_t    *bf_p;
     JSValue                 req_obj, fn, body_val, result, args[2];
     JSContext              *job_ctx;
-    const char             *str;
-    size_t                  slen;
     ngx_uint_t              i, nelts;
-    u_char                 *p;
+    int                     state;
 
     req_obj = ngx_js_wrap_request(ctx, r);
     if (JS_IsException(req_obj)) {
@@ -3031,91 +3065,162 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
 
     body_val = JS_NewStringLen(ctx, (const char *) body->data, body->len);
 
-    /* Same dispatching-flag approach as ngx_js_header_filters_run */
     w                       = JS_GetContextOpaque(ctx);
     w->dispatching_body_arr = jlcf->body_filters;
     nelts                   = jlcf->body_filters->nelts;
     elts                    = jlcf->body_filters->elts;
 
-    {
-        ngx_js_req_ctx_t  *rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
 
-        for (i = 0; i < nelts; i++) {
-            if (elts[i].mode != NGX_JS_FILTER_WB_SYNC) {
-                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                              "js: body filter mode %ui not yet implemented,"
-                              " skipping filter", elts[i].mode);
-                continue;
-            }
+    for (i = start_idx; i < nelts; i++) {
 
-            fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+        if (elts[i].mode == NGX_JS_FILTER_STREAM_SYNC
+            || elts[i].mode == NGX_JS_FILTER_STREAM_ASYNC)
+        {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "js: body filter mode %ui not yet implemented,"
+                          " skipping filter", elts[i].mode);
+            continue;
+        }
 
-            if (!JS_IsFunction(ctx, fn)) {
-                JS_FreeValue(ctx, fn);
-                continue;
-            }
-
-            if (rctx != NULL) {
-                rctx->active_filter_mode = NGX_JS_FILTER_WB_SYNC;
-            }
-
-            args[0] = req_obj;
-            args[1] = body_val;
-
-            result = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
+        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+        if (!JS_IsFunction(ctx, fn)) {
             JS_FreeValue(ctx, fn);
+            continue;
+        }
 
-            while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+        if (rctx != NULL) {
+            rctx->active_filter_mode = elts[i].mode;
+        }
 
-            if (rctx != NULL) {
-                rctx->active_filter_mode = NGX_JS_FILTER_WB_SYNC;
+        args[0] = req_obj;
+        args[1] = body_val;
+
+        result = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
+        JS_FreeValue(ctx, fn);
+
+        while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+
+        if (rctx != NULL) {
+            rctx->active_filter_mode = NGX_JS_FILTER_WB_SYNC;
+        }
+
+        if (JS_IsException(result)) {
+            ngx_js_log_exception(ctx, r->connection->log);
+            JS_FreeValue(ctx, result);
+            continue;
+        }
+
+        /* WB_ASYNC: expect a Promise; WB_SYNC: pass-through on non-string */
+        if (elts[i].mode == NGX_JS_FILTER_WB_ASYNC) {
+            state = (int) JS_PromiseState(ctx, result);
+
+            if (state == -1) {
+                /* not a Promise — treat as pass-through or string replace */
+                if (JS_IsString(result)) {
+                    JS_FreeValue(ctx, body_val);
+                    body_val = result;
+                } else {
+                    JS_FreeValue(ctx, result);
+                }
+                continue;
             }
 
-            if (JS_IsException(result)) {
-                ngx_js_log_exception(ctx, r->connection->log);
+            switch ((JSPromiseStateEnum) state) {
+
+            case JS_PROMISE_FULFILLED: {
+                JSValue res = JS_PromiseResult(ctx, result);
+                if (JS_IsString(res)) {
+                    JS_FreeValue(ctx, body_val);
+                    body_val = res;
+                } else {
+                    JS_FreeValue(ctx, res);
+                }
                 JS_FreeValue(ctx, result);
                 continue;
             }
 
-            /* String return → replace body for next filter */
-            if (JS_IsString(result)) {
-                JS_FreeValue(ctx, body_val);
-                body_val = result;
-            } else {
+            case JS_PROMISE_REJECTED: {
+                JSValue reason = JS_PromiseResult(ctx, result);
+                JSValue str_v  = JS_ToString(ctx, reason);
+                const char *cs = JS_ToCString(ctx, str_v);
+                if (cs) {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                                  "js: async body filter rejected: %s", cs);
+                    JS_FreeCString(ctx, cs);
+                }
+                JS_FreeValue(ctx, str_v);
+                JS_FreeValue(ctx, reason);
                 JS_FreeValue(ctx, result);
+                JS_FreeValue(ctx, body_val);
+                JS_FreeValue(ctx, req_obj);
+                w->dispatching_body_arr = NULL;
+                *out_body = *body;
+                return NGX_ERROR;
             }
+
+            case JS_PROMISE_PENDING:
+                /*
+                 * Materialise the current body (before this async filter ran)
+                 * into out_body so the caller can stash it in rctx->wb_body.
+                 * When the promise resolves, bf_async_check updates wb_body
+                 * with the resolved value and resumes from i+1.
+                 */
+                if (ngx_js_body_val_to_str(ctx, r, body_val, out_body)
+                    != NGX_OK)
+                {
+                    JS_FreeValue(ctx, result);
+                    JS_FreeValue(ctx, body_val);
+                    JS_FreeValue(ctx, req_obj);
+                    w->dispatching_body_arr = NULL;
+                    return NGX_ERROR;
+                }
+
+                bf_p = ngx_pcalloc(r->pool, sizeof(ngx_js_bf_pending_t));
+                if (bf_p == NULL) {
+                    JS_FreeValue(ctx, result);
+                    JS_FreeValue(ctx, body_val);
+                    JS_FreeValue(ctx, req_obj);
+                    w->dispatching_body_arr = NULL;
+                    return NGX_ERROR;
+                }
+
+                bf_p->promise    = JS_DupValue(ctx, result);
+                bf_p->resume_idx = i + 1;
+                bf_p->w          = w;
+                bf_p->r          = r;
+                bf_p->next       = w->bf_pending;
+                w->bf_pending    = bf_p;
+
+                JS_FreeValue(ctx, result);
+                JS_FreeValue(ctx, body_val);
+                JS_FreeValue(ctx, req_obj);
+                w->dispatching_body_arr = NULL;
+                return NGX_AGAIN;
+            }
+        }
+
+        /* WB_SYNC: string → replace body, else pass-through */
+        if (JS_IsString(result)) {
+            JS_FreeValue(ctx, body_val);
+            body_val = result;
+        } else {
+            JS_FreeValue(ctx, result);
         }
     }
 
     w->dispatching_body_arr = NULL;
 
     /* Materialise final body_val into r->pool */
-    str = JS_ToCStringLen(ctx, &slen, body_val);
-    JS_FreeValue(ctx, body_val);
-    JS_FreeValue(ctx, req_obj);
-
-    if (str == NULL) {
-        ngx_js_log_exception(ctx, r->connection->log);
+    if (ngx_js_body_val_to_str(ctx, r, body_val, out_body) != NGX_OK) {
+        JS_FreeValue(ctx, body_val);
+        JS_FreeValue(ctx, req_obj);
         *out_body = *body;
         return NGX_ERROR;
     }
 
-    if (slen > 0) {
-        p = ngx_pnalloc(r->pool, slen);
-        if (p == NULL) {
-            JS_FreeCString(ctx, str);
-            *out_body = *body;
-            return NGX_ERROR;
-        }
-        ngx_memcpy(p, str, slen);
-        out_body->data = p;
-        out_body->len  = slen;
-    } else {
-        out_body->data = (u_char *) "";
-        out_body->len  = 0;
-    }
-
-    JS_FreeCString(ctx, str);
+    JS_FreeValue(ctx, body_val);
+    JS_FreeValue(ctx, req_obj);
     return NGX_OK;
 }
 

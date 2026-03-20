@@ -1123,6 +1123,7 @@ ngx_js_worker_recv_handler(ngx_event_t *ev)
     while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { }
 
     ngx_js_async_check(w);
+    ngx_js_bf_async_check(w);
 }
 
 

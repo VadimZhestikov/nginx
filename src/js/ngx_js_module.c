@@ -770,6 +770,7 @@ ngx_js_bcast_recv_handler(ngx_event_t *ev)
     while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { }
 
     ngx_js_async_check(w);
+    ngx_js_bf_async_check(w);
 }
 
 
@@ -1009,15 +1010,21 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
      * "list_empty(&rt->gc_obj_list)".
      */
     if (w->ctx != NULL) {
-        ngx_js_async_ctx_t  *actx, *next;
+        ngx_js_async_ctx_t   *actx, *anext;
+        ngx_js_bf_pending_t  *bf_p, *bfnext;
 
-        for (actx = w->async_pending; actx != NULL; actx = next) {
-            next = actx->next;
+        for (actx = w->async_pending; actx != NULL; actx = anext) {
+            anext = actx->next;
             JS_FreeValue(w->ctx, actx->req_obj);
             JS_FreeValue(w->ctx, actx->promise);
         }
-
         w->async_pending = NULL;
+
+        for (bf_p = w->bf_pending; bf_p != NULL; bf_p = bfnext) {
+            bfnext = bf_p->next;
+            JS_FreeValue(w->ctx, bf_p->promise);
+        }
+        w->bf_pending = NULL;
     }
 
     if (w->ctx) {

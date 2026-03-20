@@ -423,6 +423,7 @@ ngx_js_timer_handler(ngx_event_t *ev)
 
     /* Finalize any suspended nginx requests whose promise has now settled */
     ngx_js_async_check(t->w);
+    ngx_js_bf_async_check(t->w);
 
     ngx_free(t);
 }
@@ -800,6 +801,7 @@ ngx_js_accept_ctrl_reply_handler(ngx_event_t *ev)
 
     while (JS_ExecutePendingJob(actx->rt, &job_ctx) > 0) { }
     ngx_js_async_check(actx->w);
+    ngx_js_bf_async_check(actx->w);
 
     /* Clean up the reply fd connection */
     ngx_del_event(conn->read, NGX_READ_EVENT, NGX_CLOSE_EVENT);

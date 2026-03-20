@@ -51,6 +51,10 @@ struct ngx_js_async_ctx_s {
 };
 
 
+/* Forward declaration — full definition follows ngx_js_worker_t below. */
+typedef struct ngx_js_bf_pending_s  ngx_js_bf_pending_t;
+
+
 /*
  * Per-worker JS runtime created in init_process().
  * Workers never share a JSRuntime — QuickJS is not thread-safe.
@@ -58,7 +62,8 @@ struct ngx_js_async_ctx_s {
 typedef struct {
     JSRuntime               *rt;
     JSContext               *ctx;
-    ngx_js_async_ctx_t      *async_pending;       /* list of suspended requests      */
+    ngx_js_async_ctx_t      *async_pending;       /* list of suspended content handlers */
+    ngx_js_bf_pending_t     *bf_pending;          /* list of suspended body filters  */
     ngx_js_sw_state_t       *local_sw_list;       /* dynamic SWs created post-fork  */
     uint64_t                 request_deadline_ms;  /* 0 = none; CLOCK_MONOTONIC ms   */
     size_t                   baseline_malloc_size; /* rt malloc_size right after fork */
@@ -80,6 +85,19 @@ typedef struct {
     int                      bcast_fd;
     ngx_connection_t        *bcast_conn;  /* non-NULL after activation */
 } ngx_js_worker_t;
+
+
+/*
+ * Suspend/resume entry for a wholeBodyAsync filter.
+ * Allocated in r->pool; linked into w->bf_pending.
+ */
+struct ngx_js_bf_pending_s {
+    JSValue                     promise;    /* DupValue'd filter return Promise */
+    ngx_uint_t                  resume_idx; /* next filter index to run on resolve */
+    ngx_js_worker_t            *w;
+    struct ngx_http_request_s  *r;
+    ngx_js_bf_pending_t        *next;
+};
 
 
 /*
@@ -239,11 +257,13 @@ ngx_int_t  ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
  * body     — the flat response body to transform.
  * out_body — receives the transformed body (allocated in r->pool).
  * If all filters return undefined/null, out_body == *body unchanged.
- * Returns NGX_OK or NGX_ERROR.
+ * start_idx — first filter index to run (0 for initial call, i+1 on resume).
+ * Returns NGX_OK (all done), NGX_AGAIN (async suspension, w->bf_pending set),
+ * or NGX_ERROR.
  */
 ngx_int_t  ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
     struct ngx_http_request_s *r, ngx_js_loc_conf_t *jlcf,
-    ngx_str_t *body, ngx_str_t *out_body);
+    ngx_str_t *body, ngx_str_t *out_body, ngx_uint_t start_idx);
 
 /*
  * Run the whole-body filter chain from start_idx onwards.
@@ -305,6 +325,13 @@ int  ngx_js_is_own_conf(struct ngx_http_request_s *r,
  * the promise has settled.  Called from the timer handler in ngx_js_com.c.
  */
 void ngx_js_async_check(ngx_js_worker_t *w);
+
+/*
+ * Inspect pending wholeBodyAsync filter promises and resume or finalize
+ * each settled entry.  Called alongside ngx_js_async_check from every
+ * event-loop post-drain site.
+ */
+void ngx_js_bf_async_check(ngx_js_worker_t *w);
 
 
 /*
