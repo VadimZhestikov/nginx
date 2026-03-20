@@ -1,0 +1,824 @@
+= NGINX JS DOM — Header and Body Filters
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+:icons: font
+:experimental:
+:revdate: 2026-03-19
+:revremark: Draft
+
+// ── External reference targets ───────────────────────────────────────────────
+:nginx-docs:   https://nginx.org/en/docs
+:quickjs-home: https://bellard.org/quickjs/
+// ────────────────────────────────────────────────────────────────────────────
+
+
+== Overview
+
+NGINX JS DOM lets JavaScript code intercept and transform every HTTP response
+that passes through a location.  The interception happens at two points in
+nginx's filter chain:
+
+* **Header filters** — called once, just before response headers are sent to
+  the client.  The callback receives the live `NginxRequest` object and may
+  mutate response headers in place.  The filter is always synchronous.
+
+* **Body filters** — called for each piece of the response body (streaming
+  modes) or once on the complete body (whole-body modes).  Four execution
+  modes cover every combination of sync/async and chunk/whole:
+  `wholeBodySync`, `wholeBodyAsync`, `streamingSync`, `streamingAsync`.
+
+Filters are registered per-location via methods on the
+`NginxLocation` object (accessible through `nginx.http.servers[i].locations[j]`
+or by iterating `nginx.http.servers[i].locations`).  Registering a filter
+from any script that runs at config time — `js_source`, `js_init_http`,
+`js_preprocess` — is sufficient; the filter then applies to every request
+that reaches that location.
+
+
+== Location filter API
+
+All filter management methods live on the `NginxLocation` object.
+
+=== `location.addHeaderFilter(fn [, opts])`
+
+Appends a header-filter callback to the location's header filter list.
+
+[source,js]
+----
+location.addHeaderFilter(fn)
+location.addHeaderFilter(fn, opts)
+----
+
+`fn`:: *Required.*  A function with signature `function(req)`.  Called once
+per request just before nginx sends the response headers.  The return value
+is ignored.  `req` is a `NginxRequest` — header mutation is described in
+<<header-filter-api>>.
+
+`opts`:: *Optional* object; see <<filter-options>>.
+
+Returns `undefined`.  Throws `TypeError` if `fn` is not a function.
+
+=== `location.addBodyFilter(mode, fn [, opts])`
+
+Appends a body-filter callback to the location's body filter list.
+
+[source,js]
+----
+location.addBodyFilter(mode, fn)
+location.addBodyFilter(mode, fn, opts)
+----
+
+`mode`:: *Required* string — one of:
++
+[cols="2,4",options="header"]
+|===
+|Value |Meaning
+|`'wholeBodySync'`
+|Synchronous whole-body transform.  +
+Signature: `function(req, body) → string \| undefined` +
+`body` is the complete accumulated response body as a string. Return a new
+string to replace it; return `undefined` (or any non-string) to pass through
+unchanged.
+
+|`'wholeBodyAsync'`
+|Asynchronous whole-body transform.  +
+Signature: `async function(req, body) → Promise<string \| undefined>` +
+Same semantics as `wholeBodySync` but the function may `await` I/O or timers
+before returning.  If the Promise rejects, the connection is closed with an
+error.
+
+|`'streamingSync'`
+|Synchronous per-chunk transform.  +
+Signature: `function(req, chunk, flags)` +
+Called once per nginx body-filter call (one "chunk").  Output is emitted via
+`req.sendBuffer(data)` — any number of calls per invocation. +
+If `sendBuffer` is never called the chunk is *dropped* (not forwarded).
+
+|`'streamingAsync'`
+|Asynchronous per-chunk transform.  +
+Signature: `async function(req, chunk, flags) → Promise<string \| undefined>` +
+Called once per nginx body-filter call.  The chunk is transformed via the
+*resolved value* of the returned Promise: a string replaces the chunk; `''`
+drops it; `undefined` (or any non-string) passes the original chunk through.
+If the Promise rejects, the connection is closed with an error.
+|===
+
+`fn`:: *Required.*  The filter callback; signature depends on `mode`.
+`opts`:: *Optional* object; see <<filter-options>>.
+
+Returns `undefined`.  Throws `TypeError` if `mode` is invalid or `fn` is not
+a function.
+
+=== `location.removeHeaderFilter(ref)`
+
+Removes the first header filter whose registered name equals `ref` (string)
+or whose function reference is `===` to `ref`.  No-op if not found.
+
+=== `location.removeBodyFilter(ref)`
+
+Removes the first body filter matching `ref` by name or function reference.
+No-op if not found.
+
+=== `location.getHeaderFilter(ref)`
+
+Returns a descriptor object `{ name, priority, fn }` for the first matching
+header filter, or `null` if not found.
+
+=== `location.getBodyFilter(ref)`
+
+Returns a descriptor object `{ name, priority, fn, mode }` for the first
+matching body filter, or `null` if not found.  `mode` is the string passed
+to `addBodyFilter`.
+
+=== `location.headerFilters` (getter)
+
+Returns a snapshot array of `{ name, priority, fn }` objects for all
+currently registered header filters, in dispatch order.
+
+=== `location.bodyFilters` (getter)
+
+Returns a snapshot array of `{ name, priority, fn, mode }` objects for all
+currently registered body filters, in dispatch order.
+
+[[filter-options]]
+=== Filter options object
+
+Both `addHeaderFilter` and `addBodyFilter` accept an optional second/third
+`opts` argument that controls where the new filter is inserted in the list:
+
+[source,js]
+----
+{
+  name:     string,   // symbolic name — used by remove/get
+  priority: number,   // lower = earlier; default 50
+  before:   fn | string,  // insert immediately before this filter
+  after:    fn | string,  // insert immediately after this filter
+  index:    number    // insert at this absolute position (0-based)
+}
+----
+
+Precedence (highest first): `index` > `before` / `after` > `priority`.
+
+If `before` or `after` references a filter that does not exist, the new
+filter is appended.
+
+[source,js]
+----
+const upper = function(req, body) { return body.toUpperCase(); };
+
+// append at default priority 50
+loc.addBodyFilter('wholeBodySync', upper);
+
+// insert with a name so it can be removed later
+loc.addBodyFilter('wholeBodySync', upper, { name: 'uppercase' });
+loc.removeBodyFilter('uppercase');
+
+// insert before an existing filter
+const wrap = function(req, body) { return '[' + body + ']'; };
+loc.addBodyFilter('wholeBodySync', wrap, { before: upper });
+
+// insert at the beginning
+loc.addBodyFilter('wholeBodySync', wrap, { index: 0 });
+
+// priority-based ordering: lower numbers run first
+loc.addBodyFilter('wholeBodySync', upper, { priority: 10 });
+loc.addBodyFilter('wholeBodySync', wrap,  { priority: 20 });
+// → upper runs first, then wrap
+----
+
+
+== Header filter API [[header-filter-api]]
+
+A header filter receives a single `NginxRequest` argument.  At that point
+response headers are still mutable.  Use standard property access on `req`:
+
+[source,js]
+----
+function(req) {
+  // Read a response header
+  const type = req.getResponseHeader('content-type');
+
+  // Set/replace a response header
+  req.setResponseHeader('x-processed-by', 'nginx-js');
+
+  // Delete a response header
+  req.removeResponseHeader('server');
+
+  // Inspect the response status
+  const status = req.status;  // number, e.g. 200
+
+  // Mutate the status before it is sent
+  req.status = 404;
+}
+----
+
+Header filters are always synchronous.  `async function` callbacks are
+accepted but any awaited operation completes *after* headers are already
+sent — do not rely on async behaviour inside a header filter.
+
+The return value is ignored.
+
+
+== Body filter API
+
+=== Whole-body modes (`wholeBodySync`, `wholeBodyAsync`)
+
+The body is accumulated from all nginx chain links until `last_buf` is seen.
+Then the JS filter chain runs once on the complete body string.
+
+[source,js]
+----
+// wholeBodySync — transform body synchronously
+location.addBodyFilter('wholeBodySync', function(req, body) {
+    return body.toUpperCase();  // replace
+    // return undefined          → pass through unchanged
+});
+
+// wholeBodyAsync — transform body after an async operation
+location.addBodyFilter('wholeBodyAsync', async function(req, body) {
+    const translated = await callTranslationService(body);
+    return translated;          // replace
+    // return undefined          → pass through unchanged
+    // throw new Error('...')    → close the connection
+});
+----
+
+Chaining: when multiple whole-body filters are registered they run in
+registration order; each filter receives the output of the previous one as
+its `body` argument.
+
+=== Streaming modes (`streamingSync`, `streamingAsync`)
+
+Streaming filters run on each chunk individually as nginx delivers it.
+The filter chain processes chunks in registration order.
+
+==== `streamingSync`
+
+Output is produced via `req.sendBuffer(data)`.  Multiple calls per invocation
+are allowed; their output is concatenated in call order and forwarded
+downstream.  The next filter in the chain receives the *concatenated output*
+of the previous filter — not the original chunk.
+
+[source,js]
+----
+location.addBodyFilter('streamingSync', function(req, chunk, flags) {
+    req.sendBuffer(chunk.toUpperCase());  // emit transformed chunk
+    // no call to sendBuffer              → chunk is dropped
+});
+----
+
+`flags` is an object with one property:
+
+* `flags.last` — `true` if this is the last chunk (corresponds to nginx's
+  `last_buf` flag).
+
+==== `streamingAsync`
+
+The filter returns a Promise.  The resolved value determines the output:
+
+[cols="2,3",options="header"]
+|===
+|Resolved value |Effect
+|non-empty string |Replace the chunk with this string
+|`''` (empty string) |Drop the chunk (emit nothing)
+|`undefined` / non-string |Pass the chunk through unchanged
+|Rejection |Close the connection with an error
+|===
+
+`req.sendBuffer()` is *not* the output mechanism for `streamingAsync` — use
+the return value.
+
+[source,js]
+----
+location.addBodyFilter('streamingAsync', async function(req, chunk, flags) {
+    await nginx.setTimeout(20);     // simulate async work
+    return chunk.toUpperCase();     // replace
+    // return ''                     → drop
+    // return undefined / no return → pass through
+    // throw new Error('...')        → close connection
+});
+----
+
+=== `req.sendBuffer(data)`
+
+Valid only inside a `streamingSync` filter callback.  Appends `data`
+(coerced to string) to the current chunk's output accumulator.  Multiple
+calls per invocation are allowed.
+
+If called outside a `streamingSync` context (i.e. inside a `wholeBody*`
+filter or outside any filter) it is a silent no-op and a `WARN` message is
+written to the error log.
+
+=== `flags` object
+
+Passed as the third argument to both `streamingSync` and `streamingAsync`
+callbacks:
+
+[source,js]
+----
+{
+  last: boolean   // true when this is the last chunk of the response
+}
+----
+
+In *mixed mode* (see below) streaming filters receive the whole accumulated
+body as a single chunk with `flags.last === true`.
+
+=== Mode selection (Mode A vs Mode B)
+
+nginx JS DOM uses two internal dispatch strategies based on what filter types
+are registered for a location:
+
+[cols="1,2,3",options="header"]
+|===
+|Mode |When used |Behaviour
+
+|*Mode A* — streaming
+|Location has **no** `wholeBody*` filters
+|nginx body-filter calls pass directly to the streaming chain; the body is
+never accumulated.  Each call to nginx's body filter = one call to each
+streaming filter.
+
+|*Mode B* — whole-body
+|Location has **at least one** `wholeBody*` filter
+|The body is fully accumulated, then ALL filters run in registration order
+on the complete body.  `streamingSync`/`streamingAsync` filters in this list
+receive the whole body as a single last chunk.
+|===
+
+The mode is selected automatically based on the filter list at request time.
+There is no explicit configuration knob.
+
+
+== Mixed mode (Mode B with streaming filters)
+
+When both `wholeBody*` and `streaming*` filters share a location, Mode B is
+used and all filters run in registration order on the accumulated body.
+Streaming filters behave as follows:
+
+* **`streamingSync`**: called with `(req, body, {last: true})`.  Emit output
+  via `req.sendBuffer()`; no call → body is dropped.
+* **`streamingAsync`**: called with `(req, body, {last: true})`.  Resolved
+  string replaces the body; `undefined` passes through; `''` drops it.
+
+[source,js]
+----
+// Filter 1 (wholeBody): uppercase the body
+location.addBodyFilter('wholeBodySync', function(req, body) {
+    return body.toUpperCase();
+});
+
+// Filter 2 (streaming): wrap in brackets — runs after filter 1
+location.addBodyFilter('streamingSync', function(req, chunk, flags) {
+    req.sendBuffer('[' + chunk + ']');
+});
+
+// Request body 'hello' → 'HELLO' → '[HELLO]'
+----
+
+
+== Execution order and chaining
+
+Filters execute in the order they appear in the location's filter list.
+Both header and body filter lists are independent.
+
+[source,js]
+----
+// Header filter runs first, body filters run in order for each request
+location.addHeaderFilter(function(req) {
+    req.setResponseHeader('x-stage', 'raw');
+});
+
+const step1 = function(req, body) { return body.trim(); };
+const step2 = function(req, body) { return body.toUpperCase(); };
+const step3 = function(req, body) { return '[' + body + ']'; };
+
+location.addBodyFilter('wholeBodySync', step1);
+location.addBodyFilter('wholeBodySync', step2);
+location.addBodyFilter('wholeBodySync', step3);
+// body passes through step1 → step2 → step3 in that order
+----
+
+
+== Dynamic filter management
+
+Filters can be added and removed at runtime from within a running filter
+callback.  The implementation uses copy-on-write (COW) for the filter list:
+mutations during dispatch do not affect the current iteration but take effect
+for the next request.
+
+[source,js]
+----
+let patched = false;
+const firstRequest = function(req, body) {
+    if (!patched) {
+        // Add a second filter on the first request; takes effect on second
+        location.addBodyFilter('wholeBodySync', function(req, body) {
+            return body + ' (patched)';
+        });
+        patched = true;
+    }
+    return body;
+};
+location.addBodyFilter('wholeBodySync', firstRequest);
+----
+
+[source,js]
+----
+// Remove a named filter while it is running (safe — COW guarantees
+// the current dispatch sees the old list)
+const selfRemove = function(req, body) {
+    location.removeBodyFilter('once');  // removes itself
+    return body + ' [one-shot]';
+};
+location.addBodyFilter('wholeBodySync', selfRemove, { name: 'once' });
+----
+
+
+== Priority and ordering
+
+Filters added without an explicit `index`, `before`, or `after` option are
+inserted based on `priority` (lower = earlier, default `50`):
+
+[source,js]
+----
+// priority 10 runs before priority 20 runs before priority 50 (default)
+location.addBodyFilter('wholeBodySync',
+    (req, body) => body.trimStart(), { priority: 10 });
+
+location.addBodyFilter('wholeBodySync',
+    (req, body) => body.toUpperCase(), { priority: 20 });
+
+location.addBodyFilter('wholeBodySync',
+    (req, body) => '[' + body + ']');   // priority 50 (default)
+// Order: trimStart → toUpperCase → bracket
+----
+
+
+== Error handling
+
+[cols="2,3",options="header"]
+|===
+|Situation |Behaviour
+
+|`wholeBodySync` filter throws
+|Exception is logged; body is passed through unchanged; next filter runs.
+
+|`wholeBodyAsync` filter rejects
+|Error is logged; connection is closed (HTTP 500 or connection reset).
+
+|`streamingSync` filter throws
+|Exception is logged; chunk is dropped; next filter runs.
+
+|`streamingAsync` filter rejects
+|Error is logged; connection is closed.
+
+|`addBodyFilter` / `addHeaderFilter` called with wrong type
+|`TypeError` is thrown immediately (synchronous, propagates to the caller).
+|===
+
+
+== Complete examples
+
+=== Example 1 — Inject a banner into every HTML response
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/'; }
+    );
+
+    // Modify the Content-Type header to ensure UTF-8
+    loc.addHeaderFilter(function(req) {
+        var ct = req.getResponseHeader('content-type') || '';
+        if (ct.indexOf('charset') === -1 && ct.indexOf('text/html') !== -1) {
+            req.setResponseHeader('content-type', ct + '; charset=utf-8');
+        }
+    });
+
+    // Inject a banner comment before </body>
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        var banner = '<!-- served by nginx-js -->';
+        return body.replace('</body>', banner + '</body>');
+    });
+})();
+----
+
+=== Example 2 — GZIP-style response size logging
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations[0];
+    var totalBytes = 0;
+
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        totalBytes += body.length;
+        nginx.log('info', 'Response size: ' + body.length + ' bytes '
+                  + '(cumulative: ' + totalBytes + ')');
+        return undefined;   // pass through unchanged
+    });
+})();
+----
+
+=== Example 3 — Strip server-sent events containing a keyword
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/events/'; }
+    );
+
+    // Per-chunk streaming: drop any SSE event containing 'internal'
+    loc.addBodyFilter('streamingSync', function(req, chunk, flags) {
+        if (chunk.indexOf('internal') !== -1) {
+            return;   // no sendBuffer → drop this chunk
+        }
+        req.sendBuffer(chunk);
+    });
+})();
+----
+
+=== Example 4 — Async translation (wholeBodyAsync)
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/translate/'; }
+    );
+
+    loc.addBodyFilter('wholeBodyAsync', async function(req, body) {
+        // nginx.setTimeout returns a Promise that resolves after ms
+        await nginx.setTimeout(0);  // yield to event loop
+
+        // Simulate async translation (replace with a real upstream fetch)
+        var translated = body.split('hello').join('hola');
+        return translated;
+    });
+})();
+----
+
+=== Example 5 — Async per-chunk watermark injection (streamingAsync)
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/stream/'; }
+    );
+
+    loc.addBodyFilter('streamingAsync', async function(req, chunk, flags) {
+        await nginx.setTimeout(0);  // yield to event loop
+
+        if (flags.last) {
+            // Append a watermark to the last chunk
+            return chunk + '\n<!-- end of stream -->';
+        }
+        return chunk;   // pass through other chunks unchanged
+    });
+})();
+----
+
+=== Example 6 — Chained pipeline: streaming bracket + async uppercase
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations[0];
+
+    // Step 1: synchronously wrap each chunk in angle brackets
+    loc.addBodyFilter('streamingSync', function(req, chunk, flags) {
+        req.sendBuffer('<' + chunk + '>');
+    });
+
+    // Step 2: asynchronously uppercase (receives step 1 output as input)
+    loc.addBodyFilter('streamingAsync', async function(req, chunk, flags) {
+        await nginx.setTimeout(5);
+        return chunk.toUpperCase();   // '<hello>' → '<HELLO>'
+    });
+})();
+----
+
+=== Example 7 — Priority-based middleware stack
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations[0];
+
+    // Security: strip internal headers — run first (priority 10)
+    loc.addHeaderFilter(function(req) {
+        req.removeResponseHeader('x-internal-token');
+        req.removeResponseHeader('x-debug-info');
+    }, { priority: 10 });
+
+    // Observability: add timing header — run last (priority 90)
+    var started = Date.now();
+    loc.addHeaderFilter(function(req) {
+        req.setResponseHeader('x-response-ms',
+                              String(Date.now() - started));
+    }, { priority: 90 });
+
+    // Body: redact PII — normal priority (50)
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        return body.replace(/\b\d{4}-\d{4}-\d{4}-\d{4}\b/g, '****-****-****-****');
+    });
+})();
+----
+
+=== Example 8 — One-shot filter that installs itself then removes itself
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations[0];
+
+    // Fires only on the first request, then removes itself
+    loc.addBodyFilter('wholeBodySync', function firstOnly(req, body) {
+        loc.removeBodyFilter(firstOnly);
+        return '<!-- first request -->\n' + body;
+    }, { name: 'first-only' });
+})();
+----
+
+=== Example 9 — Mixed mode: WB normalize then streaming chunk markers
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/api/'; }
+    );
+
+    // Filter 1 (wholeBodySync): parse JSON and re-serialize normalized
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        try {
+            var obj = JSON.parse(body);
+            return JSON.stringify(obj);   // compact, keys sorted by JS engine
+        } catch (e) {
+            return undefined;   // pass through if not JSON
+        }
+    });
+
+    // Filter 2 (streamingAsync): add a Content-Length annotation asynchronously
+    // Receives the normalized body as a single chunk (flags.last === true)
+    loc.addBodyFilter('streamingAsync', async function(req, chunk, flags) {
+        await nginx.setTimeout(0);
+        return chunk + '\n/* length: ' + chunk.length + ' */';
+    });
+})();
+----
+
+=== Example 10 — Runtime conditional filter (A/B test)
+
+[source,js]
+----
+(function() {
+    var loc = nginx.http.servers[0].locations[0];
+    var featureEnabled = false;
+
+    // Toggle can be flipped externally via a SharedWorker or another
+    // request handler that has access to the same closure.
+    function enableFeature() { featureEnabled = true; }
+    function disableFeature() { featureEnabled = false; }
+
+    loc.addBodyFilter('wholeBodySync', function(req, body) {
+        if (!featureEnabled) {
+            return undefined;   // pass through when A/B flag is off
+        }
+        return '<div class="beta">' + body + '</div>';
+    });
+
+    // Expose control surface via a separate management location
+    var mgmt = nginx.http.servers[0].locations.find(
+        function(l) { return l.path === '/admin/feature/'; }
+    );
+    if (mgmt) {
+        mgmt.handler = function(req) {
+            var enable = req.uri.indexOf('?enable') !== -1;
+            if (enable) { enableFeature(); } else { disableFeature(); }
+            req.respond(200, {}, 'feature ' + (featureEnabled ? 'ON' : 'OFF'));
+        };
+    }
+})();
+----
+
+
+== Reference summary
+
+=== Location methods
+
+[cols="2,1,3",options="header"]
+|===
+|Method |Returns |Description
+
+|`addHeaderFilter(fn [, opts])`
+|`undefined`
+|Register a header-filter callback.
+
+|`addBodyFilter(mode, fn [, opts])`
+|`undefined`
+|Register a body-filter callback.
+
+|`removeHeaderFilter(ref)`
+|`undefined`
+|Remove a header filter by name or function reference.
+
+|`removeBodyFilter(ref)`
+|`undefined`
+|Remove a body filter by name or function reference.
+
+|`getHeaderFilter(ref)`
+|`{name, priority, fn}` or `null`
+|Retrieve header filter descriptor.
+
+|`getBodyFilter(ref)`
+|`{name, priority, fn, mode}` or `null`
+|Retrieve body filter descriptor.
+
+|`headerFilters` _(getter)_
+|Array of `{name, priority, fn}`
+|Snapshot of all header filters in dispatch order.
+
+|`bodyFilters` _(getter)_
+|Array of `{name, priority, fn, mode}`
+|Snapshot of all body filters in dispatch order.
+|===
+
+=== Body filter modes
+
+[cols="2,2,3",options="header"]
+|===
+|Mode string |Signature |Output mechanism
+
+|`'wholeBodySync'`
+|`fn(req, body) → string\|undefined`
+|Return value
+
+|`'wholeBodyAsync'`
+|`async fn(req, body) → Promise<string\|undefined>`
+|Resolved value of returned Promise
+
+|`'streamingSync'`
+|`fn(req, chunk, flags)`
+|`req.sendBuffer(data)` — zero or more calls
+
+|`'streamingAsync'`
+|`async fn(req, chunk, flags) → Promise<string\|undefined>`
+|Resolved value of returned Promise
+|===
+
+=== `req.sendBuffer(data)`
+
+[cols="1,3",options="header"]
+|===
+|Parameter |Description
+|`data` |String (or coercible to string) to append to the current chunk output.
+|===
+
+Valid only inside a `streamingSync` callback.  No-op + `WARN` log in all
+other contexts.
+
+=== Filter options object
+
+[cols="1,1,3",options="header"]
+|===
+|Property |Type |Description
+
+|`name`
+|string
+|Symbolic name for later `remove` / `get` calls.  Optional.
+
+|`priority`
+|number
+|Insertion priority.  Lower = earlier.  Default `50`.  Used when no positional
+option (`index`, `before`, `after`) is given.
+
+|`index`
+|number
+|Absolute 0-based insertion position.  Takes precedence over all other options.
+
+|`before`
+|function or string
+|Insert immediately before this filter (matched by function reference or
+name).
+
+|`after`
+|function or string
+|Insert immediately after this filter (matched by function reference or
+name).
+|===
+
+=== `flags` object (streaming callbacks)
+
+[cols="1,1,3",options="header"]
+|===
+|Property |Type |Description
+|`last` |boolean |`true` if this is the final chunk of the response body.
+|===
