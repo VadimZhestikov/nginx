@@ -3008,6 +3008,10 @@ ngx_js_header_filters_run(JSContext *ctx, JSRuntime *rt,
  *
  * out_body is always written (copy of body if no filter modifies it).
  */
+/* Forward declaration — defined after ngx_js_body_filters_run below. */
+static void  ngx_js_flatten_stream_out(ngx_http_request_t *r,
+    ngx_js_req_ctx_t *rctx, u_char **data_out, size_t *len_out);
+
 /* Materialise a JSValue string into r->pool and write to *dst. */
 static ngx_int_t
 ngx_js_body_val_to_str(JSContext *ctx, ngx_http_request_t *r,
@@ -3051,10 +3055,12 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
     ngx_js_worker_t        *w;
     ngx_js_req_ctx_t       *rctx;
     ngx_js_bf_pending_t    *bf_p;
-    JSValue                 req_obj, fn, body_val, result, args[2];
+    JSValue                 req_obj, fn, body_val, result, flags_obj, args[3];
     JSContext              *job_ctx;
-    ngx_uint_t              i, nelts;
+    ngx_uint_t              i, nelts, nargs;
     int                     state;
+    u_char                 *flat_data;
+    size_t                  flat_len;
 
     req_obj = ngx_js_wrap_request(ctx, r);
     if (JS_IsException(req_obj)) {
@@ -3063,7 +3069,8 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
         return NGX_ERROR;
     }
 
-    body_val = JS_NewStringLen(ctx, (const char *) body->data, body->len);
+    body_val  = JS_NewStringLen(ctx, (const char *) body->data, body->len);
+    flags_obj = JS_UNDEFINED;  /* lazily created for streaming filters */
 
     w                       = JS_GetContextOpaque(ctx);
     w->dispatching_body_arr = jlcf->body_filters;
@@ -3073,15 +3080,6 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
     rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
 
     for (i = start_idx; i < nelts; i++) {
-
-        if (elts[i].mode == NGX_JS_FILTER_STREAM_SYNC
-            || elts[i].mode == NGX_JS_FILTER_STREAM_ASYNC)
-        {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                          "js: body filter mode %ui not yet implemented,"
-                          " skipping filter", elts[i].mode);
-            continue;
-        }
 
         fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
         if (!JS_IsFunction(ctx, fn)) {
@@ -3093,10 +3091,37 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
             rctx->active_filter_mode = elts[i].mode;
         }
 
-        args[0] = req_obj;
-        args[1] = body_val;
+        /*
+         * Streaming filters in the WB loop receive the whole accumulated
+         * body as a single chunk with flags.last = true.  STREAM_SYNC
+         * emits via req.sendBuffer(); STREAM_ASYNC returns a Promise
+         * whose resolved string becomes the next body.
+         */
+        if (elts[i].mode == NGX_JS_FILTER_STREAM_SYNC
+            || elts[i].mode == NGX_JS_FILTER_STREAM_ASYNC)
+        {
+            if (JS_IsUndefined(flags_obj)) {
+                flags_obj = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, flags_obj, "last", JS_TRUE);
+            }
 
-        result = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
+            if (rctx != NULL) {
+                rctx->stream_out      = NULL;
+                rctx->stream_out_last = &rctx->stream_out;
+            }
+
+            args[0] = req_obj;
+            args[1] = body_val;
+            args[2] = flags_obj;
+            nargs   = 3;
+
+        } else {
+            args[0] = req_obj;
+            args[1] = body_val;
+            nargs   = 2;
+        }
+
+        result = JS_Call(ctx, fn, JS_UNDEFINED, nargs, args);
         JS_FreeValue(ctx, fn);
 
         while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
@@ -3108,11 +3133,41 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
         if (JS_IsException(result)) {
             ngx_js_log_exception(ctx, r->connection->log);
             JS_FreeValue(ctx, result);
+            if (elts[i].mode == NGX_JS_FILTER_STREAM_SYNC) {
+                /* exception in streaming filter: treat as drop */
+                JS_FreeValue(ctx, body_val);
+                body_val = JS_NewStringLen(ctx, "", 0);
+                if (rctx != NULL) {
+                    rctx->stream_out = NULL;
+                }
+            }
             continue;
         }
 
-        /* WB_ASYNC: expect a Promise; WB_SYNC: pass-through on non-string */
-        if (elts[i].mode == NGX_JS_FILTER_WB_ASYNC) {
+        /* STREAM_SYNC: flatten stream_out into new body_val */
+        if (elts[i].mode == NGX_JS_FILTER_STREAM_SYNC) {
+            JS_FreeValue(ctx, result);  /* return value is ignored */
+            JS_FreeValue(ctx, body_val);
+
+            if (rctx != NULL && rctx->stream_out != NULL) {
+                ngx_js_flatten_stream_out(r, rctx, &flat_data, &flat_len);
+                body_val = JS_NewStringLen(ctx, (const char *) flat_data,
+                                           flat_len);
+            } else {
+                /* no sendBuffer call: drop (emit empty body downstream) */
+                body_val = JS_NewStringLen(ctx, "", 0);
+            }
+            continue;
+        }
+
+        /*
+         * WB_ASYNC and STREAM_ASYNC: handle Promise state.
+         * Both use the same bf_pending mechanism; STREAM_ASYNC resolves
+         * like WB_ASYNC — the Promise resolved string becomes the new body.
+         */
+        if (elts[i].mode == NGX_JS_FILTER_WB_ASYNC
+            || elts[i].mode == NGX_JS_FILTER_STREAM_ASYNC)
+        {
             state = (int) JS_PromiseState(ctx, result);
 
             if (state == -1) {
@@ -3135,6 +3190,7 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
                     body_val = res;
                 } else {
                     JS_FreeValue(ctx, res);
+                    /* non-string: pass-through (keep body_val) */
                 }
                 JS_FreeValue(ctx, result);
                 continue;
@@ -3153,6 +3209,9 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
                 JS_FreeValue(ctx, reason);
                 JS_FreeValue(ctx, result);
                 JS_FreeValue(ctx, body_val);
+                if (!JS_IsUndefined(flags_obj)) {
+                    JS_FreeValue(ctx, flags_obj);
+                }
                 JS_FreeValue(ctx, req_obj);
                 w->dispatching_body_arr = NULL;
                 *out_body = *body;
@@ -3171,6 +3230,9 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
                 {
                     JS_FreeValue(ctx, result);
                     JS_FreeValue(ctx, body_val);
+                    if (!JS_IsUndefined(flags_obj)) {
+                        JS_FreeValue(ctx, flags_obj);
+                    }
                     JS_FreeValue(ctx, req_obj);
                     w->dispatching_body_arr = NULL;
                     return NGX_ERROR;
@@ -3180,6 +3242,9 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
                 if (bf_p == NULL) {
                     JS_FreeValue(ctx, result);
                     JS_FreeValue(ctx, body_val);
+                    if (!JS_IsUndefined(flags_obj)) {
+                        JS_FreeValue(ctx, flags_obj);
+                    }
                     JS_FreeValue(ctx, req_obj);
                     w->dispatching_body_arr = NULL;
                     return NGX_ERROR;
@@ -3194,6 +3259,9 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
 
                 JS_FreeValue(ctx, result);
                 JS_FreeValue(ctx, body_val);
+                if (!JS_IsUndefined(flags_obj)) {
+                    JS_FreeValue(ctx, flags_obj);
+                }
                 JS_FreeValue(ctx, req_obj);
                 w->dispatching_body_arr = NULL;
                 return NGX_AGAIN;
@@ -3209,6 +3277,9 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
         }
     }
 
+    if (!JS_IsUndefined(flags_obj)) {
+        JS_FreeValue(ctx, flags_obj);
+    }
     w->dispatching_body_arr = NULL;
 
     /* Materialise final body_val into r->pool */
