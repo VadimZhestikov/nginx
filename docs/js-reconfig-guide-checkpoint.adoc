@@ -320,6 +320,170 @@ loc.handler = async (req) => {
 };
 ----
 
+== Atomic checkpoint restore with worker suspension
+
+=== Why suspension matters for checkpoints
+
+`snap.restore()` and `applyFromPlainObject()` write fields one at a time
+through the normal setter path.  Between any two writes the event loop can
+dispatch a concurrent request on the same worker that reads a
+partially-restored state.
+
+Wrapping the restore in a suspension window makes the entire restore appear
+instantaneous to other requests.
+
+=== Single-worker atomic restore
+
+[source,javascript]
+----
+loc.handler = (req) => {
+    const name = req.getVar('arg_name') || 'default';
+    const snap = loadCheckpoint(name);     // module-level checkpoint Map
+
+    if (!snap) {
+        req.respond(404, {}, 'checkpoint not found: ' + name);
+        return;
+    }
+
+    nginx.suspendAcceptance();             // no new requests on this worker
+    snap.restore();                        // all fields written before resume
+    nginx.resumeAcceptance();
+
+    req.json({ restored: name });
+};
+----
+
+=== Cross-worker atomic restore
+
+Combine `suspendAllWorkers()` with the SharedWorker broadcast so that all
+workers restore consistently before any new request is accepted anywhere.
+
+[source,javascript]
+----
+loc.handler = async (req) => {
+    const name = req.getVar('arg_name') || 'default';
+
+    // Load checkpoint data from SharedWorker store
+    let data;
+    try {
+        data = await loadSharedCheckpoint(name);   // defined in cross-worker section
+    } catch (e) {
+        req.respond(404, {}, e.message);
+        return;
+    }
+
+    await nginx.suspendAllWorkers();
+
+    try {
+        // Apply on this worker
+        applyFromPlainObject(req, data);
+
+        // Broadcast restore to all other workers
+        cfgWorker.postMessage({ type: 'restore', name, data });
+
+        req.json({ restored: name });
+
+    } catch (e) {
+        req.respond(500, {}, 'restore failed: ' + e.message);
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};
+----
+
+Add a handler in `cfgworker.js` for the restore message type:
+
+[source,javascript]
+----
+// inside cfgworker.js onmessage:
+} else if (type === 'restore') {
+    // Fan out the checkpoint data to all workers
+    postMessage({ type: 'apply-checkpoint', data });
+}
+----
+
+And in the main worker script:
+
+[source,javascript]
+----
+cfgWorker.onmessage = (msg) => {
+    if (msg.data.type === 'apply-checkpoint') {
+        // This worker receives the fan-out; no suspension needed here —
+        // the initiating worker holds suspendAllWorkers() until after the
+        // broadcast, so all workers are still suspended when this runs.
+        applyFromPlainObject(null, msg.data.data);   // null req = global write
+    }
+};
+----
+
+=== Auto-checkpoint with atomic apply
+
+Validate before suspending, then atomically apply + checkpoint inside the
+suspension window so that the "new config" and the "last-known-good
+checkpoint" are always consistent:
+
+[source,javascript]
+----
+loc.handler = async (req) => {
+    const cfg = JSON.parse(await req.readBody());
+
+    // Validate BEFORE suspending — keep the suspension window short
+    const valid = await validateConfig(cfg);
+    if (!valid) {
+        req.respond(400, {}, 'invalid config');
+        return;
+    }
+
+    await nginx.suspendAllWorkers();
+
+    try {
+        const rollback = req.location.snapshot();   // rollback point
+
+        // Apply
+        req.location.root = cfg.root;
+        // … more fields …
+
+        // Promote to last-known-good checkpoint
+        const lkg = req.location.snapshot();
+        saveCheckpoint('last-known-good', lkg);
+
+        // Broadcast
+        cfgWorker.postMessage({ type: 'set', payload: cfg });
+
+        req.json({ applied: true });
+
+    } catch (e) {
+        // rollback is defined only if suspension succeeded
+        req.respond(500, {}, e.message);
+
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};
+----
+
+=== Flow diagram: checkpoint restore lifecycle
+
+----
+  Worker 0 (handler):              All workers:
+
+  await suspendAllWorkers()
+  ─────────────────────────────►   all suspended (no new requests anywhere)
+
+  applyFromPlainObject(req, data)  ← writes to this worker's structs
+
+  cfgWorker.postMessage(restore) ──► SharedWorker fan-out
+                                       │
+                                       ├──► Worker 1: applyFromPlainObject
+                                       └──► Worker 2: applyFromPlainObject
+
+  await resumeAllWorkers()
+  ─────────────────────────────►   all resume (queued connections accepted)
+
+  All workers now have identical config matching the checkpoint.
+----
+
+
 == Persistent checkpoint (survives nginx reload)
 
 === The problem

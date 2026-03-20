@@ -16,7 +16,7 @@
         <nickname>asciidoctor + html2fb2.py</nickname>
       </author>
       <date>2026-03-19</date>
-      <id>ec3d9367-f99e-44e7-b51d-1a1add485924</id>
+      <id>04f452f3-6f32-4218-a16d-ccc1a6deb726</id>
       <version>1.0</version>
     </document-info>
   </description>
@@ -72,6 +72,153 @@
         <p>SharedArrayBuffer (SAB) │ A region of memory shared across all worker processes via mmap. Workers write/read with Atomics for synchronisation. │ Numeric parameters (weights, timeouts), high-frequency updates.</p>
         <p>Periodic reconciliation │ Each worker polls the SharedWorker for the desired config state and applies any diff on each poll tick. │ Eventual consistency is acceptable; simpler code.</p>
         <empty-line />
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>suspendAllWorkers() and resumeAllWorkers()</p>
+      </title>
+      <section>
+        <title>
+          <p>The atomicity problem</p>
+        </title>
+        <p>The broadcast strategies in this guide deliver <emphasis>eventual</emphasis> consistency: there is a window between when Worker 0 applies a change and when Worker N applies the fan-out. During that window different workers may have different configs.</p>
+        <p>For changes that must be visible consistently across all workers before any new request is accepted, use <code>nginx.suspendAllWorkers()</code> and <code>nginx.resumeAllWorkers()</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>How they work</p>
+        </title>
+        <p>
+          <code>await nginx.suspendAllWorkers()</code> sends a command to the nginx master process. The master broadcasts "suspend acceptance" to every worker and waits for acknowledgements (up to a 500 ms timeout). The Promise resolves when <strong>all</strong> workers have disabled their accept events.</p>
+        <p>
+          <code>await nginx.resumeAllWorkers()</code> sends the reverse command. All workers re-enable accept events.</p>
+        <p>Both calls are <strong>async</strong> and return <code>Promise&lt;undefined&gt;</code>. The handler must be declared <code>async</code> and must <code>await</code> both calls. Always use <code>try/finally</code> to guarantee <code>resumeAllWorkers()</code> is called even on error.</p>
+        <p>
+          <strong>: </strong>
+          <code>suspendAllWorkers()</code> is callable only from a worker process — not from config phase or from a Worker/SharedWorker thread. </p>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Worker 0 (handler):              Master process:          Other workers:</v>
+            <v />
+            <v>  await suspendAllWorkers()</v>
+            <v>    │ ── cmd ──────────────────►  broadcast SUSPEND</v>
+            <v>    │                                  │ ──────────────► Worker 1: suspend ack</v>
+            <v>    │                                  │ ──────────────► Worker 2: suspend ack</v>
+            <v>    │                                  │    (500 ms timeout)</v>
+            <v>    │ ◄── reply_fd readable ──────  all acked</v>
+            <v>    │ (Promise resolves)</v>
+            <v>    │</v>
+            <v>    ├─ apply batch mutations to this worker</v>
+            <v>    ├─ broadcast via SharedWorker ─────────────────────► Worker 1: apply</v>
+            <v>    │                                                     Worker 2: apply</v>
+            <v>    │</v>
+            <v>  await resumeAllWorkers()</v>
+            <v>    │ ── cmd ──────────────────►  broadcast RESUME</v>
+            <v>    │                                  │ ──────────────► Worker 1: resume ack</v>
+            <v>    │                                  │ ──────────────► Worker 2: resume ack</v>
+            <v>    │ ◄── reply_fd readable ──────  all acked</v>
+            <v>    (Promise resolves — all workers accepting again)</v>
+          </stanza>
+        </poem>
+        <p>While suspended, new TCP connections queue in the OS socket backlog (<code>net.core.somaxconn</code>). Keep the suspension window as short as possible — typically synchronous field writes only, not async probes.</p>
+      </section>
+      <section>
+        <title>
+          <p>Example: atomic batch update across all workers</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const cfg = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>    // Validate BEFORE suspending — keep the suspension window short</v>
+            <v>    const ok = await probeBackend(req);</v>
+            <v>    if (!ok) {</v>
+            <v>        req.respond(400, {}, 'validation failed');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    await nginx.suspendAllWorkers();</v>
+            <v />
+            <v>    try {</v>
+            <v>        // Apply to this worker</v>
+            <v>        nginx.http.upstreams[0].peers.forEach((p, i) =&gt; {</v>
+            <v>            if (cfg.weights[i] !== undefined) { p.weight = cfg.weights[i]; }</v>
+            <v>        });</v>
+            <v />
+            <v>        // Broadcast: other workers apply in their onmessage handler</v>
+            <v>        // before their first new request after resumeAllWorkers()</v>
+            <v>        cfgWorker.postMessage({ type: 'set', payload: cfg });</v>
+            <v />
+            <v>        req.json({ applied: true });</v>
+            <v>    } finally {</v>
+            <v>        await nginx.resumeAllWorkers();    // always re-enable</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: atomic cross-worker rollback</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const snap = req.location.snapshot();      // save rollback state</v>
+            <v>    const cfg  = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>    // Validate before suspending</v>
+            <v>    const ok = await probeBackend(req);</v>
+            <v>    if (!ok) {</v>
+            <v>        req.respond(400, {}, 'validation failed');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    await nginx.suspendAllWorkers();</v>
+            <v />
+            <v>    try {</v>
+            <v>        req.location.root              = cfg.root;</v>
+            <v>        req.location.proxy.readTimeout = cfg.proxy.readTimeout;</v>
+            <v />
+            <v>        cfgWorker.postMessage({ type: 'set', payload: cfg });</v>
+            <v>        req.json({ applied: true });</v>
+            <v />
+            <v>    } catch (e) {</v>
+            <v>        snap.restore();                                            // revert this worker</v>
+            <v>        cfgWorker.postMessage({ type: 'rollback', payload: cfg }); // revert others</v>
+            <v>        req.respond(500, {}, e.message);</v>
+            <v />
+            <v>    } finally {</v>
+            <v>        await nginx.resumeAllWorkers();</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Per-worker atomicity (suspendAcceptance)</p>
+        </title>
+        <p>If only <strong>this</strong> worker needs an atomic batch (e.g. a local reconciliation step), use the lighter <code>nginx.suspendAcceptance()</code> / <code>nginx.resumeAcceptance()</code> pair instead. These are <strong>synchronous</strong>, affect only one worker, and carry zero cross-process overhead. See the <emphasis>for single worker</emphasis> guide for details.</p>
+      </section>
+      <section>
+        <title>
+          <p>API reference</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>Promise&lt;undefined&gt;  nginx.suspendAllWorkers()</v>
+            <v>Promise&lt;undefined&gt;  nginx.resumeAllWorkers()</v>
+          </stanza>
+        </poem>
+        <p>Both throw <code>TypeError</code> if called outside a worker process, and <code>InternalError</code> if the manager is unavailable or the reply fd cannot be registered in the event loop.</p>
       </section>
     </section>
     <section>

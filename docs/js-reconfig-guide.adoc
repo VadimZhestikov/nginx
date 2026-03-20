@@ -197,6 +197,111 @@ nginx.http.servers.forEach(srv => {
 });
 ----
 
+== suspendAcceptance() and resumeAcceptance()
+
+=== Purpose
+
+JavaScript within a worker is single-threaded, but nginx is event-driven:
+the event loop may dispatch a second request between any two consecutive
+assignments in a handler.  Without suspension a concurrent request on this
+worker could observe a _half-updated_ config:
+
+----
+  req.location.root              = '/new';   // ← request B starts here ...
+  req.location.proxy.readTimeout = 5000;     //     ... and misses this write
+----
+
+`nginx.suspendAcceptance()` removes all listening socket read events from
+this worker's event loop.  No new requests are dispatched by this worker
+while acceptance is suspended; incoming TCP connections queue harmlessly in
+the OS socket backlog (up to `net.core.somaxconn`).  Other workers continue
+accepting normally.
+
+Call `nginx.resumeAcceptance()` once the batch is complete.
+
+NOTE: Both functions are *synchronous* and return `undefined`.  They are
+only callable from a worker process — not from config phase, and not from a
+Worker or SharedWorker thread.
+
+For changes that must be consistent across *all* workers, use
+`nginx.suspendAllWorkers()` / `nginx.resumeAllWorkers()` instead — see the
+_for all workers_ guide.
+
+=== Example: atomic batch config update
+
+[source,javascript]
+----
+loc.handler = async (req) => {
+    const cfg = JSON.parse(await req.readBody());
+
+    nginx.suspendAcceptance();                          // no new requests on this worker
+
+    req.location.root                 = cfg.root;
+    req.location.gzip.level           = cfg.gzip.level;
+    req.location.proxy.readTimeout    = cfg.proxy.readTimeout;
+    req.location.proxy.connectTimeout = cfg.proxy.connectTimeout;
+
+    nginx.resumeAcceptance();                           // restore normal accept behaviour
+
+    req.json({ applied: true });
+};
+----
+
+=== Example: atomic batch with rollback
+
+Always call `resumeAcceptance()` even when an exception is thrown.
+The `try/finally` pattern guarantees this:
+
+[source,javascript]
+----
+loc.handler = async (req) => {
+    const snap = req.location.snapshot();      // save rollback point
+
+    nginx.suspendAcceptance();
+
+    try {
+        const cfg = JSON.parse(await req.readBody());
+
+        req.location.root              = cfg.root;
+        req.location.proxy.readTimeout = cfg.proxy.readTimeout;
+        req.location.gzip.level        = cfg.gzip.level;
+
+        req.json({ applied: true });
+    } catch (e) {
+        snap.restore();                        // revert partial mutations
+        req.respond(500, {}, e.message);
+    } finally {
+        nginx.resumeAcceptance();              // always re-enable
+    }
+};
+----
+
+WARNING: Do *not* perform async I/O (network probes, `nginx.setTimeout`)
+inside the suspension window.  Awaiting I/O while suspended keeps this
+worker stopped — it cannot drain its timer queue or respond to existing
+keep-alive requests.  Validate config *before* calling `suspendAcceptance()`,
+then execute only synchronous writes inside the window.
+
+=== Flow diagram
+
+----
+  Request handler:                     Event loop (this worker):
+
+  nginx.suspendAcceptance()
+  │  removes listen read events ───────────────────────────────►
+  │                                     no new connections accepted
+  │                                     existing requests may complete
+  │
+  req.location.root = '/a'             (no interleaving possible here)
+  req.location.gzip.level = 3
+  req.location.proxy.readTimeout = 5000
+  │
+  nginx.resumeAcceptance()
+  │  re-adds listen read events ───────────────────────────────►
+                                        queued connections accepted
+----
+
+
 == snapshot() and restore()
 
 === What snapshot() captures
@@ -672,6 +777,36 @@ undefined  snap.restore({ mode: 'global' | 'local' | 'both' })
 * In config phase (no active request) `restore({ mode: 'local' })`
   is a no-op for sub-objects because there is no per-request context;
   location core fields are still written to `loc_op->write_mode`.
+
+=== nginx.suspendAcceptance()
+
+Removes all listening socket read events from this worker's event loop.
+New TCP connections queue in the OS socket backlog; other workers continue
+accepting normally.
+
+[source,text]
+----
+undefined  nginx.suspendAcceptance()
+----
+
+Throws `TypeError` if called outside a worker process.
+Throws `InternalError` if the underlying event operation fails.
+
+=== nginx.resumeAcceptance()
+
+Re-adds the listening socket read events removed by `suspendAcceptance()`.
+No-op if acceptance was not suspended.
+
+[source,text]
+----
+undefined  nginx.resumeAcceptance()
+----
+
+Throws `TypeError` if called outside a worker process.
+
+NOTE: For cross-worker suspension, use `nginx.suspendAllWorkers()` /
+`nginx.resumeAllWorkers()` (documented in the _for all workers_ guide).
+
 
 === NginxSnapshot (opaque object)
 

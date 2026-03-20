@@ -76,6 +76,154 @@ Three propagation strategies:
 | Eventual consistency is acceptable; simpler code.
 |===
 
+== suspendAllWorkers() and resumeAllWorkers()
+
+=== The atomicity problem
+
+The broadcast strategies in this guide deliver _eventual_ consistency:
+there is a window between when Worker 0 applies a change and when Worker N
+applies the fan-out.  During that window different workers may have different
+configs.
+
+For changes that must be visible consistently across all workers before any
+new request is accepted, use `nginx.suspendAllWorkers()` and
+`nginx.resumeAllWorkers()`.
+
+=== How they work
+
+`await nginx.suspendAllWorkers()` sends a command to the nginx master
+process.  The master broadcasts "suspend acceptance" to every worker and
+waits for acknowledgements (up to a 500 ms timeout).  The Promise resolves
+when *all* workers have disabled their accept events.
+
+`await nginx.resumeAllWorkers()` sends the reverse command.  All workers
+re-enable accept events.
+
+Both calls are *async* and return `Promise<undefined>`.  The handler must
+be declared `async` and must `await` both calls.  Always use `try/finally`
+to guarantee `resumeAllWorkers()` is called even on error.
+
+NOTE: `suspendAllWorkers()` is callable only from a worker process — not
+from config phase or from a Worker/SharedWorker thread.
+
+=== Flow diagram
+
+----
+  Worker 0 (handler):              Master process:          Other workers:
+
+  await suspendAllWorkers()
+    │ ── cmd ──────────────────►  broadcast SUSPEND
+    │                                  │ ──────────────► Worker 1: suspend ack
+    │                                  │ ──────────────► Worker 2: suspend ack
+    │                                  │    (500 ms timeout)
+    │ ◄── reply_fd readable ──────  all acked
+    │ (Promise resolves)
+    │
+    ├─ apply batch mutations to this worker
+    ├─ broadcast via SharedWorker ─────────────────────► Worker 1: apply
+    │                                                     Worker 2: apply
+    │
+  await resumeAllWorkers()
+    │ ── cmd ──────────────────►  broadcast RESUME
+    │                                  │ ──────────────► Worker 1: resume ack
+    │                                  │ ──────────────► Worker 2: resume ack
+    │ ◄── reply_fd readable ──────  all acked
+    (Promise resolves — all workers accepting again)
+----
+
+While suspended, new TCP connections queue in the OS socket backlog
+(`net.core.somaxconn`).  Keep the suspension window as short as possible —
+typically synchronous field writes only, not async probes.
+
+=== Example: atomic batch update across all workers
+
+[source,javascript]
+----
+loc.handler = async (req) => {
+    const cfg = JSON.parse(await req.readBody());
+
+    // Validate BEFORE suspending — keep the suspension window short
+    const ok = await probeBackend(req);
+    if (!ok) {
+        req.respond(400, {}, 'validation failed');
+        return;
+    }
+
+    await nginx.suspendAllWorkers();
+
+    try {
+        // Apply to this worker
+        nginx.http.upstreams[0].peers.forEach((p, i) => {
+            if (cfg.weights[i] !== undefined) { p.weight = cfg.weights[i]; }
+        });
+
+        // Broadcast: other workers apply in their onmessage handler
+        // before their first new request after resumeAllWorkers()
+        cfgWorker.postMessage({ type: 'set', payload: cfg });
+
+        req.json({ applied: true });
+    } finally {
+        await nginx.resumeAllWorkers();    // always re-enable
+    }
+};
+----
+
+=== Example: atomic cross-worker rollback
+
+[source,javascript]
+----
+loc.handler = async (req) => {
+    const snap = req.location.snapshot();      // save rollback state
+    const cfg  = JSON.parse(await req.readBody());
+
+    // Validate before suspending
+    const ok = await probeBackend(req);
+    if (!ok) {
+        req.respond(400, {}, 'validation failed');
+        return;
+    }
+
+    await nginx.suspendAllWorkers();
+
+    try {
+        req.location.root              = cfg.root;
+        req.location.proxy.readTimeout = cfg.proxy.readTimeout;
+
+        cfgWorker.postMessage({ type: 'set', payload: cfg });
+        req.json({ applied: true });
+
+    } catch (e) {
+        snap.restore();                                            // revert this worker
+        cfgWorker.postMessage({ type: 'rollback', payload: cfg }); // revert others
+        req.respond(500, {}, e.message);
+
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};
+----
+
+=== Per-worker atomicity (suspendAcceptance)
+
+If only *this* worker needs an atomic batch (e.g. a local reconciliation
+step), use the lighter `nginx.suspendAcceptance()` /
+`nginx.resumeAcceptance()` pair instead.  These are *synchronous*, affect
+only one worker, and carry zero cross-process overhead.
+See the _for single worker_ guide for details.
+
+=== API reference
+
+[source,text]
+----
+Promise<undefined>  nginx.suspendAllWorkers()
+Promise<undefined>  nginx.resumeAllWorkers()
+----
+
+Both throw `TypeError` if called outside a worker process, and
+`InternalError` if the manager is unavailable or the reply fd cannot
+be registered in the event loop.
+
+
 == Strategy 1: SharedWorker-based config broadcast
 
 === Architecture

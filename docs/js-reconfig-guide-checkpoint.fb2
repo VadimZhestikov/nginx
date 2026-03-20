@@ -16,7 +16,7 @@
         <nickname>asciidoctor + html2fb2.py</nickname>
       </author>
       <date>2026-03-19</date>
-      <id>253272fd-f601-4a21-bf37-ad39cdaf581e</id>
+      <id>c5e74677-ef0a-4427-814a-ec10583dc30b</id>
       <version>1.0</version>
     </document-info>
   </description>
@@ -331,6 +331,176 @@
             <v>        req.json({ checkpoints: names });</v>
             <v>    }</v>
             <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Atomic checkpoint restore with worker suspension</p>
+      </title>
+      <section>
+        <title>
+          <p>Why suspension matters for checkpoints</p>
+        </title>
+        <p>
+          <code>snap.restore()</code> and <code>applyFromPlainObject()</code> write fields one at a time through the normal setter path. Between any two writes the event loop can dispatch a concurrent request on the same worker that reads a partially-restored state.</p>
+        <p>Wrapping the restore in a suspension window makes the entire restore appear instantaneous to other requests.</p>
+      </section>
+      <section>
+        <title>
+          <p>Single-worker atomic restore</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    const name = req.getVar('arg_name') || 'default';</v>
+            <v>    const snap = loadCheckpoint(name);     // module-level checkpoint Map</v>
+            <v />
+            <v>    if (!snap) {</v>
+            <v>        req.respond(404, {}, 'checkpoint not found: ' + name);</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    nginx.suspendAcceptance();             // no new requests on this worker</v>
+            <v>    snap.restore();                        // all fields written before resume</v>
+            <v>    nginx.resumeAcceptance();</v>
+            <v />
+            <v>    req.json({ restored: name });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Cross-worker atomic restore</p>
+        </title>
+        <p>Combine <code>suspendAllWorkers()</code> with the SharedWorker broadcast so that all workers restore consistently before any new request is accepted anywhere.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const name = req.getVar('arg_name') || 'default';</v>
+            <v />
+            <v>    // Load checkpoint data from SharedWorker store</v>
+            <v>    let data;</v>
+            <v>    try {</v>
+            <v>        data = await loadSharedCheckpoint(name);   // defined in cross-worker section</v>
+            <v>    } catch (e) {</v>
+            <v>        req.respond(404, {}, e.message);</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    await nginx.suspendAllWorkers();</v>
+            <v />
+            <v>    try {</v>
+            <v>        // Apply on this worker</v>
+            <v>        applyFromPlainObject(req, data);</v>
+            <v />
+            <v>        // Broadcast restore to all other workers</v>
+            <v>        cfgWorker.postMessage({ type: 'restore', name, data });</v>
+            <v />
+            <v>        req.json({ restored: name });</v>
+            <v />
+            <v>    } catch (e) {</v>
+            <v>        req.respond(500, {}, 'restore failed: ' + e.message);</v>
+            <v>    } finally {</v>
+            <v>        await nginx.resumeAllWorkers();</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>Add a handler in <code>cfgworker.js</code> for the restore message type:</p>
+        <poem>
+          <stanza>
+            <v>// inside cfgworker.js onmessage:</v>
+            <v>} else if (type === 'restore') {</v>
+            <v>    // Fan out the checkpoint data to all workers</v>
+            <v>    postMessage({ type: 'apply-checkpoint', data });</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>And in the main worker script:</p>
+        <poem>
+          <stanza>
+            <v>cfgWorker.onmessage = (msg) =&gt; {</v>
+            <v>    if (msg.data.type === 'apply-checkpoint') {</v>
+            <v>        // This worker receives the fan-out; no suspension needed here —</v>
+            <v>        // the initiating worker holds suspendAllWorkers() until after the</v>
+            <v>        // broadcast, so all workers are still suspended when this runs.</v>
+            <v>        applyFromPlainObject(null, msg.data.data);   // null req = global write</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Auto-checkpoint with atomic apply</p>
+        </title>
+        <p>Validate before suspending, then atomically apply + checkpoint inside the suspension window so that the "new config" and the "last-known-good checkpoint" are always consistent:</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const cfg = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>    // Validate BEFORE suspending — keep the suspension window short</v>
+            <v>    const valid = await validateConfig(cfg);</v>
+            <v>    if (!valid) {</v>
+            <v>        req.respond(400, {}, 'invalid config');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    await nginx.suspendAllWorkers();</v>
+            <v />
+            <v>    try {</v>
+            <v>        const rollback = req.location.snapshot();   // rollback point</v>
+            <v />
+            <v>        // Apply</v>
+            <v>        req.location.root = cfg.root;</v>
+            <v>        // … more fields …</v>
+            <v />
+            <v>        // Promote to last-known-good checkpoint</v>
+            <v>        const lkg = req.location.snapshot();</v>
+            <v>        saveCheckpoint('last-known-good', lkg);</v>
+            <v />
+            <v>        // Broadcast</v>
+            <v>        cfgWorker.postMessage({ type: 'set', payload: cfg });</v>
+            <v />
+            <v>        req.json({ applied: true });</v>
+            <v />
+            <v>    } catch (e) {</v>
+            <v>        // rollback is defined only if suspension succeeded</v>
+            <v>        req.respond(500, {}, e.message);</v>
+            <v />
+            <v>    } finally {</v>
+            <v>        await nginx.resumeAllWorkers();</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram: checkpoint restore lifecycle</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Worker 0 (handler):              All workers:</v>
+            <v />
+            <v>  await suspendAllWorkers()</v>
+            <v>  ─────────────────────────────►   all suspended (no new requests anywhere)</v>
+            <v />
+            <v>  applyFromPlainObject(req, data)  ← writes to this worker's structs</v>
+            <v />
+            <v>  cfgWorker.postMessage(restore) ──► SharedWorker fan-out</v>
+            <v>                                       │</v>
+            <v>                                       ├──► Worker 1: applyFromPlainObject</v>
+            <v>                                       └──► Worker 2: applyFromPlainObject</v>
+            <v />
+            <v>  await resumeAllWorkers()</v>
+            <v>  ─────────────────────────────►   all resume (queued connections accepted)</v>
+            <v />
+            <v>  All workers now have identical config matching the checkpoint.</v>
           </stanza>
         </poem>
       </section>

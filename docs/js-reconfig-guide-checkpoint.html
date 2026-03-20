@@ -463,20 +463,29 @@ body.book #toc,body.book #preamble,body.book h1.sect0,body.book .sect1>h2{page-b
 <li><a href="#_example_save_and_restore_via_http_endpoints">3.4. Example: save and restore via HTTP endpoints</a></li>
 </ul>
 </li>
-<li><a href="#_persistent_checkpoint_survives_nginx_reload">4. Persistent checkpoint (survives nginx reload)</a>
+<li><a href="#_atomic_checkpoint_restore_with_worker_suspension">4. Atomic checkpoint restore with worker suspension</a>
 <ul class="sectlevel2">
-<li><a href="#_the_problem">4.1. The problem</a></li>
-<li><a href="#_pattern_write_checkpoint_to_file_read_back_via_js_preprocess">4.2. Pattern: write checkpoint to file, read back via js_preprocess</a></li>
-<li><a href="#_flow_diagram_full_persistent_checkpoint_lifecycle">4.3. Flow diagram: full persistent checkpoint lifecycle</a></li>
+<li><a href="#_why_suspension_matters_for_checkpoints">4.1. Why suspension matters for checkpoints</a></li>
+<li><a href="#_single_worker_atomic_restore">4.2. Single-worker atomic restore</a></li>
+<li><a href="#_cross_worker_atomic_restore">4.3. Cross-worker atomic restore</a></li>
+<li><a href="#_auto_checkpoint_with_atomic_apply">4.4. Auto-checkpoint with atomic apply</a></li>
+<li><a href="#_flow_diagram_checkpoint_restore_lifecycle">4.5. Flow diagram: checkpoint restore lifecycle</a></li>
 </ul>
 </li>
-<li><a href="#_checkpoint_based_ab_testing_with_controlled_rollout">5. Checkpoint-based A/B testing with controlled rollout</a></li>
-<li><a href="#_caveats">6. Caveats</a>
+<li><a href="#_persistent_checkpoint_survives_nginx_reload">5. Persistent checkpoint (survives nginx reload)</a>
 <ul class="sectlevel2">
-<li><a href="#_nginxsnapshot_is_not_serialisable">6.1. NginxSnapshot is not serialisable</a></li>
-<li><a href="#_checkpoint_staleness">6.2. Checkpoint staleness</a></li>
-<li><a href="#_concurrent_checkpoint_writers">6.3. Concurrent checkpoint writers</a></li>
-<li><a href="#_checkpoint_and_nginx_reload">6.4. Checkpoint and nginx reload</a></li>
+<li><a href="#_the_problem">5.1. The problem</a></li>
+<li><a href="#_pattern_write_checkpoint_to_file_read_back_via_js_preprocess">5.2. Pattern: write checkpoint to file, read back via js_preprocess</a></li>
+<li><a href="#_flow_diagram_full_persistent_checkpoint_lifecycle">5.3. Flow diagram: full persistent checkpoint lifecycle</a></li>
+</ul>
+</li>
+<li><a href="#_checkpoint_based_ab_testing_with_controlled_rollout">6. Checkpoint-based A/B testing with controlled rollout</a></li>
+<li><a href="#_caveats">7. Caveats</a>
+<ul class="sectlevel2">
+<li><a href="#_nginxsnapshot_is_not_serialisable">7.1. NginxSnapshot is not serialisable</a></li>
+<li><a href="#_checkpoint_staleness">7.2. Checkpoint staleness</a></li>
+<li><a href="#_concurrent_checkpoint_writers">7.3. Concurrent checkpoint writers</a></li>
+<li><a href="#_checkpoint_and_nginx_reload">7.4. Checkpoint and nginx reload</a></li>
 </ul>
 </li>
 </ul>
@@ -876,10 +885,188 @@ async function loadCheckpoint(req, name) {
 </div>
 </div>
 <div class="sect1">
-<h2 id="_persistent_checkpoint_survives_nginx_reload">4. Persistent checkpoint (survives nginx reload)</h2>
+<h2 id="_atomic_checkpoint_restore_with_worker_suspension">4. Atomic checkpoint restore with worker suspension</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_the_problem">4.1. The problem</h3>
+<h3 id="_why_suspension_matters_for_checkpoints">4.1. Why suspension matters for checkpoints</h3>
+<div class="paragraph">
+<p><code>snap.restore()</code> and <code>applyFromPlainObject()</code> write fields one at a time
+through the normal setter path.  Between any two writes the event loop can
+dispatch a concurrent request on the same worker that reads a
+partially-restored state.</p>
+</div>
+<div class="paragraph">
+<p>Wrapping the restore in a suspension window makes the entire restore appear
+instantaneous to other requests.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_single_worker_atomic_restore">4.2. Single-worker atomic restore</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = (req) =&gt; {
+    const name = req.getVar('arg_name') || 'default';
+    const snap = loadCheckpoint(name);     // module-level checkpoint Map
+
+    if (!snap) {
+        req.respond(404, {}, 'checkpoint not found: ' + name);
+        return;
+    }
+
+    nginx.suspendAcceptance();             // no new requests on this worker
+    snap.restore();                        // all fields written before resume
+    nginx.resumeAcceptance();
+
+    req.json({ restored: name });
+};</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_cross_worker_atomic_restore">4.3. Cross-worker atomic restore</h3>
+<div class="paragraph">
+<p>Combine <code>suspendAllWorkers()</code> with the SharedWorker broadcast so that all
+workers restore consistently before any new request is accepted anywhere.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = async (req) =&gt; {
+    const name = req.getVar('arg_name') || 'default';
+
+    // Load checkpoint data from SharedWorker store
+    let data;
+    try {
+        data = await loadSharedCheckpoint(name);   // defined in cross-worker section
+    } catch (e) {
+        req.respond(404, {}, e.message);
+        return;
+    }
+
+    await nginx.suspendAllWorkers();
+
+    try {
+        // Apply on this worker
+        applyFromPlainObject(req, data);
+
+        // Broadcast restore to all other workers
+        cfgWorker.postMessage({ type: 'restore', name, data });
+
+        req.json({ restored: name });
+
+    } catch (e) {
+        req.respond(500, {}, 'restore failed: ' + e.message);
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Add a handler in <code>cfgworker.js</code> for the restore message type:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// inside cfgworker.js onmessage:
+} else if (type === 'restore') {
+    // Fan out the checkpoint data to all workers
+    postMessage({ type: 'apply-checkpoint', data });
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>And in the main worker script:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">cfgWorker.onmessage = (msg) =&gt; {
+    if (msg.data.type === 'apply-checkpoint') {
+        // This worker receives the fan-out; no suspension needed here —
+        // the initiating worker holds suspendAllWorkers() until after the
+        // broadcast, so all workers are still suspended when this runs.
+        applyFromPlainObject(null, msg.data.data);   // null req = global write
+    }
+};</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_auto_checkpoint_with_atomic_apply">4.4. Auto-checkpoint with atomic apply</h3>
+<div class="paragraph">
+<p>Validate before suspending, then atomically apply + checkpoint inside the
+suspension window so that the "new config" and the "last-known-good
+checkpoint" are always consistent:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = async (req) =&gt; {
+    const cfg = JSON.parse(await req.readBody());
+
+    // Validate BEFORE suspending — keep the suspension window short
+    const valid = await validateConfig(cfg);
+    if (!valid) {
+        req.respond(400, {}, 'invalid config');
+        return;
+    }
+
+    await nginx.suspendAllWorkers();
+
+    try {
+        const rollback = req.location.snapshot();   // rollback point
+
+        // Apply
+        req.location.root = cfg.root;
+        // … more fields …
+
+        // Promote to last-known-good checkpoint
+        const lkg = req.location.snapshot();
+        saveCheckpoint('last-known-good', lkg);
+
+        // Broadcast
+        cfgWorker.postMessage({ type: 'set', payload: cfg });
+
+        req.json({ applied: true });
+
+    } catch (e) {
+        // rollback is defined only if suspension succeeded
+        req.respond(500, {}, e.message);
+
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_flow_diagram_checkpoint_restore_lifecycle">4.5. Flow diagram: checkpoint restore lifecycle</h3>
+<div class="listingblock">
+<div class="content">
+<pre>  Worker 0 (handler):              All workers:
+
+  await suspendAllWorkers()
+  ─────────────────────────────►   all suspended (no new requests anywhere)
+
+  applyFromPlainObject(req, data)  ← writes to this worker's structs
+
+  cfgWorker.postMessage(restore) ──► SharedWorker fan-out
+                                       │
+                                       ├──► Worker 1: applyFromPlainObject
+                                       └──► Worker 2: applyFromPlainObject
+
+  await resumeAllWorkers()
+  ─────────────────────────────►   all resume (queued connections accepted)
+
+  All workers now have identical config matching the checkpoint.</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_persistent_checkpoint_survives_nginx_reload">5. Persistent checkpoint (survives nginx reload)</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_the_problem">5.1. The problem</h3>
 <div class="paragraph">
 <p>When nginx reloads (<code>nginx -s reload</code>) or restarts, all workers and the
 SharedWorker are replaced.  In-memory checkpoints are lost.</p>
@@ -890,7 +1077,7 @@ or database before nginx shuts down, and re-read at the next startup.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_pattern_write_checkpoint_to_file_read_back_via_js_preprocess">4.2. Pattern: write checkpoint to file, read back via js_preprocess</h3>
+<h3 id="_pattern_write_checkpoint_to_file_read_back_via_js_preprocess">5.2. Pattern: write checkpoint to file, read back via js_preprocess</h3>
 <div class="paragraph">
 <p><code>js_preprocess</code> runs during config parse and can read files.  A checkpoint
 can be written to a JSON file by a request handler and read back at next
@@ -933,7 +1120,7 @@ try {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_flow_diagram_full_persistent_checkpoint_lifecycle">4.3. Flow diagram: full persistent checkpoint lifecycle</h3>
+<h3 id="_flow_diagram_full_persistent_checkpoint_lifecycle">5.3. Flow diagram: full persistent checkpoint lifecycle</h3>
 <div class="listingblock">
 <div class="content">
 <pre>  Nginx starts / reloads
@@ -967,7 +1154,7 @@ try {
 </div>
 </div>
 <div class="sect1">
-<h2 id="_checkpoint_based_ab_testing_with_controlled_rollout">5. Checkpoint-based A/B testing with controlled rollout</h2>
+<h2 id="_checkpoint_based_ab_testing_with_controlled_rollout">6. Checkpoint-based A/B testing with controlled rollout</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Checkpoints can represent named config states (e.g. <code>"control"</code>,
@@ -1006,10 +1193,10 @@ loc.handler = async (req) =&gt; {
 </div>
 </div>
 <div class="sect1">
-<h2 id="_caveats">6. Caveats</h2>
+<h2 id="_caveats">7. Caveats</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_nginxsnapshot_is_not_serialisable">6.1. NginxSnapshot is not serialisable</h3>
+<h3 id="_nginxsnapshot_is_not_serialisable">7.1. NginxSnapshot is not serialisable</h3>
 <div class="paragraph">
 <p><code>NginxSnapshot</code> handles are C-backed opaque objects.  They cannot be passed
 to <code>postMessage</code> or serialised via <code>JSON.stringify</code>.  Cross-worker and
@@ -1018,7 +1205,7 @@ above) and apply them field-by-field using setters.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_checkpoint_staleness">6.2. Checkpoint staleness</h3>
+<h3 id="_checkpoint_staleness">7.2. Checkpoint staleness</h3>
 <div class="paragraph">
 <p>A checkpoint captures a point-in-time view.  If nginx&#8217;s upstream peer list
 changes (peers added or removed), a stale checkpoint may attempt to set
@@ -1027,7 +1214,7 @@ best-effort and silently ignore such errors.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_concurrent_checkpoint_writers">6.3. Concurrent checkpoint writers</h3>
+<h3 id="_concurrent_checkpoint_writers">7.3. Concurrent checkpoint writers</h3>
 <div class="paragraph">
 <p>Module-level variables and SharedWorker state are not automatically mutex-
 protected.  If two requests write checkpoints concurrently, the last writer
@@ -1036,7 +1223,7 @@ wins.  For critical checkpoint writes, use a flag guard similar to
 </div>
 </div>
 <div class="sect2">
-<h3 id="_checkpoint_and_nginx_reload">6.4. Checkpoint and nginx reload</h3>
+<h3 id="_checkpoint_and_nginx_reload">7.4. Checkpoint and nginx reload</h3>
 <div class="paragraph">
 <p>Files written by <code>persistCheckpoint</code> during a request are not guaranteed to
 be flushed before <code>nginx -s reload</code> starts the new worker processes.  If the
@@ -1057,7 +1244,7 @@ rename-from-temp to mitigate:</p>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 13:38:05 -0700
+Last updated 2026-03-20 14:00:56 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

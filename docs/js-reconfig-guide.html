@@ -458,43 +458,53 @@ body.book #toc,body.book #preamble,body.book h1.sect0,body.book .sect1>h2{page-b
 <li><a href="#_example_persistent_global_mutation_hot_reload">2.7. Example: persistent global mutation (hot reload)</a></li>
 </ul>
 </li>
-<li><a href="#_snapshot_and_restore">3. snapshot() and restore()</a>
+<li><a href="#_suspendacceptance_and_resumeacceptance">3. suspendAcceptance() and resumeAcceptance()</a>
 <ul class="sectlevel2">
-<li><a href="#_what_snapshot_captures">3.1. What snapshot() captures</a></li>
-<li><a href="#_what_restore_does">3.2. What restore() does</a></li>
-<li><a href="#_restore_mode_override">3.3. restore() mode override</a></li>
-<li><a href="#_interaction_table_snapshot_write_mode">3.4. Interaction table: snapshot × write_mode</a></li>
-<li><a href="#_flow_diagram_snapshot_lifecycle">3.5. Flow diagram: snapshot lifecycle</a></li>
-<li><a href="#_flow_diagram_local_isolation_with_deliberate_commit">3.6. Flow diagram: local isolation with deliberate commit</a></li>
+<li><a href="#_purpose">3.1. Purpose</a></li>
+<li><a href="#_example_atomic_batch_config_update">3.2. Example: atomic batch config update</a></li>
+<li><a href="#_example_atomic_batch_with_rollback">3.3. Example: atomic batch with rollback</a></li>
+<li><a href="#_flow_diagram">3.4. Flow diagram</a></li>
 </ul>
 </li>
-<li><a href="#_complete_examples">4. Complete Examples</a>
+<li><a href="#_snapshot_and_restore">4. snapshot() and restore()</a>
 <ul class="sectlevel2">
-<li><a href="#_example_1_rollback_on_error">4.1. Example 1: Rollback on Error</a></li>
-<li><a href="#_example_2_atomic_two_phase_apply">4.2. Example 2: Atomic Two-Phase Apply</a></li>
-<li><a href="#_example_3_upstream_peer_weight_balancing_with_rollback">4.3. Example 3: Upstream Peer Weight Balancing with Rollback</a></li>
-<li><a href="#_example_4_single_peer_snapshot_for_fine_grained_rollback">4.4. Example 4: Single-Peer Snapshot for Fine-Grained Rollback</a></li>
-<li><a href="#_example_5_ab_configuration_experiment">4.5. Example 5: A/B Configuration Experiment</a></li>
-<li><a href="#_example_6_config_snapshot_for_audit">4.6. Example 6: Config Snapshot for Audit</a></li>
-<li><a href="#_example_7_guarded_global_mutation">4.7. Example 7: Guarded Global Mutation</a></li>
+<li><a href="#_what_snapshot_captures">4.1. What snapshot() captures</a></li>
+<li><a href="#_what_restore_does">4.2. What restore() does</a></li>
+<li><a href="#_restore_mode_override">4.3. restore() mode override</a></li>
+<li><a href="#_interaction_table_snapshot_write_mode">4.4. Interaction table: snapshot × write_mode</a></li>
+<li><a href="#_flow_diagram_snapshot_lifecycle">4.5. Flow diagram: snapshot lifecycle</a></li>
+<li><a href="#_flow_diagram_local_isolation_with_deliberate_commit">4.6. Flow diagram: local isolation with deliberate commit</a></li>
 </ul>
 </li>
-<li><a href="#_api_reference">5. API Reference</a>
+<li><a href="#_complete_examples">5. Complete Examples</a>
 <ul class="sectlevel2">
-<li><a href="#_location_setwritemodemode">5.1. location.setWriteMode(mode)</a></li>
-<li><a href="#_location_setreadmodemode">5.2. location.setReadMode(mode)</a></li>
-<li><a href="#_location_snapshot">5.3. location.snapshot()</a></li>
-<li><a href="#_upstream_snapshot">5.4. upstream.snapshot()</a></li>
-<li><a href="#_peer_snapshot_rrpeer_snapshot">5.5. peer.snapshot() / rrPeer.snapshot()</a></li>
-<li><a href="#_snap_restoreoptions">5.6. snap.restore([options])</a></li>
-<li><a href="#_nginxsnapshot_opaque_object">5.7. NginxSnapshot (opaque object)</a></li>
+<li><a href="#_example_1_rollback_on_error">5.1. Example 1: Rollback on Error</a></li>
+<li><a href="#_example_2_atomic_two_phase_apply">5.2. Example 2: Atomic Two-Phase Apply</a></li>
+<li><a href="#_example_3_upstream_peer_weight_balancing_with_rollback">5.3. Example 3: Upstream Peer Weight Balancing with Rollback</a></li>
+<li><a href="#_example_4_single_peer_snapshot_for_fine_grained_rollback">5.4. Example 4: Single-Peer Snapshot for Fine-Grained Rollback</a></li>
+<li><a href="#_example_5_ab_configuration_experiment">5.5. Example 5: A/B Configuration Experiment</a></li>
+<li><a href="#_example_6_config_snapshot_for_audit">5.6. Example 6: Config Snapshot for Audit</a></li>
+<li><a href="#_example_7_guarded_global_mutation">5.7. Example 7: Guarded Global Mutation</a></li>
 </ul>
 </li>
-<li><a href="#_design_notes">6. Design Notes</a>
+<li><a href="#_api_reference">6. API Reference</a>
 <ul class="sectlevel2">
-<li><a href="#_internal_snapshot_vs_js_snapshot">6.1. Internal snapshot vs JS snapshot</a></li>
-<li><a href="#_why_restore_is_best_effort">6.2. Why restore() is best-effort</a></li>
-<li><a href="#_snapshot_scope_for_upstream_snapshot">6.3. Snapshot scope for upstream.snapshot()</a></li>
+<li><a href="#_location_setwritemodemode">6.1. location.setWriteMode(mode)</a></li>
+<li><a href="#_location_setreadmodemode">6.2. location.setReadMode(mode)</a></li>
+<li><a href="#_location_snapshot">6.3. location.snapshot()</a></li>
+<li><a href="#_upstream_snapshot">6.4. upstream.snapshot()</a></li>
+<li><a href="#_peer_snapshot_rrpeer_snapshot">6.5. peer.snapshot() / rrPeer.snapshot()</a></li>
+<li><a href="#_snap_restoreoptions">6.6. snap.restore([options])</a></li>
+<li><a href="#_nginx_suspendacceptance">6.7. nginx.suspendAcceptance()</a></li>
+<li><a href="#_nginx_resumeacceptance">6.8. nginx.resumeAcceptance()</a></li>
+<li><a href="#_nginxsnapshot_opaque_object">6.9. NginxSnapshot (opaque object)</a></li>
+</ul>
+</li>
+<li><a href="#_design_notes">7. Design Notes</a>
+<ul class="sectlevel2">
+<li><a href="#_internal_snapshot_vs_js_snapshot">7.1. Internal snapshot vs JS snapshot</a></li>
+<li><a href="#_why_restore_is_best_effort">7.2. Why restore() is best-effort</a></li>
+<li><a href="#_snapshot_scope_for_upstream_snapshot">7.3. Snapshot scope for upstream.snapshot()</a></li>
 </ul>
 </li>
 </ul>
@@ -772,10 +782,148 @@ nginx.http.servers.forEach(srv =&gt; {
 </div>
 </div>
 <div class="sect1">
-<h2 id="_snapshot_and_restore">3. snapshot() and restore()</h2>
+<h2 id="_suspendacceptance_and_resumeacceptance">3. suspendAcceptance() and resumeAcceptance()</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_what_snapshot_captures">3.1. What snapshot() captures</h3>
+<h3 id="_purpose">3.1. Purpose</h3>
+<div class="paragraph">
+<p>JavaScript within a worker is single-threaded, but nginx is event-driven:
+the event loop may dispatch a second request between any two consecutive
+assignments in a handler.  Without suspension a concurrent request on this
+worker could observe a <em>half-updated</em> config:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  req.location.root              = '/new';   // ← request B starts here ...
+  req.location.proxy.readTimeout = 5000;     //     ... and misses this write</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>nginx.suspendAcceptance()</code> removes all listening socket read events from
+this worker&#8217;s event loop.  No new requests are dispatched by this worker
+while acceptance is suspended; incoming TCP connections queue harmlessly in
+the OS socket backlog (up to <code>net.core.somaxconn</code>).  Other workers continue
+accepting normally.</p>
+</div>
+<div class="paragraph">
+<p>Call <code>nginx.resumeAcceptance()</code> once the batch is complete.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+Both functions are <strong>synchronous</strong> and return <code>undefined</code>.  They are
+only callable from a worker process — not from config phase, and not from a
+Worker or SharedWorker thread.
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>For changes that must be consistent across <strong>all</strong> workers, use
+<code>nginx.suspendAllWorkers()</code> / <code>nginx.resumeAllWorkers()</code> instead — see the
+<em>for all workers</em> guide.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_atomic_batch_config_update">3.2. Example: atomic batch config update</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = async (req) =&gt; {
+    const cfg = JSON.parse(await req.readBody());
+
+    nginx.suspendAcceptance();                          // no new requests on this worker
+
+    req.location.root                 = cfg.root;
+    req.location.gzip.level           = cfg.gzip.level;
+    req.location.proxy.readTimeout    = cfg.proxy.readTimeout;
+    req.location.proxy.connectTimeout = cfg.proxy.connectTimeout;
+
+    nginx.resumeAcceptance();                           // restore normal accept behaviour
+
+    req.json({ applied: true });
+};</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_atomic_batch_with_rollback">3.3. Example: atomic batch with rollback</h3>
+<div class="paragraph">
+<p>Always call <code>resumeAcceptance()</code> even when an exception is thrown.
+The <code>try/finally</code> pattern guarantees this:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = async (req) =&gt; {
+    const snap = req.location.snapshot();      // save rollback point
+
+    nginx.suspendAcceptance();
+
+    try {
+        const cfg = JSON.parse(await req.readBody());
+
+        req.location.root              = cfg.root;
+        req.location.proxy.readTimeout = cfg.proxy.readTimeout;
+        req.location.gzip.level        = cfg.gzip.level;
+
+        req.json({ applied: true });
+    } catch (e) {
+        snap.restore();                        // revert partial mutations
+        req.respond(500, {}, e.message);
+    } finally {
+        nginx.resumeAcceptance();              // always re-enable
+    }
+};</code></pre>
+</div>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+Do <strong>not</strong> perform async I/O (network probes, <code>nginx.setTimeout</code>)
+inside the suspension window.  Awaiting I/O while suspended keeps this
+worker stopped — it cannot drain its timer queue or respond to existing
+keep-alive requests.  Validate config <strong>before</strong> calling <code>suspendAcceptance()</code>,
+then execute only synchronous writes inside the window.
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_flow_diagram">3.4. Flow diagram</h3>
+<div class="listingblock">
+<div class="content">
+<pre>  Request handler:                     Event loop (this worker):
+
+  nginx.suspendAcceptance()
+  │  removes listen read events ───────────────────────────────►
+  │                                     no new connections accepted
+  │                                     existing requests may complete
+  │
+  req.location.root = '/a'             (no interleaving possible here)
+  req.location.gzip.level = 3
+  req.location.proxy.readTimeout = 5000
+  │
+  nginx.resumeAcceptance()
+  │  re-adds listen read events ───────────────────────────────►
+                                        queued connections accepted</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_snapshot_and_restore">4. snapshot() and restore()</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_what_snapshot_captures">4.1. What snapshot() captures</h3>
 <div class="paragraph">
 <p><code>obj.snapshot()</code> reads the <strong>current visible values</strong> of all settable
 properties on <code>obj</code> (through <code>read_mode</code>) and stores them in a
@@ -844,7 +992,7 @@ root-based location returns null and is not stored).</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_what_restore_does">3.2. What restore() does</h3>
+<h3 id="_what_restore_does">4.2. What restore() does</h3>
 <div class="paragraph">
 <p><code>snap.restore()</code> iterates all stored nodes and calls the standard property
 <strong>setter</strong> for each captured value using <code>JS_SetPropertyStr</code>.</p>
@@ -875,7 +1023,7 @@ so that one failed field does not prevent others from being restored.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_restore_mode_override">3.3. restore() mode override</h3>
+<h3 id="_restore_mode_override">4.3. restore() mode override</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">snap.restore()                    // use current write_mode (default)
@@ -890,7 +1038,7 @@ for the duration of the restore call, then restores the original values.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_interaction_table_snapshot_write_mode">3.4. Interaction table: snapshot × write_mode</h3>
+<h3 id="_interaction_table_snapshot_write_mode">4.4. Interaction table: snapshot × write_mode</h3>
 <div class="listingblock">
 <div class="content">
 <pre>Scenario                   | snapshot captures | restore() writes to
@@ -914,7 +1062,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_flow_diagram_snapshot_lifecycle">3.5. Flow diagram: snapshot lifecycle</h3>
+<h3 id="_flow_diagram_snapshot_lifecycle">4.5. Flow diagram: snapshot lifecycle</h3>
 <div class="listingblock">
 <div class="content">
 <pre>  Time ──────────────────────────────────────────────────────────►
@@ -945,7 +1093,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_flow_diagram_local_isolation_with_deliberate_commit">3.6. Flow diagram: local isolation with deliberate commit</h3>
+<h3 id="_flow_diagram_local_isolation_with_deliberate_commit">4.6. Flow diagram: local isolation with deliberate commit</h3>
 <div class="listingblock">
 <div class="content">
 <pre>  Time ──────────────────────────────────────────────────────────►
@@ -979,10 +1127,10 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_complete_examples">4. Complete Examples</h2>
+<h2 id="_complete_examples">5. Complete Examples</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_example_1_rollback_on_error">4.1. Example 1: Rollback on Error</h3>
+<h3 id="_example_1_rollback_on_error">5.1. Example 1: Rollback on Error</h3>
 <div class="paragraph">
 <p>Mutate the location config and roll back if the mutation causes a problem.</p>
 </div>
@@ -1016,7 +1164,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_2_atomic_two_phase_apply">4.2. Example 2: Atomic Two-Phase Apply</h3>
+<h3 id="_example_2_atomic_two_phase_apply">5.2. Example 2: Atomic Two-Phase Apply</h3>
 <div class="paragraph">
 <p>Validate locally, then commit globally.</p>
 </div>
@@ -1049,7 +1197,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_3_upstream_peer_weight_balancing_with_rollback">4.3. Example 3: Upstream Peer Weight Balancing with Rollback</h3>
+<h3 id="_example_3_upstream_peer_weight_balancing_with_rollback">5.3. Example 3: Upstream Peer Weight Balancing with Rollback</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = async (req) =&gt; {
@@ -1079,7 +1227,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_4_single_peer_snapshot_for_fine_grained_rollback">4.4. Example 4: Single-Peer Snapshot for Fine-Grained Rollback</h3>
+<h3 id="_example_4_single_peer_snapshot_for_fine_grained_rollback">5.4. Example 4: Single-Peer Snapshot for Fine-Grained Rollback</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = async (req) =&gt; {
@@ -1112,7 +1260,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_5_ab_configuration_experiment">4.5. Example 5: A/B Configuration Experiment</h3>
+<h3 id="_example_5_ab_configuration_experiment">5.5. Example 5: A/B Configuration Experiment</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = (req) =&gt; {
@@ -1139,7 +1287,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_6_config_snapshot_for_audit">4.6. Example 6: Config Snapshot for Audit</h3>
+<h3 id="_example_6_config_snapshot_for_audit">5.6. Example 6: Config Snapshot for Audit</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = (req) =&gt; {
@@ -1164,7 +1312,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_7_guarded_global_mutation">4.7. Example 7: Guarded Global Mutation</h3>
+<h3 id="_example_7_guarded_global_mutation">5.7. Example 7: Guarded Global Mutation</h3>
 <div class="paragraph">
 <p>Prevent concurrent mutations from interleaving.</p>
 </div>
@@ -1201,10 +1349,10 @@ loc.handler = async (req) =&gt; {
 </div>
 </div>
 <div class="sect1">
-<h2 id="_api_reference">5. API Reference</h2>
+<h2 id="_api_reference">6. API Reference</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_location_setwritemodemode">5.1. location.setWriteMode(mode)</h3>
+<h3 id="_location_setwritemodemode">6.1. location.setWriteMode(mode)</h3>
 <div class="paragraph">
 <p>Sets the write destination for property assignments on this location
 and its sub-objects.</p>
@@ -1233,7 +1381,7 @@ setters (<code>proxy</code>, <code>gzip</code>, etc.) route writes consistently.
 </div>
 </div>
 <div class="sect2">
-<h3 id="_location_setreadmodemode">5.2. location.setReadMode(mode)</h3>
+<h3 id="_location_setreadmodemode">6.2. location.setReadMode(mode)</h3>
 <div class="paragraph">
 <p>Sets the read source for property getters on this location.</p>
 </div>
@@ -1258,7 +1406,7 @@ setters (<code>proxy</code>, <code>gzip</code>, etc.) route writes consistently.
 </table>
 </div>
 <div class="sect2">
-<h3 id="_location_snapshot">5.3. location.snapshot()</h3>
+<h3 id="_location_snapshot">6.3. location.snapshot()</h3>
 <div class="paragraph">
 <p>Captures the current readable state of the location and all
 of its mutable sub-objects.</p>
@@ -1277,7 +1425,7 @@ of every settable property value, read through the current <code>read_mode</code
 </div>
 </div>
 <div class="sect2">
-<h3 id="_upstream_snapshot">5.4. upstream.snapshot()</h3>
+<h3 id="_upstream_snapshot">6.4. upstream.snapshot()</h3>
 <div class="paragraph">
 <p>Captures all peers in the upstream&#8217;s current <code>peers[]</code> array.</p>
 </div>
@@ -1308,7 +1456,7 @@ list — this is harmless but produces no observable effect.
 </div>
 </div>
 <div class="sect2">
-<h3 id="_peer_snapshot_rrpeer_snapshot">5.5. peer.snapshot() / rrPeer.snapshot()</h3>
+<h3 id="_peer_snapshot_rrpeer_snapshot">6.5. peer.snapshot() / rrPeer.snapshot()</h3>
 <div class="paragraph">
 <p>Captures the five mutable fields of a single peer.</p>
 </div>
@@ -1320,7 +1468,7 @@ NginxSnapshot  rrPeer.snapshot()</code></pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_snap_restoreoptions">5.6. snap.restore([options])</h3>
+<h3 id="_snap_restoreoptions">6.6. snap.restore([options])</h3>
 <div class="paragraph">
 <p>Re-applies all captured values through the standard setter path.</p>
 </div>
@@ -1374,7 +1522,52 @@ location core fields are still written to <code>loc_op&#8594;write_mode</code>.<
 </div>
 </div>
 <div class="sect2">
-<h3 id="_nginxsnapshot_opaque_object">5.7. NginxSnapshot (opaque object)</h3>
+<h3 id="_nginx_suspendacceptance">6.7. nginx.suspendAcceptance()</h3>
+<div class="paragraph">
+<p>Removes all listening socket read events from this worker&#8217;s event loop.
+New TCP connections queue in the OS socket backlog; other workers continue
+accepting normally.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">undefined  nginx.suspendAcceptance()</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Throws <code>TypeError</code> if called outside a worker process.
+Throws <code>InternalError</code> if the underlying event operation fails.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginx_resumeacceptance">6.8. nginx.resumeAcceptance()</h3>
+<div class="paragraph">
+<p>Re-adds the listening socket read events removed by <code>suspendAcceptance()</code>.
+No-op if acceptance was not suspended.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">undefined  nginx.resumeAcceptance()</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Throws <code>TypeError</code> if called outside a worker process.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+For cross-worker suspension, use <code>nginx.suspendAllWorkers()</code> /
+<code>nginx.resumeAllWorkers()</code> (documented in the <em>for all workers</em> guide).
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginxsnapshot_opaque_object">6.9. NginxSnapshot (opaque object)</h3>
 <div class="paragraph">
 <p><code>NginxSnapshot</code> is an opaque QuickJS object with class name
 <code>"NginxSnapshot"</code>.  Its only JS-visible method is <code>restore()</code>.
@@ -1388,10 +1581,10 @@ dropped; no manual cleanup is required.</p>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_design_notes">6. Design Notes</h2>
+<h2 id="_design_notes">7. Design Notes</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_internal_snapshot_vs_js_snapshot">6.1. Internal snapshot vs JS snapshot</h3>
+<h3 id="_internal_snapshot_vs_js_snapshot">7.1. Internal snapshot vs JS snapshot</h3>
 <div class="paragraph">
 <p>The internal C-level snapshot (<code>ngx_js_ensure_core_snapshot</code>,
 <code>ngx_js_ensure_module_snapshot</code>) is an <strong>automatic</strong> mechanism triggered
@@ -1415,7 +1608,7 @@ complementary:</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_why_restore_is_best_effort">6.2. Why restore() is best-effort</h3>
+<h3 id="_why_restore_is_best_effort">7.2. Why restore() is best-effort</h3>
 <div class="paragraph">
 <p>Some setters may legitimately fail (e.g. <code>alias</code> on a root-based location
 throws a type error).  Because <code>snapshot()</code> silently skips null/undefined
@@ -1426,7 +1619,7 @@ restore — without crashing the request.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_snapshot_scope_for_upstream_snapshot">6.3. Snapshot scope for upstream.snapshot()</h3>
+<h3 id="_snapshot_scope_for_upstream_snapshot">7.3. Snapshot scope for upstream.snapshot()</h3>
 <div class="paragraph">
 <p><code>upstream.snapshot()</code> captures the <strong>current</strong> peer array.  If peers are
 added via <code>addPeer()</code> after the snapshot, those new peers are not in the
@@ -1444,7 +1637,7 @@ methods directly rather than relying on <code>snapshot()</code>.</p>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 13:35:00 -0700
+Last updated 2026-03-20 14:00:56 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

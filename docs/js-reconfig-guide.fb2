@@ -16,7 +16,7 @@
         <nickname>asciidoctor + html2fb2.py</nickname>
       </author>
       <date>2026-03-19</date>
-      <id>c77e36b5-8c29-47a6-ae6f-5f4b8e669bef</id>
+      <id>5ca3ea87-a0b0-4ffe-b5a0-24b6d78a8123</id>
       <version>1.0</version>
     </document-info>
   </description>
@@ -188,6 +188,107 @@
             <v>        req.json({ applied: true });</v>
             <v>    };</v>
             <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>suspendAcceptance() and resumeAcceptance()</p>
+      </title>
+      <section>
+        <title>
+          <p>Purpose</p>
+        </title>
+        <p>JavaScript within a worker is single-threaded, but nginx is event-driven: the event loop may dispatch a second request between any two consecutive assignments in a handler. Without suspension a concurrent request on this worker could observe a <emphasis>half-updated</emphasis> config:</p>
+        <poem>
+          <stanza>
+            <v>  req.location.root              = '/new';   // ← request B starts here ...</v>
+            <v>  req.location.proxy.readTimeout = 5000;     //     ... and misses this write</v>
+          </stanza>
+        </poem>
+        <p>
+          <code>nginx.suspendAcceptance()</code> removes all listening socket read events from this worker’s event loop. No new requests are dispatched by this worker while acceptance is suspended; incoming TCP connections queue harmlessly in the OS socket backlog (up to <code>net.core.somaxconn</code>). Other workers continue accepting normally.</p>
+        <p>Call <code>nginx.resumeAcceptance()</code> once the batch is complete.</p>
+        <p>
+          <strong>: </strong> Both functions are <strong>synchronous</strong> and return <code>undefined</code>. They are only callable from a worker process — not from config phase, and not from a Worker or SharedWorker thread. </p>
+        <p>For changes that must be consistent across <strong>all</strong> workers, use <code>nginx.suspendAllWorkers()</code> / <code>nginx.resumeAllWorkers()</code> instead — see the <emphasis>for all workers</emphasis> guide.</p>
+      </section>
+      <section>
+        <title>
+          <p>Example: atomic batch config update</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const cfg = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>    nginx.suspendAcceptance();                          // no new requests on this worker</v>
+            <v />
+            <v>    req.location.root                 = cfg.root;</v>
+            <v>    req.location.gzip.level           = cfg.gzip.level;</v>
+            <v>    req.location.proxy.readTimeout    = cfg.proxy.readTimeout;</v>
+            <v>    req.location.proxy.connectTimeout = cfg.proxy.connectTimeout;</v>
+            <v />
+            <v>    nginx.resumeAcceptance();                           // restore normal accept behaviour</v>
+            <v />
+            <v>    req.json({ applied: true });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: atomic batch with rollback</p>
+        </title>
+        <p>Always call <code>resumeAcceptance()</code> even when an exception is thrown. The <code>try/finally</code> pattern guarantees this:</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const snap = req.location.snapshot();      // save rollback point</v>
+            <v />
+            <v>    nginx.suspendAcceptance();</v>
+            <v />
+            <v>    try {</v>
+            <v>        const cfg = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>        req.location.root              = cfg.root;</v>
+            <v>        req.location.proxy.readTimeout = cfg.proxy.readTimeout;</v>
+            <v>        req.location.gzip.level        = cfg.gzip.level;</v>
+            <v />
+            <v>        req.json({ applied: true });</v>
+            <v>    } catch (e) {</v>
+            <v>        snap.restore();                        // revert partial mutations</v>
+            <v>        req.respond(500, {}, e.message);</v>
+            <v>    } finally {</v>
+            <v>        nginx.resumeAcceptance();              // always re-enable</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> Do <strong>not</strong> perform async I/O (network probes, <code>nginx.setTimeout</code>) inside the suspension window. Awaiting I/O while suspended keeps this worker stopped — it cannot drain its timer queue or respond to existing keep-alive requests. Validate config <strong>before</strong> calling <code>suspendAcceptance()</code>, then execute only synchronous writes inside the window. </p>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Request handler:                     Event loop (this worker):</v>
+            <v />
+            <v>  nginx.suspendAcceptance()</v>
+            <v>  │  removes listen read events ───────────────────────────────►</v>
+            <v>  │                                     no new connections accepted</v>
+            <v>  │                                     existing requests may complete</v>
+            <v>  │</v>
+            <v>  req.location.root = '/a'             (no interleaving possible here)</v>
+            <v>  req.location.gzip.level = 3</v>
+            <v>  req.location.proxy.readTimeout = 5000</v>
+            <v>  │</v>
+            <v>  nginx.resumeAcceptance()</v>
+            <v>  │  re-adds listen read events ───────────────────────────────►</v>
+            <v>                                        queued connections accepted</v>
           </stanza>
         </poem>
       </section>
@@ -658,6 +759,32 @@
         <p>Mode override applies to the location node and to <code>rctx→write_mode</code> so sub-object setters also use the requested mode.</p>
         <p>•   </p>
         <p>In config phase (no active request) <code>restore({ mode: 'local' })</code> is a no-op for sub-objects because there is no per-request context; location core fields are still written to <code>loc_op→write_mode</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>nginx.suspendAcceptance()</p>
+        </title>
+        <p>Removes all listening socket read events from this worker’s event loop. New TCP connections queue in the OS socket backlog; other workers continue accepting normally.</p>
+        <poem>
+          <stanza>
+            <v>undefined  nginx.suspendAcceptance()</v>
+          </stanza>
+        </poem>
+        <p>Throws <code>TypeError</code> if called outside a worker process. Throws <code>InternalError</code> if the underlying event operation fails.</p>
+      </section>
+      <section>
+        <title>
+          <p>nginx.resumeAcceptance()</p>
+        </title>
+        <p>Re-adds the listening socket read events removed by <code>suspendAcceptance()</code>. No-op if acceptance was not suspended.</p>
+        <poem>
+          <stanza>
+            <v>undefined  nginx.resumeAcceptance()</v>
+          </stanza>
+        </poem>
+        <p>Throws <code>TypeError</code> if called outside a worker process.</p>
+        <p>
+          <strong>: </strong> For cross-worker suspension, use <code>nginx.suspendAllWorkers()</code> / <code>nginx.resumeAllWorkers()</code> (documented in the <emphasis>for all workers</emphasis> guide). </p>
       </section>
       <section>
         <title>

@@ -448,35 +448,46 @@ body.book #toc,body.book #preamble,body.book h1.sect0,body.book .sect1>h2{page-b
 <li><a href="#_what_this_guide_covers">1.2. What this guide covers</a></li>
 </ul>
 </li>
-<li><a href="#_strategy_1_sharedworker_based_config_broadcast">2. Strategy 1: SharedWorker-based config broadcast</a>
+<li><a href="#_suspendallworkers_and_resumeallworkers">2. suspendAllWorkers() and resumeAllWorkers()</a>
 <ul class="sectlevel2">
-<li><a href="#_architecture">2.1. Architecture</a></li>
-<li><a href="#_sharedworker_setup">2.2. SharedWorker setup</a></li>
-<li><a href="#_request_handler_propagate_a_weight_change">2.3. Request handler: propagate a weight change</a></li>
-<li><a href="#_flow_diagram_broadcast_timeline">2.4. Flow diagram: broadcast timeline</a></li>
-<li><a href="#_snapshot_broadcast_rollback_across_all_workers">2.5. Snapshot + broadcast: rollback across all workers</a></li>
+<li><a href="#_the_atomicity_problem">2.1. The atomicity problem</a></li>
+<li><a href="#_how_they_work">2.2. How they work</a></li>
+<li><a href="#_flow_diagram">2.3. Flow diagram</a></li>
+<li><a href="#_example_atomic_batch_update_across_all_workers">2.4. Example: atomic batch update across all workers</a></li>
+<li><a href="#_example_atomic_cross_worker_rollback">2.5. Example: atomic cross-worker rollback</a></li>
+<li><a href="#_per_worker_atomicity_suspendacceptance">2.6. Per-worker atomicity (suspendAcceptance)</a></li>
+<li><a href="#_api_reference">2.7. API reference</a></li>
 </ul>
 </li>
-<li><a href="#_strategy_2_sharedarraybuffer_sab_for_numeric_parameters">3. Strategy 2: SharedArrayBuffer (SAB) for numeric parameters</a>
+<li><a href="#_strategy_1_sharedworker_based_config_broadcast">3. Strategy 1: SharedWorker-based config broadcast</a>
 <ul class="sectlevel2">
-<li><a href="#_when_to_use_sab">3.1. When to use SAB</a></li>
-<li><a href="#_sab_backed_weight_array">3.2. SAB-backed weight array</a></li>
-<li><a href="#_periodic_sync_trigger">3.3. Periodic sync trigger</a></li>
-<li><a href="#_atomic_compare_and_swap_for_safe_weight_update">3.4. Atomic compare-and-swap for safe weight update</a></li>
+<li><a href="#_architecture">3.1. Architecture</a></li>
+<li><a href="#_sharedworker_setup">3.2. SharedWorker setup</a></li>
+<li><a href="#_request_handler_propagate_a_weight_change">3.3. Request handler: propagate a weight change</a></li>
+<li><a href="#_flow_diagram_broadcast_timeline">3.4. Flow diagram: broadcast timeline</a></li>
+<li><a href="#_snapshot_broadcast_rollback_across_all_workers">3.5. Snapshot + broadcast: rollback across all workers</a></li>
 </ul>
 </li>
-<li><a href="#_strategy_3_periodic_reconciliation">4. Strategy 3: Periodic reconciliation</a>
+<li><a href="#_strategy_2_sharedarraybuffer_sab_for_numeric_parameters">4. Strategy 2: SharedArrayBuffer (SAB) for numeric parameters</a>
 <ul class="sectlevel2">
-<li><a href="#_pattern">4.1. Pattern</a></li>
+<li><a href="#_when_to_use_sab">4.1. When to use SAB</a></li>
+<li><a href="#_sab_backed_weight_array">4.2. SAB-backed weight array</a></li>
+<li><a href="#_periodic_sync_trigger">4.3. Periodic sync trigger</a></li>
+<li><a href="#_atomic_compare_and_swap_for_safe_weight_update">4.4. Atomic compare-and-swap for safe weight update</a></li>
 </ul>
 </li>
-<li><a href="#_caveats_and_best_practices">5. Caveats and best practices</a>
+<li><a href="#_strategy_3_periodic_reconciliation">5. Strategy 3: Periodic reconciliation</a>
 <ul class="sectlevel2">
-<li><a href="#_eventual_consistency">5.1. Eventual consistency</a></li>
-<li><a href="#_in_flight_requests_during_a_config_change">5.2. In-flight requests during a config change</a></li>
-<li><a href="#_worker_restart_behaviour">5.3. Worker restart behaviour</a></li>
-<li><a href="#_ordering_guarantees">5.4. Ordering guarantees</a></li>
-<li><a href="#_config_phase_mutations_init_conf">5.5. Config-phase mutations (init_conf)</a></li>
+<li><a href="#_pattern">5.1. Pattern</a></li>
+</ul>
+</li>
+<li><a href="#_caveats_and_best_practices">6. Caveats and best practices</a>
+<ul class="sectlevel2">
+<li><a href="#_eventual_consistency">6.1. Eventual consistency</a></li>
+<li><a href="#_in_flight_requests_during_a_config_change">6.2. In-flight requests during a config change</a></li>
+<li><a href="#_worker_restart_behaviour">6.3. Worker restart behaviour</a></li>
+<li><a href="#_ordering_guarantees">6.4. Ordering guarantees</a></li>
+<li><a href="#_config_phase_mutations_init_conf">6.5. Config-phase mutations (init_conf)</a></li>
 </ul>
 </li>
 </ul>
@@ -594,10 +605,186 @@ changes Worker 0&#8217;s copy of the C struct.  Workers 1 and 2 are unaffected.<
 </div>
 </div>
 <div class="sect1">
-<h2 id="_strategy_1_sharedworker_based_config_broadcast">2. Strategy 1: SharedWorker-based config broadcast</h2>
+<h2 id="_suspendallworkers_and_resumeallworkers">2. suspendAllWorkers() and resumeAllWorkers()</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_architecture">2.1. Architecture</h3>
+<h3 id="_the_atomicity_problem">2.1. The atomicity problem</h3>
+<div class="paragraph">
+<p>The broadcast strategies in this guide deliver <em>eventual</em> consistency:
+there is a window between when Worker 0 applies a change and when Worker N
+applies the fan-out.  During that window different workers may have different
+configs.</p>
+</div>
+<div class="paragraph">
+<p>For changes that must be visible consistently across all workers before any
+new request is accepted, use <code>nginx.suspendAllWorkers()</code> and
+<code>nginx.resumeAllWorkers()</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_how_they_work">2.2. How they work</h3>
+<div class="paragraph">
+<p><code>await nginx.suspendAllWorkers()</code> sends a command to the nginx master
+process.  The master broadcasts "suspend acceptance" to every worker and
+waits for acknowledgements (up to a 500 ms timeout).  The Promise resolves
+when <strong>all</strong> workers have disabled their accept events.</p>
+</div>
+<div class="paragraph">
+<p><code>await nginx.resumeAllWorkers()</code> sends the reverse command.  All workers
+re-enable accept events.</p>
+</div>
+<div class="paragraph">
+<p>Both calls are <strong>async</strong> and return <code>Promise&lt;undefined&gt;</code>.  The handler must
+be declared <code>async</code> and must <code>await</code> both calls.  Always use <code>try/finally</code>
+to guarantee <code>resumeAllWorkers()</code> is called even on error.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<code>suspendAllWorkers()</code> is callable only from a worker process — not
+from config phase or from a Worker/SharedWorker thread.
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_flow_diagram">2.3. Flow diagram</h3>
+<div class="listingblock">
+<div class="content">
+<pre>  Worker 0 (handler):              Master process:          Other workers:
+
+  await suspendAllWorkers()
+    │ ── cmd ──────────────────►  broadcast SUSPEND
+    │                                  │ ──────────────► Worker 1: suspend ack
+    │                                  │ ──────────────► Worker 2: suspend ack
+    │                                  │    (500 ms timeout)
+    │ ◄── reply_fd readable ──────  all acked
+    │ (Promise resolves)
+    │
+    ├─ apply batch mutations to this worker
+    ├─ broadcast via SharedWorker ─────────────────────► Worker 1: apply
+    │                                                     Worker 2: apply
+    │
+  await resumeAllWorkers()
+    │ ── cmd ──────────────────►  broadcast RESUME
+    │                                  │ ──────────────► Worker 1: resume ack
+    │                                  │ ──────────────► Worker 2: resume ack
+    │ ◄── reply_fd readable ──────  all acked
+    (Promise resolves — all workers accepting again)</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>While suspended, new TCP connections queue in the OS socket backlog
+(<code>net.core.somaxconn</code>).  Keep the suspension window as short as possible —
+typically synchronous field writes only, not async probes.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_atomic_batch_update_across_all_workers">2.4. Example: atomic batch update across all workers</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = async (req) =&gt; {
+    const cfg = JSON.parse(await req.readBody());
+
+    // Validate BEFORE suspending — keep the suspension window short
+    const ok = await probeBackend(req);
+    if (!ok) {
+        req.respond(400, {}, 'validation failed');
+        return;
+    }
+
+    await nginx.suspendAllWorkers();
+
+    try {
+        // Apply to this worker
+        nginx.http.upstreams[0].peers.forEach((p, i) =&gt; {
+            if (cfg.weights[i] !== undefined) { p.weight = cfg.weights[i]; }
+        });
+
+        // Broadcast: other workers apply in their onmessage handler
+        // before their first new request after resumeAllWorkers()
+        cfgWorker.postMessage({ type: 'set', payload: cfg });
+
+        req.json({ applied: true });
+    } finally {
+        await nginx.resumeAllWorkers();    // always re-enable
+    }
+};</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_atomic_cross_worker_rollback">2.5. Example: atomic cross-worker rollback</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = async (req) =&gt; {
+    const snap = req.location.snapshot();      // save rollback state
+    const cfg  = JSON.parse(await req.readBody());
+
+    // Validate before suspending
+    const ok = await probeBackend(req);
+    if (!ok) {
+        req.respond(400, {}, 'validation failed');
+        return;
+    }
+
+    await nginx.suspendAllWorkers();
+
+    try {
+        req.location.root              = cfg.root;
+        req.location.proxy.readTimeout = cfg.proxy.readTimeout;
+
+        cfgWorker.postMessage({ type: 'set', payload: cfg });
+        req.json({ applied: true });
+
+    } catch (e) {
+        snap.restore();                                            // revert this worker
+        cfgWorker.postMessage({ type: 'rollback', payload: cfg }); // revert others
+        req.respond(500, {}, e.message);
+
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_per_worker_atomicity_suspendacceptance">2.6. Per-worker atomicity (suspendAcceptance)</h3>
+<div class="paragraph">
+<p>If only <strong>this</strong> worker needs an atomic batch (e.g. a local reconciliation
+step), use the lighter <code>nginx.suspendAcceptance()</code> /
+<code>nginx.resumeAcceptance()</code> pair instead.  These are <strong>synchronous</strong>, affect
+only one worker, and carry zero cross-process overhead.
+See the <em>for single worker</em> guide for details.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_api_reference">2.7. API reference</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">Promise&lt;undefined&gt;  nginx.suspendAllWorkers()
+Promise&lt;undefined&gt;  nginx.resumeAllWorkers()</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Both throw <code>TypeError</code> if called outside a worker process, and
+<code>InternalError</code> if the manager is unavailable or the reply fd cannot
+be registered in the event loop.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_strategy_1_sharedworker_based_config_broadcast">3. Strategy 1: SharedWorker-based config broadcast</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_architecture">3.1. Architecture</h3>
 <div class="paragraph">
 <p>A <code>SharedWorker</code> runs in a dedicated pthread that is accessible to all
 workers through their per-worker channel.  It holds the <em>desired</em> config
@@ -637,7 +824,7 @@ state.  When any worker receives a config-change request, it:</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_sharedworker_setup">2.2. SharedWorker setup</h3>
+<h3 id="_sharedworker_setup">3.2. SharedWorker setup</h3>
 <div class="paragraph">
 <p>Define the SharedWorker in <code>js_source</code>.  It runs once in the master at
 <code>init_conf</code> and its channel is shared with every worker.</p>
@@ -692,7 +879,7 @@ onmessage = (msg) =&gt; {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_request_handler_propagate_a_weight_change">2.3. Request handler: propagate a weight change</h3>
+<h3 id="_request_handler_propagate_a_weight_change">3.3. Request handler: propagate a weight change</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = async (req) =&gt; {
@@ -712,7 +899,7 @@ onmessage = (msg) =&gt; {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_flow_diagram_broadcast_timeline">2.4. Flow diagram: broadcast timeline</h3>
+<h3 id="_flow_diagram_broadcast_timeline">3.4. Flow diagram: broadcast timeline</h3>
 <div class="listingblock">
 <div class="content">
 <pre>  Time ────────────────────────────────────────────────────────────►
@@ -733,7 +920,7 @@ onmessage = (msg) =&gt; {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_snapshot_broadcast_rollback_across_all_workers">2.5. Snapshot + broadcast: rollback across all workers</h3>
+<h3 id="_snapshot_broadcast_rollback_across_all_workers">3.5. Snapshot + broadcast: rollback across all workers</h3>
 <div class="paragraph">
 <p>If validation fails after applying locally, roll back locally <strong>and</strong>
 broadcast a rollback message.</p>
@@ -798,10 +985,10 @@ most configuration use cases.
 </div>
 </div>
 <div class="sect1">
-<h2 id="_strategy_2_sharedarraybuffer_sab_for_numeric_parameters">3. Strategy 2: SharedArrayBuffer (SAB) for numeric parameters</h2>
+<h2 id="_strategy_2_sharedarraybuffer_sab_for_numeric_parameters">4. Strategy 2: SharedArrayBuffer (SAB) for numeric parameters</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_when_to_use_sab">3.1. When to use SAB</h3>
+<h3 id="_when_to_use_sab">4.1. When to use SAB</h3>
 <div class="paragraph">
 <p><code>SharedArrayBuffer</code> provides shared memory visible to all worker processes
 simultaneously.  Combined with <code>Atomics</code>, it gives synchronous, lock-free
@@ -813,7 +1000,7 @@ upstream peer weights, timeout values, rate limits.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_sab_backed_weight_array">3.2. SAB-backed weight array</h3>
+<h3 id="_sab_backed_weight_array">4.2. SAB-backed weight array</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// js_source: sab_config.js
@@ -852,7 +1039,7 @@ function syncWeightsFromSAB() {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_periodic_sync_trigger">3.3. Periodic sync trigger</h3>
+<h3 id="_periodic_sync_trigger">4.3. Periodic sync trigger</h3>
 <div class="paragraph">
 <p>Workers cannot pro-actively receive SAB updates — they must poll.
 Use <code>nginx.setTimeout</code> to schedule a periodic sync:</p>
@@ -870,7 +1057,7 @@ Use <code>nginx.setTimeout</code> to schedule a periodic sync:</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_atomic_compare_and_swap_for_safe_weight_update">3.4. Atomic compare-and-swap for safe weight update</h3>
+<h3 id="_atomic_compare_and_swap_for_safe_weight_update">4.4. Atomic compare-and-swap for safe weight update</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">loc.handler = (req) =&gt; {
@@ -897,10 +1084,10 @@ Use <code>nginx.setTimeout</code> to schedule a periodic sync:</p>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_strategy_3_periodic_reconciliation">4. Strategy 3: Periodic reconciliation</h2>
+<h2 id="_strategy_3_periodic_reconciliation">5. Strategy 3: Periodic reconciliation</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_pattern">4.1. Pattern</h3>
+<h3 id="_pattern">5.1. Pattern</h3>
 <div class="paragraph">
 <p>Rather than reacting to change events, each worker independently polls a
 SharedWorker (the "config authority") and applies any diff.</p>
@@ -973,10 +1160,10 @@ function merge(target, src) {
 </div>
 </div>
 <div class="sect1">
-<h2 id="_caveats_and_best_practices">5. Caveats and best practices</h2>
+<h2 id="_caveats_and_best_practices">6. Caveats and best practices</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_eventual_consistency">5.1. Eventual consistency</h3>
+<h3 id="_eventual_consistency">6.1. Eventual consistency</h3>
 <div class="paragraph">
 <p>All three strategies deliver <strong>eventual</strong> consistency.  Between the moment a
 change is initiated and the moment all workers have applied it there is a
@@ -995,7 +1182,7 @@ this is acceptable.  For strict consistency, use a coordinated handshake:</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_in_flight_requests_during_a_config_change">5.2. In-flight requests during a config change</h3>
+<h3 id="_in_flight_requests_during_a_config_change">6.2. In-flight requests during a config change</h3>
 <div class="paragraph">
 <p>Requests that started before the config change will complete with the old
 config values.  This is intentional — mid-request config changes are never
@@ -1003,7 +1190,7 @@ applied retroactively.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_worker_restart_behaviour">5.3. Worker restart behaviour</h3>
+<h3 id="_worker_restart_behaviour">6.3. Worker restart behaviour</h3>
 <div class="paragraph">
 <p>When a worker crashes and is restarted by the master, the new worker forks
 from the master&#8217;s original config.  It will not automatically pick up
@@ -1016,7 +1203,7 @@ the restarted worker will catch up within one poll period.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_ordering_guarantees">5.4. Ordering guarantees</h3>
+<h3 id="_ordering_guarantees">6.4. Ordering guarantees</h3>
 <div class="paragraph">
 <p>The SharedWorker pthread processes messages sequentially (one at a time).
 Fan-out is also sequential.  Workers may apply fan-out messages in different
@@ -1025,7 +1212,7 @@ cross-worker ordering.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_config_phase_mutations_init_conf">5.5. Config-phase mutations (init_conf)</h3>
+<h3 id="_config_phase_mutations_init_conf">6.5. Config-phase mutations (init_conf)</h3>
 <div class="paragraph">
 <p>Config-phase mutations (in top-level <code>js_source</code> code, before <code>loc.handler</code>
 is set) run in the master before fork.  They are inherited by all workers at
@@ -1038,7 +1225,7 @@ the strategies described in this guide.</p>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 13:36:37 -0700
+Last updated 2026-03-20 14:00:56 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>
