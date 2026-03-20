@@ -1,0 +1,475 @@
+<?xml version='1.0' encoding='utf-8'?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>computers</genre>
+      <author>
+        <first-name />
+        <last-name>NGINX JS DOM Project</last-name>
+      </author>
+      <book-title>nginx JS — Dynamic Reconfiguration Guide (for all workers)</book-title>
+      <date>2026-03-19</date>
+      <lang>en</lang>
+    </title-info>
+    <document-info>
+      <author>
+        <nickname>asciidoctor + html2fb2.py</nickname>
+      </author>
+      <date>2026-03-19</date>
+      <id>ec3d9367-f99e-44e7-b51d-1a1add485924</id>
+      <version>1.0</version>
+    </document-info>
+  </description>
+  <body>
+    <title>
+      <p>nginx JS — Dynamic Reconfiguration Guide (for all workers)</p>
+    </title>
+    <p> │ DRAFT FOR COMMENTS — This document is a work in progress. Content, API names, and examples are subject to change before release.</p>
+    <empty-line />
+    <section>
+      <title>
+        <p>Overview</p>
+      </title>
+      <p>The previous guide (<emphasis>for single worker</emphasis>) explained <code>write_mode</code>, <code>read_mode</code>, <code>snapshot()</code>, and <code>restore()</code> — all of which operate <strong>within a single nginx worker process</strong>.</p>
+      <p>This guide addresses the harder problem: propagating a config change to <strong>all workers simultaneously</strong>.</p>
+      <p>Prerequisites: read the <emphasis>for single worker</emphasis> guide first.</p>
+      <section>
+        <title>
+          <p>The multi-process problem</p>
+        </title>
+        <p>nginx runs as a master process plus N worker processes. Each worker is a separate OS process with its own address space. After the initial fork, the workers share <emphasis>no memory</emphasis> — not even memory marked <code>write_mode='global'</code>.</p>
+        <poem>
+          <stanza>
+            <v>                 ┌────────────────┐</v>
+            <v>                 │  Master (pid 1)│</v>
+            <v>                 │  (no requests) │</v>
+            <v>                 └────────┬───────┘</v>
+            <v>                          │ fork at startup</v>
+            <v>          ┌───────────────┼───────────────┐</v>
+            <v>          │               │               │</v>
+            <v>   ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐</v>
+            <v>   │  Worker 0   │ │  Worker 1   │ │  Worker 2   │</v>
+            <v>   │  clcf copy  │ │  clcf copy  │ │  clcf copy  │</v>
+            <v>   │  ups copy   │ │  ups copy   │ │  ups copy   │</v>
+            <v>   └─────────────┘ └─────────────┘ └─────────────┘</v>
+            <v>         │                │                │</v>
+            <v>         │  COW pages     │                │</v>
+            <v>         │  diverge on    │                │</v>
+            <v>         │  first write   │                │</v>
+            <v>         ▼                ▼                ▼</v>
+            <v>   independent copies after any write_mode='global' mutation</v>
+          </stanza>
+        </poem>
+        <p>A <code>write_mode='global'</code> assignment in a request handler in Worker 0 changes Worker 0’s copy of the C struct. Workers 1 and 2 are unaffected.</p>
+      </section>
+      <section>
+        <title>
+          <p>What this guide covers</p>
+        </title>
+        <p>Three propagation strategies:</p>
+        <p>Strategy │ How it works │ Best for</p>
+        <p>SharedWorker broadcast │ One long-lived pthread acts as the config authority. Workers push updates to it; it fans out to all workers. │ Rich config objects, arbitrary JS values, ordered delivery.</p>
+        <p>SharedArrayBuffer (SAB) │ A region of memory shared across all worker processes via mmap. Workers write/read with Atomics for synchronisation. │ Numeric parameters (weights, timeouts), high-frequency updates.</p>
+        <p>Periodic reconciliation │ Each worker polls the SharedWorker for the desired config state and applies any diff on each poll tick. │ Eventual consistency is acceptable; simpler code.</p>
+        <empty-line />
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Strategy 1: SharedWorker-based config broadcast</p>
+      </title>
+      <section>
+        <title>
+          <p>Architecture</p>
+        </title>
+        <p>A <code>SharedWorker</code> runs in a dedicated pthread that is accessible to all workers through their per-worker channel. It holds the <emphasis>desired</emphasis> config state. When any worker receives a config-change request, it:</p>
+        <p>1.   </p>
+        <p>Validates and applies the change locally (see <emphasis>for single worker</emphasis> guide).</p>
+        <p>2.   </p>
+        <p>Posts the serialised change to the SharedWorker.</p>
+        <p>3.   </p>
+        <p>The SharedWorker fans out the message to all other workers.</p>
+        <p>4.   </p>
+        <p>Each receiving worker applies the change via <code>write_mode='global'</code>.</p>
+        <poem>
+          <stanza>
+            <v>  HTTP request ──► Worker 0</v>
+            <v>                      │</v>
+            <v>                      ├─ validate change</v>
+            <v>                      ├─ apply locally (write_mode='global')</v>
+            <v>                      │</v>
+            <v>                      └─ postMessage(change) ──► SharedWorker (pthread)</v>
+            <v>                                                       │</v>
+            <v>                                              ┌────────┼────────┐</v>
+            <v>                                              │        │        │</v>
+            <v>                                         Worker 0  Worker 1  Worker 2</v>
+            <v>                                         (already  apply     apply</v>
+            <v>                                          done)    change    change</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>SharedWorker setup</p>
+        </title>
+        <p>Define the SharedWorker in <code>js_source</code>. It runs once in the master at <code>init_conf</code> and its channel is shared with every worker.</p>
+        <poem>
+          <stanza>
+            <v>// js_source: config.js  (runs at init_conf, before workers fork)</v>
+            <v />
+            <v>const cfgWorker = new SharedWorker('cfgworker.js');</v>
+            <v />
+            <v>cfgWorker.onmessage = (msg) =&gt; {</v>
+            <v>    // Received a fan-out from cfgWorker; apply the change to this worker</v>
+            <v>    const change = msg.data;</v>
+            <v>    applyChange(change);</v>
+            <v>};</v>
+            <v />
+            <v>function applyChange(change) {</v>
+            <v>    if (change.type === 'upstream.weight') {</v>
+            <v>        const ups = nginx.http.upstreams.find(u =&gt; u.name === change.upstream);</v>
+            <v>        if (!ups) { return; }</v>
+            <v>        const peer = ups.peers.find(p =&gt; p.address === change.peer);</v>
+            <v>        if (!peer) { return; }</v>
+            <v>        peer.weight = change.weight;   // write_mode='global' → this worker's copy</v>
+            <v>    }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// cfgworker.js  (runs inside the SharedWorker pthread)</v>
+            <v />
+            <v>// Simple in-memory desired state</v>
+            <v>const desiredWeights = {};   // { 'upstreamName/peerAddr': weight }</v>
+            <v />
+            <v>onmessage = (msg) =&gt; {</v>
+            <v>    const { type, payload, replyTo } = msg.data;</v>
+            <v />
+            <v>    if (type === 'set') {</v>
+            <v>        // Store desired state</v>
+            <v>        const key = payload.upstream + '/' + payload.peer;</v>
+            <v>        desiredWeights[key] = payload.weight;</v>
+            <v />
+            <v>        // Fan out to all workers (broadcast postMessage)</v>
+            <v>        postMessage({ type: 'upstream.weight', ...payload });</v>
+            <v />
+            <v>    } else if (type === 'get') {</v>
+            <v>        // Return current desired state to requesting worker</v>
+            <v>        postMessage({ replyTo, state: desiredWeights });</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Request handler: propagate a weight change</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const body   = JSON.parse(await req.readBody());</v>
+            <v>    const change = { upstream: body.upstream, peer: body.peer, weight: body.weight };</v>
+            <v />
+            <v>    // 1. Apply locally (this worker is already up-to-date after postMessage fan-out</v>
+            <v>    //    returns, but apply immediately so this request sees the new state)</v>
+            <v>    applyChange(change);</v>
+            <v />
+            <v>    // 2. Tell SharedWorker to fan out to all other workers</v>
+            <v>    cfgWorker.postMessage({ type: 'set', payload: change });</v>
+            <v />
+            <v>    req.json({ applied: true });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram: broadcast timeline</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Time ────────────────────────────────────────────────────────────►</v>
+            <v />
+            <v>  Worker 0: receives /admin/set-weight</v>
+            <v>    ├─ applyChange(change)     ← local apply</v>
+            <v>    └─ cfgWorker.postMessage() ─────────────────► cfgWorker pthread</v>
+            <v>                                                        │</v>
+            <v>                                              fan-out postMessage()</v>
+            <v>                                                   │         │</v>
+            <v>                                              Worker 1     Worker 2</v>
+            <v>                                              onmessage    onmessage</v>
+            <v>                                              applyChange  applyChange</v>
+            <v>  ─────────────────────────────────────────────────────────────────►</v>
+            <v>  Eventual consistency: all workers reach the same state</v>
+            <v>  within one event-loop tick after the fan-out completes.</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Snapshot + broadcast: rollback across all workers</p>
+        </title>
+        <p>If validation fails after applying locally, roll back locally <strong>and</strong> broadcast a rollback message.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const body   = JSON.parse(await req.readBody());</v>
+            <v>    const snap   = req.location.snapshot();        // save current state</v>
+            <v />
+            <v>    try {</v>
+            <v>        applyChange(body);                          // apply locally</v>
+            <v>        const ok = await probeBackend(req);</v>
+            <v>        if (!ok) { throw new Error('probe failed'); }</v>
+            <v />
+            <v>        cfgWorker.postMessage({ type: 'set', payload: body });</v>
+            <v>        req.json({ applied: true });</v>
+            <v />
+            <v>    } catch (e) {</v>
+            <v>        snap.restore();                             // revert local copy</v>
+            <v />
+            <v>        // Broadcast rollback (SharedWorker restores original desired state)</v>
+            <v>        cfgWorker.postMessage({ type: 'rollback', payload: body });</v>
+            <v>        req.respond(500, {}, 'apply failed: ' + e.message);</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>The SharedWorker’s rollback handler restores <code>desiredWeights</code> and fans the original values back to all workers:</p>
+        <poem>
+          <stanza>
+            <v>// inside cfgworker.js onmessage:</v>
+            <v>} else if (type === 'rollback') {</v>
+            <v>    const key = payload.upstream + '/' + payload.peer;</v>
+            <v>    const prev = desiredWeights[key];   // value before the failed 'set'</v>
+            <v />
+            <v>    if (prev !== undefined) {</v>
+            <v>        postMessage({ type: 'upstream.weight', ...payload, weight: prev });</v>
+            <v>    }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> Between the <code>set</code> fan-out and the <code>rollback</code> fan-out there is a brief window where some workers may have the new value and others the old one. This is inherent to eventual-consistency approaches and is acceptable for most configuration use cases. </p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Strategy 2: SharedArrayBuffer (SAB) for numeric parameters</p>
+      </title>
+      <section>
+        <title>
+          <p>When to use SAB</p>
+        </title>
+        <p>
+          <code>SharedArrayBuffer</code> provides shared memory visible to all worker processes simultaneously. Combined with <code>Atomics</code>, it gives synchronous, lock-free reads and compare-and-swap writes without any message passing.</p>
+        <p>Use SAB for high-frequency, low-latency updates of numeric parameters: upstream peer weights, timeout values, rate limits.</p>
+      </section>
+      <section>
+        <title>
+          <p>SAB-backed weight array</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// js_source: sab_config.js</v>
+            <v />
+            <v>// Create a SAB in the master (before fork).</v>
+            <v>// Layout: one Int32 slot per upstream peer, indexed by peer position.</v>
+            <v>const PEER_COUNT = 8;</v>
+            <v>const weightBuf  = new SharedArrayBuffer(PEER_COUNT * 4);</v>
+            <v>const weights    = new Int32Array(weightBuf);</v>
+            <v />
+            <v>// Initialise from current nginx config</v>
+            <v>nginx.http.upstreams.forEach(ups =&gt; {</v>
+            <v>    ups.peers.forEach((p, i) =&gt; {</v>
+            <v>        Atomics.store(weights, i, p.weight);</v>
+            <v>    });</v>
+            <v>});</v>
+            <v />
+            <v>// Worker handler: read-modify-write a single peer weight</v>
+            <v>function setWeight(peerIdx, newWeight) {</v>
+            <v>    Atomics.store(weights, peerIdx, newWeight);</v>
+            <v />
+            <v>    // Apply to this worker's nginx struct immediately</v>
+            <v>    const peer = nginx.http.upstreams[0].peers[peerIdx];</v>
+            <v>    if (peer) { peer.weight = newWeight; }</v>
+            <v>}</v>
+            <v />
+            <v>// Worker handler: apply all SAB values to this worker's structs</v>
+            <v>// (call periodically or on a trigger to "sync" this worker)</v>
+            <v>function syncWeightsFromSAB() {</v>
+            <v>    nginx.http.upstreams[0].peers.forEach((p, i) =&gt; {</v>
+            <v>        const desired = Atomics.load(weights, i);</v>
+            <v>        if (p.weight !== desired) { p.weight = desired; }</v>
+            <v>    });</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Periodic sync trigger</p>
+        </title>
+        <p>Workers cannot pro-actively receive SAB updates — they must poll. Use <code>nginx.setTimeout</code> to schedule a periodic sync:</p>
+        <poem>
+          <stanza>
+            <v>// js_source: start a reconciliation loop in every worker</v>
+            <v>(async function reconcileLoop() {</v>
+            <v>    while (true) {</v>
+            <v>        await nginx.setTimeout(1000);   // every 1 s</v>
+            <v>        syncWeightsFromSAB();</v>
+            <v>    }</v>
+            <v>})();</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Atomic compare-and-swap for safe weight update</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    const idx        = parseInt(req.getVar('arg_idx'));</v>
+            <v>    const newWeight  = parseInt(req.getVar('arg_weight'));</v>
+            <v>    const expected   = parseInt(req.getVar('arg_expected'));  // CAS guard</v>
+            <v />
+            <v>    const actual = Atomics.compareExchange(weights, idx, expected, newWeight);</v>
+            <v />
+            <v>    if (actual !== expected) {</v>
+            <v>        req.respond(409, {}, 'CAS failed: weight changed by another worker');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    // CAS succeeded — apply locally; other workers will pick it up on next poll</v>
+            <v>    const peer = nginx.http.upstreams[0].peers[idx];</v>
+            <v>    if (peer) { peer.weight = newWeight; }</v>
+            <v />
+            <v>    req.json({ applied: true, prev: actual });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Strategy 3: Periodic reconciliation</p>
+      </title>
+      <section>
+        <title>
+          <p>Pattern</p>
+        </title>
+        <p>Rather than reacting to change events, each worker independently polls a SharedWorker (the "config authority") and applies any diff.</p>
+        <poem>
+          <stanza>
+            <v>// js_source: reconcile.js</v>
+            <v />
+            <v>const cfgAuth = new SharedWorker('cfgauth.js');</v>
+            <v>let desiredConfig = null;   // cached desired state (updated by onmessage)</v>
+            <v />
+            <v>cfgAuth.onmessage = (msg) =&gt; {</v>
+            <v>    desiredConfig = msg.data.config;</v>
+            <v>};</v>
+            <v />
+            <v>// Request desired config from authority at startup</v>
+            <v>cfgAuth.postMessage({ type: 'get' });</v>
+            <v />
+            <v>// Reconciliation loop: every 5 s, apply diff</v>
+            <v>(async function reconcileLoop() {</v>
+            <v>    while (true) {</v>
+            <v>        await nginx.setTimeout(5000);</v>
+            <v>        if (!desiredConfig) { continue; }</v>
+            <v />
+            <v>        nginx.http.upstreams.forEach(ups =&gt; {</v>
+            <v>            const desired = desiredConfig.upstreams?.[ups.name];</v>
+            <v>            if (!desired) { return; }</v>
+            <v />
+            <v>            ups.peers.forEach((p, i) =&gt; {</v>
+            <v>                const dw = desired.peers?.[i]?.weight;</v>
+            <v>                if (dw !== undefined &amp;&amp; p.weight !== dw) {</v>
+            <v>                    p.weight = dw;</v>
+            <v>                }</v>
+            <v>            });</v>
+            <v>        });</v>
+            <v>    }</v>
+            <v>})();</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// cfgauth.js  (SharedWorker — single source of truth)</v>
+            <v />
+            <v>let config = { upstreams: {} };</v>
+            <v />
+            <v>onmessage = (msg) =&gt; {</v>
+            <v>    if (msg.data.type === 'set') {</v>
+            <v>        // Deep-merge incoming change into desired config</v>
+            <v>        merge(config, msg.data.config);</v>
+            <v>        postMessage({ type: 'config', config });   // broadcast to all workers</v>
+            <v />
+            <v>    } else if (msg.data.type === 'get') {</v>
+            <v>        postMessage({ type: 'config', config });   // reply to requester</v>
+            <v>    }</v>
+            <v>};</v>
+            <v />
+            <v>function merge(target, src) {</v>
+            <v>    for (const k of Object.keys(src)) {</v>
+            <v>        if (src[k] &amp;&amp; typeof src[k] === 'object' &amp;&amp; !Array.isArray(src[k])) {</v>
+            <v>            target[k] = target[k] || {};</v>
+            <v>            merge(target[k], src[k]);</v>
+            <v>        } else {</v>
+            <v>            target[k] = src[k];</v>
+            <v>        }</v>
+            <v>    }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Caveats and best practices</p>
+      </title>
+      <section>
+        <title>
+          <p>Eventual consistency</p>
+        </title>
+        <p>All three strategies deliver <strong>eventual</strong> consistency. Between the moment a change is initiated and the moment all workers have applied it there is a window during which workers may disagree.</p>
+        <p>For most config-change use cases (upstream weights, timeouts, feature flags) this is acceptable. For strict consistency, use a coordinated handshake:</p>
+        <poem>
+          <stanza>
+            <v>// Worker 0 waits for acknowledgement from all other workers before</v>
+            <v>// considering the change applied.</v>
+            <v>// (Implementation depends on the SharedWorker protocol design.)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>In-flight requests during a config change</p>
+        </title>
+        <p>Requests that started before the config change will complete with the old config values. This is intentional — mid-request config changes are never applied retroactively.</p>
+      </section>
+      <section>
+        <title>
+          <p>Worker restart behaviour</p>
+        </title>
+        <p>When a worker crashes and is restarted by the master, the new worker forks from the master’s original config. It will not automatically pick up runtime mutations applied to sibling workers unless it receives a reconciliation message from the SharedWorker or re-reads a SAB.</p>
+        <p>A healthy reconciliation loop (Strategy 3) handles this automatically: the restarted worker will catch up within one poll period.</p>
+      </section>
+      <section>
+        <title>
+          <p>Ordering guarantees</p>
+        </title>
+        <p>The SharedWorker pthread processes messages sequentially (one at a time). Fan-out is also sequential. Workers may apply fan-out messages in different orders if they happen to be busy when the message arrives — do not rely on cross-worker ordering.</p>
+      </section>
+      <section>
+        <title>
+          <p>Config-phase mutations (init_conf)</p>
+        </title>
+        <p>Config-phase mutations (in top-level <code>js_source</code> code, before <code>loc.handler</code> is set) run in the master before fork. They are inherited by all workers at fork time and require no broadcast. Only <emphasis>request-phase</emphasis> mutations need the strategies described in this guide.</p>
+      </section>
+    </section>
+  </body>
+</FictionBook>

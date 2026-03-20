@@ -7,7 +7,7 @@
         <first-name />
         <last-name>NGINX JS DOM Project</last-name>
       </author>
-      <book-title>nginx JS — Dynamic Reconfiguration Guide</book-title>
+      <book-title>nginx JS — Dynamic Reconfiguration Guide (for single worker)</book-title>
       <date>2026-03-19</date>
       <lang>en</lang>
     </title-info>
@@ -16,14 +16,16 @@
         <nickname>asciidoctor + html2fb2.py</nickname>
       </author>
       <date>2026-03-19</date>
-      <id>20c585b1-d5bb-4ffa-a00d-0d9ff1c15f11</id>
+      <id>c77e36b5-8c29-47a6-ae6f-5f4b8e669bef</id>
       <version>1.0</version>
     </document-info>
   </description>
   <body>
     <title>
-      <p>nginx JS — Dynamic Reconfiguration Guide</p>
+      <p>nginx JS — Dynamic Reconfiguration Guide (for single worker)</p>
     </title>
+    <p> │ DRAFT FOR COMMENTS — This document is a work in progress. Content, API names, and examples are subject to change before release.</p>
+    <empty-line />
     <section>
       <title>
         <p>Overview</p>

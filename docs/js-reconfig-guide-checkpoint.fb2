@@ -1,0 +1,499 @@
+<?xml version='1.0' encoding='utf-8'?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>computers</genre>
+      <author>
+        <first-name />
+        <last-name>NGINX JS DOM Project</last-name>
+      </author>
+      <book-title>nginx JS — Dynamic Reconfiguration Guide (for config checkpoint/restore)</book-title>
+      <date>2026-03-19</date>
+      <lang>en</lang>
+    </title-info>
+    <document-info>
+      <author>
+        <nickname>asciidoctor + html2fb2.py</nickname>
+      </author>
+      <date>2026-03-19</date>
+      <id>253272fd-f601-4a21-bf37-ad39cdaf581e</id>
+      <version>1.0</version>
+    </document-info>
+  </description>
+  <body>
+    <title>
+      <p>nginx JS — Dynamic Reconfiguration Guide (for config checkpoint/restore)</p>
+    </title>
+    <p> │ DRAFT FOR COMMENTS — This document is a work in progress. Content, API names, and examples are subject to change before release.</p>
+    <empty-line />
+    <section>
+      <title>
+        <p>Overview</p>
+      </title>
+      <p>A <strong>checkpoint</strong> is a named, persistent copy of config state that survives across multiple requests and can be restored on demand.</p>
+      <p>This is distinct from the <emphasis>request-scoped</emphasis>
+        <code>snapshot()</code> / <code>restore()</code> covered in the <emphasis>for single worker</emphasis> guide: a snapshot lives only for the duration of the request that created it; a checkpoint lives until nginx restarts (or longer, if externalised).</p>
+      <section>
+        <title>
+          <p>Checkpoint scope summary</p>
+        </title>
+        <p>Scope │ Storage │ Survives request end │ Survives nginx reload</p>
+        <p>Request snapshot │ JS local variable in handler │ No (GC’d after handler) │ No</p>
+        <p>Worker checkpoint │ JS module-level variable │ Yes │ No (workers are restarted)</p>
+        <p>Cross-worker checkpoint │ SharedWorker memory │ Yes │ No (SharedWorker restarted)</p>
+        <p>Persistent checkpoint │ External file / env var (via js_preprocess) │ Yes │ Yes (re-read at next startup)</p>
+        <empty-line />
+        <p>This guide covers the last three rows.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Worker-level checkpoint</p>
+      </title>
+      <section>
+        <title>
+          <p>How it works</p>
+        </title>
+        <p>A module-level variable in <code>js_source</code> persists for the lifetime of a worker process. Any request handler in that worker can read or write it.</p>
+        <poem>
+          <stanza>
+            <v>// js_source: worker_checkpoint.js</v>
+            <v />
+            <v>// The module-level map is shared across all requests in this worker.</v>
+            <v>const checkpoints = new Map();   // name → NginxSnapshot</v>
+            <v />
+            <v>function saveCheckpoint(name, snap) {</v>
+            <v>    checkpoints.set(name, snap);</v>
+            <v>}</v>
+            <v />
+            <v>function loadCheckpoint(name) {</v>
+            <v>    return checkpoints.get(name) || null;</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: manual checkpoint via admin endpoint</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// POST /admin/checkpoint?name=stable  → save current config</v>
+            <v>// POST /admin/restore?name=stable     → restore that checkpoint</v>
+            <v />
+            <v>const adminLoc = nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/admin/checkpoint');</v>
+            <v />
+            <v>adminLoc.handler = (req) =&gt; {</v>
+            <v>    const name = req.getVar('arg_name') || 'default';</v>
+            <v />
+            <v>    if (req.method === 'POST' &amp;&amp; req.uri.startsWith('/admin/checkpoint')) {</v>
+            <v>        const snap = req.location.snapshot();</v>
+            <v>        saveCheckpoint(name, snap);</v>
+            <v>        req.json({ saved: name });</v>
+            <v />
+            <v>    } else if (req.method === 'POST' &amp;&amp; req.uri.startsWith('/admin/restore')) {</v>
+            <v>        const snap = loadCheckpoint(name);</v>
+            <v>        if (!snap) {</v>
+            <v>            req.respond(404, {}, 'checkpoint not found: ' + name);</v>
+            <v>            return;</v>
+            <v>        }</v>
+            <v>        snap.restore();</v>
+            <v>        req.json({ restored: name });</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> A checkpoint stored this way is <strong>per-worker</strong>. The other workers still have the old config. To propagate the restore to all workers, combine this with the SharedWorker broadcast strategy from the <emphasis>for all workers</emphasis> guide. </p>
+      </section>
+      <section>
+        <title>
+          <p>Auto-checkpoint on successful apply</p>
+        </title>
+        <p>Automatically save a <code>"last-known-good"</code> checkpoint every time a config change is validated and applied:</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const snap = req.location.snapshot();      // save candidate rollback point</v>
+            <v />
+            <v>    try {</v>
+            <v>        const cfg = JSON.parse(await req.readBody());</v>
+            <v>        req.location.root = cfg.root;</v>
+            <v />
+            <v>        const ok = await probeBackend(req);</v>
+            <v>        if (!ok) { throw new Error('probe failed'); }</v>
+            <v />
+            <v>        // Success — promote snapshot to "last-known-good" checkpoint</v>
+            <v>        const lkg = req.location.snapshot();   // re-snapshot after apply</v>
+            <v>        saveCheckpoint('last-known-good', lkg);</v>
+            <v />
+            <v>        req.json({ applied: true });</v>
+            <v />
+            <v>    } catch (e) {</v>
+            <v>        snap.restore();</v>
+            <v>        req.respond(500, {}, 'apply failed: ' + e.message);</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Multi-step migration with intermediate checkpoints</p>
+        </title>
+        <p>Some config changes involve multiple fields that must be updated atomically or rolled back step by step.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const steps = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>    // Checkpoint before every step so we can roll back to any intermediate state</v>
+            <v>    const checkpointStack = [];</v>
+            <v />
+            <v>    try {</v>
+            <v>        for (const step of steps) {</v>
+            <v>            checkpointStack.push(req.location.snapshot());  // save this step's start</v>
+            <v />
+            <v>            applyStep(step, req);</v>
+            <v />
+            <v>            const ok = await probeStep(step, req);</v>
+            <v>            if (!ok) { throw new Error('step failed: ' + step.name); }</v>
+            <v>        }</v>
+            <v />
+            <v>        req.json({ applied: steps.length });</v>
+            <v />
+            <v>    } catch (e) {</v>
+            <v>        // Roll back to the checkpoint taken before the failing step</v>
+            <v>        const rollback = checkpointStack[checkpointStack.length - 1];</v>
+            <v>        if (rollback) { rollback.restore(); }</v>
+            <v />
+            <v>        req.respond(500, {}, e.message);</v>
+            <v>    }</v>
+            <v>};</v>
+            <v />
+            <v>function applyStep(step, req) {</v>
+            <v>    if (step.type === 'set-root')    { req.location.root = step.value; }</v>
+            <v>    if (step.type === 'set-timeout') { req.location.proxy.readTimeout = step.value; }</v>
+            <v>    // …</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Cross-worker checkpoint (SharedWorker)</p>
+      </title>
+      <section>
+        <title>
+          <p>Architecture</p>
+        </title>
+        <p>The SharedWorker holds the checkpoint store. Any worker can save or load a checkpoint by posting a message and awaiting the reply.</p>
+        <poem>
+          <stanza>
+            <v>  Worker 0                SharedWorker pthread              Worker 1</v>
+            <v>  ────────                ────────────────────              ────────</v>
+            <v>  req → saveCheckpoint()  checkpoints Map                  req → loadCheckpoint()</v>
+            <v>     postMessage('save')  ─────────────                       postMessage('load')</v>
+            <v>                          │ name → snap │  ←── snapshots       ← postMessage(snap)</v>
+            <v>                          │   (JS obj) │      are JS objs</v>
+            <v>                          │            │      serialised</v>
+            <v>                          └────────────┘      via structured clone</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong>
+          <code>NginxSnapshot</code> is an opaque C-backed object — it cannot be serialised via structured clone. The SharedWorker checkpoint stores the <strong>raw property values</strong> (plain JS objects), not the <code>NginxSnapshot</code> handle itself. </p>
+      </section>
+      <section>
+        <title>
+          <p>SharedWorker checkpoint store</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// cpstore.js  (SharedWorker)</v>
+            <v />
+            <v>const store = new Map();   // name → plain JS object with property values</v>
+            <v />
+            <v>onmessage = (msg) =&gt; {</v>
+            <v>    const { type, name, data } = msg.data;</v>
+            <v />
+            <v>    if (type === 'save') {</v>
+            <v>        store.set(name, data);</v>
+            <v>        postMessage({ type: 'saved', name });</v>
+            <v />
+            <v>    } else if (type === 'load') {</v>
+            <v>        const data = store.get(name);</v>
+            <v>        postMessage({ type: 'loaded', name, data: data || null });</v>
+            <v />
+            <v>    } else if (type === 'list') {</v>
+            <v>        postMessage({ type: 'list', names: [...store.keys()] });</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Worker helpers: serialise and apply a checkpoint</p>
+        </title>
+        <p>Because <code>NginxSnapshot</code> is opaque, checkpoints are stored as plain objects:</p>
+        <poem>
+          <stanza>
+            <v>// js_source: cross_worker_checkpoint.js</v>
+            <v />
+            <v>const cpStore = new SharedWorker('cpstore.js');</v>
+            <v />
+            <v>// Serialise the current location config to a plain object</v>
+            <v>function captureToPlainObject(req) {</v>
+            <v>    const loc = req.location;</v>
+            <v>    return {</v>
+            <v>        root:             loc.root,</v>
+            <v>        sendfile:         loc.sendfile,</v>
+            <v>        keepaliveTimeout: loc.keepaliveTimeout,</v>
+            <v>        defaultType:      loc.defaultType,</v>
+            <v>        proxy: loc.proxy ? {</v>
+            <v>            readTimeout:    loc.proxy.readTimeout,</v>
+            <v>            connectTimeout: loc.proxy.connectTimeout,</v>
+            <v>            buffering:      loc.proxy.buffering,</v>
+            <v>        } : undefined,</v>
+            <v>    };</v>
+            <v>}</v>
+            <v />
+            <v>// Apply a plain-object checkpoint back to the location</v>
+            <v>function applyFromPlainObject(req, data) {</v>
+            <v>    if (!data) { return; }</v>
+            <v>    if (data.root             !== undefined) { req.location.root             = data.root; }</v>
+            <v>    if (data.sendfile         !== undefined) { req.location.sendfile         = data.sendfile; }</v>
+            <v>    if (data.keepaliveTimeout !== undefined) { req.location.keepaliveTimeout = data.keepaliveTimeout; }</v>
+            <v>    if (data.defaultType      !== undefined) { req.location.defaultType      = data.defaultType; }</v>
+            <v>    if (data.proxy?.readTimeout    !== undefined) { req.location.proxy.readTimeout    = data.proxy.readTimeout; }</v>
+            <v>    if (data.proxy?.connectTimeout !== undefined) { req.location.proxy.connectTimeout = data.proxy.connectTimeout; }</v>
+            <v>    if (data.proxy?.buffering      !== undefined) { req.location.proxy.buffering      = data.proxy.buffering; }</v>
+            <v>}</v>
+            <v />
+            <v>// Save current location config as a named checkpoint in the SharedWorker</v>
+            <v>async function saveCheckpoint(req, name) {</v>
+            <v>    const data = captureToPlainObject(req);</v>
+            <v>    return new Promise(resolve =&gt; {</v>
+            <v>        cpStore.onmessage = (msg) =&gt; {</v>
+            <v>            if (msg.data.type === 'saved' &amp;&amp; msg.data.name === name) { resolve(); }</v>
+            <v>        };</v>
+            <v>        cpStore.postMessage({ type: 'save', name, data });</v>
+            <v>    });</v>
+            <v>}</v>
+            <v />
+            <v>// Load a named checkpoint from the SharedWorker and apply it to this worker</v>
+            <v>async function loadCheckpoint(req, name) {</v>
+            <v>    return new Promise((resolve, reject) =&gt; {</v>
+            <v>        cpStore.onmessage = (msg) =&gt; {</v>
+            <v>            if (msg.data.type === 'loaded' &amp;&amp; msg.data.name === name) {</v>
+            <v>                if (!msg.data.data) { reject(new Error('checkpoint not found: ' + name)); return; }</v>
+            <v>                applyFromPlainObject(req, msg.data.data);</v>
+            <v>                resolve();</v>
+            <v>            }</v>
+            <v>        };</v>
+            <v>        cpStore.postMessage({ type: 'load', name });</v>
+            <v>    });</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: save and restore via HTTP endpoints</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const name = req.getVar('arg_name') || 'default';</v>
+            <v />
+            <v>    if (req.uri === '/admin/checkpoint/save') {</v>
+            <v>        await saveCheckpoint(req, name);</v>
+            <v>        req.json({ saved: name });</v>
+            <v />
+            <v>    } else if (req.uri === '/admin/checkpoint/restore') {</v>
+            <v>        try {</v>
+            <v>            await loadCheckpoint(req, name);</v>
+            <v>            req.json({ restored: name });</v>
+            <v>        } catch (e) {</v>
+            <v>            req.respond(404, {}, e.message);</v>
+            <v>        }</v>
+            <v />
+            <v>    } else if (req.uri === '/admin/checkpoint/list') {</v>
+            <v>        const names = await new Promise(resolve =&gt; {</v>
+            <v>            cpStore.onmessage = (msg) =&gt; {</v>
+            <v>                if (msg.data.type === 'list') { resolve(msg.data.names); }</v>
+            <v>            };</v>
+            <v>            cpStore.postMessage({ type: 'list' });</v>
+            <v>        });</v>
+            <v>        req.json({ checkpoints: names });</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Persistent checkpoint (survives nginx reload)</p>
+      </title>
+      <section>
+        <title>
+          <p>The problem</p>
+        </title>
+        <p>When nginx reloads (<code>nginx -s reload</code>) or restarts, all workers and the SharedWorker are replaced. In-memory checkpoints are lost.</p>
+        <p>To survive a reload, checkpoints must be externalised — written to a file or database before nginx shuts down, and re-read at the next startup.</p>
+      </section>
+      <section>
+        <title>
+          <p>Pattern: write checkpoint to file, read back via js_preprocess</p>
+        </title>
+        <p>
+          <code>js_preprocess</code> runs during config parse and can read files. A checkpoint can be written to a JSON file by a request handler and read back at next startup.</p>
+        <poem>
+          <stanza>
+            <v>// js_source: persistent_checkpoint.js</v>
+            <v>// (uses Worker for async file I/O — not shown in detail here)</v>
+            <v />
+            <v>async function persistCheckpoint(name, data) {</v>
+            <v>    const path = '/var/run/nginx/checkpoints/' + name + '.json';</v>
+            <v>    // Write via a Worker that can do synchronous file I/O</v>
+            <v>    const w = new Worker('filewriter.js');</v>
+            <v>    w.postMessage({ path, data: JSON.stringify(data) });</v>
+            <v>    await new Promise(resolve =&gt; { w.onmessage = resolve; });</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// js_preprocess: read_checkpoint.js</v>
+            <v>// Runs during config parse; injects config text based on saved checkpoint.</v>
+            <v />
+            <v>const fs   = require('std');</v>
+            <v>const path = '/var/run/nginx/checkpoints/startup.json';</v>
+            <v />
+            <v>try {</v>
+            <v>    const raw  = fs.open(path, 'r').readAsString();</v>
+            <v>    const data = JSON.parse(raw);</v>
+            <v />
+            <v>    // Generate nginx config fragment from checkpoint data</v>
+            <v>    config.write('location /from-checkpoint {\n');</v>
+            <v>    config.write('    root ' + data.root + ';\n');</v>
+            <v>    config.write('}\n');</v>
+            <v>} catch (e) {</v>
+            <v>    // No checkpoint file — use defaults from nginx.conf</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram: full persistent checkpoint lifecycle</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Nginx starts / reloads</v>
+            <v>       │</v>
+            <v>       ▼</v>
+            <v>  js_preprocess runs</v>
+            <v>       │  reads /var/run/nginx/checkpoints/startup.json</v>
+            <v>       │  injects config text (if file exists)</v>
+            <v>       ▼</v>
+            <v>  nginx.conf parsed → workers fork</v>
+            <v>       │</v>
+            <v>       │   (nginx is running)</v>
+            <v>       ▼</v>
+            <v>  Request: POST /admin/checkpoint?name=stable</v>
+            <v>       │  captures current config → plain JS object</v>
+            <v>       │  writes to /var/run/nginx/checkpoints/stable.json (via Worker)</v>
+            <v>       │</v>
+            <v>  Request: POST /admin/restore?name=stable</v>
+            <v>       │  reads from SharedWorker store OR file</v>
+            <v>       │  applies to this worker (write_mode='global')</v>
+            <v>       │  broadcasts to other workers via SharedWorker fan-out</v>
+            <v>       │</v>
+            <v>  nginx -s reload</v>
+            <v>       │</v>
+            <v>       ▼</v>
+            <v>  js_preprocess reads stable.json → injects into new config</v>
+            <v>  Workers fork with checkpoint baked in</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Checkpoint-based A/B testing with controlled rollout</p>
+      </title>
+      <p>Checkpoints can represent named config states (e.g. <code>"control"</code>, <code>"experiment-v1"</code>, <code>"experiment-v2"</code>). Traffic routing between states is controlled per-request.</p>
+      <poem>
+        <stanza>
+          <v>// js_source: ab_checkpoint.js</v>
+          <v />
+          <v>const cpStore = new SharedWorker('cpstore.js');</v>
+          <v />
+          <v>// Pre-load both configs at init time</v>
+          <v>// (assumes they were previously saved as named checkpoints)</v>
+          <v />
+          <v>loc.handler = async (req) =&gt; {</v>
+          <v>    // Route by cookie or percentage</v>
+          <v>    const bucket = req.getVar('cookie_ab_bucket');</v>
+          <v>    const target = (bucket === 'experiment') ? 'experiment-v1' : 'control';</v>
+          <v />
+          <v>    // Apply per-request (local write_mode — does not affect other requests)</v>
+          <v>    req.location.setWriteMode('local');</v>
+          <v>    req.location.setReadMode('local');</v>
+          <v />
+          <v>    try {</v>
+          <v>        await loadCheckpoint(req, target);    // applies to local snapshot</v>
+          <v>    } catch (e) {</v>
+          <v>        // Fall back to global (control) config — no local mutation applied</v>
+          <v>    }</v>
+          <v />
+          <v>    req.sendfile('/index.html');</v>
+          <v>    // local snapshot is automatically discarded at request end</v>
+          <v>};</v>
+        </stanza>
+      </poem>
+    </section>
+    <section>
+      <title>
+        <p>Caveats</p>
+      </title>
+      <section>
+        <title>
+          <p>NginxSnapshot is not serialisable</p>
+        </title>
+        <p>
+          <code>NginxSnapshot</code> handles are C-backed opaque objects. They cannot be passed to <code>postMessage</code> or serialised via <code>JSON.stringify</code>. Cross-worker and persistent checkpoints must store plain JS objects (see <code>captureToPlainObject</code> above) and apply them field-by-field using setters.</p>
+      </section>
+      <section>
+        <title>
+          <p>Checkpoint staleness</p>
+        </title>
+        <p>A checkpoint captures a point-in-time view. If nginx’s upstream peer list changes (peers added or removed), a stale checkpoint may attempt to set weights on non-existent peers. <code>restore()</code> (and <code>applyFromPlainObject</code>) are best-effort and silently ignore such errors.</p>
+      </section>
+      <section>
+        <title>
+          <p>Concurrent checkpoint writers</p>
+        </title>
+        <p>Module-level variables and SharedWorker state are not automatically mutex- protected. If two requests write checkpoints concurrently, the last writer wins. For critical checkpoint writes, use a flag guard similar to <code>mutationInProgress</code> from the <emphasis>for single worker</emphasis> guide.</p>
+      </section>
+      <section>
+        <title>
+          <p>Checkpoint and nginx reload</p>
+        </title>
+        <p>Files written by <code>persistCheckpoint</code> during a request are not guaranteed to be flushed before <code>nginx -s reload</code> starts the new worker processes. If the reload is triggered immediately after a checkpoint write, the new <code>js_preprocess</code> run may read a partial or previous file. Use atomic rename-from-temp to mitigate:</p>
+        <poem>
+          <stanza>
+            <v>// In filewriter.js Worker:</v>
+            <v>// 1. Write to /var/run/nginx/checkpoints/.stable.json.tmp</v>
+            <v>// 2. Atomically rename to /var/run/nginx/checkpoints/stable.json</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+  </body>
+</FictionBook>

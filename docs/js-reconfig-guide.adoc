@@ -1,9 +1,15 @@
-= nginx JS — Dynamic Reconfiguration Guide
+= nginx JS — Dynamic Reconfiguration Guide (for single worker)
 :toc: left
 :toclevels: 3
 :sectnums:
 :source-highlighter: highlight.js
 :icons: font
+
+[WARNING]
+====
+*DRAFT FOR COMMENTS* — This document is a work in progress.
+Content, API names, and examples are subject to change before release.
+====
 
 == Overview
 
