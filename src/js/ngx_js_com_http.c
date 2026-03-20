@@ -3274,23 +3274,28 @@ ngx_js_flatten_stream_out(ngx_http_request_t *r, ngx_js_req_ctx_t *rctx,
 
 /*
  * Streaming filter chain: each filter receives the PREVIOUS filter's output
- * as its input (composing semantics, same as wholeBody mode for the WB chain).
- * After every filter call stream_out is reset so the next filter starts fresh.
- * After the last filter stream_out is left as the final output for the caller.
+ * as its input (composing semantics).  STREAM_SYNC filters emit via
+ * req.sendBuffer(); STREAM_ASYNC filters return a Promise whose resolved
+ * string becomes the next cur_data.  start_idx allows resuming after an
+ * async suspension.  Returns NGX_OK, NGX_AGAIN (w->sf_pending set), or
+ * NGX_ERROR.
  */
 ngx_int_t
 ngx_js_streaming_filters_run(JSContext *ctx, JSRuntime *rt,
     ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf,
-    u_char *chunk_data, size_t chunk_len, ngx_uint_t is_last)
+    u_char *chunk_data, size_t chunk_len, ngx_uint_t is_last,
+    ngx_uint_t start_idx)
 {
     ngx_js_filter_entry_t  *elts;
     ngx_js_worker_t        *w;
     ngx_js_req_ctx_t       *rctx;
+    ngx_js_sf_pending_t    *sf_p;
     JSValue                 req_obj, fn, chunk_val, flags_obj, result, args[3];
     JSContext              *job_ctx;
     ngx_uint_t              i, nelts;
     u_char                 *cur_data;
     size_t                  cur_len;
+    int                     state;
 
     req_obj = ngx_js_wrap_request(ctx, r);
     if (JS_IsException(req_obj)) {
@@ -3307,12 +3312,14 @@ ngx_js_streaming_filters_run(JSContext *ctx, JSRuntime *rt,
     nelts                   = jlcf->body_filters->nelts;
     elts                    = jlcf->body_filters->elts;
 
-    rctx    = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    rctx     = ngx_http_get_module_ctx(r, ngx_js_http_module);
     cur_data = chunk_data;
     cur_len  = chunk_len;
 
-    for (i = 0; i < nelts; i++) {
-        if (elts[i].mode != NGX_JS_FILTER_STREAM_SYNC) {
+    for (i = start_idx; i < nelts; i++) {
+        if (elts[i].mode != NGX_JS_FILTER_STREAM_SYNC
+            && elts[i].mode != NGX_JS_FILTER_STREAM_ASYNC)
+        {
             continue;
         }
 
@@ -3323,15 +3330,15 @@ ngx_js_streaming_filters_run(JSContext *ctx, JSRuntime *rt,
         }
 
         /*
-         * Reset stream_out before each filter: each filter's sendBuffer
-         * calls accumulate fresh output; after the call we flatten that
-         * output into cur_data/cur_len for the NEXT filter's input.
-         * After the last filter, stream_out is left intact for the caller.
+         * Reset stream_out before each filter so each filter's sendBuffer
+         * calls accumulate fresh output.  After the call we flatten
+         * stream_out into cur_data for the next filter's input.
+         * After the last filter stream_out is left intact for the caller.
          */
         if (rctx != NULL) {
             rctx->stream_out      = NULL;
             rctx->stream_out_last = &rctx->stream_out;
-            rctx->active_filter_mode = NGX_JS_FILTER_STREAM_SYNC;
+            rctx->active_filter_mode = elts[i].mode;
         }
 
         chunk_val = JS_NewStringLen(ctx, (const char *) cur_data, cur_len);
@@ -3352,24 +3359,154 @@ ngx_js_streaming_filters_run(JSContext *ctx, JSRuntime *rt,
 
         if (JS_IsException(result)) {
             ngx_js_log_exception(ctx, r->connection->log);
+            JS_FreeValue(ctx, result);
+            /* On exception, treat as drop (cur_data = "") */
+            cur_data = (u_char *) "";
+            cur_len  = 0;
+            if (rctx != NULL) {
+                rctx->stream_out = NULL;
+            }
+            continue;
         }
-        JS_FreeValue(ctx, result);
 
-        /* Flatten this filter's stream_out into cur_data for the next filter.
-         * This also leaves stream_out pointing to the last filter's output
-         * when the loop ends (cur_data for subsequent filters, stream_out for
-         * the caller). */
+        /* STREAM_ASYNC: expect a Promise from the return value */
+        if (elts[i].mode == NGX_JS_FILTER_STREAM_ASYNC) {
+            state = (int) JS_PromiseState(ctx, result);
+
+            if (state == -1) {
+                /* not a Promise — pass-through: keep cur_data unchanged */
+                JS_FreeValue(ctx, result);
+                continue;
+            }
+
+            switch ((JSPromiseStateEnum) state) {
+
+            case JS_PROMISE_FULFILLED: {
+                JSValue     res = JS_PromiseResult(ctx, result);
+                const char *s;
+                size_t      slen;
+                u_char     *p;
+
+                JS_FreeValue(ctx, result);
+
+                if (JS_IsString(res)) {
+                    s = JS_ToCStringLen(ctx, &slen, res);
+                    if (s) {
+                        if (slen > 0) {
+                            p = ngx_pnalloc(r->pool, slen);
+                            if (p) {
+                                ngx_memcpy(p, s, slen);
+                                cur_data = p;
+                                cur_len  = slen;
+                            } else {
+                                cur_data = (u_char *) "";
+                                cur_len  = 0;
+                            }
+                        } else {
+                            cur_data = (u_char *) "";
+                            cur_len  = 0;
+                        }
+                        JS_FreeCString(ctx, s);
+                    }
+                }
+                /* Non-string: pass-through — keep cur_data unchanged */
+
+                JS_FreeValue(ctx, res);
+                /*
+                 * stream_out stays NULL; any subsequent SYNC filter will reset
+                 * it and populate it via sendBuffer.  Post-loop: if this was
+                 * the last active filter, stream_out is built from cur_data.
+                 */
+                continue;
+            }
+
+            case JS_PROMISE_REJECTED: {
+                JSValue reason = JS_PromiseResult(ctx, result);
+                JSValue str_v  = JS_ToString(ctx, reason);
+                const char *cs = JS_ToCString(ctx, str_v);
+                if (cs) {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                                  "js: async streaming filter rejected: %s",
+                                  cs);
+                    JS_FreeCString(ctx, cs);
+                }
+                JS_FreeValue(ctx, str_v);
+                JS_FreeValue(ctx, reason);
+                JS_FreeValue(ctx, result);
+                JS_FreeValue(ctx, flags_obj);
+                JS_FreeValue(ctx, req_obj);
+                w->dispatching_body_arr = NULL;
+                return NGX_ERROR;
+            }
+
+            case JS_PROMISE_PENDING:
+                /* Suspend: save cur_data (= input to this async filter) */
+                sf_p = ngx_pcalloc(r->pool, sizeof(ngx_js_sf_pending_t));
+                if (sf_p == NULL) {
+                    JS_FreeValue(ctx, result);
+                    JS_FreeValue(ctx, flags_obj);
+                    JS_FreeValue(ctx, req_obj);
+                    w->dispatching_body_arr = NULL;
+                    return NGX_ERROR;
+                }
+
+                sf_p->promise    = JS_DupValue(ctx, result);
+                sf_p->resume_idx = i + 1;
+                sf_p->w          = w;
+                sf_p->r          = r;
+                sf_p->cur_data   = cur_data;
+                sf_p->cur_len    = cur_len;
+                sf_p->is_last    = is_last;
+                sf_p->next       = w->sf_pending;
+                w->sf_pending    = sf_p;
+
+                JS_FreeValue(ctx, result);
+                JS_FreeValue(ctx, flags_obj);
+                JS_FreeValue(ctx, req_obj);
+                w->dispatching_body_arr = NULL;
+                return NGX_AGAIN;
+            }
+        }
+
+        /* STREAM_SYNC: flatten stream_out into cur_data for next filter */
         if (rctx != NULL) {
             ngx_js_flatten_stream_out(r, rctx, &cur_data, &cur_len);
         } else {
             cur_data = (u_char *) "";
             cur_len  = 0;
         }
+        JS_FreeValue(ctx, result);
     }
 
     JS_FreeValue(ctx, flags_obj);
     JS_FreeValue(ctx, req_obj);
     w->dispatching_body_arr = NULL;
+
+    /*
+     * If the last active filter was STREAM_ASYNC FULFILLED (or a non-Promise
+     * async return / pass-through "not a Promise"), stream_out is NULL but
+     * cur_data may hold content that still needs to be emitted.  Build a
+     * chain link from cur_data so the caller can pass it downstream.
+     */
+    if (rctx != NULL && rctx->stream_out == NULL && cur_len > 0) {
+        ngx_buf_t    *b;
+        ngx_chain_t  *link;
+
+        b = ngx_calloc_buf(r->pool);
+        if (b != NULL) {
+            b->pos    = cur_data;
+            b->last   = cur_data + cur_len;
+            b->memory = 1;
+
+            link = ngx_alloc_chain_link(r->pool);
+            if (link != NULL) {
+                link->buf  = b;
+                link->next = NULL;
+                rctx->stream_out      = link;
+                rctx->stream_out_last = &link->next;
+            }
+        }
+    }
 
     return NGX_OK;
 }

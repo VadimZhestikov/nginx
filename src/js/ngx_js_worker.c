@@ -1124,6 +1124,7 @@ ngx_js_worker_recv_handler(ngx_event_t *ev)
 
     ngx_js_async_check(w);
     ngx_js_bf_async_check(w);
+    ngx_js_sf_async_check(w);
 }
 
 

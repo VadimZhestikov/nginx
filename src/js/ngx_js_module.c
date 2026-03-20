@@ -771,6 +771,7 @@ ngx_js_bcast_recv_handler(ngx_event_t *ev)
 
     ngx_js_async_check(w);
     ngx_js_bf_async_check(w);
+    ngx_js_sf_async_check(w);
 }
 
 
@@ -1025,6 +1026,16 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
             JS_FreeValue(w->ctx, bf_p->promise);
         }
         w->bf_pending = NULL;
+
+        {
+            ngx_js_sf_pending_t  *sf_p, *sfnext;
+
+            for (sf_p = w->sf_pending; sf_p != NULL; sf_p = sfnext) {
+                sfnext = sf_p->next;
+                JS_FreeValue(w->ctx, sf_p->promise);
+            }
+            w->sf_pending = NULL;
+        }
     }
 
     if (w->ctx) {

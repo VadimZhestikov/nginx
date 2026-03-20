@@ -161,6 +161,91 @@ ngx_js_body_filter_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
 }
 
 
+/*
+ * Emit rctx->stream_out downstream, setting last_buf when is_last.
+ */
+static ngx_int_t
+ngx_js_streaming_emit(ngx_http_request_t *r, ngx_js_req_ctx_t *rctx,
+    ngx_uint_t is_last)
+{
+    ngx_chain_t  *cl, *lc;
+    ngx_buf_t    *lb;
+
+    cl = rctx->stream_out;
+
+    if (cl != NULL) {
+        if (is_last) {
+            lc = cl;
+            while (lc->next != NULL) {
+                lc = lc->next;
+            }
+            lc->buf->last_buf      = 1;
+            lc->buf->last_in_chain = 1;
+        }
+        return ngx_js_next_body_filter(r, cl);
+    }
+
+    if (is_last) {
+        lb = ngx_calloc_buf(r->pool);
+        if (lb == NULL) {
+            return NGX_ERROR;
+        }
+        lb->last_buf = 1;
+        lb->sync     = 1;
+
+        lc = ngx_alloc_chain_link(r->pool);
+        if (lc == NULL) {
+            return NGX_ERROR;
+        }
+        lc->buf  = lb;
+        lc->next = NULL;
+
+        return ngx_js_next_body_filter(r, lc);
+    }
+
+    return NGX_OK;
+}
+
+
+/*
+ * Run streaming filter chain from start_idx.
+ * On NGX_AGAIN suspends via r->main->count++.
+ * On NGX_OK emits stream_out downstream.
+ */
+ngx_int_t
+ngx_js_streaming_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
+    ngx_js_req_ctx_t *rctx, ngx_js_loc_conf_t *jlcf,
+    u_char *cur_data, size_t cur_len, ngx_uint_t is_last,
+    ngx_uint_t start_idx)
+{
+    ngx_int_t  rc;
+    int        was_set;
+
+    was_set = (w->current_request == r);
+    if (!was_set) {
+        w->current_request = r;
+    }
+
+    rc = ngx_js_streaming_filters_run(w->ctx, w->rt, r, jlcf,
+                                      cur_data, cur_len, is_last, start_idx);
+
+    if (!was_set) {
+        w->current_request = NULL;
+    }
+
+    if (rc == NGX_AGAIN) {
+        r->main->count++;
+        return NGX_AGAIN;
+    }
+
+    if (rc == NGX_ERROR) {
+        return NGX_ERROR;
+    }
+
+    return ngx_js_streaming_emit(r, rctx, is_last);
+}
+
+
 static ngx_int_t
 ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -218,11 +303,9 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
         ngx_chain_t  *cl;
         ngx_buf_t    *b;
-        ngx_chain_t  *lc;
-        ngx_buf_t    *lb;
         u_char       *p, *chunk_data;
         size_t        total;
-        int           last, was_set;
+        int           last;
 
         /* Flatten the chain into a single chunk string. */
         total = 0;
@@ -257,53 +340,15 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         rctx->stream_out      = NULL;
         rctx->stream_out_last = &rctx->stream_out;
 
-        was_set = (w->current_request == r);
-        if (!was_set) {
-            w->current_request = r;
-        }
-
-        ngx_js_streaming_filters_run(w->ctx, w->rt, r, jlcf,
-                                     chunk_data, total, (ngx_uint_t) last);
-
-        if (!was_set) {
-            w->current_request = NULL;
-        }
-
-        cl = rctx->stream_out;
-
-        if (cl != NULL) {
-            if (last) {
-                /* Set last_buf=1 on the final output buffer. */
-                lc = cl;
-                while (lc->next != NULL) {
-                    lc = lc->next;
-                }
-                lc->buf->last_buf      = 1;
-                lc->buf->last_in_chain = 1;
+        {
+            ngx_int_t  rc = ngx_js_streaming_run_from(w, r, rctx, jlcf,
+                                                       chunk_data, total,
+                                                       (ngx_uint_t) last, 0);
+            if (rc == NGX_AGAIN) {
+                return NGX_DONE;
             }
-            return ngx_js_next_body_filter(r, cl);
+            return rc;
         }
-
-        if (last) {
-            /* Last chunk but no sendBuffer calls: emit empty last_buf marker. */
-            lb = ngx_calloc_buf(r->pool);
-            if (lb == NULL) {
-                return NGX_ERROR;
-            }
-            lb->last_buf = 1;
-            lb->sync     = 1;
-
-            lc = ngx_alloc_chain_link(r->pool);
-            if (lc == NULL) {
-                return NGX_ERROR;
-            }
-            lc->buf  = lb;
-            lc->next = NULL;
-
-            return ngx_js_next_body_filter(r, lc);
-        }
-
-        return NGX_OK;
     }
 
     /* ── Mode B: accumulate ─────────────────────────────────────────── */
@@ -1136,6 +1181,7 @@ ngx_js_body_done(ngx_http_request_t *r)
      */
     ngx_js_async_check(bctx->w);
     ngx_js_bf_async_check(bctx->w);
+    ngx_js_sf_async_check(bctx->w);
     ngx_http_finalize_request(r, NGX_DONE);
 
     bctx->w->current_request = NULL;
@@ -1574,6 +1620,7 @@ ngx_js_subreq_resume(ngx_http_request_t *r)
     /* Finalize parent request once the top-level handler Promise settles */
     ngx_js_async_check(sctx->w);
     ngx_js_bf_async_check(sctx->w);
+    ngx_js_sf_async_check(sctx->w);
 }
 
 
@@ -2231,6 +2278,7 @@ ngx_js_sleep_timer_handler(ngx_event_t *ev)
 
     ngx_js_async_check(t->w);
     ngx_js_bf_async_check(t->w);
+    ngx_js_sf_async_check(t->w);
 }
 
 
@@ -2356,6 +2404,7 @@ ngx_js_fetch_resume_handler(ngx_event_t *ev)
 
     ngx_js_async_check(fctx->w);
     ngx_js_bf_async_check(fctx->w);
+    ngx_js_sf_async_check(fctx->w);
 }
 
 
@@ -4288,6 +4337,105 @@ ngx_js_bf_async_check(ngx_js_worker_t *w)
 
         case JS_PROMISE_PENDING:
             pp = &bf_p->next;
+            break;
+        }
+    }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Async streaming filter check — resume suspended streamingAsync       */
+/* ------------------------------------------------------------------ */
+
+void
+ngx_js_sf_async_check(ngx_js_worker_t *w)
+{
+    ngx_js_sf_pending_t  *sf_p, **pp;
+    ngx_js_req_ctx_t     *rctx;
+    ngx_js_loc_conf_t    *jlcf;
+    JSContext            *ctx;
+    JSValue               result, reason, str;
+    const char           *cs;
+    size_t                slen;
+    u_char               *cur_data;
+    size_t                cur_len;
+    ngx_int_t             rc;
+
+    ctx = w->ctx;
+    pp  = &w->sf_pending;
+
+    while (*pp != NULL) {
+        sf_p = *pp;
+
+        switch (JS_PromiseState(ctx, sf_p->promise)) {
+
+        case JS_PROMISE_FULFILLED:
+            *pp = sf_p->next;
+
+            rctx = ngx_http_get_module_ctx(sf_p->r, ngx_js_http_module);
+            jlcf = ngx_http_get_module_loc_conf(sf_p->r, ngx_js_http_module);
+
+            /* Get the resolved string; if not a string, pass-through. */
+            result   = JS_PromiseResult(ctx, sf_p->promise);
+            cur_data = sf_p->cur_data;
+            cur_len  = sf_p->cur_len;
+
+            if (JS_IsString(result)) {
+                cs = JS_ToCStringLen(ctx, &slen, result);
+                if (cs) {
+                    if (slen > 0) {
+                        u_char *p = ngx_pnalloc(sf_p->r->pool, slen);
+                        if (p) {
+                            ngx_memcpy(p, cs, slen);
+                            cur_data = p;
+                            cur_len  = slen;
+                        } else {
+                            cur_data = (u_char *) "";
+                            cur_len  = 0;
+                        }
+                    } else {
+                        cur_data = (u_char *) "";
+                        cur_len  = 0;
+                    }
+                    JS_FreeCString(ctx, cs);
+                }
+            }
+            JS_FreeValue(ctx, result);
+            JS_FreeValue(ctx, sf_p->promise);
+
+            /* Reset stream_out before resuming. */
+            if (rctx != NULL) {
+                rctx->stream_out      = NULL;
+                rctx->stream_out_last = &rctx->stream_out;
+            }
+
+            rc = ngx_js_streaming_run_from(sf_p->w, sf_p->r, rctx, jlcf,
+                                           cur_data, cur_len, sf_p->is_last,
+                                           sf_p->resume_idx);
+            (void) rc;
+            ngx_http_finalize_request(sf_p->r, NGX_DONE);
+            break;
+
+        case JS_PROMISE_REJECTED:
+            *pp = sf_p->next;
+
+            reason = JS_PromiseResult(ctx, sf_p->promise);
+            str    = JS_ToString(ctx, reason);
+            cs     = JS_ToCString(ctx, str);
+            if (cs) {
+                ngx_log_error(NGX_LOG_ERR, sf_p->r->connection->log, 0,
+                              "js: async streaming filter rejected: %s", cs);
+                JS_FreeCString(ctx, cs);
+            }
+            JS_FreeValue(ctx, str);
+            JS_FreeValue(ctx, reason);
+            JS_FreeValue(ctx, sf_p->promise);
+
+            ngx_http_finalize_request(sf_p->r, NGX_ERROR);
+            break;
+
+        case JS_PROMISE_PENDING:
+            pp = &sf_p->next;
             break;
         }
     }

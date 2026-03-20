@@ -51,8 +51,9 @@ struct ngx_js_async_ctx_s {
 };
 
 
-/* Forward declaration — full definition follows ngx_js_worker_t below. */
+/* Forward declarations — full definitions follow ngx_js_worker_t below. */
 typedef struct ngx_js_bf_pending_s  ngx_js_bf_pending_t;
+typedef struct ngx_js_sf_pending_s  ngx_js_sf_pending_t;
 
 
 /*
@@ -63,7 +64,8 @@ typedef struct {
     JSRuntime               *rt;
     JSContext               *ctx;
     ngx_js_async_ctx_t      *async_pending;       /* list of suspended content handlers */
-    ngx_js_bf_pending_t     *bf_pending;          /* list of suspended body filters  */
+    ngx_js_bf_pending_t     *bf_pending;          /* list of suspended WB async filters */
+    ngx_js_sf_pending_t     *sf_pending;          /* list of suspended streaming filters */
     ngx_js_sw_state_t       *local_sw_list;       /* dynamic SWs created post-fork  */
     uint64_t                 request_deadline_ms;  /* 0 = none; CLOCK_MONOTONIC ms   */
     size_t                   baseline_malloc_size; /* rt malloc_size right after fork */
@@ -97,6 +99,24 @@ struct ngx_js_bf_pending_s {
     ngx_js_worker_t            *w;
     struct ngx_http_request_s  *r;
     ngx_js_bf_pending_t        *next;
+};
+
+
+/*
+ * Suspend/resume entry for a streamingAsync filter.
+ * Allocated in r->pool; linked into w->sf_pending.
+ * cur_data/cur_len is the chunk input to the async filter (pool-allocated).
+ * Used as pass-through fallback if the Promise resolves to non-string.
+ */
+struct ngx_js_sf_pending_s {
+    JSValue                     promise;
+    ngx_uint_t                  resume_idx;
+    ngx_js_worker_t            *w;
+    struct ngx_http_request_s  *r;
+    u_char                     *cur_data;
+    size_t                      cur_len;
+    ngx_uint_t                  is_last;
+    ngx_js_sf_pending_t        *next;
 };
 
 
@@ -281,12 +301,26 @@ ngx_int_t  ngx_js_body_filter_run_from(ngx_js_worker_t *w,
 /*
  * Run all streamingSync/streamingAsync filters in jlcf for one chunk.
  * chunk_data/chunk_len is the current output chunk; is_last=1 if last_buf.
- * Filters emit output by calling req.sendBuffer(), which appends to
- * rctx->stream_out.  Returns NGX_OK or NGX_ERROR.
+ * start_idx: first filter to run (0 = initial call, i+1 = after async resume).
+ * Filters emit output by calling req.sendBuffer(); STREAM_ASYNC filters
+ * return a Promise whose resolved string becomes the next cur_data.
+ * Returns NGX_OK, NGX_AGAIN (async suspension, w->sf_pending set), or NGX_ERROR.
  */
 ngx_int_t  ngx_js_streaming_filters_run(JSContext *ctx, JSRuntime *rt,
     struct ngx_http_request_s *r, ngx_js_loc_conf_t *jlcf,
-    u_char *chunk_data, size_t chunk_len, ngx_uint_t is_last);
+    u_char *chunk_data, size_t chunk_len, ngx_uint_t is_last,
+    ngx_uint_t start_idx);
+
+/*
+ * Run the streaming filter chain from start_idx.  Resets rctx->stream_out,
+ * calls ngx_js_streaming_filters_run, then emits the accumulated output
+ * downstream (or an empty last_buf marker if dropped).
+ * Returns NGX_OK, NGX_AGAIN (async, count already incremented), or NGX_ERROR.
+ */
+ngx_int_t  ngx_js_streaming_run_from(ngx_js_worker_t *w,
+    struct ngx_http_request_s *r, ngx_js_req_ctx_t *rctx,
+    ngx_js_loc_conf_t *jlcf, u_char *cur_data, size_t cur_len,
+    ngx_uint_t is_last, ngx_uint_t start_idx);
 
 /* Install shared NginxPendingServer prototype in ctx */
 ngx_int_t  ngx_js_pending_server_install_proto(JSContext *ctx);
@@ -344,6 +378,13 @@ void ngx_js_async_check(ngx_js_worker_t *w);
  * event-loop post-drain site.
  */
 void ngx_js_bf_async_check(ngx_js_worker_t *w);
+
+/*
+ * Inspect pending streamingAsync filter promises and resume or finalize
+ * each settled entry.  Called alongside ngx_js_async_check from every
+ * event-loop post-drain site.
+ */
+void ngx_js_sf_async_check(ngx_js_worker_t *w);
 
 
 /*
