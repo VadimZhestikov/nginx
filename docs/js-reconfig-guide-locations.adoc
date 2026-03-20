@@ -1,0 +1,1103 @@
+= nginx JS — Dynamic Reconfiguration Guide (locations)
+:toc: left
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+:icons: font
+
+[WARNING]
+====
+*DRAFT FOR COMMENTS* — This document is a work in progress.
+Content, API names, and examples are subject to change before release.
+====
+
+== Overview
+
+This guide covers runtime management of nginx *location blocks* via the
+JavaScript DOM: adding, removing, cloning, and reconfiguring locations and
+servers without reloading nginx.
+
+Prerequisites: read the _for single worker_ guide first for `write_mode`,
+`snapshot()`, and `suspendAcceptance()`.
+
+=== Scope
+
+Location operations are available on:
+
+* `NginxServer` objects — `nginx.http.servers[i]`
+* `NginxLocation` objects — `nginx.http.servers[i].locations[j]` or the
+  return value of `addLocation()`
+
+They are *not* available on `req.location` (the request-phase wrapper is
+read-only for structural operations).  Field writes (`root`, `handler`, …)
+work on `req.location` subject to `write_mode`.
+
+=== Config phase vs request phase
+
+Location structure mutations (add, remove, clone) and handler assignment are
+permanent, global changes — they update the location BST immediately and
+affect every subsequent request on this worker.  There is no per-request
+isolation for structural changes.
+
+To propagate structural changes to all workers, use a SharedWorker broadcast
+combined with `suspendAllWorkers()` (see _for all workers_ guide).
+
+=== nginx location matching algorithm
+
+Understanding the matching order is essential when adding locations:
+
+----
+  Incoming URI
+      │
+      ▼
+  1.  Exact-match locations (= /path)  ← checked first; wins immediately on match
+      │
+      ▼
+  2.  Prefix locations (longest wins among all prefix matches)
+          │
+          ├─► If longest match has ^~  ← skip regex scan; use this location
+          │
+          └─► Otherwise: remember the longest-prefix winner and continue …
+      │
+      ▼
+  3.  Regex locations (checked in definition order, first match wins)
+          │
+          ├─► Match found  ← use this location (overrides prefix winner)
+          │
+          └─► No match     ← fall back to the remembered prefix winner
+      │
+      ▼
+  4.  Named locations (@name) — reachable only from error_page / try_files
+----
+
+This order determines which `addLocation()` patterns affect which requests.
+
+== Inspecting the location tree
+
+=== srv.locations[]
+
+Returns a live array of all locations registered on this server, including
+dynamically added ones.  The order is: prefix/exact locations (sorted by
+path length, longest first), then regex locations (definition order), then
+named locations.
+
+[source,javascript]
+----
+const srv = nginx.http.servers[0];
+
+// List all locations with their match type and path
+srv.locations.forEach(loc => {
+    nginx.log(`${loc.matchType.padEnd(16)} ${loc.path}`);
+});
+----
+
+`loc.matchType` values:
+
+[cols="1,3"]
+|===
+| Value | Meaning
+
+| `'prefix'`
+| Normal longest-prefix match.
+
+| `'exact'`
+| `= /path` — checked first, wins immediately.
+
+| `'prefix_noregex'`
+| `^~ /path` — skips regex scan on match.
+
+| `'regex'`
+| `~ /pattern` — case-sensitive PCRE.
+
+| `'regex_caseless'`
+| `~* /pattern` — case-insensitive PCRE.
+
+| `'named'`
+| `@name` — reachable from `error_page` / `try_files` only.
+|===
+
+`loc.path` — the full pattern string as passed to `addLocation()`,
+including the modifier prefix (e.g. `"= /exact"`, `"~ /\\.php$"`).
+
+`loc.pattern` — the bare path/regex without the modifier prefix.
+
+`loc.internal` — `true` for named and noname (limit_except, etc.) locations.
+
+=== srv.findLocation(pattern)
+
+Searches the server's location arrays by exact pattern string and returns
+the `NginxLocation` wrapper, or `null` if not found.
+
+[source,javascript]
+----
+const srv = nginx.http.servers[0];
+
+const api = srv.findLocation('/api/');
+if (api) {
+    nginx.log('api root: ' + api.root);
+}
+
+const exact = srv.findLocation('= /health');
+const regex = srv.findLocation('~ /\\.php$');
+----
+
+Uses the same pattern syntax as `addLocation()`.
+
+=== Iterating and filtering
+
+[source,javascript]
+----
+const srv = nginx.http.servers[0];
+
+// All prefix locations with a JS handler
+const jsLocs = srv.locations.filter(l =>
+    l.matchType === 'prefix' && l.handler);
+
+// All regex locations
+const regexLocs = srv.locations.filter(l =>
+    l.matchType === 'regex' || l.matchType === 'regex_caseless');
+
+// Find by path prefix (e.g. all sub-locations of /api/)
+const apiTree = srv.locations.filter(l =>
+    l.matchType === 'prefix' && l.pattern.startsWith('/api/'));
+----
+
+== Adding locations
+
+=== srv.addLocation(pattern [, opts])
+
+Adds a new location to the server and immediately rebuilds the location BST
+so the new location is active for all subsequent requests.
+
+Returns the new `NginxLocation` object so properties and handler can be set
+in the same expression chain or immediately after.
+
+[source,javascript]
+----
+const loc = srv.addLocation('/new/path');
+loc.root    = '/var/www/new';
+loc.handler = (req) => { req.sendfile('/index.html'); };
+----
+
+*Pattern syntax:*
+
+[cols="1,1,3"]
+|===
+| Prefix | Example | Match type
+
+| (none)
+| `'/api/'`
+| Normal prefix — longest match wins.
+
+| `'= '`
+| `'= /ping'`
+| Exact match — wins immediately, highest priority after prefix search.
+
+| `'^~ '`
+| `'^~ /static/'`
+| Preferential prefix — disables regex scan when matched.
+
+| `'~ '`
+| `'~ /\\.php$'`
+| Case-sensitive PCRE regex.
+
+| `'~* '`
+| `'~* /\\.jpg$'`
+| Case-insensitive PCRE regex.
+
+| `'@'`
+| `'@fallback'`
+| Named location — only reachable from `error_page` / `try_files`.
+|===
+
+*Options:*
+
+[cols="1,3"]
+|===
+| Option | Description
+
+| `template: '/path'`
+| Copy all config fields from an existing location (same server) as the
+  starting point.  The pattern of the new location is still `pattern`.
+  Useful for creating near-copies of an existing location.
+
+| `index: N`
+| *Regex locations only.* Insert at position `N` in the regex check array
+  (0 = first checked).  Defaults to append (last checked).
+|===
+
+*Idempotency:* if a location with the same pattern already exists,
+`addLocation()` returns the existing `NginxLocation` object without
+creating a duplicate.  Safe to call multiple times.
+
+=== loc.addLocation(pattern [, opts])
+
+Delegates to the server-level `addLocation`.  Available on locations
+obtained from `server.locations[]` or a prior `addLocation()` call.
+Not available on `req.location`.
+
+[source,javascript]
+----
+// Equivalent — both add to the same server
+srv.addLocation('/api/v2/');
+apiLoc.addLocation('/api/v2/');     // apiLoc is any loc from this server
+----
+
+NOTE: The BST builder automatically groups locations into a nested tree by
+shared prefix.  You do not need to add child locations through a parent
+location object — adding `/api/v2/` to the server always nests it under
+`/api/` in the BST, regardless of which object you call `addLocation()` on.
+
+=== Example: add a simple prefix location
+
+[source,javascript]
+----
+// js_source: run at init_conf time
+
+const srv = nginx.http.servers[0];
+const docs = srv.addLocation('/docs/');
+
+docs.root    = '/var/www/docs';
+docs.sendfile = true;
+docs.handler = (req) => {
+    req.sendfile('/index.html');
+};
+----
+
+=== Example: add an exact-match health endpoint
+
+[source,javascript]
+----
+const health = srv.addLocation('= /health');
+health.handler = (req) => {
+    req.respond(200, { 'Content-Type': 'text/plain' }, 'OK');
+};
+----
+
+----
+  Matching:
+    /health       ── exact match (= /health)  ✓  highest priority
+    /health/more  ── prefix match /health      ✓  (if /health exists)
+    /healthz      ── no match                  ✗
+----
+
+=== Example: add a regex location at a specific position
+
+[source,javascript]
+----
+const srv = nginx.http.servers[0];
+
+// This regex will be checked BEFORE any existing regex locations
+const php = srv.addLocation('~ /\\.php$', { index: 0 });
+php.handler = (req) => { /* dispatch to FastCGI */ };
+
+// This regex will be checked LAST (default append)
+const fallback = srv.addLocation('~* /\\.html?$');
+fallback.root = '/var/www/html';
+----
+
+----
+  Regex check order (definition order):
+    [0]  ~ /\.php$         ← index:0 → inserted first
+    [1]  ~* /\.html?$      ← appended (default)
+    ...  (existing regex locs)
+----
+
+=== Example: add a named location for error fallback
+
+[source,javascript]
+----
+const srv = nginx.http.servers[0];
+
+const fallback = srv.addLocation('@static_fallback');
+fallback.root    = '/var/www/static';
+fallback.handler = (req) => { req.sendfile(req.uri); };
+
+// Wire it to 404 errors in another location
+const api = srv.findLocation('/api/');
+if (api) {
+    api.errorPage = [{ codes: [404], uri: '@static_fallback' }];
+}
+----
+
+=== Example: add a location using a template
+
+[source,javascript]
+----
+const srv = nginx.http.servers[0];
+
+// /api/v2/ gets the same config as /api/v1/ (handler, root, timeouts, …)
+// but at the new path
+const v2 = srv.addLocation('/api/v2/', { template: '/api/v1/' });
+
+// Override only what differs
+v2.handler = v2Handler;
+----
+
+=== Flow diagram: addLocation BST rebuild
+
+----
+  Before addLocation('/api/v2/'):
+
+  Server location BST:
+    /             (prefix)
+    /api/         (prefix)
+    /api/v1/      (prefix, nested under /api/)
+    /static/      (prefix)
+    ~ /\.php$     (regex[0])
+
+  addLocation('/api/v2/') called:
+    1. New clcf allocated in dyn_pool
+    2. entry pushed to prefix_locs[]
+    3. ngx_js_rebuild_loc_tree() called → new BST built from ALL prefix_locs[]
+    4. srv->root->static_locations = new BST root
+    5. New requests immediately use the new BST
+
+  After:
+    /             (prefix)
+    /api/         (prefix)
+    /api/v1/      (prefix, nested under /api/)
+    /api/v2/      (prefix, nested under /api/)   ← NEW
+    /static/      (prefix)
+    ~ /\.php$     (regex[0])
+----
+
+== Removing locations
+
+=== srv.removeLocation(pattern)
+
+Removes the location matching `pattern` from the server.  The pattern syntax
+is the same as `addLocation()`.  Returns `true` if found and removed,
+`false` if not found.
+
+The BST is rebuilt immediately after removal so the location stops matching
+new requests right away.
+
+[source,javascript]
+----
+const removed = srv.removeLocation('/api/v1/');
+nginx.log('removed: ' + removed);   // true or false
+----
+
+[source,javascript]
+----
+// Remove a regex location
+const ok = srv.removeLocation('~ /\\.php$');
+
+// Remove an exact-match location
+srv.removeLocation('= /health');
+
+// Remove a named location
+srv.removeLocation('@fallback');
+----
+
+NOTE: `removeLocation` matches by pattern string only — the same string you
+passed to `addLocation`.  It does not perform URI matching.
+
+=== Example: maintenance mode toggle
+
+Add a catch-all location for maintenance and remove it when done.
+
+[source,javascript]
+----
+const srv = nginx.http.servers[0];
+let maintenanceActive = false;
+
+function enableMaintenance() {
+    if (maintenanceActive) { return; }
+
+    nginx.suspendAcceptance();
+
+    const m = srv.addLocation('/');      // catches everything (longest prefix: /)
+    m.handler = (req) => {
+        req.respond(503, { 'Retry-After': '120' },
+                    'Service temporarily unavailable');
+    };
+
+    nginx.resumeAcceptance();
+    maintenanceActive = true;
+}
+
+function disableMaintenance() {
+    if (!maintenanceActive) { return; }
+
+    nginx.suspendAcceptance();
+    srv.removeLocation('/');
+    nginx.resumeAcceptance();
+
+    maintenanceActive = false;
+}
+----
+
+=== Example: remove all dynamically added locations
+
+[source,javascript]
+----
+// Remove every location whose path starts with /dynamic/
+srv.locations
+    .filter(l => l.pattern.startsWith('/dynamic/'))
+    .forEach(l => srv.removeLocation(l.path));
+----
+
+NOTE: Removing a location while iterating `srv.locations` is safe because
+`srv.locations` returns a snapshot array; it is not mutated during iteration.
+
+=== Flow diagram: removeLocation BST rebuild
+
+----
+  Before removeLocation('/api/v1/'):
+
+  prefix_locs[]:  /, /api/, /api/v1/, /api/v2/, /static/
+  BST:            /
+                  ├─ /api/
+                  │   ├─ /api/v1/    ← to be removed
+                  │   └─ /api/v2/
+                  └─ /static/
+
+  removeLocation('/api/v1/'):
+    1. entry spliced out of prefix_locs[]
+    2. ngx_js_rebuild_loc_tree() → new BST
+    3. New requests immediately stop matching /api/v1/
+    4. In-flight requests already dispatched to /api/v1/ complete normally
+
+  After:
+  BST:            /
+                  ├─ /api/
+                  │   └─ /api/v2/
+                  └─ /static/
+----
+
+WARNING: In-flight requests that were already dispatched to a location before
+it is removed will complete normally.  The removed location's handler and
+config remain valid for the duration of those requests.
+
+== Cloning locations
+
+=== loc.clone(newPattern [, opts])
+
+Creates a new prefix location at `newPattern` as a shallow copy of the
+source location — same handler, same config values (root, timeouts, proxy
+settings, etc.).  Only plain prefix patterns (no `=`, `^~`, `~`, `@`)
+are supported as `newPattern`.
+
+[cols="1,3"]
+|===
+| Option | Description
+
+| `depth: N`
+| Copy child locations up to `N` levels of relative nesting.
+  `0` (default when omitted) = only the location itself.
+  `Infinity` = copy all descendants.
+
+|===
+
+Returns the new `NginxLocation` object.  Idempotent: if `newPattern`
+already exists as a prefix location, returns the existing wrapper.
+
+[source,javascript]
+----
+const src = srv.findLocation('/api/v1/');
+const dst = src.clone('/api/v2/');
+
+// dst is an independent location — mutating it does not affect src
+dst.handler = v2Handler;
+----
+
+=== Example: versioned API clone
+
+[source,javascript]
+----
+const srv  = nginx.http.servers[0];
+const v1   = srv.findLocation('/api/v1/');
+
+// Clone /api/v1/ tree to /api/v2/ (all immediate children)
+const v2   = v1.clone('/api/v2/', { depth: 1 });
+
+// Before:   /api/v1/,  /api/v1/users,  /api/v1/orders
+// After:    all of the above PLUS:
+//           /api/v2/,  /api/v2/users,  /api/v2/orders
+
+// Override the v2 root handler
+v2.handler = (req) => {
+    req.respond(200, {}, 'API v2');
+};
+----
+
+----
+  Source tree (/api/v1/):
+    /api/v1/
+    /api/v1/users
+    /api/v1/orders
+
+  After clone('/api/v2/', { depth: 1 }):
+    /api/v1/                 (unchanged)
+    /api/v1/users            (unchanged)
+    /api/v1/orders           (unchanged)
+    /api/v2/                 (new, copy of /api/v1/)
+    /api/v2/users            (new, copy of /api/v1/users)
+    /api/v2/orders           (new, copy of /api/v1/orders)
+----
+
+=== Example: full subtree clone with depth:Infinity
+
+[source,javascript]
+----
+const v1 = srv.findLocation('/api/v1/');
+
+// Copies all descendants regardless of nesting depth
+const v3 = v1.clone('/api/v3/', { depth: Infinity });
+
+// Customise only the top level
+v3.root = '/var/www/v3';
+----
+
+=== Example: clone a single location, no children
+
+[source,javascript]
+----
+const beta = srv.findLocation('/beta/');
+
+// depth defaults to 0: only /beta/ itself is cloned, not /beta/api/ etc.
+const prod = beta.clone('/prod/');
+prod.root = '/var/www/prod';
+----
+
+== Cloning a server
+
+=== srv.clone(newServerName)
+
+Creates a shallow copy of the entire server — all locations, all config
+fields — and registers it as a new virtual host under `newServerName`.
+The clone is added to `nginx.http.servers[]` and starts accepting requests
+for `newServerName` immediately.
+
+[source,javascript]
+----
+const primary = nginx.http.servers.find(s => s.name === 'example.com');
+const mirror  = primary.clone('mirror.example.com');
+
+// Customise the clone
+mirror.root = '/var/www/mirror';
+----
+
+NOTE: `srv.clone()` creates independent location arrays and an independent
+BST for the new server.  Structural changes on the clone do not affect the
+original, and vice versa.
+
+=== Example: per-tenant server provisioning
+
+[source,javascript]
+----
+const template = nginx.http.servers.find(s => s.name === 'template.internal');
+
+const tenants = ['acme', 'globex', 'initech'];
+tenants.forEach(tenant => {
+    const srv = template.clone(tenant + '.example.com');
+    srv.root = '/var/www/tenants/' + tenant;
+
+    // Add tenant-specific admin location
+    const admin = srv.addLocation('= /admin');
+    admin.handler = makeAdminHandler(tenant);
+});
+----
+
+== Modifying existing locations
+
+=== Changing handler and properties
+
+Property writes on a location obtained from `server.locations[]` or
+`addLocation()` use `write_mode='global'` by default — they affect all
+future requests on this worker immediately.
+
+[source,javascript]
+----
+const loc = srv.findLocation('/api/');
+if (loc) {
+    loc.root    = '/var/www/api-v2';
+    loc.handler = newApiHandler;
+}
+----
+
+=== Atomic batch modification
+
+Use `suspendAcceptance()` when changing multiple properties to prevent any
+new request on this worker from seeing a half-updated location:
+
+[source,javascript]
+----
+const loc = srv.findLocation('/api/');
+
+nginx.suspendAcceptance();
+
+loc.root                  = '/var/www/new';
+loc.keepaliveTimeout      = 75000;
+loc.proxy.readTimeout     = 30000;
+loc.proxy.connectTimeout  = 5000;
+
+nginx.resumeAcceptance();
+----
+
+=== Rollback with snapshot
+
+[source,javascript]
+----
+const loc  = srv.findLocation('/api/');
+const snap = loc.snapshot();
+
+nginx.suspendAcceptance();
+try {
+    loc.root    = cfg.root;
+    loc.handler = cfg.handler;
+    nginx.resumeAcceptance();
+    req.json({ applied: true });
+} catch (e) {
+    snap.restore();
+    nginx.resumeAcceptance();
+    req.respond(500, {}, e.message);
+}
+----
+
+=== Location swap (atomic replace)
+
+Replace one location with another in a single suspension window:
+
+[source,javascript]
+----
+async function swapLocations(srv, oldPattern, newPattern, newHandler, newRoot) {
+    nginx.suspendAcceptance();
+
+    try {
+        srv.removeLocation(oldPattern);
+
+        const loc    = srv.addLocation(newPattern);
+        loc.handler  = newHandler;
+        loc.root     = newRoot;
+    } finally {
+        nginx.resumeAcceptance();
+    }
+}
+
+// Example: swap /beta/ → /prod/
+await swapLocations(srv, '/beta/', '/prod/', prodHandler, '/var/www/prod');
+----
+
+----
+  Before swap:            After swap:
+    /beta/      (active)    /prod/      (active, immediate)
+    /prod/      (absent)    /beta/      (absent)
+----
+
+== Atomic location changes across all workers
+
+=== The problem
+
+`addLocation()`, `removeLocation()`, `clone()`, and property writes all
+update only the **current worker's** location BST.  Other workers continue
+to use their own BST, which does not include the change.
+
+To apply structural changes consistently across all workers, combine
+`suspendAllWorkers()` with a SharedWorker broadcast.
+
+=== Pattern: broadcast structural change
+
+[source,javascript]
+----
+// js_source: location_mgr.js
+
+const cfgWorker = new SharedWorker('cfgworker.js');
+
+cfgWorker.onmessage = (msg) => {
+    const { op, pattern, opts, props } = msg.data;
+    const srv = nginx.http.servers[0];
+
+    if (op === 'add') {
+        const loc = srv.addLocation(pattern, opts || {});
+        if (props) {
+            if (props.root)    { loc.root    = props.root; }
+            if (props.handler) { loc.handler = eval(props.handler); } // see note
+        }
+    } else if (op === 'remove') {
+        srv.removeLocation(pattern);
+    }
+};
+----
+
+[source,javascript]
+----
+// Request handler: add a location on all workers
+
+loc.handler = async (req) => {
+    const cfg = JSON.parse(await req.readBody());
+
+    // Apply on this worker + broadcast to all others
+    await nginx.suspendAllWorkers();
+
+    try {
+        const newLoc    = srv.addLocation(cfg.pattern);
+        newLoc.root     = cfg.root;
+        newLoc.handler  = makeHandler(cfg);
+
+        // Broadcast (other workers apply in their onmessage)
+        cfgWorker.postMessage({ op: 'add', pattern: cfg.pattern,
+                                props: { root: cfg.root } });
+
+        req.json({ added: cfg.pattern });
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};
+----
+
+NOTE: JS handler functions cannot be serialised via `postMessage`.  For
+broadcast, pass a handler identifier string and let each worker resolve it
+to a locally defined function (e.g. via a registry map).
+
+=== Flow diagram: cross-worker addLocation
+
+----
+  Worker 0 (handler):          SharedWorker:          Workers 1…N:
+
+  await suspendAllWorkers()
+  ─────────────────────────►   (all workers suspended)
+  srv.addLocation(pattern)     ← this worker's BST updated
+  cfgWorker.postMessage(add)
+      │ ─────────────────────► fan-out postMessage
+                                    │ ──────────────► Worker 1: addLocation → BST updated
+                                    │ ──────────────► Worker N: addLocation → BST updated
+  await resumeAllWorkers()
+  ─────────────────────────►   (all workers resume accepting)
+  All workers now have identical BST.
+----
+
+== Safe patterns
+
+=== Idempotent add-or-update
+
+[source,javascript]
+----
+function addOrUpdate(srv, pattern, root, handler) {
+    // addLocation is idempotent — returns existing loc if pattern exists
+    const loc   = srv.addLocation(pattern);
+    loc.root    = root;
+    loc.handler = handler;
+    return loc;
+}
+----
+
+=== Temporary location (feature flag)
+
+Add a location when a feature is enabled, remove it when disabled.
+
+[source,javascript]
+----
+const FLAG_PATH = '/api/new-feature/';
+let featureEnabled = false;
+
+function setFeature(enabled) {
+    if (enabled === featureEnabled) { return; }
+
+    nginx.suspendAcceptance();
+
+    if (enabled) {
+        const loc   = srv.addLocation(FLAG_PATH);
+        loc.handler = newFeatureHandler;
+    } else {
+        srv.removeLocation(FLAG_PATH);
+    }
+
+    nginx.resumeAcceptance();
+    featureEnabled = enabled;
+}
+----
+
+=== Versioned API routing
+
+[source,javascript]
+----
+// js_source: versions.js
+
+const srv = nginx.http.servers[0];
+
+// V1 is defined statically in nginx.conf
+const v1 = srv.findLocation('/api/v1/');
+
+// V2 is a clone of V1, handler overridden
+const v2 = v1.clone('/api/v2/', { depth: Infinity });
+v2.handler = v2ApiHandler;
+
+// V3 is freshly added with no template
+const v3 = srv.addLocation('/api/v3/');
+v3.root    = '/var/www/api/v3';
+v3.handler = v3ApiHandler;
+----
+
+=== Location inventory endpoint
+
+Expose the current location tree as JSON for observability:
+
+[source,javascript]
+----
+const inv = srv.addLocation('= /__inventory');
+
+inv.handler = (req) => {
+    const locs = srv.locations.map(l => ({
+        path:      l.path,
+        matchType: l.matchType,
+        root:      l.root,
+        hasHandler: !!l.handler,
+        internal:  l.internal,
+    }));
+    req.json({ locations: locs, count: locs.length });
+};
+----
+
+=== A/B routing by location clone
+
+Route a percentage of traffic to a cloned experimental location:
+
+[source,javascript]
+----
+// js_source: ab.js
+
+const srv    = nginx.http.servers[0];
+const stable = srv.findLocation('/api/');
+const exp    = stable.clone('/api/__exp/');
+exp.handler  = experimentalApiHandler;
+
+// Router: override location choice per-request
+const router = srv.addLocation('/api/');
+const origHandler = stable.handler;
+
+router.handler = (req) => {
+    if (Math.random() < 0.05) {
+        // Internally reroute 5% to experimental handler
+        experimentalApiHandler(req);
+    } else {
+        origHandler(req);
+    }
+};
+----
+
+== API Reference
+
+=== srv.locations
+
+Read-only array of all `NginxLocation` objects registered on this server.
+Includes static (from `nginx.conf`) and dynamic (added by `addLocation()`)
+locations.  Order: prefix/exact (longest path first), then regex (definition
+order), then named.
+
+[source,text]
+----
+NginxLocation[]  srv.locations
+----
+
+=== srv.findLocation(pattern)
+
+Returns the `NginxLocation` for the given `pattern` string, or `null` if
+not found.  Searches prefix/exact, regex, and named arrays.
+
+[source,text]
+----
+NginxLocation | null  srv.findLocation(pattern)
+----
+
+Pattern syntax is identical to `addLocation()`.
+
+=== srv.addLocation(pattern [, opts])
+
+Adds a new location (or returns existing if `pattern` already registered).
+Rebuilds the location BST immediately.
+
+[source,text]
+----
+NginxLocation  srv.addLocation(pattern)
+NginxLocation  srv.addLocation(pattern, { template: '/path', index: N })
+----
+
+[cols="1,3"]
+|===
+| Throws | Condition
+
+| `TypeError`
+| `pattern` is not a string; regex pattern on a build without PCRE.
+
+| `InternalError`
+| BST rebuild failed (OOM).
+|===
+
+=== srv.removeLocation(pattern)
+
+Removes the location matching `pattern` and rebuilds the BST.
+
+[source,text]
+----
+boolean  srv.removeLocation(pattern)
+----
+
+Returns `true` if found and removed, `false` if not found.
+
+=== srv.clone(newServerName)
+
+Creates a full shallow copy of the server under `newServerName`, adds it to
+`nginx.http.servers[]`.
+
+[source,text]
+----
+NginxServer  srv.clone(newServerName)
+----
+
+=== loc.addLocation(pattern [, opts])
+
+Identical to `srv.addLocation()` — delegates to the server.  Not available
+on `req.location`.
+
+[source,text]
+----
+NginxLocation  loc.addLocation(pattern)
+NginxLocation  loc.addLocation(pattern, { template: '/path', index: N })
+----
+
+=== loc.removeLocation(pattern)
+
+Identical to `srv.removeLocation()` — delegates to the server.  Not
+available on `req.location`.
+
+[source,text]
+----
+boolean  loc.removeLocation(pattern)
+----
+
+=== loc.clone(newPattern [, opts])
+
+Creates a shallow copy of this location at `newPattern` (plain prefix only).
+Optionally copies child locations up to `depth` levels deep.
+
+[source,text]
+----
+NginxLocation  loc.clone(newPattern)
+NginxLocation  loc.clone(newPattern, { depth: N })
+----
+
+[cols="1,3"]
+|===
+| `depth` | Effect
+
+| `0` (default)
+| Only this location; no children.
+
+| `N`
+| Children up to `N` levels of relative nesting depth.
+
+| `Infinity`
+| All descendants.
+|===
+
+Throws `TypeError` if `newPattern` has a modifier prefix (`=`, `^~`, `~`, `@`).
+
+=== loc.path, loc.matchType, loc.pattern, loc.internal
+
+Read-only properties on every `NginxLocation`:
+
+[cols="1,1,3"]
+|===
+| Property | Type | Description
+
+| `path`
+| string
+| Full pattern including modifier (e.g. `"= /ping"`, `"~ /\\.php$"`).
+
+| `matchType`
+| string
+| One of: `'prefix'`, `'exact'`, `'prefix_noregex'`, `'regex'`,
+  `'regex_caseless'`, `'named'`.
+
+| `pattern`
+| string
+| Bare path/regex without modifier prefix.
+
+| `internal`
+| boolean
+| `true` for named and internal (noname) locations.
+|===
+
+=== nginx.suspendAcceptance() / nginx.resumeAcceptance()
+
+Synchronous per-worker acceptance control.  Use to wrap multi-step location
+mutations that must appear atomic to new requests on this worker.
+See the _for single worker_ guide for full documentation.
+
+=== nginx.suspendAllWorkers() / nginx.resumeAllWorkers()
+
+Async cross-worker acceptance control.  Returns a `Promise<undefined>`.
+Use when location changes must be visible consistently across all workers
+before any new request is accepted.
+See the _for all workers_ guide for full documentation.
+
+== Design notes
+
+=== BST rebuild cost
+
+Every `addLocation()`, `removeLocation()`, or `clone()` call rebuilds the
+location binary search tree from the flat `prefix_locs[]` snapshot.  The
+rebuild is O(N log N) in the number of prefix locations.  It allocates a
+fresh pool for the BST nodes and releases the previous one.
+
+For typical deployments (tens to hundreds of locations) the rebuild is
+measured in microseconds and is not a concern.  For automated bulk operations
+(thousands of locations), batch them in a single suspension window to
+amortise the rebuild cost.
+
+=== Dynamic pool vs static pool
+
+Config-file locations are allocated in nginx's main memory pool
+(`cycle->pool`), which is never freed during a reload.  Dynamically added
+locations are allocated in the server's `dyn_pool`, which is freed when the
+server wrapper is garbage-collected (typically at process exit or explicit
+release).
+
+Removed locations are spliced out of the live arrays but their memory in
+`dyn_pool` is not reclaimed until the pool is destroyed.  This is harmless
+for typical usage patterns.
+
+=== r.location is structural read-only
+
+`req.location` provides a per-request view of the matched location.
+`addLocation()`, `removeLocation()`, and `clone()` are not available on it.
+Field writes (`root`, `handler`, etc.) work subject to `write_mode`.
+
+The rationale: structural changes are global operations on the server's BST;
+they would not make sense in a per-request isolation context.
+
+=== Regex position and definition order
+
+The `index` option in `addLocation('~ pattern', { index: N })` controls
+where the new regex is inserted in the regex array.  Regex locations are
+always checked in array order; a lower index means higher priority.
+
+Removing a regex location compacts the array: all locations after the
+removed entry shift down by one position.
+
+=== Handler serialisation for cross-worker broadcast
+
+JS functions cannot be transferred via `postMessage`.  For cross-worker
+location provisioning, use a handler registry: map handler names to function
+references, broadcast the name, and let each worker look it up locally.
+
+[source,javascript]
+----
+// Shared handler registry (defined in js_source, visible in every worker)
+const handlerRegistry = {
+    'api-v2':    v2ApiHandler,
+    'api-v3':    v3ApiHandler,
+    'static':    staticHandler,
+    'maintenance': maintenanceHandler,
+};
+
+// On receiving a broadcast:
+cfgWorker.onmessage = (msg) => {
+    const loc     = srv.addLocation(msg.data.pattern);
+    const handler = handlerRegistry[msg.data.handlerName];
+    if (handler) { loc.handler = handler; }
+};
+----

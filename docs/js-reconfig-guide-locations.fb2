@@ -1,0 +1,1110 @@
+<?xml version='1.0' encoding='utf-8'?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>computers</genre>
+      <author>
+        <first-name />
+        <last-name>NGINX JS DOM Project</last-name>
+      </author>
+      <book-title>nginx JS — Dynamic Reconfiguration Guide (locations)</book-title>
+      <date>2026-03-19</date>
+      <lang>en</lang>
+    </title-info>
+    <document-info>
+      <author>
+        <nickname>asciidoctor + html2fb2.py</nickname>
+      </author>
+      <date>2026-03-19</date>
+      <id>d37d4fad-4bd4-45d1-845c-b7abd363b810</id>
+      <version>1.0</version>
+    </document-info>
+  </description>
+  <body>
+    <title>
+      <p>nginx JS — Dynamic Reconfiguration Guide (locations)</p>
+    </title>
+    <p> │ DRAFT FOR COMMENTS — This document is a work in progress. Content, API names, and examples are subject to change before release.</p>
+    <empty-line />
+    <section>
+      <title>
+        <p>Overview</p>
+      </title>
+      <p>This guide covers runtime management of nginx <strong>location blocks</strong> via the JavaScript DOM: adding, removing, cloning, and reconfiguring locations and servers without reloading nginx.</p>
+      <p>Prerequisites: read the <emphasis>for single worker</emphasis> guide first for <code>write_mode</code>, <code>snapshot()</code>, and <code>suspendAcceptance()</code>.</p>
+      <section>
+        <title>
+          <p>Scope</p>
+        </title>
+        <p>Location operations are available on:</p>
+        <p>•   </p>
+        <p>
+          <code>NginxServer</code> objects — <code>nginx.http.servers[i]</code>
+        </p>
+        <p>•   </p>
+        <p>
+          <code>NginxLocation</code> objects — <code>nginx.http.servers[i].locations[j]</code> or the return value of <code>addLocation()</code>
+        </p>
+        <p>They are <strong>not</strong> available on <code>req.location</code> (the request-phase wrapper is read-only for structural operations). Field writes (<code>root</code>, <code>handler</code>, …) work on <code>req.location</code> subject to <code>write_mode</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>Config phase vs request phase</p>
+        </title>
+        <p>Location structure mutations (add, remove, clone) and handler assignment are permanent, global changes — they update the location BST immediately and affect every subsequent request on this worker. There is no per-request isolation for structural changes.</p>
+        <p>To propagate structural changes to all workers, use a SharedWorker broadcast combined with <code>suspendAllWorkers()</code> (see <emphasis>for all workers</emphasis> guide).</p>
+      </section>
+      <section>
+        <title>
+          <p>nginx location matching algorithm</p>
+        </title>
+        <p>Understanding the matching order is essential when adding locations:</p>
+        <poem>
+          <stanza>
+            <v>  Incoming URI</v>
+            <v>      │</v>
+            <v>      ▼</v>
+            <v>  1.  Exact-match locations (= /path)  ← checked first; wins immediately on match</v>
+            <v>      │</v>
+            <v>      ▼</v>
+            <v>  2.  Prefix locations (longest wins among all prefix matches)</v>
+            <v>          │</v>
+            <v>          ├─► If longest match has ^~  ← skip regex scan; use this location</v>
+            <v>          │</v>
+            <v>          └─► Otherwise: remember the longest-prefix winner and continue …</v>
+            <v>      │</v>
+            <v>      ▼</v>
+            <v>  3.  Regex locations (checked in definition order, first match wins)</v>
+            <v>          │</v>
+            <v>          ├─► Match found  ← use this location (overrides prefix winner)</v>
+            <v>          │</v>
+            <v>          └─► No match     ← fall back to the remembered prefix winner</v>
+            <v>      │</v>
+            <v>      ▼</v>
+            <v>  4.  Named locations (@name) — reachable only from error_page / try_files</v>
+          </stanza>
+        </poem>
+        <p>This order determines which <code>addLocation()</code> patterns affect which requests.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Inspecting the location tree</p>
+      </title>
+      <section>
+        <title>
+          <p>srv.locations[]</p>
+        </title>
+        <p>Returns a live array of all locations registered on this server, including dynamically added ones. The order is: prefix/exact locations (sorted by path length, longest first), then regex locations (definition order), then named locations.</p>
+        <poem>
+          <stanza>
+            <v>const srv = nginx.http.servers[0];</v>
+            <v />
+            <v>// List all locations with their match type and path</v>
+            <v>srv.locations.forEach(loc =&gt; {</v>
+            <v>    nginx.log(`${loc.matchType.padEnd(16)} ${loc.path}`);</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>
+          <code>loc.matchType</code> values:</p>
+        <p>Value │ Meaning</p>
+        <p>'prefix' │ Normal longest-prefix match.</p>
+        <p>'exact' │ = /path — checked first, wins immediately.</p>
+        <p>'prefix_noregex' │ ^~ /path — skips regex scan on match.</p>
+        <p>'regex' │ ~ /pattern — case-sensitive PCRE.</p>
+        <p>'regex_caseless' │ ~* /pattern — case-insensitive PCRE.</p>
+        <p>'named' │ @name — reachable from error_page / try_files only.</p>
+        <empty-line />
+        <p>
+          <code>loc.path</code> — the full pattern string as passed to <code>addLocation()</code>, including the modifier prefix (e.g. <code>"= /exact"</code>, <code>"~ /\\.php$"</code>).</p>
+        <p>
+          <code>loc.pattern</code> — the bare path/regex without the modifier prefix.</p>
+        <p>
+          <code>loc.internal</code> — <code>true</code> for named and noname (limit_except, etc.) locations.</p>
+      </section>
+      <section>
+        <title>
+          <p>srv.findLocation(pattern)</p>
+        </title>
+        <p>Searches the server’s location arrays by exact pattern string and returns the <code>NginxLocation</code> wrapper, or <code>null</code> if not found.</p>
+        <poem>
+          <stanza>
+            <v>const srv = nginx.http.servers[0];</v>
+            <v />
+            <v>const api = srv.findLocation('/api/');</v>
+            <v>if (api) {</v>
+            <v>    nginx.log('api root: ' + api.root);</v>
+            <v>}</v>
+            <v />
+            <v>const exact = srv.findLocation('= /health');</v>
+            <v>const regex = srv.findLocation('~ /\\.php$');</v>
+          </stanza>
+        </poem>
+        <p>Uses the same pattern syntax as <code>addLocation()</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>Iterating and filtering</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const srv = nginx.http.servers[0];</v>
+            <v />
+            <v>// All prefix locations with a JS handler</v>
+            <v>const jsLocs = srv.locations.filter(l =&gt;</v>
+            <v>    l.matchType === 'prefix' &amp;&amp; l.handler);</v>
+            <v />
+            <v>// All regex locations</v>
+            <v>const regexLocs = srv.locations.filter(l =&gt;</v>
+            <v>    l.matchType === 'regex' || l.matchType === 'regex_caseless');</v>
+            <v />
+            <v>// Find by path prefix (e.g. all sub-locations of /api/)</v>
+            <v>const apiTree = srv.locations.filter(l =&gt;</v>
+            <v>    l.matchType === 'prefix' &amp;&amp; l.pattern.startsWith('/api/'));</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Adding locations</p>
+      </title>
+      <section>
+        <title>
+          <p>srv.addLocation(pattern [, opts])</p>
+        </title>
+        <p>Adds a new location to the server and immediately rebuilds the location BST so the new location is active for all subsequent requests.</p>
+        <p>Returns the new <code>NginxLocation</code> object so properties and handler can be set in the same expression chain or immediately after.</p>
+        <poem>
+          <stanza>
+            <v>const loc = srv.addLocation('/new/path');</v>
+            <v>loc.root    = '/var/www/new';</v>
+            <v>loc.handler = (req) =&gt; { req.sendfile('/index.html'); };</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>Pattern syntax:</strong>
+        </p>
+        <p>Prefix │ Example │ Match type</p>
+        <p>(none) │ '/api/' │ Normal prefix — longest match wins.</p>
+        <p>'= ' │ '= /ping' │ Exact match — wins immediately, highest priority after prefix search.</p>
+        <p>'^~ ' │ '^~ /static/' │ Preferential prefix — disables regex scan when matched.</p>
+        <p>'~ ' │ '~ /\\.php$' │ Case-sensitive PCRE regex.</p>
+        <p>'~* ' │ '~* /\\.jpg$' │ Case-insensitive PCRE regex.</p>
+        <p>'@' │ '@fallback' │ Named location — only reachable from error_page / try_files.</p>
+        <empty-line />
+        <p>
+          <strong>Options:</strong>
+        </p>
+        <p>Option │ Description</p>
+        <p>template: '/path' │ Copy all config fields from an existing location (same server) as the starting point. The pattern of the new location is still pattern. Useful for creating near-copies of an existing location.</p>
+        <p>index: N │ Regex locations only. Insert at position N in the regex check array (0 = first checked). Defaults to append (last checked).</p>
+        <empty-line />
+        <p>
+          <strong>Idempotency:</strong> if a location with the same pattern already exists, <code>addLocation()</code> returns the existing <code>NginxLocation</code> object without creating a duplicate. Safe to call multiple times.</p>
+      </section>
+      <section>
+        <title>
+          <p>loc.addLocation(pattern [, opts])</p>
+        </title>
+        <p>Delegates to the server-level <code>addLocation</code>. Available on locations obtained from <code>server.locations[]</code> or a prior <code>addLocation()</code> call. Not available on <code>req.location</code>.</p>
+        <poem>
+          <stanza>
+            <v>// Equivalent — both add to the same server</v>
+            <v>srv.addLocation('/api/v2/');</v>
+            <v>apiLoc.addLocation('/api/v2/');     // apiLoc is any loc from this server</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> The BST builder automatically groups locations into a nested tree by shared prefix. You do not need to add child locations through a parent location object — adding <code>/api/v2/</code> to the server always nests it under <code>/api/</code> in the BST, regardless of which object you call <code>addLocation()</code> on. </p>
+      </section>
+      <section>
+        <title>
+          <p>Example: add a simple prefix location</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// js_source: run at init_conf time</v>
+            <v />
+            <v>const srv = nginx.http.servers[0];</v>
+            <v>const docs = srv.addLocation('/docs/');</v>
+            <v />
+            <v>docs.root    = '/var/www/docs';</v>
+            <v>docs.sendfile = true;</v>
+            <v>docs.handler = (req) =&gt; {</v>
+            <v>    req.sendfile('/index.html');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: add an exact-match health endpoint</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const health = srv.addLocation('= /health');</v>
+            <v>health.handler = (req) =&gt; {</v>
+            <v>    req.respond(200, { 'Content-Type': 'text/plain' }, 'OK');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>  Matching:</v>
+            <v>    /health       ── exact match (= /health)  ✓  highest priority</v>
+            <v>    /health/more  ── prefix match /health      ✓  (if /health exists)</v>
+            <v>    /healthz      ── no match                  ✗</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: add a regex location at a specific position</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const srv = nginx.http.servers[0];</v>
+            <v />
+            <v>// This regex will be checked BEFORE any existing regex locations</v>
+            <v>const php = srv.addLocation('~ /\\.php$', { index: 0 });</v>
+            <v>php.handler = (req) =&gt; { /* dispatch to FastCGI */ };</v>
+            <v />
+            <v>// This regex will be checked LAST (default append)</v>
+            <v>const fallback = srv.addLocation('~* /\\.html?$');</v>
+            <v>fallback.root = '/var/www/html';</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>  Regex check order (definition order):</v>
+            <v>    [0]  ~ /\.php$         ← index:0 → inserted first</v>
+            <v>    [1]  ~* /\.html?$      ← appended (default)</v>
+            <v>    ...  (existing regex locs)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: add a named location for error fallback</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const srv = nginx.http.servers[0];</v>
+            <v />
+            <v>const fallback = srv.addLocation('@static_fallback');</v>
+            <v>fallback.root    = '/var/www/static';</v>
+            <v>fallback.handler = (req) =&gt; { req.sendfile(req.uri); };</v>
+            <v />
+            <v>// Wire it to 404 errors in another location</v>
+            <v>const api = srv.findLocation('/api/');</v>
+            <v>if (api) {</v>
+            <v>    api.errorPage = [{ codes: [404], uri: '@static_fallback' }];</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: add a location using a template</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const srv = nginx.http.servers[0];</v>
+            <v />
+            <v>// /api/v2/ gets the same config as /api/v1/ (handler, root, timeouts, …)</v>
+            <v>// but at the new path</v>
+            <v>const v2 = srv.addLocation('/api/v2/', { template: '/api/v1/' });</v>
+            <v />
+            <v>// Override only what differs</v>
+            <v>v2.handler = v2Handler;</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram: addLocation BST rebuild</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Before addLocation('/api/v2/'):</v>
+            <v />
+            <v>  Server location BST:</v>
+            <v>    /             (prefix)</v>
+            <v>    /api/         (prefix)</v>
+            <v>    /api/v1/      (prefix, nested under /api/)</v>
+            <v>    /static/      (prefix)</v>
+            <v>    ~ /\.php$     (regex[0])</v>
+            <v />
+            <v>  addLocation('/api/v2/') called:</v>
+            <v>    1. New clcf allocated in dyn_pool</v>
+            <v>    2. entry pushed to prefix_locs[]</v>
+            <v>    3. ngx_js_rebuild_loc_tree() called → new BST built from ALL prefix_locs[]</v>
+            <v>    4. srv-&gt;root-&gt;static_locations = new BST root</v>
+            <v>    5. New requests immediately use the new BST</v>
+            <v />
+            <v>  After:</v>
+            <v>    /             (prefix)</v>
+            <v>    /api/         (prefix)</v>
+            <v>    /api/v1/      (prefix, nested under /api/)</v>
+            <v>    /api/v2/      (prefix, nested under /api/)   ← NEW</v>
+            <v>    /static/      (prefix)</v>
+            <v>    ~ /\.php$     (regex[0])</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Removing locations</p>
+      </title>
+      <section>
+        <title>
+          <p>srv.removeLocation(pattern)</p>
+        </title>
+        <p>Removes the location matching <code>pattern</code> from the server. The pattern syntax is the same as <code>addLocation()</code>. Returns <code>true</code> if found and removed, <code>false</code> if not found.</p>
+        <p>The BST is rebuilt immediately after removal so the location stops matching new requests right away.</p>
+        <poem>
+          <stanza>
+            <v>const removed = srv.removeLocation('/api/v1/');</v>
+            <v>nginx.log('removed: ' + removed);   // true or false</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// Remove a regex location</v>
+            <v>const ok = srv.removeLocation('~ /\\.php$');</v>
+            <v />
+            <v>// Remove an exact-match location</v>
+            <v>srv.removeLocation('= /health');</v>
+            <v />
+            <v>// Remove a named location</v>
+            <v>srv.removeLocation('@fallback');</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong>
+          <code>removeLocation</code> matches by pattern string only — the same string you passed to <code>addLocation</code>. It does not perform URI matching. </p>
+      </section>
+      <section>
+        <title>
+          <p>Example: maintenance mode toggle</p>
+        </title>
+        <p>Add a catch-all location for maintenance and remove it when done.</p>
+        <poem>
+          <stanza>
+            <v>const srv = nginx.http.servers[0];</v>
+            <v>let maintenanceActive = false;</v>
+            <v />
+            <v>function enableMaintenance() {</v>
+            <v>    if (maintenanceActive) { return; }</v>
+            <v />
+            <v>    nginx.suspendAcceptance();</v>
+            <v />
+            <v>    const m = srv.addLocation('/');      // catches everything (longest prefix: /)</v>
+            <v>    m.handler = (req) =&gt; {</v>
+            <v>        req.respond(503, { 'Retry-After': '120' },</v>
+            <v>                    'Service temporarily unavailable');</v>
+            <v>    };</v>
+            <v />
+            <v>    nginx.resumeAcceptance();</v>
+            <v>    maintenanceActive = true;</v>
+            <v>}</v>
+            <v />
+            <v>function disableMaintenance() {</v>
+            <v>    if (!maintenanceActive) { return; }</v>
+            <v />
+            <v>    nginx.suspendAcceptance();</v>
+            <v>    srv.removeLocation('/');</v>
+            <v>    nginx.resumeAcceptance();</v>
+            <v />
+            <v>    maintenanceActive = false;</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: remove all dynamically added locations</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Remove every location whose path starts with /dynamic/</v>
+            <v>srv.locations</v>
+            <v>    .filter(l =&gt; l.pattern.startsWith('/dynamic/'))</v>
+            <v>    .forEach(l =&gt; srv.removeLocation(l.path));</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> Removing a location while iterating <code>srv.locations</code> is safe because <code>srv.locations</code> returns a snapshot array; it is not mutated during iteration. </p>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram: removeLocation BST rebuild</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Before removeLocation('/api/v1/'):</v>
+            <v />
+            <v>  prefix_locs[]:  /, /api/, /api/v1/, /api/v2/, /static/</v>
+            <v>  BST:            /</v>
+            <v>                  ├─ /api/</v>
+            <v>                  │   ├─ /api/v1/    ← to be removed</v>
+            <v>                  │   └─ /api/v2/</v>
+            <v>                  └─ /static/</v>
+            <v />
+            <v>  removeLocation('/api/v1/'):</v>
+            <v>    1. entry spliced out of prefix_locs[]</v>
+            <v>    2. ngx_js_rebuild_loc_tree() → new BST</v>
+            <v>    3. New requests immediately stop matching /api/v1/</v>
+            <v>    4. In-flight requests already dispatched to /api/v1/ complete normally</v>
+            <v />
+            <v>  After:</v>
+            <v>  BST:            /</v>
+            <v>                  ├─ /api/</v>
+            <v>                  │   └─ /api/v2/</v>
+            <v>                  └─ /static/</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> In-flight requests that were already dispatched to a location before it is removed will complete normally. The removed location’s handler and config remain valid for the duration of those requests. </p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Cloning locations</p>
+      </title>
+      <section>
+        <title>
+          <p>loc.clone(newPattern [, opts])</p>
+        </title>
+        <p>Creates a new prefix location at <code>newPattern</code> as a shallow copy of the source location — same handler, same config values (root, timeouts, proxy settings, etc.). Only plain prefix patterns (no <code>=</code>, <code>^~</code>, <code>~</code>, <code>@</code>) are supported as <code>newPattern</code>.</p>
+        <p>Option │ Description</p>
+        <p>depth: N │ Copy child locations up to N levels of relative nesting. 0 (default when omitted) = only the location itself. Infinity = copy all descendants.</p>
+        <empty-line />
+        <p>Returns the new <code>NginxLocation</code> object. Idempotent: if <code>newPattern</code> already exists as a prefix location, returns the existing wrapper.</p>
+        <poem>
+          <stanza>
+            <v>const src = srv.findLocation('/api/v1/');</v>
+            <v>const dst = src.clone('/api/v2/');</v>
+            <v />
+            <v>// dst is an independent location — mutating it does not affect src</v>
+            <v>dst.handler = v2Handler;</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: versioned API clone</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const srv  = nginx.http.servers[0];</v>
+            <v>const v1   = srv.findLocation('/api/v1/');</v>
+            <v />
+            <v>// Clone /api/v1/ tree to /api/v2/ (all immediate children)</v>
+            <v>const v2   = v1.clone('/api/v2/', { depth: 1 });</v>
+            <v />
+            <v>// Before:   /api/v1/,  /api/v1/users,  /api/v1/orders</v>
+            <v>// After:    all of the above PLUS:</v>
+            <v>//           /api/v2/,  /api/v2/users,  /api/v2/orders</v>
+            <v />
+            <v>// Override the v2 root handler</v>
+            <v>v2.handler = (req) =&gt; {</v>
+            <v>    req.respond(200, {}, 'API v2');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>  Source tree (/api/v1/):</v>
+            <v>    /api/v1/</v>
+            <v>    /api/v1/users</v>
+            <v>    /api/v1/orders</v>
+            <v />
+            <v>  After clone('/api/v2/', { depth: 1 }):</v>
+            <v>    /api/v1/                 (unchanged)</v>
+            <v>    /api/v1/users            (unchanged)</v>
+            <v>    /api/v1/orders           (unchanged)</v>
+            <v>    /api/v2/                 (new, copy of /api/v1/)</v>
+            <v>    /api/v2/users            (new, copy of /api/v1/users)</v>
+            <v>    /api/v2/orders           (new, copy of /api/v1/orders)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: full subtree clone with depth:Infinity</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const v1 = srv.findLocation('/api/v1/');</v>
+            <v />
+            <v>// Copies all descendants regardless of nesting depth</v>
+            <v>const v3 = v1.clone('/api/v3/', { depth: Infinity });</v>
+            <v />
+            <v>// Customise only the top level</v>
+            <v>v3.root = '/var/www/v3';</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: clone a single location, no children</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const beta = srv.findLocation('/beta/');</v>
+            <v />
+            <v>// depth defaults to 0: only /beta/ itself is cloned, not /beta/api/ etc.</v>
+            <v>const prod = beta.clone('/prod/');</v>
+            <v>prod.root = '/var/www/prod';</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Cloning a server</p>
+      </title>
+      <section>
+        <title>
+          <p>srv.clone(newServerName)</p>
+        </title>
+        <p>Creates a shallow copy of the entire server — all locations, all config fields — and registers it as a new virtual host under <code>newServerName</code>. The clone is added to <code>nginx.http.servers[]</code> and starts accepting requests for <code>newServerName</code> immediately.</p>
+        <poem>
+          <stanza>
+            <v>const primary = nginx.http.servers.find(s =&gt; s.name === 'example.com');</v>
+            <v>const mirror  = primary.clone('mirror.example.com');</v>
+            <v />
+            <v>// Customise the clone</v>
+            <v>mirror.root = '/var/www/mirror';</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong>
+          <code>srv.clone()</code> creates independent location arrays and an independent BST for the new server. Structural changes on the clone do not affect the original, and vice versa. </p>
+      </section>
+      <section>
+        <title>
+          <p>Example: per-tenant server provisioning</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const template = nginx.http.servers.find(s =&gt; s.name === 'template.internal');</v>
+            <v />
+            <v>const tenants = ['acme', 'globex', 'initech'];</v>
+            <v>tenants.forEach(tenant =&gt; {</v>
+            <v>    const srv = template.clone(tenant + '.example.com');</v>
+            <v>    srv.root = '/var/www/tenants/' + tenant;</v>
+            <v />
+            <v>    // Add tenant-specific admin location</v>
+            <v>    const admin = srv.addLocation('= /admin');</v>
+            <v>    admin.handler = makeAdminHandler(tenant);</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Modifying existing locations</p>
+      </title>
+      <section>
+        <title>
+          <p>Changing handler and properties</p>
+        </title>
+        <p>Property writes on a location obtained from <code>server.locations[]</code> or <code>addLocation()</code> use <code>write_mode='global'</code> by default — they affect all future requests on this worker immediately.</p>
+        <poem>
+          <stanza>
+            <v>const loc = srv.findLocation('/api/');</v>
+            <v>if (loc) {</v>
+            <v>    loc.root    = '/var/www/api-v2';</v>
+            <v>    loc.handler = newApiHandler;</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Atomic batch modification</p>
+        </title>
+        <p>Use <code>suspendAcceptance()</code> when changing multiple properties to prevent any new request on this worker from seeing a half-updated location:</p>
+        <poem>
+          <stanza>
+            <v>const loc = srv.findLocation('/api/');</v>
+            <v />
+            <v>nginx.suspendAcceptance();</v>
+            <v />
+            <v>loc.root                  = '/var/www/new';</v>
+            <v>loc.keepaliveTimeout      = 75000;</v>
+            <v>loc.proxy.readTimeout     = 30000;</v>
+            <v>loc.proxy.connectTimeout  = 5000;</v>
+            <v />
+            <v>nginx.resumeAcceptance();</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Rollback with snapshot</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const loc  = srv.findLocation('/api/');</v>
+            <v>const snap = loc.snapshot();</v>
+            <v />
+            <v>nginx.suspendAcceptance();</v>
+            <v>try {</v>
+            <v>    loc.root    = cfg.root;</v>
+            <v>    loc.handler = cfg.handler;</v>
+            <v>    nginx.resumeAcceptance();</v>
+            <v>    req.json({ applied: true });</v>
+            <v>} catch (e) {</v>
+            <v>    snap.restore();</v>
+            <v>    nginx.resumeAcceptance();</v>
+            <v>    req.respond(500, {}, e.message);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Location swap (atomic replace)</p>
+        </title>
+        <p>Replace one location with another in a single suspension window:</p>
+        <poem>
+          <stanza>
+            <v>async function swapLocations(srv, oldPattern, newPattern, newHandler, newRoot) {</v>
+            <v>    nginx.suspendAcceptance();</v>
+            <v />
+            <v>    try {</v>
+            <v>        srv.removeLocation(oldPattern);</v>
+            <v />
+            <v>        const loc    = srv.addLocation(newPattern);</v>
+            <v>        loc.handler  = newHandler;</v>
+            <v>        loc.root     = newRoot;</v>
+            <v>    } finally {</v>
+            <v>        nginx.resumeAcceptance();</v>
+            <v>    }</v>
+            <v>}</v>
+            <v />
+            <v>// Example: swap /beta/ → /prod/</v>
+            <v>await swapLocations(srv, '/beta/', '/prod/', prodHandler, '/var/www/prod');</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>  Before swap:            After swap:</v>
+            <v>    /beta/      (active)    /prod/      (active, immediate)</v>
+            <v>    /prod/      (absent)    /beta/      (absent)</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Atomic location changes across all workers</p>
+      </title>
+      <section>
+        <title>
+          <p>The problem</p>
+        </title>
+        <p>
+          <code>addLocation()</code>, <code>removeLocation()</code>, <code>clone()</code>, and property writes all update only the <strong>current worker’s</strong> location BST. Other workers continue to use their own BST, which does not include the change.</p>
+        <p>To apply structural changes consistently across all workers, combine <code>suspendAllWorkers()</code> with a SharedWorker broadcast.</p>
+      </section>
+      <section>
+        <title>
+          <p>Pattern: broadcast structural change</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// js_source: location_mgr.js</v>
+            <v />
+            <v>const cfgWorker = new SharedWorker('cfgworker.js');</v>
+            <v />
+            <v>cfgWorker.onmessage = (msg) =&gt; {</v>
+            <v>    const { op, pattern, opts, props } = msg.data;</v>
+            <v>    const srv = nginx.http.servers[0];</v>
+            <v />
+            <v>    if (op === 'add') {</v>
+            <v>        const loc = srv.addLocation(pattern, opts || {});</v>
+            <v>        if (props) {</v>
+            <v>            if (props.root)    { loc.root    = props.root; }</v>
+            <v>            if (props.handler) { loc.handler = eval(props.handler); } // see note</v>
+            <v>        }</v>
+            <v>    } else if (op === 'remove') {</v>
+            <v>        srv.removeLocation(pattern);</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// Request handler: add a location on all workers</v>
+            <v />
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const cfg = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>    // Apply on this worker + broadcast to all others</v>
+            <v>    await nginx.suspendAllWorkers();</v>
+            <v />
+            <v>    try {</v>
+            <v>        const newLoc    = srv.addLocation(cfg.pattern);</v>
+            <v>        newLoc.root     = cfg.root;</v>
+            <v>        newLoc.handler  = makeHandler(cfg);</v>
+            <v />
+            <v>        // Broadcast (other workers apply in their onmessage)</v>
+            <v>        cfgWorker.postMessage({ op: 'add', pattern: cfg.pattern,</v>
+            <v>                                props: { root: cfg.root } });</v>
+            <v />
+            <v>        req.json({ added: cfg.pattern });</v>
+            <v>    } finally {</v>
+            <v>        await nginx.resumeAllWorkers();</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> JS handler functions cannot be serialised via <code>postMessage</code>. For broadcast, pass a handler identifier string and let each worker resolve it to a locally defined function (e.g. via a registry map). </p>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram: cross-worker addLocation</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Worker 0 (handler):          SharedWorker:          Workers 1…N:</v>
+            <v />
+            <v>  await suspendAllWorkers()</v>
+            <v>  ─────────────────────────►   (all workers suspended)</v>
+            <v>  srv.addLocation(pattern)     ← this worker's BST updated</v>
+            <v>  cfgWorker.postMessage(add)</v>
+            <v>      │ ─────────────────────► fan-out postMessage</v>
+            <v>                                    │ ──────────────► Worker 1: addLocation → BST updated</v>
+            <v>                                    │ ──────────────► Worker N: addLocation → BST updated</v>
+            <v>  await resumeAllWorkers()</v>
+            <v>  ─────────────────────────►   (all workers resume accepting)</v>
+            <v>  All workers now have identical BST.</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Safe patterns</p>
+      </title>
+      <section>
+        <title>
+          <p>Idempotent add-or-update</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>function addOrUpdate(srv, pattern, root, handler) {</v>
+            <v>    // addLocation is idempotent — returns existing loc if pattern exists</v>
+            <v>    const loc   = srv.addLocation(pattern);</v>
+            <v>    loc.root    = root;</v>
+            <v>    loc.handler = handler;</v>
+            <v>    return loc;</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Temporary location (feature flag)</p>
+        </title>
+        <p>Add a location when a feature is enabled, remove it when disabled.</p>
+        <poem>
+          <stanza>
+            <v>const FLAG_PATH = '/api/new-feature/';</v>
+            <v>let featureEnabled = false;</v>
+            <v />
+            <v>function setFeature(enabled) {</v>
+            <v>    if (enabled === featureEnabled) { return; }</v>
+            <v />
+            <v>    nginx.suspendAcceptance();</v>
+            <v />
+            <v>    if (enabled) {</v>
+            <v>        const loc   = srv.addLocation(FLAG_PATH);</v>
+            <v>        loc.handler = newFeatureHandler;</v>
+            <v>    } else {</v>
+            <v>        srv.removeLocation(FLAG_PATH);</v>
+            <v>    }</v>
+            <v />
+            <v>    nginx.resumeAcceptance();</v>
+            <v>    featureEnabled = enabled;</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Versioned API routing</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// js_source: versions.js</v>
+            <v />
+            <v>const srv = nginx.http.servers[0];</v>
+            <v />
+            <v>// V1 is defined statically in nginx.conf</v>
+            <v>const v1 = srv.findLocation('/api/v1/');</v>
+            <v />
+            <v>// V2 is a clone of V1, handler overridden</v>
+            <v>const v2 = v1.clone('/api/v2/', { depth: Infinity });</v>
+            <v>v2.handler = v2ApiHandler;</v>
+            <v />
+            <v>// V3 is freshly added with no template</v>
+            <v>const v3 = srv.addLocation('/api/v3/');</v>
+            <v>v3.root    = '/var/www/api/v3';</v>
+            <v>v3.handler = v3ApiHandler;</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Location inventory endpoint</p>
+        </title>
+        <p>Expose the current location tree as JSON for observability:</p>
+        <poem>
+          <stanza>
+            <v>const inv = srv.addLocation('= /__inventory');</v>
+            <v />
+            <v>inv.handler = (req) =&gt; {</v>
+            <v>    const locs = srv.locations.map(l =&gt; ({</v>
+            <v>        path:      l.path,</v>
+            <v>        matchType: l.matchType,</v>
+            <v>        root:      l.root,</v>
+            <v>        hasHandler: !!l.handler,</v>
+            <v>        internal:  l.internal,</v>
+            <v>    }));</v>
+            <v>    req.json({ locations: locs, count: locs.length });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>A/B routing by location clone</p>
+        </title>
+        <p>Route a percentage of traffic to a cloned experimental location:</p>
+        <poem>
+          <stanza>
+            <v>// js_source: ab.js</v>
+            <v />
+            <v>const srv    = nginx.http.servers[0];</v>
+            <v>const stable = srv.findLocation('/api/');</v>
+            <v>const exp    = stable.clone('/api/__exp/');</v>
+            <v>exp.handler  = experimentalApiHandler;</v>
+            <v />
+            <v>// Router: override location choice per-request</v>
+            <v>const router = srv.addLocation('/api/');</v>
+            <v>const origHandler = stable.handler;</v>
+            <v />
+            <v>router.handler = (req) =&gt; {</v>
+            <v>    if (Math.random() &lt; 0.05) {</v>
+            <v>        // Internally reroute 5% to experimental handler</v>
+            <v>        experimentalApiHandler(req);</v>
+            <v>    } else {</v>
+            <v>        origHandler(req);</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>API Reference</p>
+      </title>
+      <section>
+        <title>
+          <p>srv.locations</p>
+        </title>
+        <p>Read-only array of all <code>NginxLocation</code> objects registered on this server. Includes static (from <code>nginx.conf</code>) and dynamic (added by <code>addLocation()</code>) locations. Order: prefix/exact (longest path first), then regex (definition order), then named.</p>
+        <poem>
+          <stanza>
+            <v>NginxLocation[]  srv.locations</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>srv.findLocation(pattern)</p>
+        </title>
+        <p>Returns the <code>NginxLocation</code> for the given <code>pattern</code> string, or <code>null</code> if not found. Searches prefix/exact, regex, and named arrays.</p>
+        <poem>
+          <stanza>
+            <v>NginxLocation | null  srv.findLocation(pattern)</v>
+          </stanza>
+        </poem>
+        <p>Pattern syntax is identical to <code>addLocation()</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>srv.addLocation(pattern [, opts])</p>
+        </title>
+        <p>Adds a new location (or returns existing if <code>pattern</code> already registered). Rebuilds the location BST immediately.</p>
+        <poem>
+          <stanza>
+            <v>NginxLocation  srv.addLocation(pattern)</v>
+            <v>NginxLocation  srv.addLocation(pattern, { template: '/path', index: N })</v>
+          </stanza>
+        </poem>
+        <p>Throws │ Condition</p>
+        <p>TypeError │ pattern is not a string; regex pattern on a build without PCRE.</p>
+        <p>InternalError │ BST rebuild failed (OOM).</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>srv.removeLocation(pattern)</p>
+        </title>
+        <p>Removes the location matching <code>pattern</code> and rebuilds the BST.</p>
+        <poem>
+          <stanza>
+            <v>boolean  srv.removeLocation(pattern)</v>
+          </stanza>
+        </poem>
+        <p>Returns <code>true</code> if found and removed, <code>false</code> if not found.</p>
+      </section>
+      <section>
+        <title>
+          <p>srv.clone(newServerName)</p>
+        </title>
+        <p>Creates a full shallow copy of the server under <code>newServerName</code>, adds it to <code>nginx.http.servers[]</code>.</p>
+        <poem>
+          <stanza>
+            <v>NginxServer  srv.clone(newServerName)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>loc.addLocation(pattern [, opts])</p>
+        </title>
+        <p>Identical to <code>srv.addLocation()</code> — delegates to the server. Not available on <code>req.location</code>.</p>
+        <poem>
+          <stanza>
+            <v>NginxLocation  loc.addLocation(pattern)</v>
+            <v>NginxLocation  loc.addLocation(pattern, { template: '/path', index: N })</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>loc.removeLocation(pattern)</p>
+        </title>
+        <p>Identical to <code>srv.removeLocation()</code> — delegates to the server. Not available on <code>req.location</code>.</p>
+        <poem>
+          <stanza>
+            <v>boolean  loc.removeLocation(pattern)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>loc.clone(newPattern [, opts])</p>
+        </title>
+        <p>Creates a shallow copy of this location at <code>newPattern</code> (plain prefix only). Optionally copies child locations up to <code>depth</code> levels deep.</p>
+        <poem>
+          <stanza>
+            <v>NginxLocation  loc.clone(newPattern)</v>
+            <v>NginxLocation  loc.clone(newPattern, { depth: N })</v>
+          </stanza>
+        </poem>
+        <p>depth │ Effect</p>
+        <p>0 (default) │ Only this location; no children.</p>
+        <p>N │ Children up to N levels of relative nesting depth.</p>
+        <p>Infinity │ All descendants.</p>
+        <empty-line />
+        <p>Throws <code>TypeError</code> if <code>newPattern</code> has a modifier prefix (<code>=</code>, <code>^~</code>, <code>~</code>, <code>@</code>).</p>
+      </section>
+      <section>
+        <title>
+          <p>loc.path, loc.matchType, loc.pattern, loc.internal</p>
+        </title>
+        <p>Read-only properties on every <code>NginxLocation</code>:</p>
+        <p>Property │ Type │ Description</p>
+        <p>path │ string │ Full pattern including modifier (e.g. "= /ping", "~ /\\.php$").</p>
+        <p>matchType │ string │ One of: 'prefix', 'exact', 'prefix_noregex', 'regex', 'regex_caseless', 'named'.</p>
+        <p>pattern │ string │ Bare path/regex without modifier prefix.</p>
+        <p>internal │ boolean │ true for named and internal (noname) locations.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>nginx.suspendAcceptance() / nginx.resumeAcceptance()</p>
+        </title>
+        <p>Synchronous per-worker acceptance control. Use to wrap multi-step location mutations that must appear atomic to new requests on this worker. See the <emphasis>for single worker</emphasis> guide for full documentation.</p>
+      </section>
+      <section>
+        <title>
+          <p>nginx.suspendAllWorkers() / nginx.resumeAllWorkers()</p>
+        </title>
+        <p>Async cross-worker acceptance control. Returns a <code>Promise&lt;undefined&gt;</code>. Use when location changes must be visible consistently across all workers before any new request is accepted. See the <emphasis>for all workers</emphasis> guide for full documentation.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Design notes</p>
+      </title>
+      <section>
+        <title>
+          <p>BST rebuild cost</p>
+        </title>
+        <p>Every <code>addLocation()</code>, <code>removeLocation()</code>, or <code>clone()</code> call rebuilds the location binary search tree from the flat <code>prefix_locs[]</code> snapshot. The rebuild is O(N log N) in the number of prefix locations. It allocates a fresh pool for the BST nodes and releases the previous one.</p>
+        <p>For typical deployments (tens to hundreds of locations) the rebuild is measured in microseconds and is not a concern. For automated bulk operations (thousands of locations), batch them in a single suspension window to amortise the rebuild cost.</p>
+      </section>
+      <section>
+        <title>
+          <p>Dynamic pool vs static pool</p>
+        </title>
+        <p>Config-file locations are allocated in nginx’s main memory pool (<code>cycle→pool</code>), which is never freed during a reload. Dynamically added locations are allocated in the server’s <code>dyn_pool</code>, which is freed when the server wrapper is garbage-collected (typically at process exit or explicit release).</p>
+        <p>Removed locations are spliced out of the live arrays but their memory in <code>dyn_pool</code> is not reclaimed until the pool is destroyed. This is harmless for typical usage patterns.</p>
+      </section>
+      <section>
+        <title>
+          <p>r.location is structural read-only</p>
+        </title>
+        <p>
+          <code>req.location</code> provides a per-request view of the matched location. <code>addLocation()</code>, <code>removeLocation()</code>, and <code>clone()</code> are not available on it. Field writes (<code>root</code>, <code>handler</code>, etc.) work subject to <code>write_mode</code>.</p>
+        <p>The rationale: structural changes are global operations on the server’s BST; they would not make sense in a per-request isolation context.</p>
+      </section>
+      <section>
+        <title>
+          <p>Regex position and definition order</p>
+        </title>
+        <p>The <code>index</code> option in <code>addLocation('~ pattern', { index: N })</code> controls where the new regex is inserted in the regex array. Regex locations are always checked in array order; a lower index means higher priority.</p>
+        <p>Removing a regex location compacts the array: all locations after the removed entry shift down by one position.</p>
+      </section>
+      <section>
+        <title>
+          <p>Handler serialisation for cross-worker broadcast</p>
+        </title>
+        <p>JS functions cannot be transferred via <code>postMessage</code>. For cross-worker location provisioning, use a handler registry: map handler names to function references, broadcast the name, and let each worker look it up locally.</p>
+        <poem>
+          <stanza>
+            <v>// Shared handler registry (defined in js_source, visible in every worker)</v>
+            <v>const handlerRegistry = {</v>
+            <v>    'api-v2':    v2ApiHandler,</v>
+            <v>    'api-v3':    v3ApiHandler,</v>
+            <v>    'static':    staticHandler,</v>
+            <v>    'maintenance': maintenanceHandler,</v>
+            <v>};</v>
+            <v />
+            <v>// On receiving a broadcast:</v>
+            <v>cfgWorker.onmessage = (msg) =&gt; {</v>
+            <v>    const loc     = srv.addLocation(msg.data.pattern);</v>
+            <v>    const handler = handlerRegistry[msg.data.handlerName];</v>
+            <v>    if (handler) { loc.handler = handler; }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+  </body>
+</FictionBook>

@@ -1,0 +1,1977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="generator" content="Asciidoctor 2.0.26">
+<title>nginx JS — Dynamic Reconfiguration Guide (locations)</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:300,300italic,400,400italic,600,600italic%7CNoto+Serif:400,400italic,700,700italic%7CDroid+Sans+Mono:400,700">
+<style>
+/*! Asciidoctor default stylesheet | MIT License | https://asciidoctor.org */
+/* Uncomment the following line when using as a custom stylesheet */
+/* @import "https://fonts.googleapis.com/css?family=Open+Sans:300,300italic,400,400italic,600,600italic%7CNoto+Serif:400,400italic,700,700italic%7CDroid+Sans+Mono:400,700"; */
+html{font-family:sans-serif;-webkit-text-size-adjust:100%}
+a{background:none}
+a:focus{outline:thin dotted}
+a:active,a:hover{outline:0}
+h1{font-size:2em;margin:.67em 0}
+b,strong{font-weight:bold}
+abbr{font-size:.9em}
+abbr[title]{cursor:help;border-bottom:1px dotted #dddddf;text-decoration:none}
+dfn{font-style:italic}
+hr{height:0}
+mark{background:#ff0;color:#000}
+code,kbd,pre,samp{font-family:monospace;font-size:1em}
+pre{white-space:pre-wrap}
+q{quotes:"\201C" "\201D" "\2018" "\2019"}
+small{font-size:80%}
+sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}
+sup{top:-.5em}
+sub{bottom:-.25em}
+img{border:0}
+svg:not(:root){overflow:hidden}
+figure{margin:0}
+audio,video{display:inline-block}
+audio:not([controls]){display:none;height:0}
+fieldset{border:1px solid silver;margin:0 2px;padding:.35em .625em .75em}
+legend{border:0;padding:0}
+button,input,select,textarea{font-family:inherit;font-size:100%;margin:0}
+button,input{line-height:normal}
+button,select{text-transform:none}
+button,html input[type=button],input[type=reset],input[type=submit]{-webkit-appearance:button;cursor:pointer}
+button[disabled],html input[disabled]{cursor:default}
+input[type=checkbox],input[type=radio]{padding:0}
+button::-moz-focus-inner,input::-moz-focus-inner{border:0;padding:0}
+textarea{overflow:auto;vertical-align:top}
+table{border-collapse:collapse;border-spacing:0}
+*,::before,::after{box-sizing:border-box}
+html,body{font-size:100%}
+body{background:#fff;color:rgba(0,0,0,.8);padding:0;margin:0;font-family:"Noto Serif","DejaVu Serif",serif;line-height:1;position:relative;cursor:auto;-moz-tab-size:4;-o-tab-size:4;tab-size:4;word-wrap:anywhere;-moz-osx-font-smoothing:grayscale;-webkit-font-smoothing:antialiased}
+a:hover{cursor:pointer}
+img,object,embed{max-width:100%;height:auto}
+object,embed{height:100%}
+img{-ms-interpolation-mode:bicubic}
+.left{float:left!important}
+.right{float:right!important}
+.text-left{text-align:left!important}
+.text-right{text-align:right!important}
+.text-center{text-align:center!important}
+.text-justify{text-align:justify!important}
+.hide{display:none}
+img,object,svg{display:inline-block;vertical-align:middle}
+textarea{height:auto;min-height:50px}
+select{width:100%}
+.subheader,.admonitionblock td.content>.title,.audioblock>.title,.exampleblock>.title,.imageblock>.title,.listingblock>.title,.literalblock>.title,.stemblock>.title,.openblock>.title,.paragraph>.title,.quoteblock>.title,table.tableblock>.title,.verseblock>.title,.videoblock>.title,.dlist>.title,.olist>.title,.ulist>.title,.qlist>.title,.hdlist>.title{line-height:1.45;color:#7a2518;font-weight:400;margin-top:0;margin-bottom:.25em}
+div,dl,dt,dd,ul,ol,li,h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6,pre,form,p,blockquote,th,td{margin:0;padding:0}
+a{color:#2156a5;text-decoration:underline;line-height:inherit}
+a:hover,a:focus{color:#1d4b8f}
+a img{border:0}
+p{line-height:1.6;margin-bottom:1.25em;text-rendering:optimizeLegibility}
+p aside{font-size:.875em;line-height:1.35;font-style:italic}
+h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6{font-family:"Open Sans","DejaVu Sans",sans-serif;font-weight:300;font-style:normal;color:#ba3925;text-rendering:optimizeLegibility;margin-top:1em;margin-bottom:.5em;line-height:1.0125em}
+h1 small,h2 small,h3 small,#toctitle small,.sidebarblock>.content>.title small,h4 small,h5 small,h6 small{font-size:60%;color:#e99b8f;line-height:0}
+h1{font-size:2.125em}
+h2{font-size:1.6875em}
+h3,#toctitle,.sidebarblock>.content>.title{font-size:1.375em}
+h4,h5{font-size:1.125em}
+h6{font-size:1em}
+hr{border:solid #dddddf;border-width:1px 0 0;clear:both;margin:1.25em 0 1.1875em}
+em,i{font-style:italic;line-height:inherit}
+strong,b{font-weight:bold;line-height:inherit}
+small{font-size:60%;line-height:inherit}
+code{font-family:"Droid Sans Mono","DejaVu Sans Mono",monospace;font-weight:400;color:rgba(0,0,0,.9)}
+ul,ol,dl{line-height:1.6;margin-bottom:1.25em;list-style-position:outside;font-family:inherit}
+ul,ol{margin-left:1.5em}
+ul li ul,ul li ol{margin-left:1.25em;margin-bottom:0}
+ul.circle{list-style-type:circle}
+ul.disc{list-style-type:disc}
+ul.square{list-style-type:square}
+ul.circle ul:not([class]),ul.disc ul:not([class]),ul.square ul:not([class]){list-style:inherit}
+ol li ul,ol li ol{margin-left:1.25em;margin-bottom:0}
+dl dt{margin-bottom:.3125em;font-weight:bold}
+dl dd{margin-bottom:1.25em}
+blockquote{margin:0 0 1.25em;padding:.5625em 1.25em 0 1.1875em;border-left:1px solid #ddd}
+blockquote,blockquote p{line-height:1.6;color:rgba(0,0,0,.85)}
+@media screen and (min-width:768px){h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6{line-height:1.2}
+h1{font-size:2.75em}
+h2{font-size:2.3125em}
+h3,#toctitle,.sidebarblock>.content>.title{font-size:1.6875em}
+h4{font-size:1.4375em}}
+table{background:#fff;margin-bottom:1.25em;border:1px solid #dedede;word-wrap:normal}
+table thead,table tfoot{background:#f7f8f7}
+table thead tr th,table thead tr td,table tfoot tr th,table tfoot tr td{padding:.5em .625em .625em;font-size:inherit;color:rgba(0,0,0,.8);text-align:left}
+table tr th,table tr td{padding:.5625em .625em;font-size:inherit;color:rgba(0,0,0,.8)}
+table tr.even,table tr.alt{background:#f8f8f7}
+table thead tr th,table tfoot tr th,table tbody tr td,table tr td,table tfoot tr td{line-height:1.6}
+h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6{line-height:1.2;word-spacing:-.05em}
+h1 strong,h2 strong,h3 strong,#toctitle strong,.sidebarblock>.content>.title strong,h4 strong,h5 strong,h6 strong{font-weight:400}
+.center{margin-left:auto;margin-right:auto}
+.stretch{width:100%}
+.clearfix::before,.clearfix::after,.float-group::before,.float-group::after{content:" ";display:table}
+.clearfix::after,.float-group::after{clear:both}
+:not(pre).nobreak{word-wrap:normal}
+:not(pre).nowrap{white-space:nowrap}
+:not(pre).pre-wrap{white-space:pre-wrap}
+:not(pre):not([class^=L])>code{font-size:.9375em;font-style:normal!important;letter-spacing:0;padding:.1em .5ex;word-spacing:-.15em;background:#f7f7f8;border-radius:4px;line-height:1.45;text-rendering:optimizeSpeed}
+pre{color:rgba(0,0,0,.9);font-family:"Droid Sans Mono","DejaVu Sans Mono",monospace;line-height:1.45;text-rendering:optimizeSpeed}
+pre code,pre pre{color:inherit;font-size:inherit;line-height:inherit}
+pre.nowrap,pre.nowrap pre{white-space:pre;word-wrap:normal}
+em em{font-style:normal}
+strong strong{font-weight:400}
+.keyseq{color:rgba(51,51,51,.8)}
+kbd{font-family:"Droid Sans Mono","DejaVu Sans Mono",monospace;display:inline-block;color:rgba(0,0,0,.8);font-size:.65em;line-height:1.45;background:#f7f7f7;border:1px solid #ccc;border-radius:3px;box-shadow:0 1px 0 rgba(0,0,0,.2),inset 0 0 0 .1em #fff;margin:0 .15em;padding:.2em .5em;vertical-align:middle;position:relative;top:-.1em;white-space:nowrap}
+.keyseq kbd:first-child{margin-left:0}
+.keyseq kbd:last-child{margin-right:0}
+.menuseq,.menuref{color:#000}
+.menuseq b:not(.caret),.menuref{font-weight:inherit}
+.menuseq{word-spacing:-.02em}
+.menuseq b.caret{font-size:1.25em;line-height:.8}
+.menuseq i.caret{font-weight:bold;text-align:center;width:.45em}
+b.button::before,b.button::after{position:relative;top:-1px;font-weight:400}
+b.button::before{content:"[";padding:0 3px 0 2px}
+b.button::after{content:"]";padding:0 2px 0 3px}
+p a>code:hover{color:rgba(0,0,0,.9)}
+#header,#content,#footnotes,#footer{width:100%;margin:0 auto;max-width:62.5em;*zoom:1;position:relative;padding-left:.9375em;padding-right:.9375em}
+#header::before,#header::after,#content::before,#content::after,#footnotes::before,#footnotes::after,#footer::before,#footer::after{content:" ";display:table}
+#header::after,#content::after,#footnotes::after,#footer::after{clear:both}
+#content{margin-top:1.25em}
+#content::before{content:none}
+#header>h1:first-child{color:rgba(0,0,0,.85);margin-top:2.25rem;margin-bottom:0}
+#header>h1:first-child+#toc{margin-top:8px;border-top:1px solid #dddddf}
+#header>h1:only-child{border-bottom:1px solid #dddddf;padding-bottom:8px}
+#header .details{border-bottom:1px solid #dddddf;line-height:1.45;padding-top:.25em;padding-bottom:.25em;padding-left:.25em;color:rgba(0,0,0,.6);display:flex;flex-flow:row wrap}
+#header .details span:first-child{margin-left:-.125em}
+#header .details span.email a{color:rgba(0,0,0,.85)}
+#header .details br{display:none}
+#header .details br+span::before{content:"\00a0\2013\00a0"}
+#header .details br+span.author::before{content:"\00a0\22c5\00a0";color:rgba(0,0,0,.85)}
+#header .details br+span#revremark::before{content:"\00a0|\00a0"}
+#header #revnumber{text-transform:capitalize}
+#header #revnumber::after{content:"\00a0"}
+#content>h1:first-child:not([class]){color:rgba(0,0,0,.85);border-bottom:1px solid #dddddf;padding-bottom:8px;margin-top:0;padding-top:1rem;margin-bottom:1.25rem}
+#toc{border-bottom:1px solid #e7e7e9;padding-bottom:.5em}
+#toc>ul{margin-left:.125em}
+#toc ul.sectlevel0>li>a{font-style:italic}
+#toc ul.sectlevel0 ul.sectlevel1{margin:.5em 0}
+#toc ul{font-family:"Open Sans","DejaVu Sans",sans-serif;list-style-type:none}
+#toc li{line-height:1.3334;margin-top:.3334em}
+#toc a{text-decoration:none}
+#toc a:active{text-decoration:underline}
+#toctitle{color:#7a2518;font-size:1.2em}
+@media screen and (min-width:768px){#toctitle{font-size:1.375em}
+body.toc2{padding-left:15em;padding-right:0}
+body.toc2 #header>h1:nth-last-child(2){border-bottom:1px solid #dddddf;padding-bottom:8px}
+#toc.toc2{margin-top:0!important;background:#f8f8f7;position:fixed;width:15em;left:0;top:0;border-right:1px solid #e7e7e9;border-top-width:0!important;border-bottom-width:0!important;z-index:1000;padding:1.25em 1em;height:100%;overflow:auto}
+#toc.toc2 #toctitle{margin-top:0;margin-bottom:.8rem;font-size:1.2em}
+#toc.toc2>ul{font-size:.9em;margin-bottom:0}
+#toc.toc2 ul ul{margin-left:0;padding-left:1em}
+#toc.toc2 ul.sectlevel0 ul.sectlevel1{padding-left:0;margin-top:.5em;margin-bottom:.5em}
+body.toc2.toc-right{padding-left:0;padding-right:15em}
+body.toc2.toc-right #toc.toc2{border-right-width:0;border-left:1px solid #e7e7e9;left:auto;right:0}}
+@media screen and (min-width:1280px){body.toc2{padding-left:20em;padding-right:0}
+#toc.toc2{width:20em}
+#toc.toc2 #toctitle{font-size:1.375em}
+#toc.toc2>ul{font-size:.95em}
+#toc.toc2 ul ul{padding-left:1.25em}
+body.toc2.toc-right{padding-left:0;padding-right:20em}}
+#content #toc{border:1px solid #e0e0dc;margin-bottom:1.25em;padding:1.25em;background:#f8f8f7;border-radius:4px}
+#content #toc>:first-child{margin-top:0}
+#content #toc>:last-child{margin-bottom:0}
+#footer{max-width:none;background:rgba(0,0,0,.8);padding:1.25em}
+#footer-text{color:hsla(0,0%,100%,.8);line-height:1.44}
+#content{margin-bottom:.625em}
+.sect1{padding-bottom:.625em}
+@media screen and (min-width:768px){#content{margin-bottom:1.25em}
+.sect1{padding-bottom:1.25em}}
+.sect1:last-child{padding-bottom:0}
+.sect1+.sect1{border-top:1px solid #e7e7e9}
+#content h1>a.anchor,h2>a.anchor,h3>a.anchor,#toctitle>a.anchor,.sidebarblock>.content>.title>a.anchor,h4>a.anchor,h5>a.anchor,h6>a.anchor{position:absolute;z-index:1001;width:1.5ex;margin-left:-1.5ex;display:block;text-decoration:none!important;visibility:hidden;text-align:center;font-weight:400}
+#content h1>a.anchor::before,h2>a.anchor::before,h3>a.anchor::before,#toctitle>a.anchor::before,.sidebarblock>.content>.title>a.anchor::before,h4>a.anchor::before,h5>a.anchor::before,h6>a.anchor::before{content:"\00A7";font-size:.85em;display:block;padding-top:.1em}
+#content h1:hover>a.anchor,#content h1>a.anchor:hover,h2:hover>a.anchor,h2>a.anchor:hover,h3:hover>a.anchor,#toctitle:hover>a.anchor,.sidebarblock>.content>.title:hover>a.anchor,h3>a.anchor:hover,#toctitle>a.anchor:hover,.sidebarblock>.content>.title>a.anchor:hover,h4:hover>a.anchor,h4>a.anchor:hover,h5:hover>a.anchor,h5>a.anchor:hover,h6:hover>a.anchor,h6>a.anchor:hover{visibility:visible}
+#content h1>a.link,h2>a.link,h3>a.link,#toctitle>a.link,.sidebarblock>.content>.title>a.link,h4>a.link,h5>a.link,h6>a.link{color:#ba3925;text-decoration:none}
+#content h1>a.link:hover,h2>a.link:hover,h3>a.link:hover,#toctitle>a.link:hover,.sidebarblock>.content>.title>a.link:hover,h4>a.link:hover,h5>a.link:hover,h6>a.link:hover{color:#a53221}
+details,.audioblock,.imageblock,.literalblock,.listingblock,.stemblock,.videoblock{margin-bottom:1.25em}
+details{margin-left:1.25rem}
+details>summary{cursor:pointer;display:block;position:relative;line-height:1.6;margin-bottom:.625rem;outline:none;-webkit-tap-highlight-color:transparent}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"";border:solid transparent;border-left:solid;border-width:.3em 0 .3em .5em;position:absolute;top:.5em;left:-1.25rem;transform:translateX(15%)}
+details[open]>summary::before{border:solid transparent;border-top:solid;border-width:.5em .3em 0;transform:translateY(15%)}
+details>summary::after{content:"";width:1.25rem;height:1em;position:absolute;top:.3em;left:-1.25rem}
+.admonitionblock td.content>.title,.audioblock>.title,.exampleblock>.title,.imageblock>.title,.listingblock>.title,.literalblock>.title,.stemblock>.title,.openblock>.title,.paragraph>.title,.quoteblock>.title,table.tableblock>.title,.verseblock>.title,.videoblock>.title,.dlist>.title,.olist>.title,.ulist>.title,.qlist>.title,.hdlist>.title{text-rendering:optimizeLegibility;text-align:left;font-family:"Noto Serif","DejaVu Serif",serif;font-size:1rem;font-style:italic}
+table.tableblock.fit-content>caption.title{white-space:nowrap;width:0}
+.paragraph.lead>p,#preamble>.sectionbody>[class=paragraph]:first-of-type p{font-size:1.21875em;line-height:1.6;color:rgba(0,0,0,.85)}
+.admonitionblock>table{border-collapse:separate;border:0;background:none;width:100%}
+.admonitionblock>table td.icon{text-align:center;width:80px}
+.admonitionblock>table td.icon img{max-width:none}
+.admonitionblock>table td.icon .title{font-weight:bold;font-family:"Open Sans","DejaVu Sans",sans-serif;text-transform:uppercase}
+.admonitionblock>table td.content{padding-left:1.125em;padding-right:1.25em;border-left:1px solid #dddddf;color:rgba(0,0,0,.6);word-wrap:anywhere}
+.admonitionblock>table td.content>:last-child>:last-child{margin-bottom:0}
+.exampleblock>.content{border:1px solid #e6e6e6;margin-bottom:1.25em;padding:1.25em;background:#fff;border-radius:4px}
+.sidebarblock{border:1px solid #dbdbd6;margin-bottom:1.25em;padding:1.25em;background:#f3f3f2;border-radius:4px}
+.sidebarblock>.content>.title{color:#7a2518;margin-top:0;text-align:center}
+.exampleblock>.content>:first-child,.sidebarblock>.content>:first-child{margin-top:0}
+.exampleblock>.content>:last-child,.exampleblock>.content>:last-child>:last-child,.exampleblock>.content .olist>ol>li:last-child>:last-child,.exampleblock>.content .ulist>ul>li:last-child>:last-child,.exampleblock>.content .qlist>ol>li:last-child>:last-child,.sidebarblock>.content>:last-child,.sidebarblock>.content>:last-child>:last-child,.sidebarblock>.content .olist>ol>li:last-child>:last-child,.sidebarblock>.content .ulist>ul>li:last-child>:last-child,.sidebarblock>.content .qlist>ol>li:last-child>:last-child{margin-bottom:0}
+.literalblock pre,.listingblock>.content>pre{border-radius:4px;overflow-x:auto;padding:1em;font-size:.8125em}
+@media screen and (min-width:768px){.literalblock pre,.listingblock>.content>pre{font-size:.90625em}}
+@media screen and (min-width:1280px){.literalblock pre,.listingblock>.content>pre{font-size:1em}}
+.literalblock pre,.listingblock>.content>pre:not(.highlight),.listingblock>.content>pre[class=highlight],.listingblock>.content>pre[class^="highlight "]{background:#f7f7f8}
+.literalblock.output pre{color:#f7f7f8;background:rgba(0,0,0,.9)}
+.listingblock>.content{position:relative}
+.listingblock pre>code{display:block}
+.listingblock code[data-lang]::before{display:none;content:attr(data-lang);position:absolute;font-size:.75em;top:.425rem;right:.5rem;line-height:1;text-transform:uppercase;color:inherit;opacity:.5}
+.listingblock:hover code[data-lang]::before{display:block}
+.listingblock.terminal pre .command::before{content:attr(data-prompt);padding-right:.5em;color:inherit;opacity:.5}
+.listingblock.terminal pre .command:not([data-prompt])::before{content:"$"}
+.listingblock pre.highlightjs{padding:0}
+.listingblock pre.highlightjs>code{padding:1em;border-radius:4px}
+.listingblock pre.prettyprint{border-width:0}
+.prettyprint{background:#f7f7f8}
+pre.prettyprint .linenums{line-height:1.45;margin-left:2em}
+pre.prettyprint li{background:none;list-style-type:inherit;padding-left:0}
+pre.prettyprint li code[data-lang]::before{opacity:1}
+pre.prettyprint li:not(:first-child) code[data-lang]::before{display:none}
+table.linenotable{border-collapse:separate;border:0;margin-bottom:0;background:none}
+table.linenotable td[class]{color:inherit;vertical-align:top;padding:0;line-height:inherit;white-space:normal}
+table.linenotable td.code{padding-left:.75em}
+table.linenotable td.linenos,pre.pygments .linenos{border-right:1px solid;opacity:.35;padding-right:.5em;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none}
+pre.pygments span.linenos{display:inline-block;margin-right:.75em}
+.quoteblock{margin:0 1em 1.25em 1.5em;display:table}
+.quoteblock:not(.excerpt)>.title{margin-left:-1.5em;margin-bottom:.75em}
+.quoteblock blockquote,.quoteblock p{color:rgba(0,0,0,.85);font-size:1.15rem;line-height:1.75;word-spacing:.1em;letter-spacing:0;font-style:italic;text-align:justify}
+.quoteblock blockquote{margin:0;padding:0;border:0}
+.quoteblock blockquote::before{content:"\201c";float:left;font-size:2.75em;font-weight:bold;line-height:.6em;margin-left:-.6em;color:#7a2518;text-shadow:0 1px 2px rgba(0,0,0,.1)}
+.quoteblock blockquote>.paragraph:last-child p{margin-bottom:0}
+.quoteblock .attribution{margin-top:.75em;margin-right:.5ex;text-align:right}
+.verseblock{margin:0 1em 1.25em}
+.verseblock pre{font-family:"Open Sans","DejaVu Sans",sans-serif;font-size:1.15rem;color:rgba(0,0,0,.85);font-weight:300;text-rendering:optimizeLegibility}
+.verseblock pre strong{font-weight:400}
+.verseblock .attribution{margin-top:1.25rem;margin-left:.5ex}
+.quoteblock .attribution,.verseblock .attribution{font-size:.9375em;line-height:1.45;font-style:italic}
+.quoteblock .attribution br,.verseblock .attribution br{display:none}
+.quoteblock .attribution cite,.verseblock .attribution cite{display:block;letter-spacing:-.025em;color:rgba(0,0,0,.6)}
+.quoteblock.abstract blockquote::before,.quoteblock.excerpt blockquote::before,.quoteblock .quoteblock blockquote::before{display:none}
+.quoteblock.abstract blockquote,.quoteblock.abstract p,.quoteblock.excerpt blockquote,.quoteblock.excerpt p,.quoteblock .quoteblock blockquote,.quoteblock .quoteblock p{line-height:1.6;word-spacing:0}
+.quoteblock.abstract{margin:0 1em 1.25em;display:block}
+.quoteblock.abstract>.title{margin:0 0 .375em;font-size:1.15em;text-align:center}
+.quoteblock.excerpt>blockquote,.quoteblock .quoteblock{padding:0 0 .25em 1em;border-left:.25em solid #dddddf}
+.quoteblock.excerpt,.quoteblock .quoteblock{margin-left:0}
+.quoteblock.excerpt blockquote,.quoteblock.excerpt p,.quoteblock .quoteblock blockquote,.quoteblock .quoteblock p{color:inherit;font-size:1.0625rem}
+.quoteblock.excerpt .attribution,.quoteblock .quoteblock .attribution{color:inherit;font-size:.85rem;text-align:left;margin-right:0}
+p.tableblock:last-child{margin-bottom:0}
+td.tableblock>.content{margin-bottom:1.25em;word-wrap:anywhere}
+td.tableblock>.content>:last-child{margin-bottom:-1.25em}
+table.tableblock,th.tableblock,td.tableblock{border:0 solid #dedede}
+table.grid-all>*>tr>*{border-width:1px}
+table.grid-cols>*>tr>*{border-width:0 1px}
+table.grid-rows>*>tr>*{border-width:1px 0}
+table.frame-all{border-width:1px}
+table.frame-ends{border-width:1px 0}
+table.frame-sides{border-width:0 1px}
+table.frame-none>colgroup+*>:first-child>*,table.frame-sides>colgroup+*>:first-child>*{border-top-width:0}
+table.frame-none>:last-child>:last-child>*,table.frame-sides>:last-child>:last-child>*{border-bottom-width:0}
+table.frame-none>*>tr>:first-child,table.frame-ends>*>tr>:first-child{border-left-width:0}
+table.frame-none>*>tr>:last-child,table.frame-ends>*>tr>:last-child{border-right-width:0}
+table.stripes-all>*>tr,table.stripes-odd>*>tr:nth-of-type(odd),table.stripes-even>*>tr:nth-of-type(even),table.stripes-hover>*>tr:hover{background:#f8f8f7}
+th.halign-left,td.halign-left{text-align:left}
+th.halign-right,td.halign-right{text-align:right}
+th.halign-center,td.halign-center{text-align:center}
+th.valign-top,td.valign-top{vertical-align:top}
+th.valign-bottom,td.valign-bottom{vertical-align:bottom}
+th.valign-middle,td.valign-middle{vertical-align:middle}
+table thead th,table tfoot th{font-weight:bold}
+tbody tr th{background:#f7f8f7}
+tbody tr th,tbody tr th p,tfoot tr th,tfoot tr th p{color:rgba(0,0,0,.8);font-weight:bold}
+p.tableblock>code:only-child{background:none;padding:0}
+p.tableblock{font-size:1em}
+ol{margin-left:1.75em}
+ul li ol{margin-left:1.5em}
+dl dd{margin-left:1.125em}
+dl dd:last-child,dl dd:last-child>:last-child{margin-bottom:0}
+li p,ul dd,ol dd,.olist .olist,.ulist .ulist,.ulist .olist,.olist .ulist{margin-bottom:.625em}
+ul.checklist,ul.none,ol.none,ul.no-bullet,ol.no-bullet,ol.unnumbered,ul.unstyled,ol.unstyled{list-style-type:none}
+ul.no-bullet,ol.no-bullet,ol.unnumbered{margin-left:.625em}
+ul.unstyled,ol.unstyled{margin-left:0}
+li>p:empty:only-child::before{content:"";display:inline-block}
+ul.checklist>li>p:first-child{margin-left:-1em}
+ul.checklist>li>p:first-child>.fa-square-o:first-child,ul.checklist>li>p:first-child>.fa-check-square-o:first-child{width:1.25em;font-size:.8em;position:relative;bottom:.125em}
+ul.checklist>li>p:first-child>input[type=checkbox]:first-child{margin-right:.25em}
+ul.inline{display:flex;flex-flow:row wrap;list-style:none;margin:0 0 .625em -1.25em}
+ul.inline>li{margin-left:1.25em}
+.unstyled dl dt{font-weight:400;font-style:normal}
+ol.arabic{list-style-type:decimal}
+ol.decimal{list-style-type:decimal-leading-zero}
+ol.loweralpha{list-style-type:lower-alpha}
+ol.upperalpha{list-style-type:upper-alpha}
+ol.lowerroman{list-style-type:lower-roman}
+ol.upperroman{list-style-type:upper-roman}
+ol.lowergreek{list-style-type:lower-greek}
+.hdlist>table,.colist>table{border:0;background:none}
+.hdlist>table>tbody>tr,.colist>table>tbody>tr{background:none}
+td.hdlist1,td.hdlist2{vertical-align:top;padding:0 .625em}
+td.hdlist1{font-weight:bold;padding-bottom:1.25em}
+td.hdlist2{word-wrap:anywhere}
+.literalblock+.colist,.listingblock+.colist{margin-top:-.5em}
+.colist td:not([class]):first-child{padding:.4em .75em 0;line-height:1;vertical-align:top}
+.colist td:not([class]):first-child img{max-width:none}
+.colist td:not([class]):last-child{padding:.25em 0}
+.thumb,.th{line-height:0;display:inline-block;border:4px solid #fff;box-shadow:0 0 0 1px #ddd}
+.imageblock.left{margin:.25em .625em 1.25em 0}
+.imageblock.right{margin:.25em 0 1.25em .625em}
+.imageblock>.title{margin-bottom:0}
+.imageblock.thumb,.imageblock.th{border-width:6px}
+.imageblock.thumb>.title,.imageblock.th>.title{padding:0 .125em}
+.image.left,.image.right{margin-top:.25em;margin-bottom:.25em;display:inline-block;line-height:0}
+.image.left{margin-right:.625em}
+.image.right{margin-left:.625em}
+a.image{text-decoration:none;display:inline-block}
+a.image object{pointer-events:none}
+sup.footnote,sup.footnoteref{font-size:.875em;position:static;vertical-align:super}
+sup.footnote a,sup.footnoteref a{text-decoration:none}
+sup.footnote a:active,sup.footnoteref a:active,#footnotes .footnote a:first-of-type:active{text-decoration:underline}
+#footnotes{padding-top:.75em;padding-bottom:.75em;margin-bottom:.625em}
+#footnotes hr{width:20%;min-width:6.25em;margin:-.25em 0 .75em;border-width:1px 0 0}
+#footnotes .footnote{padding:0 .375em 0 .225em;line-height:1.3334;font-size:.875em;margin-left:1.2em;margin-bottom:.2em}
+#footnotes .footnote a:first-of-type{font-weight:bold;text-decoration:none;margin-left:-1.05em}
+#footnotes .footnote:last-of-type{margin-bottom:0}
+#content #footnotes{margin-top:-.625em;margin-bottom:0;padding:.75em 0}
+div.unbreakable{page-break-inside:avoid}
+.big{font-size:larger}
+.small{font-size:smaller}
+.underline{text-decoration:underline}
+.overline{text-decoration:overline}
+.line-through{text-decoration:line-through}
+.aqua{color:#00bfbf}
+.aqua-background{background:#00fafa}
+.black{color:#000}
+.black-background{background:#000}
+.blue{color:#0000bf}
+.blue-background{background:#0000fa}
+.fuchsia{color:#bf00bf}
+.fuchsia-background{background:#fa00fa}
+.gray{color:#606060}
+.gray-background{background:#7d7d7d}
+.green{color:#006000}
+.green-background{background:#007d00}
+.lime{color:#00bf00}
+.lime-background{background:#00fa00}
+.maroon{color:#600000}
+.maroon-background{background:#7d0000}
+.navy{color:#000060}
+.navy-background{background:#00007d}
+.olive{color:#606000}
+.olive-background{background:#7d7d00}
+.purple{color:#600060}
+.purple-background{background:#7d007d}
+.red{color:#bf0000}
+.red-background{background:#fa0000}
+.silver{color:#909090}
+.silver-background{background:#bcbcbc}
+.teal{color:#006060}
+.teal-background{background:#007d7d}
+.white{color:#bfbfbf}
+.white-background{background:#fafafa}
+.yellow{color:#bfbf00}
+.yellow-background{background:#fafa00}
+span.icon>.fa{cursor:default}
+a span.icon>.fa{cursor:inherit}
+.admonitionblock td.icon [class^="fa icon-"]{font-size:2.5em;text-shadow:1px 1px 2px rgba(0,0,0,.5);cursor:default}
+.admonitionblock td.icon .icon-note::before{content:"\f05a";color:#19407c}
+.admonitionblock td.icon .icon-tip::before{content:"\f0eb";text-shadow:1px 1px 2px rgba(155,155,0,.8);color:#111}
+.admonitionblock td.icon .icon-warning::before{content:"\f071";color:#bf6900}
+.admonitionblock td.icon .icon-caution::before{content:"\f06d";color:#bf3400}
+.admonitionblock td.icon .icon-important::before{content:"\f06a";color:#bf0000}
+.conum[data-value]{display:inline-block;color:#fff!important;background:rgba(0,0,0,.8);border-radius:50%;text-align:center;font-size:.75em;width:1.67em;height:1.67em;line-height:1.67em;font-family:"Open Sans","DejaVu Sans",sans-serif;font-style:normal;font-weight:bold}
+.conum[data-value] *{color:#fff!important}
+.conum[data-value]+b{display:none}
+.conum[data-value]::after{content:attr(data-value)}
+pre .conum[data-value]{position:relative;top:-.125em}
+b.conum *{color:inherit!important}
+.conum:not([data-value]):empty{display:none}
+dt,th.tableblock,td.content,div.footnote{text-rendering:optimizeLegibility}
+h1,h2,p,td.content,span.alt,summary{letter-spacing:-.01em}
+p strong,td.content strong,div.footnote strong{letter-spacing:-.005em}
+p,blockquote,dt,td.content,td.hdlist1,span.alt,summary{font-size:1.0625rem}
+p{margin-bottom:1.25rem}
+.sidebarblock p,.sidebarblock dt,.sidebarblock td.content,p.tableblock{font-size:1em}
+.exampleblock>.content{background:#fffef7;border-color:#e0e0dc;box-shadow:0 1px 4px #e0e0dc}
+.print-only{display:none!important}
+@page{margin:1.25cm .75cm}
+@media print{*{box-shadow:none!important;text-shadow:none!important}
+html{font-size:80%}
+a{color:inherit!important;text-decoration:underline!important}
+a.bare,a[href^="#"],a[href^="mailto:"]{text-decoration:none!important}
+a[href^="http:"]:not(.bare)::after,a[href^="https:"]:not(.bare)::after{content:"(" attr(href) ")";display:inline-block;font-size:.875em;padding-left:.25em}
+abbr[title]{border-bottom:1px dotted}
+abbr[title]::after{content:" (" attr(title) ")"}
+pre,blockquote,tr,img,object,svg{page-break-inside:avoid}
+thead{display:table-header-group}
+svg{max-width:100%}
+p,blockquote,dt,td.content{font-size:1em;orphans:3;widows:3}
+h2,h3,#toctitle,.sidebarblock>.content>.title{page-break-after:avoid}
+#header,#content,#footnotes,#footer{max-width:none}
+#toc,.sidebarblock,.exampleblock>.content{background:none!important}
+#toc{border-bottom:1px solid #dddddf!important;padding-bottom:0!important}
+body.book #header{text-align:center}
+body.book #header>h1:first-child{border:0!important;margin:2.5em 0 1em}
+body.book #header .details{border:0!important;display:block;padding:0!important}
+body.book #header .details span:first-child{margin-left:0!important}
+body.book #header .details br{display:block}
+body.book #header .details br+span::before{content:none!important}
+body.book #toc{border:0!important;text-align:left!important;padding:0!important;margin:0!important}
+body.book #toc,body.book #preamble,body.book h1.sect0,body.book .sect1>h2{page-break-before:always}
+.listingblock code[data-lang]::before{display:block}
+#footer{padding:0 .9375em}
+.hide-on-print{display:none!important}
+.print-only{display:block!important}
+.hide-for-print{display:none!important}
+.show-for-print{display:inherit!important}}
+@media amzn-kf8,print{#header>h1:first-child{margin-top:1.25rem}
+.sect1{padding:0!important}
+.sect1+.sect1{border:0}
+#footer{background:none}
+#footer-text{color:rgba(0,0,0,.6);font-size:.9em}}
+@media amzn-kf8{#header,#content,#footnotes,#footer{padding:0}}
+</style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/styles/github.min.css">
+</head>
+<body class="article toc2 toc-left">
+<div id="header">
+<h1>nginx JS — Dynamic Reconfiguration Guide (locations)</h1>
+<div id="toc" class="toc2">
+<div id="toctitle">Table of Contents</div>
+<ul class="sectlevel1">
+<li><a href="#_overview">1. Overview</a>
+<ul class="sectlevel2">
+<li><a href="#_scope">1.1. Scope</a></li>
+<li><a href="#_config_phase_vs_request_phase">1.2. Config phase vs request phase</a></li>
+<li><a href="#_nginx_location_matching_algorithm">1.3. nginx location matching algorithm</a></li>
+</ul>
+</li>
+<li><a href="#_inspecting_the_location_tree">2. Inspecting the location tree</a>
+<ul class="sectlevel2">
+<li><a href="#_srv_locations">2.1. srv.locations[]</a></li>
+<li><a href="#_srv_findlocationpattern">2.2. srv.findLocation(pattern)</a></li>
+<li><a href="#_iterating_and_filtering">2.3. Iterating and filtering</a></li>
+</ul>
+</li>
+<li><a href="#_adding_locations">3. Adding locations</a>
+<ul class="sectlevel2">
+<li><a href="#_srv_addlocationpattern_opts">3.1. srv.addLocation(pattern [, opts])</a></li>
+<li><a href="#_loc_addlocationpattern_opts">3.2. loc.addLocation(pattern [, opts])</a></li>
+<li><a href="#_example_add_a_simple_prefix_location">3.3. Example: add a simple prefix location</a></li>
+<li><a href="#_example_add_an_exact_match_health_endpoint">3.4. Example: add an exact-match health endpoint</a></li>
+<li><a href="#_example_add_a_regex_location_at_a_specific_position">3.5. Example: add a regex location at a specific position</a></li>
+<li><a href="#_example_add_a_named_location_for_error_fallback">3.6. Example: add a named location for error fallback</a></li>
+<li><a href="#_example_add_a_location_using_a_template">3.7. Example: add a location using a template</a></li>
+<li><a href="#_flow_diagram_addlocation_bst_rebuild">3.8. Flow diagram: addLocation BST rebuild</a></li>
+</ul>
+</li>
+<li><a href="#_removing_locations">4. Removing locations</a>
+<ul class="sectlevel2">
+<li><a href="#_srv_removelocationpattern">4.1. srv.removeLocation(pattern)</a></li>
+<li><a href="#_example_maintenance_mode_toggle">4.2. Example: maintenance mode toggle</a></li>
+<li><a href="#_example_remove_all_dynamically_added_locations">4.3. Example: remove all dynamically added locations</a></li>
+<li><a href="#_flow_diagram_removelocation_bst_rebuild">4.4. Flow diagram: removeLocation BST rebuild</a></li>
+</ul>
+</li>
+<li><a href="#_cloning_locations">5. Cloning locations</a>
+<ul class="sectlevel2">
+<li><a href="#_loc_clonenewpattern_opts">5.1. loc.clone(newPattern [, opts])</a></li>
+<li><a href="#_example_versioned_api_clone">5.2. Example: versioned API clone</a></li>
+<li><a href="#_example_full_subtree_clone_with_depthinfinity">5.3. Example: full subtree clone with depth:Infinity</a></li>
+<li><a href="#_example_clone_a_single_location_no_children">5.4. Example: clone a single location, no children</a></li>
+</ul>
+</li>
+<li><a href="#_cloning_a_server">6. Cloning a server</a>
+<ul class="sectlevel2">
+<li><a href="#_srv_clonenewservername">6.1. srv.clone(newServerName)</a></li>
+<li><a href="#_example_per_tenant_server_provisioning">6.2. Example: per-tenant server provisioning</a></li>
+</ul>
+</li>
+<li><a href="#_modifying_existing_locations">7. Modifying existing locations</a>
+<ul class="sectlevel2">
+<li><a href="#_changing_handler_and_properties">7.1. Changing handler and properties</a></li>
+<li><a href="#_atomic_batch_modification">7.2. Atomic batch modification</a></li>
+<li><a href="#_rollback_with_snapshot">7.3. Rollback with snapshot</a></li>
+<li><a href="#_location_swap_atomic_replace">7.4. Location swap (atomic replace)</a></li>
+</ul>
+</li>
+<li><a href="#_atomic_location_changes_across_all_workers">8. Atomic location changes across all workers</a>
+<ul class="sectlevel2">
+<li><a href="#_the_problem">8.1. The problem</a></li>
+<li><a href="#_pattern_broadcast_structural_change">8.2. Pattern: broadcast structural change</a></li>
+<li><a href="#_flow_diagram_cross_worker_addlocation">8.3. Flow diagram: cross-worker addLocation</a></li>
+</ul>
+</li>
+<li><a href="#_safe_patterns">9. Safe patterns</a>
+<ul class="sectlevel2">
+<li><a href="#_idempotent_add_or_update">9.1. Idempotent add-or-update</a></li>
+<li><a href="#_temporary_location_feature_flag">9.2. Temporary location (feature flag)</a></li>
+<li><a href="#_versioned_api_routing">9.3. Versioned API routing</a></li>
+<li><a href="#_location_inventory_endpoint">9.4. Location inventory endpoint</a></li>
+<li><a href="#_ab_routing_by_location_clone">9.5. A/B routing by location clone</a></li>
+</ul>
+</li>
+<li><a href="#_api_reference">10. API Reference</a>
+<ul class="sectlevel2">
+<li><a href="#_srv_locations_2">10.1. srv.locations</a></li>
+<li><a href="#_srv_findlocationpattern_2">10.2. srv.findLocation(pattern)</a></li>
+<li><a href="#_srv_addlocationpattern_opts_2">10.3. srv.addLocation(pattern [, opts])</a></li>
+<li><a href="#_srv_removelocationpattern_2">10.4. srv.removeLocation(pattern)</a></li>
+<li><a href="#_srv_clonenewservername_2">10.5. srv.clone(newServerName)</a></li>
+<li><a href="#_loc_addlocationpattern_opts_2">10.6. loc.addLocation(pattern [, opts])</a></li>
+<li><a href="#_loc_removelocationpattern">10.7. loc.removeLocation(pattern)</a></li>
+<li><a href="#_loc_clonenewpattern_opts_2">10.8. loc.clone(newPattern [, opts])</a></li>
+<li><a href="#_loc_path_loc_matchtype_loc_pattern_loc_internal">10.9. loc.path, loc.matchType, loc.pattern, loc.internal</a></li>
+<li><a href="#_nginx_suspendacceptance_nginx_resumeacceptance">10.10. nginx.suspendAcceptance() / nginx.resumeAcceptance()</a></li>
+<li><a href="#_nginx_suspendallworkers_nginx_resumeallworkers">10.11. nginx.suspendAllWorkers() / nginx.resumeAllWorkers()</a></li>
+</ul>
+</li>
+<li><a href="#_design_notes">11. Design notes</a>
+<ul class="sectlevel2">
+<li><a href="#_bst_rebuild_cost">11.1. BST rebuild cost</a></li>
+<li><a href="#_dynamic_pool_vs_static_pool">11.2. Dynamic pool vs static pool</a></li>
+<li><a href="#_r_location_is_structural_read_only">11.3. r.location is structural read-only</a></li>
+<li><a href="#_regex_position_and_definition_order">11.4. Regex position and definition order</a></li>
+<li><a href="#_handler_serialisation_for_cross_worker_broadcast">11.5. Handler serialisation for cross-worker broadcast</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<div id="content">
+<div id="preamble">
+<div class="sectionbody">
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p><strong>DRAFT FOR COMMENTS</strong> — This document is a work in progress.
+Content, API names, and examples are subject to change before release.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_overview">1. Overview</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>This guide covers runtime management of nginx <strong>location blocks</strong> via the
+JavaScript DOM: adding, removing, cloning, and reconfiguring locations and
+servers without reloading nginx.</p>
+</div>
+<div class="paragraph">
+<p>Prerequisites: read the <em>for single worker</em> guide first for <code>write_mode</code>,
+<code>snapshot()</code>, and <code>suspendAcceptance()</code>.</p>
+</div>
+<div class="sect2">
+<h3 id="_scope">1.1. Scope</h3>
+<div class="paragraph">
+<p>Location operations are available on:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>NginxServer</code> objects — <code>nginx.http.servers[i]</code></p>
+</li>
+<li>
+<p><code>NginxLocation</code> objects — <code>nginx.http.servers[i].locations[j]</code> or the
+return value of <code>addLocation()</code></p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>They are <strong>not</strong> available on <code>req.location</code> (the request-phase wrapper is
+read-only for structural operations).  Field writes (<code>root</code>, <code>handler</code>, …)
+work on <code>req.location</code> subject to <code>write_mode</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_config_phase_vs_request_phase">1.2. Config phase vs request phase</h3>
+<div class="paragraph">
+<p>Location structure mutations (add, remove, clone) and handler assignment are
+permanent, global changes — they update the location BST immediately and
+affect every subsequent request on this worker.  There is no per-request
+isolation for structural changes.</p>
+</div>
+<div class="paragraph">
+<p>To propagate structural changes to all workers, use a SharedWorker broadcast
+combined with <code>suspendAllWorkers()</code> (see <em>for all workers</em> guide).</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginx_location_matching_algorithm">1.3. nginx location matching algorithm</h3>
+<div class="paragraph">
+<p>Understanding the matching order is essential when adding locations:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Incoming URI
+      │
+      ▼
+  1.  Exact-match locations (= /path)  ← checked first; wins immediately on match
+      │
+      ▼
+  2.  Prefix locations (longest wins among all prefix matches)
+          │
+          ├─► If longest match has ^~  ← skip regex scan; use this location
+          │
+          └─► Otherwise: remember the longest-prefix winner and continue …
+      │
+      ▼
+  3.  Regex locations (checked in definition order, first match wins)
+          │
+          ├─► Match found  ← use this location (overrides prefix winner)
+          │
+          └─► No match     ← fall back to the remembered prefix winner
+      │
+      ▼
+  4.  Named locations (@name) — reachable only from error_page / try_files</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>This order determines which <code>addLocation()</code> patterns affect which requests.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_inspecting_the_location_tree">2. Inspecting the location tree</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_srv_locations">2.1. srv.locations[]</h3>
+<div class="paragraph">
+<p>Returns a live array of all locations registered on this server, including
+dynamically added ones.  The order is: prefix/exact locations (sorted by
+path length, longest first), then regex locations (definition order), then
+named locations.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const srv = nginx.http.servers[0];
+
+// List all locations with their match type and path
+srv.locations.forEach(loc =&gt; {
+    nginx.log(`${loc.matchType.padEnd(16)} ${loc.path}`);
+});</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>loc.matchType</code> values:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Value</th>
+<th class="tableblock halign-left valign-top">Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'prefix'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Normal longest-prefix match.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'exact'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>= /path</code> — checked first, wins immediately.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'prefix_noregex'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>^~ /path</code> — skips regex scan on match.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'regex'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>~ /pattern</code> — case-sensitive PCRE.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'regex_caseless'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>~* /pattern</code> — case-insensitive PCRE.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'named'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>@name</code> — reachable from <code>error_page</code> / <code>try_files</code> only.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p><code>loc.path</code> — the full pattern string as passed to <code>addLocation()</code>,
+including the modifier prefix (e.g. <code>"= /exact"</code>, <code>"~ /\\.php$"</code>).</p>
+</div>
+<div class="paragraph">
+<p><code>loc.pattern</code> — the bare path/regex without the modifier prefix.</p>
+</div>
+<div class="paragraph">
+<p><code>loc.internal</code> — <code>true</code> for named and noname (limit_except, etc.) locations.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_srv_findlocationpattern">2.2. srv.findLocation(pattern)</h3>
+<div class="paragraph">
+<p>Searches the server&#8217;s location arrays by exact pattern string and returns
+the <code>NginxLocation</code> wrapper, or <code>null</code> if not found.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const srv = nginx.http.servers[0];
+
+const api = srv.findLocation('/api/');
+if (api) {
+    nginx.log('api root: ' + api.root);
+}
+
+const exact = srv.findLocation('= /health');
+const regex = srv.findLocation('~ /\\.php$');</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Uses the same pattern syntax as <code>addLocation()</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_iterating_and_filtering">2.3. Iterating and filtering</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const srv = nginx.http.servers[0];
+
+// All prefix locations with a JS handler
+const jsLocs = srv.locations.filter(l =&gt;
+    l.matchType === 'prefix' &amp;&amp; l.handler);
+
+// All regex locations
+const regexLocs = srv.locations.filter(l =&gt;
+    l.matchType === 'regex' || l.matchType === 'regex_caseless');
+
+// Find by path prefix (e.g. all sub-locations of /api/)
+const apiTree = srv.locations.filter(l =&gt;
+    l.matchType === 'prefix' &amp;&amp; l.pattern.startsWith('/api/'));</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_adding_locations">3. Adding locations</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_srv_addlocationpattern_opts">3.1. srv.addLocation(pattern [, opts])</h3>
+<div class="paragraph">
+<p>Adds a new location to the server and immediately rebuilds the location BST
+so the new location is active for all subsequent requests.</p>
+</div>
+<div class="paragraph">
+<p>Returns the new <code>NginxLocation</code> object so properties and handler can be set
+in the same expression chain or immediately after.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const loc = srv.addLocation('/new/path');
+loc.root    = '/var/www/new';
+loc.handler = (req) =&gt; { req.sendfile('/index.html'); };</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><strong>Pattern syntax:</strong></p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Prefix</th>
+<th class="tableblock halign-left valign-top">Example</th>
+<th class="tableblock halign-left valign-top">Match type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">(none)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'/api/'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Normal prefix — longest match wins.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'= '</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'= /ping'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Exact match — wins immediately, highest priority after prefix search.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'^~ '</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'^~ /static/'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Preferential prefix — disables regex scan when matched.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'~ '</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'~ /\\.php$'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Case-sensitive PCRE regex.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'~* '</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'~* /\\.jpg$'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Case-insensitive PCRE regex.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'@'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'@fallback'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Named location — only reachable from <code>error_page</code> / <code>try_files</code>.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p><strong>Options:</strong></p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Option</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>template: '/path'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Copy all config fields from an existing location (same server) as the
+  starting point.  The pattern of the new location is still <code>pattern</code>.
+  Useful for creating near-copies of an existing location.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>index: N</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Regex locations only.</strong> Insert at position <code>N</code> in the regex check array
+  (0 = first checked).  Defaults to append (last checked).</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p><strong>Idempotency:</strong> if a location with the same pattern already exists,
+<code>addLocation()</code> returns the existing <code>NginxLocation</code> object without
+creating a duplicate.  Safe to call multiple times.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_loc_addlocationpattern_opts">3.2. loc.addLocation(pattern [, opts])</h3>
+<div class="paragraph">
+<p>Delegates to the server-level <code>addLocation</code>.  Available on locations
+obtained from <code>server.locations[]</code> or a prior <code>addLocation()</code> call.
+Not available on <code>req.location</code>.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// Equivalent — both add to the same server
+srv.addLocation('/api/v2/');
+apiLoc.addLocation('/api/v2/');     // apiLoc is any loc from this server</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+The BST builder automatically groups locations into a nested tree by
+shared prefix.  You do not need to add child locations through a parent
+location object — adding <code>/api/v2/</code> to the server always nests it under
+<code>/api/</code> in the BST, regardless of which object you call <code>addLocation()</code> on.
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_add_a_simple_prefix_location">3.3. Example: add a simple prefix location</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// js_source: run at init_conf time
+
+const srv = nginx.http.servers[0];
+const docs = srv.addLocation('/docs/');
+
+docs.root    = '/var/www/docs';
+docs.sendfile = true;
+docs.handler = (req) =&gt; {
+    req.sendfile('/index.html');
+};</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_add_an_exact_match_health_endpoint">3.4. Example: add an exact-match health endpoint</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const health = srv.addLocation('= /health');
+health.handler = (req) =&gt; {
+    req.respond(200, { 'Content-Type': 'text/plain' }, 'OK');
+};</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Matching:
+    /health       ── exact match (= /health)  ✓  highest priority
+    /health/more  ── prefix match /health      ✓  (if /health exists)
+    /healthz      ── no match                  ✗</pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_add_a_regex_location_at_a_specific_position">3.5. Example: add a regex location at a specific position</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const srv = nginx.http.servers[0];
+
+// This regex will be checked BEFORE any existing regex locations
+const php = srv.addLocation('~ /\\.php$', { index: 0 });
+php.handler = (req) =&gt; { /* dispatch to FastCGI */ };
+
+// This regex will be checked LAST (default append)
+const fallback = srv.addLocation('~* /\\.html?$');
+fallback.root = '/var/www/html';</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Regex check order (definition order):
+    [0]  ~ /\.php$         ← index:0 → inserted first
+    [1]  ~* /\.html?$      ← appended (default)
+    ...  (existing regex locs)</pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_add_a_named_location_for_error_fallback">3.6. Example: add a named location for error fallback</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const srv = nginx.http.servers[0];
+
+const fallback = srv.addLocation('@static_fallback');
+fallback.root    = '/var/www/static';
+fallback.handler = (req) =&gt; { req.sendfile(req.uri); };
+
+// Wire it to 404 errors in another location
+const api = srv.findLocation('/api/');
+if (api) {
+    api.errorPage = [{ codes: [404], uri: '@static_fallback' }];
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_add_a_location_using_a_template">3.7. Example: add a location using a template</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const srv = nginx.http.servers[0];
+
+// /api/v2/ gets the same config as /api/v1/ (handler, root, timeouts, …)
+// but at the new path
+const v2 = srv.addLocation('/api/v2/', { template: '/api/v1/' });
+
+// Override only what differs
+v2.handler = v2Handler;</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_flow_diagram_addlocation_bst_rebuild">3.8. Flow diagram: addLocation BST rebuild</h3>
+<div class="listingblock">
+<div class="content">
+<pre>  Before addLocation('/api/v2/'):
+
+  Server location BST:
+    /             (prefix)
+    /api/         (prefix)
+    /api/v1/      (prefix, nested under /api/)
+    /static/      (prefix)
+    ~ /\.php$     (regex[0])
+
+  addLocation('/api/v2/') called:
+    1. New clcf allocated in dyn_pool
+    2. entry pushed to prefix_locs[]
+    3. ngx_js_rebuild_loc_tree() called → new BST built from ALL prefix_locs[]
+    4. srv-&gt;root-&gt;static_locations = new BST root
+    5. New requests immediately use the new BST
+
+  After:
+    /             (prefix)
+    /api/         (prefix)
+    /api/v1/      (prefix, nested under /api/)
+    /api/v2/      (prefix, nested under /api/)   ← NEW
+    /static/      (prefix)
+    ~ /\.php$     (regex[0])</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_removing_locations">4. Removing locations</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_srv_removelocationpattern">4.1. srv.removeLocation(pattern)</h3>
+<div class="paragraph">
+<p>Removes the location matching <code>pattern</code> from the server.  The pattern syntax
+is the same as <code>addLocation()</code>.  Returns <code>true</code> if found and removed,
+<code>false</code> if not found.</p>
+</div>
+<div class="paragraph">
+<p>The BST is rebuilt immediately after removal so the location stops matching
+new requests right away.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const removed = srv.removeLocation('/api/v1/');
+nginx.log('removed: ' + removed);   // true or false</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// Remove a regex location
+const ok = srv.removeLocation('~ /\\.php$');
+
+// Remove an exact-match location
+srv.removeLocation('= /health');
+
+// Remove a named location
+srv.removeLocation('@fallback');</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<code>removeLocation</code> matches by pattern string only — the same string you
+passed to <code>addLocation</code>.  It does not perform URI matching.
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_maintenance_mode_toggle">4.2. Example: maintenance mode toggle</h3>
+<div class="paragraph">
+<p>Add a catch-all location for maintenance and remove it when done.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const srv = nginx.http.servers[0];
+let maintenanceActive = false;
+
+function enableMaintenance() {
+    if (maintenanceActive) { return; }
+
+    nginx.suspendAcceptance();
+
+    const m = srv.addLocation('/');      // catches everything (longest prefix: /)
+    m.handler = (req) =&gt; {
+        req.respond(503, { 'Retry-After': '120' },
+                    'Service temporarily unavailable');
+    };
+
+    nginx.resumeAcceptance();
+    maintenanceActive = true;
+}
+
+function disableMaintenance() {
+    if (!maintenanceActive) { return; }
+
+    nginx.suspendAcceptance();
+    srv.removeLocation('/');
+    nginx.resumeAcceptance();
+
+    maintenanceActive = false;
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_remove_all_dynamically_added_locations">4.3. Example: remove all dynamically added locations</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// Remove every location whose path starts with /dynamic/
+srv.locations
+    .filter(l =&gt; l.pattern.startsWith('/dynamic/'))
+    .forEach(l =&gt; srv.removeLocation(l.path));</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+Removing a location while iterating <code>srv.locations</code> is safe because
+<code>srv.locations</code> returns a snapshot array; it is not mutated during iteration.
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_flow_diagram_removelocation_bst_rebuild">4.4. Flow diagram: removeLocation BST rebuild</h3>
+<div class="listingblock">
+<div class="content">
+<pre>  Before removeLocation('/api/v1/'):
+
+  prefix_locs[]:  /, /api/, /api/v1/, /api/v2/, /static/
+  BST:            /
+                  ├─ /api/
+                  │   ├─ /api/v1/    ← to be removed
+                  │   └─ /api/v2/
+                  └─ /static/
+
+  removeLocation('/api/v1/'):
+    1. entry spliced out of prefix_locs[]
+    2. ngx_js_rebuild_loc_tree() → new BST
+    3. New requests immediately stop matching /api/v1/
+    4. In-flight requests already dispatched to /api/v1/ complete normally
+
+  After:
+  BST:            /
+                  ├─ /api/
+                  │   └─ /api/v2/
+                  └─ /static/</pre>
+</div>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+In-flight requests that were already dispatched to a location before
+it is removed will complete normally.  The removed location&#8217;s handler and
+config remain valid for the duration of those requests.
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_cloning_locations">5. Cloning locations</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_loc_clonenewpattern_opts">5.1. loc.clone(newPattern [, opts])</h3>
+<div class="paragraph">
+<p>Creates a new prefix location at <code>newPattern</code> as a shallow copy of the
+source location — same handler, same config values (root, timeouts, proxy
+settings, etc.).  Only plain prefix patterns (no <code>=</code>, <code>^~</code>, <code>~</code>, <code>@</code>)
+are supported as <code>newPattern</code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Option</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>depth: N</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Copy child locations up to <code>N</code> levels of relative nesting.
+  <code>0</code> (default when omitted) = only the location itself.
+  <code>Infinity</code> = copy all descendants.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>Returns the new <code>NginxLocation</code> object.  Idempotent: if <code>newPattern</code>
+already exists as a prefix location, returns the existing wrapper.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const src = srv.findLocation('/api/v1/');
+const dst = src.clone('/api/v2/');
+
+// dst is an independent location — mutating it does not affect src
+dst.handler = v2Handler;</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_versioned_api_clone">5.2. Example: versioned API clone</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const srv  = nginx.http.servers[0];
+const v1   = srv.findLocation('/api/v1/');
+
+// Clone /api/v1/ tree to /api/v2/ (all immediate children)
+const v2   = v1.clone('/api/v2/', { depth: 1 });
+
+// Before:   /api/v1/,  /api/v1/users,  /api/v1/orders
+// After:    all of the above PLUS:
+//           /api/v2/,  /api/v2/users,  /api/v2/orders
+
+// Override the v2 root handler
+v2.handler = (req) =&gt; {
+    req.respond(200, {}, 'API v2');
+};</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Source tree (/api/v1/):
+    /api/v1/
+    /api/v1/users
+    /api/v1/orders
+
+  After clone('/api/v2/', { depth: 1 }):
+    /api/v1/                 (unchanged)
+    /api/v1/users            (unchanged)
+    /api/v1/orders           (unchanged)
+    /api/v2/                 (new, copy of /api/v1/)
+    /api/v2/users            (new, copy of /api/v1/users)
+    /api/v2/orders           (new, copy of /api/v1/orders)</pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_full_subtree_clone_with_depthinfinity">5.3. Example: full subtree clone with depth:Infinity</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const v1 = srv.findLocation('/api/v1/');
+
+// Copies all descendants regardless of nesting depth
+const v3 = v1.clone('/api/v3/', { depth: Infinity });
+
+// Customise only the top level
+v3.root = '/var/www/v3';</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_clone_a_single_location_no_children">5.4. Example: clone a single location, no children</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const beta = srv.findLocation('/beta/');
+
+// depth defaults to 0: only /beta/ itself is cloned, not /beta/api/ etc.
+const prod = beta.clone('/prod/');
+prod.root = '/var/www/prod';</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_cloning_a_server">6. Cloning a server</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_srv_clonenewservername">6.1. srv.clone(newServerName)</h3>
+<div class="paragraph">
+<p>Creates a shallow copy of the entire server — all locations, all config
+fields — and registers it as a new virtual host under <code>newServerName</code>.
+The clone is added to <code>nginx.http.servers[]</code> and starts accepting requests
+for <code>newServerName</code> immediately.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const primary = nginx.http.servers.find(s =&gt; s.name === 'example.com');
+const mirror  = primary.clone('mirror.example.com');
+
+// Customise the clone
+mirror.root = '/var/www/mirror';</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<code>srv.clone()</code> creates independent location arrays and an independent
+BST for the new server.  Structural changes on the clone do not affect the
+original, and vice versa.
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_per_tenant_server_provisioning">6.2. Example: per-tenant server provisioning</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const template = nginx.http.servers.find(s =&gt; s.name === 'template.internal');
+
+const tenants = ['acme', 'globex', 'initech'];
+tenants.forEach(tenant =&gt; {
+    const srv = template.clone(tenant + '.example.com');
+    srv.root = '/var/www/tenants/' + tenant;
+
+    // Add tenant-specific admin location
+    const admin = srv.addLocation('= /admin');
+    admin.handler = makeAdminHandler(tenant);
+});</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_modifying_existing_locations">7. Modifying existing locations</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_changing_handler_and_properties">7.1. Changing handler and properties</h3>
+<div class="paragraph">
+<p>Property writes on a location obtained from <code>server.locations[]</code> or
+<code>addLocation()</code> use <code>write_mode='global'</code> by default — they affect all
+future requests on this worker immediately.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const loc = srv.findLocation('/api/');
+if (loc) {
+    loc.root    = '/var/www/api-v2';
+    loc.handler = newApiHandler;
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_atomic_batch_modification">7.2. Atomic batch modification</h3>
+<div class="paragraph">
+<p>Use <code>suspendAcceptance()</code> when changing multiple properties to prevent any
+new request on this worker from seeing a half-updated location:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const loc = srv.findLocation('/api/');
+
+nginx.suspendAcceptance();
+
+loc.root                  = '/var/www/new';
+loc.keepaliveTimeout      = 75000;
+loc.proxy.readTimeout     = 30000;
+loc.proxy.connectTimeout  = 5000;
+
+nginx.resumeAcceptance();</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_rollback_with_snapshot">7.3. Rollback with snapshot</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const loc  = srv.findLocation('/api/');
+const snap = loc.snapshot();
+
+nginx.suspendAcceptance();
+try {
+    loc.root    = cfg.root;
+    loc.handler = cfg.handler;
+    nginx.resumeAcceptance();
+    req.json({ applied: true });
+} catch (e) {
+    snap.restore();
+    nginx.resumeAcceptance();
+    req.respond(500, {}, e.message);
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_location_swap_atomic_replace">7.4. Location swap (atomic replace)</h3>
+<div class="paragraph">
+<p>Replace one location with another in a single suspension window:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">async function swapLocations(srv, oldPattern, newPattern, newHandler, newRoot) {
+    nginx.suspendAcceptance();
+
+    try {
+        srv.removeLocation(oldPattern);
+
+        const loc    = srv.addLocation(newPattern);
+        loc.handler  = newHandler;
+        loc.root     = newRoot;
+    } finally {
+        nginx.resumeAcceptance();
+    }
+}
+
+// Example: swap /beta/ → /prod/
+await swapLocations(srv, '/beta/', '/prod/', prodHandler, '/var/www/prod');</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Before swap:            After swap:
+    /beta/      (active)    /prod/      (active, immediate)
+    /prod/      (absent)    /beta/      (absent)</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_atomic_location_changes_across_all_workers">8. Atomic location changes across all workers</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_the_problem">8.1. The problem</h3>
+<div class="paragraph">
+<p><code>addLocation()</code>, <code>removeLocation()</code>, <code>clone()</code>, and property writes all
+update only the <strong>current worker&#8217;s</strong> location BST.  Other workers continue
+to use their own BST, which does not include the change.</p>
+</div>
+<div class="paragraph">
+<p>To apply structural changes consistently across all workers, combine
+<code>suspendAllWorkers()</code> with a SharedWorker broadcast.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_pattern_broadcast_structural_change">8.2. Pattern: broadcast structural change</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// js_source: location_mgr.js
+
+const cfgWorker = new SharedWorker('cfgworker.js');
+
+cfgWorker.onmessage = (msg) =&gt; {
+    const { op, pattern, opts, props } = msg.data;
+    const srv = nginx.http.servers[0];
+
+    if (op === 'add') {
+        const loc = srv.addLocation(pattern, opts || {});
+        if (props) {
+            if (props.root)    { loc.root    = props.root; }
+            if (props.handler) { loc.handler = eval(props.handler); } // see note
+        }
+    } else if (op === 'remove') {
+        srv.removeLocation(pattern);
+    }
+};</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// Request handler: add a location on all workers
+
+loc.handler = async (req) =&gt; {
+    const cfg = JSON.parse(await req.readBody());
+
+    // Apply on this worker + broadcast to all others
+    await nginx.suspendAllWorkers();
+
+    try {
+        const newLoc    = srv.addLocation(cfg.pattern);
+        newLoc.root     = cfg.root;
+        newLoc.handler  = makeHandler(cfg);
+
+        // Broadcast (other workers apply in their onmessage)
+        cfgWorker.postMessage({ op: 'add', pattern: cfg.pattern,
+                                props: { root: cfg.root } });
+
+        req.json({ added: cfg.pattern });
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+JS handler functions cannot be serialised via <code>postMessage</code>.  For
+broadcast, pass a handler identifier string and let each worker resolve it
+to a locally defined function (e.g. via a registry map).
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_flow_diagram_cross_worker_addlocation">8.3. Flow diagram: cross-worker addLocation</h3>
+<div class="listingblock">
+<div class="content">
+<pre>  Worker 0 (handler):          SharedWorker:          Workers 1…N:
+
+  await suspendAllWorkers()
+  ─────────────────────────►   (all workers suspended)
+  srv.addLocation(pattern)     ← this worker's BST updated
+  cfgWorker.postMessage(add)
+      │ ─────────────────────► fan-out postMessage
+                                    │ ──────────────► Worker 1: addLocation → BST updated
+                                    │ ──────────────► Worker N: addLocation → BST updated
+  await resumeAllWorkers()
+  ─────────────────────────►   (all workers resume accepting)
+  All workers now have identical BST.</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_safe_patterns">9. Safe patterns</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_idempotent_add_or_update">9.1. Idempotent add-or-update</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">function addOrUpdate(srv, pattern, root, handler) {
+    // addLocation is idempotent — returns existing loc if pattern exists
+    const loc   = srv.addLocation(pattern);
+    loc.root    = root;
+    loc.handler = handler;
+    return loc;
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_temporary_location_feature_flag">9.2. Temporary location (feature flag)</h3>
+<div class="paragraph">
+<p>Add a location when a feature is enabled, remove it when disabled.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const FLAG_PATH = '/api/new-feature/';
+let featureEnabled = false;
+
+function setFeature(enabled) {
+    if (enabled === featureEnabled) { return; }
+
+    nginx.suspendAcceptance();
+
+    if (enabled) {
+        const loc   = srv.addLocation(FLAG_PATH);
+        loc.handler = newFeatureHandler;
+    } else {
+        srv.removeLocation(FLAG_PATH);
+    }
+
+    nginx.resumeAcceptance();
+    featureEnabled = enabled;
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_versioned_api_routing">9.3. Versioned API routing</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// js_source: versions.js
+
+const srv = nginx.http.servers[0];
+
+// V1 is defined statically in nginx.conf
+const v1 = srv.findLocation('/api/v1/');
+
+// V2 is a clone of V1, handler overridden
+const v2 = v1.clone('/api/v2/', { depth: Infinity });
+v2.handler = v2ApiHandler;
+
+// V3 is freshly added with no template
+const v3 = srv.addLocation('/api/v3/');
+v3.root    = '/var/www/api/v3';
+v3.handler = v3ApiHandler;</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_location_inventory_endpoint">9.4. Location inventory endpoint</h3>
+<div class="paragraph">
+<p>Expose the current location tree as JSON for observability:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">const inv = srv.addLocation('= /__inventory');
+
+inv.handler = (req) =&gt; {
+    const locs = srv.locations.map(l =&gt; ({
+        path:      l.path,
+        matchType: l.matchType,
+        root:      l.root,
+        hasHandler: !!l.handler,
+        internal:  l.internal,
+    }));
+    req.json({ locations: locs, count: locs.length });
+};</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_ab_routing_by_location_clone">9.5. A/B routing by location clone</h3>
+<div class="paragraph">
+<p>Route a percentage of traffic to a cloned experimental location:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// js_source: ab.js
+
+const srv    = nginx.http.servers[0];
+const stable = srv.findLocation('/api/');
+const exp    = stable.clone('/api/__exp/');
+exp.handler  = experimentalApiHandler;
+
+// Router: override location choice per-request
+const router = srv.addLocation('/api/');
+const origHandler = stable.handler;
+
+router.handler = (req) =&gt; {
+    if (Math.random() &lt; 0.05) {
+        // Internally reroute 5% to experimental handler
+        experimentalApiHandler(req);
+    } else {
+        origHandler(req);
+    }
+};</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_api_reference">10. API Reference</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_srv_locations_2">10.1. srv.locations</h3>
+<div class="paragraph">
+<p>Read-only array of all <code>NginxLocation</code> objects registered on this server.
+Includes static (from <code>nginx.conf</code>) and dynamic (added by <code>addLocation()</code>)
+locations.  Order: prefix/exact (longest path first), then regex (definition
+order), then named.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">NginxLocation[]  srv.locations</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_srv_findlocationpattern_2">10.2. srv.findLocation(pattern)</h3>
+<div class="paragraph">
+<p>Returns the <code>NginxLocation</code> for the given <code>pattern</code> string, or <code>null</code> if
+not found.  Searches prefix/exact, regex, and named arrays.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">NginxLocation | null  srv.findLocation(pattern)</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Pattern syntax is identical to <code>addLocation()</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_srv_addlocationpattern_opts_2">10.3. srv.addLocation(pattern [, opts])</h3>
+<div class="paragraph">
+<p>Adds a new location (or returns existing if <code>pattern</code> already registered).
+Rebuilds the location BST immediately.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">NginxLocation  srv.addLocation(pattern)
+NginxLocation  srv.addLocation(pattern, { template: '/path', index: N })</code></pre>
+</div>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Throws</th>
+<th class="tableblock halign-left valign-top">Condition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>TypeError</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>pattern</code> is not a string; regex pattern on a build without PCRE.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>InternalError</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">BST rebuild failed (OOM).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_srv_removelocationpattern_2">10.4. srv.removeLocation(pattern)</h3>
+<div class="paragraph">
+<p>Removes the location matching <code>pattern</code> and rebuilds the BST.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">boolean  srv.removeLocation(pattern)</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Returns <code>true</code> if found and removed, <code>false</code> if not found.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_srv_clonenewservername_2">10.5. srv.clone(newServerName)</h3>
+<div class="paragraph">
+<p>Creates a full shallow copy of the server under <code>newServerName</code>, adds it to
+<code>nginx.http.servers[]</code>.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">NginxServer  srv.clone(newServerName)</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_loc_addlocationpattern_opts_2">10.6. loc.addLocation(pattern [, opts])</h3>
+<div class="paragraph">
+<p>Identical to <code>srv.addLocation()</code> — delegates to the server.  Not available
+on <code>req.location</code>.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">NginxLocation  loc.addLocation(pattern)
+NginxLocation  loc.addLocation(pattern, { template: '/path', index: N })</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_loc_removelocationpattern">10.7. loc.removeLocation(pattern)</h3>
+<div class="paragraph">
+<p>Identical to <code>srv.removeLocation()</code> — delegates to the server.  Not
+available on <code>req.location</code>.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">boolean  loc.removeLocation(pattern)</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_loc_clonenewpattern_opts_2">10.8. loc.clone(newPattern [, opts])</h3>
+<div class="paragraph">
+<p>Creates a shallow copy of this location at <code>newPattern</code> (plain prefix only).
+Optionally copies child locations up to <code>depth</code> levels deep.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">NginxLocation  loc.clone(newPattern)
+NginxLocation  loc.clone(newPattern, { depth: N })</code></pre>
+</div>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top"><code>depth</code></th>
+<th class="tableblock halign-left valign-top">Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>0</code> (default)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Only this location; no children.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>N</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Children up to <code>N</code> levels of relative nesting depth.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>Infinity</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">All descendants.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>Throws <code>TypeError</code> if <code>newPattern</code> has a modifier prefix (<code>=</code>, <code>^~</code>, <code>~</code>, <code>@</code>).</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_loc_path_loc_matchtype_loc_pattern_loc_internal">10.9. loc.path, loc.matchType, loc.pattern, loc.internal</h3>
+<div class="paragraph">
+<p>Read-only properties on every <code>NginxLocation</code>:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>path</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Full pattern including modifier (e.g. <code>"= /ping"</code>, <code>"~ /\\.php$"</code>).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>matchType</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">One of: <code>'prefix'</code>, <code>'exact'</code>, <code>'prefix_noregex'</code>, <code>'regex'</code>,
+  <code>'regex_caseless'</code>, <code>'named'</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>pattern</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bare path/regex without modifier prefix.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>internal</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>true</code> for named and internal (noname) locations.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginx_suspendacceptance_nginx_resumeacceptance">10.10. nginx.suspendAcceptance() / nginx.resumeAcceptance()</h3>
+<div class="paragraph">
+<p>Synchronous per-worker acceptance control.  Use to wrap multi-step location
+mutations that must appear atomic to new requests on this worker.
+See the <em>for single worker</em> guide for full documentation.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginx_suspendallworkers_nginx_resumeallworkers">10.11. nginx.suspendAllWorkers() / nginx.resumeAllWorkers()</h3>
+<div class="paragraph">
+<p>Async cross-worker acceptance control.  Returns a <code>Promise&lt;undefined&gt;</code>.
+Use when location changes must be visible consistently across all workers
+before any new request is accepted.
+See the <em>for all workers</em> guide for full documentation.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_design_notes">11. Design notes</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_bst_rebuild_cost">11.1. BST rebuild cost</h3>
+<div class="paragraph">
+<p>Every <code>addLocation()</code>, <code>removeLocation()</code>, or <code>clone()</code> call rebuilds the
+location binary search tree from the flat <code>prefix_locs[]</code> snapshot.  The
+rebuild is O(N log N) in the number of prefix locations.  It allocates a
+fresh pool for the BST nodes and releases the previous one.</p>
+</div>
+<div class="paragraph">
+<p>For typical deployments (tens to hundreds of locations) the rebuild is
+measured in microseconds and is not a concern.  For automated bulk operations
+(thousands of locations), batch them in a single suspension window to
+amortise the rebuild cost.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_dynamic_pool_vs_static_pool">11.2. Dynamic pool vs static pool</h3>
+<div class="paragraph">
+<p>Config-file locations are allocated in nginx&#8217;s main memory pool
+(<code>cycle&#8594;pool</code>), which is never freed during a reload.  Dynamically added
+locations are allocated in the server&#8217;s <code>dyn_pool</code>, which is freed when the
+server wrapper is garbage-collected (typically at process exit or explicit
+release).</p>
+</div>
+<div class="paragraph">
+<p>Removed locations are spliced out of the live arrays but their memory in
+<code>dyn_pool</code> is not reclaimed until the pool is destroyed.  This is harmless
+for typical usage patterns.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_r_location_is_structural_read_only">11.3. r.location is structural read-only</h3>
+<div class="paragraph">
+<p><code>req.location</code> provides a per-request view of the matched location.
+<code>addLocation()</code>, <code>removeLocation()</code>, and <code>clone()</code> are not available on it.
+Field writes (<code>root</code>, <code>handler</code>, etc.) work subject to <code>write_mode</code>.</p>
+</div>
+<div class="paragraph">
+<p>The rationale: structural changes are global operations on the server&#8217;s BST;
+they would not make sense in a per-request isolation context.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_regex_position_and_definition_order">11.4. Regex position and definition order</h3>
+<div class="paragraph">
+<p>The <code>index</code> option in <code>addLocation('~ pattern', { index: N })</code> controls
+where the new regex is inserted in the regex array.  Regex locations are
+always checked in array order; a lower index means higher priority.</p>
+</div>
+<div class="paragraph">
+<p>Removing a regex location compacts the array: all locations after the
+removed entry shift down by one position.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_handler_serialisation_for_cross_worker_broadcast">11.5. Handler serialisation for cross-worker broadcast</h3>
+<div class="paragraph">
+<p>JS functions cannot be transferred via <code>postMessage</code>.  For cross-worker
+location provisioning, use a handler registry: map handler names to function
+references, broadcast the name, and let each worker look it up locally.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// Shared handler registry (defined in js_source, visible in every worker)
+const handlerRegistry = {
+    'api-v2':    v2ApiHandler,
+    'api-v3':    v3ApiHandler,
+    'static':    staticHandler,
+    'maintenance': maintenanceHandler,
+};
+
+// On receiving a broadcast:
+cfgWorker.onmessage = (msg) =&gt; {
+    const loc     = srv.addLocation(msg.data.pattern);
+    const handler = handlerRegistry[msg.data.handlerName];
+    if (handler) { loc.handler = handler; }
+};</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="footer">
+<div id="footer-text">
+Last updated 2026-03-20 15:31:12 -0700
+</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>
+<script>
+if (!hljs.initHighlighting.called) {
+  hljs.initHighlighting.called = true
+  ;[].slice.call(document.querySelectorAll('pre.highlight > code[data-lang]')).forEach(function (el) { hljs.highlightBlock(el) })
+}
+</script>
+</body>
+</html>
