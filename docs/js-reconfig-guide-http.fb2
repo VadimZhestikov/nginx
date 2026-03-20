@@ -16,7 +16,7 @@
         <nickname>asciidoctor + html2fb2.py</nickname>
       </author>
       <date>2026-03-19</date>
-      <id>506f1068-eaab-4200-9f74-a8fe90ff5641</id>
+      <id>c0a8a825-d0ad-4010-a15d-c702fa257002</id>
       <version>1.0</version>
     </document-info>
   </description>
@@ -163,6 +163,347 @@
     </section>
     <section>
       <title>
+        <p>sock.broadcast()</p>
+      </title>
+      <p>Distributes a post-fork socket file descriptor to every other worker in the nginx pool so that all workers can accept connections on the new port.</p>
+      <section>
+        <title>
+          <p>Signature</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>sock.broadcast(): undefined</v>
+          </stanza>
+        </poem>
+        <p>•   </p>
+        <p>Worker-only. Throws <code>InternalError</code> if called from config phase.</p>
+        <p>•   </p>
+        <p>Synchronous from the <strong>sender’s</strong> perspective — blocks until the manager has delivered the fd and acked.</p>
+        <p>•   </p>
+        <p>Returns <code>undefined</code> (not a Promise).</p>
+      </section>
+      <section>
+        <title>
+          <p>Why broadcast is needed</p>
+        </title>
+        <p>In Phase A (pre-fork), <code>nginx.createSocket()</code> runs in the master process. The OS socket is created before <code>fork()</code>, so every worker inherits the same fd automatically.</p>
+        <p>In Phase F (post-fork), a worker asks the manager thread to create the socket. The manager creates it in the master’s network namespace and returns the fd via SCM_RIGHTS to the requesting worker only. Every other worker has its own separate fd table and knows nothing about the new socket until <code>sock.broadcast()</code> is called.</p>
+        <poem>
+          <stanza>
+            <v>  Phase A (pre-fork)             Phase F (post-fork)</v>
+            <v>  ─────────────────              ───────────────────</v>
+            <v>  master: createSocket()         Worker 0: createSocket()</v>
+            <v>        │                               │</v>
+            <v>        │  socket/bind/listen           │  SCM_RIGHTS → manager creates</v>
+            <v>        │                               │  socket, returns fd to Worker 0</v>
+            <v>        ▼                               ▼</v>
+            <v>   fork()                         Worker 0 owns fd</v>
+            <v>        │                         Workers 1,2,… know nothing</v>
+            <v>        ├──► Worker 0  (fd inherited)</v>
+            <v>        ├──► Worker 1  (fd inherited)     ◄── broadcast() fills these</v>
+            <v>        └──► Worker 2  (fd inherited)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Full broadcast protocol</p>
+        </title>
+        <p>
+          <code>sock.broadcast()</code> goes through four sub-phases:</p>
+        <poem>
+          <stanza>
+            <v>  F1  Pre-fork setup (manager start)</v>
+            <v>      ngx_js_sw_manager_start() creates one socketpair per worker:</v>
+            <v>        bcast_fds[wi][0]  — master/manager writes</v>
+            <v>        bcast_fds[wi][1]  — worker reads</v>
+            <v>      Workers inherit [1] on fork; master keeps [0].</v>
+            <v />
+            <v>  F2  Worker requests create (nginx.createSocket post-fork)</v>
+            <v>      Worker → Manager via sw_cmd_fds:</v>
+            <v>        sendmsg: [0:u32][CMD_CREATE_SOCKET:u32][worker_idx:u32]</v>
+            <v>                 [addr_len:u32][addr:bytes]</v>
+            <v>                 SCM_RIGHTS: reply_fd</v>
+            <v>      Manager: bind+listen → sends fd back via reply_fd SCM_RIGHTS.</v>
+            <v>      Worker now owns the only copy of the new socket fd.</v>
+            <v />
+            <v>  F3  Worker registers socket locally</v>
+            <v>      ngx_js_socket_reg[handle] = st;  (global table, COW)</v>
+            <v>      w-&gt;local_socket_reg[i]    = st;  (cleanup tracking)</v>
+            <v />
+            <v>  F4  sock.broadcast() — distribute to siblings</v>
+            <v>      Worker → Manager via sw_cmd_fds:</v>
+            <v>        sendmsg: [0:u32][CMD_BROADCAST_SOCKET:u32][worker_idx:u32]</v>
+            <v>                 [handle:u32][addr_len:u32][addr:bytes]</v>
+            <v>                 SCM_RIGHTS: [sock_fd, reply_fd]</v>
+            <v>      Manager iterates workers wi ≠ sender:</v>
+            <v>        sendmsg(bcast_fds[wi][0]):</v>
+            <v>          [BCAST_TYPE_SOCKET:u8][handle:u32][addr_len:u32][addr:bytes]</v>
+            <v>          SCM_RIGHTS: sock_fd   (dup sent to each worker)</v>
+            <v>      Manager closes its own copy of sock_fd.</v>
+            <v>      Manager → Worker: status byte 0 (success) on reply_fd.</v>
+            <v>      broadcast() returns.</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>  Worker 0 (sender)                    Manager thread</v>
+            <v>  ─────────────────                    ──────────────</v>
+            <v>  sock.broadcast()</v>
+            <v>    │</v>
+            <v>    ├─ sendmsg(sw_cmd_fds[1])  ──────► recvmsg(sw_cmd_fds[0])</v>
+            <v>    │   CMD_BROADCAST_SOCKET             │</v>
+            <v>    │   SCM_RIGHTS: [sock_fd,            │  for wi in 0..N, wi ≠ 0:</v>
+            <v>    │               reply_fds[1]]        │    sendmsg(bcast_fds[wi][0])</v>
+            <v>    │                                    │      BCAST_TYPE_SOCKET</v>
+            <v>    │                                    │      SCM_RIGHTS: dup(sock_fd)</v>
+            <v>    │                                    │</v>
+            <v>    │   ◄── reply_fds[0]: status=0 ─────┤  close(sock_fd)</v>
+            <v>    │                                    │  sendmsg(reply_fd, status=0)</v>
+            <v>    └─ return undefined</v>
+            <v>                                        Worker 1 (receiver, async)</v>
+            <v>                                        ──────────────────────────</v>
+            <v>                                        bcast_recv_handler fires when</v>
+            <v>                                        bcast_fds[1][1] is readable:</v>
+            <v>                                          recvmsg → recv_fd</v>
+            <v>                                          alloc ngx_js_socket_state_t</v>
+            <v>                                          ngx_js_socket_reg[handle] = st</v>
+            <v>                                          w-&gt;local_socket_reg[i] = st</v>
+            <v>                                          nginx.onSocket(sock)  ← if set</v>
+            <v />
+            <v>                                        Worker 2 (receiver, async)</v>
+            <v>                                        └─ (same as Worker 1)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>nginx.onSocket — the receiver callback</p>
+        </title>
+        <p>When a worker receives a broadcast socket fd via <code>bcast_recv_handler</code>, the C layer:</p>
+        <p>1.   </p>
+        <p>Creates a <code>ngx_js_socket_state_t</code> entry for the received fd.</p>
+        <p>2.   </p>
+        <p>Registers it in <code>ngx_js_socket_reg[handle]</code> and <code>local_socket_reg</code>.</p>
+        <p>3.   </p>
+        <p>Looks up <code>nginx.onSocket</code> in the JS global object.</p>
+        <p>4.   </p>
+        <p>If <code>nginx.onSocket</code> is a function, calls <code>nginx.onSocket(sock)</code> with a freshly-wrapped <code>NginxSocket</code> JS object.</p>
+        <p>This lets receiving workers act on the new socket immediately:</p>
+        <poem>
+          <stanza>
+            <v>// Registered once in js_source (shared by all workers)</v>
+            <v />
+            <v>nginx.onSocket = function(sock) {</v>
+            <v>    nginx.log(8, `worker received broadcast socket ${sock.address}:${sock.port}`</v>
+            <v>              + ` fd=${sock.fd}`);</v>
+            <v>    // sock is a fully usable NginxSocket in this worker</v>
+            <v>    // e.g. start an accept loop, track it, close it, etc.</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong>
+          <code>nginx.onSocket</code> is called synchronously within <code>bcast_recv_handler</code>. If it throws, the exception is logged and execution continues. The <code>NginxSocket</code> argument is a fresh JS object wrapping the same registry handle used by the sender. </p>
+      </section>
+      <section>
+        <title>
+          <p>Timing and sequencing</p>
+        </title>
+        <p>Side │ Behaviour</p>
+        <p>Sender (Worker 0) │ broadcast() blocks (in C) until the manager has finished distributing the fd to all workers and sent its ack byte. The sendmsg to each worker via bcast_fds[wi][0] is non-blocking from the manager’s point of view, but the manager iterates all workers before replying.</p>
+        <p>Receiver (Worker N) │ The bcast_recv_handler fires when bcast_fds[wi][1] becomes readable — i.e. on the next epoll iteration after the manager’s sendmsg. This is asynchronous from the sender’s perspective. broadcast() returning in Worker 0 does NOT guarantee Worker N has already called nginx.onSocket.</p>
+        <empty-line />
+        <p>If you need all workers to have acted on the socket before proceeding, combine <code>broadcast()</code> with <code>suspendAllWorkers()</code> / <code>resumeAllWorkers()</code>:</p>
+        <poem>
+          <stanza>
+            <v>async function broadcastAndSync(sock) {</v>
+            <v>    // Suspend all workers so the bcast channel drains before</v>
+            <v>    // any new connection is accepted on the new port</v>
+            <v>    await nginx.suspendAllWorkers();</v>
+            <v>    try {</v>
+            <v>        sock.broadcast();</v>
+            <v>        // Manager has sent fd to all workers; their event loops</v>
+            <v>        // will drain the bcast fd before the first accept event</v>
+            <v>        // fires, because accept events are suspended.</v>
+            <v>    } finally {</v>
+            <v>        await nginx.resumeAllWorkers();</v>
+            <v>    }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>The bcast channel is activated lazily</p>
+        </title>
+        <p>The per-worker bcast fd (<code>bcast_fds[wi][1]</code>) is stored in <code>w→bcast_fd</code> at <code>init_process</code>. The epoll read event for it is <strong>not</strong> registered immediately — it is registered the first time a JS content handler runs via <code>ngx_js_bcast_ensure_active(w)</code>. This means:</p>
+        <p>•   </p>
+        <p>A broadcast sent before any request has been handled on Worker N will be buffered in the AF_UNIX socket kernel buffer. It will be delivered as soon as Worker N handles its first request (and activates the event).</p>
+        <p>•   </p>
+        <p>The kernel buffer is large enough for hundreds of queued messages; in practice this is never a concern.</p>
+      </section>
+      <section>
+        <title>
+          <p>Errors and constraints</p>
+        </title>
+        <p>Condition │ Result</p>
+        <p>Called from config phase (master) │ Throws InternalError: sock.broadcast: only valid in worker processes</p>
+        <p>Socket already closed │ Throws InternalError: sock.broadcast: socket already closed or invalid</p>
+        <p>Manager not running │ Throws InternalError: sock.broadcast: manager failed to distribute socket to workers</p>
+        <p>Registry slot collision on receiver │ Logs WARN: bcast: handle N already occupied and discards the received fd</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Example: minimal post-fork port provisioning</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Registered in js_source — called in every worker via nginx.broadcast()</v>
+            <v />
+            <v>nginx.onSocket = function(sock) {</v>
+            <v>    nginx.log(7, `new socket: port ${sock.port}`);</v>
+            <v>    // The socket is bound and listening; start using it</v>
+            <v>};</v>
+            <v />
+            <v>// A request handler that provisions a new port on demand</v>
+            <v />
+            <v>async function provisionHandler(req) {</v>
+            <v>    const port = req.variables.arg_port || '9090';</v>
+            <v />
+            <v>    // Phase F2/F3: manager creates socket, returns fd to this worker</v>
+            <v>    const sock = nginx.createSocket(`0.0.0.0:${port}`);</v>
+            <v />
+            <v>    // Phase F4: manager distributes fd to all other workers;</v>
+            <v>    //           each worker calls nginx.onSocket(sock) asynchronously</v>
+            <v>    sock.broadcast();</v>
+            <v />
+            <v>    req.respond(200, {}, `port ${sock.port} provisioned on all workers\n`);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: broadcast with confirmation via SharedWorker</p>
+        </title>
+        <p>Because receivers are notified asynchronously, a SharedWorker can act as a rendezvous point to know when all workers have received the socket:</p>
+        <poem>
+          <stanza>
+            <v>// -- shared-worker.js --</v>
+            <v />
+            <v>let pending = null;</v>
+            <v />
+            <v>self.onmessage = function(e) {</v>
+            <v>    const msg = e.data;</v>
+            <v>    if (msg.type === 'socket-ready') {</v>
+            <v>        // Worker reports it received a broadcast socket</v>
+            <v>        if (pending &amp;&amp; pending.port === msg.port) {</v>
+            <v>            pending.count--;</v>
+            <v>            if (pending.count === 0) {</v>
+            <v>                // All workers have the socket</v>
+            <v>                self.postMessage({ type: 'all-ready', port: msg.port });</v>
+            <v>                pending = null;</v>
+            <v>            }</v>
+            <v>        }</v>
+            <v>    } else if (msg.type === 'expect') {</v>
+            <v>        pending = { port: msg.port, count: msg.workerCount };</v>
+            <v>    }</v>
+            <v>};</v>
+            <v />
+            <v>// -- main js_source --</v>
+            <v />
+            <v>const sw = new SharedWorker('/shared-worker.js');</v>
+            <v />
+            <v>nginx.onSocket = function(sock) {</v>
+            <v>    // Tell SharedWorker this worker is ready</v>
+            <v>    sw.postMessage({ type: 'socket-ready', port: sock.port });</v>
+            <v>};</v>
+            <v />
+            <v>async function provisionWithConfirm(req) {</v>
+            <v>    const port = parseInt(req.variables.arg_port || '9090');</v>
+            <v />
+            <v>    // Tell SW how many workers to wait for</v>
+            <v>    sw.postMessage({ type: 'expect', port,</v>
+            <v>                     workerCount: nginx.cycle.workers });</v>
+            <v />
+            <v>    const sock = nginx.createSocket(`0.0.0.0:${port}`);</v>
+            <v>    sock.broadcast();</v>
+            <v />
+            <v>    // Wait for SW to confirm all workers are ready</v>
+            <v>    await new Promise(resolve =&gt; {</v>
+            <v>        sw.onmessage = function(e) {</v>
+            <v>            if (e.data.type === 'all-ready' &amp;&amp; e.data.port === port) {</v>
+            <v>                resolve();</v>
+            <v>            }</v>
+            <v>        };</v>
+            <v>    });</v>
+            <v />
+            <v>    req.respond(200, {}, `port ${port} ready on all workers\n`);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: broadcast + suspend for atomic rollout</p>
+        </title>
+        <p>Combine <code>broadcast()</code> with <code>withSuspendedAcceptance()</code> to guarantee that every worker has registered the new socket <strong>before</strong> it starts accepting connections on any port:</p>
+        <poem>
+          <stanza>
+            <v>async function atomicPortRollout(req) {</v>
+            <v>    const port = req.variables.arg_port || '7070';</v>
+            <v />
+            <v>    let sock;</v>
+            <v />
+            <v>    await nginx.withSuspendedAcceptance(async () =&gt; {</v>
+            <v>        // All workers paused — no new connections accepted anywhere</v>
+            <v />
+            <v>        // Phase F: create socket in this worker</v>
+            <v>        sock = nginx.createSocket(`0.0.0.0:${port}`);</v>
+            <v />
+            <v>        // Distribute to all workers while they are suspended.</v>
+            <v>        // Their bcast event handlers will fire before the first accept</v>
+            <v>        // because accept events are still disabled.</v>
+            <v>        sock.broadcast();</v>
+            <v />
+            <v>        // All workers will have the socket registered in their</v>
+            <v>        // local_socket_reg[] by the time resume fires.</v>
+            <v>    });</v>
+            <v>    // All workers now resumed, new socket is available everywhere</v>
+            <v />
+            <v>    req.respond(200, {}, `port ${port} rolled out\n`);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>  Worker 0</v>
+            <v>  ├─ await nginx.withSuspendedAcceptance(async () =&gt; {</v>
+            <v>  │        │</v>
+            <v>  │        │  suspendAllWorkers() → manager → all workers ack</v>
+            <v>  │        │</v>
+            <v>  │        ├─ nginx.createSocket('0.0.0.0:7070')   [Phase F]</v>
+            <v>  │        │    └─► manager creates socket, returns fd</v>
+            <v>  │        │</v>
+            <v>  │        └─ sock.broadcast()                     [Phase F4]</v>
+            <v>  │               │</v>
+            <v>  │               └─► manager sends fd to bcast_fds[1][0],</v>
+            <v>  │                                           bcast_fds[2][0], …</v>
+            <v>  │                   (buffered; workers are suspended)</v>
+            <v>  │</v>
+            <v>  │  resumeAllWorkers() → manager → all workers ack</v>
+            <v>  │  Workers drain bcast fd BEFORE first epoll accept event</v>
+            <v>  │  → nginx.onSocket(sock) called in each worker</v>
+            <v>  │</v>
+            <v>  └─ req.respond(200, {}, 'done\n')</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
         <p>nginx.http.attach(sock)</p>
       </title>
       <p>Wires a <code>NginxSocket</code> into the HTTP connection pipeline.</p>
@@ -235,7 +576,7 @@
           </stanza>
         </poem>
         <p>
-          <strong>3.4.1. Flow diagram</strong>
+          <strong>4.4.1. Flow diagram</strong>
         </p>
         <poem>
           <stanza>
@@ -859,8 +1200,26 @@
         <p>fd │ R │ File descriptor number.</p>
         <p>listener │ R │ Associated NginxHttpListener or null.</p>
         <p>close() │ — │ Close the socket.</p>
-        <p>broadcast() │ F (post-fork) │ Deliver fd to all other workers. Returns Promise&lt;undefined&gt;.</p>
+        <p>broadcast() │ F (post-fork) │ Distribute fd to all other workers via the manager thread using NGX_JS_MGR_CMD_BROADCAST_SOCKET + SCM_RIGHTS. Synchronous (blocks until manager acks). Triggers nginx.onSocket(sock) in every receiving worker. Returns undefined.</p>
         <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>nginx.onSocket (callback)</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx.onSocket: function(sock: NginxSocket): void  (optional, set by user)</v>
+          </stanza>
+        </poem>
+        <p>If set, called in every worker that receives a socket via <code>broadcast()</code>. Invoked synchronously inside <code>bcast_recv_handler</code> after the socket is registered in the worker’s local registry.</p>
+        <poem>
+          <stanza>
+            <v>nginx.onSocket = function(sock) {</v>
+            <v>    nginx.log(7, `received broadcast socket port=${sock.port} fd=${sock.fd}`);</v>
+            <v>};</v>
+          </stanza>
+        </poem>
       </section>
       <section>
         <title>
@@ -905,6 +1264,22 @@
           <p>Post-fork socket creation (Phase F)</p>
         </title>
         <p>After workers fork, the master’s network namespace is the only one that can <code>bind()</code> privileged ports. Phase F uses the manager thread (which runs in the master) as a proxy: the worker sends the address, the manager creates the socket, and returns the fd via SCM_RIGHTS. <code>broadcast()</code> then distributes it to sibling workers using the same mechanism.</p>
+      </section>
+      <section>
+        <title>
+          <p>broadcast() is synchronous, nginx.onSocket is asynchronous</p>
+        </title>
+        <p>
+          <code>sock.broadcast()</code> blocks the calling worker’s C thread until the manager has sent the fd to all peer workers via <code>bcast_fds[wi][0]</code> and replied with a success byte. The manager’s <code>sendmsg</code> into each worker’s bcast pipe is non-blocking (fire-and-forget from the manager’s perspective). Receiving workers process the incoming fd the next time their event loop drains <code>bcast_fds[wi][1]</code>, which happens on the next epoll iteration after <code>broadcast()</code> returns — not before.</p>
+        <p>If strict ordering is required (all workers must have the socket before any of them can accept on it), use <code>withSuspendedAcceptance()</code> to hold all workers' accept loops while the broadcast completes.</p>
+      </section>
+      <section>
+        <title>
+          <p>The bcast channel is a pre-fork socketpair</p>
+        </title>
+        <p>
+          <code>ngx_js_sw_manager_start()</code> creates <code>bcast_fds[wi][0..1]</code> socketpairs for each worker <strong>before</strong>
+          <code>fork()</code>. Workers inherit the read end (<code>[wi][1]</code>) on fork; the master (manager thread) keeps the write end (<code>[wi][0]</code>). This is a unidirectional, per-worker delivery channel for socket fds, suspend/resume control bytes, and other future broadcast message types. Because it uses <code>AF_UNIX SOCK_STREAM</code> the kernel buffers messages until the worker drains them, so messages are never lost even if the worker is busy.</p>
       </section>
     </section>
   </body>

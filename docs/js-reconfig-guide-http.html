@@ -456,73 +456,90 @@ body.book #toc,body.book #preamble,body.book h1.sect0,body.book .sect1>h2{page-b
 <li><a href="#_example_create_a_socket_in_config_phase">2.4. Example: create a socket in config phase</a></li>
 </ul>
 </li>
-<li><a href="#_nginx_http_attachsock">3. nginx.http.attach(sock)</a>
+<li><a href="#_sock_broadcast">3. sock.broadcast()</a>
 <ul class="sectlevel2">
 <li><a href="#_signature_2">3.1. Signature</a></li>
-<li><a href="#_behaviour_2">3.2. Behaviour</a></li>
-<li><a href="#_nginxhttplistener_properties_and_methods">3.3. NginxHttpListener properties and methods</a></li>
-<li><a href="#_full_phase_a_d_example">3.4. Full Phase A-D example</a>
-<ul class="sectlevel3">
-<li><a href="#_flow_diagram">3.4.1. Flow diagram</a></li>
+<li><a href="#_why_broadcast_is_needed">3.2. Why broadcast is needed</a></li>
+<li><a href="#_full_broadcast_protocol">3.3. Full broadcast protocol</a></li>
+<li><a href="#_nginx_onsocket_the_receiver_callback">3.4. nginx.onSocket — the receiver callback</a></li>
+<li><a href="#_timing_and_sequencing">3.5. Timing and sequencing</a></li>
+<li><a href="#_the_bcast_channel_is_activated_lazily">3.6. The bcast channel is activated lazily</a></li>
+<li><a href="#_errors_and_constraints">3.7. Errors and constraints</a></li>
+<li><a href="#_example_minimal_post_fork_port_provisioning">3.8. Example: minimal post-fork port provisioning</a></li>
+<li><a href="#_example_broadcast_with_confirmation_via_sharedworker">3.9. Example: broadcast with confirmation via SharedWorker</a></li>
+<li><a href="#_example_broadcast_suspend_for_atomic_rollout">3.10. Example: broadcast + suspend for atomic rollout</a></li>
 </ul>
 </li>
-<li><a href="#_post_fork_socket_creation_phase_f">3.5. Post-fork socket creation (Phase F)</a></li>
-</ul>
-</li>
-<li><a href="#_nginx_http_servers">4. nginx.http.servers[]</a></li>
-<li><a href="#_nginx_http_sockets">5. nginx.http.sockets[]</a></li>
-<li><a href="#_nginx_http_variables">6. nginx.http.variables{}</a></li>
-<li><a href="#_hash_size_parameters">7. Hash size parameters</a></li>
-<li><a href="#_nginx_http_addservername_opts">8. nginx.http.addServer(name[, opts])</a>
+<li><a href="#_nginx_http_attachsock">4. nginx.http.attach(sock)</a>
 <ul class="sectlevel2">
-<li><a href="#_signature_3">8.1. Signature</a></li>
-<li><a href="#_two_phase_commit">8.2. Two-phase commit</a></li>
+<li><a href="#_signature_3">4.1. Signature</a></li>
+<li><a href="#_behaviour_2">4.2. Behaviour</a></li>
+<li><a href="#_nginxhttplistener_properties_and_methods">4.3. NginxHttpListener properties and methods</a></li>
+<li><a href="#_full_phase_a_d_example">4.4. Full Phase A-D example</a>
+<ul class="sectlevel3">
+<li><a href="#_flow_diagram">4.4.1. Flow diagram</a></li>
 </ul>
 </li>
-<li><a href="#_nginx_http_removeservername">9. nginx.http.removeServer(name)</a>
+<li><a href="#_post_fork_socket_creation_phase_f">4.5. Post-fork socket creation (Phase F)</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_http_servers">5. nginx.http.servers[]</a></li>
+<li><a href="#_nginx_http_sockets">6. nginx.http.sockets[]</a></li>
+<li><a href="#_nginx_http_variables">7. nginx.http.variables{}</a></li>
+<li><a href="#_hash_size_parameters">8. Hash size parameters</a></li>
+<li><a href="#_nginx_http_addservername_opts">9. nginx.http.addServer(name[, opts])</a>
 <ul class="sectlevel2">
 <li><a href="#_signature_4">9.1. Signature</a></li>
+<li><a href="#_two_phase_commit">9.2. Two-phase commit</a></li>
 </ul>
 </li>
-<li><a href="#_nginx_http_rebuildvhostdispatch">10. nginx.http.rebuildVhostDispatch()</a>
+<li><a href="#_nginx_http_removeservername">10. nginx.http.removeServer(name)</a>
 <ul class="sectlevel2">
 <li><a href="#_signature_5">10.1. Signature</a></li>
 </ul>
 </li>
-<li><a href="#_nginx_http_matchuri_servername">11. nginx.http.match(uri[, serverName])</a>
+<li><a href="#_nginx_http_rebuildvhostdispatch">11. nginx.http.rebuildVhostDispatch()</a>
 <ul class="sectlevel2">
 <li><a href="#_signature_6">11.1. Signature</a></li>
 </ul>
 </li>
-<li><a href="#_complete_examples">12. Complete examples</a>
+<li><a href="#_nginx_http_matchuri_servername">12. nginx.http.match(uri[, serverName])</a>
 <ul class="sectlevel2">
-<li><a href="#_example_1_dynamic_http_endpoint_provisioning">12.1. Example 1: Dynamic HTTP endpoint provisioning</a></li>
-<li><a href="#_example_2_inspect_all_sockets_and_servers_at_startup">12.2. Example 2: Inspect all sockets and servers at startup</a></li>
-<li><a href="#_example_3_provision_a_new_port_at_config_time_phases_a_d">12.3. Example 3: Provision a new port at config time (Phases A-D)</a></li>
-<li><a href="#_example_4_variable_introspection_in_a_request_handler">12.4. Example 4: Variable introspection in a request handler</a></li>
-<li><a href="#_example_5_cross_worker_server_provisioning_via_sharedworker">12.5. Example 5: Cross-worker server provisioning via SharedWorker</a></li>
-<li><a href="#_example_6_match_as_a_config_validation_tool">12.6. Example 6: match() as a config validation tool</a></li>
+<li><a href="#_signature_7">12.1. Signature</a></li>
 </ul>
 </li>
-<li><a href="#_cross_worker_propagation">13. Cross-worker propagation</a>
+<li><a href="#_complete_examples">13. Complete examples</a>
 <ul class="sectlevel2">
-<li><a href="#_atomic_multi_server_reconfiguration_across_all_workers">13.1. Atomic multi-server reconfiguration across all workers</a></li>
+<li><a href="#_example_1_dynamic_http_endpoint_provisioning">13.1. Example 1: Dynamic HTTP endpoint provisioning</a></li>
+<li><a href="#_example_2_inspect_all_sockets_and_servers_at_startup">13.2. Example 2: Inspect all sockets and servers at startup</a></li>
+<li><a href="#_example_3_provision_a_new_port_at_config_time_phases_a_d">13.3. Example 3: Provision a new port at config time (Phases A-D)</a></li>
+<li><a href="#_example_4_variable_introspection_in_a_request_handler">13.4. Example 4: Variable introspection in a request handler</a></li>
+<li><a href="#_example_5_cross_worker_server_provisioning_via_sharedworker">13.5. Example 5: Cross-worker server provisioning via SharedWorker</a></li>
+<li><a href="#_example_6_match_as_a_config_validation_tool">13.6. Example 6: match() as a config validation tool</a></li>
 </ul>
 </li>
-<li><a href="#_api_reference">14. API Reference</a>
+<li><a href="#_cross_worker_propagation">14. Cross-worker propagation</a>
 <ul class="sectlevel2">
-<li><a href="#_nginx_global">14.1. nginx (global)</a></li>
-<li><a href="#_nginxhttp_nginx_http">14.2. NginxHttp (nginx.http)</a></li>
-<li><a href="#_nginxsocket">14.3. NginxSocket</a></li>
-<li><a href="#_nginxhttplistener">14.4. NginxHttpListener</a></li>
+<li><a href="#_atomic_multi_server_reconfiguration_across_all_workers">14.1. Atomic multi-server reconfiguration across all workers</a></li>
 </ul>
 </li>
-<li><a href="#_design_notes">15. Design notes</a>
+<li><a href="#_api_reference">15. API Reference</a>
 <ul class="sectlevel2">
-<li><a href="#_why_four_phases">15.1. Why four phases?</a></li>
-<li><a href="#_two_phase_commit_for_server_names">15.2. Two-phase commit for server names</a></li>
-<li><a href="#_variables_is_read_only">15.3. variables{} is read-only</a></li>
-<li><a href="#_post_fork_socket_creation_phase_f_2">15.4. Post-fork socket creation (Phase F)</a></li>
+<li><a href="#_nginx_global">15.1. nginx (global)</a></li>
+<li><a href="#_nginxhttp_nginx_http">15.2. NginxHttp (nginx.http)</a></li>
+<li><a href="#_nginxsocket">15.3. NginxSocket</a></li>
+<li><a href="#_nginx_onsocket_callback">15.4. nginx.onSocket (callback)</a></li>
+<li><a href="#_nginxhttplistener">15.5. NginxHttpListener</a></li>
+</ul>
+</li>
+<li><a href="#_design_notes">16. Design notes</a>
+<ul class="sectlevel2">
+<li><a href="#_why_four_phases">16.1. Why four phases?</a></li>
+<li><a href="#_two_phase_commit_for_server_names">16.2. Two-phase commit for server names</a></li>
+<li><a href="#_variables_is_read_only">16.3. variables{} is read-only</a></li>
+<li><a href="#_post_fork_socket_creation_phase_f_2">16.4. Post-fork socket creation (Phase F)</a></li>
+<li><a href="#_broadcast_is_synchronous_nginx_onsocket_is_asynchronous">16.5. broadcast() is synchronous, nginx.onSocket is asynchronous</a></li>
+<li><a href="#_the_bcast_channel_is_a_pre_fork_socketpair">16.6. The bcast channel is a pre-fork socketpair</a></li>
 </ul>
 </li>
 </ul>
@@ -754,13 +771,456 @@ nginx.log(`created socket fd=${sock.fd} on ${sock.address}:${sock.port}`);</code
 </div>
 </div>
 <div class="sect1">
-<h2 id="_nginx_http_attachsock">3. nginx.http.attach(sock)</h2>
+<h2 id="_sock_broadcast">3. sock.broadcast()</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Distributes a post-fork socket file descriptor to every other worker
+in the nginx pool so that all workers can accept connections on the new
+port.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature_2">3.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">sock.broadcast(): undefined</code></pre>
+</div>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Worker-only.  Throws <code>InternalError</code> if called from config phase.</p>
+</li>
+<li>
+<p>Synchronous from the <strong>sender&#8217;s</strong> perspective — blocks until the manager
+has delivered the fd and acked.</p>
+</li>
+<li>
+<p>Returns <code>undefined</code> (not a Promise).</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_why_broadcast_is_needed">3.2. Why broadcast is needed</h3>
+<div class="paragraph">
+<p>In Phase A (pre-fork), <code>nginx.createSocket()</code> runs in the master
+process.  The OS socket is created before <code>fork()</code>, so every worker
+inherits the same fd automatically.</p>
+</div>
+<div class="paragraph">
+<p>In Phase F (post-fork), a worker asks the manager thread to create the
+socket.  The manager creates it in the master&#8217;s network namespace and
+returns the fd via SCM_RIGHTS to the requesting worker only.  Every other
+worker has its own separate fd table and knows nothing about the new
+socket until <code>sock.broadcast()</code> is called.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Phase A (pre-fork)             Phase F (post-fork)
+  ─────────────────              ───────────────────
+  master: createSocket()         Worker 0: createSocket()
+        │                               │
+        │  socket/bind/listen           │  SCM_RIGHTS → manager creates
+        │                               │  socket, returns fd to Worker 0
+        ▼                               ▼
+   fork()                         Worker 0 owns fd
+        │                         Workers 1,2,… know nothing
+        ├──► Worker 0  (fd inherited)
+        ├──► Worker 1  (fd inherited)     ◄── broadcast() fills these
+        └──► Worker 2  (fd inherited)</pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_full_broadcast_protocol">3.3. Full broadcast protocol</h3>
+<div class="paragraph">
+<p><code>sock.broadcast()</code> goes through four sub-phases:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  F1  Pre-fork setup (manager start)
+      ngx_js_sw_manager_start() creates one socketpair per worker:
+        bcast_fds[wi][0]  — master/manager writes
+        bcast_fds[wi][1]  — worker reads
+      Workers inherit [1] on fork; master keeps [0].
+
+  F2  Worker requests create (nginx.createSocket post-fork)
+      Worker → Manager via sw_cmd_fds:
+        sendmsg: [0:u32][CMD_CREATE_SOCKET:u32][worker_idx:u32]
+                 [addr_len:u32][addr:bytes]
+                 SCM_RIGHTS: reply_fd
+      Manager: bind+listen → sends fd back via reply_fd SCM_RIGHTS.
+      Worker now owns the only copy of the new socket fd.
+
+  F3  Worker registers socket locally
+      ngx_js_socket_reg[handle] = st;  (global table, COW)
+      w-&gt;local_socket_reg[i]    = st;  (cleanup tracking)
+
+  F4  sock.broadcast() — distribute to siblings
+      Worker → Manager via sw_cmd_fds:
+        sendmsg: [0:u32][CMD_BROADCAST_SOCKET:u32][worker_idx:u32]
+                 [handle:u32][addr_len:u32][addr:bytes]
+                 SCM_RIGHTS: [sock_fd, reply_fd]
+      Manager iterates workers wi ≠ sender:
+        sendmsg(bcast_fds[wi][0]):
+          [BCAST_TYPE_SOCKET:u8][handle:u32][addr_len:u32][addr:bytes]
+          SCM_RIGHTS: sock_fd   (dup sent to each worker)
+      Manager closes its own copy of sock_fd.
+      Manager → Worker: status byte 0 (success) on reply_fd.
+      broadcast() returns.</pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Worker 0 (sender)                    Manager thread
+  ─────────────────                    ──────────────
+  sock.broadcast()
+    │
+    ├─ sendmsg(sw_cmd_fds[1])  ──────► recvmsg(sw_cmd_fds[0])
+    │   CMD_BROADCAST_SOCKET             │
+    │   SCM_RIGHTS: [sock_fd,            │  for wi in 0..N, wi ≠ 0:
+    │               reply_fds[1]]        │    sendmsg(bcast_fds[wi][0])
+    │                                    │      BCAST_TYPE_SOCKET
+    │                                    │      SCM_RIGHTS: dup(sock_fd)
+    │                                    │
+    │   ◄── reply_fds[0]: status=0 ─────┤  close(sock_fd)
+    │                                    │  sendmsg(reply_fd, status=0)
+    └─ return undefined
+                                        Worker 1 (receiver, async)
+                                        ──────────────────────────
+                                        bcast_recv_handler fires when
+                                        bcast_fds[1][1] is readable:
+                                          recvmsg → recv_fd
+                                          alloc ngx_js_socket_state_t
+                                          ngx_js_socket_reg[handle] = st
+                                          w-&gt;local_socket_reg[i] = st
+                                          nginx.onSocket(sock)  ← if set
+
+                                        Worker 2 (receiver, async)
+                                        └─ (same as Worker 1)</pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginx_onsocket_the_receiver_callback">3.4. nginx.onSocket — the receiver callback</h3>
+<div class="paragraph">
+<p>When a worker receives a broadcast socket fd via <code>bcast_recv_handler</code>,
+the C layer:</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Creates a <code>ngx_js_socket_state_t</code> entry for the received fd.</p>
+</li>
+<li>
+<p>Registers it in <code>ngx_js_socket_reg[handle]</code> and <code>local_socket_reg</code>.</p>
+</li>
+<li>
+<p>Looks up <code>nginx.onSocket</code> in the JS global object.</p>
+</li>
+<li>
+<p>If <code>nginx.onSocket</code> is a function, calls <code>nginx.onSocket(sock)</code> with
+a freshly-wrapped <code>NginxSocket</code> JS object.</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>This lets receiving workers act on the new socket immediately:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Registered once in js_source (shared by all workers)
+
+nginx.onSocket = function(sock) {
+    nginx.log(8, `worker received broadcast socket ${sock.address}:${sock.port}`
+              + ` fd=${sock.fd}`);
+    // sock is a fully usable NginxSocket in this worker
+    // e.g. start an accept loop, track it, close it, etc.
+};</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<code>nginx.onSocket</code> is called synchronously within <code>bcast_recv_handler</code>.
+If it throws, the exception is logged and execution continues.  The
+<code>NginxSocket</code> argument is a fresh JS object wrapping the same registry
+handle used by the sender.
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_timing_and_sequencing">3.5. Timing and sequencing</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 66.6667%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Side</th>
+<th class="tableblock halign-left valign-top">Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Sender (Worker 0)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>broadcast()</code> blocks (in C) until the manager has finished distributing
+  the fd to all workers and sent its ack byte.  The <code>sendmsg</code> to each
+  worker via <code>bcast_fds[wi][0]</code> is non-blocking from the manager&#8217;s point
+  of view, but the manager iterates all workers before replying.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Receiver (Worker N)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>bcast_recv_handler</code> fires when <code>bcast_fds[wi][1]</code> becomes
+  readable — i.e. on the <strong>next epoll iteration</strong> after the manager&#8217;s
+  <code>sendmsg</code>.  This is asynchronous from the sender&#8217;s perspective.
+  <code>broadcast()</code> returning in Worker 0 does NOT guarantee Worker N has
+  already called <code>nginx.onSocket</code>.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>If you need all workers to have acted on the socket before proceeding,
+combine <code>broadcast()</code> with <code>suspendAllWorkers()</code> / <code>resumeAllWorkers()</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">async function broadcastAndSync(sock) {
+    // Suspend all workers so the bcast channel drains before
+    // any new connection is accepted on the new port
+    await nginx.suspendAllWorkers();
+    try {
+        sock.broadcast();
+        // Manager has sent fd to all workers; their event loops
+        // will drain the bcast fd before the first accept event
+        // fires, because accept events are suspended.
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_the_bcast_channel_is_activated_lazily">3.6. The bcast channel is activated lazily</h3>
+<div class="paragraph">
+<p>The per-worker bcast fd (<code>bcast_fds[wi][1]</code>) is stored in
+<code>w&#8594;bcast_fd</code> at <code>init_process</code>.  The epoll read event for it is
+<strong>not</strong> registered immediately — it is registered the first time a JS
+content handler runs via <code>ngx_js_bcast_ensure_active(w)</code>.  This means:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>A broadcast sent before any request has been handled on Worker N will
+be buffered in the AF_UNIX socket kernel buffer.  It will be delivered
+as soon as Worker N handles its first request (and activates the event).</p>
+</li>
+<li>
+<p>The kernel buffer is large enough for hundreds of queued messages; in
+practice this is never a concern.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_errors_and_constraints">3.7. Errors and constraints</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 66.6667%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Condition</th>
+<th class="tableblock halign-left valign-top">Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Called from config phase (master)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Throws <code>InternalError: sock.broadcast: only valid in worker processes</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Socket already closed</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Throws <code>InternalError: sock.broadcast: socket already closed or invalid</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Manager not running</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Throws <code>InternalError: sock.broadcast: manager failed to distribute socket to workers</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Registry slot collision on receiver</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Logs <code>WARN: bcast: handle N already occupied</code> and discards the received fd</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_example_minimal_post_fork_port_provisioning">3.8. Example: minimal post-fork port provisioning</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Registered in js_source — called in every worker via nginx.broadcast()
+
+nginx.onSocket = function(sock) {
+    nginx.log(7, `new socket: port ${sock.port}`);
+    // The socket is bound and listening; start using it
+};
+
+// A request handler that provisions a new port on demand
+
+async function provisionHandler(req) {
+    const port = req.variables.arg_port || '9090';
+
+    // Phase F2/F3: manager creates socket, returns fd to this worker
+    const sock = nginx.createSocket(`0.0.0.0:${port}`);
+
+    // Phase F4: manager distributes fd to all other workers;
+    //           each worker calls nginx.onSocket(sock) asynchronously
+    sock.broadcast();
+
+    req.respond(200, {}, `port ${sock.port} provisioned on all workers\n`);
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_broadcast_with_confirmation_via_sharedworker">3.9. Example: broadcast with confirmation via SharedWorker</h3>
+<div class="paragraph">
+<p>Because receivers are notified asynchronously, a SharedWorker can act
+as a rendezvous point to know when all workers have received the socket:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// -- shared-worker.js --
+
+let pending = null;
+
+self.onmessage = function(e) {
+    const msg = e.data;
+    if (msg.type === 'socket-ready') {
+        // Worker reports it received a broadcast socket
+        if (pending &amp;&amp; pending.port === msg.port) {
+            pending.count--;
+            if (pending.count === 0) {
+                // All workers have the socket
+                self.postMessage({ type: 'all-ready', port: msg.port });
+                pending = null;
+            }
+        }
+    } else if (msg.type === 'expect') {
+        pending = { port: msg.port, count: msg.workerCount };
+    }
+};
+
+// -- main js_source --
+
+const sw = new SharedWorker('/shared-worker.js');
+
+nginx.onSocket = function(sock) {
+    // Tell SharedWorker this worker is ready
+    sw.postMessage({ type: 'socket-ready', port: sock.port });
+};
+
+async function provisionWithConfirm(req) {
+    const port = parseInt(req.variables.arg_port || '9090');
+
+    // Tell SW how many workers to wait for
+    sw.postMessage({ type: 'expect', port,
+                     workerCount: nginx.cycle.workers });
+
+    const sock = nginx.createSocket(`0.0.0.0:${port}`);
+    sock.broadcast();
+
+    // Wait for SW to confirm all workers are ready
+    await new Promise(resolve =&gt; {
+        sw.onmessage = function(e) {
+            if (e.data.type === 'all-ready' &amp;&amp; e.data.port === port) {
+                resolve();
+            }
+        };
+    });
+
+    req.respond(200, {}, `port ${port} ready on all workers\n`);
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_broadcast_suspend_for_atomic_rollout">3.10. Example: broadcast + suspend for atomic rollout</h3>
+<div class="paragraph">
+<p>Combine <code>broadcast()</code> with <code>withSuspendedAcceptance()</code> to guarantee that
+every worker has registered the new socket <strong>before</strong> it starts accepting
+connections on any port:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">async function atomicPortRollout(req) {
+    const port = req.variables.arg_port || '7070';
+
+    let sock;
+
+    await nginx.withSuspendedAcceptance(async () =&gt; {
+        // All workers paused — no new connections accepted anywhere
+
+        // Phase F: create socket in this worker
+        sock = nginx.createSocket(`0.0.0.0:${port}`);
+
+        // Distribute to all workers while they are suspended.
+        // Their bcast event handlers will fire before the first accept
+        // because accept events are still disabled.
+        sock.broadcast();
+
+        // All workers will have the socket registered in their
+        // local_socket_reg[] by the time resume fires.
+    });
+    // All workers now resumed, new socket is available everywhere
+
+    req.respond(200, {}, `port ${port} rolled out\n`);
+}</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Worker 0
+  ├─ await nginx.withSuspendedAcceptance(async () =&gt; {
+  │        │
+  │        │  suspendAllWorkers() → manager → all workers ack
+  │        │
+  │        ├─ nginx.createSocket('0.0.0.0:7070')   [Phase F]
+  │        │    └─► manager creates socket, returns fd
+  │        │
+  │        └─ sock.broadcast()                     [Phase F4]
+  │               │
+  │               └─► manager sends fd to bcast_fds[1][0],
+  │                                           bcast_fds[2][0], …
+  │                   (buffered; workers are suspended)
+  │
+  │  resumeAllWorkers() → manager → all workers ack
+  │  Workers drain bcast fd BEFORE first epoll accept event
+  │  → nginx.onSocket(sock) called in each worker
+  │
+  └─ req.respond(200, {}, 'done\n')</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_http_attachsock">4. nginx.http.attach(sock)</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Wires a <code>NginxSocket</code> into the HTTP connection pipeline.</p>
 </div>
 <div class="sect2">
-<h3 id="_signature_2">3.1. Signature</h3>
+<h3 id="_signature_3">4.1. Signature</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.attach(sock: NginxSocket): NginxHttpListener</code></pre>
@@ -768,7 +1228,7 @@ nginx.log(`created socket fd=${sock.fd} on ${sock.address}:${sock.port}`);</code
 </div>
 </div>
 <div class="sect2">
-<h3 id="_behaviour_2">3.2. Behaviour</h3>
+<h3 id="_behaviour_2">4.2. Behaviour</h3>
 <div class="ulist">
 <ul>
 <li>
@@ -789,7 +1249,7 @@ the given socket.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_nginxhttplistener_properties_and_methods">3.3. NginxHttpListener properties and methods</h3>
+<h3 id="_nginxhttplistener_properties_and_methods">4.3. NginxHttpListener properties and methods</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 20%;">
@@ -841,7 +1301,7 @@ the given socket.</p>
 </table>
 </div>
 <div class="sect2">
-<h3 id="_full_phase_a_d_example">3.4. Full Phase A-D example</h3>
+<h3 id="_full_phase_a_d_example">4.4. Full Phase A-D example</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Phase A — create socket
@@ -871,7 +1331,7 @@ listener.addVirtualServer(appSrv);</code></pre>
 </div>
 </div>
 <div class="sect3">
-<h4 id="_flow_diagram">3.4.1. Flow diagram</h4>
+<h4 id="_flow_diagram">4.4.1. Flow diagram</h4>
 <div class="listingblock">
 <div class="content">
 <pre>nginx.createSocket('0.0.0.0:8888')
@@ -898,7 +1358,7 @@ nginx.http.attach(sock)
 </div>
 </div>
 <div class="sect2">
-<h3 id="_post_fork_socket_creation_phase_f">3.5. Post-fork socket creation (Phase F)</h3>
+<h3 id="_post_fork_socket_creation_phase_f">4.5. Post-fork socket creation (Phase F)</h3>
 <div class="paragraph">
 <p>After workers have forked, <code>nginx.createSocket()</code> routes through the
 manager thread.  Because each worker has its own fd table the socket must
@@ -937,7 +1397,7 @@ accept loop).
 </div>
 </div>
 <div class="sect1">
-<h2 id="_nginx_http_servers">4. nginx.http.servers[]</h2>
+<h2 id="_nginx_http_servers">5. nginx.http.servers[]</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Read-only array of all <code>NginxServer</code> objects currently known to the HTTP
@@ -957,7 +1417,7 @@ runtime via <code>addServer()</code>.  Order matches the order servers were regi
 </div>
 </div>
 <div class="sect1">
-<h2 id="_nginx_http_sockets">5. nginx.http.sockets[]</h2>
+<h2 id="_nginx_http_sockets">6. nginx.http.sockets[]</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Read-only array of all listening socket descriptors with their HTTP
@@ -1017,7 +1477,7 @@ configuration.</p>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_nginx_http_variables">6. nginx.http.variables{}</h2>
+<h2 id="_nginx_http_variables">7. nginx.http.variables{}</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Plain JavaScript object mapping every registered HTTP variable name to its
@@ -1082,7 +1542,7 @@ nginx.log(varInfo('my_custom_var'));</code></pre>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_hash_size_parameters">7. Hash size parameters</h2>
+<h2 id="_hash_size_parameters">8. Hash size parameters</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>These four properties mirror the corresponding nginx.conf directives.
@@ -1136,13 +1596,13 @@ They are read-only at runtime; changing them requires a config reload.</p>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_nginx_http_addservername_opts">8. nginx.http.addServer(name[, opts])</h2>
+<h2 id="_nginx_http_addservername_opts">9. nginx.http.addServer(name[, opts])</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Adds a new virtual server to the HTTP subsystem.</p>
 </div>
 <div class="sect2">
-<h3 id="_signature_3">8.1. Signature</h3>
+<h3 id="_signature_4">9.1. Signature</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.addServer(name: string, opts?: { template?: string }): NginxServer</code></pre>
@@ -1159,7 +1619,7 @@ from (inherits <code>proxy_pass</code>, SSL, etc.).  Defaults to an empty config
 </div>
 </div>
 <div class="sect2">
-<h3 id="_two_phase_commit">8.2. Two-phase commit</h3>
+<h3 id="_two_phase_commit">9.2. Two-phase commit</h3>
 <div class="paragraph">
 <p><code>addServer()</code> registers the server internally but <strong>does not</strong> update the
 server-name routing hash until <code>rebuildVhostDispatch()</code> is called.
@@ -1190,13 +1650,13 @@ nginx.http.rebuildVhostDispatch();   // activate</code></pre>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_nginx_http_removeservername">9. nginx.http.removeServer(name)</h2>
+<h2 id="_nginx_http_removeservername">10. nginx.http.removeServer(name)</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Removes a virtual server from the HTTP subsystem.</p>
 </div>
 <div class="sect2">
-<h3 id="_signature_4">9.1. Signature</h3>
+<h3 id="_signature_5">10.1. Signature</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.removeServer(name: string): void</code></pre>
@@ -1221,13 +1681,13 @@ nginx.http.rebuildVhostDispatch();</code></pre>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_nginx_http_rebuildvhostdispatch">10. nginx.http.rebuildVhostDispatch()</h2>
+<h2 id="_nginx_http_rebuildvhostdispatch">11. nginx.http.rebuildVhostDispatch()</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Rebuilds the server-name routing hash from the current <code>servers[]</code> list.</p>
 </div>
 <div class="sect2">
-<h3 id="_signature_5">10.1. Signature</h3>
+<h3 id="_signature_6">11.1. Signature</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.rebuildVhostDispatch(): void</code></pre>
@@ -1250,14 +1710,14 @@ nginx.http.rebuildVhostDispatch();   // both become reachable atomically</code><
 </div>
 </div>
 <div class="sect1">
-<h2 id="_nginx_http_matchuri_servername">11. nginx.http.match(uri[, serverName])</h2>
+<h2 id="_nginx_http_matchuri_servername">12. nginx.http.match(uri[, serverName])</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Simulates the full nginx dispatch logic and returns the server and location
 that would handle a given request.</p>
 </div>
 <div class="sect2">
-<h3 id="_signature_6">11.1. Signature</h3>
+<h3 id="_signature_7">12.1. Signature</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.match(uri: string, serverName?: string): { server: NginxServer, location: NginxLocation } | null</code></pre>
@@ -1304,10 +1764,10 @@ assertRoutes([
 </div>
 </div>
 <div class="sect1">
-<h2 id="_complete_examples">12. Complete examples</h2>
+<h2 id="_complete_examples">13. Complete examples</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_example_1_dynamic_http_endpoint_provisioning">12.1. Example 1: Dynamic HTTP endpoint provisioning</h3>
+<h3 id="_example_1_dynamic_http_endpoint_provisioning">13.1. Example 1: Dynamic HTTP endpoint provisioning</h3>
 <div class="paragraph">
 <p>Add a new API server at runtime from a request handler.</p>
 </div>
@@ -1366,7 +1826,7 @@ curl -H 'Host: new.example.com' http://localhost/
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_2_inspect_all_sockets_and_servers_at_startup">12.2. Example 2: Inspect all sockets and servers at startup</h3>
+<h3 id="_example_2_inspect_all_sockets_and_servers_at_startup">13.2. Example 2: Inspect all sockets and servers at startup</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">(function auditHttp() {
@@ -1397,7 +1857,7 @@ curl -H 'Host: new.example.com' http://localhost/
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_3_provision_a_new_port_at_config_time_phases_a_d">12.3. Example 3: Provision a new port at config time (Phases A-D)</h3>
+<h3 id="_example_3_provision_a_new_port_at_config_time_phases_a_d">13.3. Example 3: Provision a new port at config time (Phases A-D)</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Full Phase A-D: new port with two virtual hosts
@@ -1436,7 +1896,7 @@ nginx.log('Port 8888 ready: default + api.internal');</code></pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_4_variable_introspection_in_a_request_handler">12.4. Example 4: Variable introspection in a request handler</h3>
+<h3 id="_example_4_variable_introspection_in_a_request_handler">13.4. Example 4: Variable introspection in a request handler</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Expose all nginx variables for a given request (debugging endpoint)
@@ -1458,7 +1918,7 @@ function varDumpHandler(req) {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_5_cross_worker_server_provisioning_via_sharedworker">12.5. Example 5: Cross-worker server provisioning via SharedWorker</h3>
+<h3 id="_example_5_cross_worker_server_provisioning_via_sharedworker">13.5. Example 5: Cross-worker server provisioning via SharedWorker</h3>
 <div class="paragraph">
 <p>This example shows how to propagate a new server to all workers using
 a SharedWorker as the coordination hub.  See
@@ -1504,7 +1964,7 @@ function applyHandlerLocally(name, body) {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_example_6_match_as_a_config_validation_tool">12.6. Example 6: match() as a config validation tool</h3>
+<h3 id="_example_6_match_as_a_config_validation_tool">13.6. Example 6: match() as a config validation tool</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Validate routing table after a bulk reconfiguration
@@ -1545,7 +2005,7 @@ validateRouting([
 </div>
 </div>
 <div class="sect1">
-<h2 id="_cross_worker_propagation">13. Cross-worker propagation</h2>
+<h2 id="_cross_worker_propagation">14. Cross-worker propagation</h2>
 <div class="sectionbody">
 <div class="paragraph">
 <p>Changes to <code>nginx.http</code> (adding/removing servers, modifying locations)
@@ -1595,7 +2055,7 @@ not serialisable.  Always use a named handler registry: broadcast the
 </table>
 </div>
 <div class="sect2">
-<h3 id="_atomic_multi_server_reconfiguration_across_all_workers">13.1. Atomic multi-server reconfiguration across all workers</h3>
+<h3 id="_atomic_multi_server_reconfiguration_across_all_workers">14.1. Atomic multi-server reconfiguration across all workers</h3>
 <div class="paragraph">
 <p>If you need to add several servers atomically (no request should see a
 partial state), use <code>suspendAllWorkers()</code>:</p>
@@ -1626,10 +2086,10 @@ partial state), use <code>suspendAllWorkers()</code>:</p>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_api_reference">14. API Reference</h2>
+<h2 id="_api_reference">15. API Reference</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_nginx_global">14.1. nginx (global)</h3>
+<h3 id="_nginx_global">15.1. nginx (global)</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 33.3333%;">
@@ -1659,7 +2119,7 @@ partial state), use <code>suspendAllWorkers()</code>:</p>
 </table>
 </div>
 <div class="sect2">
-<h3 id="_nginxhttp_nginx_http">14.2. NginxHttp (nginx.http)</h3>
+<h3 id="_nginxhttp_nginx_http">15.2. NginxHttp (nginx.http)</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 33.3333%;">
@@ -1738,7 +2198,7 @@ partial state), use <code>suspendAllWorkers()</code>:</p>
 </table>
 </div>
 <div class="sect2">
-<h3 id="_nginxsocket">14.3. NginxSocket</h3>
+<h3 id="_nginxsocket">15.3. NginxSocket</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 33.3333%;">
@@ -1781,13 +2241,36 @@ partial state), use <code>suspendAllWorkers()</code>:</p>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>broadcast()</code></p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">F (post-fork)</p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">Deliver fd to all other workers.  Returns <code>Promise&lt;undefined&gt;</code>.</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Distribute fd to all other workers via the manager thread using
+  <code>NGX_JS_MGR_CMD_BROADCAST_SOCKET</code> + SCM_RIGHTS.  Synchronous
+  (blocks until manager acks).  Triggers <code>nginx.onSocket(sock)</code> in
+  every receiving worker.  Returns <code>undefined</code>.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
 <div class="sect2">
-<h3 id="_nginxhttplistener">14.4. NginxHttpListener</h3>
+<h3 id="_nginx_onsocket_callback">15.4. nginx.onSocket (callback)</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.onSocket: function(sock: NginxSocket): void  (optional, set by user)</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>If set, called in every worker that receives a socket via <code>broadcast()</code>.
+Invoked synchronously inside <code>bcast_recv_handler</code> after the socket is
+registered in the worker&#8217;s local registry.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">nginx.onSocket = function(sock) {
+    nginx.log(7, `received broadcast socket port=${sock.port} fd=${sock.fd}`);
+};</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginxhttplistener">15.5. NginxHttpListener</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 33.3333%;">
@@ -1838,10 +2321,10 @@ partial state), use <code>suspendAllWorkers()</code>:</p>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_design_notes">15. Design notes</h2>
+<h2 id="_design_notes">16. Design notes</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_why_four_phases">15.1. Why four phases?</h3>
+<h3 id="_why_four_phases">16.1. Why four phases?</h3>
 <div class="paragraph">
 <p>nginx&#8217;s listening infrastructure is built incrementally.  <code>socket()</code><br>
 <code>bind()</code> + <code>listen()</code> (Phase A) must happen before any process forks so
@@ -1858,7 +2341,7 @@ infrastructure becomes active.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_two_phase_commit_for_server_names">15.2. Two-phase commit for server names</h3>
+<h3 id="_two_phase_commit_for_server_names">16.2. Two-phase commit for server names</h3>
 <div class="paragraph">
 <p>Server-name routing uses a static hash table.  Adding or removing a
 server requires rebuilding the entire hash.  <code>addServer()</code> /
@@ -1868,7 +2351,7 @@ makes all changes visible atomically.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_variables_is_read_only">15.3. variables{} is read-only</h3>
+<h3 id="_variables_is_read_only">16.3. variables{} is read-only</h3>
 <div class="paragraph">
 <p>The variable map is populated at config parse time by all modules that
 register variables.  It cannot be extended at runtime because the
@@ -1876,7 +2359,7 @@ variable index is embedded in compiled location configurations.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_post_fork_socket_creation_phase_f_2">15.4. Post-fork socket creation (Phase F)</h3>
+<h3 id="_post_fork_socket_creation_phase_f_2">16.4. Post-fork socket creation (Phase F)</h3>
 <div class="paragraph">
 <p>After workers fork, the master&#8217;s network namespace is the only one that
 can <code>bind()</code> privileged ports.  Phase F uses the manager thread (which
@@ -1885,12 +2368,42 @@ creates the socket, and returns the fd via SCM_RIGHTS.  <code>broadcast()</code>
 then distributes it to sibling workers using the same mechanism.</p>
 </div>
 </div>
+<div class="sect2">
+<h3 id="_broadcast_is_synchronous_nginx_onsocket_is_asynchronous">16.5. broadcast() is synchronous, nginx.onSocket is asynchronous</h3>
+<div class="paragraph">
+<p><code>sock.broadcast()</code> blocks the calling worker&#8217;s C thread until the manager
+has sent the fd to all peer workers via <code>bcast_fds[wi][0]</code> and replied
+with a success byte.  The manager&#8217;s <code>sendmsg</code> into each worker&#8217;s bcast
+pipe is non-blocking (fire-and-forget from the manager&#8217;s perspective).
+Receiving workers process the incoming fd the next time their event loop
+drains <code>bcast_fds[wi][1]</code>, which happens on the next epoll iteration
+after <code>broadcast()</code> returns — not before.</p>
+</div>
+<div class="paragraph">
+<p>If strict ordering is required (all workers must have the socket before
+any of them can accept on it), use <code>withSuspendedAcceptance()</code> to hold
+all workers' accept loops while the broadcast completes.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_the_bcast_channel_is_a_pre_fork_socketpair">16.6. The bcast channel is a pre-fork socketpair</h3>
+<div class="paragraph">
+<p><code>ngx_js_sw_manager_start()</code> creates <code>bcast_fds[wi][0..1]</code> socketpairs
+for each worker <strong>before</strong> <code>fork()</code>.  Workers inherit the read end
+(<code>[wi][1]</code>) on fork; the master (manager thread) keeps the write end
+(<code>[wi][0]</code>).  This is a unidirectional, per-worker delivery channel for
+socket fds, suspend/resume control bytes, and other future broadcast
+message types.  Because it uses <code>AF_UNIX SOCK_STREAM</code> the kernel buffers
+messages until the worker drains them, so messages are never lost even if
+the worker is busy.</p>
+</div>
+</div>
 </div>
 </div>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 16:05:00 -0700
+Last updated 2026-03-20 16:42:45 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>
