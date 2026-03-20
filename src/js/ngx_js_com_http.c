@@ -240,6 +240,8 @@ static JSValue ngx_js_location_fn_remove_location(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 static JSValue ngx_js_location_fn_clone(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
+static JSValue ngx_js_location_fn_snapshot(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv);
 
 static JSValue ngx_js_location_fn_clear_handler(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
@@ -3712,6 +3714,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CFUNC_DEF("setReadMode",    1, ngx_js_location_fn_set_read_mode),
     JS_CFUNC_DEF("setProperty",    2, ngx_js_location_fn_set_property),
     JS_CFUNC_DEF("getProperty",    1, ngx_js_location_fn_get_property),
+    JS_CFUNC_DEF("snapshot",       0, ngx_js_location_fn_snapshot),
 
     /* Handler management */
     JS_CFUNC_DEF("clearHandler",   0, ngx_js_location_fn_clear_handler),
@@ -7861,6 +7864,475 @@ ngx_js_http_socket_entries(JSContext *ctx, JSValue arr,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* NginxSnapshot — point-in-time copy of a COM sub-tree's settable     */
+/* fields.  Allows rollback (restore) via the standard setter path,    */
+/* which honours write_mode transparently.                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Settable property name arrays per COM class.
+ * Only properties that have real setters are listed; read-only
+ * properties (null setter in the proto table) are silently skipped by
+ * ngx_js_snap_capture_node because JS_GetPropertyStr on them returns
+ * their current value, which would be accepted by restore() but the
+ * corresponding setter would be a no-op.  We exclude them explicitly
+ * to avoid confusion.
+ *
+ * Note: "alias" getter returns null for root-based locations; null is
+ * silently skipped by ngx_js_snap_capture_node.
+ */
+
+static const char * const ngx_js_loc_snap_props[] = {
+    "root",                     /* magic  1 */
+    "handler",                  /* magic  2 */
+    "sendfile",                 /* magic  4 */
+    "tcpNopush",                /* magic  5 */
+    "tcpNodelay",               /* magic  6 */
+    "etag",                     /* magic  7 */
+    "keepaliveTimeout",         /* magic  8 */
+    "keepaliveRequests",        /* magic  9 */
+    "clientMaxBodySize",        /* magic 10 */
+    "clientBodyTimeout",        /* magic 11 */
+    "sendTimeout",              /* magic 12 */
+    "defaultType",              /* magic 13 */
+    "alias",                    /* magic 14 — null for root-based; skipped */
+    "satisfy",                  /* magic 48 */
+    "limitExcept",              /* magic 49 */
+    "lingering",                /* magic 50 */
+    "lingeringTimeout",         /* magic 51 */
+    "lingeringTime",            /* magic 52 */
+    "resolverTimeout",          /* magic 53 */
+    "chunkedTransferEncoding",  /* magic 54 */
+    "msieRefresh",              /* magic 55 */
+    "logNotFound",              /* magic 56 */
+    "logSubrequest",            /* magic 57 */
+    "recursiveErrorPages",      /* magic 58 */
+    "clientBodyBufferSize",     /* magic 59 */
+    "clientBodyInFileOnly",     /* magic 60 */
+    "clientBodyInSingleBuffer", /* magic 61 */
+    "resetTimedoutConnection",  /* magic 62 */
+    "absoluteRedirect",         /* magic 63 */
+    "serverNameInRedirect",     /* magic 64 */
+    "portInRedirect",           /* magic 65 */
+    "msiePadding",              /* magic 66 */
+    "ifModifiedSince",          /* magic 67 */
+    "maxRanges",                /* magic 68 */
+    "authDelay",                /* magic 69 */
+    "keepaliveTime",            /* magic 70 */
+    "sendLowat",                /* magic 71 */
+    "postponeOutput",           /* magic 72 */
+    "keepaliveDisable",         /* magic 74 */
+    "keepaliveMinTimeout",      /* magic 75 */
+    "sendfileMaxChunk",         /* magic 76 */
+    "readAhead",                /* magic 77 */
+    "directio",                 /* magic 78 */
+    "directioAlignment",        /* magic 79 */
+    "errorPage",                /* custom getter/setter */
+    NULL
+};
+
+static const char * const ngx_js_proxy_snap_props[] = {
+    "httpVersion",
+    "connectTimeout",
+    "sendTimeout",
+    "readTimeout",
+    "buffering",
+    "requestBuffering",
+    "interceptErrors",
+    "bufferSize",
+    "nextUpstreamTries",
+    "nextUpstreamTimeout",
+    NULL
+};
+
+static const char * const ngx_js_gzip_snap_props[] = {
+    "enable",
+    "level",
+    "minLength",
+    "vary",
+    NULL
+};
+
+static const char * const ngx_js_headers_snap_props[] = {
+    "headersInherit",
+    "trailersInherit",
+    NULL
+};
+
+static const char * const ngx_js_rewrite_snap_props[] = {
+    "log",
+    "uninitializedVariableWarn",
+    "stackSize",
+    NULL
+};
+
+/* Sub-object table: property name on location → settable prop list */
+static const struct {
+    const char         *prop;
+    const char * const *snap_props;
+} ngx_js_loc_subobj_snap[] = {
+    { "proxy",   ngx_js_proxy_snap_props   },
+    { "gzip",    ngx_js_gzip_snap_props    },
+    { "headers", ngx_js_headers_snap_props },
+    { "rewrite", ngx_js_rewrite_snap_props },
+    { NULL, NULL }
+};
+
+
+/*
+ * Free a snap node and all its prop entries using runtime-safe freeing
+ * (safe to call from a JS finalizer or from a live context error path).
+ */
+void
+ngx_js_snap_node_free(JSRuntime *rt, ngx_js_snap_node_t *node)
+{
+    ngx_js_snap_prop_t  *prop, *next;
+
+    JS_FreeValueRT(rt, node->target);
+
+    for (prop = node->props; prop; prop = next) {
+        next = prop->next;
+        JS_FreeValueRT(rt, prop->val);
+        js_free_rt(rt, prop);
+    }
+
+    js_free_rt(rt, node);
+}
+
+
+static void
+ngx_js_snapshot_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_snapshot_opaque_t  *snap_op;
+    ngx_js_snap_node_t        *node, *next_node;
+
+    snap_op = JS_GetOpaque(val, ngx_js_snapshot_class_id);
+    if (!snap_op) {
+        return;
+    }
+
+    for (node = snap_op->head; node; node = next_node) {
+        next_node = node->next;
+        ngx_js_snap_node_free(rt, node);
+    }
+
+    js_free_rt(rt, snap_op);
+}
+
+
+static JSClassDef ngx_js_snapshot_class = {
+    "NginxSnapshot",
+    .finalizer = ngx_js_snapshot_finalizer
+};
+
+
+/*
+ * Create an empty NginxSnapshot JS object.
+ * The caller must populate it with ngx_js_snapshot_append_node() calls.
+ */
+JSValue
+ngx_js_snapshot_new(JSContext *ctx)
+{
+    ngx_js_snapshot_opaque_t  *snap_op;
+    JSValue                    obj;
+
+    obj = JS_NewObjectClass(ctx, ngx_js_snapshot_class_id);
+    if (JS_IsException(obj)) {
+        return obj;
+    }
+
+    snap_op = js_malloc(ctx, sizeof(*snap_op));
+    if (!snap_op) {
+        JS_FreeValue(ctx, obj);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    snap_op->head = NULL;
+    JS_SetOpaque(obj, snap_op);
+    return obj;
+}
+
+
+/* Tail-appends node to snap->head list (preserves capture order). */
+void
+ngx_js_snapshot_append_node(ngx_js_snapshot_opaque_t *snap,
+    ngx_js_snap_node_t *node)
+{
+    ngx_js_snap_node_t  **tail;
+
+    node->next = NULL;
+    for (tail = &snap->head; *tail; tail = &(*tail)->next) { /* walk */ }
+    *tail = node;
+}
+
+
+/*
+ * Read all listed property names from obj (via the existing getter path,
+ * honouring read_mode) and store non-null/undefined results in a new node.
+ * Returns NULL on OOM; the caller must handle the error.
+ */
+ngx_js_snap_node_t *
+ngx_js_snap_capture_node(JSContext *ctx, JSValueConst obj,
+    const char * const *prop_names)
+{
+    ngx_js_snap_node_t   *node;
+    ngx_js_snap_prop_t  **tail, *prop;
+    const char * const   *pn;
+    JSValue               v;
+
+    node = js_malloc(ctx, sizeof(*node));
+    if (!node) {
+        return NULL;
+    }
+
+    node->target = JS_DupValue(ctx, obj);
+    node->props  = NULL;
+    node->next   = NULL;
+    tail         = &node->props;
+
+    for (pn = prop_names; *pn != NULL; pn++) {
+        v = JS_GetPropertyStr(ctx, obj, *pn);
+
+        if (JS_IsException(v)) {
+            /* getter threw (e.g. alias on a root-based loc) — skip */
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            continue;
+        }
+
+        if (JS_IsUndefined(v) || JS_IsNull(v)) {
+            JS_FreeValue(ctx, v);
+            continue;
+        }
+
+        prop = js_malloc(ctx, sizeof(*prop));
+        if (!prop) {
+            JS_FreeValue(ctx, v);
+            goto oom;
+        }
+
+        prop->name = *pn;
+        prop->val  = v;    /* takes ownership */
+        prop->next = NULL;
+        *tail = prop;
+        tail  = &prop->next;
+    }
+
+    return node;
+
+oom:
+    ngx_js_snap_node_free(JS_GetRuntime(ctx), node);
+    return NULL;
+}
+
+
+/*
+ * snap.restore([options])
+ *
+ * Re-applies every captured property value through the standard setter
+ * path, which honours write_mode (NGX_JS_WRITE_GLOBAL / LOCAL / BOTH)
+ * and triggers ngx_js_ensure_*_snapshot() automatically when writing
+ * to a per-request local copy.
+ *
+ * options.mode — optional string "global" | "local" | "both".
+ *   When supplied, write_mode is overridden for the duration of restore:
+ *   - loc_op->write_mode  (routes core + alias setter)
+ *   - rctx->write_mode    (routes sub-object setters: proxy, gzip, …)
+ *   Both are saved and restored after all writes complete.
+ */
+static JSValue
+ngx_js_snapshot_fn_restore(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_snapshot_opaque_t  *snap_op;
+    ngx_js_snap_node_t        *node;
+    ngx_js_snap_prop_t        *prop;
+    ngx_js_location_opaque_t  *loc_op;
+    ngx_js_req_ctx_t          *rctx;
+    ngx_js_worker_t           *w;
+    ngx_http_request_t        *r;
+    uint32_t                   saved_loc_mode, saved_rctx_mode, mode;
+    ngx_int_t                  has_mode;
+    JSValue                    mode_val;
+
+    snap_op = JS_GetOpaque2(ctx, this_val, ngx_js_snapshot_class_id);
+    if (!snap_op) {
+        return JS_EXCEPTION;
+    }
+
+    has_mode = 0;
+    saved_loc_mode = saved_rctx_mode = 0;   /* suppress -Wuninitialized */
+
+    if (argc > 0 && JS_IsObject(argv[0])) {
+        mode_val = JS_GetPropertyStr(ctx, argv[0], "mode");
+
+        if (!JS_IsUndefined(mode_val) && !JS_IsNull(mode_val)) {
+            if (ngx_js_parse_rw_mode(ctx, mode_val, &mode) != NGX_OK) {
+                JS_FreeValue(ctx, mode_val);
+                return JS_EXCEPTION;
+            }
+
+            has_mode = 1;
+        }
+
+        JS_FreeValue(ctx, mode_val);
+    }
+
+    /* Locate per-request context for sub-object write_mode routing */
+    w    = JS_GetContextOpaque(ctx);
+    r    = (w && w->current_request) ? w->current_request : NULL;
+    rctx = r ? ngx_http_get_module_ctx(r, ngx_js_http_module) : NULL;
+
+    loc_op = NULL;
+
+    if (has_mode && snap_op->head) {
+        /*
+         * Mode override applies to the location node (head) and to
+         * rctx so sub-object setters (proxy, gzip, …) also route
+         * through the requested mode.
+         */
+        loc_op = JS_GetOpaque(snap_op->head->target,
+                              ngx_js_location_class_id);
+        if (loc_op) {
+            saved_loc_mode     = loc_op->write_mode;
+            loc_op->write_mode = mode;
+        }
+
+        if (rctx) {
+            saved_rctx_mode  = rctx->write_mode;
+            rctx->write_mode = mode;
+        }
+    }
+
+    for (node = snap_op->head; node; node = node->next) {
+        for (prop = node->props; prop; prop = prop->next) {
+            /* Best-effort: clear any setter error and continue */
+            if (JS_SetPropertyStr(ctx, node->target, prop->name,
+                                  JS_DupValue(ctx, prop->val)) < 0)
+            {
+                JS_FreeValue(ctx, JS_GetException(ctx));
+            }
+        }
+    }
+
+    /* Restore overridden modes */
+    if (has_mode) {
+        if (loc_op) {
+            loc_op->write_mode = saved_loc_mode;
+        }
+
+        if (rctx) {
+            rctx->write_mode = saved_rctx_mode;
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+ngx_int_t
+ngx_js_snapshot_register_class(JSRuntime *rt)
+{
+    if (JS_NewClass(rt, ngx_js_snapshot_class_id,
+                    &ngx_js_snapshot_class) < 0)
+    {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static const JSCFunctionListEntry ngx_js_snapshot_proto_funcs[] = {
+    JS_CFUNC_DEF("restore", 0, ngx_js_snapshot_fn_restore),
+};
+
+
+ngx_int_t
+ngx_js_snapshot_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_snapshot_proto_funcs,
+                               countof(ngx_js_snapshot_proto_funcs));
+
+    JS_SetClassProto(ctx, ngx_js_snapshot_class_id, proto);
+    return NGX_OK;
+}
+
+
+/*
+ * location.snapshot()
+ *
+ * Creates a NginxSnapshot capturing the current values of all settable
+ * core fields plus proxy / gzip / headers / rewrite sub-object fields.
+ * Values are read through the existing getter path (honouring read_mode).
+ *
+ * The snapshot can be restored at any time via snap.restore() or
+ * snap.restore({ mode: 'global'|'local'|'both' }).
+ */
+static JSValue
+ngx_js_location_fn_snapshot(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_snapshot_opaque_t  *snap_op;
+    ngx_js_snap_node_t        *node;
+    JSValue                    snap_obj, sub_obj;
+    ngx_uint_t                 i;
+
+    snap_obj = ngx_js_snapshot_new(ctx);
+    if (JS_IsException(snap_obj)) {
+        return snap_obj;
+    }
+
+    snap_op = JS_GetOpaque(snap_obj, ngx_js_snapshot_class_id);
+
+    /* Capture location core scalar fields */
+    node = ngx_js_snap_capture_node(ctx, this_val, ngx_js_loc_snap_props);
+    if (!node) {
+        JS_FreeValue(ctx, snap_obj);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_js_snapshot_append_node(snap_op, node);
+
+    /* Capture sub-objects (proxy, gzip, headers, rewrite) */
+    for (i = 0; ngx_js_loc_subobj_snap[i].prop != NULL; i++) {
+        sub_obj = JS_GetPropertyStr(ctx, this_val,
+                                    ngx_js_loc_subobj_snap[i].prop);
+
+        if (JS_IsException(sub_obj)) {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            continue;
+        }
+
+        if (JS_IsNull(sub_obj) || JS_IsUndefined(sub_obj)) {
+            JS_FreeValue(ctx, sub_obj);
+            continue;
+        }
+
+        node = ngx_js_snap_capture_node(ctx, sub_obj,
+                                        ngx_js_loc_subobj_snap[i].snap_props);
+        JS_FreeValue(ctx, sub_obj);
+
+        if (!node) {
+            JS_FreeValue(ctx, snap_obj);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        ngx_js_snapshot_append_node(snap_op, node);
+    }
+
+    return snap_obj;
+}
+
+
 /* ngx_js_http_com_install                                              */
 /* ------------------------------------------------------------------ */
 
@@ -8019,6 +8491,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_mirror_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_snapshot_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 

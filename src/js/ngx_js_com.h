@@ -74,6 +74,50 @@ extern JSClassID  ngx_js_stream_rr_peer_class_id;    /* stream runtime RR peer  
 extern JSClassID  ngx_js_stream_access_class_id;    /* stream server access     (Stage C)   */
 extern JSClassID  ngx_js_stream_ssl_class_id;       /* stream server SSL        (Stage D)   */
 extern JSClassID  ngx_js_stream_session_class_id;   /* stream session handler   (Stage E)   */
+extern JSClassID  ngx_js_snapshot_class_id;         /* NginxSnapshot            (Step 12)   */
+
+
+/* ---- Snapshot types shared between COM source files ---- */
+
+/*
+ * One saved property value inside a NginxSnapshot node.
+ * name always points to a static string literal (no heap allocation).
+ * val is an owned JSValue freed in the snapshot finalizer.
+ */
+typedef struct ngx_js_snap_prop_s {
+    const char                *name;
+    JSValue                    val;
+    struct ngx_js_snap_prop_s *next;
+} ngx_js_snap_prop_t;
+
+/*
+ * One COM object's worth of captured properties.
+ * target is a JS_DupValue of the COM wrapper (keeps GC alive + provides
+ * the receiver for restore's JS_SetPropertyStr calls).
+ */
+typedef struct ngx_js_snap_node_s {
+    JSValue                    target;
+    ngx_js_snap_prop_t        *props;
+    struct ngx_js_snap_node_s *next;
+} ngx_js_snap_node_t;
+
+typedef struct {
+    ngx_js_snap_node_t  *head;
+} ngx_js_snapshot_opaque_t;
+
+
+/* Snapshot class lifecycle */
+ngx_int_t           ngx_js_snapshot_register_class(JSRuntime *rt);
+ngx_int_t           ngx_js_snapshot_install_proto(JSContext *ctx);
+
+/* NginxSnapshot construction helpers used by multiple COM files */
+JSValue             ngx_js_snapshot_new(JSContext *ctx);
+void                ngx_js_snapshot_append_node(ngx_js_snapshot_opaque_t *snap,
+                        ngx_js_snap_node_t *node);
+ngx_js_snap_node_t *ngx_js_snap_capture_node(JSContext *ctx, JSValueConst obj,
+                        const char * const *prop_names);
+void                ngx_js_snap_node_free(JSRuntime *rt,
+                        ngx_js_snap_node_t *node);
 
 
 /*

@@ -139,6 +139,39 @@ ngx_js_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
 }
 
 
+/* Settable property names common to NginxPeer and NginxRRPeer */
+static const char * const ngx_js_peer_snap_props[] = {
+    "weight", "maxFails", "down", "failTimeout", "maxConns",
+    NULL
+};
+
+
+static JSValue
+ngx_js_peer_fn_snapshot(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_snapshot_opaque_t  *snap_op;
+    ngx_js_snap_node_t        *node;
+    JSValue                    snap_obj;
+
+    snap_obj = ngx_js_snapshot_new(ctx);
+    if (JS_IsException(snap_obj)) {
+        return snap_obj;
+    }
+
+    snap_op = JS_GetOpaque(snap_obj, ngx_js_snapshot_class_id);
+
+    node = ngx_js_snap_capture_node(ctx, this_val, ngx_js_peer_snap_props);
+    if (!node) {
+        JS_FreeValue(ctx, snap_obj);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_js_snapshot_append_node(snap_op, node);
+    return snap_obj;
+}
+
+
 static const JSCFunctionListEntry ngx_js_peer_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("address",     ngx_js_peer_get, NULL,            0),
     JS_CGETSET_MAGIC_DEF("weight",      ngx_js_peer_get, ngx_js_peer_set, 1),
@@ -147,6 +180,7 @@ static const JSCFunctionListEntry ngx_js_peer_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("backup",      ngx_js_peer_get, NULL,            4),
     JS_CGETSET_MAGIC_DEF("failTimeout", ngx_js_peer_get, ngx_js_peer_set, 5),
     JS_CGETSET_MAGIC_DEF("maxConns",    ngx_js_peer_get, ngx_js_peer_set, 6),
+    JS_CFUNC_DEF("snapshot", 0, ngx_js_peer_fn_snapshot),
 };
 
 
@@ -322,6 +356,100 @@ ngx_js_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 }
 
 
+static JSValue
+ngx_js_rr_peer_fn_snapshot(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_snapshot_opaque_t  *snap_op;
+    ngx_js_snap_node_t        *node;
+    JSValue                    snap_obj;
+
+    snap_obj = ngx_js_snapshot_new(ctx);
+    if (JS_IsException(snap_obj)) {
+        return snap_obj;
+    }
+
+    snap_op = JS_GetOpaque(snap_obj, ngx_js_snapshot_class_id);
+
+    node = ngx_js_snap_capture_node(ctx, this_val, ngx_js_peer_snap_props);
+    if (!node) {
+        JS_FreeValue(ctx, snap_obj);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_js_snapshot_append_node(snap_op, node);
+    return snap_obj;
+}
+
+
+/*
+ * upstream.snapshot() — creates a NginxSnapshot containing one node
+ * per peer (all peers in the upstream's current peers[] array).
+ * Works for both config-phase (NginxPeer) and runtime (NginxRRPeer).
+ */
+static JSValue
+ngx_js_upstream_fn_snapshot(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_snapshot_opaque_t  *snap_op;
+    ngx_js_snap_node_t        *node;
+    JSValue                    snap_obj, peers_arr, peer_obj, len_val;
+    uint32_t                   len, i;
+
+    snap_obj = ngx_js_snapshot_new(ctx);
+    if (JS_IsException(snap_obj)) {
+        return snap_obj;
+    }
+
+    snap_op = JS_GetOpaque(snap_obj, ngx_js_snapshot_class_id);
+
+    peers_arr = JS_GetPropertyStr(ctx, this_val, "peers");
+
+    if (JS_IsException(peers_arr) || JS_IsNull(peers_arr)
+        || JS_IsUndefined(peers_arr))
+    {
+        JS_FreeValue(ctx, peers_arr);
+        return snap_obj;   /* empty snapshot — no peers to capture */
+    }
+
+    len_val = JS_GetPropertyStr(ctx, peers_arr, "length");
+    if (JS_IsException(len_val)) {
+        JS_FreeValue(ctx, peers_arr);
+        JS_FreeValue(ctx, snap_obj);
+        return JS_EXCEPTION;
+    }
+
+    JS_ToUint32(ctx, &len, len_val);
+    JS_FreeValue(ctx, len_val);
+
+    for (i = 0; i < len; i++) {
+        peer_obj = JS_GetPropertyUint32(ctx, peers_arr, i);
+
+        if (JS_IsException(peer_obj) || JS_IsUndefined(peer_obj)
+            || JS_IsNull(peer_obj))
+        {
+            JS_FreeValue(ctx, peer_obj);
+            continue;
+        }
+
+        node = ngx_js_snap_capture_node(ctx, peer_obj,
+                                        ngx_js_peer_snap_props);
+        JS_FreeValue(ctx, peer_obj);
+
+        if (!node) {
+            JS_FreeValue(ctx, peers_arr);
+            JS_FreeValue(ctx, snap_obj);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        ngx_js_snapshot_append_node(snap_op, node);
+    }
+
+    JS_FreeValue(ctx, peers_arr);
+    return snap_obj;
+}
+
+
 static const JSCFunctionListEntry ngx_js_rr_peer_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("address",     ngx_js_rr_peer_get, NULL,               0),
     JS_CGETSET_MAGIC_DEF("weight",      ngx_js_rr_peer_get, ngx_js_rr_peer_set, 1),
@@ -333,6 +461,7 @@ static const JSCFunctionListEntry ngx_js_rr_peer_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("maxConns",    ngx_js_rr_peer_get, ngx_js_rr_peer_set, 7),
     JS_CGETSET_MAGIC_DEF("server",      ngx_js_rr_peer_get, NULL,               8),
     JS_CGETSET_MAGIC_DEF("fails",       ngx_js_rr_peer_get, NULL,               9),
+    JS_CFUNC_DEF("snapshot", 0, ngx_js_rr_peer_fn_snapshot),
 };
 
 
@@ -821,6 +950,7 @@ static const JSCFunctionListEntry ngx_js_upstream_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("peers", ngx_js_upstream_get_peers, NULL, 0),
     JS_CFUNC_DEF("addPeer",    1, ngx_js_upstream_add_peer),
     JS_CFUNC_DEF("removePeer", 1, ngx_js_upstream_remove_peer),
+    JS_CFUNC_DEF("snapshot",   0, ngx_js_upstream_fn_snapshot),
 };
 
 

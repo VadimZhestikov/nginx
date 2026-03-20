@@ -1,0 +1,702 @@
+<?xml version='1.0' encoding='utf-8'?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>computers</genre>
+      <author>
+        <first-name />
+        <last-name>NGINX JS DOM Project</last-name>
+      </author>
+      <book-title>nginx JS — Dynamic Reconfiguration Guide</book-title>
+      <date>2026-03-19</date>
+      <lang>en</lang>
+    </title-info>
+    <document-info>
+      <author>
+        <nickname>asciidoctor + html2fb2.py</nickname>
+      </author>
+      <date>2026-03-19</date>
+      <id>20c585b1-d5bb-4ffa-a00d-0d9ff1c15f11</id>
+      <version>1.0</version>
+    </document-info>
+  </description>
+  <body>
+    <title>
+      <p>nginx JS — Dynamic Reconfiguration Guide</p>
+    </title>
+    <section>
+      <title>
+        <p>Overview</p>
+      </title>
+      <p>The nginx JS DOM lets you read <strong>and write</strong> live nginx configuration from JavaScript running inside nginx workers. This guide covers the <strong>write-side</strong> of that API:</p>
+      <p>•   </p>
+      <p>
+        <code>write_mode</code> / <code>read_mode</code> — control <strong>where</strong> property assignments go and where reads come from (global shared struct vs per-request snapshot).</p>
+      <p>•   </p>
+      <p>
+        <code>snapshot()</code> / <code>restore()</code> — capture a point-in-time copy of a COM sub-tree and roll it back at any moment.</p>
+      <p>Together these two mechanisms let you implement safe hot-reload, per-tenant routing, A/B configuration experiments, and rollback-on-error patterns without reloading nginx.</p>
+      <section>
+        <title>
+          <p>Terminology</p>
+        </title>
+        <p>Term │ Meaning</p>
+        <p>global struct │ The C struct shared by all workers that was set up at config parse time. Mutations here affect every new request immediately.</p>
+        <p>per-request snapshot │ A shallow copy of r→loc_conf[] (pointer array) plus deep copies of whatever individual C structs have been mutated for this request. Exists only for the duration of one request.</p>
+        <p>COM node │ A JavaScript wrapper object (NginxLocation, NginxProxy, NginxPeer, NginxRRPeer, NginxUpstream, …) backed by a nginx C struct.</p>
+        <empty-line />
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>write_mode and read_mode</p>
+      </title>
+      <section>
+        <title>
+          <p>Default behaviour</p>
+        </title>
+        <p>Both <code>write_mode</code> and <code>read_mode</code> default to <code>'global'</code>.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    // By default all writes go to the global shared struct</v>
+            <v>    req.location.root = '/new/root';    // immediately visible to ALL requests</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>write_mode = 'global' (default)</v>
+            <v />
+            <v>  Request N        Global struct</v>
+            <v>  ──────────       ─────────────</v>
+            <v>  req.location ──────────────────►  clcf { root = '/new/root', ... }</v>
+            <v>  .root = '/new'                       │</v>
+            <v>                                       │  visible to Request N+1</v>
+            <v>                                       ▼</v>
+            <v>  Request N+1      Global struct</v>
+            <v>  ──────────       ─────────────</v>
+            <v>  req.location ──────────────────►  clcf { root = '/new/root', ... }</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>write_mode values</p>
+        </title>
+        <p>Value │ Constant │ Meaning</p>
+        <p>'global' │ NGX_JS_WRITE_GLOBAL (0x01) │ All property assignments write to the global shared C struct only. No per-request snapshot is created. Default.</p>
+        <p>'local' │ NGX_JS_WRITE_LOCAL (0x02) │ Writes go to a per-request snapshot copy only. A snapshot is created automatically on the first write. The global struct is never touched. Other concurrent requests see the original global values.</p>
+        <p>'both' │ NGX_JS_WRITE_BOTH (0x03) │ Writes go to both the global struct and the per-request snapshot. Semantics of 'global' for other requests, semantics of 'local' for the current request.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>read_mode values</p>
+        </title>
+        <p>Value │ Meaning</p>
+        <p>'global' │ Property reads always return the value from the global shared struct. Default.</p>
+        <p>'local' │ Property reads prefer the per-request snapshot when one exists, falling back to the global struct automatically (because r→loc_conf[idx] == op→clcf until a snapshot is taken).</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>API</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>req.location.setWriteMode(mode)   // 'global' | 'local' | 'both'</v>
+            <v>req.location.setReadMode(mode)    // 'global' | 'local'</v>
+          </stanza>
+        </poem>
+        <p>Both methods update the opaque state of the <code>NginxLocation</code> wrapper <strong>and</strong> propagate the new write_mode into the per-request context (<code>rctx</code>) so that sub-object setters (<code>proxy</code>, <code>gzip</code>, <code>headers</code>, <code>rewrite</code>) also honour it.</p>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram: write_mode interactions</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>                        ┌──────────────────────┐</v>
+            <v>                        │   Request N starts   │</v>
+            <v>                        │  write_mode='global' │  ← default</v>
+            <v>                        └──────────┬───────────┘</v>
+            <v>                                   │</v>
+            <v>              ┌────────────────────┼────────────────────┐</v>
+            <v>              │                    │                     │</v>
+            <v>     write_mode='global'  write_mode='local'   write_mode='both'</v>
+            <v>              │                    │                     │</v>
+            <v>              ▼                    ▼                     ▼</v>
+            <v>      ┌──────────────┐    ┌──────────────────┐  ┌──────────────────┐</v>
+            <v>      │ Global clcf  │    │ ensure_snapshot()│  │ ensure_snapshot()│</v>
+            <v>      │ (shared by   │    │ per-req copy     │  │ per-req copy     │</v>
+            <v>      │  all reqs)   │    │ written ONLY     │  │ written          │</v>
+            <v>      └──────┬───────┘    └──────────────────┘  │+                 │</v>
+            <v>             │                                   │ Global clcf      │</v>
+            <v>             │  other requests see               │ also written     │</v>
+            <v>             │  the new value immediately        └──────────────────┘</v>
+            <v>             ▼</v>
+            <v>    Request N+1 reads the</v>
+            <v>    mutated global value</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example: per-tenant root directory</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    // Isolate writes to this request — global is never touched</v>
+            <v>    req.location.setWriteMode('local');</v>
+            <v>    req.location.setReadMode('local');</v>
+            <v />
+            <v>    const tenant = req.getVar('http_x_tenant') || 'default';</v>
+            <v>    req.location.root = '/var/www/' + tenant;</v>
+            <v />
+            <v>    // req.sendfile still works with the local root</v>
+            <v>    req.sendfile('/index.html');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>Other concurrent requests continue to read the original global <code>root</code> because this request only wrote to its per-request snapshot.</p>
+      </section>
+      <section>
+        <title>
+          <p>Example: persistent global mutation (hot reload)</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Endpoint that updates the upstream peer weight globally</v>
+            <v>nginx.http.servers.forEach(srv =&gt; {</v>
+            <v>    const loc = srv.locations.find(l =&gt; l.path === '/admin/set-weight');</v>
+            <v>    if (!loc) { return; }</v>
+            <v />
+            <v>    loc.handler = (req) =&gt; {</v>
+            <v>        // Default write_mode='global' — affects all future requests</v>
+            <v>        const body = JSON.parse(req.body);</v>
+            <v>        const ups  = nginx.http.upstreams.find(u =&gt; u.name === body.upstream);</v>
+            <v>        if (!ups) { req.respond(404, {}, 'upstream not found'); return; }</v>
+            <v />
+            <v>        const peer = ups.peers.find(p =&gt; p.address === body.peer);</v>
+            <v>        if (!peer) { req.respond(404, {}, 'peer not found'); return; }</v>
+            <v />
+            <v>        peer.weight = body.weight;</v>
+            <v>        req.json({ applied: true });</v>
+            <v>    };</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>snapshot() and restore()</p>
+      </title>
+      <section>
+        <title>
+          <p>What snapshot() captures</p>
+        </title>
+        <p>
+          <code>obj.snapshot()</code> reads the <strong>current visible values</strong> of all settable properties on <code>obj</code> (through <code>read_mode</code>) and stores them in a <code>NginxSnapshot</code> handle. For <code>NginxLocation</code> it also recursively captures the settable fields of sub-objects (<code>proxy</code>, <code>gzip</code>, <code>headers</code>, <code>rewrite</code>).</p>
+        <p>COM class │ Fields captured by snapshot()</p>
+        <p>NginxLocation │ root, handler, sendfile, tcpNopush, tcpNodelay, etag, keepaliveTimeout, keepaliveRequests, clientMaxBodySize, clientBodyTimeout, sendTimeout, defaultType, alias, satisfy, limitExcept, lingering, lingeringTimeout, lingeringTime, resolverTimeout, chunkedTransferEncoding, msieRefresh, logNotFound, logSubrequest, recursiveErrorPages, clientBodyBufferSize, clientBodyInFileOnly, clientBodyInSingleBuffer, resetTimedoutConnection, absoluteRedirect, serverNameInRedirect, portInRedirect, msiePadding, ifModifiedSince, maxRanges, authDelay, keepaliveTime, sendLowat, postponeOutput, keepaliveDisable, keepaliveMinTimeout, sendfileMaxChunk, readAhead, directio, directioAlignment, errorPage</p>
+        <p>NginxLocation (sub: proxy) │ httpVersion, connectTimeout, sendTimeout, readTimeout, buffering, requestBuffering, interceptErrors, bufferSize, nextUpstreamTries, nextUpstreamTimeout</p>
+        <p>NginxLocation (sub: gzip) │ enable, level, minLength, vary</p>
+        <p>NginxLocation (sub: headers) │ headersInherit, trailersInherit</p>
+        <p>NginxLocation (sub: rewrite) │ log, uninitializedVariableWarn, stackSize</p>
+        <p>NginxPeer / NginxRRPeer │ weight, maxFails, down, failTimeout, maxConns</p>
+        <p>NginxUpstream │ All current peers (one sub-node per peer, each with the fields above)</p>
+        <empty-line />
+        <p>Null/undefined getter results are silently skipped (e.g. <code>alias</code> on a root-based location returns null and is not stored).</p>
+      </section>
+      <section>
+        <title>
+          <p>What restore() does</p>
+        </title>
+        <p>
+          <code>snap.restore()</code> iterates all stored nodes and calls the standard property <strong>setter</strong> for each captured value using <code>JS_SetPropertyStr</code>.</p>
+        <p>The setter path handles:</p>
+        <p>•   </p>
+        <p>
+          <code>write_mode</code> routing (global / local / both).</p>
+        <p>•   </p>
+        <p>
+          <code>ngx_js_ensure_core_snapshot()</code> / <code>ngx_js_ensure_module_snapshot()</code> — creating per-request snapshot copies when needed.</p>
+        <p>•   </p>
+        <p>Lock acquisition for <code>NginxRRPeer</code> properties.</p>
+        <p>
+          <code>restore()</code> is <strong>best-effort</strong>: individual setter errors are silently cleared so that one failed field does not prevent others from being restored.</p>
+        <p>
+          <code>restore()</code> is <strong>idempotent</strong>: you can call it multiple times safely.</p>
+      </section>
+      <section>
+        <title>
+          <p>restore() mode override</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>snap.restore()                    // use current write_mode (default)</v>
+            <v>snap.restore({ mode: 'global' }) // force all writes to global struct</v>
+            <v>snap.restore({ mode: 'local' })  // force all writes to per-req snapshot</v>
+            <v>snap.restore({ mode: 'both' })   // write to both</v>
+          </stanza>
+        </poem>
+        <p>The override temporarily sets <code>loc_op→write_mode</code> and <code>rctx→write_mode</code> for the duration of the restore call, then restores the original values.</p>
+      </section>
+      <section>
+        <title>
+          <p>Interaction table: snapshot × write_mode</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>Scenario                   | snapshot captures | restore() writes to</v>
+            <v>───────────────────────────┼───────────────────┼─────────────────────</v>
+            <v>write_mode='global'        │ current global    │ global</v>
+            <v>  default, no override     │ values            │ (other reqs see it)</v>
+            <v>───────────────────────────┼───────────────────┼─────────────────────</v>
+            <v>write_mode='local'         │ current local     │ local snapshot only</v>
+            <v>  no override              │ (= global if no   │ (global untouched)</v>
+            <v>                           │  prior mutation)  │</v>
+            <v>───────────────────────────┼───────────────────┼─────────────────────</v>
+            <v>write_mode='both'          │ current local     │ both global and</v>
+            <v>  no override              │ (mirrors global)  │ local snapshot</v>
+            <v>───────────────────────────┼───────────────────┼─────────────────────</v>
+            <v>Any write_mode +           │ whatever          │ forced global</v>
+            <v>restore({mode:'global'})   │ read_mode says    │</v>
+            <v>───────────────────────────┼───────────────────┼─────────────────────</v>
+            <v>write_mode='local' +       │ local values      │ forced global</v>
+            <v>restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram: snapshot lifecycle</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Time ──────────────────────────────────────────────────────────►</v>
+            <v />
+            <v>  Request N:</v>
+            <v>    │</v>
+            <v>    ├─[1] snap = req.location.snapshot()</v>
+            <v>    │      │  reads root, gzip.level, proxy.readTimeout, …</v>
+            <v>    │      │  via getter (honours read_mode)</v>
+            <v>    │      │  stores copies in NginxSnapshot object</v>
+            <v>    │</v>
+            <v>    ├─[2] req.location.root = '/new'</v>
+            <v>    │      │  write_mode='global' → writes directly to shared clcf</v>
+            <v>    │      │  (no per-req snapshot created)</v>
+            <v>    │</v>
+            <v>    ├─[3] ← SOMETHING FAILS</v>
+            <v>    │</v>
+            <v>    └─[4] snap.restore()</v>
+            <v>           │  iterates stored fields</v>
+            <v>           │  calls JS_SetPropertyStr(loc_obj, 'root', '/original')</v>
+            <v>           │  → ngx_js_location_set() → need_global=1 → clcf-&gt;root = '/original'</v>
+            <v>           │  calls JS_SetPropertyStr(proxy_obj, 'readTimeout', orig_val)</v>
+            <v>           │  → ngx_js_proxy_set_core() → plcf-&gt;upstream.read_timeout = orig_val</v>
+            <v>           │</v>
+            <v>           ▼</v>
+            <v>        global config is back to what it was at [1]</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Flow diagram: local isolation with deliberate commit</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  Time ──────────────────────────────────────────────────────────►</v>
+            <v />
+            <v>  Request N:</v>
+            <v>    │</v>
+            <v>    ├─ setWriteMode('local')</v>
+            <v>    │</v>
+            <v>    ├─ snap = req.location.snapshot()    ← captures global values</v>
+            <v>    │</v>
+            <v>    ├─ req.location.root = '/candidate'  ← per-req snapshot created,</v>
+            <v>    │                                       global unchanged</v>
+            <v>    │</v>
+            <v>    ├─ validate() ← test the new config</v>
+            <v>    │   │</v>
+            <v>    │   ├─ OK → commit:</v>
+            <v>    │   │        snap2 = req.location.snapshot()  ← captures /candidate</v>
+            <v>    │   │        snap2.restore({ mode: 'global' }) ← writes /candidate → global</v>
+            <v>    │   │</v>
+            <v>    │   └─ FAIL → rollback:</v>
+            <v>    │              snap.restore({ mode: 'local' })  ← reverts local copy</v>
+            <v>    │</v>
+            <v>    │</v>
+            <v>  Request N+1 (concurrent):</v>
+            <v>    │  No write_mode set — reads from global</v>
+            <v>    │  Sees original value UNTIL Request N commits</v>
+            <v>    └─ …</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Complete Examples</p>
+      </title>
+      <section>
+        <title>
+          <p>Example 1: Rollback on Error</p>
+        </title>
+        <p>Mutate the location config and roll back if the mutation causes a problem.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const snap = req.location.snapshot();</v>
+            <v />
+            <v>    try {</v>
+            <v>        const cfg = JSON.parse(await req.readBody());</v>
+            <v>        req.location.root = cfg.root;</v>
+            <v />
+            <v>        if (cfg.proxy) {</v>
+            <v>            req.location.proxy.readTimeout    = cfg.proxy.readTimeout;</v>
+            <v>            req.location.proxy.connectTimeout = cfg.proxy.connectTimeout;</v>
+            <v>        }</v>
+            <v />
+            <v>        // Test the new config with a probe request</v>
+            <v>        const ok = await probeBackend(req);</v>
+            <v>        if (!ok) {</v>
+            <v>            throw new Error('probe failed');</v>
+            <v>        }</v>
+            <v />
+            <v>        req.json({ applied: true });</v>
+            <v>    } catch (e) {</v>
+            <v>        snap.restore();</v>
+            <v>        req.respond(500, {}, 'Config apply failed: ' + e.message);</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 2: Atomic Two-Phase Apply</p>
+        </title>
+        <p>Validate locally, then commit globally.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    // Phase 1: validate in isolation</v>
+            <v>    req.location.setWriteMode('local');</v>
+            <v>    req.location.setReadMode('local');</v>
+            <v />
+            <v>    const cfg  = JSON.parse(await req.readBody());</v>
+            <v>    const orig = req.location.snapshot();    // capture current state</v>
+            <v />
+            <v>    req.location.root = cfg.root;</v>
+            <v />
+            <v>    const valid = await validateConfig(req.location);</v>
+            <v>    if (!valid) {</v>
+            <v>        orig.restore({ mode: 'local' });     // revert local copy</v>
+            <v>        req.respond(400, {}, 'invalid config');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    // Phase 2: commit validated values globally</v>
+            <v>    const validated = req.location.snapshot();   // capture /local/ values</v>
+            <v>    validated.restore({ mode: 'global' });        // write them to global</v>
+            <v />
+            <v>    req.json({ committed: true });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 3: Upstream Peer Weight Balancing with Rollback</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const ups  = nginx.http.upstreams.find(u =&gt; u.name === 'backend');</v>
+            <v>    const snap = ups.snapshot();              // save all peer weights</v>
+            <v />
+            <v>    try {</v>
+            <v>        // Rebalance weights based on health check results</v>
+            <v>        const health = await checkHealth(ups);</v>
+            <v>        ups.peers.forEach((p, i) =&gt; {</v>
+            <v>            p.weight = health[i].healthy ? health[i].score : 0;</v>
+            <v>        });</v>
+            <v />
+            <v>        // Verify at least one peer is alive</v>
+            <v>        const alive = ups.peers.some(p =&gt; p.weight &gt; 0);</v>
+            <v>        if (!alive) {</v>
+            <v>            throw new Error('all peers down after rebalance');</v>
+            <v>        }</v>
+            <v />
+            <v>        req.json({ rebalanced: true });</v>
+            <v>    } catch (e) {</v>
+            <v>        snap.restore();                       // restore original weights</v>
+            <v>        req.respond(503, {}, e.message);</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 4: Single-Peer Snapshot for Fine-Grained Rollback</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const ups  = nginx.http.upstreams.find(u =&gt; u.name === 'backend');</v>
+            <v>    const peer = ups.peers.find(p =&gt; p.address === req.getVar('arg_peer'));</v>
+            <v />
+            <v>    if (!peer) {</v>
+            <v>        req.respond(404, {}, 'peer not found');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    const snap = peer.snapshot();    // snapshot only this peer</v>
+            <v />
+            <v>    peer.down    = true;             // take peer out of rotation</v>
+            <v>    peer.weight  = 0;</v>
+            <v />
+            <v>    // Wait for in-flight requests to drain</v>
+            <v>    await nginx.setTimeout(5000);</v>
+            <v />
+            <v>    const drained = await verifyDrained(peer.address);</v>
+            <v>    if (!drained) {</v>
+            <v>        snap.restore();              // put peer back on failure</v>
+            <v>        req.respond(503, {}, 'drain failed');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    req.json({ drained: true, peer: peer.address });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 5: A/B Configuration Experiment</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    // Route 10% of requests to experimental config</v>
+            <v>    const isExperiment = Math.random() &lt; 0.10;</v>
+            <v />
+            <v>    if (!isExperiment) {</v>
+            <v>        req.sendfile('/index.html');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    // Local-only mutation — no global side-effect</v>
+            <v>    req.location.setWriteMode('local');</v>
+            <v>    req.location.setReadMode('local');</v>
+            <v />
+            <v>    req.location.root          = '/var/www/experiment';</v>
+            <v>    req.location.sendfile      = false;</v>
+            <v>    req.location.defaultType   = 'text/html; charset=utf-8';</v>
+            <v />
+            <v>    req.sendfile('/index.html');</v>
+            <v>    // local snapshot is automatically discarded when the request ends</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 6: Config Snapshot for Audit</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    // Return a JSON representation of current location config</v>
+            <v>    const snap = req.location.snapshot();</v>
+            <v />
+            <v>    // NginxSnapshot is opaque — to read its values, read the location directly</v>
+            <v>    const config = {</v>
+            <v>        root:              req.location.root,</v>
+            <v>        sendfile:          req.location.sendfile,</v>
+            <v>        keepaliveTimeout:  req.location.keepaliveTimeout,</v>
+            <v>        proxy: req.location.proxy ? {</v>
+            <v>            readTimeout:    req.location.proxy.readTimeout,</v>
+            <v>            connectTimeout: req.location.proxy.connectTimeout,</v>
+            <v>            buffering:      req.location.proxy.buffering,</v>
+            <v>        } : null,</v>
+            <v>    };</v>
+            <v />
+            <v>    req.json(config);</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 7: Guarded Global Mutation</p>
+        </title>
+        <p>Prevent concurrent mutations from interleaving.</p>
+        <poem>
+          <stanza>
+            <v>let mutationInProgress = false;</v>
+            <v />
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    if (mutationInProgress) {</v>
+            <v>        req.respond(429, {}, 'mutation in progress, retry');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    mutationInProgress = true;</v>
+            <v>    const snap = req.location.snapshot();</v>
+            <v />
+            <v>    try {</v>
+            <v>        const cfg = JSON.parse(await req.readBody());</v>
+            <v>        req.location.root  = cfg.root;</v>
+            <v>        req.location.etag  = cfg.etag ?? true;</v>
+            <v>        // … more fields …</v>
+            <v />
+            <v>        req.json({ applied: true });</v>
+            <v>    } catch (e) {</v>
+            <v>        snap.restore();</v>
+            <v>        req.respond(500, {}, e.message);</v>
+            <v>    } finally {</v>
+            <v>        mutationInProgress = false;</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>API Reference</p>
+      </title>
+      <section>
+        <title>
+          <p>location.setWriteMode(mode)</p>
+        </title>
+        <p>Sets the write destination for property assignments on this location and its sub-objects.</p>
+        <p>Parameter │ Description</p>
+        <p>mode │ 'global' | 'local' | 'both'</p>
+        <empty-line />
+        <p>Also propagates the new mode to <code>rctx→write_mode</code> so that sub-object setters (<code>proxy</code>, <code>gzip</code>, etc.) route writes consistently.</p>
+      </section>
+      <section>
+        <title>
+          <p>location.setReadMode(mode)</p>
+        </title>
+        <p>Sets the read source for property getters on this location.</p>
+        <p>Parameter │ Description</p>
+        <p>mode │ 'global' — always read from global shared struct. 'local' — prefer per-request snapshot; fall back to global.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>location.snapshot()</p>
+        </title>
+        <p>Captures the current readable state of the location and all of its mutable sub-objects.</p>
+        <poem>
+          <stanza>
+            <v>NginxSnapshot  location.snapshot()</v>
+          </stanza>
+        </poem>
+        <p>Returns a <code>NginxSnapshot</code> object. The snapshot is a point-in-time copy of every settable property value, read through the current <code>read_mode</code>.</p>
+        <p>Null/undefined property values are silently excluded.</p>
+      </section>
+      <section>
+        <title>
+          <p>upstream.snapshot()</p>
+        </title>
+        <p>Captures all peers in the upstream’s current <code>peers[]</code> array.</p>
+        <poem>
+          <stanza>
+            <v>NginxSnapshot  upstream.snapshot()</v>
+          </stanza>
+        </poem>
+        <p>Each peer becomes a separate node in the snapshot. The snapshot is ordered (peer 0 first, backup peers last).</p>
+        <p>
+          <strong>: </strong> If peers are added or removed between <code>snapshot()</code> and <code>restore()</code>, the snapshot nodes point to the original peer objects (which remain valid as long as the upstream zone memory is not recycled). Restoring a snapshot after <code>removePeer()</code> may write to a peer that is no longer in the active list — this is harmless but produces no observable effect. </p>
+      </section>
+      <section>
+        <title>
+          <p>peer.snapshot() / rrPeer.snapshot()</p>
+        </title>
+        <p>Captures the five mutable fields of a single peer.</p>
+        <poem>
+          <stanza>
+            <v>NginxSnapshot  peer.snapshot()</v>
+            <v>NginxSnapshot  rrPeer.snapshot()</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>snap.restore([options])</p>
+        </title>
+        <p>Re-applies all captured values through the standard setter path.</p>
+        <poem>
+          <stanza>
+            <v>undefined  snap.restore()</v>
+            <v>undefined  snap.restore({ mode: 'global' | 'local' | 'both' })</v>
+          </stanza>
+        </poem>
+        <p>Option │ Description</p>
+        <p>mode │ Optional string. When supplied, overrides the current write_mode for the duration of this restore call only. Original mode is restored after all fields are written.</p>
+        <empty-line />
+        <p>
+          <strong>Behaviour:</strong>
+        </p>
+        <p>•   </p>
+        <p>Idempotent — calling <code>restore()</code> multiple times is safe.</p>
+        <p>•   </p>
+        <p>Best-effort — individual setter errors are silently cleared.</p>
+        <p>•   </p>
+        <p>Mode override applies to the location node and to <code>rctx→write_mode</code> so sub-object setters also use the requested mode.</p>
+        <p>•   </p>
+        <p>In config phase (no active request) <code>restore({ mode: 'local' })</code> is a no-op for sub-objects because there is no per-request context; location core fields are still written to <code>loc_op→write_mode</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>NginxSnapshot (opaque object)</p>
+        </title>
+        <p>
+          <code>NginxSnapshot</code> is an opaque QuickJS object with class name <code>"NginxSnapshot"</code>. Its only JS-visible method is <code>restore()</code>. The captured values are not directly accessible from JavaScript.</p>
+        <p>The snapshot is garbage-collected when the last JS reference to it is dropped; no manual cleanup is required.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Design Notes</p>
+      </title>
+      <section>
+        <title>
+          <p>Internal snapshot vs JS snapshot</p>
+        </title>
+        <p>The internal C-level snapshot (<code>ngx_js_ensure_core_snapshot</code>, <code>ngx_js_ensure_module_snapshot</code>) is an <strong>automatic</strong> mechanism triggered by <code>write_mode='local'</code> setters. It operates at the C struct level and is invisible to JavaScript.</p>
+        <p>The JS-level <code>snapshot()</code> / <code>restore()</code> operates at the <strong>property</strong> level: it calls the existing getters and setters. The two mechanisms are complementary:</p>
+        <p>•   </p>
+        <p>
+          <code>write_mode='local'</code> + internal snapshots → isolation of mutations.</p>
+        <p>•   </p>
+        <p>
+          <code>snapshot()</code> + <code>restore()</code> → rollback of mutations.</p>
+      </section>
+      <section>
+        <title>
+          <p>Why restore() is best-effort</p>
+        </title>
+        <p>Some setters may legitimately fail (e.g. <code>alias</code> on a root-based location throws a type error). Because <code>snapshot()</code> silently skips null/undefined values (and <code>alias</code> returns null for root-based locations), such fields are never captured. The <code>restore()</code> "best-effort" guarantee handles any remaining edge cases — e.g. a location type changed between snapshot and restore — without crashing the request.</p>
+      </section>
+      <section>
+        <title>
+          <p>Snapshot scope for upstream.snapshot()</p>
+        </title>
+        <p>
+          <code>upstream.snapshot()</code> captures the <strong>current</strong> peer array. If peers are added via <code>addPeer()</code> after the snapshot, those new peers are not in the snapshot and will not be removed by <code>restore()</code>. Similarly, if peers are removed via <code>removePeer()</code>, restoring field values to a removed peer has no effect on the live upstream.</p>
+        <p>For a complete "undo addPeer/removePeer", use the <code>addPeer()</code>/<code>removePeer()</code> methods directly rather than relying on <code>snapshot()</code>.</p>
+      </section>
+    </section>
+  </body>
+</FictionBook>
