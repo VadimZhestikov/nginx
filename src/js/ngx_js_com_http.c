@@ -3041,6 +3041,13 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
         ngx_js_req_ctx_t  *rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
 
         for (i = 0; i < nelts; i++) {
+            if (elts[i].mode != NGX_JS_FILTER_WB_SYNC) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "js: body filter mode %ui not yet implemented,"
+                              " skipping filter", elts[i].mode);
+                continue;
+            }
+
             fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
 
             if (!JS_IsFunction(ctx, fn)) {
@@ -3049,7 +3056,7 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
             }
 
             if (rctx != NULL) {
-                rctx->active_filter_mode = elts[i].mode;
+                rctx->active_filter_mode = NGX_JS_FILTER_WB_SYNC;
             }
 
             args[0] = req_obj;

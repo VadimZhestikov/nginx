@@ -80,6 +80,76 @@ ngx_js_header_filter(ngx_http_request_t *r)
 }
 
 
+/*
+ * Emit rctx->wb_body as a single downstream buffer with last_buf = 1.
+ * Shared by ngx_js_body_filter_run_from and (later) async resume.
+ */
+static ngx_int_t
+ngx_js_body_emit_wb(ngx_http_request_t *r, ngx_js_req_ctx_t *rctx)
+{
+    ngx_buf_t    *b;
+    ngx_chain_t  *out;
+
+    b = ngx_calloc_buf(r->pool);
+    if (b == NULL) {
+        return NGX_ERROR;
+    }
+
+    b->last_buf = 1;
+
+    if (rctx->wb_body.len > 0) {
+        b->pos    = rctx->wb_body.data;
+        b->last   = rctx->wb_body.data + rctx->wb_body.len;
+        b->memory = 1;
+    } else {
+        /* Zero-length body: emit a sync/flush marker so the write filter
+         * finalises the chunked response without triggering the "zero size
+         * buf in writer" alert that a memory buf with pos==last would cause. */
+        b->sync = 1;
+    }
+
+    out = ngx_alloc_chain_link(r->pool);
+    if (out == NULL) {
+        return NGX_ERROR;
+    }
+    out->buf  = b;
+    out->next = NULL;
+
+    return ngx_js_next_body_filter(r, out);
+}
+
+
+/*
+ * Run the whole-body filter chain starting from start_idx.
+ * rctx->wb_body is the body on entry; updated in place by each filter.
+ * On completion (all filters done) emits via ngx_js_body_emit_wb.
+ * Returns NGX_OK or NGX_ERROR.
+ */
+ngx_int_t
+ngx_js_body_filter_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
+    ngx_js_req_ctx_t *rctx, ngx_js_loc_conf_t *jlcf, ngx_uint_t start_idx)
+{
+    ngx_str_t  out_body;
+    int        was_set;
+
+    was_set = (w->current_request == r);
+    if (!was_set) {
+        w->current_request = r;
+    }
+
+    out_body = rctx->wb_body;
+    ngx_js_body_filters_run(w->ctx, w->rt, r, jlcf,
+                            &rctx->wb_body, &out_body);
+    rctx->wb_body = out_body;
+
+    if (!was_set) {
+        w->current_request = NULL;
+    }
+
+    return ngx_js_body_emit_wb(r, rctx);
+}
+
+
 static ngx_int_t
 ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -87,12 +157,11 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_js_loc_conf_t  *jlcf;
     ngx_js_worker_t    *w;
     ngx_js_req_ctx_t   *rctx;
-    ngx_chain_t        *cl, *link, *out;
+    ngx_chain_t        *cl, *link;
     ngx_buf_t          *b;
-    ngx_str_t           body, new_body;
     u_char             *p;
     size_t              total;
-    int                 last, was_set;
+    int                 last;
 
     /* Only intercept the main request */
     if (r != r->main) {
@@ -124,6 +193,20 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         rctx->body_bufs_last = &rctx->body_bufs;
         ngx_http_set_ctx(r, rctx, ngx_js_http_module);
     }
+
+    /*
+     * Mode B (whole-body): accumulate all chunks, then run the filter chain
+     * once on the complete body.  This path is taken whenever the filter list
+     * contains at least one wholeBody* filter.
+     *
+     * Mode A (streaming): not yet implemented; passes through unchanged.
+     */
+    if (!jlcf->body_filter_has_wb) {
+        /* Mode A stub — streaming filters are not yet implemented */
+        return ngx_js_next_body_filter(r, in);
+    }
+
+    /* ── Mode B: accumulate ─────────────────────────────────────────── */
 
     if (rctx->body_bufs_last == NULL) {
         rctx->body_bufs_last = &rctx->body_bufs;
@@ -167,8 +250,8 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         if (p == NULL) {
             return NGX_ERROR;
         }
-        body.data = p;
-        body.len  = total;
+        rctx->wb_body.data = p;
+        rctx->wb_body.len  = total;
         for (cl = rctx->body_bufs; cl; cl = cl->next) {
             b = cl->buf;
             if (ngx_buf_in_memory(b)) {
@@ -176,54 +259,15 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
             }
         }
     } else {
-        body.data = (u_char *) "";
-        body.len  = 0;
+        rctx->wb_body.data = (u_char *) "";
+        rctx->wb_body.len  = 0;
     }
 
-    /* Run JS body filters */
-    was_set = (w->current_request == r);
-    if (!was_set) {
-        w->current_request = r;
-    }
-
-    new_body = body;
-    ngx_js_body_filters_run(w->ctx, w->rt, r, jlcf, &body, &new_body);
-
-    if (!was_set) {
-        w->current_request = NULL;
-    }
-
-    /* Reset accumulation state for request reuse */
+    /* Reset accumulation state */
     rctx->body_bufs      = NULL;
     rctx->body_bufs_last = NULL;
 
-    /* Build a single output buffer with the (possibly modified) body */
-    b = ngx_calloc_buf(r->pool);
-    if (b == NULL) {
-        return NGX_ERROR;
-    }
-
-    b->last_buf = 1;
-
-    if (new_body.len > 0) {
-        b->pos    = new_body.data;
-        b->last   = new_body.data + new_body.len;
-        b->memory = 1;
-    } else {
-        /* Zero-length body: emit a sync/flush marker so the write filter
-         * finalises the chunked response without triggering the "zero size
-         * buf in writer" alert that a memory buf with pos==last would cause. */
-        b->sync = 1;
-    }
-
-    out = ngx_alloc_chain_link(r->pool);
-    if (out == NULL) {
-        return NGX_ERROR;
-    }
-    out->buf  = b;
-    out->next = NULL;
-
-    return ngx_js_next_body_filter(r, out);
+    return ngx_js_body_filter_run_from(w, r, rctx, jlcf, 0);
 }
 
 
