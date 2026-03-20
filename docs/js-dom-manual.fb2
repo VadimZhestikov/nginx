@@ -1,0 +1,3154 @@
+<?xml version='1.0' encoding='utf-8'?>
+<FictionBook xmlns:ns0="http://www.w3.org/1999/xlink" xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>computers</genre>
+      <author>
+        <first-name />
+        <last-name>NGINX JS DOM Project</last-name>
+      </author>
+      <book-title>NGINX JS DOM — Developer Manual</book-title>
+      <date>2026-03-19</date>
+      <lang>en</lang>
+    </title-info>
+    <document-info>
+      <author>
+        <nickname>asciidoctor + html2fb2.py</nickname>
+      </author>
+      <date>2026-03-19</date>
+      <id>d6c614f3-f98d-4b65-a9cf-36af43202d1d</id>
+      <version>1.0</version>
+    </document-info>
+  </description>
+  <body>
+    <title>
+      <p>NGINX JS DOM — Developer Manual</p>
+    </title>
+    <section>
+      <title>
+        <p>Introduction</p>
+      </title>
+      <section>
+        <title>
+          <p>What NGINX JS DOM Is</p>
+        </title>
+        <p>NGINX is deliberately static: its configuration is read once at startup (or reload) and compiled into kernel-level data structures. This rigidity is a feature — it makes nginx predictable, fast, and easy to reason about — but it creates friction whenever runtime adaptability is required: upstream weights that need to track backend health scores, virtual hosts generated from a tenant database, SSL certificates that rotate on a schedule, or request routing rules that depend on live feature-flag state.</p>
+        <p>
+          <strong>NGINX JS DOM</strong> embeds QuickJS [https://bellard.org/quickjs/] (a lightweight ES2020+ [https://tc39.es/ecma262/2020/] JavaScript engine) directly into nginx and exposes the entire nginx configuration as a structured JavaScript object tree called the <strong>Configuration Object Model (COM)</strong>. Through the COM, JavaScript can:</p>
+        <p>•   </p>
+        <p>
+          <strong>Read</strong> the full live configuration of every module in every server and location.</p>
+        <p>•   </p>
+        <p>
+          <strong>Write</strong> configuration properties — upstream peer weights, SSL certificates, location directives, gzip settings, and much more — with immediate effect, either for the current worker or atomically for all workers at once.</p>
+        <p>•   </p>
+        <p>
+          <strong>Generate</strong> server and location blocks at parse time, before nginx has even finished reading its configuration file.</p>
+        <p>•   </p>
+        <p>
+          <strong>Handle requests</strong> in JavaScript, using the same event-driven async model as nginx itself.</p>
+        <p>•   </p>
+        <p>
+          <strong>Offload</strong> CPU-intensive work to background threads (Workers) without blocking the nginx event loop.</p>
+        <p>•   </p>
+        <p>
+          <strong>Maintain shared mutable state</strong> across all nginx worker processes using SharedWorkers and SharedArrayBuffers.</p>
+        <p>The result is an nginx that can be programmed rather than merely configured — without restarting, without patching C code, and without sacrificing the performance or stability of the core server.</p>
+      </section>
+      <section>
+        <title>
+          <p>Intended Audience</p>
+        </title>
+        <p>This manual assumes:</p>
+        <p>•   </p>
+        <p>Familiarity with nginx configuration syntax and core concepts (workers, upstreams, locations, modules). See the NGINX Beginner’s Guide [https://nginx.org/en/docs/beginners_guide.html] and the full module reference [https://nginx.org/en/docs] if you need a refresher.</p>
+        <p>•   </p>
+        <p>Working knowledge of modern JavaScript (ES2020): <code>async</code>/<code>await</code>, Promises, <code>import</code>/<code>export</code>, <code>SharedArrayBuffer</code>, <code>Atomics</code>. See the ECMAScript 2020 specification [https://tc39.es/ecma262/2020/] or any ES2020 reference.</p>
+        <p>You do <strong>not</strong> need to know C or QuickJS internals to use the JS DOM API.</p>
+      </section>
+      <section>
+        <title>
+          <p>A Map of the Moving Parts</p>
+        </title>
+        <p>The sections that follow cover these components:</p>
+        <p>Component │ What it gives you</p>
+        <p>js_preprocess │ Runs JavaScript during config parsing; the script writes config text back into the parser. Use it to generate server/location blocks from files, environment variables, or external sources.</p>
+        <p>js_init_http │ Runs JavaScript after the http {} block is parsed but before directives are merged. Can read already-parsed servers and inject new ones.</p>
+        <p>js_source │ Evaluates JavaScript in the master process after all config has been parsed. This is where you install request handlers, set up Workers and SharedWorkers, and perform any pre-fork initialisation.</p>
+        <p>Request handlers │ JavaScript async functions assigned to location.handler. Each request runs through the nginx event loop; await suspends the handler without blocking any other request.</p>
+        <p>COM │ The nginx global object tree. Read live config values; write mutations that take effect immediately.</p>
+        <p>Workers │ Standard Web Worker API. A per-nginx-worker background thread for CPU-bound work. Does not block the event loop.</p>
+        <p>SharedWorkers │ A single long-lived thread in the master process, connected to every nginx worker via UNIX sockets. The canonical place for mutable state that must be consistent across all workers.</p>
+        <p>SharedArrayBuffers + Atomics │ Binary shared-memory regions (MDN reference) accessible from any thread with zero copy. Combined with Atomics, they enable lock-free counters, mutexes, and condition variables.</p>
+        <p>Accept control │ nginx.suspendAcceptance() / nginx.suspendAllWorkers() — pause connection acceptance during a mutation window, then resume.</p>
+        <p>Resource limits │ nginx.workerMemoryLimit and nginx.workerRequestTimeout cap heap usage and CPU time per request; JS exceptions are caught; the worker survives.</p>
+        <empty-line />
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Architecture</p>
+      </title>
+      <section>
+        <title>
+          <p>Lifecycle Overview</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx start</v>
+            <v>│</v>
+            <v>├─ Config file parsing begins (ngx_conf_parse)</v>
+            <v>│   │</v>
+            <v>│   ├── js_preprocess /gen.js ◄── STAGE 1: runs immediately, mid-parse</v>
+            <v>│   │      • Ephemeral JS runtime (freed after script returns)</v>
+            <v>│   │      • config.write(text) injects text back into the parser</v>
+            <v>│   │      • nginx.http, nginx.stream, etc. do NOT exist yet</v>
+            <v>│   │</v>
+            <v>│   ├── ... rest of nginx.conf parsed (servers, locations, upstreams) ...</v>
+            <v>│   │</v>
+            <v>│   └── js_init_http /init.js ◄── STAGE 2: runs after http{} block parses</v>
+            <v>│          • Ephemeral runtime, scoped to this directive</v>
+            <v>│          • config.write(text) still works; new servers get full merge treatment</v>
+            <v>│          • nginx.http.servers[] is readable (servers parsed before this line)</v>
+            <v>│</v>
+            <v>├─ init_conf (master process)  ◄── STAGE 3: js_source scripts evaluated here</v>
+            <v>│   │</v>
+            <v>│   ├── JS runtime + context created (persists, will be inherited by workers)</v>
+            <v>│   ├── All js_source files evaluated in order</v>
+            <v>│   │      • Install location.handler = fn assignments</v>
+            <v>│   │      • Create SharedWorkers (they start running immediately)</v>
+            <v>│   │      • Set nginx.workerMemoryLimit / nginx.workerRequestTimeout</v>
+            <v>│   │      • Any other pre-fork setup</v>
+            <v>│   └── SharedWorker threads spawned; channels to each future worker prepared</v>
+            <v>│</v>
+            <v>├─ fork() × worker_processes  ◄── STAGE 4: worker processes created</v>
+            <v>│   │</v>
+            <v>│   └── init_process (per worker)</v>
+            <v>│          • JS runtime inherited via copy-on-write</v>
+            <v>│          • No re-evaluation of scripts; all handlers already installed</v>
+            <v>│          • Worker attaches its UNIX socket channels to each SharedWorker</v>
+            <v>│</v>
+            <v>└─ Event loop (per worker)     ◄── STAGE 5: runtime</v>
+            <v>        │</v>
+            <v>        └── HTTP/stream request arrives</v>
+            <v>               • location.handler(req) called</v>
+            <v>               • await suspends handler; event loop serves other requests</v>
+            <v>               • COM reads/writes apply to THIS worker's copy (or all, with</v>
+            <v>                 suspendAllWorkers)</v>
+            <v>               • req.json() / req.respond() sends the response</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Process and Thread Topology</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>  ┌─────────────────────────────────────────────────────────────────┐</v>
+            <v>  │  Master process                                                 │</v>
+            <v>  │                                                                 │</v>
+            <v>  │  ┌──────────────────────┐  ┌──────────────────────┐            │</v>
+            <v>  │  │  SharedWorker A      │  │  SharedWorker B       │            │</v>
+            <v>  │  │  (pthread)           │  │  (pthread)            │            │</v>
+            <v>  │  │  long-lived JS state │  │  e.g. rate-limiter    │            │</v>
+            <v>  │  └──────────────────────┘  └──────────────────────┘            │</v>
+            <v>  └────────────────────────┬────────────────────────────────────────┘</v>
+            <v>                           │  AF_UNIX SEQPACKET</v>
+            <v>                           │  each worker gets one channel per SharedWorker</v>
+            <v>              ┌────────────┼────────────┐</v>
+            <v>              │            │            │</v>
+            <v>              ▼            ▼            ▼</v>
+            <v>  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐</v>
+            <v>  │  Worker 0    │  │  Worker 1    │  │  Worker N    │</v>
+            <v>  │  JS Runtime  │  │  JS Runtime  │  │  JS Runtime  │</v>
+            <v>  │  (CoW copy)  │  │  (CoW copy)  │  │  (CoW copy)  │</v>
+            <v>  │  Event loop  │  │  Event loop  │  │  Event loop  │</v>
+            <v>  │  JS Workers  │  │  JS Workers  │  │  JS Workers  │</v>
+            <v>  └──────────────┘  └──────────────┘  └──────────────┘</v>
+          </stanza>
+        </poem>
+        <p>Key properties of this topology:</p>
+        <p>•   </p>
+        <p>Each nginx <strong>worker process</strong> has its own independent JS runtime. QuickJS is not thread-safe; no runtime is ever shared between processes.</p>
+        <p>•   </p>
+        <p>Workers inherit the master’s runtime via copy-on-write after <code>fork()</code>. Scripts do not need to be re-evaluated; all handler functions, SharedWorker references, and global variables are ready immediately.</p>
+        <p>•   </p>
+        <p>
+          <strong>SharedWorkers</strong> run in the master process as pthreads, outside any worker. Each worker communicates with a SharedWorker over a dedicated UNIX socket channel. This is the only channel through which workers can share mutable JS state.</p>
+        <p>•   </p>
+        <p>
+          <strong>JS Workers</strong> (lowercase) are pthreads spawned <strong>inside</strong> a worker process. They exist to offload work from the event loop and are private to their nginx worker.</p>
+      </section>
+      <section>
+        <title>
+          <p>COM Ownership and Mutation Scope</p>
+        </title>
+        <p>All COM mutations go through one of three scopes:</p>
+        <p>Scope │ Mechanism │ Visible to</p>
+        <p>Per-request snapshot │ r.location.setWriteMode("local") — writes a per-request copy of the location config │ This request only; reversed when the request pool is freed</p>
+        <p>This worker only │ Direct COM write (default) │ All subsequent requests on this worker process</p>
+        <p>All workers atomically │ await nginx.suspendAllWorkers() → mutate → await nginx.resumeAllWorkers() │ All workers, once they resume</p>
+        <empty-line />
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Quick Start</p>
+      </title>
+      <p>This section goes from "hello world" to "live upstream rebalancing" in four steps, each building on the previous one.</p>
+      <section>
+        <title>
+          <p>Hello World Handler</p>
+        </title>
+        <poem>
+          <stanza>
+            <v># nginx.conf</v>
+            <v>js_source /etc/nginx/js/init.js;</v>
+            <v />
+            <v>events { }</v>
+            <v />
+            <v>http {</v>
+            <v>    server {</v>
+            <v>        listen 80;</v>
+            <v>        location /hello { }   # placeholder — handler installed from JS</v>
+            <v>    }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// /etc/nginx/js/init.js</v>
+            <v>// This file is evaluated once in the master process after config parsing.</v>
+            <v>// All location.handler assignments made here are inherited by every worker.</v>
+            <v />
+            <v>const loc = nginx.http.servers[0].locations.find(l =&gt; l.path === '/hello');</v>
+            <v />
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    // req is a NginxRequest object.  text() is a convenience shorthand</v>
+            <v>    // for respond(200, {'Content-Type': 'text/plain'}, body).</v>
+            <v>    req.text('Hello from JS DOM!\n');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Reading Request Data</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Read everything you might want from an incoming request.</v>
+            <v />
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    // Basic identity</v>
+            <v>    const method  = req.method;          // "GET", "POST", …</v>
+            <v>    const uri     = req.uri;             // "/hello"</v>
+            <v>    const args    = req.args;            // raw query string: "a=1&amp;b=2"</v>
+            <v>    const params  = req.queryParams;     // {a: "1", b: "2"}</v>
+            <v>    const scheme  = req.scheme;          // "http" or "https"</v>
+            <v>    const host    = req.host;            // "example.com"</v>
+            <v />
+            <v>    // Network info</v>
+            <v>    const client  = req.remoteAddr;      // "203.0.113.42"</v>
+            <v>    const port    = req.remotePort;      // 54321</v>
+            <v>    const server  = req.serverAddr;      // "192.0.2.1"</v>
+            <v />
+            <v>    // Headers (read-only object; keys are lowercased)</v>
+            <v>    const ua      = req.headers['user-agent'];</v>
+            <v>    const ct      = req.contentType;     // shorthand for content-type header</v>
+            <v />
+            <v>    // Cookies: {name: "value", …}</v>
+            <v>    const session = req.cookies['session_id'];</v>
+            <v />
+            <v>    // nginx variables — readable and writable via req.variables</v>
+            <v>    const xff     = req.variables['http_x_forwarded_for'];</v>
+            <v>    req.variables['my_custom_var'] = 'set-from-js';</v>
+            <v />
+            <v>    // Request body (requires await — nginx reads it asynchronously)</v>
+            <v>    const body    = await req.readBody();  // returns string</v>
+            <v />
+            <v>    req.json({</v>
+            <v>        method, uri, client, ua, session,</v>
+            <v>        bodyLength: body.length</v>
+            <v>    });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Async Fetch and Transform</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Non-blocking upstream call.  While this handler awaits, the nginx event</v>
+            <v>// loop freely serves other requests on this worker.</v>
+            <v />
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    // req.fetch() performs an HTTP subrequest through nginx's upstream</v>
+            <v>    // machinery.  It returns a Promise that resolves with a Response object.</v>
+            <v>    const res  = await req.fetch('http://api.internal/v1/prices');</v>
+            <v>    const data = await res.json();</v>
+            <v />
+            <v>    // Apply transformation</v>
+            <v>    const adjusted = data.items.map(item =&gt; ({</v>
+            <v>        ...item,</v>
+            <v>        price: (item.price * 1.10).toFixed(2)   // add 10% margin</v>
+            <v>    }));</v>
+            <v />
+            <v>    req.json({ items: adjusted });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>HTTP request arrives at worker</v>
+            <v>        │</v>
+            <v>        ▼</v>
+            <v>  loc.handler called synchronously</v>
+            <v>        │</v>
+            <v>        └─ await req.fetch(...)</v>
+            <v>               │</v>
+            <v>               │  [event loop resumes; other requests served here]</v>
+            <v>               │</v>
+            <v>               ▼  upstream response received (epoll fires)</v>
+            <v>         Promise resolves</v>
+            <v>               │</v>
+            <v>               ▼</v>
+            <v>         res.json() parsed</v>
+            <v>               │</v>
+            <v>               ▼</v>
+            <v>         req.json(result) → HTTP response sent</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Live Upstream Rebalancing</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// An admin endpoint that atomically updates upstream peer weights across</v>
+            <v>// all workers — no nginx restart, no dropped connections.</v>
+            <v />
+            <v>const adminLoc = nginx.http.servers</v>
+            <v>    .find(s =&gt; s.names.includes('admin.internal'))</v>
+            <v>    .locations.find(l =&gt; l.path === '/upstream/rebalance');</v>
+            <v />
+            <v>adminLoc.handler = async (req) =&gt; {</v>
+            <v>    const body    = await req.readBody();</v>
+            <v>    const weights = JSON.parse(body);   // { "192.0.2.10:8080": 5, "192.0.2.11:8080": 10 }</v>
+            <v />
+            <v>    // Step 1: pause all workers so the change is seen atomically.</v>
+            <v>    await nginx.suspendAllWorkers();</v>
+            <v />
+            <v>    // Step 2: apply weights.</v>
+            <v>    const peers = nginx.http.upstreams</v>
+            <v>        .find(u =&gt; u.name === 'backend').peers;</v>
+            <v />
+            <v>    for (const peer of peers) {</v>
+            <v>        if (weights[peer.addr] !== undefined) {</v>
+            <v>            peer.weight = weights[peer.addr];</v>
+            <v>        }</v>
+            <v>    }</v>
+            <v />
+            <v>    // Step 3: resume — all workers pick up the new weights immediately.</v>
+            <v>    await nginx.resumeAllWorkers();</v>
+            <v />
+            <v>    req.json({ applied: true, peers: peers.map(p =&gt; ({addr: p.addr, weight: p.weight})) });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Request Handlers</p>
+      </title>
+      <section>
+        <title>
+          <p>Installing a Handler</p>
+        </title>
+        <p>A location handler is a JavaScript function assigned to <code>location.handler</code> during <code>js_source</code> evaluation (init_conf time):</p>
+        <poem>
+          <stanza>
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/api')</v>
+            <v>    .handler = async (req) =&gt; { ... };</v>
+          </stanza>
+        </poem>
+        <p>The function receives one argument — a <code>NginxRequest</code> object — and may be synchronous or <code>async</code>. A location that has no JS handler falls through to nginx’s normal content processing (proxy, static files, etc.).</p>
+      </section>
+      <section>
+        <title>
+          <p>NginxRequest Reference</p>
+        </title>
+        <p>
+          <strong>4.2.1. Identity and Network</strong>
+        </p>
+        <p>Property │ Type │ Description</p>
+        <p>method │ string │ HTTP method: "GET", "POST", "DELETE", …</p>
+        <p>uri │ string │ Request URI without query string</p>
+        <p>args │ string │ Raw query string ("a=1&amp;b=foo")</p>
+        <p>queryParams │ object │ Query string parsed to key→value pairs</p>
+        <p>scheme │ string │ "http" or "https"</p>
+        <p>host │ string │ Value of the Host header</p>
+        <p>remoteAddr │ string │ Client IP address</p>
+        <p>remotePort │ number │ Client TCP port</p>
+        <p>serverAddr │ string │ Server-side IP the connection arrived on</p>
+        <p>serverPort │ number │ Server-side port</p>
+        <p>httpVersion │ string │ "1.0", "1.1", or "2.0"</p>
+        <p>keepalive │ boolean │ Whether the connection is keep-alive</p>
+        <p>isInternal │ boolean │ true for subrequests</p>
+        <p>startTime │ number │ Request start time (milliseconds, Unix epoch)</p>
+        <p>requestLength │ number │ Total bytes received (headers + body)</p>
+        <p>connection │ number │ nginx connection serial number</p>
+        <empty-line />
+        <p>
+          <strong>4.2.2. Headers</strong>
+        </p>
+        <p>Property / Method │ Type │ Description</p>
+        <p>headers │ object │ Request headers; keys are lowercased</p>
+        <p>contentType │ string │ Shorthand for headers['content-type']</p>
+        <p>contentLength │ number │ Parsed Content-Length value</p>
+        <p>getHeader(name) │ string │ Get a response header already set</p>
+        <p>setHeader(name, v) │ — │ Set a response header</p>
+        <p>removeHeader(name) │ — │ Remove a response header</p>
+        <empty-line />
+        <p>
+          <strong>4.2.3. Body</strong>
+        </p>
+        <p>Property / Method │ Type │ Description</p>
+        <p>body │ string | null │ Request body if already buffered; null otherwise</p>
+        <p>readBody() │ Promise&lt;string&gt; │ Read the full request body (async)</p>
+        <empty-line />
+        <p>
+          <strong>4.2.4. Cookies and Variables</strong>
+        </p>
+        <p>Property / Method │ Type │ Description</p>
+        <p>cookies │ object │ Cookie jar: {name: "value", …}</p>
+        <p>variables │ object │ Exotic r/w proxy over nginx variables</p>
+        <p>getVar(name) │ string │ Read one nginx variable</p>
+        <p>setVar(name, val) │ — │ Set one nginx variable</p>
+        <empty-line />
+        <p>
+          <strong>4.2.5. Location and Server Context</strong>
+        </p>
+        <p>Property │ Type │ Description</p>
+        <p>location │ NginxLocation │ The matched location’s COM object (mutable within this request)</p>
+        <p>upstream │ object | null │ Upstream peer info if request was proxied</p>
+        <empty-line />
+        <p>
+          <strong>4.2.6. Response</strong>
+        </p>
+        <p>Method │ Description</p>
+        <p>respond(status, headers, body) │ Low-level response; sends status + headers + body string in one call</p>
+        <p>json(data) │ Send JSON: status 200, Content-Type: application/json</p>
+        <p>text(body) │ Send plain text: status 200, Content-Type: text/plain</p>
+        <p>html(body) │ Send HTML: status 200, Content-Type: text/html</p>
+        <p>redirect(url) │ Send HTTP 302 redirect</p>
+        <p>sendfile(path) │ Serve a file from the filesystem using sendfile(2)</p>
+        <p>writeHead(status, headers) │ Start a streaming response (headers only)</p>
+        <p>write(chunk) │ Append a chunk to a streaming response</p>
+        <p>finish() │ End a streaming response</p>
+        <p>statusCode (r/w) │ Get or set the response status code</p>
+        <empty-line />
+        <p>
+          <strong>4.2.7. Async Utilities</strong>
+        </p>
+        <p>Method │ Description</p>
+        <p>sleep(ms) │ Pause the handler for ms milliseconds (non-blocking)</p>
+        <p>fetch(url [, opts]) │ Make a non-blocking upstream HTTP request; returns Promise&lt;Response&gt;</p>
+        <p>subrequest(uri) │ Issue an nginx internal subrequest; returns Promise&lt;Response&gt;</p>
+        <empty-line />
+        <p>
+          <strong>4.2.8. Logging</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>req.log(nginx.INFO, 'Processing request from ' + req.remoteAddr);</v>
+            <v>// Log levels: nginx.DEBUG, nginx.INFO, nginx.NOTICE, nginx.WARN,</v>
+            <v>//             nginx.ERR, nginx.CRIT, nginx.ALERT, nginx.EMERG</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Async Handler Lifecycle</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx worker event loop</v>
+            <v>│</v>
+            <v>├─ accept() → new connection</v>
+            <v>│</v>
+            <v>├─ HTTP request parsed</v>
+            <v>│</v>
+            <v>├─ location matched → location.handler(req) called</v>
+            <v>│       │</v>
+            <v>│       ├─ [sync path] req.json(data)</v>
+            <v>│       │       └─► response buffered → written to socket → done</v>
+            <v>│       │</v>
+            <v>│       └─ [async path] await something</v>
+            <v>│               │</v>
+            <v>│               │  Handler suspended.  Worker event loop continues:</v>
+            <v>│               │    • accepts new connections</v>
+            <v>│               │    • runs other handlers</v>
+            <v>│               │    • processes timers and upstream responses</v>
+            <v>│               │</v>
+            <v>│               ▼  event fires (timer / upstream / Worker message)</v>
+            <v>│          Promise resolves; handler resumes from the await point</v>
+            <v>│               │</v>
+            <v>│               └─► req.json(data) → done</v>
+            <v>│</v>
+            <v>└─ (next event)</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> Multiple async handlers can be suspended concurrently on the same worker. Each nginx worker runs a single-threaded event loop; async handlers cooperate by yielding at every <code>await</code> point, allowing other requests to be accepted and served in between. Use Workers or SharedWorkers when you need true CPU parallelism or need to share mutable state across workers. </p>
+      </section>
+      <section>
+        <title>
+          <p>Streaming Responses</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    // Send status + headers, then stream the body in chunks.</v>
+            <v>    req.writeHead(200, {'Content-Type': 'text/event-stream',</v>
+            <v>                        'Cache-Control': 'no-cache'});</v>
+            <v />
+            <v>    for (let i = 0; i &lt; 5; i++) {</v>
+            <v>        req.write(`data: event ${i}\n\n`);</v>
+            <v>        await req.sleep(200);      // 200 ms between events, non-blocking</v>
+            <v>    }</v>
+            <v />
+            <v>    req.finish();</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Subrequest Fan-Out</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Fire three upstreams in parallel and merge results.</v>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const [a, b, c] = await Promise.all([</v>
+            <v>        req.subrequest('/internal/prices'),</v>
+            <v>        req.subrequest('/internal/stock'),</v>
+            <v>        req.subrequest('/internal/ratings'),</v>
+            <v>    ]);</v>
+            <v />
+            <v>    req.json({</v>
+            <v>        prices:  await a.json(),</v>
+            <v>        stock:   await b.json(),</v>
+            <v>        ratings: await c.json(),</v>
+            <v>    });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Header and Body Filters</p>
+        </title>
+        <p>Filters are JavaScript functions that run in the nginx filter chain. They are installed on a location object:</p>
+        <poem>
+          <stanza>
+            <v>// Header filter — modify response headers before they leave nginx</v>
+            <v>loc.headerFilter = (req, headers) =&gt; {</v>
+            <v>    headers['X-Powered-By'] = 'NGINX JS DOM';</v>
+            <v>    delete headers['Server'];</v>
+            <v>    return headers;</v>
+            <v>};</v>
+            <v />
+            <v>// Body filter — transform response body chunks</v>
+            <v>loc.bodyFilter = (req, chunk, isLast) =&gt; {</v>
+            <v>    // Replace "foo" with "bar" in every body chunk</v>
+            <v>    return chunk.replace(/foo/g, 'bar');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>Filters run in priority order (lower number = earlier in chain, default priority 50).</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Configuration Object Model (COM)</p>
+      </title>
+      <section>
+        <title>
+          <p>Overview</p>
+        </title>
+        <p>The COM is a live JavaScript object tree rooted at the global <code>nginx</code> object. Properties read from the tree return current nginx struct values; writes (on mutable properties) take immediate effect.</p>
+        <poem>
+          <stanza>
+            <v>nginx</v>
+            <v>│</v>
+            <v>├── version            — string  "1.27.x"</v>
+            <v>├── cpuCount           — number  (number of CPU cores)</v>
+            <v>├── workerMemoryLimit  — number  (bytes; 0 = unlimited)  ← r/w</v>
+            <v>├── workerRequestTimeout — number (ms; 0 = unlimited)    ← r/w</v>
+            <v>│</v>
+            <v>├── log(level, msg)    — write to nginx error log</v>
+            <v>├── broadcast(msg)     — send msg to all workers' nginx.onbroadcast handler</v>
+            <v>│</v>
+            <v>├── suspendAcceptance()   — per-worker accept pause (sync)</v>
+            <v>├── resumeAcceptance()    — per-worker accept resume (sync)</v>
+            <v>├── suspendAllWorkers()   — cross-worker quiesce (async, returns Promise)</v>
+            <v>├── resumeAllWorkers()    — cross-worker resume (async, returns Promise)</v>
+            <v>│</v>
+            <v>├── cycle</v>
+            <v>│    ├── connections       — number (active connections)</v>
+            <v>│    ├── freeConnections   — number</v>
+            <v>│    ├── openFilesN        — number</v>
+            <v>│    └── sockets[]         — listener socket objects</v>
+            <v>│</v>
+            <v>├── events</v>
+            <v>│    ├── workerConnections — number ← r/w</v>
+            <v>│    ├── multiAccept       — boolean ← r/w</v>
+            <v>│    └── acceptMutex       — boolean ← r/w</v>
+            <v>│</v>
+            <v>├── http</v>
+            <v>│    ├── servers[]         — array of NginxServer (see below)</v>
+            <v>│    ├── upstreams[]       — array of NginxUpstream</v>
+            <v>│    ├── variables{}       — nginx HTTP variables</v>
+            <v>│    ├── serverNamesHashMaxSize    ← r/w</v>
+            <v>│    ├── serverNamesHashBucketSize ← r/w</v>
+            <v>│    ├── variablesHashMaxSize      ← r/w</v>
+            <v>│    ├── variablesHashBucketSize   ← r/w</v>
+            <v>│    ├── addServer(name)   — create a new virtual server at runtime</v>
+            <v>│    ├── removeServer(name) — remove a virtual server at runtime</v>
+            <v>│    ├── rebuildVhostDispatch() — recompile the server_name dispatch hash</v>
+            <v>│    ├── match(req, conditions) — evaluate an `if` condition against a request</v>
+            <v>│    └── sockets[]         — listening socket objects</v>
+            <v>│</v>
+            <v>└── stream</v>
+            <v>     ├── servers[]         — array of stream NginxServer</v>
+            <v>     └── upstreams[]       — array of stream NginxUpstream</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>NginxServer</p>
+        </title>
+        <p>Each element of <code>nginx.http.servers[]</code> represents a <code>server {}</code> block.</p>
+        <poem>
+          <stanza>
+            <v>const srv = nginx.http.servers[0];</v>
+            <v />
+            <v>// Identification</v>
+            <v>srv.name          // primary server_name</v>
+            <v>srv.names         // array of all server_names</v>
+            <v>srv.listen        // array of listen address strings</v>
+            <v />
+            <v>// Child collections</v>
+            <v>srv.locations     // array of NginxLocation</v>
+            <v>srv.upstreams     // upstreams referenced from this server (if any)</v>
+            <v />
+            <v>// SSL (if ssl module is compiled in)</v>
+            <v>srv.ssl.cert          // path to certificate ← r/w</v>
+            <v>srv.ssl.key           // path to private key ← r/w</v>
+            <v>srv.ssl.protocols     // "TLSv1.2 TLSv1.3" ← r/w</v>
+            <v>srv.ssl.ciphers       // cipher list ← r/w</v>
+            <v>srv.ssl.clientCert    // path to CA cert for client auth ← r/w</v>
+            <v />
+            <v>// Dynamic location management</v>
+            <v>const loc = srv.addLocation('/new-path');  // returns NginxLocation</v>
+            <v>const loc = srv.addLocation('/api', { template: '/existing-path' }); // copy settings</v>
+            <v>                                                                      // from existing loc</v>
+            <v />
+            <v>// Stream handler (stream {} servers only)</v>
+            <v>srv.handler = async (session) =&gt; { ... };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>NginxLocation</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const loc = nginx.http.servers[0].locations.find(l =&gt; l.path === '/api');</v>
+            <v />
+            <v>// Identification</v>
+            <v>loc.path          // "/api"</v>
+            <v>loc.exact         // true for "= /api" locations</v>
+            <v>loc.regex         // true for "~ /pattern" locations</v>
+            <v />
+            <v>// Handler</v>
+            <v>loc.handler = async (req) =&gt; { ... };</v>
+            <v />
+            <v>// Common directives (r/w)</v>
+            <v>loc.root          // document root path</v>
+            <v>loc.alias         // alias path</v>
+            <v>loc.index         // index file list</v>
+            <v>loc.tryFiles      // try_files argument list</v>
+            <v>loc.sendfile      // boolean</v>
+            <v>loc.gzip          // boolean</v>
+            <v>loc.gzipMinLength // number</v>
+            <v />
+            <v>// Proxy</v>
+            <v>loc.proxy.pass        // upstream URL ← r/w</v>
+            <v>loc.proxy.setHeader   // {name: value} pairs ← r/w</v>
+            <v>loc.proxy.readTimeout // ms ← r/w</v>
+            <v />
+            <v>// Rate limiting, access, auth, headers — all module configs accessible</v>
+            <v>// (see §14 Reference for full list)</v>
+            <v />
+            <v>// Per-request write scoping</v>
+            <v>loc.setWriteMode("global")  // write to global config (all future requests)</v>
+            <v>loc.setWriteMode("local")   // write only to a per-request snapshot</v>
+            <v>loc.setWriteMode("both")    // write to both (default)</v>
+            <v>loc.setReadMode("global")   // reads come from global config</v>
+            <v>loc.setReadMode("local")    // reads come from the snapshot (default)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>NginxUpstream and Peers</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const up = nginx.http.upstreams.find(u =&gt; u.name === 'backend');</v>
+            <v />
+            <v>up.name               // "backend"</v>
+            <v>up.peers              // array of NginxRRPeer</v>
+            <v />
+            <v>const p = up.peers[0];</v>
+            <v>p.addr                // "192.0.2.10:8080"</v>
+            <v>p.weight              // number ← r/w (takes a write lock internally)</v>
+            <v>p.maxFails            // number ← r/w</v>
+            <v>p.failTimeout         // ms ← r/w</v>
+            <v>p.down                // boolean ← r/w (marks peer as permanently down)</v>
+            <v>p.backup              // boolean (read-only)</v>
+            <v>p.conns               // number (active connections, live stat)</v>
+            <v>p.fails               // number (fail counter, live stat)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Iterating the Full Config Tree</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Dump the entire server/location tree to the error log.</v>
+            <v>for (const srv of nginx.http.servers) {</v>
+            <v>    nginx.log(nginx.INFO, `Server: ${srv.names.join(', ')}`);</v>
+            <v>    for (const loc of srv.locations) {</v>
+            <v>        nginx.log(nginx.INFO, `  ${loc.path}  handler=${loc.handler ? 'JS' : 'nginx'}`);</v>
+            <v>    }</v>
+            <v>}</v>
+            <v />
+            <v>// Find all locations that use a specific upstream</v>
+            <v>const byUpstream = nginx.http.servers</v>
+            <v>    .flatMap(s =&gt; s.locations)</v>
+            <v>    .filter(l =&gt; l.proxy?.pass?.includes('backend'));</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Dynamic Reconfiguration</p>
+      </title>
+      <section>
+        <title>
+          <p>Scope 1 — This Worker Only</p>
+        </title>
+        <p>The simplest mutations happen directly in a handler with no coordination. The change takes effect immediately for all subsequent requests on this worker. Other workers retain their own CoW copy unchanged.</p>
+        <poem>
+          <stanza>
+            <v>// Use-case: A/B flag toggle via admin endpoint, applied to this worker.</v>
+            <v>// Fine for experiments where eventual consistency across workers is acceptable.</v>
+            <v />
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/admin/toggle-gzip')</v>
+            <v>    .handler = (req) =&gt; {</v>
+            <v>        // Toggle gzip for the /api location on THIS worker only</v>
+            <v>        const apiLoc = nginx.http.servers[0].locations</v>
+            <v>            .find(l =&gt; l.path === '/api');</v>
+            <v>        apiLoc.gzip = !apiLoc.gzip;</v>
+            <v>        req.text(`gzip is now ${apiLoc.gzip}`);</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Scope 2 — All Workers Atomically</p>
+        </title>
+        <p>For changes that must be consistent across every worker simultaneously, use <code>suspendAllWorkers</code> / <code>resumeAllWorkers</code>.</p>
+        <poem>
+          <stanza>
+            <v>Worker A (handler)</v>
+            <v>    │</v>
+            <v>    ├─ await suspendAllWorkers()</v>
+            <v>    │       │</v>
+            <v>    │       ├─► sends coordination signal to Workers B, C, …</v>
+            <v>    │       │     Each worker finishes its current request, then:</v>
+            <v>    │       │     • stops calling accept()</v>
+            <v>    │       │     • sends ACK</v>
+            <v>    │       │</v>
+            <v>    │       └─ resolves when ALL workers have ACK'd</v>
+            <v>    │</v>
+            <v>    ├─ [mutation window]</v>
+            <v>    │       • Direct COM writes apply to Worker A's copy</v>
+            <v>    │       • SharedWorker broadcast distributes the same data to B, C, …</v>
+            <v>    │         (each worker applies it from its own onmessage handler)</v>
+            <v>    │</v>
+            <v>    ├─ await resumeAllWorkers()</v>
+            <v>    │       └─► all workers call ngx_enable_accept_events() and resume</v>
+            <v>    │</v>
+            <v>    └─ respond</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>adminLoc.handler = async (req) =&gt; {</v>
+            <v>    const newPeers = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>    await nginx.suspendAllWorkers();</v>
+            <v />
+            <v>    // Apply to this worker</v>
+            <v>    const peers = nginx.http.upstreams[0].peers;</v>
+            <v>    newPeers.forEach((p, i) =&gt; {</v>
+            <v>        if (peers[i]) peers[i].weight = p.weight;</v>
+            <v>    });</v>
+            <v />
+            <v>    await nginx.resumeAllWorkers();</v>
+            <v />
+            <v>    req.json({ ok: true });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Scope 3 — Add / Remove Servers and Locations</p>
+        </title>
+        <p>
+          <code>addServer</code>, <code>removeServer</code>, <code>addLocation</code> enable structural mutations — adding or removing routing entries at runtime.</p>
+        <poem>
+          <stanza>
+            <v>// Tenant onboarding: create a new vhost live, no restart.</v>
+            <v />
+            <v>nginx.http.servers</v>
+            <v>    .find(s =&gt; s.names.includes('admin.internal'))</v>
+            <v>    .locations.find(l =&gt; l.path === '/tenant/create')</v>
+            <v>    .handler = async (req) =&gt; {</v>
+            <v>        const body   = JSON.parse(await req.readBody());</v>
+            <v>        const domain = body.domain;</v>
+            <v />
+            <v>        await nginx.suspendAllWorkers();</v>
+            <v />
+            <v>        // Create the new server</v>
+            <v>        const srv = nginx.http.addServer(domain);</v>
+            <v>        srv.listen.push('80');</v>
+            <v />
+            <v>        // Add a root location with a JS handler</v>
+            <v>        const loc = srv.addLocation('/');</v>
+            <v>        loc.handler = (r) =&gt; {</v>
+            <v>            r.text(`Welcome to ${domain}!\n`);</v>
+            <v>        };</v>
+            <v />
+            <v>        // Rebuild the server_name dispatch hash so the new Host: domain routes</v>
+            <v>        // correctly to our new server.</v>
+            <v>        nginx.http.rebuildVhostDispatch();</v>
+            <v />
+            <v>        await nginx.resumeAllWorkers();</v>
+            <v />
+            <v>        req.json({ created: domain });</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// Remove a tenant server (e.g. account deleted).</v>
+            <v>nginx.http.removeServer('ex-tenant.example.com');</v>
+            <v>nginx.http.rebuildVhostDispatch();</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong>
+          <code>rebuildVhostDispatch()</code> must be called after any change to server names. Without it the Host-based routing hash is stale and requests will be routed to the wrong server. </p>
+      </section>
+      <section>
+        <title>
+          <p>Scope 4 — Per-Request Config Snapshot</p>
+        </title>
+        <p>The <code>location.setWriteMode("local")</code> API creates a copy of the location’s config struct scoped to the current request. The global struct is untouched; other concurrent requests see the original values.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    // Write only to a private snapshot for this request.</v>
+            <v>    req.location.setWriteMode('local');</v>
+            <v />
+            <v>    // This change is visible only inside this handler invocation.</v>
+            <v>    req.location.root = '/var/www/' + req.getVar('user_dir');</v>
+            <v>    req.location.gzip = false;</v>
+            <v />
+            <v>    // ... process request ...</v>
+            <v>    // When the request pool is freed, the snapshot is discarded automatically.</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Hot SSL Certificate Swap</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Admin handler: reload the TLS certificate from disk, zero downtime.</v>
+            <v>// New connections after this call use the new certificate;</v>
+            <v>// in-flight TLS sessions are unaffected.</v>
+            <v />
+            <v>adminLoc.handler = async (req) =&gt; {</v>
+            <v>    const body = JSON.parse(await req.readBody());</v>
+            <v>    const srv  = nginx.http.servers.find(s =&gt; s.names.includes(body.domain));</v>
+            <v>    if (!srv) { req.respond(404, {}, 'unknown domain'); return; }</v>
+            <v />
+            <v>    await nginx.suspendAllWorkers();</v>
+            <v>    srv.ssl.cert = body.certPath;</v>
+            <v>    srv.ssl.key  = body.keyPath;</v>
+            <v>    await nginx.resumeAllWorkers();</v>
+            <v />
+            <v>    req.json({ reloaded: body.domain });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Pre-Fork Initialization</p>
+      </title>
+      <section>
+        <title>
+          <p>7.1.js_preprocess— Config Injection During Parse</p>
+        </title>
+        <p>
+          <code>js_preprocess</code> evaluates a JS script <strong>during</strong>
+          <code>ngx_conf_parse</code>, at the exact point where the directive appears in the config file. The script receives a global <code>config</code> object with a single method:</p>
+        <p>
+          <code>config.write(text)</code> — feeds <code>text</code> back into the nginx config parser exactly as if it had appeared inline at this position.</p>
+        <p>This happens <strong>before</strong>
+          <code>init_conf</code>, so <code>nginx.http</code>, <code>nginx.stream</code>, and the full COM are not available. The <code>std</code> and <code>os</code> QuickJS modules are available for file and OS access.</p>
+        <poem>
+          <stanza>
+            <v>nginx.conf parse reaches js_preprocess /gen.js</v>
+            <v>        │</v>
+            <v>        ├─ New JS runtime created (isolated, short-lived)</v>
+            <v>        │</v>
+            <v>        ├─ gen.js evaluated</v>
+            <v>        │       • Can read files:    std.loadFile('/etc/conf.json')</v>
+            <v>        │       • Can read env:      std.getenv('APP_ENV')</v>
+            <v>        │       • Can run commands:  os.exec([...])</v>
+            <v>        │       • Can call config.write(text)</v>
+            <v>        │</v>
+            <v>        ├─ Runtime freed</v>
+            <v>        │</v>
+            <v>        └─ Injected text re-enters the parser as if it were inline</v>
+            <v>               → full http{}/server{}/location{} blocks allowed</v>
+            <v>               → directives go through normal merge/optimize_servers treatment</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>7.1.1. Example: Server Blocks from a JSON File</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>// /etc/nginx/js/gen.js</v>
+            <v>// Generates one server {} block per tenant from a JSON config file.</v>
+            <v>// Runs once at startup (and again on `nginx -s reload`).</v>
+            <v />
+            <v>import * as std from 'std';</v>
+            <v />
+            <v>// Read tenant definitions from a JSON file.</v>
+            <v>const raw     = std.loadFile('/etc/nginx/tenants.json');</v>
+            <v>const tenants = JSON.parse(raw);</v>
+            <v />
+            <v>let out = '';</v>
+            <v>for (const t of tenants) {</v>
+            <v>    out += `</v>
+            <v>server {</v>
+            <v>    listen 80;</v>
+            <v>    server_name ${t.domain};</v>
+            <v>    root /var/www/${t.id};</v>
+            <v>    location / { }</v>
+            <v>}</v>
+            <v>`;</v>
+            <v>}</v>
+            <v />
+            <v>config.write(out);</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v># nginx.conf</v>
+            <v>js_preprocess /etc/nginx/js/gen.js;   # ← generates server{} blocks</v>
+            <v />
+            <v>events { }</v>
+            <v>http {</v>
+            <v>    # servers from gen.js appear here as if written manually</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>7.1.2. Example: Conditional SSL Config</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>// Enable SSL only if the certificate file actually exists.</v>
+            <v>import * as os from 'os';</v>
+            <v />
+            <v>const certPath = '/etc/ssl/certs/site.pem';</v>
+            <v>const keyPath  = '/etc/ssl/private/site.key';</v>
+            <v />
+            <v>// os.stat() returns an object on success, error code on failure.</v>
+            <v>const [stat, err] = os.stat(certPath);</v>
+            <v>if (!err) {</v>
+            <v>    config.write(`</v>
+            <v>ssl_certificate     ${certPath};</v>
+            <v>ssl_certificate_key ${keyPath};</v>
+            <v>listen 443 ssl;</v>
+            <v>`);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>7.1.3. Example: Fetching Config from a Network Service</strong>
+        </p>
+        <p>
+          <code>js_preprocess</code> runs synchronously inside the C parse loop. There is no event loop at this stage, so the standard <code>req.fetch()</code> API is unavailable. The <code>std.urlGet()</code> function (QuickJS std library [https://bellard.org/quickjs/quickjs.html#Standard-library]) works around this by spawning <code>curl</code> as a child process and blocking until the response arrives.</p>
+        <p>
+          <code>curl</code> must be installed on the system.</p>
+        <poem>
+          <stanza>
+            <v>// /etc/nginx/js/fetch-config.js</v>
+            <v>// Download upstream configuration from a config service at startup.</v>
+            <v>// Uses std.urlGet() which shells out to curl — blocking and synchronous.</v>
+            <v />
+            <v>import * as std from 'std';</v>
+            <v />
+            <v>const res = std.urlGet('http://config-service.internal/v1/nginx-upstreams',</v>
+            <v>                       { full: true });  // { status, headers, body }</v>
+            <v />
+            <v>if (res.status !== 200) {</v>
+            <v>    // Fail loudly — a bad config is worse than a failed start.</v>
+            <v>    throw new Error(`Config service returned ${res.status}`);</v>
+            <v>}</v>
+            <v />
+            <v>const cfg = JSON.parse(res.body);</v>
+            <v />
+            <v>// Generate upstream{} blocks</v>
+            <v>let out = '';</v>
+            <v>for (const up of cfg.upstreams) {</v>
+            <v>    out += `upstream ${up.name} {\n`;</v>
+            <v>    for (const peer of up.peers) {</v>
+            <v>        out += `    server ${peer.addr} weight=${peer.weight};\n`;</v>
+            <v>    }</v>
+            <v>    out += `}\n`;</v>
+            <v>}</v>
+            <v>config.write(out);</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong>
+          <code>std.urlGet</code> always spawns a <code>curl</code> subprocess. For reliability in production, prefer writing config data to a file during a pre-start hook and reading it with <code>std.loadFile()</code>, keeping <code>js_preprocess</code> independent of network availability at start time. The network fetch pattern is useful for short-lived tooling or environments where the config service is guaranteed to be reachable. </p>
+        <p>
+          <strong>7.1.4. Multiple <code>js_preprocess</code> Directives</strong>
+        </p>
+        <p>Multiple <code>js_preprocess</code> directives are allowed; each runs in its own isolated runtime in declaration order:</p>
+        <poem>
+          <stanza>
+            <v>js_preprocess /etc/nginx/js/gen-servers.js;    # generates server{} blocks</v>
+            <v>js_preprocess /etc/nginx/js/gen-upstreams.js;  # generates upstream{} blocks</v>
+            <v>js_preprocess /etc/nginx/js/gen-maps.js;       # generates map{} blocks</v>
+            <v />
+            <v>events { }</v>
+            <v>http { ... }</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>7.2.js_init_http— Post-Parse Server Injection</p>
+        </title>
+        <p>
+          <code>js_init_http</code> fires after the entire <code>http {}</code> block has been parsed but before directive merging takes place. It provides both <code>config.write()</code> and a read-only view of <code>nginx.http.servers[]</code> — the servers parsed before the <code>js_init_http</code> directive.</p>
+        <poem>
+          <stanza>
+            <v>nginx.conf</v>
+            <v>│</v>
+            <v>└── http {</v>
+            <v>    │</v>
+            <v>    ├── server { server_name primary.example.com; ... }</v>
+            <v>    │</v>
+            <v>    ├── server { server_name secondary.example.com; ... }</v>
+            <v>    │</v>
+            <v>    └── js_init_http /etc/nginx/js/post-parse.js;</v>
+            <v>           │</v>
+            <v>           ├─ nginx.http.servers[0] and [1] are readable</v>
+            <v>           ├─ config.write(text) injects new servers after these two</v>
+            <v>           └─ injected servers go through normal merge/init_locations treatment</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// /etc/nginx/js/post-parse.js</v>
+            <v>// Add a management server on port 8099 only if no server is already</v>
+            <v>// listening on that port.</v>
+            <v />
+            <v>import * as std from 'std';</v>
+            <v />
+            <v>// Check whether any existing server listens on 8099</v>
+            <v>const already = nginx.http.servers.some(s =&gt;</v>
+            <v>    s.listen.some(addr =&gt; addr.includes(':8099') || addr === '8099')</v>
+            <v>);</v>
+            <v />
+            <v>if (!already) {</v>
+            <v>    config.write(`</v>
+            <v>server {</v>
+            <v>    listen 8099;</v>
+            <v>    server_name management.internal;</v>
+            <v />
+            <v>    location /health { }</v>
+            <v>    location /metrics { }</v>
+            <v>}</v>
+            <v>`);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> Place <code>js_init_http</code>
+          <strong>after</strong> the <code>server {}</code> blocks it needs to read. Servers parsed after the directive are not visible to the script. </p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Workers (JS Web Workers)</p>
+      </title>
+      <p>JS Workers are background pthreads spawned inside an nginx worker process. They implement the standard Web Worker API [https://developer.mozilla.org/en-US/docs/Web/API/Worker] and are the correct tool when a request needs to perform CPU-intensive computation without blocking the event loop.</p>
+      <p>Each nginx worker process has its own set of Workers; they are not shared between nginx workers.</p>
+      <section>
+        <title>
+          <p>Basic Worker Pattern</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// init.js (js_source)</v>
+            <v />
+            <v>// Spawn a Worker thread for CPU-intensive prime computation.</v>
+            <v>// Workers are created once in js_source and reused across all requests.</v>
+            <v>const computeWorker = new Worker('/etc/nginx/js/prime_worker.js');</v>
+            <v />
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/primes')</v>
+            <v>    .handler = async (req) =&gt; {</v>
+            <v>        const n = parseInt(req.queryParams.n) || 100;</v>
+            <v />
+            <v>        // Send work to the Worker thread and await the result.</v>
+            <v>        // While awaiting, the event loop is free to serve other requests.</v>
+            <v>        const result = await new Promise(resolve =&gt; {</v>
+            <v>            computeWorker.onmessage = e =&gt; resolve(e.data);</v>
+            <v>            computeWorker.postMessage({ n });</v>
+            <v>        });</v>
+            <v />
+            <v>        req.json(result);</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// /etc/nginx/js/prime_worker.js — runs in a separate pthread</v>
+            <v />
+            <v>function sieve(n) {</v>
+            <v>    const composite = new Uint8Array(n + 1);</v>
+            <v>    for (let i = 2; i * i &lt;= n; i++) {</v>
+            <v>        if (!composite[i]) {</v>
+            <v>            for (let j = i * i; j &lt;= n; j += i) composite[j] = 1;</v>
+            <v>        }</v>
+            <v>    }</v>
+            <v>    return Array.from({length: n - 1}, (_, i) =&gt; i + 2).filter(i =&gt; !composite[i]);</v>
+            <v>}</v>
+            <v />
+            <v>// Worker message loop</v>
+            <v>onmessage = (e) =&gt; {</v>
+            <v>    const primes = sieve(e.data.n);</v>
+            <v>    postMessage({ count: primes.length, largest: primes[primes.length - 1] });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>HTTP request → nginx worker event loop</v>
+            <v>        │</v>
+            <v>        ├─ handler called; sends postMessage to Worker thread</v>
+            <v>        │       │</v>
+            <v>        │       ▼</v>
+            <v>        │   Worker pthread</v>
+            <v>        │   (independent JS runtime)</v>
+            <v>        │   sieve(n)  ← CPU-bound, runs without blocking event loop</v>
+            <v>        │       │</v>
+            <v>        │       ▼</v>
+            <v>        │   postMessage(result)</v>
+            <v>        │       │</v>
+            <v>        │       ▼  onmessage event delivered to event loop</v>
+            <v>        │</v>
+            <v>        └─ Promise resolves; req.json(result) → response sent</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Transferring ArrayBuffers (Zero Copy)</p>
+        </title>
+        <p>Passing an <code>ArrayBuffer</code> by transfer moves ownership; the sender can no longer access it. Use this for large binary payloads:</p>
+        <poem>
+          <stanza>
+            <v>// Compress a large buffer in a Worker thread, transfer result back.</v>
+            <v>const compressionWorker = new Worker('/etc/nginx/js/compress_worker.js');</v>
+            <v />
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const body   = await req.readBody();</v>
+            <v>    const input  = new TextEncoder().encode(body).buffer;  // ArrayBuffer</v>
+            <v />
+            <v>    const compressed = await new Promise(resolve =&gt; {</v>
+            <v>        compressionWorker.onmessage = e =&gt; resolve(e.data.buf);</v>
+            <v>        // Transfer 'input' — zero copy, Worker takes ownership</v>
+            <v>        compressionWorker.postMessage({ buf: input }, [input]);</v>
+            <v>    });</v>
+            <v />
+            <v>    req.setHeader('Content-Encoding', 'deflate');</v>
+            <v>    req.respond(200, {}, compressed);</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>WorkerstdandosModules</p>
+        </title>
+        <p>Workers have access to the QuickJS standard library:</p>
+        <poem>
+          <stanza>
+            <v>// worker.js</v>
+            <v>import * as std from 'std';</v>
+            <v>import * as os  from 'os';</v>
+            <v />
+            <v>onmessage = (e) =&gt; {</v>
+            <v>    // Blocking file read — safe in a Worker (doesn't block the event loop)</v>
+            <v>    const data = std.loadFile(e.data.path);</v>
+            <v>    postMessage({ content: data, length: data?.length ?? 0 });</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>See QuickJS Standard Library [https://bellard.org/quickjs/quickjs.html#Standard-library] for the full <code>std</code>/<code>os</code> API reference.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>SharedWorkers</p>
+      </title>
+      <section>
+        <title>
+          <p>Concept and Use Cases</p>
+        </title>
+        <p>A SharedWorker [https://developer.mozilla.org/en-US/docs/Web/API/SharedWorker] is a single long-lived pthread running in the nginx <strong>master</strong> process, connected to every nginx worker via dedicated UNIX socket channels. Unlike JS Workers (one per nginx worker), there is exactly one SharedWorker instance regardless of the <code>worker_processes</code> count.</p>
+        <p>This makes SharedWorkers the canonical location for:</p>
+        <p>•   </p>
+        <p>
+          <strong>Session stores</strong> — a token → user mapping visible to every worker.</p>
+        <p>•   </p>
+        <p>
+          <strong>Distributed rate limiters</strong> — accurate global request-per-second counting.</p>
+        <p>•   </p>
+        <p>
+          <strong>Feature flags</strong> — a single flag store; updates propagate to all workers on the next message.</p>
+        <p>•   </p>
+        <p>
+          <strong>Distributed locks</strong> — a central lock arbiter that any worker can acquire.</p>
+        <p>•   </p>
+        <p>
+          <strong>Config broadcast</strong> — push a config change to all workers simultaneously (see <a ns0:href="#scope-2-all-workers-atomically">[scope-2-all-workers-atomically]</a>).</p>
+      </section>
+      <section>
+        <title>
+          <p>Port-Based Pattern (Explicitonconnect)</p>
+        </title>
+        <p>Use this pattern when a worker needs a dedicated two-way channel with the SharedWorker (i.e. replies must go back to the same worker that sent the request):</p>
+        <poem>
+          <stanza>
+            <v>// /etc/nginx/js/session_sw.js — SharedWorker script</v>
+            <v />
+            <v>const store = new Map();   // token → {userId, expires}</v>
+            <v />
+            <v>// onconnect fires once per nginx worker when the channel is first used.</v>
+            <v>onconnect = (e) =&gt; {</v>
+            <v>    const port = e.ports[0];</v>
+            <v />
+            <v>    port.onmessage = (msg) =&gt; {</v>
+            <v>        const { cmd, token, data } = msg.data;</v>
+            <v />
+            <v>        if (cmd === 'get') {</v>
+            <v>            const entry = store.get(token) ?? null;</v>
+            <v>            // Reply only to the worker that asked</v>
+            <v>            port.postMessage({ token, entry });</v>
+            <v />
+            <v>        } else if (cmd === 'set') {</v>
+            <v>            store.set(token, { userId: data.userId,</v>
+            <v>                               expires: Date.now() + data.ttl });</v>
+            <v>            port.postMessage({ ok: true });</v>
+            <v />
+            <v>        } else if (cmd === 'del') {</v>
+            <v>            store.delete(token);</v>
+            <v>            port.postMessage({ ok: true });</v>
+            <v>        }</v>
+            <v>    };</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// init.js (js_source)</v>
+            <v />
+            <v>const sessionSW = new SharedWorker('/etc/nginx/js/session_sw.js');</v>
+            <v />
+            <v>// Helper: promise-based call into the SharedWorker.</v>
+            <v>function swCall(cmd, token, data) {</v>
+            <v>    return new Promise(resolve =&gt; {</v>
+            <v>        sessionSW.port.onmessage = e =&gt; resolve(e.data);</v>
+            <v>        sessionSW.port.postMessage({ cmd, token, data });</v>
+            <v>    });</v>
+            <v>}</v>
+            <v />
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/auth')</v>
+            <v>    .handler = async (req) =&gt; {</v>
+            <v>        const token = req.cookies['session'];</v>
+            <v>        if (!token) { req.respond(401, {}, 'no session'); return; }</v>
+            <v />
+            <v>        const { entry } = await swCall('get', token, null);</v>
+            <v>        if (!entry || entry.expires &lt; Date.now()) {</v>
+            <v>            req.respond(401, {}, 'invalid or expired session');</v>
+            <v>            return;</v>
+            <v>        }</v>
+            <v />
+            <v>        req.setVar('authenticated_user', entry.userId);</v>
+            <v>        req.respond(200, {}, `Hello ${entry.userId}`);</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Broadcast Pattern (Globalonmessage+clients)</p>
+        </title>
+        <p>Use this pattern when the SharedWorker needs to push the same message to <strong>all</strong> connected workers simultaneously:</p>
+        <poem>
+          <stanza>
+            <v>// /etc/nginx/js/broadcast_sw.js</v>
+            <v />
+            <v>// No onconnect — global onmessage handles all workers via the `clients` array.</v>
+            <v>// `clients` is an array of all currently connected port objects.</v>
+            <v />
+            <v>onmessage = (msg) =&gt; {</v>
+            <v>    if (msg.data.cmd === 'broadcast') {</v>
+            <v>        // Forward the message to every connected worker</v>
+            <v>        clients.forEach(c =&gt; c.postMessage(msg.data.payload));</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// init.js: trigger a broadcast from any worker's request handler.</v>
+            <v>const broadcastSW = new SharedWorker('/etc/nginx/js/broadcast_sw.js');</v>
+            <v />
+            <v>// Each worker registers a listener on the SW port at init time.</v>
+            <v>broadcastSW.port.onmessage = (e) =&gt; {</v>
+            <v>    // This fires on every worker when a broadcast arrives.</v>
+            <v>    const { key, value } = e.data;</v>
+            <v>    // Apply the change to this worker's local copy of the config.</v>
+            <v>    applyFeatureFlag(key, value);</v>
+            <v>};</v>
+            <v />
+            <v>// Admin handler: update a feature flag on all workers at once.</v>
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/admin/feature-flag')</v>
+            <v>    .handler = async (req) =&gt; {</v>
+            <v>        const { key, value } = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>        // Tell the SharedWorker to broadcast to all workers.</v>
+            <v>        broadcastSW.port.postMessage({</v>
+            <v>            cmd: 'broadcast',</v>
+            <v>            payload: { key, value }</v>
+            <v>        });</v>
+            <v />
+            <v>        req.json({ ok: true });</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Dynamic SharedWorker Creation</p>
+        </title>
+        <p>SharedWorkers created in <code>js_source</code> are spawned before <code>fork()</code> and are available to all workers from the start. They can also be created dynamically from a request handler after <code>fork()</code>:</p>
+        <poem>
+          <stanza>
+            <v>// Create a SharedWorker on demand from a handler.</v>
+            <v>// The SharedWorker is registered globally and subsequent handlers</v>
+            <v>// calling new SharedWorker('/js/dynamic.js') reuse the same thread.</v>
+            <v />
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    const sw = new SharedWorker('/etc/nginx/js/on_demand_sw.js');</v>
+            <v />
+            <v>    const result = await new Promise(resolve =&gt; {</v>
+            <v>        sw.port.onmessage = e =&gt; resolve(e.data);</v>
+            <v>        sw.port.postMessage({ req: req.uri });</v>
+            <v>    });</v>
+            <v />
+            <v>    req.json(result);</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>SharedWorker Flow Chart</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>                    Master process</v>
+            <v>                    ┌──────────────────────────────────────┐</v>
+            <v>                    │                                      │</v>
+            <v>                    │  SharedWorker thread                 │</v>
+            <v>                    │  ┌────────────────────────────────┐  │</v>
+            <v>                    │  │  onconnect / onmessage          │  │</v>
+            <v>                    │  │  shared JS state (Map, arrays)  │  │</v>
+            <v>                    │  └──────────┬───────────┬──────────┘  │</v>
+            <v>                    │             │           │              │</v>
+            <v>                    └─────────────┼───────────┼──────────────┘</v>
+            <v>                    AF_UNIX SEQPACKET         │</v>
+            <v>             ┌───────────┘                   └────────────┐</v>
+            <v>             │                                            │</v>
+            <v>    ┌────────▼────────────┐                 ┌─────────────▼───────────┐</v>
+            <v>    │  Worker 0            │                 │  Worker 1               │</v>
+            <v>    │  sw.port.postMessage │                 │  sw.port.postMessage    │</v>
+            <v>    │  sw.port.onmessage   │                 │  sw.port.onmessage      │</v>
+            <v>    └──────────────────────┘                 └─────────────────────────┘</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>SharedArrayBuffers and Atomics</p>
+      </title>
+      <section>
+        <title>
+          <p>What They Are</p>
+        </title>
+        <p>A <code>SharedArrayBuffer</code> [https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer] is a region of memory accessible — with zero copying — from any thread: nginx workers, JS Workers, and the SharedWorker thread.</p>
+        <p>Typed array views (<code>Int32Array</code>, <code>Float64Array</code>, <code>BigInt64Array</code>, etc.) over a SAB provide direct read/write access. <code>Atomics</code> [https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics] operations (<code>add</code>, <code>compareExchange</code>, <code>wait</code>, <code>notify</code>) provide the synchronisation primitives needed for safe concurrent access.</p>
+      </section>
+      <section>
+        <title>
+          <p>Pre-Fork SABs (Visible to All Workers)</p>
+        </title>
+        <p>A SAB created in <code>js_source</code> is backed by the CoW page mapping inherited by every worker after <code>fork()</code>. All workers share the same physical pages.</p>
+        <poem>
+          <stanza>
+            <v>// init.js (js_source)</v>
+            <v>// A global hit counter visible to all workers with zero copy.</v>
+            <v />
+            <v>const counterBuf = new SharedArrayBuffer(8);</v>
+            <v>const hits       = new BigInt64Array(counterBuf);</v>
+            <v>// hits[0] is shared by every worker process.</v>
+            <v />
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/count')</v>
+            <v>    .handler = (req) =&gt; {</v>
+            <v>        // Atomic increment — safe across all nginx workers simultaneously.</v>
+            <v>        const n = Atomics.add(hits, 0, 1n);</v>
+            <v>        req.text(`Request #${n + 1n}\n`);</v>
+            <v>    };</v>
+            <v />
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/stats')</v>
+            <v>    .handler = (req) =&gt; {</v>
+            <v>        req.json({ total_hits: Number(Atomics.load(hits, 0)) });</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Post-Fork SABs (Worker-Local, Passed via Channels)</p>
+        </title>
+        <p>A SAB created inside a request handler (post-fork) is backed by a Linux <code>memfd</code> and can be transferred to a JS Worker or SharedWorker via <code>postMessage</code>. The receiving thread `mmap`s the same file descriptor, establishing a shared mapping without copying data.</p>
+        <poem>
+          <stanza>
+            <v>// Worker thread computes a result into a SAB; main thread reads it.</v>
+            <v />
+            <v>const processorWorker = new Worker('/etc/nginx/js/processor.js');</v>
+            <v />
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    // Allocate shared memory for the result</v>
+            <v>    const resultBuf = new SharedArrayBuffer(1024);</v>
+            <v>    const result    = new Uint8Array(resultBuf);</v>
+            <v>    const ready     = new SharedArrayBuffer(4);</v>
+            <v>    const flag      = new Int32Array(ready);</v>
+            <v />
+            <v>    // Pass both SABs to the Worker; it writes the result and sets flag.</v>
+            <v>    processorWorker.postMessage({</v>
+            <v>        input:     JSON.parse(await req.readBody()),</v>
+            <v>        resultBuf, // shared — Worker writes here</v>
+            <v>        ready      // shared — Worker sets flag[0]=1 when done</v>
+            <v>    });</v>
+            <v />
+            <v>    // Non-blocking poll using Atomics.wait in the Worker thread</v>
+            <v>    // Meanwhile the event loop remains free.</v>
+            <v>    await new Promise(resolve =&gt; {</v>
+            <v>        processorWorker.onmessage = () =&gt; resolve();</v>
+            <v>    });</v>
+            <v />
+            <v>    req.respond(200, {}, new TextDecoder().decode(result));</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Atomics.wait / Atomics.notify</p>
+        </title>
+        <p>
+          <code>Atomics.wait</code> is a <strong>blocking</strong> call — it must only be used in Worker or SharedWorker threads, never in the main nginx event loop.</p>
+        <poem>
+          <stanza>
+            <v>// Mutex implementation using SAB + Atomics.</v>
+            <v>// Safe to use in Worker and SharedWorker threads.</v>
+            <v />
+            <v>const mutexBuf = new SharedArrayBuffer(4);   // one Int32 = one mutex</v>
+            <v>const mutex    = new Int32Array(mutexBuf);</v>
+            <v />
+            <v>function lock() {</v>
+            <v>    // Spin until we CAS 0 → 1 (acquire)</v>
+            <v>    while (Atomics.compareExchange(mutex, 0, 0, 1) !== 0) {</v>
+            <v>        // Block this thread until mutex[0] changes — woken by unlock()</v>
+            <v>        Atomics.wait(mutex, 0, 1);</v>
+            <v>    }</v>
+            <v>}</v>
+            <v />
+            <v>function unlock() {</v>
+            <v>    Atomics.store(mutex, 0, 0);</v>
+            <v>    // Wake one waiting thread</v>
+            <v>    Atomics.notify(mutex, 0, 1);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// In the SharedWorker thread — use Atomics.wait/notify to signal workers.</v>
+            <v>// SharedWorker receives work, signals the waiting nginx worker via SAB.</v>
+            <v />
+            <v>onconnect = (e) =&gt; {</v>
+            <v>    const port = e.ports[0];</v>
+            <v />
+            <v>    port.onmessage = (msg) =&gt; {</v>
+            <v>        const { sab, workItem } = msg.data;</v>
+            <v>        const signal = new Int32Array(sab);</v>
+            <v />
+            <v>        // Do the work ...</v>
+            <v>        const result = processWork(workItem);</v>
+            <v />
+            <v>        // Write result into a different part of the SAB, then notify.</v>
+            <v>        // The nginx worker is blocked in Atomics.waitAsync on this index.</v>
+            <v>        Atomics.store(signal, 0, 1);       // mark done</v>
+            <v>        Atomics.notify(signal, 0);         // wake the nginx worker's Worker thread</v>
+            <v>    };</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong>
+          <code>Atomics.waitAsync</code> (non-blocking, returns a Promise) is available in the nginx event loop context and is the correct way to wait for a SAB value to change from the main thread. </p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Accept Control and Cross-Worker Coordination</p>
+      </title>
+      <section>
+        <title>
+          <p>The Problem</p>
+        </title>
+        <p>COM mutations applied directly from a handler affect only the worker that executed the handler. Other workers have independent CoW copies and will not see the change. Furthermore, if a mutation is applied while another request on the same worker is halfway through using the old value, the result can be inconsistent.</p>
+        <p>Accept control solves both problems by temporarily pausing connection acceptance, creating a window during which no new requests can start and the worker is in a known-clean state.</p>
+      </section>
+      <section>
+        <title>
+          <p>Per-Worker:suspendAcceptance/resumeAcceptance</p>
+        </title>
+        <p>These are synchronous, instant, and affect only the calling worker.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    // Stop accepting new connections on THIS worker.</v>
+            <v>    // OS backlog holds new connections; other workers keep accepting normally.</v>
+            <v>    nginx.suspendAcceptance();</v>
+            <v />
+            <v>    // Apply a batch of mutations atomically from this worker's perspective.</v>
+            <v>    const upstream = nginx.http.upstreams[0];</v>
+            <v>    upstream.peers[0].weight = 10;</v>
+            <v>    upstream.peers[1].weight = 5;</v>
+            <v>    upstream.peers[2].down   = true;</v>
+            <v />
+            <v>    // Resume accepting.</v>
+            <v>    nginx.resumeAcceptance();</v>
+            <v />
+            <v>    req.text('upstream updated\n');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>What happens while suspended:</p>
+        <poem>
+          <stanza>
+            <v>OS kernel</v>
+            <v>  │</v>
+            <v>  └── TCP SYN backlog accumulates (up to net.core.somaxconn connections)</v>
+            <v>          │</v>
+            <v>          └── When resumeAcceptance() is called, epoll fires again and</v>
+            <v>              the worker drains the backlog in FIFO order.</v>
+          </stanza>
+        </poem>
+        <p>Other workers are unaffected and continue accepting normally.</p>
+      </section>
+      <section>
+        <title>
+          <p>Cross-Worker:suspendAllWorkers/resumeAllWorkers</p>
+        </title>
+        <p>For changes that must be atomic across all workers simultaneously:</p>
+        <poem>
+          <stanza>
+            <v>Worker A (handler)</v>
+            <v>  │</v>
+            <v>  ├─ await nginx.suspendAllWorkers()</v>
+            <v>  │       │</v>
+            <v>  │       ├─ Workers B, C, … receive coordination signal</v>
+            <v>  │       │     Each finishes current request → stops accepting → ACKs</v>
+            <v>  │       └─ resolves when all have ACK'd</v>
+            <v>  │</v>
+            <v>  ├─ mutation window (all workers quiesced)</v>
+            <v>  │</v>
+            <v>  ├─ await nginx.resumeAllWorkers()</v>
+            <v>  │       └─ all workers re-add listening sockets to epoll</v>
+            <v>  │</v>
+            <v>  └─ req.respond(...)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>SharedWorker Broadcast + Accept Control Pattern</p>
+        </title>
+        <p>The most flexible pattern for cross-worker config updates:</p>
+        <poem>
+          <stanza>
+            <v>// coord_sw.js — SharedWorker for cross-worker coordination</v>
+            <v />
+            <v>const ports = [];   // one port per connected worker</v>
+            <v />
+            <v>onconnect = (e) =&gt; {</v>
+            <v>    const port = e.ports[0];</v>
+            <v>    ports.push(port);</v>
+            <v />
+            <v>    port.onmessage = (msg) =&gt; {</v>
+            <v>        if (msg.data.cmd === 'broadcast_apply') {</v>
+            <v>            // Push the same config update to every worker</v>
+            <v>            ports.forEach(p =&gt; p.postMessage({</v>
+            <v>                cmd:    'apply',</v>
+            <v>                config: msg.data.config</v>
+            <v>            }));</v>
+            <v>        }</v>
+            <v>    };</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// init.js</v>
+            <v>const coordSW = new SharedWorker('/etc/nginx/js/coord_sw.js');</v>
+            <v />
+            <v>// Each worker registers a listener to apply inbound config changes.</v>
+            <v>coordSW.port.onmessage = (e) =&gt; {</v>
+            <v>    if (e.data.cmd === 'apply') {</v>
+            <v>        applyConfig(e.data.config);</v>
+            <v>        nginx.resumeAcceptance();</v>
+            <v>    }</v>
+            <v>};</v>
+            <v />
+            <v>function applyConfig(cfg) {</v>
+            <v>    // Apply upstream changes to this worker's local copy.</v>
+            <v>    const peers = nginx.http.upstreams[0].peers;</v>
+            <v>    cfg.peers.forEach((p, i) =&gt; {</v>
+            <v>        if (peers[i]) {</v>
+            <v>            peers[i].weight = p.weight;</v>
+            <v>            peers[i].down   = p.down;</v>
+            <v>        }</v>
+            <v>    });</v>
+            <v>}</v>
+            <v />
+            <v>// Admin endpoint: one worker drives the update, broadcasts to all others.</v>
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/admin/config-push')</v>
+            <v>    .handler = async (req) =&gt; {</v>
+            <v>        const cfg = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>        // Quiesce all workers, apply locally, then broadcast.</v>
+            <v>        await nginx.suspendAllWorkers();</v>
+            <v />
+            <v>        applyConfig(cfg);  // this worker applies locally</v>
+            <v />
+            <v>        // Tell SharedWorker to push to all workers; they will call</v>
+            <v>        // resumeAcceptance() from their onmessage handler.</v>
+            <v>        coordSW.port.postMessage({ cmd: 'broadcast_apply', config: cfg });</v>
+            <v />
+            <v>        // This worker also resumes acceptance.</v>
+            <v>        nginx.resumeAcceptance();</v>
+            <v />
+            <v>        req.json({ pushed: true });</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Backlog Behaviour</p>
+        </title>
+        <p>While any or all workers have acceptance suspended, incoming TCP connections queue in the OS SYN/accept backlog:</p>
+        <p>•   </p>
+        <p>Backlog size is controlled by <code>net.core.somaxconn</code> (typically 128–4096) and the <code>listen</code> directive’s <code>backlog=N</code> parameter.</p>
+        <p>•   </p>
+        <p>If the backlog fills before <code>resumeAcceptance()</code> is called, the kernel drops new SYN packets. From the client’s perspective this looks like the server is temporarily unavailable.</p>
+        <p>•   </p>
+        <p>For short mutation windows (sub-millisecond), the probability of backlog overflow is negligible even under high load.</p>
+        <p>
+          <strong>: </strong> Do not hold all workers suspended for long operations (database queries, external HTTP calls). Complete all blocking work before calling <code>suspendAllWorkers()</code>, then apply changes synchronously in the mutation window. </p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Snapshots</p>
+      </title>
+      <p>Snapshots capture a point-in-time copy of a COM sub-tree. They are useful for rollback, for auditing config state, and for read-heavy operations that must be isolated from concurrent writes.</p>
+      <section>
+        <title>
+          <p>Basic Snapshot and Rollback</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    // Capture the current state of a location before mutating it.</v>
+            <v>    const snap = req.location.snapshot();</v>
+            <v />
+            <v>    try {</v>
+            <v>        // Attempt to apply new configuration.</v>
+            <v>        const cfg = JSON.parse(await req.readBody());</v>
+            <v>        req.location.gzip        = cfg.gzip;</v>
+            <v>        req.location.root        = cfg.root;</v>
+            <v>        req.location.proxy.pass  = cfg.proxyPass;</v>
+            <v />
+            <v>        req.json({ applied: true });</v>
+            <v>    } catch (e) {</v>
+            <v>        // Something went wrong — restore the original state.</v>
+            <v>        snap.restore();</v>
+            <v>        req.respond(500, {}, `Config apply failed: ${e.message}`);</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Sub-Object Snapshots</p>
+        </title>
+        <p>You can snapshot a specific COM sub-tree rather than the entire config:</p>
+        <poem>
+          <stanza>
+            <v>// Snapshot just the upstream peer list.</v>
+            <v>const snap = nginx.http.upstreams[0].snapshot();</v>
+            <v />
+            <v>// Apply potentially risky changes.</v>
+            <v>nginx.http.upstreams[0].peers.forEach(p =&gt; p.weight = 1);</v>
+            <v />
+            <v>// If health-check fails, restore peer weights.</v>
+            <v>const healthy = await runHealthCheck();</v>
+            <v>if (!healthy) {</v>
+            <v>    snap.restore();</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Read / Write Mode Interaction with Snapshots</p>
+        </title>
+        <p>When <code>setWriteMode("local")</code> is active, COM writes go to a per-request snapshot automatically, leaving the global config untouched:</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async (req) =&gt; {</v>
+            <v>    // Isolate all writes to this request.</v>
+            <v>    req.location.setWriteMode('local');</v>
+            <v>    req.location.setReadMode('local');</v>
+            <v />
+            <v>    // Mutate the per-request copy freely.</v>
+            <v>    req.location.root = '/var/www/' + req.getVar('tenant');</v>
+            <v />
+            <v>    // Other concurrent requests still see the original global root.</v>
+            <v>    req.sendfile('/index.html');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Stream (TCP/UDP) Support</p>
+      </title>
+      <p>The JS DOM API extends to nginx’s <code>stream {}</code> context. Stream handlers receive a <code>NginxStreamSession</code> object instead of <code>NginxRequest</code>.</p>
+      <poem>
+        <stanza>
+          <v>js_source /etc/nginx/js/stream_init.js;</v>
+          <v />
+          <v>events { }</v>
+          <v />
+          <v>stream {</v>
+          <v>    server {</v>
+          <v>        listen 9000;</v>
+          <v>    }</v>
+          <v>}</v>
+        </stanza>
+      </poem>
+      <poem>
+        <stanza>
+          <v>// stream_init.js</v>
+          <v />
+          <v>nginx.stream.servers[0].handler = function(session) {</v>
+          <v>    // Session properties</v>
+          <v>    session.remoteAddress  // client IP</v>
+          <v>    session.remotePort     // client port</v>
+          <v>    session.localAddress   // server-side IP</v>
+          <v>    session.localPort      // server-side port (9000)</v>
+          <v>    session.ssl            // boolean</v>
+          <v>    session.received       // bytes received so far</v>
+          <v />
+          <v>    // Variable access (stream variables)</v>
+          <v>    const proto = session.variable('protocol');  // "TCP" or "UDP"</v>
+          <v />
+          <v>    // Close the session with a status code</v>
+          <v>    session.finalize();          // NGX_STREAM_OK</v>
+          <v>    session.finalize(500);       // error</v>
+          <v>};</v>
+        </stanza>
+      </poem>
+      <p>Stream COM mirrors the HTTP COM:</p>
+      <poem>
+        <stanza>
+          <v>// Read stream upstream peers</v>
+          <v>const peers = nginx.stream.upstreams[0].peers;</v>
+          <v>peers.forEach(p =&gt; nginx.log(nginx.INFO, `${p.addr} w=${p.weight}`));</v>
+          <v />
+          <v>// Mutate stream upstream peers (same API as HTTP)</v>
+          <v>peers[0].weight = 20;</v>
+        </stanza>
+      </poem>
+    </section>
+    <section>
+      <title>
+        <p>External Config Sources and Full Reload</p>
+      </title>
+      <section>
+        <title>
+          <p>Pattern A — File at Startup (js_preprocess)</p>
+        </title>
+        <p>Config data is written to a file by an external process (deploy script, Kubernetes operator, config management tool) and read synchronously during nginx startup:</p>
+        <poem>
+          <stanza>
+            <v>// /etc/nginx/js/from-file.js</v>
+            <v>import * as std from 'std';</v>
+            <v />
+            <v>const cfg = JSON.parse(std.loadFile('/etc/nginx/dynamic-config.json') || '{}');</v>
+            <v />
+            <v>for (const vhost of (cfg.vhosts || [])) {</v>
+            <v>    config.write(`</v>
+            <v>server {</v>
+            <v>    listen 80;</v>
+            <v>    server_name ${vhost.domain};</v>
+            <v>    root /var/www/${vhost.docroot};</v>
+            <v>    location / { }</v>
+            <v>}</v>
+            <v>`);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>This runs on every <code>nginx -s reload</code>, so the file is the single source of truth.</p>
+      </section>
+      <section>
+        <title>
+          <p>Pattern B — Network at Startup (js_preprocess+std.urlGet)</p>
+        </title>
+        <p>See the example in <a ns0:href="#example-fetching-config-from-a-network-service">[example-fetching-config-from-a-network-service]</a>. Use this pattern for tooling environments where network availability is guaranteed. In production, pre-download to a file during a health-check or init-container step to avoid coupling nginx startup to network availability.</p>
+      </section>
+      <section>
+        <title>
+          <p>Pattern C — Live Reload via Handler (Zero Downtime)</p>
+        </title>
+        <p>For changes that do not require a full restart — upstream weights, SSL certificates, location handlers — apply mutations via the COM from a request handler:</p>
+        <poem>
+          <stanza>
+            <v>// init.js</v>
+            <v />
+            <v>function applyConfig(cfg) {</v>
+            <v>    // Update upstream peer weights</v>
+            <v>    if (cfg.upstreams) {</v>
+            <v>        for (const [name, peerCfg] of Object.entries(cfg.upstreams)) {</v>
+            <v>            const up = nginx.http.upstreams.find(u =&gt; u.name === name);</v>
+            <v>            if (!up) continue;</v>
+            <v>            for (const [addr, w] of Object.entries(peerCfg)) {</v>
+            <v>                const peer = up.peers.find(p =&gt; p.addr === addr);</v>
+            <v>                if (peer) peer.weight = w;</v>
+            <v>            }</v>
+            <v>        }</v>
+            <v>    }</v>
+            <v />
+            <v>    // Hot-swap SSL certificates</v>
+            <v>    if (cfg.ssl) {</v>
+            <v>        for (const [domain, paths] of Object.entries(cfg.ssl)) {</v>
+            <v>            const srv = nginx.http.servers.find(s =&gt; s.names.includes(domain));</v>
+            <v>            if (!srv) continue;</v>
+            <v>            srv.ssl.cert = paths.cert;</v>
+            <v>            srv.ssl.key  = paths.key;</v>
+            <v>        }</v>
+            <v>    }</v>
+            <v>}</v>
+            <v />
+            <v>// Admin endpoint: POST the new config JSON.</v>
+            <v>nginx.http.servers</v>
+            <v>    .find(s =&gt; s.names.includes('admin.internal'))</v>
+            <v>    .locations.find(l =&gt; l.path === '/config/apply')</v>
+            <v>    .handler = async (req) =&gt; {</v>
+            <v>        const cfg = JSON.parse(await req.readBody());</v>
+            <v />
+            <v>        await nginx.suspendAllWorkers();</v>
+            <v>        applyConfig(cfg);</v>
+            <v>        await nginx.resumeAllWorkers();</v>
+            <v />
+            <v>        req.json({ applied: true, ts: Date.now() });</v>
+            <v>    };</v>
+            <v />
+            <v>// Pull-based reload: a background Worker polls the config service</v>
+            <v>// periodically and applies changes.</v>
+            <v>const pollerWorker = new Worker('/etc/nginx/js/config_poller.js');</v>
+            <v>pollerWorker.onmessage = async (e) =&gt; {</v>
+            <v>    if (e.data.type === 'config-update') {</v>
+            <v>        await nginx.suspendAllWorkers();</v>
+            <v>        applyConfig(e.data.config);</v>
+            <v>        await nginx.resumeAllWorkers();</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// /etc/nginx/js/config_poller.js — JS Worker thread</v>
+            <v>import * as std from 'std';</v>
+            <v />
+            <v>let lastETag = '';</v>
+            <v />
+            <v>while (true) {</v>
+            <v>    // Poll every 30 seconds</v>
+            <v>    os.sleep(30000);</v>
+            <v />
+            <v>    const res = std.urlGet('http://config-service.internal/v1/nginx-config',</v>
+            <v>                           { full: true });</v>
+            <v>    const etag = (res.headers || {})['etag'] || '';</v>
+            <v />
+            <v>    if (res.status === 200 &amp;&amp; etag !== lastETag) {</v>
+            <v>        lastETag = etag;</v>
+            <v>        postMessage({ type: 'config-update', config: JSON.parse(res.body) });</v>
+            <v>    }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Decision Guide</p>
+        </title>
+        <p>Requirement │ js_preprocess │ Pattern C (live) │ Full restart</p>
+        <p>Generate server/location blocks │ ✓ │ ✗ (can addServer/addLocation, but no merge treatment) │ ✓ (via preprocess)</p>
+        <p>Network dependency at start time │ Risky (prefer file) │ ✓ │ Risky</p>
+        <p>Zero downtime │ ✗ (graceful reload) │ ✓ │ ✗</p>
+        <p>Upstream peer weights │ ✓ │ ✓ │ ✓</p>
+        <p>SSL certificate rotation │ ✓ │ ✓ │ ✓</p>
+        <p>New location with full directive inheritance │ ✓ │ Partial (addLocation inherits from template only) │ ✓</p>
+        <empty-line />
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Third-Party Module Integration</p>
+      </title>
+      <section>
+        <title>
+          <p>Overview</p>
+        </title>
+        <p>Any nginx module can expose its configuration to the COM by implementing a small bridge file that reads the module’s C config structs and projects them as JS properties.</p>
+        <p>This section walks through adding COM support to a hypothetical <code>ngx_http_mymod</code> module with a main-level config struct.</p>
+      </section>
+      <section>
+        <title>
+          <p>Step 1 — Identify the Config Structs</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>/* ngx_http_mymod.h */</v>
+            <v />
+            <v>typedef struct {</v>
+            <v>    ngx_flag_t   enable;</v>
+            <v>    ngx_uint_t   max_entries;</v>
+            <v>    ngx_str_t    backend_url;</v>
+            <v>} ngx_http_mymod_main_conf_t;</v>
+            <v />
+            <v>typedef struct {</v>
+            <v>    ngx_msec_t   timeout_ms;</v>
+            <v>    ngx_flag_t   cache;</v>
+            <v>} ngx_http_mymod_loc_conf_t;</v>
+            <v />
+            <v>extern ngx_module_t  ngx_http_mymod_module;</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Step 2 — Write the COM Bridge File</p>
+        </title>
+        <p>Create <code>ngx_js_com_mymod.c</code> next to your module sources:</p>
+        <poem>
+          <stanza>
+            <v>/* ngx_js_com_mymod.c */</v>
+            <v>#include &lt;ngx_config.h&gt;</v>
+            <v>#include &lt;ngx_core.h&gt;</v>
+            <v>#include &lt;ngx_http.h&gt;</v>
+            <v>#include "quickjs.h"</v>
+            <v>#include "ngx_js.h"</v>
+            <v>#include "ngx_http_mymod.h"</v>
+            <v />
+            <v>/*</v>
+            <v> * Getter / setter for main-conf properties.</v>
+            <v> * 'magic' selects which property (same pattern as NginxRequest).</v>
+            <v> */</v>
+            <v>static JSValue</v>
+            <v>ngx_js_mymod_main_get(JSContext *ctx, JSValueConst this_val, int magic)</v>
+            <v>{</v>
+            <v>    ngx_http_mymod_main_conf_t  *mcf;</v>
+            <v />
+            <v>    /* Retrieve the main config from the cycle. */</v>
+            <v>    mcf = ngx_http_cycle_get_module_main_conf(ngx_cycle,</v>
+            <v>                                              ngx_http_mymod_module);</v>
+            <v>    if (mcf == NULL) {</v>
+            <v>        return JS_UNDEFINED;</v>
+            <v>    }</v>
+            <v />
+            <v>    switch (magic) {</v>
+            <v>    case 0: return JS_NewBool(ctx, mcf-&gt;enable);</v>
+            <v>    case 1: return JS_NewUint32(ctx, mcf-&gt;max_entries);</v>
+            <v>    case 2: return JS_NewStringLen(ctx, (char *) mcf-&gt;backend_url.data,</v>
+            <v>                                   mcf-&gt;backend_url.len);</v>
+            <v>    }</v>
+            <v>    return JS_UNDEFINED;</v>
+            <v>}</v>
+            <v />
+            <v>static JSValue</v>
+            <v>ngx_js_mymod_main_set(JSContext *ctx, JSValueConst this_val,</v>
+            <v>    JSValueConst val, int magic)</v>
+            <v>{</v>
+            <v>    ngx_http_mymod_main_conf_t  *mcf;</v>
+            <v />
+            <v>    mcf = ngx_http_cycle_get_module_main_conf(ngx_cycle,</v>
+            <v>                                              ngx_http_mymod_module);</v>
+            <v>    if (mcf == NULL) {</v>
+            <v>        return JS_EXCEPTION;</v>
+            <v>    }</v>
+            <v />
+            <v>    switch (magic) {</v>
+            <v>    case 0:</v>
+            <v>        mcf-&gt;enable = JS_ToBool(ctx, val);</v>
+            <v>        break;</v>
+            <v>    case 1:</v>
+            <v>        JS_ToUint32(ctx, &amp;mcf-&gt;max_entries, val);</v>
+            <v>        break;</v>
+            <v>    /* backend_url is an ngx_str_t backed by pool memory — omit setter</v>
+            <v>       or implement with careful pool allocation */</v>
+            <v>    }</v>
+            <v>    return JS_UNDEFINED;</v>
+            <v>}</v>
+            <v />
+            <v>/*</v>
+            <v> * Install nginx.http.mymod into ctx.</v>
+            <v> * Called from ngx_js_install_nginx_com() during init_conf.</v>
+            <v> */</v>
+            <v>ngx_int_t</v>
+            <v>ngx_js_com_mymod_install(JSContext *ctx, JSValueConst nginx_obj)</v>
+            <v>{</v>
+            <v>    JSValue  http_obj, mymod_obj;</v>
+            <v />
+            <v>    /* Retrieve the existing nginx.http object. */</v>
+            <v>    http_obj = JS_GetPropertyStr(ctx, nginx_obj, "http");</v>
+            <v>    if (JS_IsUndefined(http_obj)) {</v>
+            <v>        return NGX_ERROR;</v>
+            <v>    }</v>
+            <v />
+            <v>    mymod_obj = JS_NewObject(ctx);</v>
+            <v>    if (JS_IsException(mymod_obj)) {</v>
+            <v>        JS_FreeValue(ctx, http_obj);</v>
+            <v>        return NGX_ERROR;</v>
+            <v>    }</v>
+            <v />
+            <v>    /* Expose enable / maxEntries / backendUrl as JS properties. */</v>
+            <v>    JS_DefinePropertyGetSet(ctx, mymod_obj,</v>
+            <v>        JS_NewAtom(ctx, "enable"),</v>
+            <v>        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_get, "get_enable", 0,</v>
+            <v>                             JS_CFUNC_generic_magic, 0),</v>
+            <v>        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_set, "set_enable", 1,</v>
+            <v>                             JS_CFUNC_generic_magic, 0),</v>
+            <v>        JS_PROP_CONFIGURABLE);</v>
+            <v />
+            <v>    JS_DefinePropertyGetSet(ctx, mymod_obj,</v>
+            <v>        JS_NewAtom(ctx, "maxEntries"),</v>
+            <v>        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_get, "get_maxEntries", 0,</v>
+            <v>                             JS_CFUNC_generic_magic, 1),</v>
+            <v>        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_set, "set_maxEntries", 1,</v>
+            <v>                             JS_CFUNC_generic_magic, 1),</v>
+            <v>        JS_PROP_CONFIGURABLE);</v>
+            <v />
+            <v>    JS_DefinePropertyGetSet(ctx, mymod_obj,</v>
+            <v>        JS_NewAtom(ctx, "backendUrl"),</v>
+            <v>        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_get, "get_backendUrl", 0,</v>
+            <v>                             JS_CFUNC_generic_magic, 2),</v>
+            <v>        JS_UNDEFINED,   /* no setter — read-only */</v>
+            <v>        JS_PROP_CONFIGURABLE);</v>
+            <v />
+            <v>    JS_SetPropertyStr(ctx, http_obj, "mymod", mymod_obj);</v>
+            <v>    JS_FreeValue(ctx, http_obj);</v>
+            <v />
+            <v>    return NGX_OK;</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Step 3 — Register the Bridge in the COM Initialiser</p>
+        </title>
+        <p>In <code>ngx_js_com.c</code>, locate <code>ngx_js_install_nginx_com</code> and add a call to your bridge function, guarded by whether the module was compiled in:</p>
+        <poem>
+          <stanza>
+            <v>/* ngx_js_com.c — in ngx_js_install_nginx_com() */</v>
+            <v>#if defined(NGX_HTTP_MYMOD)</v>
+            <v>    if (ngx_js_com_mymod_install(ctx, nginx_obj) != NGX_OK) {</v>
+            <v>        return NGX_ERROR;</v>
+            <v>    }</v>
+            <v>#endif</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Step 4 — Use from JavaScript</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// init.js</v>
+            <v>nginx.log(nginx.INFO, `mymod enabled: ${nginx.http.mymod.enable}`);</v>
+            <v>nginx.log(nginx.INFO, `mymod maxEntries: ${nginx.http.mymod.maxEntries}`);</v>
+            <v />
+            <v>// Toggle mymod from a handler (takes effect immediately for this worker)</v>
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/admin/mymod-toggle')</v>
+            <v>    .handler = (req) =&gt; {</v>
+            <v>        nginx.http.mymod.enable = !nginx.http.mymod.enable;</v>
+            <v>        req.text(`mymod is now ${nginx.http.mymod.enable ? 'on' : 'off'}\n`);</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Location-Level Config</p>
+        </title>
+        <p>For per-location config, retrieve the conf pointer from the request’s <code>loc_conf</code> array rather than the cycle:</p>
+        <poem>
+          <stanza>
+            <v>/* In a JS getter called from a request handler context */</v>
+            <v>static JSValue</v>
+            <v>ngx_js_mymod_loc_get_timeout(JSContext *ctx, JSValueConst this_val, int magic)</v>
+            <v>{</v>
+            <v>    ngx_http_request_t          *r;</v>
+            <v>    ngx_js_worker_t             *w;</v>
+            <v>    ngx_http_mymod_loc_conf_t   *lcf;</v>
+            <v />
+            <v>    w = JS_GetContextOpaque(ctx);</v>
+            <v>    r = w-&gt;current_request;</v>
+            <v>    if (r == NULL) {</v>
+            <v>        return JS_UNDEFINED;</v>
+            <v>    }</v>
+            <v />
+            <v>    lcf = ngx_http_get_module_loc_conf(r, ngx_http_mymod_module);</v>
+            <v>    return JS_NewUint32(ctx, lcf-&gt;timeout_ms);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Resource Protection</p>
+      </title>
+      <section>
+        <title>
+          <p>Worker Memory Limit</p>
+        </title>
+        <p>
+          <code>nginx.workerMemoryLimit</code> caps the QuickJS heap for all JS allocations in a worker process. The limit applies on top of nginx’s own memory — it measures only memory allocated through the QuickJS allocator.</p>
+        <poem>
+          <stanza>
+            <v>// Set from js_source — applies to every worker after fork().</v>
+            <v>nginx.workerMemoryLimit = 128 * 1024 * 1024;  // 128 MB per worker</v>
+            <v />
+            <v>// Read back the configured limit (0 = unlimited).</v>
+            <v>nginx.log(nginx.INFO, `Memory limit: ${nginx.workerMemoryLimit}`);</v>
+          </stanza>
+        </poem>
+        <p>When a JS allocation exceeds the limit, QuickJS throws <code>RangeError: out of
+memory</code>. The worker process remains healthy; the individual request receives a 500 error.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    try {</v>
+            <v>        const huge = new ArrayBuffer(512 * 1024 * 1024);  // exceeds limit</v>
+            <v>        req.text('allocated\n');</v>
+            <v>    } catch (e) {</v>
+            <v>        // e is RangeError: out of memory</v>
+            <v>        req.respond(503, {}, 'memory limit exceeded, try again\n');</v>
+            <v>    }</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Worker Request Timeout</p>
+        </title>
+        <p>
+          <code>nginx.workerRequestTimeout</code> sets the maximum wall-clock time (in milliseconds) a single JS handler invocation may consume. If the handler runs longer than this (including time spent in a tight synchronous loop), QuickJS fires an interrupt that aborts the handler. The worker survives and the request receives HTTP 500.</p>
+        <poem>
+          <stanza>
+            <v>// Allow each handler at most 5 seconds of wall time.</v>
+            <v>nginx.workerRequestTimeout = 5000;</v>
+            <v />
+            <v>// Re-configure at runtime from a handler.</v>
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(l =&gt; l.path === '/admin/timeout')</v>
+            <v>    .handler = (req) =&gt; {</v>
+            <v>        const ms = parseInt(req.queryParams.ms);</v>
+            <v>        if (ms &gt;= 0) nginx.workerRequestTimeout = ms;</v>
+            <v>        req.text(`timeout is now ${nginx.workerRequestTimeout} ms\n`);</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Error Isolation</p>
+        </title>
+        <p>JavaScript exceptions in a handler are caught by the module framework and converted to HTTP 500 responses. The worker process never crashes due to an unhandled JS exception.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = (req) =&gt; {</v>
+            <v>    // This exception is caught by the framework — worker stays up.</v>
+            <v>    throw new Error('deliberate error');</v>
+            <v>    // Client receives: HTTP/1.1 500 Internal Server Error</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>What JS Cannot Do</p>
+        </title>
+        <p>The JS runtime runs inside an nginx worker process (or master, for SharedWorkers) with the same OS privileges. The following restrictions apply:</p>
+        <p>•   </p>
+        <p>No access to nginx’s internal C memory outside the COM API. There is no <code>ctypes</code>, <code>ffi</code>, or equivalent.</p>
+        <p>•   </p>
+        <p>No subprocess spawning from handlers or SharedWorkers. The <code>os.exec()</code> function from QuickJS <code>os</code> is available only in Workers and <code>js_preprocess</code> scripts, not in nginx event-loop handlers.</p>
+        <p>•   </p>
+        <p>Blocking the event loop with a synchronous tight loop is interrupted by the request timeout if <code>nginx.workerRequestTimeout</code> is set.</p>
+        <p>•   </p>
+        <p>
+          <code>Atomics.wait</code> (blocking) must not be called from the event loop; use <code>Atomics.waitAsync</code> (non-blocking, returns a Promise) instead.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Reference</p>
+      </title>
+      <section>
+        <title>
+          <p>Directives</p>
+        </title>
+        <p>Directive │ Context │ Arguments │ Description</p>
+        <p>js_source path │ main │ 1 (path) │ Evaluate path in the master process after config parsing (init_conf). Multiple allowed; evaluated in declaration order. The JS runtime created here is inherited by all workers after fork.</p>
+        <p>js_preprocess path │ main │ 1 (path) │ Evaluate path immediately when encountered during ngx_conf_parse. Receives global config.write(text). Multiple allowed; each runs in an isolated ephemeral runtime.</p>
+        <p>js_init_http path │ http │ 1 (path) │ Evaluate path after the http {} block finishes parsing, before merge. Receives config.write(text) and read-only nginx.http.servers[].</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>17.2.nginxGlobal Object</p>
+        </title>
+        <p>Property / Method │ Type │ Description</p>
+        <p>nginx.version │ string │ nginx version string ("1.27.x")</p>
+        <p>nginx.cpuCount │ number │ Number of CPU cores</p>
+        <p>nginx.workerMemoryLimit │ number │ QuickJS heap cap in bytes; 0 = unlimited (r/w)</p>
+        <p>nginx.workerRequestTimeout │ number │ Max handler wall time in ms; 0 = unlimited (r/w)</p>
+        <p>nginx.log(level, msg) │ — │ Write to nginx error log</p>
+        <p>nginx.DEBUG/INFO/NOTICE/WARN/ERR/CRIT/ALERT/EMERG │ number │ Log level constants</p>
+        <p>nginx.broadcast(msg) │ — │ Deliver msg to nginx.onbroadcast on every worker</p>
+        <p>nginx.onbroadcast │ function │ Set handler for broadcast messages (r/w)</p>
+        <p>nginx.setTimeout(ms) │ Promise │ Resolve after ms ms (non-blocking)</p>
+        <p>nginx.cycle │ object │ Cycle-level stats (connections, openFilesN, sockets)</p>
+        <p>nginx.events │ object │ events{} directives (workerConnections, multiAccept, …)</p>
+        <p>nginx.http │ object │ HTTP COM tree</p>
+        <p>nginx.stream │ object │ Stream COM tree</p>
+        <p>nginx.suspendAcceptance() │ — │ Remove listening sockets from this worker’s epoll</p>
+        <p>nginx.resumeAcceptance() │ — │ Re-add listening sockets to this worker’s epoll</p>
+        <p>nginx.suspendAllWorkers() │ Promise │ Quiesce all workers (async)</p>
+        <p>nginx.resumeAllWorkers() │ Promise │ Resume all workers (async)</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>17.3.nginx.httpObject</p>
+        </title>
+        <p>Property / Method │ Type │ Description</p>
+        <p>servers[] │ array │ Array of NginxServer objects</p>
+        <p>upstreams[] │ array │ Array of NginxUpstream objects</p>
+        <p>variables │ object │ nginx HTTP variables (r/w)</p>
+        <p>serverNamesHashMaxSize │ number │ r/w</p>
+        <p>serverNamesHashBucketSize │ number │ r/w</p>
+        <p>variablesHashMaxSize │ number │ r/w</p>
+        <p>variablesHashBucketSize │ number │ r/w</p>
+        <p>sockets[] │ array │ Listening socket objects</p>
+        <p>addServer(name) │ NginxServer │ Create a new virtual server at runtime</p>
+        <p>removeServer(name) │ boolean │ Remove a virtual server; returns false if not found</p>
+        <p>rebuildVhostDispatch() │ — │ Recompile the server_name dispatch hash</p>
+        <p>match(req, conditions) │ boolean │ Evaluate nginx if conditions against a request</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>NginxRequest Methods and Properties</p>
+        </title>
+        <p>See <a ns0:href="#nginxrequest-reference">[nginxrequest-reference]</a>.</p>
+      </section>
+      <section>
+        <title>
+          <p>Worker / SharedWorker API</p>
+        </title>
+        <p>JS DOM implements a subset of the standard Web Worker and SharedWorker APIs.</p>
+        <p>API │ Notes</p>
+        <p>new Worker(url) │ Spawn a JS Worker thread. url is a path to a JS file.</p>
+        <p>worker.postMessage(data [, transferList]) │ Send a value to the Worker. Transferable: ArrayBuffer. Shareable: SharedArrayBuffer.</p>
+        <p>worker.onmessage = fn │ Receive a value from the Worker.</p>
+        <p>worker.terminate() │ Stop the Worker thread.</p>
+        <p>new SharedWorker(url) │ Connect to (or create) a SharedWorker. Returns an object with a port property.</p>
+        <p>sw.port.postMessage(data) │ Send to the SharedWorker.</p>
+        <p>sw.port.onmessage = fn │ Receive from the SharedWorker.</p>
+        <p>onconnect = fn (in SW script) │ Fires when a new worker process connects. e.ports[0] is the port.</p>
+        <p>onmessage = fn (in SW script) │ Global handler; fires for any message from any worker. clients array is available.</p>
+        <p>clients (in SW script) │ Array of all connected port objects; use for broadcast.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>SharedArrayBuffer and Atomics Support Matrix</p>
+        </title>
+        <p>Operation │ Event loop │ JS Worker │ SharedWorker │ js_preprocess</p>
+        <p>new SharedArrayBuffer(n) │ ✓ │ ✓ │ ✓ │ ✓</p>
+        <p>Typed array read/write │ ✓ │ ✓ │ ✓ │ ✓</p>
+        <p>Atomics.load/store/add/… │ ✓ │ ✓ │ ✓ │ ✓</p>
+        <p>Atomics.compareExchange │ ✓ │ ✓ │ ✓ │ ✓</p>
+        <p>Atomics.wait (blocking) │ ✗ │ ✓ │ ✓ │ ✓</p>
+        <p>Atomics.waitAsync │ ✓ │ ✓ │ ✓ │ ✗</p>
+        <p>Atomics.notify │ ✓ │ ✓ │ ✓ │ ✓</p>
+        <p>Transfer via postMessage │ ✓ │ ✓ │ ✓ │ —</p>
+        <empty-line />
+        <p>
+          <strong>: </strong> Never call <code>Atomics.wait</code> from the nginx event loop — it blocks the thread, preventing all request processing. Use <code>Atomics.waitAsync</code> in the event loop and <code>Atomics.wait</code> in Workers / SharedWorker threads. </p>
+      </section>
+      <section>
+        <title>
+          <p>Log Level Constants</p>
+        </title>
+        <p>Constant │ nginx log level</p>
+        <p>nginx.DEBUG │ debug</p>
+        <p>nginx.INFO │ info</p>
+        <p>nginx.NOTICE │ notice</p>
+        <p>nginx.WARN │ warn</p>
+        <p>nginx.ERR │ error</p>
+        <p>nginx.CRIT │ crit</p>
+        <p>nginx.ALERT │ alert</p>
+        <p>nginx.EMERG │ emerg</p>
+        <empty-line />
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Appendix — Flow Charts</p>
+      </title>
+      <section>
+        <title>
+          <p>A: Simple Synchronous Handler</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>Client → nginx → location matched → handler(req) → req.json() → response</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>B: Async Handler with Worker Offload</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>Client → nginx → handler called</v>
+            <v>                       │</v>
+            <v>                       ├── postMessage(input) ────► Worker thread</v>
+            <v>                       │                                │ CPU work</v>
+            <v>                       │   [event loop free]            │</v>
+            <v>                       │                       postMessage(result)</v>
+            <v>                       │◄──────────────────────────────┘</v>
+            <v>                       └── req.json(result) → response</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>C: Cross-Worker COM Mutation (suspendAllWorkers)</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>Client → handler</v>
+            <v>              │</v>
+            <v>              ├── await suspendAllWorkers()</v>
+            <v>              │       └─► Workers 1..N finish request, stop accepting, ACK</v>
+            <v>              │</v>
+            <v>              ├── [mutation window] mutate COM</v>
+            <v>              │</v>
+            <v>              ├── await resumeAllWorkers()</v>
+            <v>              │       └─► Workers 1..N re-enable accept</v>
+            <v>              │</v>
+            <v>              └── req.respond() → response</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>D: SharedWorker State Coordination</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>Worker 0 ──postMessage──► SharedWorker (master process)</v>
+            <v>Worker 1 ──postMessage──►     shared JS state (Map, counters, …)</v>
+            <v>Worker N ──postMessage──►         │</v>
+            <v>                               route reply ──► correct worker port</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>E: SAB Lock-Free Counter (Pre-Fork)</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>js_source: const sab = new SharedArrayBuffer(8);  ← master creates</v>
+            <v>fork() × N workers                                 ← each inherits CoW pages</v>
+            <v>Worker A: Atomics.add(hits, 0, 1n)  ──► kernel mediates CAS on shared page</v>
+            <v>Worker B: Atomics.add(hits, 0, 1n)  ──┘  (no user-space lock needed)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>F: Pre-Fork Config Generation</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx start → conf parse → js_preprocess fires</v>
+            <v>                                │</v>
+            <v>                           JS reads files / env / network</v>
+            <v>                                │</v>
+            <v>                           config.write(generated_text)</v>
+            <v>                                │</v>
+            <v>                           text re-enters parser inline</v>
+            <v>                                │</v>
+            <v>                           server{}/location{} blocks created with</v>
+            <v>                           full merge/init_locations/optimize_servers</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>G: Live Reload from Config Service</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>Config service updates                Nginx workers running</v>
+            <v>         │                                    │</v>
+            <v>         ▼                                    │</v>
+            <v>   POST /config/apply               all workers quiesced</v>
+            <v>         │                                    │</v>
+            <v>         ▼                           suspendAllWorkers()</v>
+            <v>   handler fetches / reads                    │</v>
+            <v>   new config JSON                  applyConfig(cfg) per worker</v>
+            <v>         │                                    │</v>
+            <v>         └──────► COM mutations  ────►  resumeAllWorkers()</v>
+            <v>                                             │</v>
+            <v>                                    all workers resume, serving</v>
+            <v>                                    requests with new config</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>H: Complete nginx.* Object Tree</p>
+        </title>
+        <p>The following tree lists every property and method reachable from the global <code>nginx</code> object, with types and mutability. <code>r/o</code> = read-only; <code>r/w</code> = read-write; <code>fn</code> = function / method.</p>
+        <poem>
+          <stanza>
+            <v>nginx  (global object)</v>
+            <v>│</v>
+            <v>├── version               string   r/o   nginx version string, e.g. "1.27.4"</v>
+            <v>├── workerMemoryLimit     number   r/w   QuickJS heap cap per worker, bytes (0 = unlimited)</v>
+            <v>├── workerRequestTimeout  number   r/w   Per-handler wall-time cap, ms (0 = unlimited)</v>
+            <v>│</v>
+            <v>├── log(level, msg)                fn    Write to nginx error log</v>
+            <v>├── broadcast(msg)                 fn    Deliver msg to nginx.onbroadcast on every worker</v>
+            <v>├── onbroadcast                    fn    r/w  Handler called when a broadcast arrives</v>
+            <v>├── setTimeout(ms)        Promise  fn    Resolve after ms milliseconds (non-blocking)</v>
+            <v>├── suspendAcceptance()            fn    Remove listening sockets from this worker's epoll</v>
+            <v>├── resumeAcceptance()             fn    Re-add listening sockets to this worker's epoll</v>
+            <v>├── suspendAllWorkers()   Promise  fn    Quiesce all workers (async)</v>
+            <v>├── resumeAllWorkers()    Promise  fn    Resume all workers (async)</v>
+            <v>│</v>
+            <v>├── cycle  (NginxCycle)</v>
+            <v>│   ├── hostname            string  r/o   system hostname</v>
+            <v>│   ├── prefix              string  r/o   conf directory (dirname of nginx.conf)</v>
+            <v>│   ├── confFile            string  r/o   full path to nginx.conf</v>
+            <v>│   ├── errorLog            string  r/o   path to error log file</v>
+            <v>│   ├── installPrefix       string  r/o   nginx --prefix</v>
+            <v>│   ├── pid                 string  r/o   path to PID file</v>
+            <v>│   ├── connectionN         number  r/o   worker_connections value</v>
+            <v>│   ├── workers             number  r/w   worker_processes count</v>
+            <v>│   ├── daemon              bool    r/o   daemon on|off</v>
+            <v>│   ├── master              bool    r/o   master_process on|off</v>
+            <v>│   ├── timerResolution     number  r/o   timer_resolution in ms (0 = disabled)</v>
+            <v>│   ├── shutdownTimeout     number  r/o   worker_shutdown_timeout in ms (0 = disabled)</v>
+            <v>│   ├── priority            number  r/o   worker_priority (nice value)</v>
+            <v>│   ├── rlimitNofile        number  r/o   worker_rlimit_nofile (-1 if unset)</v>
+            <v>│   ├── workingDirectory    string  r/o   working_directory ("" if unset)</v>
+            <v>│   └── sockets[]           array   r/o   NginxSocket — listening sockets snapshot</v>
+            <v>│</v>
+            <v>├── events  (NginxEvents)</v>
+            <v>│   ├── connections         number  r/o   worker_connections</v>
+            <v>│   ├── use                 string  r/o   event method ("epoll", "kqueue", …)</v>
+            <v>│   ├── multiAccept         bool    r/w   multi_accept on|off</v>
+            <v>│   ├── acceptMutex         bool    r/w   accept_mutex on|off</v>
+            <v>│   └── acceptMutexDelay    number  r/w   accept_mutex_delay in ms</v>
+            <v>│</v>
+            <v>├── http  (object)</v>
+            <v>│   ├── servers[]           array   r/o   NginxServer</v>
+            <v>│   ├── upstreams[]         array   r/o   NginxUpstream</v>
+            <v>│   ├── variables           object  r/o   variable name → flags/type map</v>
+            <v>│   ├── serverNamesHashMaxSize      number  r/o</v>
+            <v>│   ├── serverNamesHashBucketSize   number  r/o</v>
+            <v>│   ├── variablesHashMaxSize        number  r/o</v>
+            <v>│   ├── variablesHashBucketSize     number  r/o</v>
+            <v>│   ├── sockets[]           array   r/o   NginxSocket — HTTP listening sockets</v>
+            <v>│   ├── addServer(name)              fn    → NginxServer   create virtual server at runtime</v>
+            <v>│   ├── removeServer(name)           fn    → bool          remove virtual server</v>
+            <v>│   ├── rebuildVhostDispatch()       fn    recompile server_name dispatch hash (call after addServer/removeServer/setNames)</v>
+            <v>│   └── match(req, conds)            fn    → bool          evaluate nginx if-conditions</v>
+            <v>│</v>
+            <v>└── stream  (object)</v>
+            <v>    ├── servers[]           array   r/o   NginxStreamServer</v>
+            <v>    └── upstreams[]         array   r/o   NginxStreamUpstream</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>18.8.1. NginxServer properties</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>NginxServer  (nginx.http.servers[i])</v>
+            <v>│</v>
+            <v>├── name                      string  r/o   primary server_name</v>
+            <v>├── names[]                   array   r/o   all server_name values</v>
+            <v>├── listen[]                  array   r/o   listen addresses</v>
+            <v>├── locations[]               array   r/o   NginxLocation</v>
+            <v>│</v>
+            <v>├── clientHeaderBufferSize    number  r/w   bytes</v>
+            <v>├── clientHeaderTimeout       number  r/w   ms</v>
+            <v>├── connectionPoolSize        number  r/w   bytes</v>
+            <v>├── requestPoolSize           number  r/w   bytes</v>
+            <v>├── ignoreInvalidHeaders      bool    r/w</v>
+            <v>├── mergeSlashes              bool    r/w</v>
+            <v>├── underscoresInHeaders      bool    r/w</v>
+            <v>├── serverTokens              bool    r/w</v>
+            <v>│</v>
+            <v>├── ssl                              NginxSSL  (see below)</v>
+            <v>│</v>
+            <v>├── setNames(names[])                fn</v>
+            <v>├── addLocation(path [, {template}]) fn    → NginxLocation</v>
+            <v>├── removeLocation(path)             fn    → bool</v>
+            <v>├── findLocation(path)               fn    → NginxLocation | null</v>
+            <v>└── clone(name)                      fn    → NginxServer</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>18.8.2. NginxLocation properties</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>NginxLocation  (server.locations[i]  or  server.addLocation(…))</v>
+            <v>│</v>
+            <v>├── path              string  r/o   location path</v>
+            <v>├── pattern           string  r/o   compiled regex (regex locations only)</v>
+            <v>├── matchType         string  r/o   "prefix" | "exact" | "regex" | "named_regex"</v>
+            <v>├── internal          bool    r/o</v>
+            <v>├── jsCreated         bool    r/o   true if created by addLocation()</v>
+            <v>│</v>
+            <v>├── handler                   r/w   JS async (req) =&gt; {} content handler</v>
+            <v>├── headerFilters[]   array   r/o   installed header filter entries</v>
+            <v>├── bodyFilters[]     array   r/o   installed body filter entries</v>
+            <v>│</v>
+            <v>├── root              string  r/w</v>
+            <v>├── alias             string  r/w</v>
+            <v>├── index             string  r/w</v>
+            <v>├── defaultType       string  r/w</v>
+            <v>├── sendfile          bool    r/w</v>
+            <v>├── tcpNopush         bool    r/w</v>
+            <v>├── tcpNodelay        bool    r/w</v>
+            <v>├── etag              bool    r/w</v>
+            <v>├── readAhead         number  r/w   bytes</v>
+            <v>├── directio          number  r/w   bytes (0 = disabled)</v>
+            <v>├── directioAlignment number  r/w   bytes</v>
+            <v>├── satisfy           string  r/w   "all" | "any"</v>
+            <v>├── limitExcept       string  r/w</v>
+            <v>├── lingering         bool    r/w</v>
+            <v>├── lingeringTimeout  number  r/w   ms</v>
+            <v>├── lingeringTime     number  r/w   ms</v>
+            <v>├── keepaliveTimeout  number  r/w   ms</v>
+            <v>├── keepaliveRequests number  r/w</v>
+            <v>├── keepaliveTime     number  r/w   ms</v>
+            <v>├── keepaliveDisable  string  r/w   "none" | "msie6" | …</v>
+            <v>├── keepaliveMinTimeout number r/w  ms</v>
+            <v>├── clientMaxBodySize number  r/w   bytes</v>
+            <v>├── clientBodyTimeout number  r/w   ms</v>
+            <v>├── clientBodyBufferSize     number  r/w  bytes</v>
+            <v>├── clientBodyInFileOnly     bool    r/w</v>
+            <v>├── clientBodyInSingleBuffer bool    r/w</v>
+            <v>├── sendTimeout       number  r/w   ms</v>
+            <v>├── sendLowat         number  r/w   bytes</v>
+            <v>├── postponeOutput    number  r/w   bytes</v>
+            <v>├── sendfileMaxChunk  number  r/w   bytes</v>
+            <v>├── resetTimedoutConnection  bool    r/w</v>
+            <v>├── absoluteRedirect  bool    r/w</v>
+            <v>├── serverNameInRedirect     bool    r/w</v>
+            <v>├── portInRedirect    bool    r/w</v>
+            <v>├── chunkedTransferEncoding  bool    r/w</v>
+            <v>├── resolverTimeout   number  r/w   ms</v>
+            <v>├── authDelay         number  r/w   ms</v>
+            <v>├── maxRanges         number  r/w</v>
+            <v>├── ifModifiedSince   string  r/w   "off" | "exact" | "before"</v>
+            <v>├── msieRefresh       bool    r/w</v>
+            <v>├── msiePadding       bool    r/w</v>
+            <v>├── logNotFound       bool    r/w</v>
+            <v>├── logSubrequest     bool    r/w</v>
+            <v>├── recursiveErrorPages      bool    r/w</v>
+            <v>├── typesHashMaxSize  number  r/o</v>
+            <v>│</v>
+            <v>├── ── Module sub-objects (all r/o access; properties within are r/w) ──</v>
+            <v>├── proxy             NginxProxy</v>
+            <v>├── gzip              NginxGzip</v>
+            <v>├── ssl               NginxSSL</v>
+            <v>├── headers           NginxHeaders</v>
+            <v>├── rewrite           NginxRewrite</v>
+            <v>├── access            NginxAccess</v>
+            <v>├── auth              NginxAuth</v>
+            <v>├── authRequest       NginxAuthRequest</v>
+            <v>├── autoindex         NginxAutoindex</v>
+            <v>├── charset           NginxCharset</v>
+            <v>├── dav               NginxDav</v>
+            <v>├── fastcgi           NginxFastCGI</v>
+            <v>├── gunzip            NginxGunzip</v>
+            <v>├── gzipStatic        NginxGzipStatic</v>
+            <v>├── imageFilter       NginxImageFilter</v>
+            <v>├── limitConn         NginxLimitConn</v>
+            <v>├── limitReq          NginxLimitReq</v>
+            <v>├── log               NginxLog</v>
+            <v>├── memcached         NginxMemcached</v>
+            <v>├── mirror            NginxMirror</v>
+            <v>├── mp4               NginxMp4</v>
+            <v>├── proxyCache        NginxProxyCache</v>
+            <v>├── randomIndex       NginxRandomIndex</v>
+            <v>├── realip            NginxRealIP</v>
+            <v>├── referer           NginxReferer</v>
+            <v>├── scgi              NginxScgi</v>
+            <v>├── secureLink        NginxSecureLink</v>
+            <v>├── slice             NginxSlice</v>
+            <v>├── ssi               NginxSsi</v>
+            <v>├── subFilter         NginxSubFilter</v>
+            <v>├── tryFiles          (object)</v>
+            <v>├── userid            NginxUserid</v>
+            <v>├── uwsgi             NginxUwsgi</v>
+            <v>├── addition          NginxAddition</v>
+            <v>└── xslt              NginxXslt</v>
+            <v>│</v>
+            <v>├── setWriteMode("global"|"local"|"both")   fn</v>
+            <v>├── setReadMode("global"|"local")           fn</v>
+            <v>├── setProperty(name, value [, mode])       fn</v>
+            <v>├── getProperty(name [, mode])              fn</v>
+            <v>├── addHeaderFilter(name, fn [, priority])  fn</v>
+            <v>├── addBodyFilter(name, fn [, priority])    fn</v>
+            <v>├── removeHeaderFilter(name)                fn</v>
+            <v>├── removeBodyFilter(name)                  fn</v>
+            <v>└── getHeaderFilter(name) / getBodyFilter(name)  fn</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>18.8.3. NginxUpstream, NginxPeer, NginxRRPeer</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>NginxUpstream  (nginx.http.upstreams[i]  or  nginx.stream.upstreams[i])</v>
+            <v>├── name          string  r/o</v>
+            <v>├── zone          string  r/o   shared memory zone name ("" if none)</v>
+            <v>├── peers[]       array   r/o   NginxPeer (config time) or NginxRRPeer (runtime)</v>
+            <v>├── addPeer(cfg)           fn   → NginxPeer | NginxRRPeer</v>
+            <v>└── removePeer(addr)       fn   → bool</v>
+            <v />
+            <v>NginxPeer  (config-time upstream peer)</v>
+            <v>├── address       string  r/o</v>
+            <v>├── weight        number  r/w</v>
+            <v>├── maxFails      number  r/w</v>
+            <v>├── failTimeout   number  r/w   seconds</v>
+            <v>├── maxConns      number  r/w</v>
+            <v>├── down          bool    r/w</v>
+            <v>└── backup        bool    r/o</v>
+            <v />
+            <v>NginxRRPeer  (runtime round-robin peer — same as NginxPeer plus:)</v>
+            <v>├── conns         number  r/o   current active connections</v>
+            <v>├── fails         number  r/o   current fail counter</v>
+            <v>└── server        string  r/o   upstream group name</v>
+            <v />
+            <v>NginxStreamPeer / NginxStreamRRPeer  — identical structure to HTTP equivalents</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>18.8.4. NginxSocket and NginxHttpListener / NginxStreamListener</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>NginxSocket  (nginx.cycle.sockets[i]  or  nginx.http.sockets[i])</v>
+            <v>├── address       string  r/o   "host:port"</v>
+            <v>├── port          number  r/o</v>
+            <v>├── fd            number  r/o   OS file descriptor</v>
+            <v>├── listener      r/o          NginxHttpListener | NginxStreamListener | null</v>
+            <v>├── close()                fn  close and remove socket</v>
+            <v>└── broadcast()            fn  send fd to all workers via SCM_RIGHTS</v>
+            <v />
+            <v>NginxHttpListener  (returned by socket listener attach / nginx.http.sockets[i].listener)</v>
+            <v>├── address       string  r/o</v>
+            <v>├── socket        NginxSocket  r/o</v>
+            <v>├── serverNames   object  r/o   { name → NginxServer }</v>
+            <v>├── serverByName(name)     fn  → NginxServer | null</v>
+            <v>├── addServer(cfg)         fn  → NginxServer</v>
+            <v>└── addVirtualServer(cfg)  fn  → NginxServer</v>
+            <v />
+            <v>NginxStreamListener  — same shape as NginxHttpListener but returns NginxStreamServer</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>18.8.5. NginxStreamServer and NginxStreamProxy</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>NginxStreamServer  (nginx.stream.servers[i])</v>
+            <v>├── serverName            string  r/o</v>
+            <v>├── tcpNodelay            bool    r/w</v>
+            <v>├── prereadBufferSize     number  r/w   bytes</v>
+            <v>├── prereadTimeout        number  r/w   ms</v>
+            <v>├── resolverTimeout       number  r/w   ms</v>
+            <v>├── proxyProtocolTimeout  number  r/w   ms</v>
+            <v>├── proxy                 NginxStreamProxy</v>
+            <v>├── access                NginxStreamAccess</v>
+            <v>├── ssl                   NginxStreamSSL</v>
+            <v>└── handler                       r/w   JS (session) =&gt; {} content handler</v>
+            <v />
+            <v>NginxStreamProxy</v>
+            <v>├── pass                  string  r/o   upstream name</v>
+            <v>├── connectTimeout        number  r/w   ms</v>
+            <v>├── timeout               number  r/w   ms  (proxy_timeout)</v>
+            <v>├── nextUpstreamTimeout   number  r/w   ms</v>
+            <v>├── bufferSize            number  r/w   bytes</v>
+            <v>├── requests              number  r/o   proxy_requests value</v>
+            <v>├── responses             number  r/o   proxy_responses value</v>
+            <v>├── nextUpstreamTries     number  r/w</v>
+            <v>├── nextUpstream          string  r/w</v>
+            <v>├── proxyProtocol         bool    r/w</v>
+            <v>├── halfClose             bool    r/w</v>
+            <v>└── socketKeepalive       bool    r/w</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>18.8.6. NginxRequest and NginxStreamSession</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>NginxRequest  (handler argument in HTTP content handlers)</v>
+            <v>│</v>
+            <v>├── ── Read-only request info ──</v>
+            <v>├── method          string   "GET" | "POST" | …</v>
+            <v>├── uri             string   path without query string</v>
+            <v>├── args            string   raw query string</v>
+            <v>├── queryParams     object   parsed {key: value} query parameters</v>
+            <v>├── scheme          string   "http" | "https"</v>
+            <v>├── host            string   Host header value</v>
+            <v>├── remoteAddr      string   client IP</v>
+            <v>├── remotePort      number   client TCP port</v>
+            <v>├── serverAddr      string   server-side IP</v>
+            <v>├── serverPort      number   server-side port</v>
+            <v>├── httpVersion     string   "1.0" | "1.1" | "2.0"</v>
+            <v>├── keepalive       bool     connection is keep-alive</v>
+            <v>├── isInternal      bool     is subrequest</v>
+            <v>├── startTime       number   ms since Unix epoch</v>
+            <v>├── requestLength   number   total bytes received (headers + body)</v>
+            <v>├── contentType     string   Content-Type header value</v>
+            <v>├── contentLength   number   Content-Length value</v>
+            <v>├── connection      object   nginx connection info</v>
+            <v>├── headers         object   request headers (lowercased keys)</v>
+            <v>├── cookies         object   parsed cookies {name: value}</v>
+            <v>├── upstream        object   upstream peer info (if proxied)</v>
+            <v>│</v>
+            <v>├── ── Mutable ──</v>
+            <v>├── statusCode      number   r/w   response status code</v>
+            <v>├── variables       object   r/w   nginx variables exotic proxy (r.variables.foo)</v>
+            <v>├── location        NginxLocation  r/o  matched location (mutable via setWriteMode)</v>
+            <v>│</v>
+            <v>├── ── Response ──</v>
+            <v>├── respond(status, headers, body)   fn  send complete response</v>
+            <v>├── json(data)                       fn  200 + application/json</v>
+            <v>├── text(body)                       fn  200 + text/plain</v>
+            <v>├── html(body)                       fn  200 + text/html</v>
+            <v>├── redirect(url)                    fn  302 redirect</v>
+            <v>├── writeHead(status, headers)       fn  begin streaming response</v>
+            <v>├── write(chunk)                     fn  append streaming chunk</v>
+            <v>├── finish()                         fn  end streaming response</v>
+            <v>├── sendfile(path)                   fn  serve file via sendfile(2)</v>
+            <v>│</v>
+            <v>├── ── Headers ──</v>
+            <v>├── setHeader(name, value)           fn</v>
+            <v>├── getHeader(name)                  fn  → string | undefined</v>
+            <v>└── removeHeader(name)               fn</v>
+            <v>│</v>
+            <v>├── ── Variables ──</v>
+            <v>├── variable(name) / getVar(name)    fn  → string | number | undefined</v>
+            <v>└── setVariable(name, v) / setVar    fn</v>
+            <v>│</v>
+            <v>├── ── Body ──</v>
+            <v>├── body            string  r/o   buffered body (null if not yet read)</v>
+            <v>└── readBody()      Promise fn    read full request body → string</v>
+            <v>│</v>
+            <v>├── ── Async ──</v>
+            <v>├── sleep(ms)       Promise fn    non-blocking delay</v>
+            <v>├── fetch(url)      Promise fn    non-blocking upstream HTTP request → Response</v>
+            <v>└── subrequest(uri) Promise fn    nginx internal subrequest → Response</v>
+            <v>│</v>
+            <v>└── log(level, msg)          fn</v>
+            <v />
+            <v>NginxStreamSession  (handler argument in stream content handlers)</v>
+            <v>├── remoteAddress   string  r/o</v>
+            <v>├── remotePort      number  r/o</v>
+            <v>├── localAddress    string  r/o</v>
+            <v>├── localPort       number  r/o</v>
+            <v>├── received        number  r/o   bytes received so far</v>
+            <v>├── status          number  r/o   session status code</v>
+            <v>├── ssl             object  r/o   SSL info (null on plain TCP)</v>
+            <v>├── finalize([code])         fn   close session; default code = NGX_STREAM_OK</v>
+            <v>└── variable(name)           fn   → string | undefined</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>18.8.7. Worker and SharedWorker</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>Worker  (new Worker(url))</v>
+            <v>├── onmessage       fn      r/w   called when the Worker posts a message</v>
+            <v>├── postMessage(data [, transferList])  fn  send value to the Worker</v>
+            <v>└── terminate()             fn   stop the Worker thread</v>
+            <v />
+            <v>SharedWorker  (new SharedWorker(url))</v>
+            <v>└── port            MessagePort</v>
+            <v />
+            <v>MessagePort  (sw.port)</v>
+            <v>├── onmessage       fn      r/w   called when the SharedWorker posts a message</v>
+            <v>└── postMessage(data)       fn   send value to the SharedWorker</v>
+            <v />
+            <v>── Inside a SharedWorker script ──</v>
+            <v>onconnect               fn  r/w  fires when a new nginx worker connects; e.data.ports[0] = MessagePort</v>
+            <v>onmessage               fn  r/w  global handler; receives messages from any worker</v>
+            <v>clients[]               array    all connected MessagePort objects (for broadcast)</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>18.8.8. NginxSSL and NginxStreamSSL</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>NginxSSL  (server.ssl  in http context)</v>
+            <v>├── sessionTimeout        number  r/w   seconds</v>
+            <v>├── sessionTickets        bool    r/w</v>
+            <v>├── preferServerCiphers   bool    r/w</v>
+            <v>├── verifyDepth           number  r/w</v>
+            <v>├── ciphers               string  r/o</v>
+            <v>├── clientCertificate     string  r/o</v>
+            <v>├── trustedCertificate    string  r/o</v>
+            <v>├── ecdhCurve             string  r/o</v>
+            <v>├── dhparam               string  r/o</v>
+            <v>├── setCiphers(list)       fn     change cipher list</v>
+            <v>├── setProtocols(list)     fn     e.g. "TLSv1.2 TLSv1.3"</v>
+            <v>└── setCertificate(cert, key)  fn  hot-swap certificate and key</v>
+            <v />
+            <v>NginxStreamSSL  (streamServer.ssl  in stream context) — same properties plus:</v>
+            <v>└── handshakeTimeout      number  r/w   ms</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>I: Full Nginx JS Class Reference</p>
+        </title>
+        <p>
+          <strong>18.9.1. Class Index</strong>
+        </p>
+        <p>Class name │ JS constructor / access path │ Purpose</p>
+        <p>NginxCycle │ nginx.cycle │ Cycle-level nginx globals</p>
+        <p>NginxEvents │ nginx.events │ events{} block settings</p>
+        <p>NginxServer │ nginx.http.servers[i] │ HTTP virtual server</p>
+        <p>NginxLocation │ server.locations[i], addLocation() │ HTTP location block</p>
+        <p>NginxUpstream │ nginx.http.upstreams[i] │ HTTP upstream group</p>
+        <p>NginxPeer │ upstream.peers[i] (config time) │ Upstream server (static)</p>
+        <p>NginxRRPeer │ upstream.peers[i] (runtime) │ Upstream server (live stats)</p>
+        <p>NginxRequest │ handler argument req │ HTTP request/response</p>
+        <p>NginxSocket │ nginx.cycle.sockets[i], http.sockets[i] │ Bound listening socket fd</p>
+        <p>NginxHttpListener │ socket.listener │ HTTP virtual-host router</p>
+        <p>NginxStreamServer │ nginx.stream.servers[i] │ Stream (TCP/UDP) server</p>
+        <p>NginxStreamProxy │ streamServer.proxy │ Stream proxy settings</p>
+        <p>NginxStreamListener │ socket.listener (stream) │ Stream virtual-host router</p>
+        <p>NginxStreamSession │ handler argument session │ TCP/UDP session</p>
+        <p>NginxStreamUpstream │ nginx.stream.upstreams[i] │ Stream upstream group</p>
+        <p>NginxStreamPeer │ streamUpstream.peers[i] (config) │ Stream upstream server (static)</p>
+        <p>NginxStreamRRPeer │ streamUpstream.peers[i] (runtime) │ Stream upstream server (live)</p>
+        <p>Worker │ new Worker(url) │ Background JS thread (per nginx-worker)</p>
+        <p>SharedWorker │ new SharedWorker(url) │ Shared JS thread (one, in master)</p>
+        <p>MessagePort │ sharedWorker.port │ Channel endpoint to SharedWorker</p>
+        <p>NginxSSL │ server.ssl │ HTTP SSL/TLS settings</p>
+        <p>NginxStreamSSL │ streamServer.ssl │ Stream SSL/TLS settings</p>
+        <p>NginxProxy │ location.proxy │ proxy_pass and proxy settings</p>
+        <p>NginxGzip │ location.gzip │ gzip module settings</p>
+        <p>NginxHeaders │ location.headers │ add_header / expires settings</p>
+        <p>NginxRewrite │ location.rewrite │ rewrite module settings</p>
+        <p>NginxAccess │ location.access │ allow/deny access rules</p>
+        <p>NginxAuth │ location.auth │ auth_basic settings</p>
+        <p>NginxAuthRequest │ location.authRequest │ auth_request settings</p>
+        <p>NginxAutoindex │ location.autoindex │ Directory listing settings</p>
+        <p>NginxCharset │ location.charset │ Charset conversion settings</p>
+        <p>NginxDav │ location.dav │ WebDAV settings</p>
+        <p>NginxFastCGI │ location.fastcgi │ FastCGI proxy settings</p>
+        <p>NginxGunzip │ location.gunzip │ On-the-fly decompression</p>
+        <p>NginxGzipStatic │ location.gzipStatic │ Pre-compressed file serving</p>
+        <p>NginxImageFilter │ location.imageFilter │ Image transformation settings</p>
+        <p>NginxLimitConn │ location.limitConn │ limit_conn settings</p>
+        <p>NginxLimitReq │ location.limitReq │ limit_req settings</p>
+        <p>NginxLog │ location.log │ Access log settings</p>
+        <p>NginxMemcached │ location.memcached │ Memcached proxy settings</p>
+        <p>NginxMirror │ location.mirror │ Request mirroring settings</p>
+        <p>NginxMp4 │ location.mp4 │ MP4 pseudo-streaming settings</p>
+        <p>NginxProxyCache │ location.proxyCache │ Proxy cache settings</p>
+        <p>NginxRandomIndex │ location.randomIndex │ Random index file settings</p>
+        <p>NginxRealIP │ location.realip │ Real-IP header settings</p>
+        <p>NginxReferer │ location.referer │ Referer validation settings</p>
+        <p>NginxScgi │ location.scgi │ SCGI proxy settings</p>
+        <p>NginxSecureLink │ location.secureLink │ Secure link settings</p>
+        <p>NginxSlice │ location.slice │ Response slicing settings</p>
+        <p>NginxSsi │ location.ssi │ SSI processing settings</p>
+        <p>NginxSubFilter │ location.subFilter │ Response substitution settings</p>
+        <p>NginxUserid │ location.userid │ User-ID cookie settings</p>
+        <p>NginxUwsgi │ location.uwsgi │ uWSGI proxy settings</p>
+        <p>NginxAddition │ location.addition │ Response addition settings</p>
+        <p>NginxXslt │ location.xslt │ XSLT transformation settings</p>
+        <p>NginxStreamAccess │ streamServer.access │ Stream access rules</p>
+        <empty-line />
+        <p>
+          <strong>18.9.2. Module COM Class Properties</strong>
+        </p>
+        <p>Class │ Property │ Mode │ Notes</p>
+        <p>NginxProxy │ pass │ r/o │ upstream URL or name</p>
+        <p>NginxProxy │ httpVersion │ r/w │ "1.0" or "1.1"</p>
+        <p>NginxProxy │ connectTimeout │ r/w │ ms</p>
+        <p>NginxProxy │ sendTimeout │ r/w │ ms</p>
+        <p>NginxProxy │ readTimeout │ r/w │ ms</p>
+        <p>NginxProxy │ buffering │ r/w │ bool</p>
+        <p>NginxProxy │ requestBuffering │ r/w │ bool</p>
+        <p>NginxProxy │ interceptErrors │ r/w │ bool</p>
+        <p>NginxProxy │ bufferSize │ r/w │ bytes</p>
+        <p>NginxProxy │ nextUpstreamTries │ r/w │ number</p>
+        <p>NginxProxy │ nextUpstreamTimeout │ r/w │ ms</p>
+        <p>NginxGzip │ enable │ r/w │ bool</p>
+        <p>NginxGzip │ level │ r/w │ 1–9</p>
+        <p>NginxGzip │ minLength │ r/w │ bytes</p>
+        <p>NginxGzip │ vary │ r/w │ bool — add Vary: Accept-Encoding</p>
+        <p>NginxHeaders │ expires │ r/o │ seconds; -1 = epoch; -2 = max; 0 = off</p>
+        <p>NginxHeaders │ expiresTime │ r/o │ absolute Unix timestamp</p>
+        <p>NginxHeaders │ headersInherit │ r/w │ bool</p>
+        <p>NginxHeaders │ trailersInherit │ r/w │ bool</p>
+        <p>NginxRewrite │ log │ r/w │ bool — log rewrite rule execution</p>
+        <p>NginxRewrite │ uninitializedVariableWarn │ r/w │ bool</p>
+        <p>NginxRewrite │ stackSize │ r/w │ number — rewrite stack depth</p>
+        <p>NginxRewrite │ hasRules │ r/o │ bool — any rules defined</p>
+        <p>NginxAuth │ realm │ r/w │ string — Basic auth realm</p>
+        <p>NginxAuth │ userFile │ r/w │ string — path to htpasswd file</p>
+        <p>NginxAuthRequest │ uri │ r/w │ string — subrequest URI</p>
+        <p>NginxAutoindex │ enable │ r/w │ bool</p>
+        <p>NginxAutoindex │ format │ r/w │ "html" | "xml" | "json" | "jsonp"</p>
+        <p>NginxAutoindex │ localtime │ r/w │ bool</p>
+        <p>NginxAutoindex │ exactSize │ r/w │ bool</p>
+        <p>NginxCharset │ charset │ r/o │ string</p>
+        <p>NginxCharset │ sourceCharset │ r/o │ string</p>
+        <p>NginxCharset │ overrideCharset │ r/w │ bool</p>
+        <p>NginxCharset │ setCharset(from, to) │ fn │ add charset conversion mapping</p>
+        <p>NginxDav │ methods │ r/w │ string[] — allowed HTTP methods</p>
+        <p>NginxDav │ access │ r/w │ number — octal permissions (e.g. 0o644)</p>
+        <p>NginxDav │ minDeleteDepth │ r/w │ number</p>
+        <p>NginxDav │ createFullPutPath │ r/w │ bool</p>
+        <p>NginxFastCGI │ pass │ r/o │ string</p>
+        <p>NginxFastCGI │ index │ r/w │ string</p>
+        <p>NginxFastCGI │ keepConn │ r/w │ bool</p>
+        <p>NginxFastCGI │ connectTimeout │ r/w │ ms</p>
+        <p>NginxFastCGI │ sendTimeout │ r/w │ ms</p>
+        <p>NginxFastCGI │ readTimeout │ r/w │ ms</p>
+        <p>NginxFastCGI │ buffering │ r/w │ bool</p>
+        <p>NginxFastCGI │ requestBuffering │ r/w │ bool</p>
+        <p>NginxFastCGI │ interceptErrors │ r/w │ bool</p>
+        <p>NginxGunzip │ enable │ r/w │ bool</p>
+        <p>NginxGzipStatic │ enable │ r/w │ bool — serve pre-compressed .gz files</p>
+        <p>NginxImageFilter │ action │ r/w │ "test" | "resize" | "crop" | "rotate"</p>
+        <p>NginxImageFilter │ width │ r/w │ pixels</p>
+        <p>NginxImageFilter │ height │ r/w │ pixels</p>
+        <p>NginxImageFilter │ angle │ r/w │ 90 | 180 | 270</p>
+        <p>NginxImageFilter │ jpegQuality │ r/w │ 1–100</p>
+        <p>NginxImageFilter │ webpQuality │ r/w │ 1–100</p>
+        <p>NginxImageFilter │ sharpen │ r/w │ 0–100</p>
+        <p>NginxImageFilter │ transparency │ r/w │ bool</p>
+        <p>NginxImageFilter │ interlace │ r/w │ bool</p>
+        <p>NginxImageFilter │ bufferSize │ r/w │ bytes</p>
+        <p>NginxLimitReq │ logLevel │ r/w │ log level string</p>
+        <p>NginxLimitReq │ delayLogLevel │ r/w │ log level string</p>
+        <p>NginxLimitReq │ statusCode │ r/w │ HTTP status for rejected requests (default 503)</p>
+        <p>NginxLimitReq │ dryRun │ r/w │ bool — count but do not limit</p>
+        <p>NginxLimitConn │ logLevel │ r/w │ log level string</p>
+        <p>NginxLimitConn │ statusCode │ r/w │ HTTP status (default 503)</p>
+        <p>NginxLimitConn │ dryRun │ r/w │ bool</p>
+        <p>NginxLog │ off │ r/w │ bool — disable access logging for this location</p>
+        <p>NginxMemcached │ connectTimeout │ r/w │ ms</p>
+        <p>NginxMemcached │ sendTimeout │ r/w │ ms</p>
+        <p>NginxMemcached │ readTimeout │ r/w │ ms</p>
+        <p>NginxMemcached │ bufferSize │ r/w │ bytes</p>
+        <p>NginxMemcached │ gzipFlag │ r/w │ number — Memcached flags value for gzip content</p>
+        <p>NginxMirror │ uris │ r/w │ string[] — mirror target URIs</p>
+        <p>NginxMirror │ requestBody │ r/w │ bool — mirror request body</p>
+        <p>NginxMp4 │ bufferSize │ r/w │ bytes</p>
+        <p>NginxMp4 │ maxBufferSize │ r/w │ bytes</p>
+        <p>NginxMp4 │ startKeyFrame │ r/w │ bool</p>
+        <p>NginxRandomIndex │ enable │ r/w │ bool</p>
+        <p>NginxRealIP │ header │ r/o │ string — header used as client IP source</p>
+        <p>NginxRealIP │ recursive │ r/w │ bool</p>
+        <p>NginxReferer │ noReferer │ r/w │ bool — allow requests without Referer</p>
+        <p>NginxReferer │ blockedReferer │ r/w │ bool — allow requests with blocked Referer</p>
+        <p>NginxReferer │ serverNames │ r/w │ string[] — allowed referer server names</p>
+        <p>NginxScgi │ connectTimeout │ r/w │ ms</p>
+        <p>NginxScgi │ sendTimeout │ r/w │ ms</p>
+        <p>NginxScgi │ readTimeout │ r/w │ ms</p>
+        <p>NginxScgi │ bufferSize │ r/w │ bytes</p>
+        <p>NginxUwsgi │ connectTimeout │ r/w │ ms</p>
+        <p>NginxUwsgi │ sendTimeout │ r/w │ ms</p>
+        <p>NginxUwsgi │ readTimeout │ r/w │ ms</p>
+        <p>NginxUwsgi │ bufferSize │ r/w │ bytes</p>
+        <p>NginxSecureLink │ secret │ r/w │ string — HMAC secret</p>
+        <p>NginxSecureLink │ variable │ r/o │ string — variable name holding the link</p>
+        <p>NginxSecureLink │ md5 │ r/o │ bool — MD5-based (vs HMAC-SHA1)</p>
+        <p>NginxSlice │ size │ r/w │ bytes — slice size for range-splitting</p>
+        <p>NginxSsi │ enable │ r/w │ bool</p>
+        <p>NginxSsi │ silentErrors │ r/w │ bool</p>
+        <p>NginxSsi │ lastModified │ r/w │ bool</p>
+        <p>NginxSsi │ valueLen │ r/w │ number — max SSI variable value length</p>
+        <p>NginxSubFilter │ once │ r/w │ bool — replace only first occurrence</p>
+        <p>NginxSubFilter │ lastModified │ r/w │ bool</p>
+        <p>NginxUserid │ enable │ r/w │ bool | "v1" | "v2" | "log"</p>
+        <p>NginxUserid │ name │ r/w │ string — cookie name</p>
+        <p>NginxUserid │ domain │ r/w │ string — cookie domain</p>
+        <p>NginxUserid │ path │ r/w │ string — cookie path</p>
+        <p>NginxUserid │ p3p │ r/w │ string — P3P header value</p>
+        <p>NginxUserid │ expires │ r/o │ number — seconds</p>
+        <p>NginxUserid │ mark │ r/w │ string — version mark character</p>
+        <p>NginxAddition │ addBeforeBody │ r/w │ string — URI to prepend to response body</p>
+        <p>NginxAddition │ addAfterBody │ r/w │ string — URI to append to response body</p>
+        <p>NginxProxyCache │ minUses │ r/w │ number</p>
+        <p>NginxProxyCache │ lock │ r/w │ bool</p>
+        <p>NginxProxyCache │ lockTimeout │ r/w │ ms</p>
+        <p>NginxProxyCache │ lockAge │ r/w │ ms</p>
+        <p>NginxProxyCache │ revalidate │ r/w │ bool</p>
+        <p>NginxProxyCache │ convertHead │ r/w │ bool</p>
+        <p>NginxProxyCache │ backgroundUpdate │ r/w │ bool</p>
+        <p>NginxXslt │ lastModified │ r/w │ bool</p>
+        <p>NginxXslt │ sheetsCount │ r/o │ number — number of loaded stylesheets</p>
+        <empty-line />
+      </section>
+    </section>
+  </body>
+</FictionBook>
