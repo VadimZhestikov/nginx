@@ -1,0 +1,1212 @@
+= nginx JS — Dynamic Reconfiguration Guide (servers)
+:toc: left
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+:icons: font
+
+[WARNING]
+====
+*DRAFT FOR COMMENTS* — This document is a work in progress.
+Content, API names, and examples are subject to change before release.
+====
+
+== Overview
+
+This guide covers runtime management of nginx *server blocks* via the
+JavaScript DOM: adding, removing, renaming, and reconfiguring virtual
+servers, including their SSL configuration.
+
+Prerequisites: read the _for single worker_ guide first for `write_mode`,
+`snapshot()`, and `suspendAcceptance()`; and the _locations_ guide for
+`addLocation()`, `removeLocation()`, and `clone()`.
+
+=== The two-phase commit model
+
+Server-level structural operations (add, remove, rename) follow a
+**two-phase** model:
+
+----
+  Phase 1 — Structural change:
+    nginx.http.addServer(name)      ← server added to nginx.http.servers[]
+    nginx.http.removeServer(name)   ← server removed from nginx.http.servers[]
+    srv.setNames([...])             ← server_name list updated in memory
+
+    After Phase 1: nginx.http.servers[] reflects the change, but the
+    server-name hash tables are NOT yet updated.  Real HTTP requests
+    still route according to the OLD hash.
+
+  Phase 2 — Activate routing:
+    nginx.http.rebuildVhostDispatch()
+
+    After Phase 2: the server-name hash is rebuilt from all current
+    nginx.http.servers[].  New requests are dispatched to the updated set.
+----
+
+This is intentional: it lets you prepare a server completely (add
+locations, set handler, configure SSL) before any request can reach it.
+
+NOTE: `addLocation()` and `removeLocation()` (location-level changes) do
+*not* require a `rebuildVhostDispatch()` call — they update the location
+BST immediately.
+
+=== What this guide covers
+
+[cols="1,2"]
+|===
+| Topic | API
+
+| Inspect servers
+| `nginx.http.servers[]`, `srv.name`, `srv.names`, `srv.locations`
+
+| Add server
+| `nginx.http.addServer(name [, opts])` + `rebuildVhostDispatch()`
+
+| Remove server
+| `nginx.http.removeServer(name)` + `rebuildVhostDispatch()`
+
+| Clone server
+| `srv.clone(newName)` + `rebuildVhostDispatch()`
+
+| Rename / multi-name
+| `srv.setNames([...])` + `rebuildVhostDispatch()`
+
+| Reconfigure properties
+| `srv.root`, `srv.clientHeaderTimeout`, `srv.mergeSlashes`, etc.
+
+| SSL reconfiguration
+| `srv.ssl.setCertificate()`, `ssl.setProtocols()`, `ssl.setCiphers()`
+
+| Test routing
+| `nginx.http.match(uri [, serverName])`
+
+| Atomicity
+| `suspendAcceptance()`, `suspendAllWorkers()`
+|===
+
+== Inspecting servers
+
+=== nginx.http.servers[]
+
+The live array of all `NginxServer` objects registered on the HTTP module.
+Includes both static (from `nginx.conf`) and dynamically added servers.
+
+[source,javascript]
+----
+// List all servers and their names
+nginx.http.servers.forEach((srv, i) => {
+    nginx.log(`servers[${i}]: ${srv.names.join(', ')} (${srv.locations.length} locations)`);
+});
+----
+
+=== Server identity properties
+
+[cols="1,1,3"]
+|===
+| Property | Access | Description
+
+| `name`
+| read-only
+| First `server_name` string, or `""` if none.
+
+| `names`
+| read-only
+| Array of all `server_name` strings for this server.
+
+| `root`
+| read/write
+| Document root from the server's implicit `/` location.
+
+| `locations`
+| read-only
+| Array of `NginxLocation` objects (see _locations_ guide).
+|===
+
+=== Finding a server by name
+
+[source,javascript]
+----
+function findServer(name) {
+    return nginx.http.servers.find(srv =>
+        srv.names.some(n => n.toLowerCase() === name.toLowerCase())
+    ) || null;
+}
+
+const api = findServer('api.example.com');
+if (api) {
+    nginx.log('api root: ' + api.root);
+}
+----
+
+=== nginx.http.match(uri [, serverName])
+
+Simulates nginx's location dispatch algorithm on the JavaScript side.
+Returns the `NginxLocation` that would handle `uri`, or `null` if no
+location matches.
+
+[source,javascript]
+----
+// Test location dispatch on the first server
+const loc = nginx.http.match('/api/v2/users');
+nginx.log(loc ? 'matched: ' + loc.path : 'no match');
+
+// Test on a specific virtual host
+const loc2 = nginx.http.match('/static/img.png', 'cdn.example.com');
+----
+
+Useful for verifying that `addLocation()` / `removeLocation()` changes
+route requests as expected before enabling them for real traffic.
+
+----
+  match('/api/v2/users', 'api.example.com'):
+    Scans prefix_locs[]  → /api/v2/  (longest prefix match)
+    Checks regex_locs[]  → no match
+    Returns: NginxLocation { path: '/api/v2/', matchType: 'prefix' }
+----
+
+== Adding servers
+
+=== nginx.http.addServer(name [, opts])
+
+Creates a new virtual server with `name` as its primary `server_name`.
+The server is added to `nginx.http.servers[]` and to every listening
+address's vhost dispatch table, but routing does not activate until
+`rebuildVhostDispatch()` is called.
+
+[source,javascript]
+----
+const newSrv = nginx.http.addServer('new.example.com');
+// … configure locations, handler, etc. …
+nginx.http.rebuildVhostDispatch();   // activate routing
+----
+
+*Options:*
+
+[cols="1,3"]
+|===
+| Option | Description
+
+| `template: 'name'`
+| Use the named server as the configuration template (inherits server-level
+  defaults such as `clientHeaderTimeout`, `mergeSlashes`, etc.).
+  Defaults to the first server in `nginx.http.servers[]`.
+  The new server starts with an **empty location tree** regardless of the
+  template's locations — use `srv.clone()` if you need to copy locations.
+|===
+
+=== Difference between addServer and clone
+
+[cols="1,2,2"]
+|===
+| | `nginx.http.addServer(name, {template})` | `srv.clone(newName)`
+
+| Location tree
+| Empty (no locations)
+| Full copy of source locations
+
+| Config values
+| Inherited from template
+| Copied from source (shallow copy)
+
+| Location clcf sharing
+| — (no locations yet)
+| Shared initially; independent after `addLocation()`
+
+| Use case
+| Build a new server from scratch
+| Duplicate an existing server
+|===
+
+=== Example: add a server and populate locations
+
+[source,javascript]
+----
+// js_source: provision.js
+
+const srv = nginx.http.addServer('tenant-acme.example.com');
+
+// Document root
+srv.root = '/var/www/tenants/acme';
+
+// Health endpoint
+const health = srv.addLocation('= /health');
+health.handler = (req) => {
+    req.respond(200, {}, 'OK');
+};
+
+// Static files
+const static_ = srv.addLocation('/static/');
+static_.root     = '/var/www/tenants/acme/static';
+static_.sendfile = true;
+
+// Activate routing
+nginx.http.rebuildVhostDispatch();
+----
+
+=== Example: add server from template
+
+[source,javascript]
+----
+// Inherit clientHeaderTimeout, mergeSlashes, etc. from 'base.example.com'
+const newSrv = nginx.http.addServer('beta.example.com',
+                                    { template: 'base.example.com' });
+
+// Add locations specific to the beta server
+const beta = newSrv.addLocation('/beta/');
+beta.handler = betaHandler;
+
+nginx.http.rebuildVhostDispatch();
+----
+
+=== Flow diagram: addServer two-phase
+
+----
+  Phase 1: nginx.http.addServer('new.example.com')
+  ─────────────────────────────────────────────────
+
+  nginx.http.servers[]      vhost dispatch tables
+  ──────────────────        ────────────────────────
+  [0] example.com           addr_conf->virtual_names
+  [1] api.example.com         hash: example.com → [0]
+  [2] new.example.com  ←NEW        api.example.com → [1]
+                                ← hash NOT YET updated
+                                ← requests for new.example.com →
+                                   no match → fall back to default
+
+  Phase 2: nginx.http.rebuildVhostDispatch()
+  ──────────────────────────────────────────
+
+  vhost dispatch tables rebuilt:
+    hash: example.com     → [0]
+          api.example.com → [1]
+          new.example.com → [2]   ← NOW ACTIVE
+----
+
+== Removing servers
+
+=== nginx.http.removeServer(name)
+
+Removes the server whose primary name (case-insensitive) matches `name`.
+Splices it from `nginx.http.servers[]` and from every listening address's
+vhost entry list.  Returns `true` if found and removed, `false` otherwise.
+
+*Must call `rebuildVhostDispatch()`* to stop routing requests to the
+removed server.
+
+[source,javascript]
+----
+const removed = nginx.http.removeServer('old.example.com');
+if (removed) {
+    nginx.http.rebuildVhostDispatch();
+}
+----
+
+WARNING: In-flight requests being processed by the removed server's
+handlers complete normally.  The server's config memory is not freed until
+the server opaque object is garbage-collected.
+
+=== Example: dynamic server lifecycle (add → serve → remove)
+
+[source,javascript]
+----
+// Bring up a temporary server for a maintenance window
+async function withTemporaryServer(name, handler, durationMs) {
+    const srv = nginx.http.addServer(name);
+    const loc = srv.addLocation('/');
+    loc.handler = handler;
+    nginx.http.rebuildVhostDispatch();
+
+    nginx.log('temporary server live: ' + name);
+    await nginx.setTimeout(durationMs);
+
+    nginx.http.removeServer(name);
+    nginx.http.rebuildVhostDispatch();
+    nginx.log('temporary server removed: ' + name);
+}
+
+// Usage: maintenance page for 2 minutes
+withTemporaryServer('maintenance.example.com',
+    (req) => { req.respond(503, {}, 'Maintenance in progress'); },
+    120000);
+----
+
+=== Flow diagram: removeServer two-phase
+
+----
+  Before removeServer('api.example.com'):
+    servers[]: example.com, api.example.com, cdn.example.com
+    hash: all three names routable
+
+  Phase 1: nginx.http.removeServer('api.example.com')
+    servers[]: example.com, cdn.example.com
+    hash: still routes api.example.com → (now stale pointer)
+    ← DANGER: do not leave this state for long
+
+  Phase 2: nginx.http.rebuildVhostDispatch()
+    hash rebuilt: example.com, cdn.example.com
+    Requests for api.example.com → no match → default server
+----
+
+== Cloning a server
+
+=== srv.clone(newName)
+
+Creates an independent copy of the server under `newName`.  Unlike
+`addServer()`, the clone inherits the **full current location tree** —
+all prefix, regex, and named locations (both static and dynamic).
+
+[source,javascript]
+----
+const primary = findServer('example.com');
+const mirror  = primary.clone('mirror.example.com');
+nginx.http.rebuildVhostDispatch();
+----
+
+=== Shared location structs after clone
+
+After `clone()`, the source and clone initially share the underlying
+`ngx_http_core_loc_conf_t` C structs for each copied location.  This means:
+
+* Reading `loc.root` / `loc.handler` / etc. on either server returns the
+  same value.
+* Writing `loc.handler = fn` via a location object from either server
+  modifies the **shared** struct and affects **both** servers.
+* Calling `clone.addLocation('/new/')` creates a new, independent entry
+  only in the clone's BST.  It does not affect the source.
+
+To make a location's config truly independent after cloning, use
+`loc.snapshot()` on the clone's location and then immediately `restore()` —
+this forces a copy-on-write.  Or set the field you want to differ: the
+setter will write to the shared struct (which is still correct if you intend
+to update both), or use `write_mode='local'` for per-request isolation.
+
+----
+  srv.clone('mirror.example.com'):
+
+  primary.locations:              mirror.locations (after clone):
+    /api/   → clcf_A  ─────────────► /api/   → clcf_A  (shared pointer)
+    /static/ → clcf_B ─────────────► /static/ → clcf_B (shared pointer)
+    /        → clcf_C ─────────────► /        → clcf_C (shared pointer)
+
+  mirror.addLocation('/mirror-only/'):
+    /mirror-only/ → clcf_NEW  ← independent, only in mirror
+
+  primary.findLocation('/api/').handler = v2;  ← modifies clcf_A
+    → affects BOTH primary and mirror /api/
+----
+
+=== Example: blue-green deployment by server clone
+
+[source,javascript]
+----
+// js_source: blue_green.js
+
+let activeName = 'app.example.com';
+let standbyName = 'app-standby.internal';
+
+// Initial state: active server is live
+const active = findServer(activeName);
+
+async function deployGreen(newHandlers) {
+    // Clone active → standby (inherits all locations and settings)
+    const standby = active.clone(standbyName);
+
+    // Update handlers on standby
+    // (sets shared clcf, visible on both servers — that is fine here
+    //  because standby is not yet routable)
+    newHandlers.forEach(({ path, handler }) => {
+        const loc = standby.findLocation(path);
+        if (loc) { loc.handler = handler; }
+    });
+
+    // Add standby to routing
+    nginx.http.rebuildVhostDispatch();
+    nginx.log('standby live at: ' + standbyName);
+
+    // Smoke-test the standby via match() before cutover
+    const health = nginx.http.match('/health', standbyName);
+    nginx.log('standby health loc: ' + (health ? health.path : 'none'));
+
+    // Cutover: swap names
+    await nginx.suspendAllWorkers();
+    try {
+        active.setNames([standbyName]);       // demote active to standby
+        standby.setNames([activeName]);       // promote standby to active
+        nginx.http.rebuildVhostDispatch();
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+
+    nginx.log('cutover complete: ' + activeName + ' → new handlers');
+}
+----
+
+== Managing server names
+
+=== srv.setNames(namesArray)
+
+Replaces the `server_name` list for this server.  Strings are copied into
+the cycle pool.  The change is visible immediately via `srv.names` and
+`srv.name`, but routing is not updated until `rebuildVhostDispatch()` is
+called.
+
+[source,javascript]
+----
+const srv = findServer('example.com');
+
+// Add an alias
+srv.setNames(['example.com', 'www.example.com', 'example.net']);
+nginx.http.rebuildVhostDispatch();
+----
+
+[source,javascript]
+----
+// Remove all names (server becomes the default_server for its address)
+srv.setNames([]);
+nginx.http.rebuildVhostDispatch();
+----
+
+NOTE: `setNames` replaces the entire name list.  To add a single alias,
+read `srv.names`, push to it, and pass the updated array back.
+
+[source,javascript]
+----
+function addAlias(srv, alias) {
+    const names = srv.names.slice();   // copy current names
+    if (!names.includes(alias)) {
+        names.push(alias);
+        srv.setNames(names);
+        nginx.http.rebuildVhostDispatch();
+    }
+}
+
+function removeAlias(srv, alias) {
+    const names = srv.names.filter(n => n !== alias);
+    srv.setNames(names);
+    nginx.http.rebuildVhostDispatch();
+}
+----
+
+=== Example: certificate rollover with name swap
+
+Wildcard certificates covering `*.example.com` can be rotated by swapping
+which server responds to each name:
+
+[source,javascript]
+----
+async function swapServerNames(nameA, nameB) {
+    const srvA = findServer(nameA);
+    const srvB = findServer(nameB);
+
+    if (!srvA || !srvB) { throw new Error('server not found'); }
+
+    await nginx.suspendAllWorkers();
+    try {
+        const tempA = srvA.names.slice();
+        const tempB = srvB.names.slice();
+
+        srvA.setNames(tempB);
+        srvB.setNames(tempA);
+        nginx.http.rebuildVhostDispatch();
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+}
+----
+
+== Reconfiguring server properties
+
+=== Writable server properties
+
+[cols="1,1,3"]
+|===
+| Property | Type | Description
+
+| `root`
+| string
+| Document root for the implicit `/` location.
+
+| `clientHeaderBufferSize`
+| number (bytes)
+| Size of buffer for reading client request headers.
+
+| `clientHeaderTimeout`
+| number (ms)
+| Timeout for reading the full HTTP request header.
+
+| `ignoreInvalidHeaders`
+| boolean
+| Whether to ignore invalid header names (default: `true`).
+
+| `mergeSlashes`
+| boolean
+| Whether to merge consecutive slashes in URIs (default: `true`).
+
+| `underscoresInHeaders`
+| boolean
+| Whether to allow underscores in header names (default: `false`).
+
+| `serverTokens`
+| `'on'` \| `'off'` \| `'build'`
+| Controls the `Server:` response header.
+
+| `connectionPoolSize`
+| number (bytes)
+| Size of the per-connection memory pool.
+
+| `requestPoolSize`
+| number (bytes)
+| Size of the per-request memory pool.
+|===
+
+=== Read-only server properties
+
+[cols="1,3"]
+|===
+| Property | Description
+
+| `largeClientHeaderBuffers`
+| Object with `count` and `size` (bytes).  Set via `nginx.conf` only.
+
+| `ssl`
+| `NginxSSL` sub-object, or `null` if SSL is not configured.
+  SSL settings are mutated via `ssl.setCertificate()` etc.
+|===
+
+=== Example: runtime header policy change
+
+[source,javascript]
+----
+const srv = findServer('legacy.example.com');
+
+// Legacy API clients send underscores in header names
+nginx.suspendAcceptance();
+srv.underscoresInHeaders = true;
+srv.ignoreInvalidHeaders = false;
+nginx.resumeAcceptance();
+----
+
+== SSL reconfiguration
+
+=== The NginxSSL sub-object
+
+`srv.ssl` returns a `NginxSSL` wrapper if the server has `ssl_certificate`
+configured, or `null` otherwise.
+
+[source,javascript]
+----
+const ssl = findServer('secure.example.com').ssl;
+if (!ssl) { throw new Error('no SSL configured'); }
+----
+
+=== SSL read-only properties
+
+[cols="1,3"]
+|===
+| Property | Description
+
+| `certificate`
+| Current certificate file path (string).
+
+| `certificateKey`
+| Current private key file path (string).
+
+| `protocols`
+| Array of enabled protocol strings (e.g. `['TLSv1.2', 'TLSv1.3']`).
+
+| `ciphers`
+| OpenSSL cipher string.
+
+| `verify`
+| Client certificate verification mode (`'off'`, `'on'`, `'optional'`,
+  `'optional_no_ca'`).
+
+| `clientCertificate`
+| Path to client CA bundle (or `""` if not set).
+
+| `trustedCertificate`
+| Path to trusted CA bundle (or `""` if not set).
+
+| `ecdhCurve`
+| ECDH curve name or `"auto"`.
+
+| `dhparam`
+| DH parameters file path (or `""` if not set).
+|===
+
+=== SSL read/write properties
+
+[cols="1,1,3"]
+|===
+| Property | Type | Description
+
+| `sessionTimeout`
+| number (seconds)
+| TLS session cache timeout.
+
+| `sessionTickets`
+| boolean
+| Whether to use TLS session tickets.
+
+| `preferServerCiphers`
+| boolean
+| Whether to prefer the server's cipher order.
+
+| `verifyDepth`
+| number
+| Maximum depth of client certificate chain.
+|===
+
+=== ssl.setCertificate(certPath, keyPath)
+
+Hot-swaps the TLS certificate and private key on the live `SSL_CTX`.
+Calls `SSL_CTX_use_certificate_chain_file()` and
+`SSL_CTX_use_PrivateKey_file()` (PEM format), then validates that the
+cert and key match.
+
+Takes effect for all *new* TLS handshakes immediately.  Existing sessions
+continue with the old certificate until they expire.  Throws on any error
+(file not found, invalid format, key mismatch).
+
+[source,javascript]
+----
+const ssl = findServer('secure.example.com').ssl;
+
+ssl.setCertificate(
+    '/etc/ssl/certs/2025/secure.example.com.pem',
+    '/etc/ssl/private/2025/secure.example.com.key'
+);
+nginx.log('certificate rotated: ' + ssl.certificate);
+----
+
+=== ssl.setProtocols(protocolArray)
+
+Sets the enabled TLS protocol versions on the live `SSL_CTX`.
+
+Accepted values: `'SSLv2'`, `'SSLv3'`, `'TLSv1'`, `'TLSv1.1'`,
+`'TLSv1.2'`, `'TLSv1.3'`.
+
+[source,javascript]
+----
+// Enforce TLS 1.2+ only
+ssl.setProtocols(['TLSv1.2', 'TLSv1.3']);
+
+// Re-enable TLS 1.1 for legacy clients temporarily
+ssl.setProtocols(['TLSv1.1', 'TLSv1.2', 'TLSv1.3']);
+----
+
+=== ssl.setCiphers(cipherString)
+
+Sets the OpenSSL cipher suite string on the live `SSL_CTX`.
+
+[source,javascript]
+----
+ssl.setCiphers('ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256');
+----
+
+=== Example: zero-downtime certificate rotation
+
+[source,javascript]
+----
+loc.handler = async (req) => {
+    const body    = JSON.parse(await req.readBody());
+    const srvName = body.server;
+    const certPath = body.cert;
+    const keyPath  = body.key;
+
+    const srv = findServer(srvName);
+    if (!srv) { req.respond(404, {}, 'server not found'); return; }
+
+    const ssl = srv.ssl;
+    if (!ssl) { req.respond(400, {}, 'server has no SSL'); return; }
+
+    const oldCert = ssl.certificate;
+    const oldKey  = ssl.certificateKey;
+
+    try {
+        ssl.setCertificate(certPath, keyPath);
+        nginx.log(`cert rotated on ${srvName}: ${oldCert} → ${certPath}`);
+        req.json({ rotated: true, cert: ssl.certificate });
+    } catch (e) {
+        req.respond(500, {}, 'cert rotation failed: ' + e.message);
+    }
+};
+----
+
+=== Example: emergency protocol downgrade
+
+Allow older TLS versions temporarily for a critical client integration:
+
+[source,javascript]
+----
+loc.handler = async (req) => {
+    const ssl      = findServer('api.example.com').ssl;
+    const original = ssl.protocols.slice();    // save current protocols
+
+    // Allow TLS 1.1 for 10 minutes, then revert
+    ssl.setProtocols(['TLSv1.1', 'TLSv1.2', 'TLSv1.3']);
+    nginx.log('TLS 1.1 re-enabled temporarily');
+
+    await nginx.setTimeout(600000);   // 10 min
+
+    ssl.setProtocols(original);
+    nginx.log('TLS protocols restored: ' + original.join(', '));
+};
+----
+
+NOTE: `ssl.protocols` returns the current enabled protocol list.
+Saving and restoring it is equivalent to using `snapshot()` on a
+sub-object — an explicit save/restore is required here because `NginxSSL`
+does not currently support `snapshot()`.
+
+== Complete examples
+
+=== Example 1: per-tenant server provisioning
+
+[source,javascript]
+----
+// js_source: tenants.js
+
+const templateServer = nginx.http.servers[0];
+
+function provisionTenant(tenant) {
+    const name = tenant.id + '.example.com';
+
+    // Idempotent: if already exists, return existing
+    const existing = findServer(name);
+    if (existing) { return existing; }
+
+    const srv = nginx.http.addServer(name);
+    srv.root = '/var/www/tenants/' + tenant.id;
+
+    // Standard locations
+    const health = srv.addLocation('= /health');
+    health.handler = (req) => { req.respond(200, {}, 'OK'); };
+
+    const api = srv.addLocation('/api/');
+    api.handler = makeTenantApiHandler(tenant);
+
+    const static_ = srv.addLocation('/static/');
+    static_.root     = '/var/www/static';
+    static_.sendfile = true;
+
+    nginx.http.rebuildVhostDispatch();
+    nginx.log('provisioned: ' + name);
+    return srv;
+}
+
+function deprovisionTenant(tenantId) {
+    const name = tenantId + '.example.com';
+    const removed = nginx.http.removeServer(name);
+    if (removed) {
+        nginx.http.rebuildVhostDispatch();
+        nginx.log('deprovisioned: ' + name);
+    }
+    return removed;
+}
+----
+
+=== Example 2: atomic blue-green server swap
+
+[source,javascript]
+----
+let blueActive = true;
+
+loc.handler = async (req) => {
+    const body   = JSON.parse(await req.readBody());
+    const flavor = body.flavor;     // 'blue' or 'green'
+    const target = 'app.example.com';
+
+    // Build the new (inactive) server with the new handler
+    const newSrv = nginx.http.addServer(target + '-' + flavor);
+    const apiLoc = newSrv.addLocation('/api/');
+    apiLoc.handler = flavor === 'blue' ? blueHandler : greenHandler;
+
+    // Verify new server routes correctly via match() before cutover
+    const matched = nginx.http.match('/api/test', target + '-' + flavor);
+    if (!matched || !matched.handler) {
+        nginx.http.removeServer(target + '-' + flavor);
+        nginx.http.rebuildVhostDispatch();
+        req.respond(500, {}, 'route test failed');
+        return;
+    }
+
+    // Atomic cutover: suspend all workers, swap names, rebuild
+    await nginx.suspendAllWorkers();
+    try {
+        const oldSrv = findServer(target);
+        if (oldSrv) {
+            oldSrv.setNames([target + '-old']);
+        }
+        newSrv.setNames([target]);
+        nginx.http.rebuildVhostDispatch();
+        blueActive = (flavor === 'blue');
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+
+    // Clean up the old server after traffic drains
+    await nginx.setTimeout(30000);
+    nginx.http.removeServer(target + '-old');
+    nginx.http.rebuildVhostDispatch();
+
+    req.json({ active: flavor });
+};
+----
+
+=== Example 3: certificate rotation endpoint
+
+[source,javascript]
+----
+// POST /admin/rotate-cert
+// Body: { "server": "secure.example.com", "cert": "/path/cert.pem", "key": "/path/key.pem" }
+
+loc.handler = async (req) => {
+    const body = JSON.parse(await req.readBody());
+    const srv  = findServer(body.server);
+
+    if (!srv || !srv.ssl) {
+        req.respond(404, {}, 'server or SSL not found');
+        return;
+    }
+
+    const ssl     = srv.ssl;
+    const oldCert = ssl.certificate;
+
+    try {
+        ssl.setCertificate(body.cert, body.key);
+        req.json({
+            server:  body.server,
+            old:     oldCert,
+            new:     ssl.certificate,
+            rotated: true,
+        });
+    } catch (e) {
+        req.respond(500, {}, e.message);
+    }
+};
+----
+
+=== Example 4: server inventory endpoint
+
+[source,javascript]
+----
+const inv = nginx.http.servers[0].addLocation('= /__servers');
+nginx.http.rebuildVhostDispatch();
+
+inv.handler = (req) => {
+    const data = nginx.http.servers.map(srv => ({
+        name:           srv.name,
+        names:          srv.names,
+        root:           srv.root,
+        locationCount:  srv.locations.length,
+        hasSSL:         srv.ssl !== null,
+        sslCert:        srv.ssl ? srv.ssl.certificate : null,
+        sslProtocols:   srv.ssl ? srv.ssl.protocols   : null,
+        serverTokens:   srv.serverTokens,
+    }));
+    req.json({ servers: data, count: data.length });
+};
+----
+
+=== Example 5: validate routing before going live
+
+Use `nginx.http.match()` to assert location dispatch is correct before
+calling `rebuildVhostDispatch()`:
+
+[source,javascript]
+----
+function validateRouting(srv) {
+    const cases = [
+        { uri: '/health',       expect: '= /health' },
+        { uri: '/api/users',    expect: '/api/' },
+        { uri: '/static/a.js',  expect: '/static/' },
+        { uri: '/unknown/path', expect: '/' },
+    ];
+
+    const errors = [];
+
+    cases.forEach(({ uri, expect }) => {
+        const loc = nginx.http.match(uri, srv.name);
+        if (!loc || loc.path !== expect) {
+            errors.push(`${uri}: expected '${expect}' got '${loc ? loc.path : 'null'}'`);
+        }
+    });
+
+    return errors;
+}
+
+// Usage before activating a new server:
+const newSrv = nginx.http.addServer('new.example.com');
+// … add locations …
+
+const errors = validateRouting(newSrv);
+if (errors.length > 0) {
+    nginx.http.removeServer('new.example.com');
+    throw new Error('Routing validation failed:\n' + errors.join('\n'));
+}
+
+nginx.http.rebuildVhostDispatch();
+----
+
+== Atomicity and cross-worker propagation
+
+=== Single-worker atomicity
+
+Property writes on `NginxServer` and `NginxSSL` objects are individual
+assignments.  Use `suspendAcceptance()` to make a multi-field update appear
+atomic to new requests on this worker:
+
+[source,javascript]
+----
+nginx.suspendAcceptance();
+
+srv.clientHeaderTimeout     = 10000;
+srv.underscoresInHeaders    = true;
+srv.ignoreInvalidHeaders    = false;
+
+nginx.resumeAcceptance();
+----
+
+=== Cross-worker atomicity
+
+Server structural changes and `rebuildVhostDispatch()` affect only the
+current worker's server-name hash.  To propagate to all workers:
+
+[source,javascript]
+----
+const cfgWorker = new SharedWorker('cfgworker.js');
+
+// Each worker applies addServer fan-out from the SharedWorker:
+cfgWorker.onmessage = (msg) => {
+    if (msg.data.op === 'addServer') {
+        const srv = nginx.http.addServer(msg.data.name, msg.data.opts);
+        // Re-apply locations/handlers from registry (functions can't be cloned)
+        msg.data.locationDefs.forEach(def => {
+            const loc = srv.addLocation(def.pattern);
+            if (def.root)    { loc.root    = def.root; }
+            if (def.handler) { loc.handler = handlerRegistry[def.handler]; }
+        });
+        nginx.http.rebuildVhostDispatch();
+    } else if (msg.data.op === 'removeServer') {
+        nginx.http.removeServer(msg.data.name);
+        nginx.http.rebuildVhostDispatch();
+    }
+};
+----
+
+[source,javascript]
+----
+// Handler: add server across all workers atomically
+loc.handler = async (req) => {
+    const cfg = JSON.parse(await req.readBody());
+
+    await nginx.suspendAllWorkers();
+    try {
+        // Apply locally
+        const srv = nginx.http.addServer(cfg.name, cfg.opts);
+        // … add locations …
+        nginx.http.rebuildVhostDispatch();
+
+        // Broadcast to all other workers
+        cfgWorker.postMessage({
+            op: 'addServer',
+            name: cfg.name,
+            opts: cfg.opts,
+            locationDefs: cfg.locationDefs,
+        });
+
+        req.json({ added: cfg.name });
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};
+----
+
+=== Flow diagram: cross-worker addServer + rebuildVhostDispatch
+
+----
+  Worker 0:
+
+  await suspendAllWorkers()
+  ─────────────────────────────────────────► all workers suspended
+  nginx.http.addServer('new.example.com')
+  nginx.http.rebuildVhostDispatch()         ← this worker's hash rebuilt
+  cfgWorker.postMessage({op:'addServer'})
+      │ ──────────────────────────────────► SharedWorker fan-out
+                                                 │ ──────────────► Worker 1:
+                                                 │                  addServer()
+                                                 │                  rebuildVhostDispatch()
+                                                 └ ──────────────► Worker 2:
+                                                                    addServer()
+                                                                    rebuildVhostDispatch()
+  await resumeAllWorkers()
+  ─────────────────────────────────────────► all workers resume
+  All workers now route requests to new.example.com.
+----
+
+== API Reference
+
+=== nginx.http.servers[]
+
+Read-only live array of all `NginxServer` objects.
+
+[source,text]
+----
+NginxServer[]  nginx.http.servers
+----
+
+=== nginx.http.addServer(name [, opts])
+
+Creates a new virtual server with an empty location tree.
+
+[source,text]
+----
+NginxServer  nginx.http.addServer(name)
+NginxServer  nginx.http.addServer(name, { template: 'existingName' })
+----
+
+Does NOT activate routing — call `rebuildVhostDispatch()` after.
+
+Throws `TypeError` if `name` is missing.
+Throws `InternalError` if no existing servers or no http{} block.
+
+=== nginx.http.removeServer(name)
+
+Removes the server matching `name` (case-insensitive).
+
+[source,text]
+----
+boolean  nginx.http.removeServer(name)
+----
+
+Returns `true` if removed, `false` if not found.
+Does NOT update routing — call `rebuildVhostDispatch()` after.
+
+=== nginx.http.rebuildVhostDispatch()
+
+Rebuilds the server-name hash tables for all listening addresses.
+Must be called after `addServer()`, `removeServer()`, or `srv.setNames()`.
+
+[source,text]
+----
+undefined  nginx.http.rebuildVhostDispatch()
+----
+
+Throws `InternalError` on hash allocation or init failure.
+
+=== nginx.http.match(uri [, serverName])
+
+Simulates nginx's location dispatch algorithm.  Returns the
+`NginxLocation` that would handle `uri`, or `null` on no match.
+
+[source,text]
+----
+NginxLocation | null  nginx.http.match(uri)
+NginxLocation | null  nginx.http.match(uri, serverName)
+----
+
+Uses the first server in `nginx.http.servers[]` when `serverName` is
+omitted.  Performs the full exact → prefix → ^~ → regex → fallback
+sequence on the JavaScript-side location arrays.
+
+=== srv.clone(newName)
+
+Creates an independent copy of the server (with full location tree).
+
+[source,text]
+----
+NginxServer  srv.clone(newName)
+----
+
+Does NOT activate routing — call `rebuildVhostDispatch()` after.
+
+=== srv.setNames(namesArray)
+
+Replaces the `server_name` list.
+
+[source,text]
+----
+undefined  srv.setNames([ 'name1', 'name2', ... ])
+----
+
+Does NOT update routing — call `rebuildVhostDispatch()` after.
+
+Throws `TypeError` if the argument is not an array.
+
+=== ssl.setCertificate(certPath, keyPath)
+
+Hot-swaps the TLS certificate and private key on the live `SSL_CTX`.
+
+[source,text]
+----
+undefined  ssl.setCertificate(certPath, keyPath)
+----
+
+Takes effect for new handshakes immediately.  Throws on file I/O error,
+PEM parse error, or cert/key mismatch.
+
+=== ssl.setProtocols(protocolArray)
+
+Sets enabled TLS protocol versions on the live `SSL_CTX`.
+
+[source,text]
+----
+undefined  ssl.setProtocols(['TLSv1.2', 'TLSv1.3'])
+----
+
+Accepted strings: `'SSLv2'`, `'SSLv3'`, `'TLSv1'`, `'TLSv1.1'`,
+`'TLSv1.2'`, `'TLSv1.3'`.
+
+=== ssl.setCiphers(cipherString)
+
+Sets the OpenSSL cipher suite string.
+
+[source,text]
+----
+undefined  ssl.setCiphers(openSSLCipherString)
+----
+
+== Design notes
+
+=== Why rebuildVhostDispatch() is explicit
+
+nginx's server-name dispatch is based on hash tables built at startup.
+A single atomic rebuild — rather than incremental insertion — avoids
+hash collisions, wildcard ordering issues, and PCRE regex recompilation
+during partial updates.  The explicit call gives the JS script control
+over exactly when the new routing becomes active.
+
+=== addServer vs srv.clone: location tree sharing
+
+`nginx.http.addServer()` always creates an empty location tree.  This is
+deliberate: it forces the caller to explicitly define all locations for
+the new server, preventing unexpected inheritance of handler functions
+that may reference per-server state.
+
+`srv.clone()` copies the full tree for cases where the intent is to
+create a near-identical virtual host.  The initial struct sharing is safe
+because the clone is not yet reachable until `rebuildVhostDispatch()` is
+called, giving the caller a window to customise the clone before any
+request can reach it.
+
+=== Certificate rotation and existing sessions
+
+`ssl.setCertificate()` replaces the certificate on the live `SSL_CTX`
+using `SSL_CTX_use_certificate_chain_file` / `SSL_CTX_use_PrivateKey_file`.
+This is the standard OpenSSL hot-swap path.  Sessions established before
+the swap continue with the old certificate via OpenSSL's session cache
+or tickets; only new handshakes use the new certificate.
+
+=== rebuildVhostDispatch and per-worker hashes
+
+Each worker maintains its own server-name hash.  A `rebuildVhostDispatch()`
+call on Worker 0 does not update Workers 1 … N.  Broadcast via SharedWorker
+(see cross-worker section above) is required to synchronise all workers.
+
+=== Duplicate server names
+
+`rebuildVhostDispatch()` logs a warning (`NGX_LOG_WARN`) and skips
+duplicate server names silently — it does not throw.  The first server
+registered with a given name wins.  Ensure names are unique before
+calling `addServer()` if strict routing is required.
