@@ -137,6 +137,8 @@ typedef struct {
     ngx_chain_t          **body_bufs_last; /* tail pointer into body_bufs list */
     ngx_uint_t             active_filter_mode; /* NGX_JS_FILTER_* of running filter */
     ngx_str_t              wb_body;        /* whole-body filter: current body string */
+    ngx_chain_t           *stream_out;     /* sendBuffer accumulator (streaming)    */
+    ngx_chain_t          **stream_out_last;/* tail of stream_out                    */
 } ngx_js_req_ctx_t;
 
 
@@ -275,6 +277,16 @@ ngx_int_t  ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
 ngx_int_t  ngx_js_body_filter_run_from(ngx_js_worker_t *w,
     struct ngx_http_request_s *r, ngx_js_req_ctx_t *rctx,
     ngx_js_loc_conf_t *jlcf, ngx_uint_t start_idx);
+
+/*
+ * Run all streamingSync/streamingAsync filters in jlcf for one chunk.
+ * chunk_data/chunk_len is the current output chunk; is_last=1 if last_buf.
+ * Filters emit output by calling req.sendBuffer(), which appends to
+ * rctx->stream_out.  Returns NGX_OK or NGX_ERROR.
+ */
+ngx_int_t  ngx_js_streaming_filters_run(JSContext *ctx, JSRuntime *rt,
+    struct ngx_http_request_s *r, ngx_js_loc_conf_t *jlcf,
+    u_char *chunk_data, size_t chunk_len, ngx_uint_t is_last);
 
 /* Install shared NginxPendingServer prototype in ctx */
 ngx_int_t  ngx_js_pending_server_install_proto(JSContext *ctx);

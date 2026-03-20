@@ -3225,6 +3225,156 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
 }
 
 
+/*
+ * Helper: flatten rctx->stream_out chain into a contiguous pool buffer.
+ * Returns a pointer to the buffer in *data_out and the length in *len_out.
+ * If stream_out is NULL or empty, sets *len_out = 0 and *data_out = "".
+ */
+static void
+ngx_js_flatten_stream_out(ngx_http_request_t *r, ngx_js_req_ctx_t *rctx,
+    u_char **data_out, size_t *len_out)
+{
+    ngx_chain_t  *cl;
+    ngx_buf_t    *b;
+    size_t        total;
+    u_char       *p;
+
+    total = 0;
+    for (cl = rctx->stream_out; cl; cl = cl->next) {
+        b = cl->buf;
+        if (ngx_buf_in_memory(b)) {
+            total += (size_t)(b->last - b->pos);
+        }
+    }
+
+    if (total == 0) {
+        *data_out = (u_char *) "";
+        *len_out  = 0;
+        return;
+    }
+
+    p = ngx_pnalloc(r->pool, total);
+    if (p == NULL) {
+        *data_out = (u_char *) "";
+        *len_out  = 0;
+        return;
+    }
+
+    *data_out = p;
+    *len_out  = total;
+
+    for (cl = rctx->stream_out; cl; cl = cl->next) {
+        b = cl->buf;
+        if (ngx_buf_in_memory(b)) {
+            p = ngx_copy(p, b->pos, (size_t)(b->last - b->pos));
+        }
+    }
+}
+
+
+/*
+ * Streaming filter chain: each filter receives the PREVIOUS filter's output
+ * as its input (composing semantics, same as wholeBody mode for the WB chain).
+ * After every filter call stream_out is reset so the next filter starts fresh.
+ * After the last filter stream_out is left as the final output for the caller.
+ */
+ngx_int_t
+ngx_js_streaming_filters_run(JSContext *ctx, JSRuntime *rt,
+    ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf,
+    u_char *chunk_data, size_t chunk_len, ngx_uint_t is_last)
+{
+    ngx_js_filter_entry_t  *elts;
+    ngx_js_worker_t        *w;
+    ngx_js_req_ctx_t       *rctx;
+    JSValue                 req_obj, fn, chunk_val, flags_obj, result, args[3];
+    JSContext              *job_ctx;
+    ngx_uint_t              i, nelts;
+    u_char                 *cur_data;
+    size_t                  cur_len;
+
+    req_obj = ngx_js_wrap_request(ctx, r);
+    if (JS_IsException(req_obj)) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        return NGX_ERROR;
+    }
+
+    flags_obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, flags_obj, "last",
+                      is_last ? JS_TRUE : JS_FALSE);
+
+    w                       = JS_GetContextOpaque(ctx);
+    w->dispatching_body_arr = jlcf->body_filters;
+    nelts                   = jlcf->body_filters->nelts;
+    elts                    = jlcf->body_filters->elts;
+
+    rctx    = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    cur_data = chunk_data;
+    cur_len  = chunk_len;
+
+    for (i = 0; i < nelts; i++) {
+        if (elts[i].mode != NGX_JS_FILTER_STREAM_SYNC) {
+            continue;
+        }
+
+        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+        if (!JS_IsFunction(ctx, fn)) {
+            JS_FreeValue(ctx, fn);
+            continue;
+        }
+
+        /*
+         * Reset stream_out before each filter: each filter's sendBuffer
+         * calls accumulate fresh output; after the call we flatten that
+         * output into cur_data/cur_len for the NEXT filter's input.
+         * After the last filter, stream_out is left intact for the caller.
+         */
+        if (rctx != NULL) {
+            rctx->stream_out      = NULL;
+            rctx->stream_out_last = &rctx->stream_out;
+            rctx->active_filter_mode = NGX_JS_FILTER_STREAM_SYNC;
+        }
+
+        chunk_val = JS_NewStringLen(ctx, (const char *) cur_data, cur_len);
+
+        args[0] = req_obj;
+        args[1] = chunk_val;
+        args[2] = flags_obj;
+
+        result = JS_Call(ctx, fn, JS_UNDEFINED, 3, args);
+        JS_FreeValue(ctx, fn);
+        JS_FreeValue(ctx, chunk_val);
+
+        while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+
+        if (rctx != NULL) {
+            rctx->active_filter_mode = NGX_JS_FILTER_WB_SYNC;
+        }
+
+        if (JS_IsException(result)) {
+            ngx_js_log_exception(ctx, r->connection->log);
+        }
+        JS_FreeValue(ctx, result);
+
+        /* Flatten this filter's stream_out into cur_data for the next filter.
+         * This also leaves stream_out pointing to the last filter's output
+         * when the loop ends (cur_data for subsequent filters, stream_out for
+         * the caller). */
+        if (rctx != NULL) {
+            ngx_js_flatten_stream_out(r, rctx, &cur_data, &cur_len);
+        } else {
+            cur_data = (u_char *) "";
+            cur_len  = 0;
+        }
+    }
+
+    JS_FreeValue(ctx, flags_obj);
+    JS_FreeValue(ctx, req_obj);
+    w->dispatching_body_arr = NULL;
+
+    return NGX_OK;
+}
+
+
 static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("path",             ngx_js_location_get, NULL,                 0),
     JS_CGETSET_MAGIC_DEF("root",             ngx_js_location_get, ngx_js_location_set,  1),

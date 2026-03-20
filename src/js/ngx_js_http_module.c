@@ -210,11 +210,100 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
      * once on the complete body.  This path is taken whenever the filter list
      * contains at least one wholeBody* filter.
      *
-     * Mode A (streaming): not yet implemented; passes through unchanged.
+     * Mode A (streaming): each nginx body filter call = one chunk delivered
+     * to all streamingSync filters.  Filters emit output via req.sendBuffer().
      */
     if (!jlcf->body_filter_has_wb) {
-        /* Mode A stub — streaming filters are not yet implemented */
-        return ngx_js_next_body_filter(r, in);
+        /* ── Mode A: streaming ─────────────────────────────────────── */
+
+        ngx_chain_t  *cl;
+        ngx_buf_t    *b;
+        ngx_chain_t  *lc;
+        ngx_buf_t    *lb;
+        u_char       *p, *chunk_data;
+        size_t        total;
+        int           last, was_set;
+
+        /* Flatten the chain into a single chunk string. */
+        total = 0;
+        last  = 0;
+        for (cl = in; cl; cl = cl->next) {
+            b = cl->buf;
+            if (ngx_buf_in_memory(b)) {
+                total += (size_t)(b->last - b->pos);
+            }
+            if (b->last_buf) {
+                last = 1;
+            }
+        }
+
+        if (total > 0) {
+            p = ngx_pnalloc(r->pool, total);
+            if (p == NULL) {
+                return NGX_ERROR;
+            }
+            chunk_data = p;
+            for (cl = in; cl; cl = cl->next) {
+                b = cl->buf;
+                if (ngx_buf_in_memory(b)) {
+                    p = ngx_copy(p, b->pos, (size_t)(b->last - b->pos));
+                }
+            }
+        } else {
+            chunk_data = (u_char *) "";
+        }
+
+        /* Reset per-chunk output accumulator. */
+        rctx->stream_out      = NULL;
+        rctx->stream_out_last = &rctx->stream_out;
+
+        was_set = (w->current_request == r);
+        if (!was_set) {
+            w->current_request = r;
+        }
+
+        ngx_js_streaming_filters_run(w->ctx, w->rt, r, jlcf,
+                                     chunk_data, total, (ngx_uint_t) last);
+
+        if (!was_set) {
+            w->current_request = NULL;
+        }
+
+        cl = rctx->stream_out;
+
+        if (cl != NULL) {
+            if (last) {
+                /* Set last_buf=1 on the final output buffer. */
+                lc = cl;
+                while (lc->next != NULL) {
+                    lc = lc->next;
+                }
+                lc->buf->last_buf      = 1;
+                lc->buf->last_in_chain = 1;
+            }
+            return ngx_js_next_body_filter(r, cl);
+        }
+
+        if (last) {
+            /* Last chunk but no sendBuffer calls: emit empty last_buf marker. */
+            lb = ngx_calloc_buf(r->pool);
+            if (lb == NULL) {
+                return NGX_ERROR;
+            }
+            lb->last_buf = 1;
+            lb->sync     = 1;
+
+            lc = ngx_alloc_chain_link(r->pool);
+            if (lc == NULL) {
+                return NGX_ERROR;
+            }
+            lc->buf  = lb;
+            lc->next = NULL;
+
+            return ngx_js_next_body_filter(r, lc);
+        }
+
+        return NGX_OK;
     }
 
     /* ── Mode B: accumulate ─────────────────────────────────────────── */
@@ -3907,6 +3996,93 @@ ngx_js_request_finish(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * req.sendBuffer(data)
+ *
+ * Valid only inside a streamingSync or streamingAsync filter.  Appends
+ * data to the per-chunk output accumulator (rctx->stream_out); the caller
+ * emits the accumulated chain downstream after all filters have run.
+ *
+ * If called from a wholeBodySync/Async context: silent no-op + NGX_LOG_WARN.
+ * If called outside any filter: treated as wholeBody (no-op + warning).
+ */
+static JSValue
+ngx_js_request_send_buffer(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_js_req_ctx_t         *rctx;
+    ngx_http_request_t       *r;
+    ngx_buf_t                *b;
+    ngx_chain_t              *link;
+    const char               *data_cstr;
+    size_t                    data_len;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    r = op->r;
+    if (r == NULL) {
+        return JS_UNDEFINED;
+    }
+
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+
+    /* wholeBody modes (or outside a filter): silent no-op + warning */
+    if (rctx == NULL
+        || rctx->active_filter_mode == NGX_JS_FILTER_WB_SYNC
+        || rctx->active_filter_mode == NGX_JS_FILTER_WB_ASYNC)
+    {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "js: req.sendBuffer() called outside a streaming"
+                      " filter — ignored");
+        return JS_UNDEFINED;
+    }
+
+    if (argc < 1 || JS_IsUndefined(argv[0]) || JS_IsNull(argv[0])) {
+        return JS_UNDEFINED;
+    }
+
+    data_cstr = JS_ToCStringLen(ctx, &data_len, argv[0]);
+    if (!data_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    if (data_len == 0) {
+        JS_FreeCString(ctx, data_cstr);
+        return JS_UNDEFINED;
+    }
+
+    b = ngx_create_temp_buf(r->pool, data_len);
+    if (!b) {
+        JS_FreeCString(ctx, data_cstr);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    b->last = ngx_cpymem(b->pos, data_cstr, data_len);
+    JS_FreeCString(ctx, data_cstr);
+
+    link = ngx_alloc_chain_link(r->pool);
+    if (!link) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    link->buf  = b;
+    link->next = NULL;
+
+    if (rctx->stream_out_last == NULL) {
+        rctx->stream_out_last = &rctx->stream_out;
+    }
+
+    *rctx->stream_out_last = link;
+    rctx->stream_out_last  = &link->next;
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("method",        ngx_js_request_get, NULL,  0),
     JS_CGETSET_MAGIC_DEF("uri",           ngx_js_request_get, NULL,  1),
@@ -3954,6 +4130,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("finish",              0, ngx_js_request_finish),
     JS_CFUNC_DEF("sleep",               1, ngx_js_request_sleep),
     JS_CFUNC_DEF("fetch",               1, ngx_js_request_fetch),
+    JS_CFUNC_DEF("sendBuffer",          1, ngx_js_request_send_buffer),
 };
 
 
