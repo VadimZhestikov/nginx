@@ -5808,6 +5808,7 @@ ngx_js_create_loc_conf(ngx_conf_t *cf)
     jlcf->body_filters       = NULL;
     jlcf->own_header_filters = 1;  /* NULL is "owned" */
     jlcf->own_body_filters   = 1;
+    jlcf->body_filter_has_wb = 0;
     jlcf->pool               = cf->pool;
 
     return jlcf;
@@ -5834,8 +5835,9 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     }
 
     if (conf->body_filters == NULL && prev->body_filters != NULL) {
-        conf->body_filters     = prev->body_filters;
-        conf->own_body_filters = 0;
+        conf->body_filters       = prev->body_filters;
+        conf->own_body_filters   = 0;
+        conf->body_filter_has_wb = prev->body_filter_has_wb;
     }
 
     return NGX_CONF_OK;

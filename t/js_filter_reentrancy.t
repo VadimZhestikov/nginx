@@ -87,10 +87,10 @@ $t->write_file_expand('init.js', <<'JS');
      * First request:  snapshot has [A] only → body = 'HI'  (no '!').
      * Second request: snapshot has [A, B]   → body = 'HI!' (B appends). */
     var bodyAdded = false;
-    by['/body_add/'].addBodyFilter(function(r, body) {
+    by['/body_add/'].addBodyFilter('wholeBodySync', function(r, body) {
         if (!bodyAdded) {
             bodyAdded = true;
-            r.location.addBodyFilter(function(r2, b) { return b + '!'; });
+            r.location.addBodyFilter('wholeBodySync', function(r2, b) { return b + '!'; });
         }
         return body.toUpperCase();
     });
@@ -99,11 +99,11 @@ $t->write_file_expand('init.js', <<'JS');
     /* ------------------------------------------------------------------ */
     /* /body_remove/ — body filter A (priority 10) removes filter B
      * (priority 20) before B runs.  B is skipped → body = 'x:A'. */
-    by['/body_remove/'].addBodyFilter(function(r, body) {
+    by['/body_remove/'].addBodyFilter('wholeBodySync', function(r, body) {
         r.location.removeBodyFilter('late');
         return body + ':A';
     }, { priority: 10 });
-    by['/body_remove/'].addBodyFilter(function(r, body) {
+    by['/body_remove/'].addBodyFilter('wholeBodySync', function(r, body) {
         return body + ':B';
     }, { name: 'late', priority: 20 });
     by['/body_remove/'].handler = function(r) { r.respond(200, {}, 'x'); };

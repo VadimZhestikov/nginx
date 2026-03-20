@@ -44,16 +44,16 @@ $t->write_file_expand('init.js', <<'JS');
     for (var i = 0; i < locs.length; i++) { by[locs[i].path] = locs[i]; }
 
     /* /undef/ — filter returns undefined (implicit): body unchanged */
-    by['/undef/'].addBodyFilter(function(r, body) { /* no return */ });
+    by['/undef/'].addBodyFilter('wholeBodySync', function(r, body) { /* no return */ });
     by['/undef/'].handler = function(r) { r.respond(200, {}, 'unchanged'); };
 
     /* /null/ — filter returns null: body unchanged */
-    by['/null/'].addBodyFilter(function(r, body) { return null; });
+    by['/null/'].addBodyFilter('wholeBodySync', function(r, body) { return null; });
     by['/null/'].handler = function(r) { r.respond(200, {}, 'keep'); };
 
     /* /mixed/ — first filter modifies, second returns null: first change preserved */
-    by['/mixed/'].addBodyFilter(function(r, body) { return body.toUpperCase(); });
-    by['/mixed/'].addBodyFilter(function(r, body) { return null; });
+    by['/mixed/'].addBodyFilter('wholeBodySync', function(r, body) { return body.toUpperCase(); });
+    by['/mixed/'].addBodyFilter('wholeBodySync', function(r, body) { return null; });
     by['/mixed/'].handler = function(r) { r.respond(200, {}, 'hello'); };
 })();
 JS

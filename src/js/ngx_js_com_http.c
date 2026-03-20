@@ -2488,8 +2488,59 @@ ngx_js_parse_add_filter_opts(JSContext *ctx, JSValueConst opts_val,
 
 
 /*
+ * Parse the mode string that is the first argument of addBodyFilter.
+ * Returns NGX_OK and sets *mode_out on success; throws TypeError and
+ * returns NGX_ERROR on bad input.
+ */
+static ngx_int_t
+ngx_js_parse_body_filter_mode(JSContext *ctx, JSValueConst mode_val,
+    ngx_uint_t *mode_out)
+{
+    const char  *s;
+
+    if (!JS_IsString(mode_val)) {
+        JS_ThrowTypeError(ctx,
+                          "addBodyFilter: first argument must be a mode string "
+                          "('wholeBodySync', 'wholeBodyAsync', "
+                          "'streamingSync', 'streamingAsync')");
+        return NGX_ERROR;
+    }
+
+    s = JS_ToCString(ctx, mode_val);
+    if (!s) {
+        return NGX_ERROR;
+    }
+
+    if (strcmp(s, "wholeBodySync") == 0) {
+        *mode_out = NGX_JS_FILTER_WB_SYNC;
+
+    } else if (strcmp(s, "wholeBodyAsync") == 0) {
+        *mode_out = NGX_JS_FILTER_WB_ASYNC;
+
+    } else if (strcmp(s, "streamingSync") == 0) {
+        *mode_out = NGX_JS_FILTER_STREAM_SYNC;
+
+    } else if (strcmp(s, "streamingAsync") == 0) {
+        *mode_out = NGX_JS_FILTER_STREAM_ASYNC;
+
+    } else {
+        JS_ThrowTypeError(ctx,
+                          "addBodyFilter: unknown mode '%s'; expected "
+                          "'wholeBodySync', 'wholeBodyAsync', "
+                          "'streamingSync', or 'streamingAsync'", s);
+        JS_FreeCString(ctx, s);
+        return NGX_ERROR;
+    }
+
+    JS_FreeCString(ctx, s);
+    return NGX_OK;
+}
+
+
+/*
  * Core add logic shared by addHeaderFilter and addBodyFilter.
  * is_body: 0 = header list, 1 = body list.
+ * mode: NGX_JS_FILTER_* — used only when is_body == 1.
  */
 /*
  * If the filter array *listp is currently being iterated by the dispatch loop
@@ -2532,7 +2583,7 @@ ngx_js_filter_predispatch_cow(JSContext *ctx, ngx_array_t **listp,
 
 static JSValue
 ngx_js_filter_add_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
-    int is_body, JSValue fn, ngx_js_add_filter_opts_t *opts)
+    int is_body, ngx_uint_t mode, JSValue fn, ngx_js_add_filter_opts_t *opts)
 {
     ngx_js_loc_conf_t     *jlcf;
     ngx_array_t          **listp;
@@ -2557,6 +2608,7 @@ ngx_js_filter_add_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
     entry.fn_idx   = ngx_js_filter_register_fn(ctx, fn);
     entry.name     = opts->name;
     entry.priority = opts->priority;
+    entry.mode     = is_body ? mode : NGX_JS_FILTER_WB_SYNC;
 
     /* Determine insertion position (precedence: index > before/after > priority) */
     if (opts->insert_idx >= 0) {
@@ -2588,6 +2640,13 @@ ngx_js_filter_add_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
     if (ngx_js_filter_insert_at(*listp, pos, &entry) != NGX_OK) {
         ngx_js_filter_unregister_fn(ctx, entry.fn_idx);
         return JS_ThrowOutOfMemory(ctx);
+    }
+
+    /* Update the whole-body flag so the body filter can select Mode A vs B. */
+    if (is_body
+        && (mode == NGX_JS_FILTER_WB_SYNC || mode == NGX_JS_FILTER_WB_ASYNC))
+    {
+        jlcf->body_filter_has_wb = 1;
     }
 
     return JS_UNDEFINED;
@@ -2622,24 +2681,48 @@ ngx_js_location_fn_add_header_filter(JSContext *ctx, JSValueConst this_val,
         }
     }
 
-    ret = ngx_js_filter_add_impl(ctx, op->clcf, 0, argv[0], &opts);
+    ret = ngx_js_filter_add_impl(ctx, op->clcf, 0, NGX_JS_FILTER_WB_SYNC,
+                                 argv[0], &opts);
     JS_FreeValue(ctx, opts.before_ref);
     JS_FreeValue(ctx, opts.after_ref);
     return ret;
 }
 
 
+/*
+ * addBodyFilter(mode, fn[, opts])
+ *
+ * mode (required string):
+ *   'wholeBodySync'   — fn(req, body) → string
+ *   'wholeBodyAsync'  — async fn(req, body) → Promise<string>
+ *   'streamingSync'   — fn(req, chunk, flags) → void; uses req.sendBuffer()
+ *   'streamingAsync'  — async fn(req, chunk, flags) → void; uses req.sendBuffer()
+ *
+ * opts (optional object): same {name, priority, before, after, index} as before.
+ */
 static JSValue
 ngx_js_location_fn_add_body_filter(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     ngx_js_location_opaque_t  *op;
     ngx_js_add_filter_opts_t   opts;
+    ngx_uint_t                 mode;
     JSValue                    ret;
 
-    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+    /* argv[0] = mode string, argv[1] = fn, argv[2] = opts */
+    if (argc < 2) {
         return JS_ThrowTypeError(ctx,
-                                 "addBodyFilter: first argument must be a function");
+                                 "addBodyFilter(mode, fn[, opts]): "
+                                 "two arguments required");
+    }
+
+    if (ngx_js_parse_body_filter_mode(ctx, argv[0], &mode) != NGX_OK) {
+        return JS_EXCEPTION;
+    }
+
+    if (!JS_IsFunction(ctx, argv[1])) {
+        return JS_ThrowTypeError(ctx,
+                                 "addBodyFilter: second argument must be a function");
     }
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
@@ -2650,14 +2733,14 @@ ngx_js_location_fn_add_body_filter(JSContext *ctx, JSValueConst this_val,
     {
         ngx_js_loc_conf_t *jlcf = op->clcf->loc_conf[ngx_js_http_module.ctx_index];
         if (ngx_js_parse_add_filter_opts(ctx,
-                                         argc > 1 ? argv[1] : JS_UNDEFINED,
+                                         argc > 2 ? argv[2] : JS_UNDEFINED,
                                          &opts, jlcf->pool) != NGX_OK)
         {
             return JS_EXCEPTION;
         }
     }
 
-    ret = ngx_js_filter_add_impl(ctx, op->clcf, 1, argv[0], &opts);
+    ret = ngx_js_filter_add_impl(ctx, op->clcf, 1, mode, argv[1], &opts);
     JS_FreeValue(ctx, opts.before_ref);
     JS_FreeValue(ctx, opts.after_ref);
     return ret;
@@ -2954,34 +3037,46 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
     nelts                   = jlcf->body_filters->nelts;
     elts                    = jlcf->body_filters->elts;
 
-    for (i = 0; i < nelts; i++) {
-        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+    {
+        ngx_js_req_ctx_t  *rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
 
-        if (!JS_IsFunction(ctx, fn)) {
+        for (i = 0; i < nelts; i++) {
+            fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+
+            if (!JS_IsFunction(ctx, fn)) {
+                JS_FreeValue(ctx, fn);
+                continue;
+            }
+
+            if (rctx != NULL) {
+                rctx->active_filter_mode = elts[i].mode;
+            }
+
+            args[0] = req_obj;
+            args[1] = body_val;
+
+            result = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
             JS_FreeValue(ctx, fn);
-            continue;
-        }
 
-        args[0] = req_obj;
-        args[1] = body_val;
+            while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
 
-        result = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
-        JS_FreeValue(ctx, fn);
+            if (rctx != NULL) {
+                rctx->active_filter_mode = NGX_JS_FILTER_WB_SYNC;
+            }
 
-        while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+            if (JS_IsException(result)) {
+                ngx_js_log_exception(ctx, r->connection->log);
+                JS_FreeValue(ctx, result);
+                continue;
+            }
 
-        if (JS_IsException(result)) {
-            ngx_js_log_exception(ctx, r->connection->log);
-            JS_FreeValue(ctx, result);
-            continue;
-        }
-
-        /* String return → replace body for next filter */
-        if (JS_IsString(result)) {
-            JS_FreeValue(ctx, body_val);
-            body_val = result;
-        } else {
-            JS_FreeValue(ctx, result);
+            /* String return → replace body for next filter */
+            if (JS_IsString(result)) {
+                JS_FreeValue(ctx, body_val);
+                body_val = result;
+            } else {
+                JS_FreeValue(ctx, result);
+            }
         }
     }
 
@@ -3125,7 +3220,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("bodyFilters",   ngx_js_location_get_filter_list,
                           NULL, 1),
     JS_CFUNC_DEF("addHeaderFilter",    1, ngx_js_location_fn_add_header_filter),
-    JS_CFUNC_DEF("addBodyFilter",      1, ngx_js_location_fn_add_body_filter),
+    JS_CFUNC_DEF("addBodyFilter",      2, ngx_js_location_fn_add_body_filter),
     JS_CFUNC_DEF("removeHeaderFilter", 1, ngx_js_location_fn_remove_header_filter),
     JS_CFUNC_DEF("removeBodyFilter",   1, ngx_js_location_fn_remove_body_filter),
     JS_CFUNC_DEF("getHeaderFilter",    1, ngx_js_location_fn_get_header_filter),

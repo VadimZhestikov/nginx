@@ -44,15 +44,15 @@ $t->write_file_expand('init.js', <<'JS');
     for (var i = 0; i < locs.length; i++) { by[locs[i].path] = locs[i]; }
 
     /* /upper/ — single filter uppercases the body */
-    by['/upper/'].addBodyFilter(function(r, body) { return body.toUpperCase(); });
+    by['/upper/'].addBodyFilter('wholeBodySync', function(r, body) { return body.toUpperCase(); });
     by['/upper/'].handler = function(r) { r.respond(200, {}, 'hello'); };
 
     /* /empty/ — filter returns empty string */
-    by['/empty/'].addBodyFilter(function(r, body) { return ''; });
+    by['/empty/'].addBodyFilter('wholeBodySync', function(r, body) { return ''; });
     by['/empty/'].handler = function(r) { r.respond(200, {}, 'something'); };
 
     /* /hdr/ — filter reads a request header to build the response body */
-    by['/hdr/'].addBodyFilter(function(r, body) {
+    by['/hdr/'].addBodyFilter('wholeBodySync', function(r, body) {
         var prefix = r.headers['x-prefix'] || 'pre';
         return prefix + ':' + body;
     });

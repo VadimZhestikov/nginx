@@ -117,6 +117,7 @@ typedef struct {
     ngx_js_module_snap_t  *snapped;     /* per-module snapshot linked list */
     ngx_chain_t           *body_bufs;      /* accumulated response body (E1) */
     ngx_chain_t          **body_bufs_last; /* tail pointer into body_bufs list */
+    ngx_uint_t             active_filter_mode; /* NGX_JS_FILTER_* of running filter */
 } ngx_js_req_ctx_t;
 
 
@@ -125,13 +126,22 @@ typedef struct {
  * fn_idx is an index into the global __ngx_filters__ JS array (keeps fn
  * GC-reachable).  name is empty (len==0) for unnamed filters.
  * priority controls auto-insertion order (lower = runs first, default 50).
+ * mode is one of the NGX_JS_FILTER_* constants below (body filters only;
+ * header filter entries always carry NGX_JS_FILTER_WB_SYNC).
  */
 #define NGX_JS_FILTER_PRIORITY_DEFAULT  50
+
+/* Body filter execution modes (first argument to addBodyFilter). */
+#define NGX_JS_FILTER_WB_SYNC      0   /* 'wholeBodySync'   fn(req,body)→str     */
+#define NGX_JS_FILTER_WB_ASYNC     1   /* 'wholeBodyAsync'  async fn(req,body)→str */
+#define NGX_JS_FILTER_STREAM_SYNC  2   /* 'streamingSync'   fn(req,chunk,flags)  */
+#define NGX_JS_FILTER_STREAM_ASYNC 3   /* 'streamingAsync'  async fn(req,chunk,flags) */
 
 typedef struct {
     uint32_t    fn_idx;   /* index into global __ngx_filters__ array */
     ngx_str_t   name;
     ngx_int_t   priority;
+    ngx_uint_t  mode;     /* NGX_JS_FILTER_* — body filters only     */
 } ngx_js_filter_entry_t;
 
 
@@ -152,6 +162,7 @@ typedef struct {
     ngx_array_t *body_filters;        /* ngx_js_filter_entry_t[] */
     ngx_uint_t   own_header_filters;  /* 1 = owned; 0 = inherited */
     ngx_uint_t   own_body_filters;
+    ngx_uint_t   body_filter_has_wb;  /* 1 if any WB_SYNC/WB_ASYNC in list */
     ngx_pool_t  *pool;  /* cf->pool from create_loc_conf; used for filter allocs */
 } ngx_js_loc_conf_t;
 

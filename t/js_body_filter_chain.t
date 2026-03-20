@@ -44,14 +44,14 @@ $t->write_file_expand('init.js', <<'JS');
 
     /* /chain/ — first filter appends '!', second wraps in brackets
        input: 'hi' → 'hi!' → '[hi!]' */
-    by['/chain/'].addBodyFilter(function(r, body) { return body + '!'; });
-    by['/chain/'].addBodyFilter(function(r, body) { return '[' + body + ']'; });
+    by['/chain/'].addBodyFilter('wholeBodySync', function(r, body) { return body + '!'; });
+    by['/chain/'].addBodyFilter('wholeBodySync', function(r, body) { return '[' + body + ']'; });
     by['/chain/'].handler = function(r) { r.respond(200, {}, 'hi'); };
 
     /* /order/ — priority 10 runs first (prepends 'A:'), priority 50 runs after (prepends 'B:')
        input: 'x' → 'A:x' → 'B:A:x' */
-    by['/order/'].addBodyFilter(function(r, body) { return 'B:' + body; }, { priority: 50 });
-    by['/order/'].addBodyFilter(function(r, body) { return 'A:' + body; }, { priority: 10 });
+    by['/order/'].addBodyFilter('wholeBodySync', function(r, body) { return 'B:' + body; }, { priority: 50 });
+    by['/order/'].addBodyFilter('wholeBodySync', function(r, body) { return 'A:' + body; }, { priority: 10 });
     by['/order/'].handler = function(r) { r.respond(200, {}, 'x'); };
 })();
 JS
