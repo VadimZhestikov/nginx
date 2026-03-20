@@ -1,0 +1,1029 @@
+= Dynamic Reconfiguration Guide (http)
+:toc: left
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+:icons: font
+
+[WARNING]
+====
+*DRAFT FOR COMMENTS* — This document is a work in progress.
+====
+
+== Overview
+
+This guide covers runtime reconfiguration of the `nginx.http` object — the
+top-level HTTP subsystem accessible from JavaScript.  It covers:
+
+* Reading HTTP subsystem state (`servers[]`, `sockets[]`, `variables{}`,
+  hash-size parameters)
+* Provisioning new listening sockets (`nginx.createSocket()`)
+* Wiring sockets into the HTTP pipeline (`nginx.http.attach()`)
+* Managing server-name dispatch (`addServer`, `removeServer`,
+  `rebuildVhostDispatch`, `match`)
+* Safe patterns for cross-worker propagation
+
+For location-level operations see
+link:js-reconfig-guide-locations.adoc[Guide 4 (Locations)].
+For server-level operations see
+link:js-reconfig-guide-servers.adoc[Guide 5 (Servers)].
+For cross-worker coordination see
+link:js-reconfig-guide-all-workers.adoc[Guide 2 (All Workers)].
+For snapshot/restore see
+link:js-reconfig-guide-checkpoint.adoc[Guide 3 (Checkpoint/Restore)].
+
+=== nginx.http at a glance
+
+[source,js]
+----
+const h = nginx.http;
+
+// Read-only state
+h.servers[]                   // NginxServer[]
+h.sockets[]                   // NginxSocket[] — all listening sockets
+h.variables{}                 // { name: { index, writable } }
+h.serverNamesHashMaxSize      // number (from server_names_hash_max_size)
+h.serverNamesHashBucketSize   // number (from server_names_hash_bucket_size)
+h.variablesHashMaxSize        // number (from variables_hash_max_size)
+h.variablesHashBucketSize     // number (from variables_hash_bucket_size)
+
+// Mutations
+h.addServer(name[, opts])     // → NginxServer
+h.removeServer(name)          // void
+h.rebuildVhostDispatch()      // void — activates addServer/removeServer
+h.match(uri[, serverName])    // → { server, location } | null
+
+// Socket provisioning
+nginx.createSocket('host:port')   // → NginxSocket  (Phase A)
+h.attach(sock)                    // → NginxHttpListener  (Phase B)
+----
+
+=== Lifecycle phases
+
+Socket provisioning spans four phases.  Phases A-D are all pre-fork
+(config phase / `init_conf`).  Post-fork socket creation uses Phase F.
+
+----
+Phase A  nginx.createSocket('addr:port')   →  NginxSocket
+Phase B  nginx.http.attach(sock)           →  NginxHttpListener
+Phase C  listener.addServer(srv)           activates the listener
+Phase D  listener.addVirtualServer(srv)    adds a virtual-host entry
+Phase F  nginx.createSocket('addr:port')   →  NginxSocket  (post-fork,
+                                              via manager SCM_RIGHTS)
+----
+
+The four-phase model exists because nginx's listening-socket infrastructure,
+HTTP connection pipeline, and virtual-host hash are built up incrementally.
+Each `addServer` / `addVirtualServer` call triggers an inline hash rebuild
+so the new names are reachable immediately.
+
+----
+  [nginx.createSocket]          [nginx.http.attach]
+      Phase A                       Phase B
+  ┌──────────┐  NginxSocket   ┌─────────────────┐  NginxHttpListener
+  │  socket  │ ─────────────► │   HTTP wiring   │ ──────────────────►
+  │  bind    │                │  (addr, pool,   │
+  │  listen  │                │   routing structs│
+  └──────────┘                └─────────────────┘
+                                      │
+                   ┌──────────────────┴───────────────────┐
+                   ▼ Phase C                               ▼ Phase D
+          listener.addServer(srv)             listener.addVirtualServer(srv)
+          (activates cycle->listening,         (adds name to virtual_names hash,
+           sets default server)                rebuilds inline)
+----
+
+== nginx.createSocket(address)
+
+Creates a new TCP listening socket.
+
+=== Signature
+
+[source,text]
+----
+nginx.createSocket(address: string): NginxSocket
+----
+
+`address` — `"host:port"` string, e.g. `"0.0.0.0:9000"` or `"[::]:443"`.
+
+=== Behaviour
+
+* *Phase A (pre-fork / `init_conf`)* — calls `socket()`, `bind()`, and
+  `listen()` directly in the master process.  The socket is ready before
+  any worker forks.
+* *Phase F (post-fork, from a request handler)* — sends the bind address to
+  the manager thread via AF_UNIX + SCM_RIGHTS.  The manager creates the
+  socket in the master's network namespace and delivers the file descriptor
+  back to the requesting worker.  Other workers obtain the same fd via
+  `sock.broadcast()`.
+
+=== NginxSocket properties and methods
+
+[cols="1,1,3", options="header"]
+|===
+| Member | R/W | Description
+
+| `address`
+| R
+| Bind address string, e.g. `"0.0.0.0"`.
+
+| `port`
+| R
+| Bind port number.
+
+| `fd`
+| R
+| Raw file descriptor number.
+
+| `listener`
+| R
+| Associated `NginxHttpListener`, or `null` if `attach()` has not been called.
+
+| `close()`
+| —
+| Closes the socket file descriptor.
+
+| `broadcast()`
+| —
+| (Phase F) Delivers the socket fd to all other workers via the manager thread.
+  Returns `Promise<undefined>`.
+|===
+
+=== Example: create a socket in config phase
+
+[source,js]
+----
+// In js_source script, executed during init_conf
+
+const sock = nginx.createSocket('0.0.0.0:9000');
+nginx.log(`created socket fd=${sock.fd} on ${sock.address}:${sock.port}`);
+----
+
+== nginx.http.attach(sock)
+
+Wires a `NginxSocket` into the HTTP connection pipeline.
+
+=== Signature
+
+[source,text]
+----
+nginx.http.attach(sock: NginxSocket): NginxHttpListener
+----
+
+=== Behaviour
+
+* Pre-fork only.  Calling `attach()` post-fork throws an error.
+* Fills in the `sockaddr`, connection pool, and HTTP routing structures for
+  the given socket.
+* Returns a `NginxHttpListener` that can be used to register servers
+  (Phase C) and virtual hosts (Phase D).
+* Sets `sock.listener` to the returned listener.
+
+=== NginxHttpListener properties and methods
+
+[cols="1,1,3", options="header"]
+|===
+| Member | R/W | Description
+
+| `address`
+| R
+| Bind address string.
+
+| `socket`
+| R
+| The `NginxSocket` this listener was created from.
+
+| `serverNames`
+| R
+| Array of all server-name strings registered on this listener.
+
+| `serverByName(name)`
+| —
+| Returns the `NginxServer` registered under `name`, or `null`.
+
+| `addServer(srv)`
+| —
+| Phase C — sets `srv` as the default server for this listener and activates
+  it by pushing to `cycle->listening`.  Must be called exactly once per
+  listener before `addVirtualServer`.
+
+| `addVirtualServer(srv)`
+| —
+| Phase D — adds `srv` as a named virtual host.  Rebuilds the virtual-names
+  hash inline.  May be called multiple times.
+|===
+
+=== Full Phase A-D example
+
+[source,js]
+----
+// Phase A — create socket
+const sock = nginx.createSocket('0.0.0.0:8888');
+
+// Phase B — attach to HTTP pipeline
+const listener = nginx.http.attach(sock);
+
+// Build a default server
+const defaultSrv = nginx.http.addServer('_');
+defaultSrv.addLocation('/').handler = function(req) {
+    req.respond(444, {}, '');   // close silently
+};
+
+// Phase C — activate listener with a default server
+listener.addServer(defaultSrv);
+
+// Build a named virtual host
+const appSrv = nginx.http.addServer('app.example.com');
+appSrv.addLocation('/').handler = function(req) {
+    req.respond(200, {'Content-Type': 'text/plain'}, 'hello from app\n');
+};
+nginx.http.rebuildVhostDispatch();
+
+// Phase D — wire named virtual host into this listener
+listener.addVirtualServer(appSrv);
+----
+
+==== Flow diagram
+
+----
+nginx.createSocket('0.0.0.0:8888')
+          │
+          │  NginxSocket (fd=N)
+          ▼
+nginx.http.attach(sock)
+          │
+          │  NginxHttpListener
+          ▼
+    ┌─────────────┐
+    │  listener   │
+    └─────┬───────┘
+          │
+          ├──── addServer(defaultSrv)   [Phase C]
+          │         └─► pushes to cycle->listening
+          │             marks defaultSrv as default
+          │
+          └──── addVirtualServer(appSrv) [Phase D]
+                    └─► inserts into virtual_names hash
+                        (inline rebuild)
+----
+
+=== Post-fork socket creation (Phase F)
+
+After workers have forked, `nginx.createSocket()` routes through the
+manager thread.  Because each worker has its own fd table the socket must
+be explicitly distributed with `sock.broadcast()`.
+
+[source,js]
+----
+// In a request handler (post-fork)
+
+async function provisionSocket(req) {
+    // Ask manager to create + bind + listen
+    const sock = await nginx.createSocket('0.0.0.0:9001');
+
+    // Deliver fd to sibling workers
+    await sock.broadcast();
+
+    req.respond(200, {}, `socket ready on port ${sock.port}\n`);
+}
+----
+
+NOTE: `attach()` is pre-fork only.  Post-fork dynamic sockets must be
+managed at a lower level (e.g. passed to a SharedWorker that owns the
+accept loop).
+
+== nginx.http.servers[]
+
+Read-only array of all `NginxServer` objects currently known to the HTTP
+subsystem.
+
+[source,js]
+----
+for (const srv of nginx.http.servers) {
+    nginx.log(`server: names=[${srv.names}] locations=${srv.locations.length}`);
+}
+----
+
+The array reflects both statically-configured servers and servers added at
+runtime via `addServer()`.  Order matches the order servers were registered.
+
+== nginx.http.sockets[]
+
+Read-only array of all listening socket descriptors with their HTTP
+configuration.
+
+Each entry exposes:
+
+[cols="1,1,3", options="header"]
+|===
+| Property | Type | Description
+
+| `address`
+| string
+| Bind address (e.g. `"0.0.0.0"`).
+
+| `port`
+| number
+| Bind port.
+
+| `ssl`
+| boolean
+| Whether TLS is active on this listener.
+
+| `http2`
+| boolean
+| Whether HTTP/2 is negotiated on this listener.
+
+| `listen`
+| array
+| Raw listen-directive parameter objects for this port.
+|===
+
+[source,js]
+----
+for (const s of nginx.http.sockets) {
+    nginx.log(`${s.address}:${s.port}  ssl=${s.ssl}  http2=${s.http2}`);
+}
+----
+
+== nginx.http.variables{}
+
+Plain JavaScript object mapping every registered HTTP variable name to its
+metadata.
+
+[source,js]
+----
+{
+  "host":            { index: 0,  writable: false },
+  "request_method":  { index: 1,  writable: false },
+  "my_custom_var":   { index: 42, writable: true  },
+  ...
+}
+----
+
+Fields:
+
+[cols="1,1,3", options="header"]
+|===
+| Field | Type | Description
+
+| `index`
+| number
+| Internal variable index used by nginx's variable engine.
+
+| `writable`
+| boolean
+| Whether the variable can be set at request time (e.g. `set $my_var ...`).
+|===
+
+This map is populated at config parse time and is read-only at runtime.
+It lets JavaScript code discover which variables are available and whether
+they can be written.
+
+[source,js]
+----
+// Check whether a variable exists and is writable
+function varInfo(name) {
+    const v = nginx.http.variables[name];
+    if (!v) return `${name}: not registered`;
+    return `${name}: index=${v.index} writable=${v.writable}`;
+}
+nginx.log(varInfo('host'));
+nginx.log(varInfo('my_custom_var'));
+----
+
+== Hash size parameters
+
+These four properties mirror the corresponding nginx.conf directives.
+They are read-only at runtime; changing them requires a config reload.
+
+[cols="1,1,3", options="header"]
+|===
+| Property | nginx.conf directive | Purpose
+
+| `serverNamesHashMaxSize`
+| `server_names_hash_max_size`
+| Maximum hash table size for server-name dispatch.  Increase if many
+  virtual hosts cause hash-bucket conflicts.
+
+| `serverNamesHashBucketSize`
+| `server_names_hash_bucket_size`
+| Bucket size (bytes, power-of-two).  Increase if server names are long.
+
+| `variablesHashMaxSize`
+| `variables_hash_max_size`
+| Maximum hash table size for the variable engine.
+
+| `variablesHashBucketSize`
+| `variables_hash_bucket_size`
+| Bucket size for the variable hash.
+|===
+
+[source,js]
+----
+nginx.log(
+    `serverNames hash: max=${nginx.http.serverNamesHashMaxSize}` +
+    ` bucket=${nginx.http.serverNamesHashBucketSize}`
+);
+----
+
+== nginx.http.addServer(name[, opts])
+
+Adds a new virtual server to the HTTP subsystem.
+
+=== Signature
+
+[source,text]
+----
+nginx.http.addServer(name: string, opts?: { template?: string }): NginxServer
+----
+
+`name` — primary server name.
+`opts.template` — optional name of an existing server to copy configuration
+from (inherits `proxy_pass`, SSL, etc.).  Defaults to an empty configuration.
+
+The new server starts with an empty location tree.  See
+link:js-reconfig-guide-servers.adoc[Guide 5] for full details.
+
+=== Two-phase commit
+
+`addServer()` registers the server internally but *does not* update the
+server-name routing hash until `rebuildVhostDispatch()` is called.
+Incoming requests continue to use the old dispatch table until the rebuild.
+
+----
+  nginx.http.addServer('new.example.com')
+             │
+             │  registered internally
+             │  (not yet routable)
+             │
+  nginx.http.rebuildVhostDispatch()
+             │
+             └─► routing hash rebuilt — new.example.com now reachable
+----
+
+[source,js]
+----
+const srv = nginx.http.addServer('api.example.com');
+srv.addLocation('/v1').handler = function(req) {
+    req.respond(200, {}, 'v1\n');
+};
+nginx.http.rebuildVhostDispatch();   // activate
+----
+
+== nginx.http.removeServer(name)
+
+Removes a virtual server from the HTTP subsystem.
+
+=== Signature
+
+[source,text]
+----
+nginx.http.removeServer(name: string): void
+----
+
+Splices the named server from all internal virtual-host entries.  Like
+`addServer`, the routing hash is not updated until `rebuildVhostDispatch()`.
+
+In-flight requests that are already executing inside the removed server's
+handlers continue to completion.  New connections will not be dispatched to
+the removed server after the next `rebuildVhostDispatch()`.
+
+[source,js]
+----
+nginx.http.removeServer('api.example.com');
+nginx.http.rebuildVhostDispatch();
+----
+
+== nginx.http.rebuildVhostDispatch()
+
+Rebuilds the server-name routing hash from the current `servers[]` list.
+
+=== Signature
+
+[source,text]
+----
+nginx.http.rebuildVhostDispatch(): void
+----
+
+Must be called after any `addServer()` or `removeServer()` to make the
+changes reachable by incoming requests.  Safe to call at any time — the
+hash rebuild is an O(N) operation and completes in microseconds for typical
+deployments.
+
+[source,js]
+----
+nginx.http.addServer('a.example.com');
+nginx.http.addServer('b.example.com');
+nginx.http.rebuildVhostDispatch();   // both become reachable atomically
+----
+
+== nginx.http.match(uri[, serverName])
+
+Simulates the full nginx dispatch logic and returns the server and location
+that would handle a given request.
+
+=== Signature
+
+[source,text]
+----
+nginx.http.match(uri: string, serverName?: string): { server: NginxServer, location: NginxLocation } | null
+----
+
+`uri` — request URI path (e.g. `"/api/v1/users"`).
+`serverName` — optional `Host` header value for virtual-host selection.
+  Defaults to the first (default) server.
+
+Returns `null` if no match is found.
+
+[source,js]
+----
+const m = nginx.http.match('/api/v1/users', 'api.example.com');
+if (m) {
+    nginx.log(`server=${m.server.names[0]} location=${m.location.path}`);
+}
+----
+
+Useful for integration testing config changes without sending real requests:
+
+[source,js]
+----
+function assertRoutes(routes) {
+    for (const [uri, host, wantPath] of routes) {
+        const m = nginx.http.match(uri, host);
+        if (!m || m.location.path !== wantPath) {
+            throw new Error(`match(${uri}, ${host}) → ${m?.location.path} ≠ ${wantPath}`);
+        }
+    }
+}
+
+assertRoutes([
+    ['/api/v1/users', 'api.example.com', '/api/v1/'],
+    ['/health',       'api.example.com', '/health'],
+    ['/',             'www.example.com', '/'],
+]);
+----
+
+== Complete examples
+
+=== Example 1: Dynamic HTTP endpoint provisioning
+
+Add a new API server at runtime from a request handler.
+
+[source,js]
+----
+// In js_source script
+
+(function() {
+    const loc = nginx.http.servers[0].locations.find(l => l.path === '/admin');
+    if (loc) loc.handler = adminHandler;
+})();
+
+async function adminHandler(req) {
+    const body = await req.text();
+    let cmd;
+    try { cmd = JSON.parse(body); } catch(e) {
+        req.respond(400, {}, 'bad JSON\n'); return;
+    }
+
+    if (cmd.action === 'add-server') {
+        const srv = nginx.http.addServer(cmd.name);
+
+        for (const [path, msg] of Object.entries(cmd.routes || {})) {
+            const capture = msg;
+            srv.addLocation(path).handler = function(r) {
+                r.respond(200, {'Content-Type': 'text/plain'}, capture + '\n');
+            };
+        }
+
+        nginx.http.rebuildVhostDispatch();
+        req.respond(200, {}, `added server ${cmd.name}\n`);
+
+    } else if (cmd.action === 'remove-server') {
+        nginx.http.removeServer(cmd.name);
+        nginx.http.rebuildVhostDispatch();
+        req.respond(200, {}, `removed server ${cmd.name}\n`);
+
+    } else {
+        req.respond(400, {}, `unknown action ${cmd.action}\n`);
+    }
+}
+----
+
+Usage:
+
+[source,bash]
+----
+curl -X POST http://localhost/admin \
+  -d '{"action":"add-server","name":"new.example.com",
+       "routes":{"/":"hello","/api/":"api handler"}}'
+
+curl -H 'Host: new.example.com' http://localhost/
+# → hello
+----
+
+=== Example 2: Inspect all sockets and servers at startup
+
+[source,js]
+----
+(function auditHttp() {
+    nginx.log('=== HTTP Subsystem Audit ===');
+
+    nginx.log(`Listening sockets (${nginx.http.sockets.length}):`);
+    for (const s of nginx.http.sockets) {
+        nginx.log(`  ${s.address}:${s.port}  ssl=${s.ssl} http2=${s.http2}`);
+    }
+
+    nginx.log(`Servers (${nginx.http.servers.length}):`);
+    for (const srv of nginx.http.servers) {
+        nginx.log(`  [${srv.names.join(', ')}]  locations=${srv.locations.length}`);
+    }
+
+    nginx.log(`Hash sizes:`);
+    nginx.log(`  serverNames max=${nginx.http.serverNamesHashMaxSize}` +
+              ` bucket=${nginx.http.serverNamesHashBucketSize}`);
+    nginx.log(`  variables   max=${nginx.http.variablesHashMaxSize}` +
+              ` bucket=${nginx.http.variablesHashBucketSize}`);
+
+    const vars = nginx.http.variables;
+    const writable = Object.entries(vars).filter(([,v]) => v.writable).map(([n]) => n);
+    nginx.log(`Variables: total=${Object.keys(vars).length} writable=${writable.length}`);
+    if (writable.length) nginx.log(`  writable: ${writable.join(', ')}`);
+})();
+----
+
+=== Example 3: Provision a new port at config time (Phases A-D)
+
+[source,js]
+----
+// Full Phase A-D: new port with two virtual hosts
+
+// Phase A
+const sock = nginx.createSocket('0.0.0.0:8888');
+
+// Phase B
+const listener = nginx.http.attach(sock);
+
+// Build servers
+const defaultSrv = nginx.http.addServer('_');
+defaultSrv.addLocation('= /health').handler = function(req) {
+    req.respond(200, {}, 'OK\n');
+};
+defaultSrv.addLocation('/').handler = function(req) {
+    req.respond(404, {}, 'not found\n');
+};
+
+const apiSrv = nginx.http.addServer('api.internal');
+apiSrv.addLocation('/v1/').handler = function(req) {
+    req.respond(200, {'Content-Type': 'application/json'}, '{"v":1}\n');
+};
+
+// Phase C — activate listener
+listener.addServer(defaultSrv);
+
+// Make servers routable
+nginx.http.rebuildVhostDispatch();
+
+// Phase D — add virtual host
+listener.addVirtualServer(apiSrv);
+
+nginx.log('Port 8888 ready: default + api.internal');
+----
+
+=== Example 4: Variable introspection in a request handler
+
+[source,js]
+----
+// Expose all nginx variables for a given request (debugging endpoint)
+
+function varDumpHandler(req) {
+    const vars = nginx.http.variables;
+    const lines = [];
+    for (const [name, meta] of Object.entries(vars).sort()) {
+        try {
+            const val = req.variables[name];
+            lines.push(`${name}=${JSON.stringify(val)}  (idx=${meta.index})`);
+        } catch (_) {
+            lines.push(`${name}=<error>  (idx=${meta.index})`);
+        }
+    }
+    req.respond(200, {'Content-Type': 'text/plain'}, lines.join('\n') + '\n');
+}
+----
+
+=== Example 5: Cross-worker server provisioning via SharedWorker
+
+This example shows how to propagate a new server to all workers using
+a SharedWorker as the coordination hub.  See
+link:js-reconfig-guide-all-workers.adoc[Guide 2] for the full
+SharedWorker broadcast pattern.
+
+[source,js]
+----
+// -- shared-worker.js --
+
+const HANDLER_REGISTRY = {};   // name → function
+
+self.onmessage = function(e) {
+    const msg = e.data;
+    if (msg.type === 'register-handler') {
+        HANDLER_REGISTRY[msg.name] = new Function('req', msg.body);
+        self.postMessage({ type: 'ack', name: msg.name });
+    }
+};
+
+// -- main js_source script --
+
+const sw = new SharedWorker('/shared-worker.js');
+
+// Broadcast handler registration to all workers
+function broadcastHandler(name, fn) {
+    sw.postMessage({
+        type: 'register-handler',
+        name: name,
+        body: fn.toString().replace(/^function[^{]*\{|\}$/g, '')
+    });
+}
+
+// Called on each worker after receiving broadcast
+function applyHandlerLocally(name, body) {
+    const fn = new Function('req', body);
+    const srv = nginx.http.servers.find(s => s.names.includes(name));
+    if (srv) {
+        srv.locations.find(l => l.path === '/').handler = fn;
+    }
+}
+----
+
+=== Example 6: match() as a config validation tool
+
+[source,js]
+----
+// Validate routing table after a bulk reconfiguration
+
+function validateRouting(testCases) {
+    const failures = [];
+    for (const { uri, host, expectedServer, expectedLocation } of testCases) {
+        const m = nginx.http.match(uri, host);
+        if (!m) {
+            failures.push(`${host}${uri}: no match (expected ${expectedLocation})`);
+            continue;
+        }
+        if (expectedServer && !m.server.names.includes(expectedServer)) {
+            failures.push(`${host}${uri}: server=${m.server.names[0]} ≠ ${expectedServer}`);
+        }
+        if (expectedLocation && m.location.path !== expectedLocation) {
+            failures.push(`${host}${uri}: location=${m.location.path} ≠ ${expectedLocation}`);
+        }
+    }
+    if (failures.length) {
+        throw new Error('Routing validation failed:\n' + failures.join('\n'));
+    }
+    nginx.log('Routing validation passed');
+}
+
+// After reconfiguration:
+validateRouting([
+    { uri: '/api/v1/users', host: 'api.example.com',
+      expectedServer: 'api.example.com', expectedLocation: '/api/v1/' },
+    { uri: '/health',       host: 'api.example.com',
+      expectedLocation: '/health' },
+    { uri: '/',             host: 'www.example.com',
+      expectedServer: 'www.example.com', expectedLocation: '/' },
+]);
+----
+
+== Cross-worker propagation
+
+Changes to `nginx.http` (adding/removing servers, modifying locations)
+affect only the current worker's view of configuration.  To propagate
+changes to all workers use one of the three strategies from
+link:js-reconfig-guide-all-workers.adoc[Guide 2].
+
+The diagram below shows the full provisioning pipeline for a post-fork
+`addServer` broadcast:
+
+----
+  Worker 0 (request handler)
+  ├─ nginx.http.addServer('new.example.com')
+  ├─ srv.addLocation('/').handler = fn
+  ├─ nginx.http.rebuildVhostDispatch()
+  └─ sw.postMessage({ type: 'add-server', name: 'new.example.com',
+                      locationHandler: 'myHandler' })
+           │
+           │  SharedWorker (master process thread)
+           │  ├─ receives message from Worker 0
+           │  └─ broadcasts to Worker 1, Worker 2, …
+           │
+  Worker 1 (SharedWorker onmessage)
+  ├─ look up 'myHandler' in HANDLER_REGISTRY
+  ├─ nginx.http.addServer('new.example.com')
+  ├─ srv.addLocation('/').handler = HANDLER_REGISTRY['myHandler']
+  └─ nginx.http.rebuildVhostDispatch()
+
+  Worker 2 (SharedWorker onmessage)
+  └─ (same as Worker 1)
+----
+
+WARNING: JS functions cannot be transferred via `postMessage` — they are
+not serialisable.  Always use a named handler registry: broadcast the
+*name* string, and have each worker look up the function locally.
+
+=== Atomic multi-server reconfiguration across all workers
+
+If you need to add several servers atomically (no request should see a
+partial state), use `suspendAllWorkers()`:
+
+[source,js]
+----
+async function atomicMultiServerAdd(specs) {
+    await nginx.suspendAllWorkers();    // all workers pause acceptance
+    try {
+        for (const { name, routes } of specs) {
+            const srv = nginx.http.addServer(name);
+            for (const [path, handlerName] of Object.entries(routes)) {
+                srv.addLocation(path).handler = HANDLER_REGISTRY[handlerName];
+            }
+        }
+        nginx.http.rebuildVhostDispatch();
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+}
+----
+
+See link:js-reconfig-guide-all-workers.adoc[Guide 2] for the
+`suspendAllWorkers` / `resumeAllWorkers` protocol.
+
+== API Reference
+
+=== nginx (global)
+
+[cols="2,1,3", options="header"]
+|===
+| Method / Property | Phase | Description
+
+| `nginx.createSocket(addr)`
+| A (pre-fork), F (post-fork)
+| Create, bind, and listen a new TCP socket.
+  Returns `NginxSocket`.
+
+| `nginx.http`
+| any
+| The `NginxHttp` singleton.
+|===
+
+=== NginxHttp (nginx.http)
+
+[cols="2,1,3", options="header"]
+|===
+| Member | R/W | Description
+
+| `servers[]`
+| R
+| Array of all `NginxServer` objects.
+
+| `sockets[]`
+| R
+| Array of listening socket descriptors with HTTP metadata.
+
+| `variables{}`
+| R
+| Map of all registered HTTP variables: `{ name: { index, writable } }`.
+
+| `serverNamesHashMaxSize`
+| R
+| `server_names_hash_max_size` directive value.
+
+| `serverNamesHashBucketSize`
+| R
+| `server_names_hash_bucket_size` directive value.
+
+| `variablesHashMaxSize`
+| R
+| `variables_hash_max_size` directive value.
+
+| `variablesHashBucketSize`
+| R
+| `variables_hash_bucket_size` directive value.
+
+| `addServer(name[, opts])`
+| W
+| Add a server.  Not routable until `rebuildVhostDispatch()`.
+
+| `removeServer(name)`
+| W
+| Remove a server.  Takes effect after `rebuildVhostDispatch()`.
+
+| `rebuildVhostDispatch()`
+| W
+| Rebuild server-name routing hash.
+
+| `match(uri[, serverName])`
+| R
+| Simulate dispatch.  Returns `{ server, location }` or `null`.
+
+| `attach(sock)`
+| B (pre-fork)
+| Wire `NginxSocket` to HTTP pipeline.  Returns `NginxHttpListener`.
+|===
+
+=== NginxSocket
+
+[cols="2,1,3", options="header"]
+|===
+| Member | R/W | Description
+
+| `address`
+| R
+| Bind address string.
+
+| `port`
+| R
+| Bind port number.
+
+| `fd`
+| R
+| File descriptor number.
+
+| `listener`
+| R
+| Associated `NginxHttpListener` or `null`.
+
+| `close()`
+| —
+| Close the socket.
+
+| `broadcast()`
+| F (post-fork)
+| Deliver fd to all other workers.  Returns `Promise<undefined>`.
+|===
+
+=== NginxHttpListener
+
+[cols="2,1,3", options="header"]
+|===
+| Member | R/W | Description
+
+| `address`
+| R
+| Bind address string.
+
+| `socket`
+| R
+| Associated `NginxSocket`.
+
+| `serverNames`
+| R
+| Array of registered server-name strings.
+
+| `serverByName(name)`
+| —
+| Returns `NginxServer` or `null`.
+
+| `addServer(srv)`
+| C (pre-fork)
+| Set default server, activate listener.
+
+| `addVirtualServer(srv)`
+| D (pre-fork)
+| Add named virtual host, rebuild virtual-names hash.
+|===
+
+== Design notes
+
+=== Why four phases?
+
+nginx's listening infrastructure is built incrementally.  `socket()` +
+`bind()` + `listen()` (Phase A) must happen before any process forks so
+all workers inherit the socket.  Wiring the socket into the HTTP
+connection pipeline (Phase B) requires HTTP core data structures that
+exist only after `http {}` has been parsed.  Activating the listener
+(Phase C) pushes it to `cycle->listening`, which is read by the event
+loop at worker start.  Adding virtual hosts (Phase D) builds the
+per-listener name hash.
+
+Separating these phases gives precise control over when each piece of
+infrastructure becomes active.
+
+=== Two-phase commit for server names
+
+Server-name routing uses a static hash table.  Adding or removing a
+server requires rebuilding the entire hash.  `addServer()` /
+`removeServer()` defer the hash rebuild so multiple servers can be
+modified in a single batch before a single `rebuildVhostDispatch()` call
+makes all changes visible atomically.
+
+=== variables{} is read-only
+
+The variable map is populated at config parse time by all modules that
+register variables.  It cannot be extended at runtime because the
+variable index is embedded in compiled location configurations.
+
+=== Post-fork socket creation (Phase F)
+
+After workers fork, the master's network namespace is the only one that
+can `bind()` privileged ports.  Phase F uses the manager thread (which
+runs in the master) as a proxy: the worker sends the address, the manager
+creates the socket, and returns the fd via SCM_RIGHTS.  `broadcast()`
+then distributes it to sibling workers using the same mechanism.

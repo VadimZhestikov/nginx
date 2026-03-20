@@ -1,0 +1,911 @@
+<?xml version='1.0' encoding='utf-8'?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>computers</genre>
+      <author>
+        <first-name />
+        <last-name>NGINX JS DOM Project</last-name>
+      </author>
+      <book-title>Dynamic Reconfiguration Guide (http)</book-title>
+      <date>2026-03-19</date>
+      <lang>en</lang>
+    </title-info>
+    <document-info>
+      <author>
+        <nickname>asciidoctor + html2fb2.py</nickname>
+      </author>
+      <date>2026-03-19</date>
+      <id>506f1068-eaab-4200-9f74-a8fe90ff5641</id>
+      <version>1.0</version>
+    </document-info>
+  </description>
+  <body>
+    <title>
+      <p>Dynamic Reconfiguration Guide (http)</p>
+    </title>
+    <p> │ DRAFT FOR COMMENTS — This document is a work in progress.</p>
+    <empty-line />
+    <section>
+      <title>
+        <p>Overview</p>
+      </title>
+      <p>This guide covers runtime reconfiguration of the <code>nginx.http</code> object — the top-level HTTP subsystem accessible from JavaScript. It covers:</p>
+      <p>•   </p>
+      <p>Reading HTTP subsystem state (<code>servers[]</code>, <code>sockets[]</code>, <code>variables{}</code>, hash-size parameters)</p>
+      <p>•   </p>
+      <p>Provisioning new listening sockets (<code>nginx.createSocket()</code>)</p>
+      <p>•   </p>
+      <p>Wiring sockets into the HTTP pipeline (<code>nginx.http.attach()</code>)</p>
+      <p>•   </p>
+      <p>Managing server-name dispatch (<code>addServer</code>, <code>removeServer</code>, <code>rebuildVhostDispatch</code>, <code>match</code>)</p>
+      <p>•   </p>
+      <p>Safe patterns for cross-worker propagation</p>
+      <p>For location-level operations see Guide 4 (Locations) [js-reconfig-guide-locations.adoc]. For server-level operations see Guide 5 (Servers) [js-reconfig-guide-servers.adoc]. For cross-worker coordination see Guide 2 (All Workers) [js-reconfig-guide-all-workers.adoc]. For snapshot/restore see Guide 3 (Checkpoint/Restore) [js-reconfig-guide-checkpoint.adoc].</p>
+      <section>
+        <title>
+          <p>nginx.http at a glance</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>const h = nginx.http;</v>
+            <v />
+            <v>// Read-only state</v>
+            <v>h.servers[]                   // NginxServer[]</v>
+            <v>h.sockets[]                   // NginxSocket[] — all listening sockets</v>
+            <v>h.variables{}                 // { name: { index, writable } }</v>
+            <v>h.serverNamesHashMaxSize      // number (from server_names_hash_max_size)</v>
+            <v>h.serverNamesHashBucketSize   // number (from server_names_hash_bucket_size)</v>
+            <v>h.variablesHashMaxSize        // number (from variables_hash_max_size)</v>
+            <v>h.variablesHashBucketSize     // number (from variables_hash_bucket_size)</v>
+            <v />
+            <v>// Mutations</v>
+            <v>h.addServer(name[, opts])     // → NginxServer</v>
+            <v>h.removeServer(name)          // void</v>
+            <v>h.rebuildVhostDispatch()      // void — activates addServer/removeServer</v>
+            <v>h.match(uri[, serverName])    // → { server, location } | null</v>
+            <v />
+            <v>// Socket provisioning</v>
+            <v>nginx.createSocket('host:port')   // → NginxSocket  (Phase A)</v>
+            <v>h.attach(sock)                    // → NginxHttpListener  (Phase B)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Lifecycle phases</p>
+        </title>
+        <p>Socket provisioning spans four phases. Phases A-D are all pre-fork (config phase / <code>init_conf</code>). Post-fork socket creation uses Phase F.</p>
+        <poem>
+          <stanza>
+            <v>Phase A  nginx.createSocket('addr:port')   →  NginxSocket</v>
+            <v>Phase B  nginx.http.attach(sock)           →  NginxHttpListener</v>
+            <v>Phase C  listener.addServer(srv)           activates the listener</v>
+            <v>Phase D  listener.addVirtualServer(srv)    adds a virtual-host entry</v>
+            <v>Phase F  nginx.createSocket('addr:port')   →  NginxSocket  (post-fork,</v>
+            <v>                                              via manager SCM_RIGHTS)</v>
+          </stanza>
+        </poem>
+        <p>The four-phase model exists because nginx’s listening-socket infrastructure, HTTP connection pipeline, and virtual-host hash are built up incrementally. Each <code>addServer</code> / <code>addVirtualServer</code> call triggers an inline hash rebuild so the new names are reachable immediately.</p>
+        <poem>
+          <stanza>
+            <v>  [nginx.createSocket]          [nginx.http.attach]</v>
+            <v>      Phase A                       Phase B</v>
+            <v>  ┌──────────┐  NginxSocket   ┌─────────────────┐  NginxHttpListener</v>
+            <v>  │  socket  │ ─────────────► │   HTTP wiring   │ ──────────────────►</v>
+            <v>  │  bind    │                │  (addr, pool,   │</v>
+            <v>  │  listen  │                │   routing structs│</v>
+            <v>  └──────────┘                └─────────────────┘</v>
+            <v>                                      │</v>
+            <v>                   ┌──────────────────┴───────────────────┐</v>
+            <v>                   ▼ Phase C                               ▼ Phase D</v>
+            <v>          listener.addServer(srv)             listener.addVirtualServer(srv)</v>
+            <v>          (activates cycle-&gt;listening,         (adds name to virtual_names hash,</v>
+            <v>           sets default server)                rebuilds inline)</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>nginx.createSocket(address)</p>
+      </title>
+      <p>Creates a new TCP listening socket.</p>
+      <section>
+        <title>
+          <p>Signature</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx.createSocket(address: string): NginxSocket</v>
+          </stanza>
+        </poem>
+        <p>
+          <code>address</code> — <code>"host:port"</code> string, e.g. <code>"0.0.0.0:9000"</code> or <code>"[::]:443"</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>Behaviour</p>
+        </title>
+        <p>•   </p>
+        <p>
+          <strong>Phase A (pre-fork / <code>init_conf</code>)</strong> — calls <code>socket()</code>, <code>bind()</code>, and <code>listen()</code> directly in the master process. The socket is ready before any worker forks.</p>
+        <p>•   </p>
+        <p>
+          <strong>Phase F (post-fork, from a request handler)</strong> — sends the bind address to the manager thread via AF_UNIX + SCM_RIGHTS. The manager creates the socket in the master’s network namespace and delivers the file descriptor back to the requesting worker. Other workers obtain the same fd via <code>sock.broadcast()</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>NginxSocket properties and methods</p>
+        </title>
+        <p>Member │ R/W │ Description</p>
+        <p>address │ R │ Bind address string, e.g. "0.0.0.0".</p>
+        <p>port │ R │ Bind port number.</p>
+        <p>fd │ R │ Raw file descriptor number.</p>
+        <p>listener │ R │ Associated NginxHttpListener, or null if attach() has not been called.</p>
+        <p>close() │ — │ Closes the socket file descriptor.</p>
+        <p>broadcast() │ — │ (Phase F) Delivers the socket fd to all other workers via the manager thread. Returns Promise&lt;undefined&gt;.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Example: create a socket in config phase</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// In js_source script, executed during init_conf</v>
+            <v />
+            <v>const sock = nginx.createSocket('0.0.0.0:9000');</v>
+            <v>nginx.log(`created socket fd=${sock.fd} on ${sock.address}:${sock.port}`);</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>nginx.http.attach(sock)</p>
+      </title>
+      <p>Wires a <code>NginxSocket</code> into the HTTP connection pipeline.</p>
+      <section>
+        <title>
+          <p>Signature</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx.http.attach(sock: NginxSocket): NginxHttpListener</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Behaviour</p>
+        </title>
+        <p>•   </p>
+        <p>Pre-fork only. Calling <code>attach()</code> post-fork throws an error.</p>
+        <p>•   </p>
+        <p>Fills in the <code>sockaddr</code>, connection pool, and HTTP routing structures for the given socket.</p>
+        <p>•   </p>
+        <p>Returns a <code>NginxHttpListener</code> that can be used to register servers (Phase C) and virtual hosts (Phase D).</p>
+        <p>•   </p>
+        <p>Sets <code>sock.listener</code> to the returned listener.</p>
+      </section>
+      <section>
+        <title>
+          <p>NginxHttpListener properties and methods</p>
+        </title>
+        <p>Member │ R/W │ Description</p>
+        <p>address │ R │ Bind address string.</p>
+        <p>socket │ R │ The NginxSocket this listener was created from.</p>
+        <p>serverNames │ R │ Array of all server-name strings registered on this listener.</p>
+        <p>serverByName(name) │ — │ Returns the NginxServer registered under name, or null.</p>
+        <p>addServer(srv) │ — │ Phase C — sets srv as the default server for this listener and activates it by pushing to cycle→listening. Must be called exactly once per listener before addVirtualServer.</p>
+        <p>addVirtualServer(srv) │ — │ Phase D — adds srv as a named virtual host. Rebuilds the virtual-names hash inline. May be called multiple times.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Full Phase A-D example</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Phase A — create socket</v>
+            <v>const sock = nginx.createSocket('0.0.0.0:8888');</v>
+            <v />
+            <v>// Phase B — attach to HTTP pipeline</v>
+            <v>const listener = nginx.http.attach(sock);</v>
+            <v />
+            <v>// Build a default server</v>
+            <v>const defaultSrv = nginx.http.addServer('_');</v>
+            <v>defaultSrv.addLocation('/').handler = function(req) {</v>
+            <v>    req.respond(444, {}, '');   // close silently</v>
+            <v>};</v>
+            <v />
+            <v>// Phase C — activate listener with a default server</v>
+            <v>listener.addServer(defaultSrv);</v>
+            <v />
+            <v>// Build a named virtual host</v>
+            <v>const appSrv = nginx.http.addServer('app.example.com');</v>
+            <v>appSrv.addLocation('/').handler = function(req) {</v>
+            <v>    req.respond(200, {'Content-Type': 'text/plain'}, 'hello from app\n');</v>
+            <v>};</v>
+            <v>nginx.http.rebuildVhostDispatch();</v>
+            <v />
+            <v>// Phase D — wire named virtual host into this listener</v>
+            <v>listener.addVirtualServer(appSrv);</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>3.4.1. Flow diagram</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>nginx.createSocket('0.0.0.0:8888')</v>
+            <v>          │</v>
+            <v>          │  NginxSocket (fd=N)</v>
+            <v>          ▼</v>
+            <v>nginx.http.attach(sock)</v>
+            <v>          │</v>
+            <v>          │  NginxHttpListener</v>
+            <v>          ▼</v>
+            <v>    ┌─────────────┐</v>
+            <v>    │  listener   │</v>
+            <v>    └─────┬───────┘</v>
+            <v>          │</v>
+            <v>          ├──── addServer(defaultSrv)   [Phase C]</v>
+            <v>          │         └─► pushes to cycle-&gt;listening</v>
+            <v>          │             marks defaultSrv as default</v>
+            <v>          │</v>
+            <v>          └──── addVirtualServer(appSrv) [Phase D]</v>
+            <v>                    └─► inserts into virtual_names hash</v>
+            <v>                        (inline rebuild)</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Post-fork socket creation (Phase F)</p>
+        </title>
+        <p>After workers have forked, <code>nginx.createSocket()</code> routes through the manager thread. Because each worker has its own fd table the socket must be explicitly distributed with <code>sock.broadcast()</code>.</p>
+        <poem>
+          <stanza>
+            <v>// In a request handler (post-fork)</v>
+            <v />
+            <v>async function provisionSocket(req) {</v>
+            <v>    // Ask manager to create + bind + listen</v>
+            <v>    const sock = await nginx.createSocket('0.0.0.0:9001');</v>
+            <v />
+            <v>    // Deliver fd to sibling workers</v>
+            <v>    await sock.broadcast();</v>
+            <v />
+            <v>    req.respond(200, {}, `socket ready on port ${sock.port}\n`);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong>
+          <code>attach()</code> is pre-fork only. Post-fork dynamic sockets must be managed at a lower level (e.g. passed to a SharedWorker that owns the accept loop). </p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>nginx.http.servers[]</p>
+      </title>
+      <p>Read-only array of all <code>NginxServer</code> objects currently known to the HTTP subsystem.</p>
+      <poem>
+        <stanza>
+          <v>for (const srv of nginx.http.servers) {</v>
+          <v>    nginx.log(`server: names=[${srv.names}] locations=${srv.locations.length}`);</v>
+          <v>}</v>
+        </stanza>
+      </poem>
+      <p>The array reflects both statically-configured servers and servers added at runtime via <code>addServer()</code>. Order matches the order servers were registered.</p>
+    </section>
+    <section>
+      <title>
+        <p>nginx.http.sockets[]</p>
+      </title>
+      <p>Read-only array of all listening socket descriptors with their HTTP configuration.</p>
+      <p>Each entry exposes:</p>
+      <p>Property │ Type │ Description</p>
+      <p>address │ string │ Bind address (e.g. "0.0.0.0").</p>
+      <p>port │ number │ Bind port.</p>
+      <p>ssl │ boolean │ Whether TLS is active on this listener.</p>
+      <p>http2 │ boolean │ Whether HTTP/2 is negotiated on this listener.</p>
+      <p>listen │ array │ Raw listen-directive parameter objects for this port.</p>
+      <empty-line />
+      <poem>
+        <stanza>
+          <v>for (const s of nginx.http.sockets) {</v>
+          <v>    nginx.log(`${s.address}:${s.port}  ssl=${s.ssl}  http2=${s.http2}`);</v>
+          <v>}</v>
+        </stanza>
+      </poem>
+    </section>
+    <section>
+      <title>
+        <p>nginx.http.variables{}</p>
+      </title>
+      <p>Plain JavaScript object mapping every registered HTTP variable name to its metadata.</p>
+      <poem>
+        <stanza>
+          <v>{</v>
+          <v>  "host":            { index: 0,  writable: false },</v>
+          <v>  "request_method":  { index: 1,  writable: false },</v>
+          <v>  "my_custom_var":   { index: 42, writable: true  },</v>
+          <v>  ...</v>
+          <v>}</v>
+        </stanza>
+      </poem>
+      <p>Fields:</p>
+      <p>Field │ Type │ Description</p>
+      <p>index │ number │ Internal variable index used by nginx’s variable engine.</p>
+      <p>writable │ boolean │ Whether the variable can be set at request time (e.g. set $my_var …​).</p>
+      <empty-line />
+      <p>This map is populated at config parse time and is read-only at runtime. It lets JavaScript code discover which variables are available and whether they can be written.</p>
+      <poem>
+        <stanza>
+          <v>// Check whether a variable exists and is writable</v>
+          <v>function varInfo(name) {</v>
+          <v>    const v = nginx.http.variables[name];</v>
+          <v>    if (!v) return `${name}: not registered`;</v>
+          <v>    return `${name}: index=${v.index} writable=${v.writable}`;</v>
+          <v>}</v>
+          <v>nginx.log(varInfo('host'));</v>
+          <v>nginx.log(varInfo('my_custom_var'));</v>
+        </stanza>
+      </poem>
+    </section>
+    <section>
+      <title>
+        <p>Hash size parameters</p>
+      </title>
+      <p>These four properties mirror the corresponding nginx.conf directives. They are read-only at runtime; changing them requires a config reload.</p>
+      <p>Property │ nginx.conf directive │ Purpose</p>
+      <p>serverNamesHashMaxSize │ server_names_hash_max_size │ Maximum hash table size for server-name dispatch. Increase if many virtual hosts cause hash-bucket conflicts.</p>
+      <p>serverNamesHashBucketSize │ server_names_hash_bucket_size │ Bucket size (bytes, power-of-two). Increase if server names are long.</p>
+      <p>variablesHashMaxSize │ variables_hash_max_size │ Maximum hash table size for the variable engine.</p>
+      <p>variablesHashBucketSize │ variables_hash_bucket_size │ Bucket size for the variable hash.</p>
+      <empty-line />
+      <poem>
+        <stanza>
+          <v>nginx.log(</v>
+          <v>    `serverNames hash: max=${nginx.http.serverNamesHashMaxSize}` +</v>
+          <v>    ` bucket=${nginx.http.serverNamesHashBucketSize}`</v>
+          <v>);</v>
+        </stanza>
+      </poem>
+    </section>
+    <section>
+      <title>
+        <p>nginx.http.addServer(name[, opts])</p>
+      </title>
+      <p>Adds a new virtual server to the HTTP subsystem.</p>
+      <section>
+        <title>
+          <p>Signature</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx.http.addServer(name: string, opts?: { template?: string }): NginxServer</v>
+          </stanza>
+        </poem>
+        <p>
+          <code>name</code> — primary server name. <code>opts.template</code> — optional name of an existing server to copy configuration from (inherits <code>proxy_pass</code>, SSL, etc.). Defaults to an empty configuration.</p>
+        <p>The new server starts with an empty location tree. See Guide 5 [js-reconfig-guide-servers.adoc] for full details.</p>
+      </section>
+      <section>
+        <title>
+          <p>Two-phase commit</p>
+        </title>
+        <p>
+          <code>addServer()</code> registers the server internally but <strong>does not</strong> update the server-name routing hash until <code>rebuildVhostDispatch()</code> is called. Incoming requests continue to use the old dispatch table until the rebuild.</p>
+        <poem>
+          <stanza>
+            <v>  nginx.http.addServer('new.example.com')</v>
+            <v>             │</v>
+            <v>             │  registered internally</v>
+            <v>             │  (not yet routable)</v>
+            <v>             │</v>
+            <v>  nginx.http.rebuildVhostDispatch()</v>
+            <v>             │</v>
+            <v>             └─► routing hash rebuilt — new.example.com now reachable</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>const srv = nginx.http.addServer('api.example.com');</v>
+            <v>srv.addLocation('/v1').handler = function(req) {</v>
+            <v>    req.respond(200, {}, 'v1\n');</v>
+            <v>};</v>
+            <v>nginx.http.rebuildVhostDispatch();   // activate</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>nginx.http.removeServer(name)</p>
+      </title>
+      <p>Removes a virtual server from the HTTP subsystem.</p>
+      <section>
+        <title>
+          <p>Signature</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx.http.removeServer(name: string): void</v>
+          </stanza>
+        </poem>
+        <p>Splices the named server from all internal virtual-host entries. Like <code>addServer</code>, the routing hash is not updated until <code>rebuildVhostDispatch()</code>.</p>
+        <p>In-flight requests that are already executing inside the removed server’s handlers continue to completion. New connections will not be dispatched to the removed server after the next <code>rebuildVhostDispatch()</code>.</p>
+        <poem>
+          <stanza>
+            <v>nginx.http.removeServer('api.example.com');</v>
+            <v>nginx.http.rebuildVhostDispatch();</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>nginx.http.rebuildVhostDispatch()</p>
+      </title>
+      <p>Rebuilds the server-name routing hash from the current <code>servers[]</code> list.</p>
+      <section>
+        <title>
+          <p>Signature</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx.http.rebuildVhostDispatch(): void</v>
+          </stanza>
+        </poem>
+        <p>Must be called after any <code>addServer()</code> or <code>removeServer()</code> to make the changes reachable by incoming requests. Safe to call at any time — the hash rebuild is an O(N) operation and completes in microseconds for typical deployments.</p>
+        <poem>
+          <stanza>
+            <v>nginx.http.addServer('a.example.com');</v>
+            <v>nginx.http.addServer('b.example.com');</v>
+            <v>nginx.http.rebuildVhostDispatch();   // both become reachable atomically</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>nginx.http.match(uri[, serverName])</p>
+      </title>
+      <p>Simulates the full nginx dispatch logic and returns the server and location that would handle a given request.</p>
+      <section>
+        <title>
+          <p>Signature</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>nginx.http.match(uri: string, serverName?: string): { server: NginxServer, location: NginxLocation } | null</v>
+          </stanza>
+        </poem>
+        <p>
+          <code>uri</code> — request URI path (e.g. <code>"/api/v1/users"</code>). <code>serverName</code> — optional <code>Host</code> header value for virtual-host selection. Defaults to the first (default) server.</p>
+        <p>Returns <code>null</code> if no match is found.</p>
+        <poem>
+          <stanza>
+            <v>const m = nginx.http.match('/api/v1/users', 'api.example.com');</v>
+            <v>if (m) {</v>
+            <v>    nginx.log(`server=${m.server.names[0]} location=${m.location.path}`);</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>Useful for integration testing config changes without sending real requests:</p>
+        <poem>
+          <stanza>
+            <v>function assertRoutes(routes) {</v>
+            <v>    for (const [uri, host, wantPath] of routes) {</v>
+            <v>        const m = nginx.http.match(uri, host);</v>
+            <v>        if (!m || m.location.path !== wantPath) {</v>
+            <v>            throw new Error(`match(${uri}, ${host}) → ${m?.location.path} ≠ ${wantPath}`);</v>
+            <v>        }</v>
+            <v>    }</v>
+            <v>}</v>
+            <v />
+            <v>assertRoutes([</v>
+            <v>    ['/api/v1/users', 'api.example.com', '/api/v1/'],</v>
+            <v>    ['/health',       'api.example.com', '/health'],</v>
+            <v>    ['/',             'www.example.com', '/'],</v>
+            <v>]);</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Complete examples</p>
+      </title>
+      <section>
+        <title>
+          <p>Example 1: Dynamic HTTP endpoint provisioning</p>
+        </title>
+        <p>Add a new API server at runtime from a request handler.</p>
+        <poem>
+          <stanza>
+            <v>// In js_source script</v>
+            <v />
+            <v>(function() {</v>
+            <v>    const loc = nginx.http.servers[0].locations.find(l =&gt; l.path === '/admin');</v>
+            <v>    if (loc) loc.handler = adminHandler;</v>
+            <v>})();</v>
+            <v />
+            <v>async function adminHandler(req) {</v>
+            <v>    const body = await req.text();</v>
+            <v>    let cmd;</v>
+            <v>    try { cmd = JSON.parse(body); } catch(e) {</v>
+            <v>        req.respond(400, {}, 'bad JSON\n'); return;</v>
+            <v>    }</v>
+            <v />
+            <v>    if (cmd.action === 'add-server') {</v>
+            <v>        const srv = nginx.http.addServer(cmd.name);</v>
+            <v />
+            <v>        for (const [path, msg] of Object.entries(cmd.routes || {})) {</v>
+            <v>            const capture = msg;</v>
+            <v>            srv.addLocation(path).handler = function(r) {</v>
+            <v>                r.respond(200, {'Content-Type': 'text/plain'}, capture + '\n');</v>
+            <v>            };</v>
+            <v>        }</v>
+            <v />
+            <v>        nginx.http.rebuildVhostDispatch();</v>
+            <v>        req.respond(200, {}, `added server ${cmd.name}\n`);</v>
+            <v />
+            <v>    } else if (cmd.action === 'remove-server') {</v>
+            <v>        nginx.http.removeServer(cmd.name);</v>
+            <v>        nginx.http.rebuildVhostDispatch();</v>
+            <v>        req.respond(200, {}, `removed server ${cmd.name}\n`);</v>
+            <v />
+            <v>    } else {</v>
+            <v>        req.respond(400, {}, `unknown action ${cmd.action}\n`);</v>
+            <v>    }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>Usage:</p>
+        <poem>
+          <stanza>
+            <v>curl -X POST http://localhost/admin \</v>
+            <v>  -d '{"action":"add-server","name":"new.example.com",</v>
+            <v>       "routes":{"/":"hello","/api/":"api handler"}}'</v>
+            <v />
+            <v>curl -H 'Host: new.example.com' http://localhost/</v>
+            <v># → hello</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 2: Inspect all sockets and servers at startup</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>(function auditHttp() {</v>
+            <v>    nginx.log('=== HTTP Subsystem Audit ===');</v>
+            <v />
+            <v>    nginx.log(`Listening sockets (${nginx.http.sockets.length}):`);</v>
+            <v>    for (const s of nginx.http.sockets) {</v>
+            <v>        nginx.log(`  ${s.address}:${s.port}  ssl=${s.ssl} http2=${s.http2}`);</v>
+            <v>    }</v>
+            <v />
+            <v>    nginx.log(`Servers (${nginx.http.servers.length}):`);</v>
+            <v>    for (const srv of nginx.http.servers) {</v>
+            <v>        nginx.log(`  [${srv.names.join(', ')}]  locations=${srv.locations.length}`);</v>
+            <v>    }</v>
+            <v />
+            <v>    nginx.log(`Hash sizes:`);</v>
+            <v>    nginx.log(`  serverNames max=${nginx.http.serverNamesHashMaxSize}` +</v>
+            <v>              ` bucket=${nginx.http.serverNamesHashBucketSize}`);</v>
+            <v>    nginx.log(`  variables   max=${nginx.http.variablesHashMaxSize}` +</v>
+            <v>              ` bucket=${nginx.http.variablesHashBucketSize}`);</v>
+            <v />
+            <v>    const vars = nginx.http.variables;</v>
+            <v>    const writable = Object.entries(vars).filter(([,v]) =&gt; v.writable).map(([n]) =&gt; n);</v>
+            <v>    nginx.log(`Variables: total=${Object.keys(vars).length} writable=${writable.length}`);</v>
+            <v>    if (writable.length) nginx.log(`  writable: ${writable.join(', ')}`);</v>
+            <v>})();</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 3: Provision a new port at config time (Phases A-D)</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Full Phase A-D: new port with two virtual hosts</v>
+            <v />
+            <v>// Phase A</v>
+            <v>const sock = nginx.createSocket('0.0.0.0:8888');</v>
+            <v />
+            <v>// Phase B</v>
+            <v>const listener = nginx.http.attach(sock);</v>
+            <v />
+            <v>// Build servers</v>
+            <v>const defaultSrv = nginx.http.addServer('_');</v>
+            <v>defaultSrv.addLocation('= /health').handler = function(req) {</v>
+            <v>    req.respond(200, {}, 'OK\n');</v>
+            <v>};</v>
+            <v>defaultSrv.addLocation('/').handler = function(req) {</v>
+            <v>    req.respond(404, {}, 'not found\n');</v>
+            <v>};</v>
+            <v />
+            <v>const apiSrv = nginx.http.addServer('api.internal');</v>
+            <v>apiSrv.addLocation('/v1/').handler = function(req) {</v>
+            <v>    req.respond(200, {'Content-Type': 'application/json'}, '{"v":1}\n');</v>
+            <v>};</v>
+            <v />
+            <v>// Phase C — activate listener</v>
+            <v>listener.addServer(defaultSrv);</v>
+            <v />
+            <v>// Make servers routable</v>
+            <v>nginx.http.rebuildVhostDispatch();</v>
+            <v />
+            <v>// Phase D — add virtual host</v>
+            <v>listener.addVirtualServer(apiSrv);</v>
+            <v />
+            <v>nginx.log('Port 8888 ready: default + api.internal');</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 4: Variable introspection in a request handler</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Expose all nginx variables for a given request (debugging endpoint)</v>
+            <v />
+            <v>function varDumpHandler(req) {</v>
+            <v>    const vars = nginx.http.variables;</v>
+            <v>    const lines = [];</v>
+            <v>    for (const [name, meta] of Object.entries(vars).sort()) {</v>
+            <v>        try {</v>
+            <v>            const val = req.variables[name];</v>
+            <v>            lines.push(`${name}=${JSON.stringify(val)}  (idx=${meta.index})`);</v>
+            <v>        } catch (_) {</v>
+            <v>            lines.push(`${name}=&lt;error&gt;  (idx=${meta.index})`);</v>
+            <v>        }</v>
+            <v>    }</v>
+            <v>    req.respond(200, {'Content-Type': 'text/plain'}, lines.join('\n') + '\n');</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 5: Cross-worker server provisioning via SharedWorker</p>
+        </title>
+        <p>This example shows how to propagate a new server to all workers using a SharedWorker as the coordination hub. See Guide 2 [js-reconfig-guide-all-workers.adoc] for the full SharedWorker broadcast pattern.</p>
+        <poem>
+          <stanza>
+            <v>// -- shared-worker.js --</v>
+            <v />
+            <v>const HANDLER_REGISTRY = {};   // name → function</v>
+            <v />
+            <v>self.onmessage = function(e) {</v>
+            <v>    const msg = e.data;</v>
+            <v>    if (msg.type === 'register-handler') {</v>
+            <v>        HANDLER_REGISTRY[msg.name] = new Function('req', msg.body);</v>
+            <v>        self.postMessage({ type: 'ack', name: msg.name });</v>
+            <v>    }</v>
+            <v>};</v>
+            <v />
+            <v>// -- main js_source script --</v>
+            <v />
+            <v>const sw = new SharedWorker('/shared-worker.js');</v>
+            <v />
+            <v>// Broadcast handler registration to all workers</v>
+            <v>function broadcastHandler(name, fn) {</v>
+            <v>    sw.postMessage({</v>
+            <v>        type: 'register-handler',</v>
+            <v>        name: name,</v>
+            <v>        body: fn.toString().replace(/^function[^{]*\{|\}$/g, '')</v>
+            <v>    });</v>
+            <v>}</v>
+            <v />
+            <v>// Called on each worker after receiving broadcast</v>
+            <v>function applyHandlerLocally(name, body) {</v>
+            <v>    const fn = new Function('req', body);</v>
+            <v>    const srv = nginx.http.servers.find(s =&gt; s.names.includes(name));</v>
+            <v>    if (srv) {</v>
+            <v>        srv.locations.find(l =&gt; l.path === '/').handler = fn;</v>
+            <v>    }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Example 6: match() as a config validation tool</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Validate routing table after a bulk reconfiguration</v>
+            <v />
+            <v>function validateRouting(testCases) {</v>
+            <v>    const failures = [];</v>
+            <v>    for (const { uri, host, expectedServer, expectedLocation } of testCases) {</v>
+            <v>        const m = nginx.http.match(uri, host);</v>
+            <v>        if (!m) {</v>
+            <v>            failures.push(`${host}${uri}: no match (expected ${expectedLocation})`);</v>
+            <v>            continue;</v>
+            <v>        }</v>
+            <v>        if (expectedServer &amp;&amp; !m.server.names.includes(expectedServer)) {</v>
+            <v>            failures.push(`${host}${uri}: server=${m.server.names[0]} ≠ ${expectedServer}`);</v>
+            <v>        }</v>
+            <v>        if (expectedLocation &amp;&amp; m.location.path !== expectedLocation) {</v>
+            <v>            failures.push(`${host}${uri}: location=${m.location.path} ≠ ${expectedLocation}`);</v>
+            <v>        }</v>
+            <v>    }</v>
+            <v>    if (failures.length) {</v>
+            <v>        throw new Error('Routing validation failed:\n' + failures.join('\n'));</v>
+            <v>    }</v>
+            <v>    nginx.log('Routing validation passed');</v>
+            <v>}</v>
+            <v />
+            <v>// After reconfiguration:</v>
+            <v>validateRouting([</v>
+            <v>    { uri: '/api/v1/users', host: 'api.example.com',</v>
+            <v>      expectedServer: 'api.example.com', expectedLocation: '/api/v1/' },</v>
+            <v>    { uri: '/health',       host: 'api.example.com',</v>
+            <v>      expectedLocation: '/health' },</v>
+            <v>    { uri: '/',             host: 'www.example.com',</v>
+            <v>      expectedServer: 'www.example.com', expectedLocation: '/' },</v>
+            <v>]);</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Cross-worker propagation</p>
+      </title>
+      <p>Changes to <code>nginx.http</code> (adding/removing servers, modifying locations) affect only the current worker’s view of configuration. To propagate changes to all workers use one of the three strategies from Guide 2 [js-reconfig-guide-all-workers.adoc].</p>
+      <p>The diagram below shows the full provisioning pipeline for a post-fork <code>addServer</code> broadcast:</p>
+      <poem>
+        <stanza>
+          <v>  Worker 0 (request handler)</v>
+          <v>  ├─ nginx.http.addServer('new.example.com')</v>
+          <v>  ├─ srv.addLocation('/').handler = fn</v>
+          <v>  ├─ nginx.http.rebuildVhostDispatch()</v>
+          <v>  └─ sw.postMessage({ type: 'add-server', name: 'new.example.com',</v>
+          <v>                      locationHandler: 'myHandler' })</v>
+          <v>           │</v>
+          <v>           │  SharedWorker (master process thread)</v>
+          <v>           │  ├─ receives message from Worker 0</v>
+          <v>           │  └─ broadcasts to Worker 1, Worker 2, …</v>
+          <v>           │</v>
+          <v>  Worker 1 (SharedWorker onmessage)</v>
+          <v>  ├─ look up 'myHandler' in HANDLER_REGISTRY</v>
+          <v>  ├─ nginx.http.addServer('new.example.com')</v>
+          <v>  ├─ srv.addLocation('/').handler = HANDLER_REGISTRY['myHandler']</v>
+          <v>  └─ nginx.http.rebuildVhostDispatch()</v>
+          <v />
+          <v>  Worker 2 (SharedWorker onmessage)</v>
+          <v>  └─ (same as Worker 1)</v>
+        </stanza>
+      </poem>
+      <p>
+        <strong>: </strong> JS functions cannot be transferred via <code>postMessage</code> — they are not serialisable. Always use a named handler registry: broadcast the <strong>name</strong> string, and have each worker look up the function locally. </p>
+      <section>
+        <title>
+          <p>Atomic multi-server reconfiguration across all workers</p>
+        </title>
+        <p>If you need to add several servers atomically (no request should see a partial state), use <code>suspendAllWorkers()</code>:</p>
+        <poem>
+          <stanza>
+            <v>async function atomicMultiServerAdd(specs) {</v>
+            <v>    await nginx.suspendAllWorkers();    // all workers pause acceptance</v>
+            <v>    try {</v>
+            <v>        for (const { name, routes } of specs) {</v>
+            <v>            const srv = nginx.http.addServer(name);</v>
+            <v>            for (const [path, handlerName] of Object.entries(routes)) {</v>
+            <v>                srv.addLocation(path).handler = HANDLER_REGISTRY[handlerName];</v>
+            <v>            }</v>
+            <v>        }</v>
+            <v>        nginx.http.rebuildVhostDispatch();</v>
+            <v>    } finally {</v>
+            <v>        await nginx.resumeAllWorkers();</v>
+            <v>    }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>See Guide 2 [js-reconfig-guide-all-workers.adoc] for the <code>suspendAllWorkers</code> / <code>resumeAllWorkers</code> protocol.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>API Reference</p>
+      </title>
+      <section>
+        <title>
+          <p>nginx (global)</p>
+        </title>
+        <p>Method / Property │ Phase │ Description</p>
+        <p>nginx.createSocket(addr) │ A (pre-fork), F (post-fork) │ Create, bind, and listen a new TCP socket. Returns NginxSocket.</p>
+        <p>nginx.http │ any │ The NginxHttp singleton.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>NginxHttp (nginx.http)</p>
+        </title>
+        <p>Member │ R/W │ Description</p>
+        <p>servers[] │ R │ Array of all NginxServer objects.</p>
+        <p>sockets[] │ R │ Array of listening socket descriptors with HTTP metadata.</p>
+        <p>variables{} │ R │ Map of all registered HTTP variables: { name: { index, writable } }.</p>
+        <p>serverNamesHashMaxSize │ R │ server_names_hash_max_size directive value.</p>
+        <p>serverNamesHashBucketSize │ R │ server_names_hash_bucket_size directive value.</p>
+        <p>variablesHashMaxSize │ R │ variables_hash_max_size directive value.</p>
+        <p>variablesHashBucketSize │ R │ variables_hash_bucket_size directive value.</p>
+        <p>addServer(name[, opts]) │ W │ Add a server. Not routable until rebuildVhostDispatch().</p>
+        <p>removeServer(name) │ W │ Remove a server. Takes effect after rebuildVhostDispatch().</p>
+        <p>rebuildVhostDispatch() │ W │ Rebuild server-name routing hash.</p>
+        <p>match(uri[, serverName]) │ R │ Simulate dispatch. Returns { server, location } or null.</p>
+        <p>attach(sock) │ B (pre-fork) │ Wire NginxSocket to HTTP pipeline. Returns NginxHttpListener.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>NginxSocket</p>
+        </title>
+        <p>Member │ R/W │ Description</p>
+        <p>address │ R │ Bind address string.</p>
+        <p>port │ R │ Bind port number.</p>
+        <p>fd │ R │ File descriptor number.</p>
+        <p>listener │ R │ Associated NginxHttpListener or null.</p>
+        <p>close() │ — │ Close the socket.</p>
+        <p>broadcast() │ F (post-fork) │ Deliver fd to all other workers. Returns Promise&lt;undefined&gt;.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>NginxHttpListener</p>
+        </title>
+        <p>Member │ R/W │ Description</p>
+        <p>address │ R │ Bind address string.</p>
+        <p>socket │ R │ Associated NginxSocket.</p>
+        <p>serverNames │ R │ Array of registered server-name strings.</p>
+        <p>serverByName(name) │ — │ Returns NginxServer or null.</p>
+        <p>addServer(srv) │ C (pre-fork) │ Set default server, activate listener.</p>
+        <p>addVirtualServer(srv) │ D (pre-fork) │ Add named virtual host, rebuild virtual-names hash.</p>
+        <empty-line />
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Design notes</p>
+      </title>
+      <section>
+        <title>
+          <p>Why four phases?</p>
+        </title>
+        <p>nginx’s listening infrastructure is built incrementally. <code>socket()</code>
+          <code>bind()</code> + <code>listen()</code> (Phase A) must happen before any process forks so all workers inherit the socket. Wiring the socket into the HTTP connection pipeline (Phase B) requires HTTP core data structures that exist only after <code>http {}</code> has been parsed. Activating the listener (Phase C) pushes it to <code>cycle→listening</code>, which is read by the event loop at worker start. Adding virtual hosts (Phase D) builds the per-listener name hash.</p>
+        <p>Separating these phases gives precise control over when each piece of infrastructure becomes active.</p>
+      </section>
+      <section>
+        <title>
+          <p>Two-phase commit for server names</p>
+        </title>
+        <p>Server-name routing uses a static hash table. Adding or removing a server requires rebuilding the entire hash. <code>addServer()</code> / <code>removeServer()</code> defer the hash rebuild so multiple servers can be modified in a single batch before a single <code>rebuildVhostDispatch()</code> call makes all changes visible atomically.</p>
+      </section>
+      <section>
+        <title>
+          <p>variables{} is read-only</p>
+        </title>
+        <p>The variable map is populated at config parse time by all modules that register variables. It cannot be extended at runtime because the variable index is embedded in compiled location configurations.</p>
+      </section>
+      <section>
+        <title>
+          <p>Post-fork socket creation (Phase F)</p>
+        </title>
+        <p>After workers fork, the master’s network namespace is the only one that can <code>bind()</code> privileged ports. Phase F uses the manager thread (which runs in the master) as a proxy: the worker sends the address, the manager creates the socket, and returns the fd via SCM_RIGHTS. <code>broadcast()</code> then distributes it to sibling workers using the same mechanism.</p>
+      </section>
+    </section>
+  </body>
+</FictionBook>

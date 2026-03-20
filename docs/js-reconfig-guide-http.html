@@ -1,0 +1,1904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="generator" content="Asciidoctor 2.0.26">
+<title>Dynamic Reconfiguration Guide (http)</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:300,300italic,400,400italic,600,600italic%7CNoto+Serif:400,400italic,700,700italic%7CDroid+Sans+Mono:400,700">
+<style>
+/*! Asciidoctor default stylesheet | MIT License | https://asciidoctor.org */
+/* Uncomment the following line when using as a custom stylesheet */
+/* @import "https://fonts.googleapis.com/css?family=Open+Sans:300,300italic,400,400italic,600,600italic%7CNoto+Serif:400,400italic,700,700italic%7CDroid+Sans+Mono:400,700"; */
+html{font-family:sans-serif;-webkit-text-size-adjust:100%}
+a{background:none}
+a:focus{outline:thin dotted}
+a:active,a:hover{outline:0}
+h1{font-size:2em;margin:.67em 0}
+b,strong{font-weight:bold}
+abbr{font-size:.9em}
+abbr[title]{cursor:help;border-bottom:1px dotted #dddddf;text-decoration:none}
+dfn{font-style:italic}
+hr{height:0}
+mark{background:#ff0;color:#000}
+code,kbd,pre,samp{font-family:monospace;font-size:1em}
+pre{white-space:pre-wrap}
+q{quotes:"\201C" "\201D" "\2018" "\2019"}
+small{font-size:80%}
+sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}
+sup{top:-.5em}
+sub{bottom:-.25em}
+img{border:0}
+svg:not(:root){overflow:hidden}
+figure{margin:0}
+audio,video{display:inline-block}
+audio:not([controls]){display:none;height:0}
+fieldset{border:1px solid silver;margin:0 2px;padding:.35em .625em .75em}
+legend{border:0;padding:0}
+button,input,select,textarea{font-family:inherit;font-size:100%;margin:0}
+button,input{line-height:normal}
+button,select{text-transform:none}
+button,html input[type=button],input[type=reset],input[type=submit]{-webkit-appearance:button;cursor:pointer}
+button[disabled],html input[disabled]{cursor:default}
+input[type=checkbox],input[type=radio]{padding:0}
+button::-moz-focus-inner,input::-moz-focus-inner{border:0;padding:0}
+textarea{overflow:auto;vertical-align:top}
+table{border-collapse:collapse;border-spacing:0}
+*,::before,::after{box-sizing:border-box}
+html,body{font-size:100%}
+body{background:#fff;color:rgba(0,0,0,.8);padding:0;margin:0;font-family:"Noto Serif","DejaVu Serif",serif;line-height:1;position:relative;cursor:auto;-moz-tab-size:4;-o-tab-size:4;tab-size:4;word-wrap:anywhere;-moz-osx-font-smoothing:grayscale;-webkit-font-smoothing:antialiased}
+a:hover{cursor:pointer}
+img,object,embed{max-width:100%;height:auto}
+object,embed{height:100%}
+img{-ms-interpolation-mode:bicubic}
+.left{float:left!important}
+.right{float:right!important}
+.text-left{text-align:left!important}
+.text-right{text-align:right!important}
+.text-center{text-align:center!important}
+.text-justify{text-align:justify!important}
+.hide{display:none}
+img,object,svg{display:inline-block;vertical-align:middle}
+textarea{height:auto;min-height:50px}
+select{width:100%}
+.subheader,.admonitionblock td.content>.title,.audioblock>.title,.exampleblock>.title,.imageblock>.title,.listingblock>.title,.literalblock>.title,.stemblock>.title,.openblock>.title,.paragraph>.title,.quoteblock>.title,table.tableblock>.title,.verseblock>.title,.videoblock>.title,.dlist>.title,.olist>.title,.ulist>.title,.qlist>.title,.hdlist>.title{line-height:1.45;color:#7a2518;font-weight:400;margin-top:0;margin-bottom:.25em}
+div,dl,dt,dd,ul,ol,li,h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6,pre,form,p,blockquote,th,td{margin:0;padding:0}
+a{color:#2156a5;text-decoration:underline;line-height:inherit}
+a:hover,a:focus{color:#1d4b8f}
+a img{border:0}
+p{line-height:1.6;margin-bottom:1.25em;text-rendering:optimizeLegibility}
+p aside{font-size:.875em;line-height:1.35;font-style:italic}
+h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6{font-family:"Open Sans","DejaVu Sans",sans-serif;font-weight:300;font-style:normal;color:#ba3925;text-rendering:optimizeLegibility;margin-top:1em;margin-bottom:.5em;line-height:1.0125em}
+h1 small,h2 small,h3 small,#toctitle small,.sidebarblock>.content>.title small,h4 small,h5 small,h6 small{font-size:60%;color:#e99b8f;line-height:0}
+h1{font-size:2.125em}
+h2{font-size:1.6875em}
+h3,#toctitle,.sidebarblock>.content>.title{font-size:1.375em}
+h4,h5{font-size:1.125em}
+h6{font-size:1em}
+hr{border:solid #dddddf;border-width:1px 0 0;clear:both;margin:1.25em 0 1.1875em}
+em,i{font-style:italic;line-height:inherit}
+strong,b{font-weight:bold;line-height:inherit}
+small{font-size:60%;line-height:inherit}
+code{font-family:"Droid Sans Mono","DejaVu Sans Mono",monospace;font-weight:400;color:rgba(0,0,0,.9)}
+ul,ol,dl{line-height:1.6;margin-bottom:1.25em;list-style-position:outside;font-family:inherit}
+ul,ol{margin-left:1.5em}
+ul li ul,ul li ol{margin-left:1.25em;margin-bottom:0}
+ul.circle{list-style-type:circle}
+ul.disc{list-style-type:disc}
+ul.square{list-style-type:square}
+ul.circle ul:not([class]),ul.disc ul:not([class]),ul.square ul:not([class]){list-style:inherit}
+ol li ul,ol li ol{margin-left:1.25em;margin-bottom:0}
+dl dt{margin-bottom:.3125em;font-weight:bold}
+dl dd{margin-bottom:1.25em}
+blockquote{margin:0 0 1.25em;padding:.5625em 1.25em 0 1.1875em;border-left:1px solid #ddd}
+blockquote,blockquote p{line-height:1.6;color:rgba(0,0,0,.85)}
+@media screen and (min-width:768px){h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6{line-height:1.2}
+h1{font-size:2.75em}
+h2{font-size:2.3125em}
+h3,#toctitle,.sidebarblock>.content>.title{font-size:1.6875em}
+h4{font-size:1.4375em}}
+table{background:#fff;margin-bottom:1.25em;border:1px solid #dedede;word-wrap:normal}
+table thead,table tfoot{background:#f7f8f7}
+table thead tr th,table thead tr td,table tfoot tr th,table tfoot tr td{padding:.5em .625em .625em;font-size:inherit;color:rgba(0,0,0,.8);text-align:left}
+table tr th,table tr td{padding:.5625em .625em;font-size:inherit;color:rgba(0,0,0,.8)}
+table tr.even,table tr.alt{background:#f8f8f7}
+table thead tr th,table tfoot tr th,table tbody tr td,table tr td,table tfoot tr td{line-height:1.6}
+h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6{line-height:1.2;word-spacing:-.05em}
+h1 strong,h2 strong,h3 strong,#toctitle strong,.sidebarblock>.content>.title strong,h4 strong,h5 strong,h6 strong{font-weight:400}
+.center{margin-left:auto;margin-right:auto}
+.stretch{width:100%}
+.clearfix::before,.clearfix::after,.float-group::before,.float-group::after{content:" ";display:table}
+.clearfix::after,.float-group::after{clear:both}
+:not(pre).nobreak{word-wrap:normal}
+:not(pre).nowrap{white-space:nowrap}
+:not(pre).pre-wrap{white-space:pre-wrap}
+:not(pre):not([class^=L])>code{font-size:.9375em;font-style:normal!important;letter-spacing:0;padding:.1em .5ex;word-spacing:-.15em;background:#f7f7f8;border-radius:4px;line-height:1.45;text-rendering:optimizeSpeed}
+pre{color:rgba(0,0,0,.9);font-family:"Droid Sans Mono","DejaVu Sans Mono",monospace;line-height:1.45;text-rendering:optimizeSpeed}
+pre code,pre pre{color:inherit;font-size:inherit;line-height:inherit}
+pre.nowrap,pre.nowrap pre{white-space:pre;word-wrap:normal}
+em em{font-style:normal}
+strong strong{font-weight:400}
+.keyseq{color:rgba(51,51,51,.8)}
+kbd{font-family:"Droid Sans Mono","DejaVu Sans Mono",monospace;display:inline-block;color:rgba(0,0,0,.8);font-size:.65em;line-height:1.45;background:#f7f7f7;border:1px solid #ccc;border-radius:3px;box-shadow:0 1px 0 rgba(0,0,0,.2),inset 0 0 0 .1em #fff;margin:0 .15em;padding:.2em .5em;vertical-align:middle;position:relative;top:-.1em;white-space:nowrap}
+.keyseq kbd:first-child{margin-left:0}
+.keyseq kbd:last-child{margin-right:0}
+.menuseq,.menuref{color:#000}
+.menuseq b:not(.caret),.menuref{font-weight:inherit}
+.menuseq{word-spacing:-.02em}
+.menuseq b.caret{font-size:1.25em;line-height:.8}
+.menuseq i.caret{font-weight:bold;text-align:center;width:.45em}
+b.button::before,b.button::after{position:relative;top:-1px;font-weight:400}
+b.button::before{content:"[";padding:0 3px 0 2px}
+b.button::after{content:"]";padding:0 2px 0 3px}
+p a>code:hover{color:rgba(0,0,0,.9)}
+#header,#content,#footnotes,#footer{width:100%;margin:0 auto;max-width:62.5em;*zoom:1;position:relative;padding-left:.9375em;padding-right:.9375em}
+#header::before,#header::after,#content::before,#content::after,#footnotes::before,#footnotes::after,#footer::before,#footer::after{content:" ";display:table}
+#header::after,#content::after,#footnotes::after,#footer::after{clear:both}
+#content{margin-top:1.25em}
+#content::before{content:none}
+#header>h1:first-child{color:rgba(0,0,0,.85);margin-top:2.25rem;margin-bottom:0}
+#header>h1:first-child+#toc{margin-top:8px;border-top:1px solid #dddddf}
+#header>h1:only-child{border-bottom:1px solid #dddddf;padding-bottom:8px}
+#header .details{border-bottom:1px solid #dddddf;line-height:1.45;padding-top:.25em;padding-bottom:.25em;padding-left:.25em;color:rgba(0,0,0,.6);display:flex;flex-flow:row wrap}
+#header .details span:first-child{margin-left:-.125em}
+#header .details span.email a{color:rgba(0,0,0,.85)}
+#header .details br{display:none}
+#header .details br+span::before{content:"\00a0\2013\00a0"}
+#header .details br+span.author::before{content:"\00a0\22c5\00a0";color:rgba(0,0,0,.85)}
+#header .details br+span#revremark::before{content:"\00a0|\00a0"}
+#header #revnumber{text-transform:capitalize}
+#header #revnumber::after{content:"\00a0"}
+#content>h1:first-child:not([class]){color:rgba(0,0,0,.85);border-bottom:1px solid #dddddf;padding-bottom:8px;margin-top:0;padding-top:1rem;margin-bottom:1.25rem}
+#toc{border-bottom:1px solid #e7e7e9;padding-bottom:.5em}
+#toc>ul{margin-left:.125em}
+#toc ul.sectlevel0>li>a{font-style:italic}
+#toc ul.sectlevel0 ul.sectlevel1{margin:.5em 0}
+#toc ul{font-family:"Open Sans","DejaVu Sans",sans-serif;list-style-type:none}
+#toc li{line-height:1.3334;margin-top:.3334em}
+#toc a{text-decoration:none}
+#toc a:active{text-decoration:underline}
+#toctitle{color:#7a2518;font-size:1.2em}
+@media screen and (min-width:768px){#toctitle{font-size:1.375em}
+body.toc2{padding-left:15em;padding-right:0}
+body.toc2 #header>h1:nth-last-child(2){border-bottom:1px solid #dddddf;padding-bottom:8px}
+#toc.toc2{margin-top:0!important;background:#f8f8f7;position:fixed;width:15em;left:0;top:0;border-right:1px solid #e7e7e9;border-top-width:0!important;border-bottom-width:0!important;z-index:1000;padding:1.25em 1em;height:100%;overflow:auto}
+#toc.toc2 #toctitle{margin-top:0;margin-bottom:.8rem;font-size:1.2em}
+#toc.toc2>ul{font-size:.9em;margin-bottom:0}
+#toc.toc2 ul ul{margin-left:0;padding-left:1em}
+#toc.toc2 ul.sectlevel0 ul.sectlevel1{padding-left:0;margin-top:.5em;margin-bottom:.5em}
+body.toc2.toc-right{padding-left:0;padding-right:15em}
+body.toc2.toc-right #toc.toc2{border-right-width:0;border-left:1px solid #e7e7e9;left:auto;right:0}}
+@media screen and (min-width:1280px){body.toc2{padding-left:20em;padding-right:0}
+#toc.toc2{width:20em}
+#toc.toc2 #toctitle{font-size:1.375em}
+#toc.toc2>ul{font-size:.95em}
+#toc.toc2 ul ul{padding-left:1.25em}
+body.toc2.toc-right{padding-left:0;padding-right:20em}}
+#content #toc{border:1px solid #e0e0dc;margin-bottom:1.25em;padding:1.25em;background:#f8f8f7;border-radius:4px}
+#content #toc>:first-child{margin-top:0}
+#content #toc>:last-child{margin-bottom:0}
+#footer{max-width:none;background:rgba(0,0,0,.8);padding:1.25em}
+#footer-text{color:hsla(0,0%,100%,.8);line-height:1.44}
+#content{margin-bottom:.625em}
+.sect1{padding-bottom:.625em}
+@media screen and (min-width:768px){#content{margin-bottom:1.25em}
+.sect1{padding-bottom:1.25em}}
+.sect1:last-child{padding-bottom:0}
+.sect1+.sect1{border-top:1px solid #e7e7e9}
+#content h1>a.anchor,h2>a.anchor,h3>a.anchor,#toctitle>a.anchor,.sidebarblock>.content>.title>a.anchor,h4>a.anchor,h5>a.anchor,h6>a.anchor{position:absolute;z-index:1001;width:1.5ex;margin-left:-1.5ex;display:block;text-decoration:none!important;visibility:hidden;text-align:center;font-weight:400}
+#content h1>a.anchor::before,h2>a.anchor::before,h3>a.anchor::before,#toctitle>a.anchor::before,.sidebarblock>.content>.title>a.anchor::before,h4>a.anchor::before,h5>a.anchor::before,h6>a.anchor::before{content:"\00A7";font-size:.85em;display:block;padding-top:.1em}
+#content h1:hover>a.anchor,#content h1>a.anchor:hover,h2:hover>a.anchor,h2>a.anchor:hover,h3:hover>a.anchor,#toctitle:hover>a.anchor,.sidebarblock>.content>.title:hover>a.anchor,h3>a.anchor:hover,#toctitle>a.anchor:hover,.sidebarblock>.content>.title>a.anchor:hover,h4:hover>a.anchor,h4>a.anchor:hover,h5:hover>a.anchor,h5>a.anchor:hover,h6:hover>a.anchor,h6>a.anchor:hover{visibility:visible}
+#content h1>a.link,h2>a.link,h3>a.link,#toctitle>a.link,.sidebarblock>.content>.title>a.link,h4>a.link,h5>a.link,h6>a.link{color:#ba3925;text-decoration:none}
+#content h1>a.link:hover,h2>a.link:hover,h3>a.link:hover,#toctitle>a.link:hover,.sidebarblock>.content>.title>a.link:hover,h4>a.link:hover,h5>a.link:hover,h6>a.link:hover{color:#a53221}
+details,.audioblock,.imageblock,.literalblock,.listingblock,.stemblock,.videoblock{margin-bottom:1.25em}
+details{margin-left:1.25rem}
+details>summary{cursor:pointer;display:block;position:relative;line-height:1.6;margin-bottom:.625rem;outline:none;-webkit-tap-highlight-color:transparent}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"";border:solid transparent;border-left:solid;border-width:.3em 0 .3em .5em;position:absolute;top:.5em;left:-1.25rem;transform:translateX(15%)}
+details[open]>summary::before{border:solid transparent;border-top:solid;border-width:.5em .3em 0;transform:translateY(15%)}
+details>summary::after{content:"";width:1.25rem;height:1em;position:absolute;top:.3em;left:-1.25rem}
+.admonitionblock td.content>.title,.audioblock>.title,.exampleblock>.title,.imageblock>.title,.listingblock>.title,.literalblock>.title,.stemblock>.title,.openblock>.title,.paragraph>.title,.quoteblock>.title,table.tableblock>.title,.verseblock>.title,.videoblock>.title,.dlist>.title,.olist>.title,.ulist>.title,.qlist>.title,.hdlist>.title{text-rendering:optimizeLegibility;text-align:left;font-family:"Noto Serif","DejaVu Serif",serif;font-size:1rem;font-style:italic}
+table.tableblock.fit-content>caption.title{white-space:nowrap;width:0}
+.paragraph.lead>p,#preamble>.sectionbody>[class=paragraph]:first-of-type p{font-size:1.21875em;line-height:1.6;color:rgba(0,0,0,.85)}
+.admonitionblock>table{border-collapse:separate;border:0;background:none;width:100%}
+.admonitionblock>table td.icon{text-align:center;width:80px}
+.admonitionblock>table td.icon img{max-width:none}
+.admonitionblock>table td.icon .title{font-weight:bold;font-family:"Open Sans","DejaVu Sans",sans-serif;text-transform:uppercase}
+.admonitionblock>table td.content{padding-left:1.125em;padding-right:1.25em;border-left:1px solid #dddddf;color:rgba(0,0,0,.6);word-wrap:anywhere}
+.admonitionblock>table td.content>:last-child>:last-child{margin-bottom:0}
+.exampleblock>.content{border:1px solid #e6e6e6;margin-bottom:1.25em;padding:1.25em;background:#fff;border-radius:4px}
+.sidebarblock{border:1px solid #dbdbd6;margin-bottom:1.25em;padding:1.25em;background:#f3f3f2;border-radius:4px}
+.sidebarblock>.content>.title{color:#7a2518;margin-top:0;text-align:center}
+.exampleblock>.content>:first-child,.sidebarblock>.content>:first-child{margin-top:0}
+.exampleblock>.content>:last-child,.exampleblock>.content>:last-child>:last-child,.exampleblock>.content .olist>ol>li:last-child>:last-child,.exampleblock>.content .ulist>ul>li:last-child>:last-child,.exampleblock>.content .qlist>ol>li:last-child>:last-child,.sidebarblock>.content>:last-child,.sidebarblock>.content>:last-child>:last-child,.sidebarblock>.content .olist>ol>li:last-child>:last-child,.sidebarblock>.content .ulist>ul>li:last-child>:last-child,.sidebarblock>.content .qlist>ol>li:last-child>:last-child{margin-bottom:0}
+.literalblock pre,.listingblock>.content>pre{border-radius:4px;overflow-x:auto;padding:1em;font-size:.8125em}
+@media screen and (min-width:768px){.literalblock pre,.listingblock>.content>pre{font-size:.90625em}}
+@media screen and (min-width:1280px){.literalblock pre,.listingblock>.content>pre{font-size:1em}}
+.literalblock pre,.listingblock>.content>pre:not(.highlight),.listingblock>.content>pre[class=highlight],.listingblock>.content>pre[class^="highlight "]{background:#f7f7f8}
+.literalblock.output pre{color:#f7f7f8;background:rgba(0,0,0,.9)}
+.listingblock>.content{position:relative}
+.listingblock pre>code{display:block}
+.listingblock code[data-lang]::before{display:none;content:attr(data-lang);position:absolute;font-size:.75em;top:.425rem;right:.5rem;line-height:1;text-transform:uppercase;color:inherit;opacity:.5}
+.listingblock:hover code[data-lang]::before{display:block}
+.listingblock.terminal pre .command::before{content:attr(data-prompt);padding-right:.5em;color:inherit;opacity:.5}
+.listingblock.terminal pre .command:not([data-prompt])::before{content:"$"}
+.listingblock pre.highlightjs{padding:0}
+.listingblock pre.highlightjs>code{padding:1em;border-radius:4px}
+.listingblock pre.prettyprint{border-width:0}
+.prettyprint{background:#f7f7f8}
+pre.prettyprint .linenums{line-height:1.45;margin-left:2em}
+pre.prettyprint li{background:none;list-style-type:inherit;padding-left:0}
+pre.prettyprint li code[data-lang]::before{opacity:1}
+pre.prettyprint li:not(:first-child) code[data-lang]::before{display:none}
+table.linenotable{border-collapse:separate;border:0;margin-bottom:0;background:none}
+table.linenotable td[class]{color:inherit;vertical-align:top;padding:0;line-height:inherit;white-space:normal}
+table.linenotable td.code{padding-left:.75em}
+table.linenotable td.linenos,pre.pygments .linenos{border-right:1px solid;opacity:.35;padding-right:.5em;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none}
+pre.pygments span.linenos{display:inline-block;margin-right:.75em}
+.quoteblock{margin:0 1em 1.25em 1.5em;display:table}
+.quoteblock:not(.excerpt)>.title{margin-left:-1.5em;margin-bottom:.75em}
+.quoteblock blockquote,.quoteblock p{color:rgba(0,0,0,.85);font-size:1.15rem;line-height:1.75;word-spacing:.1em;letter-spacing:0;font-style:italic;text-align:justify}
+.quoteblock blockquote{margin:0;padding:0;border:0}
+.quoteblock blockquote::before{content:"\201c";float:left;font-size:2.75em;font-weight:bold;line-height:.6em;margin-left:-.6em;color:#7a2518;text-shadow:0 1px 2px rgba(0,0,0,.1)}
+.quoteblock blockquote>.paragraph:last-child p{margin-bottom:0}
+.quoteblock .attribution{margin-top:.75em;margin-right:.5ex;text-align:right}
+.verseblock{margin:0 1em 1.25em}
+.verseblock pre{font-family:"Open Sans","DejaVu Sans",sans-serif;font-size:1.15rem;color:rgba(0,0,0,.85);font-weight:300;text-rendering:optimizeLegibility}
+.verseblock pre strong{font-weight:400}
+.verseblock .attribution{margin-top:1.25rem;margin-left:.5ex}
+.quoteblock .attribution,.verseblock .attribution{font-size:.9375em;line-height:1.45;font-style:italic}
+.quoteblock .attribution br,.verseblock .attribution br{display:none}
+.quoteblock .attribution cite,.verseblock .attribution cite{display:block;letter-spacing:-.025em;color:rgba(0,0,0,.6)}
+.quoteblock.abstract blockquote::before,.quoteblock.excerpt blockquote::before,.quoteblock .quoteblock blockquote::before{display:none}
+.quoteblock.abstract blockquote,.quoteblock.abstract p,.quoteblock.excerpt blockquote,.quoteblock.excerpt p,.quoteblock .quoteblock blockquote,.quoteblock .quoteblock p{line-height:1.6;word-spacing:0}
+.quoteblock.abstract{margin:0 1em 1.25em;display:block}
+.quoteblock.abstract>.title{margin:0 0 .375em;font-size:1.15em;text-align:center}
+.quoteblock.excerpt>blockquote,.quoteblock .quoteblock{padding:0 0 .25em 1em;border-left:.25em solid #dddddf}
+.quoteblock.excerpt,.quoteblock .quoteblock{margin-left:0}
+.quoteblock.excerpt blockquote,.quoteblock.excerpt p,.quoteblock .quoteblock blockquote,.quoteblock .quoteblock p{color:inherit;font-size:1.0625rem}
+.quoteblock.excerpt .attribution,.quoteblock .quoteblock .attribution{color:inherit;font-size:.85rem;text-align:left;margin-right:0}
+p.tableblock:last-child{margin-bottom:0}
+td.tableblock>.content{margin-bottom:1.25em;word-wrap:anywhere}
+td.tableblock>.content>:last-child{margin-bottom:-1.25em}
+table.tableblock,th.tableblock,td.tableblock{border:0 solid #dedede}
+table.grid-all>*>tr>*{border-width:1px}
+table.grid-cols>*>tr>*{border-width:0 1px}
+table.grid-rows>*>tr>*{border-width:1px 0}
+table.frame-all{border-width:1px}
+table.frame-ends{border-width:1px 0}
+table.frame-sides{border-width:0 1px}
+table.frame-none>colgroup+*>:first-child>*,table.frame-sides>colgroup+*>:first-child>*{border-top-width:0}
+table.frame-none>:last-child>:last-child>*,table.frame-sides>:last-child>:last-child>*{border-bottom-width:0}
+table.frame-none>*>tr>:first-child,table.frame-ends>*>tr>:first-child{border-left-width:0}
+table.frame-none>*>tr>:last-child,table.frame-ends>*>tr>:last-child{border-right-width:0}
+table.stripes-all>*>tr,table.stripes-odd>*>tr:nth-of-type(odd),table.stripes-even>*>tr:nth-of-type(even),table.stripes-hover>*>tr:hover{background:#f8f8f7}
+th.halign-left,td.halign-left{text-align:left}
+th.halign-right,td.halign-right{text-align:right}
+th.halign-center,td.halign-center{text-align:center}
+th.valign-top,td.valign-top{vertical-align:top}
+th.valign-bottom,td.valign-bottom{vertical-align:bottom}
+th.valign-middle,td.valign-middle{vertical-align:middle}
+table thead th,table tfoot th{font-weight:bold}
+tbody tr th{background:#f7f8f7}
+tbody tr th,tbody tr th p,tfoot tr th,tfoot tr th p{color:rgba(0,0,0,.8);font-weight:bold}
+p.tableblock>code:only-child{background:none;padding:0}
+p.tableblock{font-size:1em}
+ol{margin-left:1.75em}
+ul li ol{margin-left:1.5em}
+dl dd{margin-left:1.125em}
+dl dd:last-child,dl dd:last-child>:last-child{margin-bottom:0}
+li p,ul dd,ol dd,.olist .olist,.ulist .ulist,.ulist .olist,.olist .ulist{margin-bottom:.625em}
+ul.checklist,ul.none,ol.none,ul.no-bullet,ol.no-bullet,ol.unnumbered,ul.unstyled,ol.unstyled{list-style-type:none}
+ul.no-bullet,ol.no-bullet,ol.unnumbered{margin-left:.625em}
+ul.unstyled,ol.unstyled{margin-left:0}
+li>p:empty:only-child::before{content:"";display:inline-block}
+ul.checklist>li>p:first-child{margin-left:-1em}
+ul.checklist>li>p:first-child>.fa-square-o:first-child,ul.checklist>li>p:first-child>.fa-check-square-o:first-child{width:1.25em;font-size:.8em;position:relative;bottom:.125em}
+ul.checklist>li>p:first-child>input[type=checkbox]:first-child{margin-right:.25em}
+ul.inline{display:flex;flex-flow:row wrap;list-style:none;margin:0 0 .625em -1.25em}
+ul.inline>li{margin-left:1.25em}
+.unstyled dl dt{font-weight:400;font-style:normal}
+ol.arabic{list-style-type:decimal}
+ol.decimal{list-style-type:decimal-leading-zero}
+ol.loweralpha{list-style-type:lower-alpha}
+ol.upperalpha{list-style-type:upper-alpha}
+ol.lowerroman{list-style-type:lower-roman}
+ol.upperroman{list-style-type:upper-roman}
+ol.lowergreek{list-style-type:lower-greek}
+.hdlist>table,.colist>table{border:0;background:none}
+.hdlist>table>tbody>tr,.colist>table>tbody>tr{background:none}
+td.hdlist1,td.hdlist2{vertical-align:top;padding:0 .625em}
+td.hdlist1{font-weight:bold;padding-bottom:1.25em}
+td.hdlist2{word-wrap:anywhere}
+.literalblock+.colist,.listingblock+.colist{margin-top:-.5em}
+.colist td:not([class]):first-child{padding:.4em .75em 0;line-height:1;vertical-align:top}
+.colist td:not([class]):first-child img{max-width:none}
+.colist td:not([class]):last-child{padding:.25em 0}
+.thumb,.th{line-height:0;display:inline-block;border:4px solid #fff;box-shadow:0 0 0 1px #ddd}
+.imageblock.left{margin:.25em .625em 1.25em 0}
+.imageblock.right{margin:.25em 0 1.25em .625em}
+.imageblock>.title{margin-bottom:0}
+.imageblock.thumb,.imageblock.th{border-width:6px}
+.imageblock.thumb>.title,.imageblock.th>.title{padding:0 .125em}
+.image.left,.image.right{margin-top:.25em;margin-bottom:.25em;display:inline-block;line-height:0}
+.image.left{margin-right:.625em}
+.image.right{margin-left:.625em}
+a.image{text-decoration:none;display:inline-block}
+a.image object{pointer-events:none}
+sup.footnote,sup.footnoteref{font-size:.875em;position:static;vertical-align:super}
+sup.footnote a,sup.footnoteref a{text-decoration:none}
+sup.footnote a:active,sup.footnoteref a:active,#footnotes .footnote a:first-of-type:active{text-decoration:underline}
+#footnotes{padding-top:.75em;padding-bottom:.75em;margin-bottom:.625em}
+#footnotes hr{width:20%;min-width:6.25em;margin:-.25em 0 .75em;border-width:1px 0 0}
+#footnotes .footnote{padding:0 .375em 0 .225em;line-height:1.3334;font-size:.875em;margin-left:1.2em;margin-bottom:.2em}
+#footnotes .footnote a:first-of-type{font-weight:bold;text-decoration:none;margin-left:-1.05em}
+#footnotes .footnote:last-of-type{margin-bottom:0}
+#content #footnotes{margin-top:-.625em;margin-bottom:0;padding:.75em 0}
+div.unbreakable{page-break-inside:avoid}
+.big{font-size:larger}
+.small{font-size:smaller}
+.underline{text-decoration:underline}
+.overline{text-decoration:overline}
+.line-through{text-decoration:line-through}
+.aqua{color:#00bfbf}
+.aqua-background{background:#00fafa}
+.black{color:#000}
+.black-background{background:#000}
+.blue{color:#0000bf}
+.blue-background{background:#0000fa}
+.fuchsia{color:#bf00bf}
+.fuchsia-background{background:#fa00fa}
+.gray{color:#606060}
+.gray-background{background:#7d7d7d}
+.green{color:#006000}
+.green-background{background:#007d00}
+.lime{color:#00bf00}
+.lime-background{background:#00fa00}
+.maroon{color:#600000}
+.maroon-background{background:#7d0000}
+.navy{color:#000060}
+.navy-background{background:#00007d}
+.olive{color:#606000}
+.olive-background{background:#7d7d00}
+.purple{color:#600060}
+.purple-background{background:#7d007d}
+.red{color:#bf0000}
+.red-background{background:#fa0000}
+.silver{color:#909090}
+.silver-background{background:#bcbcbc}
+.teal{color:#006060}
+.teal-background{background:#007d7d}
+.white{color:#bfbfbf}
+.white-background{background:#fafafa}
+.yellow{color:#bfbf00}
+.yellow-background{background:#fafa00}
+span.icon>.fa{cursor:default}
+a span.icon>.fa{cursor:inherit}
+.admonitionblock td.icon [class^="fa icon-"]{font-size:2.5em;text-shadow:1px 1px 2px rgba(0,0,0,.5);cursor:default}
+.admonitionblock td.icon .icon-note::before{content:"\f05a";color:#19407c}
+.admonitionblock td.icon .icon-tip::before{content:"\f0eb";text-shadow:1px 1px 2px rgba(155,155,0,.8);color:#111}
+.admonitionblock td.icon .icon-warning::before{content:"\f071";color:#bf6900}
+.admonitionblock td.icon .icon-caution::before{content:"\f06d";color:#bf3400}
+.admonitionblock td.icon .icon-important::before{content:"\f06a";color:#bf0000}
+.conum[data-value]{display:inline-block;color:#fff!important;background:rgba(0,0,0,.8);border-radius:50%;text-align:center;font-size:.75em;width:1.67em;height:1.67em;line-height:1.67em;font-family:"Open Sans","DejaVu Sans",sans-serif;font-style:normal;font-weight:bold}
+.conum[data-value] *{color:#fff!important}
+.conum[data-value]+b{display:none}
+.conum[data-value]::after{content:attr(data-value)}
+pre .conum[data-value]{position:relative;top:-.125em}
+b.conum *{color:inherit!important}
+.conum:not([data-value]):empty{display:none}
+dt,th.tableblock,td.content,div.footnote{text-rendering:optimizeLegibility}
+h1,h2,p,td.content,span.alt,summary{letter-spacing:-.01em}
+p strong,td.content strong,div.footnote strong{letter-spacing:-.005em}
+p,blockquote,dt,td.content,td.hdlist1,span.alt,summary{font-size:1.0625rem}
+p{margin-bottom:1.25rem}
+.sidebarblock p,.sidebarblock dt,.sidebarblock td.content,p.tableblock{font-size:1em}
+.exampleblock>.content{background:#fffef7;border-color:#e0e0dc;box-shadow:0 1px 4px #e0e0dc}
+.print-only{display:none!important}
+@page{margin:1.25cm .75cm}
+@media print{*{box-shadow:none!important;text-shadow:none!important}
+html{font-size:80%}
+a{color:inherit!important;text-decoration:underline!important}
+a.bare,a[href^="#"],a[href^="mailto:"]{text-decoration:none!important}
+a[href^="http:"]:not(.bare)::after,a[href^="https:"]:not(.bare)::after{content:"(" attr(href) ")";display:inline-block;font-size:.875em;padding-left:.25em}
+abbr[title]{border-bottom:1px dotted}
+abbr[title]::after{content:" (" attr(title) ")"}
+pre,blockquote,tr,img,object,svg{page-break-inside:avoid}
+thead{display:table-header-group}
+svg{max-width:100%}
+p,blockquote,dt,td.content{font-size:1em;orphans:3;widows:3}
+h2,h3,#toctitle,.sidebarblock>.content>.title{page-break-after:avoid}
+#header,#content,#footnotes,#footer{max-width:none}
+#toc,.sidebarblock,.exampleblock>.content{background:none!important}
+#toc{border-bottom:1px solid #dddddf!important;padding-bottom:0!important}
+body.book #header{text-align:center}
+body.book #header>h1:first-child{border:0!important;margin:2.5em 0 1em}
+body.book #header .details{border:0!important;display:block;padding:0!important}
+body.book #header .details span:first-child{margin-left:0!important}
+body.book #header .details br{display:block}
+body.book #header .details br+span::before{content:none!important}
+body.book #toc{border:0!important;text-align:left!important;padding:0!important;margin:0!important}
+body.book #toc,body.book #preamble,body.book h1.sect0,body.book .sect1>h2{page-break-before:always}
+.listingblock code[data-lang]::before{display:block}
+#footer{padding:0 .9375em}
+.hide-on-print{display:none!important}
+.print-only{display:block!important}
+.hide-for-print{display:none!important}
+.show-for-print{display:inherit!important}}
+@media amzn-kf8,print{#header>h1:first-child{margin-top:1.25rem}
+.sect1{padding:0!important}
+.sect1+.sect1{border:0}
+#footer{background:none}
+#footer-text{color:rgba(0,0,0,.6);font-size:.9em}}
+@media amzn-kf8{#header,#content,#footnotes,#footer{padding:0}}
+</style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/styles/github.min.css">
+</head>
+<body class="article toc2 toc-left">
+<div id="header">
+<h1>Dynamic Reconfiguration Guide (http)</h1>
+<div id="toc" class="toc2">
+<div id="toctitle">Table of Contents</div>
+<ul class="sectlevel1">
+<li><a href="#_overview">1. Overview</a>
+<ul class="sectlevel2">
+<li><a href="#_nginx_http_at_a_glance">1.1. nginx.http at a glance</a></li>
+<li><a href="#_lifecycle_phases">1.2. Lifecycle phases</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_createsocketaddress">2. nginx.createSocket(address)</a>
+<ul class="sectlevel2">
+<li><a href="#_signature">2.1. Signature</a></li>
+<li><a href="#_behaviour">2.2. Behaviour</a></li>
+<li><a href="#_nginxsocket_properties_and_methods">2.3. NginxSocket properties and methods</a></li>
+<li><a href="#_example_create_a_socket_in_config_phase">2.4. Example: create a socket in config phase</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_http_attachsock">3. nginx.http.attach(sock)</a>
+<ul class="sectlevel2">
+<li><a href="#_signature_2">3.1. Signature</a></li>
+<li><a href="#_behaviour_2">3.2. Behaviour</a></li>
+<li><a href="#_nginxhttplistener_properties_and_methods">3.3. NginxHttpListener properties and methods</a></li>
+<li><a href="#_full_phase_a_d_example">3.4. Full Phase A-D example</a>
+<ul class="sectlevel3">
+<li><a href="#_flow_diagram">3.4.1. Flow diagram</a></li>
+</ul>
+</li>
+<li><a href="#_post_fork_socket_creation_phase_f">3.5. Post-fork socket creation (Phase F)</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_http_servers">4. nginx.http.servers[]</a></li>
+<li><a href="#_nginx_http_sockets">5. nginx.http.sockets[]</a></li>
+<li><a href="#_nginx_http_variables">6. nginx.http.variables{}</a></li>
+<li><a href="#_hash_size_parameters">7. Hash size parameters</a></li>
+<li><a href="#_nginx_http_addservername_opts">8. nginx.http.addServer(name[, opts])</a>
+<ul class="sectlevel2">
+<li><a href="#_signature_3">8.1. Signature</a></li>
+<li><a href="#_two_phase_commit">8.2. Two-phase commit</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_http_removeservername">9. nginx.http.removeServer(name)</a>
+<ul class="sectlevel2">
+<li><a href="#_signature_4">9.1. Signature</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_http_rebuildvhostdispatch">10. nginx.http.rebuildVhostDispatch()</a>
+<ul class="sectlevel2">
+<li><a href="#_signature_5">10.1. Signature</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_http_matchuri_servername">11. nginx.http.match(uri[, serverName])</a>
+<ul class="sectlevel2">
+<li><a href="#_signature_6">11.1. Signature</a></li>
+</ul>
+</li>
+<li><a href="#_complete_examples">12. Complete examples</a>
+<ul class="sectlevel2">
+<li><a href="#_example_1_dynamic_http_endpoint_provisioning">12.1. Example 1: Dynamic HTTP endpoint provisioning</a></li>
+<li><a href="#_example_2_inspect_all_sockets_and_servers_at_startup">12.2. Example 2: Inspect all sockets and servers at startup</a></li>
+<li><a href="#_example_3_provision_a_new_port_at_config_time_phases_a_d">12.3. Example 3: Provision a new port at config time (Phases A-D)</a></li>
+<li><a href="#_example_4_variable_introspection_in_a_request_handler">12.4. Example 4: Variable introspection in a request handler</a></li>
+<li><a href="#_example_5_cross_worker_server_provisioning_via_sharedworker">12.5. Example 5: Cross-worker server provisioning via SharedWorker</a></li>
+<li><a href="#_example_6_match_as_a_config_validation_tool">12.6. Example 6: match() as a config validation tool</a></li>
+</ul>
+</li>
+<li><a href="#_cross_worker_propagation">13. Cross-worker propagation</a>
+<ul class="sectlevel2">
+<li><a href="#_atomic_multi_server_reconfiguration_across_all_workers">13.1. Atomic multi-server reconfiguration across all workers</a></li>
+</ul>
+</li>
+<li><a href="#_api_reference">14. API Reference</a>
+<ul class="sectlevel2">
+<li><a href="#_nginx_global">14.1. nginx (global)</a></li>
+<li><a href="#_nginxhttp_nginx_http">14.2. NginxHttp (nginx.http)</a></li>
+<li><a href="#_nginxsocket">14.3. NginxSocket</a></li>
+<li><a href="#_nginxhttplistener">14.4. NginxHttpListener</a></li>
+</ul>
+</li>
+<li><a href="#_design_notes">15. Design notes</a>
+<ul class="sectlevel2">
+<li><a href="#_why_four_phases">15.1. Why four phases?</a></li>
+<li><a href="#_two_phase_commit_for_server_names">15.2. Two-phase commit for server names</a></li>
+<li><a href="#_variables_is_read_only">15.3. variables{} is read-only</a></li>
+<li><a href="#_post_fork_socket_creation_phase_f_2">15.4. Post-fork socket creation (Phase F)</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<div id="content">
+<div id="preamble">
+<div class="sectionbody">
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p><strong>DRAFT FOR COMMENTS</strong> — This document is a work in progress.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_overview">1. Overview</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>This guide covers runtime reconfiguration of the <code>nginx.http</code> object — the
+top-level HTTP subsystem accessible from JavaScript.  It covers:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Reading HTTP subsystem state (<code>servers[]</code>, <code>sockets[]</code>, <code>variables{}</code>,
+hash-size parameters)</p>
+</li>
+<li>
+<p>Provisioning new listening sockets (<code>nginx.createSocket()</code>)</p>
+</li>
+<li>
+<p>Wiring sockets into the HTTP pipeline (<code>nginx.http.attach()</code>)</p>
+</li>
+<li>
+<p>Managing server-name dispatch (<code>addServer</code>, <code>removeServer</code>,
+<code>rebuildVhostDispatch</code>, <code>match</code>)</p>
+</li>
+<li>
+<p>Safe patterns for cross-worker propagation</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>For location-level operations see
+<a href="js-reconfig-guide-locations.adoc">Guide 4 (Locations)</a>.
+For server-level operations see
+<a href="js-reconfig-guide-servers.adoc">Guide 5 (Servers)</a>.
+For cross-worker coordination see
+<a href="js-reconfig-guide-all-workers.adoc">Guide 2 (All Workers)</a>.
+For snapshot/restore see
+<a href="js-reconfig-guide-checkpoint.adoc">Guide 3 (Checkpoint/Restore)</a>.</p>
+</div>
+<div class="sect2">
+<h3 id="_nginx_http_at_a_glance">1.1. nginx.http at a glance</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">const h = nginx.http;
+
+// Read-only state
+h.servers[]                   // NginxServer[]
+h.sockets[]                   // NginxSocket[] — all listening sockets
+h.variables{}                 // { name: { index, writable } }
+h.serverNamesHashMaxSize      // number (from server_names_hash_max_size)
+h.serverNamesHashBucketSize   // number (from server_names_hash_bucket_size)
+h.variablesHashMaxSize        // number (from variables_hash_max_size)
+h.variablesHashBucketSize     // number (from variables_hash_bucket_size)
+
+// Mutations
+h.addServer(name[, opts])     // → NginxServer
+h.removeServer(name)          // void
+h.rebuildVhostDispatch()      // void — activates addServer/removeServer
+h.match(uri[, serverName])    // → { server, location } | null
+
+// Socket provisioning
+nginx.createSocket('host:port')   // → NginxSocket  (Phase A)
+h.attach(sock)                    // → NginxHttpListener  (Phase B)</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_lifecycle_phases">1.2. Lifecycle phases</h3>
+<div class="paragraph">
+<p>Socket provisioning spans four phases.  Phases A-D are all pre-fork
+(config phase / <code>init_conf</code>).  Post-fork socket creation uses Phase F.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>Phase A  nginx.createSocket('addr:port')   →  NginxSocket
+Phase B  nginx.http.attach(sock)           →  NginxHttpListener
+Phase C  listener.addServer(srv)           activates the listener
+Phase D  listener.addVirtualServer(srv)    adds a virtual-host entry
+Phase F  nginx.createSocket('addr:port')   →  NginxSocket  (post-fork,
+                                              via manager SCM_RIGHTS)</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The four-phase model exists because nginx&#8217;s listening-socket infrastructure,
+HTTP connection pipeline, and virtual-host hash are built up incrementally.
+Each <code>addServer</code> / <code>addVirtualServer</code> call triggers an inline hash rebuild
+so the new names are reachable immediately.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  [nginx.createSocket]          [nginx.http.attach]
+      Phase A                       Phase B
+  ┌──────────┐  NginxSocket   ┌─────────────────┐  NginxHttpListener
+  │  socket  │ ─────────────► │   HTTP wiring   │ ──────────────────►
+  │  bind    │                │  (addr, pool,   │
+  │  listen  │                │   routing structs│
+  └──────────┘                └─────────────────┘
+                                      │
+                   ┌──────────────────┴───────────────────┐
+                   ▼ Phase C                               ▼ Phase D
+          listener.addServer(srv)             listener.addVirtualServer(srv)
+          (activates cycle-&gt;listening,         (adds name to virtual_names hash,
+           sets default server)                rebuilds inline)</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_createsocketaddress">2. nginx.createSocket(address)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Creates a new TCP listening socket.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature">2.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.createSocket(address: string): NginxSocket</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>address</code> — <code>"host:port"</code> string, e.g. <code>"0.0.0.0:9000"</code> or <code>"[::]:443"</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_behaviour">2.2. Behaviour</h3>
+<div class="ulist">
+<ul>
+<li>
+<p><strong>Phase A (pre-fork / <code>init_conf</code>)</strong> — calls <code>socket()</code>, <code>bind()</code>, and
+<code>listen()</code> directly in the master process.  The socket is ready before
+any worker forks.</p>
+</li>
+<li>
+<p><strong>Phase F (post-fork, from a request handler)</strong> — sends the bind address to
+the manager thread via AF_UNIX + SCM_RIGHTS.  The manager creates the
+socket in the master&#8217;s network namespace and delivers the file descriptor
+back to the requesting worker.  Other workers obtain the same fd via
+<code>sock.broadcast()</code>.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginxsocket_properties_and_methods">2.3. NginxSocket properties and methods</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Member</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>address</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind address string, e.g. <code>"0.0.0.0"</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>port</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind port number.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fd</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Raw file descriptor number.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>listener</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Associated <code>NginxHttpListener</code>, or <code>null</code> if <code>attach()</code> has not been called.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>close()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Closes the socket file descriptor.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>broadcast()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">(Phase F) Delivers the socket fd to all other workers via the manager thread.
+  Returns <code>Promise&lt;undefined&gt;</code>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_example_create_a_socket_in_config_phase">2.4. Example: create a socket in config phase</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// In js_source script, executed during init_conf
+
+const sock = nginx.createSocket('0.0.0.0:9000');
+nginx.log(`created socket fd=${sock.fd} on ${sock.address}:${sock.port}`);</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_http_attachsock">3. nginx.http.attach(sock)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Wires a <code>NginxSocket</code> into the HTTP connection pipeline.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature_2">3.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.attach(sock: NginxSocket): NginxHttpListener</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_behaviour_2">3.2. Behaviour</h3>
+<div class="ulist">
+<ul>
+<li>
+<p>Pre-fork only.  Calling <code>attach()</code> post-fork throws an error.</p>
+</li>
+<li>
+<p>Fills in the <code>sockaddr</code>, connection pool, and HTTP routing structures for
+the given socket.</p>
+</li>
+<li>
+<p>Returns a <code>NginxHttpListener</code> that can be used to register servers
+(Phase C) and virtual hosts (Phase D).</p>
+</li>
+<li>
+<p>Sets <code>sock.listener</code> to the returned listener.</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginxhttplistener_properties_and_methods">3.3. NginxHttpListener properties and methods</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Member</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>address</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind address string.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>socket</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>NginxSocket</code> this listener was created from.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNames</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Array of all server-name strings registered on this listener.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverByName(name)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Returns the <code>NginxServer</code> registered under <code>name</code>, or <code>null</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>addServer(srv)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Phase C — sets <code>srv</code> as the default server for this listener and activates
+  it by pushing to <code>cycle&#8594;listening</code>.  Must be called exactly once per
+  listener before <code>addVirtualServer</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>addVirtualServer(srv)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Phase D — adds <code>srv</code> as a named virtual host.  Rebuilds the virtual-names
+  hash inline.  May be called multiple times.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_full_phase_a_d_example">3.4. Full Phase A-D example</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Phase A — create socket
+const sock = nginx.createSocket('0.0.0.0:8888');
+
+// Phase B — attach to HTTP pipeline
+const listener = nginx.http.attach(sock);
+
+// Build a default server
+const defaultSrv = nginx.http.addServer('_');
+defaultSrv.addLocation('/').handler = function(req) {
+    req.respond(444, {}, '');   // close silently
+};
+
+// Phase C — activate listener with a default server
+listener.addServer(defaultSrv);
+
+// Build a named virtual host
+const appSrv = nginx.http.addServer('app.example.com');
+appSrv.addLocation('/').handler = function(req) {
+    req.respond(200, {'Content-Type': 'text/plain'}, 'hello from app\n');
+};
+nginx.http.rebuildVhostDispatch();
+
+// Phase D — wire named virtual host into this listener
+listener.addVirtualServer(appSrv);</code></pre>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_flow_diagram">3.4.1. Flow diagram</h4>
+<div class="listingblock">
+<div class="content">
+<pre>nginx.createSocket('0.0.0.0:8888')
+          │
+          │  NginxSocket (fd=N)
+          ▼
+nginx.http.attach(sock)
+          │
+          │  NginxHttpListener
+          ▼
+    ┌─────────────┐
+    │  listener   │
+    └─────┬───────┘
+          │
+          ├──── addServer(defaultSrv)   [Phase C]
+          │         └─► pushes to cycle-&gt;listening
+          │             marks defaultSrv as default
+          │
+          └──── addVirtualServer(appSrv) [Phase D]
+                    └─► inserts into virtual_names hash
+                        (inline rebuild)</pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_post_fork_socket_creation_phase_f">3.5. Post-fork socket creation (Phase F)</h3>
+<div class="paragraph">
+<p>After workers have forked, <code>nginx.createSocket()</code> routes through the
+manager thread.  Because each worker has its own fd table the socket must
+be explicitly distributed with <code>sock.broadcast()</code>.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// In a request handler (post-fork)
+
+async function provisionSocket(req) {
+    // Ask manager to create + bind + listen
+    const sock = await nginx.createSocket('0.0.0.0:9001');
+
+    // Deliver fd to sibling workers
+    await sock.broadcast();
+
+    req.respond(200, {}, `socket ready on port ${sock.port}\n`);
+}</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<code>attach()</code> is pre-fork only.  Post-fork dynamic sockets must be
+managed at a lower level (e.g. passed to a SharedWorker that owns the
+accept loop).
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_http_servers">4. nginx.http.servers[]</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Read-only array of all <code>NginxServer</code> objects currently known to the HTTP
+subsystem.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">for (const srv of nginx.http.servers) {
+    nginx.log(`server: names=[${srv.names}] locations=${srv.locations.length}`);
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The array reflects both statically-configured servers and servers added at
+runtime via <code>addServer()</code>.  Order matches the order servers were registered.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_http_sockets">5. nginx.http.sockets[]</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Read-only array of all listening socket descriptors with their HTTP
+configuration.</p>
+</div>
+<div class="paragraph">
+<p>Each entry exposes:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>address</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind address (e.g. <code>"0.0.0.0"</code>).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>port</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind port.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ssl</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Whether TLS is active on this listener.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>http2</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Whether HTTP/2 is negotiated on this listener.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>listen</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">array</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Raw listen-directive parameter objects for this port.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">for (const s of nginx.http.sockets) {
+    nginx.log(`${s.address}:${s.port}  ssl=${s.ssl}  http2=${s.http2}`);
+}</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_http_variables">6. nginx.http.variables{}</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Plain JavaScript object mapping every registered HTTP variable name to its
+metadata.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">{
+  "host":            { index: 0,  writable: false },
+  "request_method":  { index: 1,  writable: false },
+  "my_custom_var":   { index: 42, writable: true  },
+  ...
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Fields:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Field</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>index</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Internal variable index used by nginx&#8217;s variable engine.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>writable</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Whether the variable can be set at request time (e.g. <code>set $my_var &#8230;&#8203;</code>).</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>This map is populated at config parse time and is read-only at runtime.
+It lets JavaScript code discover which variables are available and whether
+they can be written.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Check whether a variable exists and is writable
+function varInfo(name) {
+    const v = nginx.http.variables[name];
+    if (!v) return `${name}: not registered`;
+    return `${name}: index=${v.index} writable=${v.writable}`;
+}
+nginx.log(varInfo('host'));
+nginx.log(varInfo('my_custom_var'));</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_hash_size_parameters">7. Hash size parameters</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>These four properties mirror the corresponding nginx.conf directives.
+They are read-only at runtime; changing them requires a config reload.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">nginx.conf directive</th>
+<th class="tableblock halign-left valign-top">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNamesHashMaxSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>server_names_hash_max_size</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Maximum hash table size for server-name dispatch.  Increase if many
+  virtual hosts cause hash-bucket conflicts.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNamesHashBucketSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>server_names_hash_bucket_size</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bucket size (bytes, power-of-two).  Increase if server names are long.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variablesHashMaxSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variables_hash_max_size</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Maximum hash table size for the variable engine.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variablesHashBucketSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variables_hash_bucket_size</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bucket size for the variable hash.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">nginx.log(
+    `serverNames hash: max=${nginx.http.serverNamesHashMaxSize}` +
+    ` bucket=${nginx.http.serverNamesHashBucketSize}`
+);</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_http_addservername_opts">8. nginx.http.addServer(name[, opts])</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Adds a new virtual server to the HTTP subsystem.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature_3">8.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.addServer(name: string, opts?: { template?: string }): NginxServer</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>name</code> — primary server name.
+<code>opts.template</code> — optional name of an existing server to copy configuration
+from (inherits <code>proxy_pass</code>, SSL, etc.).  Defaults to an empty configuration.</p>
+</div>
+<div class="paragraph">
+<p>The new server starts with an empty location tree.  See
+<a href="js-reconfig-guide-servers.adoc">Guide 5</a> for full details.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_two_phase_commit">8.2. Two-phase commit</h3>
+<div class="paragraph">
+<p><code>addServer()</code> registers the server internally but <strong>does not</strong> update the
+server-name routing hash until <code>rebuildVhostDispatch()</code> is called.
+Incoming requests continue to use the old dispatch table until the rebuild.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  nginx.http.addServer('new.example.com')
+             │
+             │  registered internally
+             │  (not yet routable)
+             │
+  nginx.http.rebuildVhostDispatch()
+             │
+             └─► routing hash rebuilt — new.example.com now reachable</pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">const srv = nginx.http.addServer('api.example.com');
+srv.addLocation('/v1').handler = function(req) {
+    req.respond(200, {}, 'v1\n');
+};
+nginx.http.rebuildVhostDispatch();   // activate</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_http_removeservername">9. nginx.http.removeServer(name)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Removes a virtual server from the HTTP subsystem.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature_4">9.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.removeServer(name: string): void</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Splices the named server from all internal virtual-host entries.  Like
+<code>addServer</code>, the routing hash is not updated until <code>rebuildVhostDispatch()</code>.</p>
+</div>
+<div class="paragraph">
+<p>In-flight requests that are already executing inside the removed server&#8217;s
+handlers continue to completion.  New connections will not be dispatched to
+the removed server after the next <code>rebuildVhostDispatch()</code>.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">nginx.http.removeServer('api.example.com');
+nginx.http.rebuildVhostDispatch();</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_http_rebuildvhostdispatch">10. nginx.http.rebuildVhostDispatch()</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Rebuilds the server-name routing hash from the current <code>servers[]</code> list.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature_5">10.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.rebuildVhostDispatch(): void</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Must be called after any <code>addServer()</code> or <code>removeServer()</code> to make the
+changes reachable by incoming requests.  Safe to call at any time — the
+hash rebuild is an O(N) operation and completes in microseconds for typical
+deployments.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">nginx.http.addServer('a.example.com');
+nginx.http.addServer('b.example.com');
+nginx.http.rebuildVhostDispatch();   // both become reachable atomically</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_http_matchuri_servername">11. nginx.http.match(uri[, serverName])</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Simulates the full nginx dispatch logic and returns the server and location
+that would handle a given request.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature_6">11.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.http.match(uri: string, serverName?: string): { server: NginxServer, location: NginxLocation } | null</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>uri</code> — request URI path (e.g. <code>"/api/v1/users"</code>).
+<code>serverName</code> — optional <code>Host</code> header value for virtual-host selection.
+  Defaults to the first (default) server.</p>
+</div>
+<div class="paragraph">
+<p>Returns <code>null</code> if no match is found.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">const m = nginx.http.match('/api/v1/users', 'api.example.com');
+if (m) {
+    nginx.log(`server=${m.server.names[0]} location=${m.location.path}`);
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Useful for integration testing config changes without sending real requests:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">function assertRoutes(routes) {
+    for (const [uri, host, wantPath] of routes) {
+        const m = nginx.http.match(uri, host);
+        if (!m || m.location.path !== wantPath) {
+            throw new Error(`match(${uri}, ${host}) → ${m?.location.path} ≠ ${wantPath}`);
+        }
+    }
+}
+
+assertRoutes([
+    ['/api/v1/users', 'api.example.com', '/api/v1/'],
+    ['/health',       'api.example.com', '/health'],
+    ['/',             'www.example.com', '/'],
+]);</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_complete_examples">12. Complete examples</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_example_1_dynamic_http_endpoint_provisioning">12.1. Example 1: Dynamic HTTP endpoint provisioning</h3>
+<div class="paragraph">
+<p>Add a new API server at runtime from a request handler.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// In js_source script
+
+(function() {
+    const loc = nginx.http.servers[0].locations.find(l =&gt; l.path === '/admin');
+    if (loc) loc.handler = adminHandler;
+})();
+
+async function adminHandler(req) {
+    const body = await req.text();
+    let cmd;
+    try { cmd = JSON.parse(body); } catch(e) {
+        req.respond(400, {}, 'bad JSON\n'); return;
+    }
+
+    if (cmd.action === 'add-server') {
+        const srv = nginx.http.addServer(cmd.name);
+
+        for (const [path, msg] of Object.entries(cmd.routes || {})) {
+            const capture = msg;
+            srv.addLocation(path).handler = function(r) {
+                r.respond(200, {'Content-Type': 'text/plain'}, capture + '\n');
+            };
+        }
+
+        nginx.http.rebuildVhostDispatch();
+        req.respond(200, {}, `added server ${cmd.name}\n`);
+
+    } else if (cmd.action === 'remove-server') {
+        nginx.http.removeServer(cmd.name);
+        nginx.http.rebuildVhostDispatch();
+        req.respond(200, {}, `removed server ${cmd.name}\n`);
+
+    } else {
+        req.respond(400, {}, `unknown action ${cmd.action}\n`);
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Usage:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-bash hljs" data-lang="bash">curl -X POST http://localhost/admin \
+  -d '{"action":"add-server","name":"new.example.com",
+       "routes":{"/":"hello","/api/":"api handler"}}'
+
+curl -H 'Host: new.example.com' http://localhost/
+# → hello</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_2_inspect_all_sockets_and_servers_at_startup">12.2. Example 2: Inspect all sockets and servers at startup</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">(function auditHttp() {
+    nginx.log('=== HTTP Subsystem Audit ===');
+
+    nginx.log(`Listening sockets (${nginx.http.sockets.length}):`);
+    for (const s of nginx.http.sockets) {
+        nginx.log(`  ${s.address}:${s.port}  ssl=${s.ssl} http2=${s.http2}`);
+    }
+
+    nginx.log(`Servers (${nginx.http.servers.length}):`);
+    for (const srv of nginx.http.servers) {
+        nginx.log(`  [${srv.names.join(', ')}]  locations=${srv.locations.length}`);
+    }
+
+    nginx.log(`Hash sizes:`);
+    nginx.log(`  serverNames max=${nginx.http.serverNamesHashMaxSize}` +
+              ` bucket=${nginx.http.serverNamesHashBucketSize}`);
+    nginx.log(`  variables   max=${nginx.http.variablesHashMaxSize}` +
+              ` bucket=${nginx.http.variablesHashBucketSize}`);
+
+    const vars = nginx.http.variables;
+    const writable = Object.entries(vars).filter(([,v]) =&gt; v.writable).map(([n]) =&gt; n);
+    nginx.log(`Variables: total=${Object.keys(vars).length} writable=${writable.length}`);
+    if (writable.length) nginx.log(`  writable: ${writable.join(', ')}`);
+})();</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_3_provision_a_new_port_at_config_time_phases_a_d">12.3. Example 3: Provision a new port at config time (Phases A-D)</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Full Phase A-D: new port with two virtual hosts
+
+// Phase A
+const sock = nginx.createSocket('0.0.0.0:8888');
+
+// Phase B
+const listener = nginx.http.attach(sock);
+
+// Build servers
+const defaultSrv = nginx.http.addServer('_');
+defaultSrv.addLocation('= /health').handler = function(req) {
+    req.respond(200, {}, 'OK\n');
+};
+defaultSrv.addLocation('/').handler = function(req) {
+    req.respond(404, {}, 'not found\n');
+};
+
+const apiSrv = nginx.http.addServer('api.internal');
+apiSrv.addLocation('/v1/').handler = function(req) {
+    req.respond(200, {'Content-Type': 'application/json'}, '{"v":1}\n');
+};
+
+// Phase C — activate listener
+listener.addServer(defaultSrv);
+
+// Make servers routable
+nginx.http.rebuildVhostDispatch();
+
+// Phase D — add virtual host
+listener.addVirtualServer(apiSrv);
+
+nginx.log('Port 8888 ready: default + api.internal');</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_4_variable_introspection_in_a_request_handler">12.4. Example 4: Variable introspection in a request handler</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Expose all nginx variables for a given request (debugging endpoint)
+
+function varDumpHandler(req) {
+    const vars = nginx.http.variables;
+    const lines = [];
+    for (const [name, meta] of Object.entries(vars).sort()) {
+        try {
+            const val = req.variables[name];
+            lines.push(`${name}=${JSON.stringify(val)}  (idx=${meta.index})`);
+        } catch (_) {
+            lines.push(`${name}=&lt;error&gt;  (idx=${meta.index})`);
+        }
+    }
+    req.respond(200, {'Content-Type': 'text/plain'}, lines.join('\n') + '\n');
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_5_cross_worker_server_provisioning_via_sharedworker">12.5. Example 5: Cross-worker server provisioning via SharedWorker</h3>
+<div class="paragraph">
+<p>This example shows how to propagate a new server to all workers using
+a SharedWorker as the coordination hub.  See
+<a href="js-reconfig-guide-all-workers.adoc">Guide 2</a> for the full
+SharedWorker broadcast pattern.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// -- shared-worker.js --
+
+const HANDLER_REGISTRY = {};   // name → function
+
+self.onmessage = function(e) {
+    const msg = e.data;
+    if (msg.type === 'register-handler') {
+        HANDLER_REGISTRY[msg.name] = new Function('req', msg.body);
+        self.postMessage({ type: 'ack', name: msg.name });
+    }
+};
+
+// -- main js_source script --
+
+const sw = new SharedWorker('/shared-worker.js');
+
+// Broadcast handler registration to all workers
+function broadcastHandler(name, fn) {
+    sw.postMessage({
+        type: 'register-handler',
+        name: name,
+        body: fn.toString().replace(/^function[^{]*\{|\}$/g, '')
+    });
+}
+
+// Called on each worker after receiving broadcast
+function applyHandlerLocally(name, body) {
+    const fn = new Function('req', body);
+    const srv = nginx.http.servers.find(s =&gt; s.names.includes(name));
+    if (srv) {
+        srv.locations.find(l =&gt; l.path === '/').handler = fn;
+    }
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_6_match_as_a_config_validation_tool">12.6. Example 6: match() as a config validation tool</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Validate routing table after a bulk reconfiguration
+
+function validateRouting(testCases) {
+    const failures = [];
+    for (const { uri, host, expectedServer, expectedLocation } of testCases) {
+        const m = nginx.http.match(uri, host);
+        if (!m) {
+            failures.push(`${host}${uri}: no match (expected ${expectedLocation})`);
+            continue;
+        }
+        if (expectedServer &amp;&amp; !m.server.names.includes(expectedServer)) {
+            failures.push(`${host}${uri}: server=${m.server.names[0]} ≠ ${expectedServer}`);
+        }
+        if (expectedLocation &amp;&amp; m.location.path !== expectedLocation) {
+            failures.push(`${host}${uri}: location=${m.location.path} ≠ ${expectedLocation}`);
+        }
+    }
+    if (failures.length) {
+        throw new Error('Routing validation failed:\n' + failures.join('\n'));
+    }
+    nginx.log('Routing validation passed');
+}
+
+// After reconfiguration:
+validateRouting([
+    { uri: '/api/v1/users', host: 'api.example.com',
+      expectedServer: 'api.example.com', expectedLocation: '/api/v1/' },
+    { uri: '/health',       host: 'api.example.com',
+      expectedLocation: '/health' },
+    { uri: '/',             host: 'www.example.com',
+      expectedServer: 'www.example.com', expectedLocation: '/' },
+]);</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_cross_worker_propagation">13. Cross-worker propagation</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Changes to <code>nginx.http</code> (adding/removing servers, modifying locations)
+affect only the current worker&#8217;s view of configuration.  To propagate
+changes to all workers use one of the three strategies from
+<a href="js-reconfig-guide-all-workers.adoc">Guide 2</a>.</p>
+</div>
+<div class="paragraph">
+<p>The diagram below shows the full provisioning pipeline for a post-fork
+<code>addServer</code> broadcast:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Worker 0 (request handler)
+  ├─ nginx.http.addServer('new.example.com')
+  ├─ srv.addLocation('/').handler = fn
+  ├─ nginx.http.rebuildVhostDispatch()
+  └─ sw.postMessage({ type: 'add-server', name: 'new.example.com',
+                      locationHandler: 'myHandler' })
+           │
+           │  SharedWorker (master process thread)
+           │  ├─ receives message from Worker 0
+           │  └─ broadcasts to Worker 1, Worker 2, …
+           │
+  Worker 1 (SharedWorker onmessage)
+  ├─ look up 'myHandler' in HANDLER_REGISTRY
+  ├─ nginx.http.addServer('new.example.com')
+  ├─ srv.addLocation('/').handler = HANDLER_REGISTRY['myHandler']
+  └─ nginx.http.rebuildVhostDispatch()
+
+  Worker 2 (SharedWorker onmessage)
+  └─ (same as Worker 1)</pre>
+</div>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+JS functions cannot be transferred via <code>postMessage</code> — they are
+not serialisable.  Always use a named handler registry: broadcast the
+<strong>name</strong> string, and have each worker look up the function locally.
+</td>
+</tr>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_atomic_multi_server_reconfiguration_across_all_workers">13.1. Atomic multi-server reconfiguration across all workers</h3>
+<div class="paragraph">
+<p>If you need to add several servers atomically (no request should see a
+partial state), use <code>suspendAllWorkers()</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">async function atomicMultiServerAdd(specs) {
+    await nginx.suspendAllWorkers();    // all workers pause acceptance
+    try {
+        for (const { name, routes } of specs) {
+            const srv = nginx.http.addServer(name);
+            for (const [path, handlerName] of Object.entries(routes)) {
+                srv.addLocation(path).handler = HANDLER_REGISTRY[handlerName];
+            }
+        }
+        nginx.http.rebuildVhostDispatch();
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+}</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>See <a href="js-reconfig-guide-all-workers.adoc">Guide 2</a> for the
+<code>suspendAllWorkers</code> / <code>resumeAllWorkers</code> protocol.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_api_reference">14. API Reference</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_nginx_global">14.1. nginx (global)</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Method / Property</th>
+<th class="tableblock halign-left valign-top">Phase</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.createSocket(addr)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A (pre-fork), F (post-fork)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Create, bind, and listen a new TCP socket.
+  Returns <code>NginxSocket</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.http</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">any</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>NginxHttp</code> singleton.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxhttp_nginx_http">14.2. NginxHttp (nginx.http)</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Member</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>servers[]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Array of all <code>NginxServer</code> objects.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>sockets[]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Array of listening socket descriptors with HTTP metadata.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variables{}</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Map of all registered HTTP variables: <code>{ name: { index, writable } }</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNamesHashMaxSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>server_names_hash_max_size</code> directive value.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNamesHashBucketSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>server_names_hash_bucket_size</code> directive value.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variablesHashMaxSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variables_hash_max_size</code> directive value.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variablesHashBucketSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variables_hash_bucket_size</code> directive value.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>addServer(name[, opts])</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Add a server.  Not routable until <code>rebuildVhostDispatch()</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>removeServer(name)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Remove a server.  Takes effect after <code>rebuildVhostDispatch()</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>rebuildVhostDispatch()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Rebuild server-name routing hash.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>match(uri[, serverName])</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Simulate dispatch.  Returns <code>{ server, location }</code> or <code>null</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>attach(sock)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">B (pre-fork)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Wire <code>NginxSocket</code> to HTTP pipeline.  Returns <code>NginxHttpListener</code>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxsocket">14.3. NginxSocket</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Member</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>address</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind address string.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>port</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind port number.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fd</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">File descriptor number.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>listener</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Associated <code>NginxHttpListener</code> or <code>null</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>close()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Close the socket.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>broadcast()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">F (post-fork)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Deliver fd to all other workers.  Returns <code>Promise&lt;undefined&gt;</code>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxhttplistener">14.4. NginxHttpListener</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Member</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>address</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind address string.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>socket</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Associated <code>NginxSocket</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNames</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Array of registered server-name strings.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverByName(name)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Returns <code>NginxServer</code> or <code>null</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>addServer(srv)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">C (pre-fork)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Set default server, activate listener.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>addVirtualServer(srv)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">D (pre-fork)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Add named virtual host, rebuild virtual-names hash.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_design_notes">15. Design notes</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_why_four_phases">15.1. Why four phases?</h3>
+<div class="paragraph">
+<p>nginx&#8217;s listening infrastructure is built incrementally.  <code>socket()</code><br>
+<code>bind()</code> + <code>listen()</code> (Phase A) must happen before any process forks so
+all workers inherit the socket.  Wiring the socket into the HTTP
+connection pipeline (Phase B) requires HTTP core data structures that
+exist only after <code>http {}</code> has been parsed.  Activating the listener
+(Phase C) pushes it to <code>cycle&#8594;listening</code>, which is read by the event
+loop at worker start.  Adding virtual hosts (Phase D) builds the
+per-listener name hash.</p>
+</div>
+<div class="paragraph">
+<p>Separating these phases gives precise control over when each piece of
+infrastructure becomes active.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_two_phase_commit_for_server_names">15.2. Two-phase commit for server names</h3>
+<div class="paragraph">
+<p>Server-name routing uses a static hash table.  Adding or removing a
+server requires rebuilding the entire hash.  <code>addServer()</code> /
+<code>removeServer()</code> defer the hash rebuild so multiple servers can be
+modified in a single batch before a single <code>rebuildVhostDispatch()</code> call
+makes all changes visible atomically.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_variables_is_read_only">15.3. variables{} is read-only</h3>
+<div class="paragraph">
+<p>The variable map is populated at config parse time by all modules that
+register variables.  It cannot be extended at runtime because the
+variable index is embedded in compiled location configurations.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_post_fork_socket_creation_phase_f_2">15.4. Post-fork socket creation (Phase F)</h3>
+<div class="paragraph">
+<p>After workers fork, the master&#8217;s network namespace is the only one that
+can <code>bind()</code> privileged ports.  Phase F uses the manager thread (which
+runs in the master) as a proxy: the worker sends the address, the manager
+creates the socket, and returns the fd via SCM_RIGHTS.  <code>broadcast()</code>
+then distributes it to sibling workers using the same mechanism.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="footer">
+<div id="footer-text">
+Last updated 2026-03-20 16:05:00 -0700
+</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>
+<script>
+if (!hljs.initHighlighting.called) {
+  hljs.initHighlighting.called = true
+  ;[].slice.call(document.querySelectorAll('pre.highlight > code[data-lang]')).forEach(function (el) { hljs.highlightBlock(el) })
+}
+</script>
+</body>
+</html>
