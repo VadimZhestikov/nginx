@@ -1,0 +1,2723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="generator" content="Asciidoctor 2.0.26">
+<title>Dynamic Reconfiguration Guide (global nginx.* namespace)</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:300,300italic,400,400italic,600,600italic%7CNoto+Serif:400,400italic,700,700italic%7CDroid+Sans+Mono:400,700">
+<style>
+/*! Asciidoctor default stylesheet | MIT License | https://asciidoctor.org */
+/* Uncomment the following line when using as a custom stylesheet */
+/* @import "https://fonts.googleapis.com/css?family=Open+Sans:300,300italic,400,400italic,600,600italic%7CNoto+Serif:400,400italic,700,700italic%7CDroid+Sans+Mono:400,700"; */
+html{font-family:sans-serif;-webkit-text-size-adjust:100%}
+a{background:none}
+a:focus{outline:thin dotted}
+a:active,a:hover{outline:0}
+h1{font-size:2em;margin:.67em 0}
+b,strong{font-weight:bold}
+abbr{font-size:.9em}
+abbr[title]{cursor:help;border-bottom:1px dotted #dddddf;text-decoration:none}
+dfn{font-style:italic}
+hr{height:0}
+mark{background:#ff0;color:#000}
+code,kbd,pre,samp{font-family:monospace;font-size:1em}
+pre{white-space:pre-wrap}
+q{quotes:"\201C" "\201D" "\2018" "\2019"}
+small{font-size:80%}
+sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}
+sup{top:-.5em}
+sub{bottom:-.25em}
+img{border:0}
+svg:not(:root){overflow:hidden}
+figure{margin:0}
+audio,video{display:inline-block}
+audio:not([controls]){display:none;height:0}
+fieldset{border:1px solid silver;margin:0 2px;padding:.35em .625em .75em}
+legend{border:0;padding:0}
+button,input,select,textarea{font-family:inherit;font-size:100%;margin:0}
+button,input{line-height:normal}
+button,select{text-transform:none}
+button,html input[type=button],input[type=reset],input[type=submit]{-webkit-appearance:button;cursor:pointer}
+button[disabled],html input[disabled]{cursor:default}
+input[type=checkbox],input[type=radio]{padding:0}
+button::-moz-focus-inner,input::-moz-focus-inner{border:0;padding:0}
+textarea{overflow:auto;vertical-align:top}
+table{border-collapse:collapse;border-spacing:0}
+*,::before,::after{box-sizing:border-box}
+html,body{font-size:100%}
+body{background:#fff;color:rgba(0,0,0,.8);padding:0;margin:0;font-family:"Noto Serif","DejaVu Serif",serif;line-height:1;position:relative;cursor:auto;-moz-tab-size:4;-o-tab-size:4;tab-size:4;word-wrap:anywhere;-moz-osx-font-smoothing:grayscale;-webkit-font-smoothing:antialiased}
+a:hover{cursor:pointer}
+img,object,embed{max-width:100%;height:auto}
+object,embed{height:100%}
+img{-ms-interpolation-mode:bicubic}
+.left{float:left!important}
+.right{float:right!important}
+.text-left{text-align:left!important}
+.text-right{text-align:right!important}
+.text-center{text-align:center!important}
+.text-justify{text-align:justify!important}
+.hide{display:none}
+img,object,svg{display:inline-block;vertical-align:middle}
+textarea{height:auto;min-height:50px}
+select{width:100%}
+.subheader,.admonitionblock td.content>.title,.audioblock>.title,.exampleblock>.title,.imageblock>.title,.listingblock>.title,.literalblock>.title,.stemblock>.title,.openblock>.title,.paragraph>.title,.quoteblock>.title,table.tableblock>.title,.verseblock>.title,.videoblock>.title,.dlist>.title,.olist>.title,.ulist>.title,.qlist>.title,.hdlist>.title{line-height:1.45;color:#7a2518;font-weight:400;margin-top:0;margin-bottom:.25em}
+div,dl,dt,dd,ul,ol,li,h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6,pre,form,p,blockquote,th,td{margin:0;padding:0}
+a{color:#2156a5;text-decoration:underline;line-height:inherit}
+a:hover,a:focus{color:#1d4b8f}
+a img{border:0}
+p{line-height:1.6;margin-bottom:1.25em;text-rendering:optimizeLegibility}
+p aside{font-size:.875em;line-height:1.35;font-style:italic}
+h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6{font-family:"Open Sans","DejaVu Sans",sans-serif;font-weight:300;font-style:normal;color:#ba3925;text-rendering:optimizeLegibility;margin-top:1em;margin-bottom:.5em;line-height:1.0125em}
+h1 small,h2 small,h3 small,#toctitle small,.sidebarblock>.content>.title small,h4 small,h5 small,h6 small{font-size:60%;color:#e99b8f;line-height:0}
+h1{font-size:2.125em}
+h2{font-size:1.6875em}
+h3,#toctitle,.sidebarblock>.content>.title{font-size:1.375em}
+h4,h5{font-size:1.125em}
+h6{font-size:1em}
+hr{border:solid #dddddf;border-width:1px 0 0;clear:both;margin:1.25em 0 1.1875em}
+em,i{font-style:italic;line-height:inherit}
+strong,b{font-weight:bold;line-height:inherit}
+small{font-size:60%;line-height:inherit}
+code{font-family:"Droid Sans Mono","DejaVu Sans Mono",monospace;font-weight:400;color:rgba(0,0,0,.9)}
+ul,ol,dl{line-height:1.6;margin-bottom:1.25em;list-style-position:outside;font-family:inherit}
+ul,ol{margin-left:1.5em}
+ul li ul,ul li ol{margin-left:1.25em;margin-bottom:0}
+ul.circle{list-style-type:circle}
+ul.disc{list-style-type:disc}
+ul.square{list-style-type:square}
+ul.circle ul:not([class]),ul.disc ul:not([class]),ul.square ul:not([class]){list-style:inherit}
+ol li ul,ol li ol{margin-left:1.25em;margin-bottom:0}
+dl dt{margin-bottom:.3125em;font-weight:bold}
+dl dd{margin-bottom:1.25em}
+blockquote{margin:0 0 1.25em;padding:.5625em 1.25em 0 1.1875em;border-left:1px solid #ddd}
+blockquote,blockquote p{line-height:1.6;color:rgba(0,0,0,.85)}
+@media screen and (min-width:768px){h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6{line-height:1.2}
+h1{font-size:2.75em}
+h2{font-size:2.3125em}
+h3,#toctitle,.sidebarblock>.content>.title{font-size:1.6875em}
+h4{font-size:1.4375em}}
+table{background:#fff;margin-bottom:1.25em;border:1px solid #dedede;word-wrap:normal}
+table thead,table tfoot{background:#f7f8f7}
+table thead tr th,table thead tr td,table tfoot tr th,table tfoot tr td{padding:.5em .625em .625em;font-size:inherit;color:rgba(0,0,0,.8);text-align:left}
+table tr th,table tr td{padding:.5625em .625em;font-size:inherit;color:rgba(0,0,0,.8)}
+table tr.even,table tr.alt{background:#f8f8f7}
+table thead tr th,table tfoot tr th,table tbody tr td,table tr td,table tfoot tr td{line-height:1.6}
+h1,h2,h3,#toctitle,.sidebarblock>.content>.title,h4,h5,h6{line-height:1.2;word-spacing:-.05em}
+h1 strong,h2 strong,h3 strong,#toctitle strong,.sidebarblock>.content>.title strong,h4 strong,h5 strong,h6 strong{font-weight:400}
+.center{margin-left:auto;margin-right:auto}
+.stretch{width:100%}
+.clearfix::before,.clearfix::after,.float-group::before,.float-group::after{content:" ";display:table}
+.clearfix::after,.float-group::after{clear:both}
+:not(pre).nobreak{word-wrap:normal}
+:not(pre).nowrap{white-space:nowrap}
+:not(pre).pre-wrap{white-space:pre-wrap}
+:not(pre):not([class^=L])>code{font-size:.9375em;font-style:normal!important;letter-spacing:0;padding:.1em .5ex;word-spacing:-.15em;background:#f7f7f8;border-radius:4px;line-height:1.45;text-rendering:optimizeSpeed}
+pre{color:rgba(0,0,0,.9);font-family:"Droid Sans Mono","DejaVu Sans Mono",monospace;line-height:1.45;text-rendering:optimizeSpeed}
+pre code,pre pre{color:inherit;font-size:inherit;line-height:inherit}
+pre.nowrap,pre.nowrap pre{white-space:pre;word-wrap:normal}
+em em{font-style:normal}
+strong strong{font-weight:400}
+.keyseq{color:rgba(51,51,51,.8)}
+kbd{font-family:"Droid Sans Mono","DejaVu Sans Mono",monospace;display:inline-block;color:rgba(0,0,0,.8);font-size:.65em;line-height:1.45;background:#f7f7f7;border:1px solid #ccc;border-radius:3px;box-shadow:0 1px 0 rgba(0,0,0,.2),inset 0 0 0 .1em #fff;margin:0 .15em;padding:.2em .5em;vertical-align:middle;position:relative;top:-.1em;white-space:nowrap}
+.keyseq kbd:first-child{margin-left:0}
+.keyseq kbd:last-child{margin-right:0}
+.menuseq,.menuref{color:#000}
+.menuseq b:not(.caret),.menuref{font-weight:inherit}
+.menuseq{word-spacing:-.02em}
+.menuseq b.caret{font-size:1.25em;line-height:.8}
+.menuseq i.caret{font-weight:bold;text-align:center;width:.45em}
+b.button::before,b.button::after{position:relative;top:-1px;font-weight:400}
+b.button::before{content:"[";padding:0 3px 0 2px}
+b.button::after{content:"]";padding:0 2px 0 3px}
+p a>code:hover{color:rgba(0,0,0,.9)}
+#header,#content,#footnotes,#footer{width:100%;margin:0 auto;max-width:62.5em;*zoom:1;position:relative;padding-left:.9375em;padding-right:.9375em}
+#header::before,#header::after,#content::before,#content::after,#footnotes::before,#footnotes::after,#footer::before,#footer::after{content:" ";display:table}
+#header::after,#content::after,#footnotes::after,#footer::after{clear:both}
+#content{margin-top:1.25em}
+#content::before{content:none}
+#header>h1:first-child{color:rgba(0,0,0,.85);margin-top:2.25rem;margin-bottom:0}
+#header>h1:first-child+#toc{margin-top:8px;border-top:1px solid #dddddf}
+#header>h1:only-child{border-bottom:1px solid #dddddf;padding-bottom:8px}
+#header .details{border-bottom:1px solid #dddddf;line-height:1.45;padding-top:.25em;padding-bottom:.25em;padding-left:.25em;color:rgba(0,0,0,.6);display:flex;flex-flow:row wrap}
+#header .details span:first-child{margin-left:-.125em}
+#header .details span.email a{color:rgba(0,0,0,.85)}
+#header .details br{display:none}
+#header .details br+span::before{content:"\00a0\2013\00a0"}
+#header .details br+span.author::before{content:"\00a0\22c5\00a0";color:rgba(0,0,0,.85)}
+#header .details br+span#revremark::before{content:"\00a0|\00a0"}
+#header #revnumber{text-transform:capitalize}
+#header #revnumber::after{content:"\00a0"}
+#content>h1:first-child:not([class]){color:rgba(0,0,0,.85);border-bottom:1px solid #dddddf;padding-bottom:8px;margin-top:0;padding-top:1rem;margin-bottom:1.25rem}
+#toc{border-bottom:1px solid #e7e7e9;padding-bottom:.5em}
+#toc>ul{margin-left:.125em}
+#toc ul.sectlevel0>li>a{font-style:italic}
+#toc ul.sectlevel0 ul.sectlevel1{margin:.5em 0}
+#toc ul{font-family:"Open Sans","DejaVu Sans",sans-serif;list-style-type:none}
+#toc li{line-height:1.3334;margin-top:.3334em}
+#toc a{text-decoration:none}
+#toc a:active{text-decoration:underline}
+#toctitle{color:#7a2518;font-size:1.2em}
+@media screen and (min-width:768px){#toctitle{font-size:1.375em}
+body.toc2{padding-left:15em;padding-right:0}
+body.toc2 #header>h1:nth-last-child(2){border-bottom:1px solid #dddddf;padding-bottom:8px}
+#toc.toc2{margin-top:0!important;background:#f8f8f7;position:fixed;width:15em;left:0;top:0;border-right:1px solid #e7e7e9;border-top-width:0!important;border-bottom-width:0!important;z-index:1000;padding:1.25em 1em;height:100%;overflow:auto}
+#toc.toc2 #toctitle{margin-top:0;margin-bottom:.8rem;font-size:1.2em}
+#toc.toc2>ul{font-size:.9em;margin-bottom:0}
+#toc.toc2 ul ul{margin-left:0;padding-left:1em}
+#toc.toc2 ul.sectlevel0 ul.sectlevel1{padding-left:0;margin-top:.5em;margin-bottom:.5em}
+body.toc2.toc-right{padding-left:0;padding-right:15em}
+body.toc2.toc-right #toc.toc2{border-right-width:0;border-left:1px solid #e7e7e9;left:auto;right:0}}
+@media screen and (min-width:1280px){body.toc2{padding-left:20em;padding-right:0}
+#toc.toc2{width:20em}
+#toc.toc2 #toctitle{font-size:1.375em}
+#toc.toc2>ul{font-size:.95em}
+#toc.toc2 ul ul{padding-left:1.25em}
+body.toc2.toc-right{padding-left:0;padding-right:20em}}
+#content #toc{border:1px solid #e0e0dc;margin-bottom:1.25em;padding:1.25em;background:#f8f8f7;border-radius:4px}
+#content #toc>:first-child{margin-top:0}
+#content #toc>:last-child{margin-bottom:0}
+#footer{max-width:none;background:rgba(0,0,0,.8);padding:1.25em}
+#footer-text{color:hsla(0,0%,100%,.8);line-height:1.44}
+#content{margin-bottom:.625em}
+.sect1{padding-bottom:.625em}
+@media screen and (min-width:768px){#content{margin-bottom:1.25em}
+.sect1{padding-bottom:1.25em}}
+.sect1:last-child{padding-bottom:0}
+.sect1+.sect1{border-top:1px solid #e7e7e9}
+#content h1>a.anchor,h2>a.anchor,h3>a.anchor,#toctitle>a.anchor,.sidebarblock>.content>.title>a.anchor,h4>a.anchor,h5>a.anchor,h6>a.anchor{position:absolute;z-index:1001;width:1.5ex;margin-left:-1.5ex;display:block;text-decoration:none!important;visibility:hidden;text-align:center;font-weight:400}
+#content h1>a.anchor::before,h2>a.anchor::before,h3>a.anchor::before,#toctitle>a.anchor::before,.sidebarblock>.content>.title>a.anchor::before,h4>a.anchor::before,h5>a.anchor::before,h6>a.anchor::before{content:"\00A7";font-size:.85em;display:block;padding-top:.1em}
+#content h1:hover>a.anchor,#content h1>a.anchor:hover,h2:hover>a.anchor,h2>a.anchor:hover,h3:hover>a.anchor,#toctitle:hover>a.anchor,.sidebarblock>.content>.title:hover>a.anchor,h3>a.anchor:hover,#toctitle>a.anchor:hover,.sidebarblock>.content>.title>a.anchor:hover,h4:hover>a.anchor,h4>a.anchor:hover,h5:hover>a.anchor,h5>a.anchor:hover,h6:hover>a.anchor,h6>a.anchor:hover{visibility:visible}
+#content h1>a.link,h2>a.link,h3>a.link,#toctitle>a.link,.sidebarblock>.content>.title>a.link,h4>a.link,h5>a.link,h6>a.link{color:#ba3925;text-decoration:none}
+#content h1>a.link:hover,h2>a.link:hover,h3>a.link:hover,#toctitle>a.link:hover,.sidebarblock>.content>.title>a.link:hover,h4>a.link:hover,h5>a.link:hover,h6>a.link:hover{color:#a53221}
+details,.audioblock,.imageblock,.literalblock,.listingblock,.stemblock,.videoblock{margin-bottom:1.25em}
+details{margin-left:1.25rem}
+details>summary{cursor:pointer;display:block;position:relative;line-height:1.6;margin-bottom:.625rem;outline:none;-webkit-tap-highlight-color:transparent}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"";border:solid transparent;border-left:solid;border-width:.3em 0 .3em .5em;position:absolute;top:.5em;left:-1.25rem;transform:translateX(15%)}
+details[open]>summary::before{border:solid transparent;border-top:solid;border-width:.5em .3em 0;transform:translateY(15%)}
+details>summary::after{content:"";width:1.25rem;height:1em;position:absolute;top:.3em;left:-1.25rem}
+.admonitionblock td.content>.title,.audioblock>.title,.exampleblock>.title,.imageblock>.title,.listingblock>.title,.literalblock>.title,.stemblock>.title,.openblock>.title,.paragraph>.title,.quoteblock>.title,table.tableblock>.title,.verseblock>.title,.videoblock>.title,.dlist>.title,.olist>.title,.ulist>.title,.qlist>.title,.hdlist>.title{text-rendering:optimizeLegibility;text-align:left;font-family:"Noto Serif","DejaVu Serif",serif;font-size:1rem;font-style:italic}
+table.tableblock.fit-content>caption.title{white-space:nowrap;width:0}
+.paragraph.lead>p,#preamble>.sectionbody>[class=paragraph]:first-of-type p{font-size:1.21875em;line-height:1.6;color:rgba(0,0,0,.85)}
+.admonitionblock>table{border-collapse:separate;border:0;background:none;width:100%}
+.admonitionblock>table td.icon{text-align:center;width:80px}
+.admonitionblock>table td.icon img{max-width:none}
+.admonitionblock>table td.icon .title{font-weight:bold;font-family:"Open Sans","DejaVu Sans",sans-serif;text-transform:uppercase}
+.admonitionblock>table td.content{padding-left:1.125em;padding-right:1.25em;border-left:1px solid #dddddf;color:rgba(0,0,0,.6);word-wrap:anywhere}
+.admonitionblock>table td.content>:last-child>:last-child{margin-bottom:0}
+.exampleblock>.content{border:1px solid #e6e6e6;margin-bottom:1.25em;padding:1.25em;background:#fff;border-radius:4px}
+.sidebarblock{border:1px solid #dbdbd6;margin-bottom:1.25em;padding:1.25em;background:#f3f3f2;border-radius:4px}
+.sidebarblock>.content>.title{color:#7a2518;margin-top:0;text-align:center}
+.exampleblock>.content>:first-child,.sidebarblock>.content>:first-child{margin-top:0}
+.exampleblock>.content>:last-child,.exampleblock>.content>:last-child>:last-child,.exampleblock>.content .olist>ol>li:last-child>:last-child,.exampleblock>.content .ulist>ul>li:last-child>:last-child,.exampleblock>.content .qlist>ol>li:last-child>:last-child,.sidebarblock>.content>:last-child,.sidebarblock>.content>:last-child>:last-child,.sidebarblock>.content .olist>ol>li:last-child>:last-child,.sidebarblock>.content .ulist>ul>li:last-child>:last-child,.sidebarblock>.content .qlist>ol>li:last-child>:last-child{margin-bottom:0}
+.literalblock pre,.listingblock>.content>pre{border-radius:4px;overflow-x:auto;padding:1em;font-size:.8125em}
+@media screen and (min-width:768px){.literalblock pre,.listingblock>.content>pre{font-size:.90625em}}
+@media screen and (min-width:1280px){.literalblock pre,.listingblock>.content>pre{font-size:1em}}
+.literalblock pre,.listingblock>.content>pre:not(.highlight),.listingblock>.content>pre[class=highlight],.listingblock>.content>pre[class^="highlight "]{background:#f7f7f8}
+.literalblock.output pre{color:#f7f7f8;background:rgba(0,0,0,.9)}
+.listingblock>.content{position:relative}
+.listingblock pre>code{display:block}
+.listingblock code[data-lang]::before{display:none;content:attr(data-lang);position:absolute;font-size:.75em;top:.425rem;right:.5rem;line-height:1;text-transform:uppercase;color:inherit;opacity:.5}
+.listingblock:hover code[data-lang]::before{display:block}
+.listingblock.terminal pre .command::before{content:attr(data-prompt);padding-right:.5em;color:inherit;opacity:.5}
+.listingblock.terminal pre .command:not([data-prompt])::before{content:"$"}
+.listingblock pre.highlightjs{padding:0}
+.listingblock pre.highlightjs>code{padding:1em;border-radius:4px}
+.listingblock pre.prettyprint{border-width:0}
+.prettyprint{background:#f7f7f8}
+pre.prettyprint .linenums{line-height:1.45;margin-left:2em}
+pre.prettyprint li{background:none;list-style-type:inherit;padding-left:0}
+pre.prettyprint li code[data-lang]::before{opacity:1}
+pre.prettyprint li:not(:first-child) code[data-lang]::before{display:none}
+table.linenotable{border-collapse:separate;border:0;margin-bottom:0;background:none}
+table.linenotable td[class]{color:inherit;vertical-align:top;padding:0;line-height:inherit;white-space:normal}
+table.linenotable td.code{padding-left:.75em}
+table.linenotable td.linenos,pre.pygments .linenos{border-right:1px solid;opacity:.35;padding-right:.5em;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none}
+pre.pygments span.linenos{display:inline-block;margin-right:.75em}
+.quoteblock{margin:0 1em 1.25em 1.5em;display:table}
+.quoteblock:not(.excerpt)>.title{margin-left:-1.5em;margin-bottom:.75em}
+.quoteblock blockquote,.quoteblock p{color:rgba(0,0,0,.85);font-size:1.15rem;line-height:1.75;word-spacing:.1em;letter-spacing:0;font-style:italic;text-align:justify}
+.quoteblock blockquote{margin:0;padding:0;border:0}
+.quoteblock blockquote::before{content:"\201c";float:left;font-size:2.75em;font-weight:bold;line-height:.6em;margin-left:-.6em;color:#7a2518;text-shadow:0 1px 2px rgba(0,0,0,.1)}
+.quoteblock blockquote>.paragraph:last-child p{margin-bottom:0}
+.quoteblock .attribution{margin-top:.75em;margin-right:.5ex;text-align:right}
+.verseblock{margin:0 1em 1.25em}
+.verseblock pre{font-family:"Open Sans","DejaVu Sans",sans-serif;font-size:1.15rem;color:rgba(0,0,0,.85);font-weight:300;text-rendering:optimizeLegibility}
+.verseblock pre strong{font-weight:400}
+.verseblock .attribution{margin-top:1.25rem;margin-left:.5ex}
+.quoteblock .attribution,.verseblock .attribution{font-size:.9375em;line-height:1.45;font-style:italic}
+.quoteblock .attribution br,.verseblock .attribution br{display:none}
+.quoteblock .attribution cite,.verseblock .attribution cite{display:block;letter-spacing:-.025em;color:rgba(0,0,0,.6)}
+.quoteblock.abstract blockquote::before,.quoteblock.excerpt blockquote::before,.quoteblock .quoteblock blockquote::before{display:none}
+.quoteblock.abstract blockquote,.quoteblock.abstract p,.quoteblock.excerpt blockquote,.quoteblock.excerpt p,.quoteblock .quoteblock blockquote,.quoteblock .quoteblock p{line-height:1.6;word-spacing:0}
+.quoteblock.abstract{margin:0 1em 1.25em;display:block}
+.quoteblock.abstract>.title{margin:0 0 .375em;font-size:1.15em;text-align:center}
+.quoteblock.excerpt>blockquote,.quoteblock .quoteblock{padding:0 0 .25em 1em;border-left:.25em solid #dddddf}
+.quoteblock.excerpt,.quoteblock .quoteblock{margin-left:0}
+.quoteblock.excerpt blockquote,.quoteblock.excerpt p,.quoteblock .quoteblock blockquote,.quoteblock .quoteblock p{color:inherit;font-size:1.0625rem}
+.quoteblock.excerpt .attribution,.quoteblock .quoteblock .attribution{color:inherit;font-size:.85rem;text-align:left;margin-right:0}
+p.tableblock:last-child{margin-bottom:0}
+td.tableblock>.content{margin-bottom:1.25em;word-wrap:anywhere}
+td.tableblock>.content>:last-child{margin-bottom:-1.25em}
+table.tableblock,th.tableblock,td.tableblock{border:0 solid #dedede}
+table.grid-all>*>tr>*{border-width:1px}
+table.grid-cols>*>tr>*{border-width:0 1px}
+table.grid-rows>*>tr>*{border-width:1px 0}
+table.frame-all{border-width:1px}
+table.frame-ends{border-width:1px 0}
+table.frame-sides{border-width:0 1px}
+table.frame-none>colgroup+*>:first-child>*,table.frame-sides>colgroup+*>:first-child>*{border-top-width:0}
+table.frame-none>:last-child>:last-child>*,table.frame-sides>:last-child>:last-child>*{border-bottom-width:0}
+table.frame-none>*>tr>:first-child,table.frame-ends>*>tr>:first-child{border-left-width:0}
+table.frame-none>*>tr>:last-child,table.frame-ends>*>tr>:last-child{border-right-width:0}
+table.stripes-all>*>tr,table.stripes-odd>*>tr:nth-of-type(odd),table.stripes-even>*>tr:nth-of-type(even),table.stripes-hover>*>tr:hover{background:#f8f8f7}
+th.halign-left,td.halign-left{text-align:left}
+th.halign-right,td.halign-right{text-align:right}
+th.halign-center,td.halign-center{text-align:center}
+th.valign-top,td.valign-top{vertical-align:top}
+th.valign-bottom,td.valign-bottom{vertical-align:bottom}
+th.valign-middle,td.valign-middle{vertical-align:middle}
+table thead th,table tfoot th{font-weight:bold}
+tbody tr th{background:#f7f8f7}
+tbody tr th,tbody tr th p,tfoot tr th,tfoot tr th p{color:rgba(0,0,0,.8);font-weight:bold}
+p.tableblock>code:only-child{background:none;padding:0}
+p.tableblock{font-size:1em}
+ol{margin-left:1.75em}
+ul li ol{margin-left:1.5em}
+dl dd{margin-left:1.125em}
+dl dd:last-child,dl dd:last-child>:last-child{margin-bottom:0}
+li p,ul dd,ol dd,.olist .olist,.ulist .ulist,.ulist .olist,.olist .ulist{margin-bottom:.625em}
+ul.checklist,ul.none,ol.none,ul.no-bullet,ol.no-bullet,ol.unnumbered,ul.unstyled,ol.unstyled{list-style-type:none}
+ul.no-bullet,ol.no-bullet,ol.unnumbered{margin-left:.625em}
+ul.unstyled,ol.unstyled{margin-left:0}
+li>p:empty:only-child::before{content:"";display:inline-block}
+ul.checklist>li>p:first-child{margin-left:-1em}
+ul.checklist>li>p:first-child>.fa-square-o:first-child,ul.checklist>li>p:first-child>.fa-check-square-o:first-child{width:1.25em;font-size:.8em;position:relative;bottom:.125em}
+ul.checklist>li>p:first-child>input[type=checkbox]:first-child{margin-right:.25em}
+ul.inline{display:flex;flex-flow:row wrap;list-style:none;margin:0 0 .625em -1.25em}
+ul.inline>li{margin-left:1.25em}
+.unstyled dl dt{font-weight:400;font-style:normal}
+ol.arabic{list-style-type:decimal}
+ol.decimal{list-style-type:decimal-leading-zero}
+ol.loweralpha{list-style-type:lower-alpha}
+ol.upperalpha{list-style-type:upper-alpha}
+ol.lowerroman{list-style-type:lower-roman}
+ol.upperroman{list-style-type:upper-roman}
+ol.lowergreek{list-style-type:lower-greek}
+.hdlist>table,.colist>table{border:0;background:none}
+.hdlist>table>tbody>tr,.colist>table>tbody>tr{background:none}
+td.hdlist1,td.hdlist2{vertical-align:top;padding:0 .625em}
+td.hdlist1{font-weight:bold;padding-bottom:1.25em}
+td.hdlist2{word-wrap:anywhere}
+.literalblock+.colist,.listingblock+.colist{margin-top:-.5em}
+.colist td:not([class]):first-child{padding:.4em .75em 0;line-height:1;vertical-align:top}
+.colist td:not([class]):first-child img{max-width:none}
+.colist td:not([class]):last-child{padding:.25em 0}
+.thumb,.th{line-height:0;display:inline-block;border:4px solid #fff;box-shadow:0 0 0 1px #ddd}
+.imageblock.left{margin:.25em .625em 1.25em 0}
+.imageblock.right{margin:.25em 0 1.25em .625em}
+.imageblock>.title{margin-bottom:0}
+.imageblock.thumb,.imageblock.th{border-width:6px}
+.imageblock.thumb>.title,.imageblock.th>.title{padding:0 .125em}
+.image.left,.image.right{margin-top:.25em;margin-bottom:.25em;display:inline-block;line-height:0}
+.image.left{margin-right:.625em}
+.image.right{margin-left:.625em}
+a.image{text-decoration:none;display:inline-block}
+a.image object{pointer-events:none}
+sup.footnote,sup.footnoteref{font-size:.875em;position:static;vertical-align:super}
+sup.footnote a,sup.footnoteref a{text-decoration:none}
+sup.footnote a:active,sup.footnoteref a:active,#footnotes .footnote a:first-of-type:active{text-decoration:underline}
+#footnotes{padding-top:.75em;padding-bottom:.75em;margin-bottom:.625em}
+#footnotes hr{width:20%;min-width:6.25em;margin:-.25em 0 .75em;border-width:1px 0 0}
+#footnotes .footnote{padding:0 .375em 0 .225em;line-height:1.3334;font-size:.875em;margin-left:1.2em;margin-bottom:.2em}
+#footnotes .footnote a:first-of-type{font-weight:bold;text-decoration:none;margin-left:-1.05em}
+#footnotes .footnote:last-of-type{margin-bottom:0}
+#content #footnotes{margin-top:-.625em;margin-bottom:0;padding:.75em 0}
+div.unbreakable{page-break-inside:avoid}
+.big{font-size:larger}
+.small{font-size:smaller}
+.underline{text-decoration:underline}
+.overline{text-decoration:overline}
+.line-through{text-decoration:line-through}
+.aqua{color:#00bfbf}
+.aqua-background{background:#00fafa}
+.black{color:#000}
+.black-background{background:#000}
+.blue{color:#0000bf}
+.blue-background{background:#0000fa}
+.fuchsia{color:#bf00bf}
+.fuchsia-background{background:#fa00fa}
+.gray{color:#606060}
+.gray-background{background:#7d7d7d}
+.green{color:#006000}
+.green-background{background:#007d00}
+.lime{color:#00bf00}
+.lime-background{background:#00fa00}
+.maroon{color:#600000}
+.maroon-background{background:#7d0000}
+.navy{color:#000060}
+.navy-background{background:#00007d}
+.olive{color:#606000}
+.olive-background{background:#7d7d00}
+.purple{color:#600060}
+.purple-background{background:#7d007d}
+.red{color:#bf0000}
+.red-background{background:#fa0000}
+.silver{color:#909090}
+.silver-background{background:#bcbcbc}
+.teal{color:#006060}
+.teal-background{background:#007d7d}
+.white{color:#bfbfbf}
+.white-background{background:#fafafa}
+.yellow{color:#bfbf00}
+.yellow-background{background:#fafa00}
+span.icon>.fa{cursor:default}
+a span.icon>.fa{cursor:inherit}
+.admonitionblock td.icon [class^="fa icon-"]{font-size:2.5em;text-shadow:1px 1px 2px rgba(0,0,0,.5);cursor:default}
+.admonitionblock td.icon .icon-note::before{content:"\f05a";color:#19407c}
+.admonitionblock td.icon .icon-tip::before{content:"\f0eb";text-shadow:1px 1px 2px rgba(155,155,0,.8);color:#111}
+.admonitionblock td.icon .icon-warning::before{content:"\f071";color:#bf6900}
+.admonitionblock td.icon .icon-caution::before{content:"\f06d";color:#bf3400}
+.admonitionblock td.icon .icon-important::before{content:"\f06a";color:#bf0000}
+.conum[data-value]{display:inline-block;color:#fff!important;background:rgba(0,0,0,.8);border-radius:50%;text-align:center;font-size:.75em;width:1.67em;height:1.67em;line-height:1.67em;font-family:"Open Sans","DejaVu Sans",sans-serif;font-style:normal;font-weight:bold}
+.conum[data-value] *{color:#fff!important}
+.conum[data-value]+b{display:none}
+.conum[data-value]::after{content:attr(data-value)}
+pre .conum[data-value]{position:relative;top:-.125em}
+b.conum *{color:inherit!important}
+.conum:not([data-value]):empty{display:none}
+dt,th.tableblock,td.content,div.footnote{text-rendering:optimizeLegibility}
+h1,h2,p,td.content,span.alt,summary{letter-spacing:-.01em}
+p strong,td.content strong,div.footnote strong{letter-spacing:-.005em}
+p,blockquote,dt,td.content,td.hdlist1,span.alt,summary{font-size:1.0625rem}
+p{margin-bottom:1.25rem}
+.sidebarblock p,.sidebarblock dt,.sidebarblock td.content,p.tableblock{font-size:1em}
+.exampleblock>.content{background:#fffef7;border-color:#e0e0dc;box-shadow:0 1px 4px #e0e0dc}
+.print-only{display:none!important}
+@page{margin:1.25cm .75cm}
+@media print{*{box-shadow:none!important;text-shadow:none!important}
+html{font-size:80%}
+a{color:inherit!important;text-decoration:underline!important}
+a.bare,a[href^="#"],a[href^="mailto:"]{text-decoration:none!important}
+a[href^="http:"]:not(.bare)::after,a[href^="https:"]:not(.bare)::after{content:"(" attr(href) ")";display:inline-block;font-size:.875em;padding-left:.25em}
+abbr[title]{border-bottom:1px dotted}
+abbr[title]::after{content:" (" attr(title) ")"}
+pre,blockquote,tr,img,object,svg{page-break-inside:avoid}
+thead{display:table-header-group}
+svg{max-width:100%}
+p,blockquote,dt,td.content{font-size:1em;orphans:3;widows:3}
+h2,h3,#toctitle,.sidebarblock>.content>.title{page-break-after:avoid}
+#header,#content,#footnotes,#footer{max-width:none}
+#toc,.sidebarblock,.exampleblock>.content{background:none!important}
+#toc{border-bottom:1px solid #dddddf!important;padding-bottom:0!important}
+body.book #header{text-align:center}
+body.book #header>h1:first-child{border:0!important;margin:2.5em 0 1em}
+body.book #header .details{border:0!important;display:block;padding:0!important}
+body.book #header .details span:first-child{margin-left:0!important}
+body.book #header .details br{display:block}
+body.book #header .details br+span::before{content:none!important}
+body.book #toc{border:0!important;text-align:left!important;padding:0!important;margin:0!important}
+body.book #toc,body.book #preamble,body.book h1.sect0,body.book .sect1>h2{page-break-before:always}
+.listingblock code[data-lang]::before{display:block}
+#footer{padding:0 .9375em}
+.hide-on-print{display:none!important}
+.print-only{display:block!important}
+.hide-for-print{display:none!important}
+.show-for-print{display:inherit!important}}
+@media amzn-kf8,print{#header>h1:first-child{margin-top:1.25rem}
+.sect1{padding:0!important}
+.sect1+.sect1{border:0}
+#footer{background:none}
+#footer-text{color:rgba(0,0,0,.6);font-size:.9em}}
+@media amzn-kf8{#header,#content,#footnotes,#footer{padding:0}}
+</style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/styles/github.min.css">
+</head>
+<body class="article toc2 toc-left">
+<div id="header">
+<h1>Dynamic Reconfiguration Guide (global nginx.* namespace)</h1>
+<div id="toc" class="toc2">
+<div id="toctitle">Table of Contents</div>
+<ul class="sectlevel1">
+<li><a href="#_overview">1. Overview</a>
+<ul class="sectlevel2">
+<li><a href="#_the_nginx_global_object_at_a_glance">1.1. The nginx global object at a glance</a></li>
+<li><a href="#_object_hierarchy">1.2. Object hierarchy</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_version_and_nginx_cpu_count">2. nginx.version and nginx.cpu_count</a></li>
+<li><a href="#_nginx_loglevel_message">3. nginx.log(level, message)</a>
+<ul class="sectlevel2">
+<li><a href="#_signature">3.1. Signature</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_cycle_nginxcycle">4. nginx.cycle (NginxCycle)</a>
+<ul class="sectlevel2">
+<li><a href="#_properties">4.1. Properties</a></li>
+<li><a href="#_reading_cycle_properties">4.2. Reading cycle properties</a></li>
+<li><a href="#_setting_workers_count">4.3. Setting workers count</a></li>
+<li><a href="#_nginx_cycle_sockets">4.4. nginx.cycle.sockets[]</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_events_nginxevents">5. nginx.events (NginxEvents)</a>
+<ul class="sectlevel2">
+<li><a href="#_properties_2">5.1. Properties</a></li>
+<li><a href="#_tuning_accept_behaviour_at_startup">5.2. Tuning accept behaviour at startup</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_stream">6. nginx.stream</a>
+<ul class="sectlevel2">
+<li><a href="#_properties_3">6.1. Properties</a></li>
+<li><a href="#_nginxstreamserver_properties">6.2. NginxStreamServer properties</a></li>
+<li><a href="#_nginxstreamproxy_sub_object">6.3. NginxStreamProxy sub-object</a></li>
+<li><a href="#_nginxstreamlistener">6.4. NginxStreamListener</a></li>
+<li><a href="#_stream_provisioning_example">6.5. Stream provisioning example</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_broadcastfn">7. nginx.broadcast(fn)</a>
+<ul class="sectlevel2">
+<li><a href="#_signature_2">7.1. Signature</a></li>
+<li><a href="#_behaviour">7.2. Behaviour</a></li>
+<li><a href="#_use_cases">7.3. Use cases</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_settimeoutms">8. nginx.setTimeout(ms)</a>
+<ul class="sectlevel2">
+<li><a href="#_signature_3">8.1. Signature</a></li>
+<li><a href="#_behaviour_2">8.2. Behaviour</a></li>
+<li><a href="#_worker_only_restriction">8.3. Worker-only restriction</a></li>
+<li><a href="#_example_polling_loop_with_back_off">8.4. Example: polling loop with back-off</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_suspendacceptance_and_nginx_resumeacceptance">9. nginx.suspendAcceptance() and nginx.resumeAcceptance()</a>
+<ul class="sectlevel2">
+<li><a href="#_signatures">9.1. Signatures</a></li>
+<li><a href="#_behaviour_3">9.2. Behaviour</a></li>
+<li><a href="#_use_case_atomic_multi_field_mutation">9.3. Use case: atomic multi-field mutation</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_suspendallworkers_and_nginx_resumeallworkers">10. nginx.suspendAllWorkers() and nginx.resumeAllWorkers()</a>
+<ul class="sectlevel2">
+<li><a href="#_signatures_2">10.1. Signatures</a></li>
+<li><a href="#_behaviour_4">10.2. Behaviour</a></li>
+<li><a href="#_timeout">10.3. Timeout</a></li>
+<li><a href="#_nginx_withsuspendedacceptancefn">10.4. nginx.withSuspendedAcceptance(fn)</a></li>
+<li><a href="#_example_cluster_wide_atomic_server_reconfiguration">10.5. Example: cluster-wide atomic server reconfiguration</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_createsocketaddress">11. nginx.createSocket(address)</a>
+<ul class="sectlevel2">
+<li><a href="#_signature_4">11.1. Signature</a></li>
+<li><a href="#_phase_a_vs_phase_f">11.2. Phase A vs Phase F</a></li>
+</ul>
+</li>
+<li><a href="#_nginx_workermemorylimit_and_nginx_workerrequesttimeout">12. nginx.workerMemoryLimit and nginx.workerRequestTimeout</a>
+<ul class="sectlevel2">
+<li><a href="#_workermemorylimit">12.1. workerMemoryLimit</a></li>
+<li><a href="#_workerrequesttimeout">12.2. workerRequestTimeout</a></li>
+</ul>
+</li>
+<li><a href="#_complete_examples">13. Complete examples</a>
+<ul class="sectlevel2">
+<li><a href="#_example_1_startup_audit_dump_the_full_nginx_object_tree">13.1. Example 1: Startup audit — dump the full nginx object tree</a></li>
+<li><a href="#_example_2_adaptive_worker_count">13.2. Example 2: Adaptive worker count</a></li>
+<li><a href="#_example_3_per_worker_warm_up_with_settimeout">13.3. Example 3: Per-worker warm-up with setTimeout</a></li>
+<li><a href="#_example_4_graceful_config_reload_with_cluster_wide_suspension">13.4. Example 4: Graceful config reload with cluster-wide suspension</a></li>
+<li><a href="#_example_5_stream_server_property_inspection_and_tuning">13.5. Example 5: Stream server property inspection and tuning</a></li>
+<li><a href="#_example_6_dynamic_stream_listener_provisioning">13.6. Example 6: Dynamic stream listener provisioning</a></li>
+</ul>
+</li>
+<li><a href="#_api_reference">14. API Reference</a>
+<ul class="sectlevel2">
+<li><a href="#_nginx_global_object">14.1. nginx (global object)</a></li>
+<li><a href="#_nginxcycle">14.2. NginxCycle</a></li>
+<li><a href="#_nginxevents">14.3. NginxEvents</a></li>
+<li><a href="#_nginxstreamserver">14.4. NginxStreamServer</a></li>
+<li><a href="#_nginxstreamproxy">14.5. NginxStreamProxy</a></li>
+<li><a href="#_nginxstreamlistener_2">14.6. NginxStreamListener</a></li>
+</ul>
+</li>
+<li><a href="#_design_notes">15. Design notes</a>
+<ul class="sectlevel2">
+<li><a href="#_why_nginx_cycle_workers_is_writable">15.1. Why nginx.cycle.workers is writable</a></li>
+<li><a href="#_broadcast_and_the_init_process_hook">15.2. broadcast() and the init_process hook</a></li>
+<li><a href="#_withsuspendedacceptance_is_pure_js">15.3. withSuspendedAcceptance is pure JS</a></li>
+<li><a href="#_workerrequesttimeout_and_quickjs_interrupts">15.4. workerRequestTimeout and QuickJS interrupts</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<div id="content">
+<div id="preamble">
+<div class="sectionbody">
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+<div class="paragraph">
+<p><strong>DRAFT FOR COMMENTS</strong> — This document is a work in progress.</p>
+</div>
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_overview">1. Overview</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>This guide is a comprehensive reference for the top-level <code>nginx</code> global
+object that is available in every JavaScript context created by the JS
+module.  It covers all properties and methods directly on <code>nginx.*</code> —
+from read-only version information to cross-process coordination
+primitives — plus the two sub-namespaces <code>nginx.cycle</code> and
+<code>nginx.events</code> that expose core and event-loop configuration.</p>
+</div>
+<div class="paragraph">
+<p>Related guides for the deeper sub-namespaces:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><a href="js-reconfig-guide-http.adoc">Guide 6 (HTTP)</a> — <code>nginx.http.*</code></p>
+</li>
+<li>
+<p><a href="js-reconfig-guide-servers.adoc">Guide 5 (Servers)</a> — HTTP server API</p>
+</li>
+<li>
+<p><a href="js-reconfig-guide-locations.adoc">Guide 4 (Locations)</a> — HTTP location API</p>
+</li>
+<li>
+<p><a href="js-reconfig-guide-all-workers.adoc">Guide 2 (All Workers)</a> — cross-worker coordination</p>
+</li>
+<li>
+<p><a href="js-reconfig-guide-checkpoint.adoc">Guide 3 (Checkpoint/Restore)</a> — snapshot API</p>
+</li>
+</ul>
+</div>
+<div class="sect2">
+<h3 id="_the_nginx_global_object_at_a_glance">1.1. The nginx global object at a glance</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Read-only metadata
+nginx.version                  // "1.27.x" — nginx version string
+nginx.cpu_count                // number of logical CPUs
+
+// Logging
+nginx.log(level, message)      // write to error log
+
+// Sub-namespaces
+nginx.cycle                    // NginxCycle — master-process config
+nginx.events                   // NginxEvents — events{} block
+nginx.http                     // NginxHttp   — HTTP subsystem
+nginx.stream                   // plain object — stream{} subsystem
+
+// Socket provisioning
+nginx.createSocket('host:port') // → NginxSocket (Phase A pre-fork / Phase F post-fork)
+
+// Worker bootstrap
+nginx.broadcast(fn)            // register per-worker startup callback
+
+// Async timer
+nginx.setTimeout(ms)           // → Promise&lt;undefined&gt;
+
+// Acceptance control — single worker (Phase 1)
+nginx.suspendAcceptance()      // disable accept events in this worker
+nginx.resumeAcceptance()       // re-enable accept events in this worker
+
+// Acceptance control — all workers (Phase 2)
+nginx.suspendAllWorkers()      // → Promise&lt;undefined&gt;
+nginx.resumeAllWorkers()       // → Promise&lt;undefined&gt;
+nginx.withSuspendedAcceptance(fn) // convenience wrapper — suspend → fn() → resume
+
+// Per-worker resource limits (written in config phase)
+nginx.workerMemoryLimit        // r/w number — JS heap cap per worker (bytes, 0 = none)
+nginx.workerRequestTimeout     // r/w number — per-request JS timeout (ms, 0 = none)</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_object_hierarchy">1.2. Object hierarchy</h3>
+<div class="listingblock">
+<div class="content">
+<pre>nginx
+├── version               (string, r/o)
+├── cpu_count             (number, r/o)
+├── log(level, msg)
+├── workerMemoryLimit     (number, r/w)
+├── workerRequestTimeout  (number, r/w)
+│
+├── cycle                 NginxCycle
+│   ├── hostname          (r/o)
+│   ├── prefix            (r/o) — config directory
+│   ├── installPrefix     (r/o) — installation directory
+│   ├── confFile          (r/o)
+│   ├── errorLog          (r/o)
+│   ├── pid               (r/o) — pid file path
+│   ├── workers           (r/w) — worker_processes count
+│   ├── connectionN       (r/o) — max connections per worker
+│   ├── daemon            (r/o boolean)
+│   ├── master            (r/o boolean) — master_process on/off
+│   ├── timerResolution   (r/o ms)
+│   ├── shutdownTimeout   (r/o ms)
+│   ├── priority          (r/o) — worker_priority nice value
+│   ├── rlimitNofile      (r/o) — worker_rlimit_nofile
+│   ├── workingDirectory  (r/o)
+│   └── sockets[]         (r/o) — all listening sockets
+│
+├── events                NginxEvents
+│   ├── connections       (r/o) — worker_connections
+│   ├── use               (r/o) — "epoll" / "kqueue" / …
+│   ├── multiAccept       (r/w boolean)
+│   ├── acceptMutex       (r/w boolean)
+│   └── acceptMutexDelay  (r/w ms)
+│
+├── http                  NginxHttp — see Guide 6
+│   ├── servers[]
+│   ├── sockets[]
+│   ├── variables{}
+│   ├── upstreams[]
+│   └── …
+│
+├── stream                plain object
+│   ├── servers[]         NginxStreamServer[]
+│   ├── upstreams[]       NginxStreamUpstream[]
+│   ├── sockets[]
+│   ├── serverNamesHashMaxSize / BucketSize
+│   ├── variablesHashMaxSize / BucketSize
+│   └── attach(sock)      → NginxStreamListener
+│
+├── createSocket(addr)    → NginxSocket
+├── broadcast(fn)
+├── setTimeout(ms)        → Promise
+├── suspendAcceptance()
+├── resumeAcceptance()
+├── suspendAllWorkers()   → Promise
+├── resumeAllWorkers()    → Promise
+└── withSuspendedAcceptance(fn) → Promise</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_version_and_nginx_cpu_count">2. nginx.version and nginx.cpu_count</h2>
+<div class="sectionbody">
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.version:   string  (read-only)
+nginx.cpu_count: number  (read-only)</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>nginx.version</code> — the nginx version string as compiled in, e.g. <code>"1.27.3"</code>.</p>
+</div>
+<div class="paragraph">
+<p><code>nginx.cpu_count</code> — the number of logical CPUs detected by nginx at startup
+(the value of <code>ngx_ncpu</code>).  Useful for setting <code>nginx.cycle.workers</code> to an
+appropriate value.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">nginx.log(4, `nginx ${nginx.version} on ${nginx.cpu_count} CPUs`);
+
+// Ensure workers = CPU count at startup
+nginx.cycle.workers = nginx.cpu_count;</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_loglevel_message">3. nginx.log(level, message)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Writes a message to the nginx error log at the given log level.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature">3.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.log(level: number, message: string): undefined</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><code>level</code> — numeric log level:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 66.6667%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Value</th>
+<th class="tableblock halign-left valign-top">Level</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">1</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>stderr</code> (always printed)</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">2</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>emerg</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">3</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>alert</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">4</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>crit</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">5</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>error</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">6</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>warn</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">7</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>notice</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">8</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>info</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">9</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>debug</code></p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p><code>message</code> — the string to write.  The prefix <code>"js: "</code> is prepended automatically.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">nginx.log(6, 'upstream weights updated');
+nginx.log(8, `servers: ${nginx.http.servers.length}`);</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<code>nginx.log</code> is available in all contexts: config phase (<code>js_source</code>),
+worker request handlers, SharedWorker threads, and JS Worker threads.
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_cycle_nginxcycle">4. nginx.cycle (NginxCycle)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>The <code>nginx.cycle</code> object exposes the <code>ngx_cycle_t</code> structure — the central
+nginx process context.  It is available in all JS contexts.</p>
+</div>
+<div class="sect2">
+<h3 id="_properties">4.1. Properties</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 16.6666%;">
+<col style="width: 16.6666%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0002%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>hostname</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Machine hostname.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>prefix</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Configuration directory (<code>--prefix</code> at configure time, or the directory
+  containing the config file).  Equivalent to <code>conf_prefix</code> in nginx source.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>installPrefix</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Installation directory (<code>cycle&#8594;prefix</code>).  Typically <code>/usr/local/nginx</code>
+  or the value passed to <code>--prefix</code> at build time.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>confFile</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Full path to the nginx configuration file.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>errorLog</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Path to the error log file.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>pid</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Path to the nginx pid file.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>workers</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>R/W</strong></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Current <code>worker_processes</code> count.  Write this during config phase to
+  change how many worker processes nginx should fork.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>connectionN</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Maximum number of connections per worker (<code>worker_connections</code> ×
+  internal allocation).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>daemon</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Whether nginx runs in daemon mode.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>master</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Whether the <code>master_process</code> directive is on.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>timerResolution</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (ms)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>timer_resolution</code> directive value (ms).  Zero means disabled.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>shutdownTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (ms)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>worker_shutdown_timeout</code> value (ms).  Zero means disabled.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>priority</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>worker_priority</code> nice value (0 = default).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>rlimitNofile</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>worker_rlimit_nofile</code> value.  <code>-1</code> if not set.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>workingDirectory</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>working_directory</code> directive value.  Empty string if not set.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>sockets[]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">array</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Snapshot of all listening sockets across HTTP and stream subsystems.
+  Same format as <code>nginx.http.sockets[]</code> and <code>nginx.stream.sockets[]</code>
+  combined into a single flat array.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_reading_cycle_properties">4.2. Reading cycle properties</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">const c = nginx.cycle;
+nginx.log(8, [
+    `hostname:       ${c.hostname}`,
+    `prefix:         ${c.prefix}`,
+    `installPrefix:  ${c.installPrefix}`,
+    `confFile:       ${c.confFile}`,
+    `errorLog:       ${c.errorLog}`,
+    `pid:            ${c.pid}`,
+    `workers:        ${c.workers}`,
+    `connectionN:    ${c.connectionN}`,
+    `daemon:         ${c.daemon}`,
+    `master:         ${c.master}`,
+    `timerResolution:${c.timerResolution} ms`,
+    `shutdownTimeout:${c.shutdownTimeout} ms`,
+    `priority:       ${c.priority}`,
+    `rlimitNofile:   ${c.rlimitNofile}`,
+    `workingDir:     ${c.workingDirectory}`,
+    `sockets:        ${c.sockets.length}`,
+].join('\n'));</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_setting_workers_count">4.3. Setting workers count</h3>
+<div class="paragraph">
+<p><code>nginx.cycle.workers</code> is the only writable cycle property.  Write it during
+config phase (in a <code>js_source</code> script) to adjust the worker count before
+nginx forks.  This is equivalent to the <code>worker_processes</code> directive.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Auto-size to CPU count (mirrors worker_processes auto;)
+nginx.cycle.workers = nginx.cpu_count;
+nginx.log(7, `workers set to ${nginx.cycle.workers}`);</code></pre>
+</div>
+</div>
+<div class="admonitionblock warning">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-warning" title="Warning"></i>
+</td>
+<td class="content">
+Writing <code>workers</code> after the fork has no effect on the running
+process count.  Use it only in config-phase scripts.
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginx_cycle_sockets">4.4. nginx.cycle.sockets[]</h3>
+<div class="paragraph">
+<p>A read-only snapshot array listing every listening socket currently active
+on this cycle.  It combines HTTP and stream sockets.  Each entry has:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>address</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind address.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>port</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind port.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ssl</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Whether TLS is active.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>http2</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Whether HTTP/2 is negotiated (HTTP listeners only).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>listen</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">array</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Raw listen-directive parameter objects for this port.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">for (const s of nginx.cycle.sockets) {
+    nginx.log(8, `${s.address}:${s.port}  ssl=${s.ssl}`);
+}</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_events_nginxevents">5. nginx.events (NginxEvents)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>The <code>nginx.events</code> object exposes the <code>events {}</code> block configuration.</p>
+</div>
+<div class="sect2">
+<h3 id="_properties_2">5.1. Properties</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 16.6666%;">
+<col style="width: 16.6666%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0002%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>connections</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>worker_connections</code> — maximum simultaneous connections per worker.
+  Read-only because the connection pool is allocated at startup.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>use</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Event method name, e.g. <code>"epoll"</code>, <code>"kqueue"</code>, <code>"select"</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>multiAccept</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>R/W</strong></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>multi_accept on/off</code> — whether a worker accepts as many connections as
+  possible at once.  Default: off.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>acceptMutex</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>R/W</strong></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>accept_mutex on/off</code> — whether workers take turns accepting new
+  connections (reduces thundering-herd on old kernels).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>acceptMutexDelay</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (ms)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>R/W</strong></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>accept_mutex_delay</code> — delay before trying to acquire the accept mutex.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">const ev = nginx.events;
+nginx.log(8, `events: use=${ev.use}  connections=${ev.connections}`);
+nginx.log(8, `  multiAccept=${ev.multiAccept}  acceptMutex=${ev.acceptMutex}`);
+nginx.log(8, `  acceptMutexDelay=${ev.acceptMutexDelay} ms`);</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_tuning_accept_behaviour_at_startup">5.2. Tuning accept behaviour at startup</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Enable multi_accept for high-connection-rate workloads
+nginx.events.multiAccept = true;
+
+// Reduce accept-mutex delay for faster hand-off
+nginx.events.acceptMutexDelay = 50;    // ms (default 500)</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<code>multiAccept</code> and <code>acceptMutex</code> are read by the event loop at
+worker start.  Changing them post-fork has no effect on accepted
+connections but will be visible to future reads of the property.
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_stream">6. nginx.stream</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>The <code>nginx.stream</code> plain object mirrors <code>nginx.http</code> for the TCP/UDP
+stream subsystem.</p>
+</div>
+<div class="sect2">
+<h3 id="_properties_3">6.1. Properties</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>servers[]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">NginxStreamServer[]</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Array of all <code>server {}</code> blocks from the <code>stream {}</code> config.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>upstreams[]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">NginxStreamUpstream[]</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Array of all <code>upstream {}</code> blocks in the stream context.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>sockets[]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">array</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Listening socket descriptors for the stream subsystem.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNamesHashMaxSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (r/o)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>server_names_hash_max_size</code> in the stream context.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNamesHashBucketSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (r/o)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>server_names_hash_bucket_size</code> in the stream context.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variablesHashMaxSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (r/o)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variables_hash_max_size</code> in the stream context.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variablesHashBucketSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (r/o)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>variables_hash_bucket_size</code> in the stream context.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>attach(sock)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">method</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Wires a <code>NginxSocket</code> into the stream pipeline.
+  Returns <code>NginxStreamListener</code>.  Pre-fork only.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxstreamserver_properties">6.2. NginxStreamServer properties</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 16.6666%;">
+<col style="width: 16.6666%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0002%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverName</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Primary server name (or empty string for unnamed servers).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>tcpNodelay</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>tcp_nodelay on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>prereadBufferSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>preread_buffer_size</code> (bytes).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>prereadTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (ms)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>preread_timeout</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>resolverTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (ms)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>resolver_timeout</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxyProtocolTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (ms)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_protocol_timeout</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">NginxStreamProxy</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Stream proxy sub-object.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>access</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">NginxStreamAccess</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Access control sub-object.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ssl</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">NginxStreamSSL</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">SSL/TLS sub-object.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>handler</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">function</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Request handler: <code>function(session)</code>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxstreamproxy_sub_object">6.3. NginxStreamProxy sub-object</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 16.6666%;">
+<col style="width: 16.6666%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0002%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">Type</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>connectTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (ms)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_connect_timeout</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>timeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (ms)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_timeout</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nextUpstreamTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (ms)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_next_upstream_timeout</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>bufferSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number (bytes)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_buffer_size</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>requests</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_requests</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>responses</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_responses</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nextUpstreamTries</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_next_upstream_tries</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nextUpstream</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_next_upstream on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxyProtocol</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_protocol on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>halfClose</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_half_close on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>socketKeepalive</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_socket_keepalive on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>pass</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">string</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_pass</code> target (upstream name or address).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxstreamlistener">6.4. NginxStreamListener</h3>
+<div class="paragraph">
+<p>Returned by <code>nginx.stream.attach(sock)</code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Member</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>address</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind address string.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>socket</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">The <code>NginxSocket</code> this listener was created from.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNames</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Array of registered server-name strings.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverByName(name)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Returns <code>NginxStreamServer</code> or <code>null</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>addServer(srv)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Phase C — set default stream server, activate listener.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>addVirtualServer(srv)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Phase D — add named virtual stream server.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_stream_provisioning_example">6.5. Stream provisioning example</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Provision a new stream listener at config phase
+
+const sock = nginx.createSocket('0.0.0.0:5555');
+const listener = nginx.stream.attach(sock);
+
+// Use an existing stream server as the default
+const defaultSrv = nginx.stream.servers[0];
+listener.addServer(defaultSrv);
+
+nginx.log(7, 'stream port 5555 ready');</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_broadcastfn">7. nginx.broadcast(fn)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Registers a function to be called in every nginx worker process.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature_2">7.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.broadcast(fn: function): undefined</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_behaviour">7.2. Behaviour</h3>
+<div class="paragraph">
+<p>The behaviour differs depending on <strong>where</strong> <code>broadcast</code> is called:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Context</th>
+<th class="tableblock halign-left valign-top">Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Config phase</strong> (<code>js_source</code> top-level code, master process)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fn</code> is appended to the internal <code>nginx.__broadcast_queue</code>.  After the
+  master forks, each worker calls every queued function during
+  <code>init_process</code>, with the worker context already set.  This lets you
+  register per-worker startup logic that requires worker-only APIs (e.g.
+  <code>nginx.setTimeout</code>, request-level COM objects).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><strong>Worker request handler</strong> (post-fork)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fn</code> is called immediately in the <strong>current</strong> worker only.  No IPC to
+  other workers is performed.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="listingblock">
+<div class="content">
+<pre>  Config phase (master)                  Workers (after fork)
+  ─────────────────────                  ────────────────────
+  nginx.broadcast(fn)                    init_process:
+        │                                  calls fn() in Worker 0
+        │  appended to                     calls fn() in Worker 1
+        ▼  __broadcast_queue              calls fn() in Worker 2 …
+  [ fn, fn2, … ]</pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_use_cases">7.3. Use cases</h3>
+<div class="paragraph">
+<p><strong>Registering per-worker state</strong> — set up a cache, open a file descriptor,
+or start a background loop that needs to run in every worker:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Config phase — register once, runs in every worker at startup
+
+nginx.broadcast(function workerInit() {
+    // This runs in every worker after fork
+    nginx.log(8, 'worker started, setting up local state');
+
+    // Example: start a periodic health-check timer
+    async function healthLoop() {
+        while (true) {
+            await nginx.setTimeout(5000);
+            nginx.log(8, 'worker health tick');
+        }
+    }
+    healthLoop();
+});</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p><strong>Installing a handler that requires worker context</strong>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Some handlers need the worker context (e.g. nginx.setTimeout)
+// nginx.broadcast defers registration until worker init
+
+nginx.broadcast(function() {
+    const loc = nginx.http.servers[0].locations.find(l =&gt; l.path === '/slow');
+    if (loc) {
+        loc.handler = async function(req) {
+            await nginx.setTimeout(200);
+            req.respond(200, {}, 'done\n');
+        };
+    }
+});</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+Functions queued via <code>broadcast()</code> in config phase share the same
+JS runtime and context as the main <code>js_source</code> code.  They can close
+over module-level variables defined in the same script.
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_settimeoutms">8. nginx.setTimeout(ms)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Suspends the current async request handler for <code>ms</code> milliseconds using
+nginx&#8217;s event-loop timer infrastructure.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature_3">8.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.setTimeout(ms: number): Promise&lt;undefined&gt;</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_behaviour_2">8.2. Behaviour</h3>
+<div class="ulist">
+<ul>
+<li>
+<p>Creates a native <code>ngx_event_t</code> timer in the worker&#8217;s event loop.</p>
+</li>
+<li>
+<p>Returns a <code>Promise</code> that resolves when the timer fires.</p>
+</li>
+<li>
+<p>While suspended, the worker&#8217;s event loop continues processing other
+connections and timers normally.</p>
+</li>
+<li>
+<p>After the promise resolves, microtasks are drained and any suspended
+nginx requests (awaiting the same timer) are finalized.</p>
+</li>
+</ul>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  request handler
+       │
+       ├─ await nginx.setTimeout(200)
+       │          │
+       │          │  worker event loop runs (other requests served)
+       │          │
+       │     timer fires (200ms later)
+       │          │  resolve Promise
+       │          │  drain microtasks
+       │          │  ngx_js_async_check → finalize request
+       │
+       └─ execution resumes here</pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_worker_only_restriction">8.3. Worker-only restriction</h3>
+<div class="paragraph">
+<p><code>setTimeout</code> requires a worker context opaque (set after fork).  Calling
+it from config-phase top-level code throws an error.  Use
+<code>nginx.broadcast</code> to defer <code>setTimeout</code> calls to worker startup:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// WRONG — throws at config phase:
+// await nginx.setTimeout(100);
+
+// CORRECT — deferred to worker:
+nginx.broadcast(async function() {
+    await nginx.setTimeout(100);
+    nginx.log(8, 'post-startup delay done');
+});</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_polling_loop_with_back_off">8.4. Example: polling loop with back-off</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">nginx.broadcast(async function() {
+    let delay = 1000;
+    const MAX_DELAY = 30000;
+
+    while (true) {
+        await nginx.setTimeout(delay);
+        try {
+            checkUpstreamHealth();
+            delay = 1000;           // reset on success
+        } catch (e) {
+            nginx.log(5, `health check failed: ${e.message}`);
+            delay = Math.min(delay * 2, MAX_DELAY);
+        }
+    }
+});</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_suspendacceptance_and_nginx_resumeacceptance">9. nginx.suspendAcceptance() and nginx.resumeAcceptance()</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Per-worker acceptance control (Phase 1).  These are synchronous, instant,
+and affect only the calling worker.</p>
+</div>
+<div class="sect2">
+<h3 id="_signatures">9.1. Signatures</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.suspendAcceptance(): undefined
+nginx.resumeAcceptance(): undefined</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_behaviour_3">9.2. Behaviour</h3>
+<div class="paragraph">
+<p><code>suspendAcceptance()</code> — removes all listening socket read events from this
+worker&#8217;s event loop.  Incoming TCP connections continue to queue in the
+OS SYN backlog (up to <code>net.core.somaxconn</code>) and will be accepted once
+<code>resumeAcceptance()</code> is called.  <strong>Other workers continue accepting
+normally.</strong></p>
+</div>
+<div class="paragraph">
+<p><code>resumeAcceptance()</code> — re-adds the listening socket read events.  No-op
+if acceptance was not suspended.</p>
+</div>
+<div class="paragraph">
+<p>Both functions are only callable from a worker process.  Calling from
+config phase throws a <code>TypeError</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_use_case_atomic_multi_field_mutation">9.3. Use case: atomic multi-field mutation</h3>
+<div class="paragraph">
+<p>Wrap a batch of COM mutations that must appear atomic from new connections'
+perspective.  Without suspension, a new connection could arrive between
+two mutations and observe a partially-updated configuration:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">function atomicUpdate(req) {
+    nginx.suspendAcceptance();
+    try {
+        // Both mutations applied before any new connection is accepted
+        nginx.http.upstreams[0].peers[0].weight = 200;
+        nginx.http.servers[0].locations
+              .find(l =&gt; l.path === '/api').root = '/var/www/api-v2';
+    } finally {
+        nginx.resumeAcceptance();
+    }
+    req.respond(200, {}, 'updated\n');
+}</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Worker N
+  ├─ nginx.suspendAcceptance()   ← remove listen read events
+  │        (new conns queue in OS backlog)
+  │
+  ├─ mutation 1 (upstream weight)
+  ├─ mutation 2 (location root)
+  │
+  └─ nginx.resumeAcceptance()    ← restore listen read events
+           (queued conns now accepted with updated config)</pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+Because this is per-worker, parallel workers may accept connections
+with the old config while this worker is suspended.  For cluster-wide
+atomicity use <code>suspendAllWorkers()</code> instead.
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_suspendallworkers_and_nginx_resumeallworkers">10. nginx.suspendAllWorkers() and nginx.resumeAllWorkers()</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Cross-worker acceptance control (Phase 2).  Asynchronous; coordinates
+through the manager process.</p>
+</div>
+<div class="sect2">
+<h3 id="_signatures_2">10.1. Signatures</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.suspendAllWorkers(): Promise&lt;undefined&gt;
+nginx.resumeAllWorkers():  Promise&lt;undefined&gt;</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_behaviour_4">10.2. Behaviour</h3>
+<div class="paragraph">
+<p>Both functions return a <code>Promise</code> that resolves after <strong>every</strong> worker in
+the nginx pool has acknowledged the suspend/resume command.</p>
+</div>
+<div class="paragraph">
+<p>Protocol:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">  Worker 0 (request handler)
+       │
+       ├─ await nginx.suspendAllWorkers()
+       │          │
+       │          ├─ sends NGX_JS_MGR_CMD_SUSPEND_ACCEPT to manager
+       │          │
+       │   Manager process
+       │   ├─ broadcasts suspend command to Worker 0, 1, 2 …
+       │   ├─ waits for acks (500 ms timeout)
+       │   └─ writes 1-byte reply on reply_fd
+       │          │
+       │          └─ reply_fd read event fires → resolve Promise
+       │
+       ├─ all workers now suspended
+       ├─ perform cluster-wide COM mutations
+       │
+       └─ await nginx.resumeAllWorkers()   (same protocol)</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_timeout">10.3. Timeout</h3>
+<div class="paragraph">
+<p>If not all workers ack within 500 ms the manager resolves anyway so the
+calling worker is not stuck.  Slow workers will resume acceptance on their
+own when the next <code>resumeAllWorkers</code> broadcast arrives.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginx_withsuspendedacceptancefn">10.4. nginx.withSuspendedAcceptance(fn)</h3>
+<div class="paragraph">
+<p>A convenience wrapper defined in pure JavaScript during <code>ngx_js_com_init</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">nginx.withSuspendedAcceptance = async function(fn) {
+    await nginx.suspendAllWorkers();
+    try {
+        await fn();
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Use this instead of the raw pair to guarantee <code>resumeAllWorkers</code> is
+called even if <code>fn</code> throws.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_cluster_wide_atomic_server_reconfiguration">10.5. Example: cluster-wide atomic server reconfiguration</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">async function hotReloadServers(req) {
+    await nginx.withSuspendedAcceptance(async () =&gt; {
+        // All workers suspended; no new connections accepted anywhere
+
+        // Remove old API server
+        nginx.http.removeServer('api-v1.example.com');
+
+        // Add new API server
+        const srv = nginx.http.addServer('api-v2.example.com');
+        srv.addLocation('/').handler = apiV2Handler;
+
+        // Rebuild routing hash
+        nginx.http.rebuildVhostDispatch();
+    });
+    // All workers resumed with new config
+
+    req.respond(200, {}, 'hot reload complete\n');
+}</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>  Worker 0 (request handler)
+       │
+       ├─ await nginx.withSuspendedAcceptance(async () =&gt; {
+       │          │
+       │          │  suspendAllWorkers()
+       │          │    → manager broadcasts suspend → all workers ack
+       │          │
+       │          ├─ removeServer('api-v1.example.com')
+       │          ├─ addServer('api-v2.example.com') + addLocation
+       │          ├─ rebuildVhostDispatch()
+       │          │
+       │          │  resumeAllWorkers()
+       │          │    → manager broadcasts resume → all workers ack
+       │          │
+       │          └─ Promise resolves
+       │
+       └─ req.respond(200, {}, 'done\n')</pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+Worker 0 is also suspended during this window (it cannot accept new
+connections).  In-flight requests on Worker 0 continue executing.
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_createsocketaddress">11. nginx.createSocket(address)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Creates a TCP listening socket.  See
+<a href="js-reconfig-guide-http.adoc">Guide 6</a> for the full NginxSocket API
+and the Phase A-D provisioning pipeline.</p>
+</div>
+<div class="sect2">
+<h3 id="_signature_4">11.1. Signature</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.createSocket(address: string): NginxSocket</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_phase_a_vs_phase_f">11.2. Phase A vs Phase F</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 20%;">
+<col style="width: 20%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Phase</th>
+<th class="tableblock halign-left valign-top">Context</th>
+<th class="tableblock halign-left valign-top">Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A (pre-fork)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Config phase (<code>js_source</code> top-level code)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Calls <code>socket()</code> + <code>bind()</code> + <code>listen()</code> directly in the master.
+  All workers inherit the fd on fork.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">F (post-fork)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Worker request handler</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Sends the bind address to the manager thread via AF_UNIX + SCM_RIGHTS.
+  The manager creates the socket and returns the fd to the requesting
+  worker.  Use <code>sock.broadcast()</code> to share it with sibling workers.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Config phase (Phase A)
+const httpSock   = nginx.createSocket('0.0.0.0:8080');
+const httpListen = nginx.http.attach(httpSock);
+
+const streamSock   = nginx.createSocket('0.0.0.0:5000');
+const streamListen = nginx.stream.attach(streamSock);</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_workermemorylimit_and_nginx_workerrequesttimeout">12. nginx.workerMemoryLimit and nginx.workerRequestTimeout</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Two writable properties that configure per-worker resource limits.  They
+are read by <code>init_process</code> (after fork) and cannot be changed at runtime.</p>
+</div>
+<div class="sect2">
+<h3 id="_workermemorylimit">12.1. workerMemoryLimit</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.workerMemoryLimit: number  (bytes, 0 = no limit)</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Caps the QuickJS heap size for each worker&#8217;s JS runtime.  After fork,
+<code>init_process</code> calls <code>JS_SetMemoryLimit(rt, workerMemoryLimit)</code> if the
+value is non-zero.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Limit each worker to 128 MB of JS heap
+nginx.workerMemoryLimit = 128 * 1024 * 1024;</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_workerrequesttimeout">12.2. workerRequestTimeout</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.workerRequestTimeout: number  (ms, 0 = no timeout)</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Caps the wall-clock time a single JS request handler invocation may run.
+After fork, <code>init_process</code> installs a QuickJS interrupt handler that
+checks a monotonic-clock deadline set around each <code>JS_Call</code> in the content
+handler.  If the deadline passes, the interrupt handler throws a
+<code>SyntaxError</code> to terminate the runaway script.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Kill any request handler that runs for more than 5 seconds
+nginx.workerRequestTimeout = 5000;</code></pre>
+</div>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+The timeout applies to synchronous execution time within a single
+<code>JS_Call</code> invocation.  Async handlers that <code>await nginx.setTimeout()</code> are
+not penalised for the wall-clock time spent waiting; the deadline is reset
+at each resume.
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_complete_examples">13. Complete examples</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_example_1_startup_audit_dump_the_full_nginx_object_tree">13.1. Example 1: Startup audit — dump the full nginx object tree</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">(function auditAll() {
+    const c = nginx.cycle;
+    const ev = nginx.events;
+
+    nginx.log(8, '=== nginx global audit ===');
+    nginx.log(8, `version:     ${nginx.version}`);
+    nginx.log(8, `cpu_count:   ${nginx.cpu_count}`);
+
+    nginx.log(8, `cycle.hostname:       ${c.hostname}`);
+    nginx.log(8, `cycle.prefix:         ${c.prefix}`);
+    nginx.log(8, `cycle.installPrefix:  ${c.installPrefix}`);
+    nginx.log(8, `cycle.confFile:       ${c.confFile}`);
+    nginx.log(8, `cycle.errorLog:       ${c.errorLog}`);
+    nginx.log(8, `cycle.pid:            ${c.pid}`);
+    nginx.log(8, `cycle.workers:        ${c.workers}`);
+    nginx.log(8, `cycle.connectionN:    ${c.connectionN}`);
+    nginx.log(8, `cycle.daemon:         ${c.daemon}`);
+    nginx.log(8, `cycle.master:         ${c.master}`);
+    nginx.log(8, `cycle.timerResolution:${c.timerResolution} ms`);
+    nginx.log(8, `cycle.shutdownTimeout:${c.shutdownTimeout} ms`);
+    nginx.log(8, `cycle.priority:       ${c.priority}`);
+    nginx.log(8, `cycle.rlimitNofile:   ${c.rlimitNofile}`);
+    nginx.log(8, `cycle.workingDir:     ${c.workingDirectory}`);
+
+    nginx.log(8, `events.use:              ${ev.use}`);
+    nginx.log(8, `events.connections:      ${ev.connections}`);
+    nginx.log(8, `events.multiAccept:      ${ev.multiAccept}`);
+    nginx.log(8, `events.acceptMutex:      ${ev.acceptMutex}`);
+    nginx.log(8, `events.acceptMutexDelay: ${ev.acceptMutexDelay} ms`);
+
+    nginx.log(8, `http.servers:   ${nginx.http.servers.length}`);
+    nginx.log(8, `http.sockets:   ${nginx.http.sockets.length}`);
+    nginx.log(8, `stream.servers: ${(nginx.stream.servers||[]).length}`);
+
+    const allSocks = c.sockets;
+    nginx.log(8, `total sockets: ${allSocks.length}`);
+    for (const s of allSocks) {
+        nginx.log(8, `  ${s.address}:${s.port} ssl=${s.ssl} http2=${s.http2||false}`);
+    }
+})();</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_2_adaptive_worker_count">13.2. Example 2: Adaptive worker count</h3>
+<div class="paragraph">
+<p>Set <code>workers</code> to the CPU count minus one (leave a core for the OS) and
+cap the memory per worker:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">const cpus = nginx.cpu_count;
+nginx.cycle.workers = Math.max(1, cpus - 1);
+nginx.workerMemoryLimit = 64 * 1024 * 1024;   // 64 MB per worker
+nginx.log(7, `workers=${nginx.cycle.workers}  memLimit=64MB`);</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_3_per_worker_warm_up_with_settimeout">13.3. Example 3: Per-worker warm-up with setTimeout</h3>
+<div class="paragraph">
+<p>After fork, each worker runs a warm-up routine that pre-builds caches
+and logs its startup sequence:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">nginx.broadcast(async function workerWarmUp() {
+    nginx.log(8, 'worker warm-up started');
+
+    // Stagger workers to avoid thundering-herd on a shared resource
+    const jitter = Math.floor(Math.random() * 500);
+    await nginx.setTimeout(jitter);
+
+    // … pre-populate caches, connect to local resources …
+
+    nginx.log(8, 'worker warm-up complete');
+});</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_4_graceful_config_reload_with_cluster_wide_suspension">13.4. Example 4: Graceful config reload with cluster-wide suspension</h3>
+<div class="paragraph">
+<p>A handler that reloads routing config from an external source and applies
+it atomically across all workers:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">async function reloadConfig(req) {
+    let newRoutes;
+    try {
+        // Fetch new routing table (async, workers still accepting)
+        newRoutes = await fetchRoutingTable();
+    } catch (e) {
+        req.respond(500, {}, `fetch failed: ${e.message}\n`);
+        return;
+    }
+
+    await nginx.withSuspendedAcceptance(async () =&gt; {
+        // Validate before applying
+        for (const { host, path, upstream } of newRoutes) {
+            if (!nginx.http.servers.find(s =&gt; s.names.includes(host))) {
+                nginx.http.addServer(host);
+            }
+            const srv = nginx.http.servers.find(s =&gt; s.names.includes(host));
+            const loc = srv.addLocation(path);
+            loc.proxyPass = upstream;
+        }
+        nginx.http.rebuildVhostDispatch();
+    });
+
+    req.respond(200, {}, `reload complete (${newRoutes.length} routes)\n`);
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_5_stream_server_property_inspection_and_tuning">13.5. Example 5: Stream server property inspection and tuning</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Inspect and tune all stream servers at startup
+
+for (const srv of nginx.stream.servers) {
+    nginx.log(8, `stream server: ${srv.serverName || '&lt;unnamed&gt;'}`);
+    if (srv.proxy) {
+        nginx.log(8, `  proxy.pass=${srv.proxy.pass}`);
+        nginx.log(8, `  proxy.connectTimeout=${srv.proxy.connectTimeout} ms`);
+
+        // Reduce connection timeout for internal servers
+        if (srv.proxy.pass &amp;&amp; srv.proxy.pass.startsWith('internal_')) {
+            srv.proxy.connectTimeout = 1000;   // 1 s
+            srv.proxy.timeout        = 30000;  // 30 s
+        }
+    }
+}</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_example_6_dynamic_stream_listener_provisioning">13.6. Example 6: Dynamic stream listener provisioning</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Provision a new TCP proxy listener at config phase
+
+const sock     = nginx.createSocket('0.0.0.0:7000');
+const listener = nginx.stream.attach(sock);
+
+// Use the first existing stream server as default
+if (nginx.stream.servers.length &gt; 0) {
+    listener.addServer(nginx.stream.servers[0]);
+    nginx.log(7, 'stream port 7000 ready');
+} else {
+    nginx.log(5, 'no stream servers available; skipping port 7000');
+}</code></pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_api_reference">14. API Reference</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_nginx_global_object">14.1. nginx (global object)</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Member</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>version</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">nginx version string (e.g. <code>"1.27.3"</code>).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>cpu_count</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Number of logical CPUs.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>log(level, msg)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Write to the error log.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>cycle</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>NginxCycle</code> — core process configuration.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>events</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>NginxEvents</code> — events{} block configuration.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>http</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>NginxHttp</code> — HTTP subsystem.  See Guide 6.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>stream</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Plain object — stream{} subsystem.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>createSocket(addr)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Create a TCP listening socket.  Returns <code>NginxSocket</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>broadcast(fn)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Register a per-worker startup callback (or call immediately in worker).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>setTimeout(ms)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Async timer.  Returns <code>Promise&lt;undefined&gt;</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>suspendAcceptance()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Disable accept events in the current worker (synchronous, worker-only).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>resumeAcceptance()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Re-enable accept events in the current worker (synchronous, worker-only).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>suspendAllWorkers()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Broadcast suspend to all workers.  Returns <code>Promise&lt;undefined&gt;</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>resumeAllWorkers()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Broadcast resume to all workers.  Returns <code>Promise&lt;undefined&gt;</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>withSuspendedAcceptance(fn)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Convenience: <code>suspendAllWorkers → fn() → resumeAllWorkers</code>.
+  Returns <code>Promise&lt;undefined&gt;</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>workerMemoryLimit</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Per-worker JS heap cap in bytes.  0 = no limit.
+  Read at <code>init_process</code>; config-phase write only.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>workerRequestTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Per-request JS execution timeout in ms.  0 = no timeout.
+  Read at <code>init_process</code>; config-phase write only.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxcycle">14.2. NginxCycle</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>hostname</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Machine hostname.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>prefix</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Config directory.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>installPrefix</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Installation directory.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>confFile</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Full config file path.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>errorLog</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Error log path.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>pid</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">PID file path.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>workers</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Worker process count.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>connectionN</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Max connections per worker.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>daemon</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Daemon mode (boolean).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>master</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">master_process on/off (boolean).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>timerResolution</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>timer_resolution</code> (ms).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>shutdownTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>worker_shutdown_timeout</code> (ms).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>priority</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>worker_priority</code> nice value.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>rlimitNofile</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>worker_rlimit_nofile</code> (-1 if unset).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>workingDirectory</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>working_directory</code> ("" if unset).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>sockets[]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">All listening sockets (HTTP + stream).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxevents">14.3. NginxEvents</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>connections</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>worker_connections</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>use</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Event method name ("epoll", "kqueue", …).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>multiAccept</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>multi_accept on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>acceptMutex</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>accept_mutex on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>acceptMutexDelay</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>accept_mutex_delay</code> (ms).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxstreamserver">14.4. NginxStreamServer</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverName</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Primary server name.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>tcpNodelay</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>tcp_nodelay on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>prereadBufferSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>preread_buffer_size</code> (bytes).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>prereadTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>preread_timeout</code> (ms).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>resolverTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>resolver_timeout</code> (ms).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxyProtocolTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_protocol_timeout</code> (ms).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">NginxStreamProxy sub-object.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>access</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">NginxStreamAccess sub-object.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>ssl</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">NginxStreamSSL sub-object.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>handler</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Session handler function.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxstreamproxy">14.5. NginxStreamProxy</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Property</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>connectTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_connect_timeout</code> (ms).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>timeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_timeout</code> (ms).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nextUpstreamTimeout</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_next_upstream_timeout</code> (ms).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>bufferSize</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_buffer_size</code> (bytes).</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>requests</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_requests</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>responses</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_responses</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nextUpstreamTries</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_next_upstream_tries</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nextUpstream</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_next_upstream on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxyProtocol</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_protocol on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>halfClose</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_half_close on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>socketKeepalive</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R/W</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_socket_keepalive on/off</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>pass</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>proxy_pass</code> target.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_nginxstreamlistener_2">14.6. NginxStreamListener</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Member</th>
+<th class="tableblock halign-left valign-top">R/W</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>address</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bind address.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>socket</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Associated NginxSocket.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverNames</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">R</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Registered server-name strings.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>serverByName(name)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Returns NginxStreamServer or null.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>addServer(srv)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Phase C — set default server, activate listener.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>addVirtualServer(srv)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Phase D — add named virtual server.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_design_notes">15. Design notes</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_why_nginx_cycle_workers_is_writable">15.1. Why nginx.cycle.workers is writable</h3>
+<div class="paragraph">
+<p><code>workers</code> is the only writable <code>NginxCycle</code> property because it modifies
+the <code>worker_processes</code> field in <code>ngx_core_conf_t</code> — a plain integer read
+at fork time.  All other cycle fields are either structural (memory pool
+layouts, allocated arrays) or already computed at config parse time in
+ways that cannot be safely changed after-the-fact.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_broadcast_and_the_init_process_hook">15.2. broadcast() and the init_process hook</h3>
+<div class="paragraph">
+<p>JavaScript code evaluated at config phase (inside <code>js_source</code>) runs in
+the master process before any workers fork.  Functions in <code>__broadcast_queue</code>
+are stored as JS values in the shared context.  Because workers inherit
+the JS runtime via copy-on-write after fork, the queue is accessible in
+all workers.  <code>init_process</code> iterates the queue and calls each function
+with the worker context opaque already installed, so <code>nginx.setTimeout</code>
+and request-level COM objects work correctly inside broadcast callbacks.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_withsuspendedacceptance_is_pure_js">15.3. withSuspendedAcceptance is pure JS</h3>
+<div class="paragraph">
+<p><code>withSuspendedAcceptance</code> is not a C function — it is a short async
+function defined in a script string evaluated during <code>ngx_js_com_init</code>.
+This makes it easy to inspect or override: <code>nginx.withSuspendedAcceptance</code>
+can be reassigned from JS code for testing purposes.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_workerrequesttimeout_and_quickjs_interrupts">15.4. workerRequestTimeout and QuickJS interrupts</h3>
+<div class="paragraph">
+<p>The timeout is implemented with <code>JS_SetInterruptHandler</code>.  Before each
+<code>JS_Call</code> into a request handler, the C layer records <code>clock_gettime(CLOCK_MONOTONIC)</code>
++ <code>workerRequestTimeout</code> as a deadline.  The interrupt handler fires
+periodically (QuickJS checks at branch-back points) and compares the
+current time to the deadline.  If exceeded it returns 1, which causes
+QuickJS to throw a <code>SyntaxError("Script interrupted")</code>.  Async suspend
+points (<code>await</code>) do not advance the deadline; the deadline is re-stamped
+each time the event loop resumes the handler from a timer or I/O event.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="footer">
+<div id="footer-text">
+Last updated 2026-03-20 16:25:57 -0700
+</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>
+<script>
+if (!hljs.initHighlighting.called) {
+  hljs.initHighlighting.called = true
+  ;[].slice.call(document.querySelectorAll('pre.highlight > code[data-lang]')).forEach(function (el) { hljs.highlightBlock(el) })
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,1433 @@
+= Dynamic Reconfiguration Guide (global nginx.* namespace)
+:toc: left
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+:icons: font
+
+[WARNING]
+====
+*DRAFT FOR COMMENTS* — This document is a work in progress.
+====
+
+== Overview
+
+This guide is a comprehensive reference for the top-level `nginx` global
+object that is available in every JavaScript context created by the JS
+module.  It covers all properties and methods directly on `nginx.*` —
+from read-only version information to cross-process coordination
+primitives — plus the two sub-namespaces `nginx.cycle` and
+`nginx.events` that expose core and event-loop configuration.
+
+Related guides for the deeper sub-namespaces:
+
+* link:js-reconfig-guide-http.adoc[Guide 6 (HTTP)] — `nginx.http.*`
+* link:js-reconfig-guide-servers.adoc[Guide 5 (Servers)] — HTTP server API
+* link:js-reconfig-guide-locations.adoc[Guide 4 (Locations)] — HTTP location API
+* link:js-reconfig-guide-all-workers.adoc[Guide 2 (All Workers)] — cross-worker coordination
+* link:js-reconfig-guide-checkpoint.adoc[Guide 3 (Checkpoint/Restore)] — snapshot API
+
+=== The nginx global object at a glance
+
+[source,js]
+----
+// Read-only metadata
+nginx.version                  // "1.27.x" — nginx version string
+nginx.cpu_count                // number of logical CPUs
+
+// Logging
+nginx.log(level, message)      // write to error log
+
+// Sub-namespaces
+nginx.cycle                    // NginxCycle — master-process config
+nginx.events                   // NginxEvents — events{} block
+nginx.http                     // NginxHttp   — HTTP subsystem
+nginx.stream                   // plain object — stream{} subsystem
+
+// Socket provisioning
+nginx.createSocket('host:port') // → NginxSocket (Phase A pre-fork / Phase F post-fork)
+
+// Worker bootstrap
+nginx.broadcast(fn)            // register per-worker startup callback
+
+// Async timer
+nginx.setTimeout(ms)           // → Promise<undefined>
+
+// Acceptance control — single worker (Phase 1)
+nginx.suspendAcceptance()      // disable accept events in this worker
+nginx.resumeAcceptance()       // re-enable accept events in this worker
+
+// Acceptance control — all workers (Phase 2)
+nginx.suspendAllWorkers()      // → Promise<undefined>
+nginx.resumeAllWorkers()       // → Promise<undefined>
+nginx.withSuspendedAcceptance(fn) // convenience wrapper — suspend → fn() → resume
+
+// Per-worker resource limits (written in config phase)
+nginx.workerMemoryLimit        // r/w number — JS heap cap per worker (bytes, 0 = none)
+nginx.workerRequestTimeout     // r/w number — per-request JS timeout (ms, 0 = none)
+----
+
+=== Object hierarchy
+
+----
+nginx
+├── version               (string, r/o)
+├── cpu_count             (number, r/o)
+├── log(level, msg)
+├── workerMemoryLimit     (number, r/w)
+├── workerRequestTimeout  (number, r/w)
+│
+├── cycle                 NginxCycle
+│   ├── hostname          (r/o)
+│   ├── prefix            (r/o) — config directory
+│   ├── installPrefix     (r/o) — installation directory
+│   ├── confFile          (r/o)
+│   ├── errorLog          (r/o)
+│   ├── pid               (r/o) — pid file path
+│   ├── workers           (r/w) — worker_processes count
+│   ├── connectionN       (r/o) — max connections per worker
+│   ├── daemon            (r/o boolean)
+│   ├── master            (r/o boolean) — master_process on/off
+│   ├── timerResolution   (r/o ms)
+│   ├── shutdownTimeout   (r/o ms)
+│   ├── priority          (r/o) — worker_priority nice value
+│   ├── rlimitNofile      (r/o) — worker_rlimit_nofile
+│   ├── workingDirectory  (r/o)
+│   └── sockets[]         (r/o) — all listening sockets
+│
+├── events                NginxEvents
+│   ├── connections       (r/o) — worker_connections
+│   ├── use               (r/o) — "epoll" / "kqueue" / …
+│   ├── multiAccept       (r/w boolean)
+│   ├── acceptMutex       (r/w boolean)
+│   └── acceptMutexDelay  (r/w ms)
+│
+├── http                  NginxHttp — see Guide 6
+│   ├── servers[]
+│   ├── sockets[]
+│   ├── variables{}
+│   ├── upstreams[]
+│   └── …
+│
+├── stream                plain object
+│   ├── servers[]         NginxStreamServer[]
+│   ├── upstreams[]       NginxStreamUpstream[]
+│   ├── sockets[]
+│   ├── serverNamesHashMaxSize / BucketSize
+│   ├── variablesHashMaxSize / BucketSize
+│   └── attach(sock)      → NginxStreamListener
+│
+├── createSocket(addr)    → NginxSocket
+├── broadcast(fn)
+├── setTimeout(ms)        → Promise
+├── suspendAcceptance()
+├── resumeAcceptance()
+├── suspendAllWorkers()   → Promise
+├── resumeAllWorkers()    → Promise
+└── withSuspendedAcceptance(fn) → Promise
+----
+
+== nginx.version and nginx.cpu_count
+
+[source,text]
+----
+nginx.version:   string  (read-only)
+nginx.cpu_count: number  (read-only)
+----
+
+`nginx.version` — the nginx version string as compiled in, e.g. `"1.27.3"`.
+
+`nginx.cpu_count` — the number of logical CPUs detected by nginx at startup
+(the value of `ngx_ncpu`).  Useful for setting `nginx.cycle.workers` to an
+appropriate value.
+
+[source,js]
+----
+nginx.log(4, `nginx ${nginx.version} on ${nginx.cpu_count} CPUs`);
+
+// Ensure workers = CPU count at startup
+nginx.cycle.workers = nginx.cpu_count;
+----
+
+== nginx.log(level, message)
+
+Writes a message to the nginx error log at the given log level.
+
+=== Signature
+
+[source,text]
+----
+nginx.log(level: number, message: string): undefined
+----
+
+`level` — numeric log level:
+
+[cols="1,2", options="header"]
+|===
+| Value | Level
+
+| 1 | `stderr` (always printed)
+| 2 | `emerg`
+| 3 | `alert`
+| 4 | `crit`
+| 5 | `error`
+| 6 | `warn`
+| 7 | `notice`
+| 8 | `info`
+| 9 | `debug`
+|===
+
+`message` — the string to write.  The prefix `"js: "` is prepended automatically.
+
+[source,js]
+----
+nginx.log(6, 'upstream weights updated');
+nginx.log(8, `servers: ${nginx.http.servers.length}`);
+----
+
+NOTE: `nginx.log` is available in all contexts: config phase (`js_source`),
+worker request handlers, SharedWorker threads, and JS Worker threads.
+
+== nginx.cycle (NginxCycle)
+
+The `nginx.cycle` object exposes the `ngx_cycle_t` structure — the central
+nginx process context.  It is available in all JS contexts.
+
+=== Properties
+
+[cols="1,1,1,3", options="header"]
+|===
+| Property | Type | R/W | Description
+
+| `hostname`
+| string
+| R
+| Machine hostname.
+
+| `prefix`
+| string
+| R
+| Configuration directory (`--prefix` at configure time, or the directory
+  containing the config file).  Equivalent to `conf_prefix` in nginx source.
+
+| `installPrefix`
+| string
+| R
+| Installation directory (`cycle->prefix`).  Typically `/usr/local/nginx`
+  or the value passed to `--prefix` at build time.
+
+| `confFile`
+| string
+| R
+| Full path to the nginx configuration file.
+
+| `errorLog`
+| string
+| R
+| Path to the error log file.
+
+| `pid`
+| string
+| R
+| Path to the nginx pid file.
+
+| `workers`
+| number
+| *R/W*
+| Current `worker_processes` count.  Write this during config phase to
+  change how many worker processes nginx should fork.
+
+| `connectionN`
+| number
+| R
+| Maximum number of connections per worker (`worker_connections` ×
+  internal allocation).
+
+| `daemon`
+| boolean
+| R
+| Whether nginx runs in daemon mode.
+
+| `master`
+| boolean
+| R
+| Whether the `master_process` directive is on.
+
+| `timerResolution`
+| number (ms)
+| R
+| `timer_resolution` directive value (ms).  Zero means disabled.
+
+| `shutdownTimeout`
+| number (ms)
+| R
+| `worker_shutdown_timeout` value (ms).  Zero means disabled.
+
+| `priority`
+| number
+| R
+| `worker_priority` nice value (0 = default).
+
+| `rlimitNofile`
+| number
+| R
+| `worker_rlimit_nofile` value.  `-1` if not set.
+
+| `workingDirectory`
+| string
+| R
+| `working_directory` directive value.  Empty string if not set.
+
+| `sockets[]`
+| array
+| R
+| Snapshot of all listening sockets across HTTP and stream subsystems.
+  Same format as `nginx.http.sockets[]` and `nginx.stream.sockets[]`
+  combined into a single flat array.
+|===
+
+=== Reading cycle properties
+
+[source,js]
+----
+const c = nginx.cycle;
+nginx.log(8, [
+    `hostname:       ${c.hostname}`,
+    `prefix:         ${c.prefix}`,
+    `installPrefix:  ${c.installPrefix}`,
+    `confFile:       ${c.confFile}`,
+    `errorLog:       ${c.errorLog}`,
+    `pid:            ${c.pid}`,
+    `workers:        ${c.workers}`,
+    `connectionN:    ${c.connectionN}`,
+    `daemon:         ${c.daemon}`,
+    `master:         ${c.master}`,
+    `timerResolution:${c.timerResolution} ms`,
+    `shutdownTimeout:${c.shutdownTimeout} ms`,
+    `priority:       ${c.priority}`,
+    `rlimitNofile:   ${c.rlimitNofile}`,
+    `workingDir:     ${c.workingDirectory}`,
+    `sockets:        ${c.sockets.length}`,
+].join('\n'));
+----
+
+=== Setting workers count
+
+`nginx.cycle.workers` is the only writable cycle property.  Write it during
+config phase (in a `js_source` script) to adjust the worker count before
+nginx forks.  This is equivalent to the `worker_processes` directive.
+
+[source,js]
+----
+// Auto-size to CPU count (mirrors worker_processes auto;)
+nginx.cycle.workers = nginx.cpu_count;
+nginx.log(7, `workers set to ${nginx.cycle.workers}`);
+----
+
+WARNING: Writing `workers` after the fork has no effect on the running
+process count.  Use it only in config-phase scripts.
+
+=== nginx.cycle.sockets[]
+
+A read-only snapshot array listing every listening socket currently active
+on this cycle.  It combines HTTP and stream sockets.  Each entry has:
+
+[cols="1,1,3", options="header"]
+|===
+| Property | Type | Description
+
+| `address`
+| string
+| Bind address.
+
+| `port`
+| number
+| Bind port.
+
+| `ssl`
+| boolean
+| Whether TLS is active.
+
+| `http2`
+| boolean
+| Whether HTTP/2 is negotiated (HTTP listeners only).
+
+| `listen`
+| array
+| Raw listen-directive parameter objects for this port.
+|===
+
+[source,js]
+----
+for (const s of nginx.cycle.sockets) {
+    nginx.log(8, `${s.address}:${s.port}  ssl=${s.ssl}`);
+}
+----
+
+== nginx.events (NginxEvents)
+
+The `nginx.events` object exposes the `events {}` block configuration.
+
+=== Properties
+
+[cols="1,1,1,3", options="header"]
+|===
+| Property | Type | R/W | Description
+
+| `connections`
+| number
+| R
+| `worker_connections` — maximum simultaneous connections per worker.
+  Read-only because the connection pool is allocated at startup.
+
+| `use`
+| string
+| R
+| Event method name, e.g. `"epoll"`, `"kqueue"`, `"select"`.
+
+| `multiAccept`
+| boolean
+| *R/W*
+| `multi_accept on/off` — whether a worker accepts as many connections as
+  possible at once.  Default: off.
+
+| `acceptMutex`
+| boolean
+| *R/W*
+| `accept_mutex on/off` — whether workers take turns accepting new
+  connections (reduces thundering-herd on old kernels).
+
+| `acceptMutexDelay`
+| number (ms)
+| *R/W*
+| `accept_mutex_delay` — delay before trying to acquire the accept mutex.
+|===
+
+[source,js]
+----
+const ev = nginx.events;
+nginx.log(8, `events: use=${ev.use}  connections=${ev.connections}`);
+nginx.log(8, `  multiAccept=${ev.multiAccept}  acceptMutex=${ev.acceptMutex}`);
+nginx.log(8, `  acceptMutexDelay=${ev.acceptMutexDelay} ms`);
+----
+
+=== Tuning accept behaviour at startup
+
+[source,js]
+----
+// Enable multi_accept for high-connection-rate workloads
+nginx.events.multiAccept = true;
+
+// Reduce accept-mutex delay for faster hand-off
+nginx.events.acceptMutexDelay = 50;    // ms (default 500)
+----
+
+NOTE: `multiAccept` and `acceptMutex` are read by the event loop at
+worker start.  Changing them post-fork has no effect on accepted
+connections but will be visible to future reads of the property.
+
+== nginx.stream
+
+The `nginx.stream` plain object mirrors `nginx.http` for the TCP/UDP
+stream subsystem.
+
+=== Properties
+
+[cols="1,1,3", options="header"]
+|===
+| Property | Type | Description
+
+| `servers[]`
+| NginxStreamServer[]
+| Array of all `server {}` blocks from the `stream {}` config.
+
+| `upstreams[]`
+| NginxStreamUpstream[]
+| Array of all `upstream {}` blocks in the stream context.
+
+| `sockets[]`
+| array
+| Listening socket descriptors for the stream subsystem.
+
+| `serverNamesHashMaxSize`
+| number (r/o)
+| `server_names_hash_max_size` in the stream context.
+
+| `serverNamesHashBucketSize`
+| number (r/o)
+| `server_names_hash_bucket_size` in the stream context.
+
+| `variablesHashMaxSize`
+| number (r/o)
+| `variables_hash_max_size` in the stream context.
+
+| `variablesHashBucketSize`
+| number (r/o)
+| `variables_hash_bucket_size` in the stream context.
+
+| `attach(sock)`
+| method
+| Wires a `NginxSocket` into the stream pipeline.
+  Returns `NginxStreamListener`.  Pre-fork only.
+|===
+
+=== NginxStreamServer properties
+
+[cols="1,1,1,3", options="header"]
+|===
+| Property | Type | R/W | Description
+
+| `serverName`
+| string
+| R
+| Primary server name (or empty string for unnamed servers).
+
+| `tcpNodelay`
+| boolean
+| R/W
+| `tcp_nodelay on/off`.
+
+| `prereadBufferSize`
+| number
+| R/W
+| `preread_buffer_size` (bytes).
+
+| `prereadTimeout`
+| number (ms)
+| R/W
+| `preread_timeout`.
+
+| `resolverTimeout`
+| number (ms)
+| R/W
+| `resolver_timeout`.
+
+| `proxyProtocolTimeout`
+| number (ms)
+| R/W
+| `proxy_protocol_timeout`.
+
+| `proxy`
+| NginxStreamProxy
+| R
+| Stream proxy sub-object.
+
+| `access`
+| NginxStreamAccess
+| R
+| Access control sub-object.
+
+| `ssl`
+| NginxStreamSSL
+| R
+| SSL/TLS sub-object.
+
+| `handler`
+| function
+| W
+| Request handler: `function(session)`.
+|===
+
+=== NginxStreamProxy sub-object
+
+[cols="1,1,1,3", options="header"]
+|===
+| Property | Type | R/W | Description
+
+| `connectTimeout`
+| number (ms)
+| R/W
+| `proxy_connect_timeout`.
+
+| `timeout`
+| number (ms)
+| R/W
+| `proxy_timeout`.
+
+| `nextUpstreamTimeout`
+| number (ms)
+| R/W
+| `proxy_next_upstream_timeout`.
+
+| `bufferSize`
+| number (bytes)
+| R/W
+| `proxy_buffer_size`.
+
+| `requests`
+| number
+| R
+| `proxy_requests`.
+
+| `responses`
+| number
+| R
+| `proxy_responses`.
+
+| `nextUpstreamTries`
+| number
+| R/W
+| `proxy_next_upstream_tries`.
+
+| `nextUpstream`
+| boolean
+| R/W
+| `proxy_next_upstream on/off`.
+
+| `proxyProtocol`
+| boolean
+| R/W
+| `proxy_protocol on/off`.
+
+| `halfClose`
+| boolean
+| R/W
+| `proxy_half_close on/off`.
+
+| `socketKeepalive`
+| boolean
+| R/W
+| `proxy_socket_keepalive on/off`.
+
+| `pass`
+| string
+| R
+| `proxy_pass` target (upstream name or address).
+|===
+
+=== NginxStreamListener
+
+Returned by `nginx.stream.attach(sock)`.
+
+[cols="1,1,3", options="header"]
+|===
+| Member | R/W | Description
+
+| `address`
+| R
+| Bind address string.
+
+| `socket`
+| R
+| The `NginxSocket` this listener was created from.
+
+| `serverNames`
+| R
+| Array of registered server-name strings.
+
+| `serverByName(name)`
+| —
+| Returns `NginxStreamServer` or `null`.
+
+| `addServer(srv)`
+| —
+| Phase C — set default stream server, activate listener.
+
+| `addVirtualServer(srv)`
+| —
+| Phase D — add named virtual stream server.
+|===
+
+=== Stream provisioning example
+
+[source,js]
+----
+// Provision a new stream listener at config phase
+
+const sock = nginx.createSocket('0.0.0.0:5555');
+const listener = nginx.stream.attach(sock);
+
+// Use an existing stream server as the default
+const defaultSrv = nginx.stream.servers[0];
+listener.addServer(defaultSrv);
+
+nginx.log(7, 'stream port 5555 ready');
+----
+
+== nginx.broadcast(fn)
+
+Registers a function to be called in every nginx worker process.
+
+=== Signature
+
+[source,text]
+----
+nginx.broadcast(fn: function): undefined
+----
+
+=== Behaviour
+
+The behaviour differs depending on *where* `broadcast` is called:
+
+[cols="1,3", options="header"]
+|===
+| Context | Behaviour
+
+| *Config phase* (`js_source` top-level code, master process)
+| `fn` is appended to the internal `nginx.__broadcast_queue`.  After the
+  master forks, each worker calls every queued function during
+  `init_process`, with the worker context already set.  This lets you
+  register per-worker startup logic that requires worker-only APIs (e.g.
+  `nginx.setTimeout`, request-level COM objects).
+
+| *Worker request handler* (post-fork)
+| `fn` is called immediately in the *current* worker only.  No IPC to
+  other workers is performed.
+|===
+
+----
+  Config phase (master)                  Workers (after fork)
+  ─────────────────────                  ────────────────────
+  nginx.broadcast(fn)                    init_process:
+        │                                  calls fn() in Worker 0
+        │  appended to                     calls fn() in Worker 1
+        ▼  __broadcast_queue              calls fn() in Worker 2 …
+  [ fn, fn2, … ]
+----
+
+=== Use cases
+
+*Registering per-worker state* — set up a cache, open a file descriptor,
+or start a background loop that needs to run in every worker:
+
+[source,js]
+----
+// Config phase — register once, runs in every worker at startup
+
+nginx.broadcast(function workerInit() {
+    // This runs in every worker after fork
+    nginx.log(8, 'worker started, setting up local state');
+
+    // Example: start a periodic health-check timer
+    async function healthLoop() {
+        while (true) {
+            await nginx.setTimeout(5000);
+            nginx.log(8, 'worker health tick');
+        }
+    }
+    healthLoop();
+});
+----
+
+*Installing a handler that requires worker context*:
+
+[source,js]
+----
+// Some handlers need the worker context (e.g. nginx.setTimeout)
+// nginx.broadcast defers registration until worker init
+
+nginx.broadcast(function() {
+    const loc = nginx.http.servers[0].locations.find(l => l.path === '/slow');
+    if (loc) {
+        loc.handler = async function(req) {
+            await nginx.setTimeout(200);
+            req.respond(200, {}, 'done\n');
+        };
+    }
+});
+----
+
+NOTE: Functions queued via `broadcast()` in config phase share the same
+JS runtime and context as the main `js_source` code.  They can close
+over module-level variables defined in the same script.
+
+== nginx.setTimeout(ms)
+
+Suspends the current async request handler for `ms` milliseconds using
+nginx's event-loop timer infrastructure.
+
+=== Signature
+
+[source,text]
+----
+nginx.setTimeout(ms: number): Promise<undefined>
+----
+
+=== Behaviour
+
+* Creates a native `ngx_event_t` timer in the worker's event loop.
+* Returns a `Promise` that resolves when the timer fires.
+* While suspended, the worker's event loop continues processing other
+  connections and timers normally.
+* After the promise resolves, microtasks are drained and any suspended
+  nginx requests (awaiting the same timer) are finalized.
+
+----
+  request handler
+       │
+       ├─ await nginx.setTimeout(200)
+       │          │
+       │          │  worker event loop runs (other requests served)
+       │          │
+       │     timer fires (200ms later)
+       │          │  resolve Promise
+       │          │  drain microtasks
+       │          │  ngx_js_async_check → finalize request
+       │
+       └─ execution resumes here
+----
+
+=== Worker-only restriction
+
+`setTimeout` requires a worker context opaque (set after fork).  Calling
+it from config-phase top-level code throws an error.  Use
+`nginx.broadcast` to defer `setTimeout` calls to worker startup:
+
+[source,js]
+----
+// WRONG — throws at config phase:
+// await nginx.setTimeout(100);
+
+// CORRECT — deferred to worker:
+nginx.broadcast(async function() {
+    await nginx.setTimeout(100);
+    nginx.log(8, 'post-startup delay done');
+});
+----
+
+=== Example: polling loop with back-off
+
+[source,js]
+----
+nginx.broadcast(async function() {
+    let delay = 1000;
+    const MAX_DELAY = 30000;
+
+    while (true) {
+        await nginx.setTimeout(delay);
+        try {
+            checkUpstreamHealth();
+            delay = 1000;           // reset on success
+        } catch (e) {
+            nginx.log(5, `health check failed: ${e.message}`);
+            delay = Math.min(delay * 2, MAX_DELAY);
+        }
+    }
+});
+----
+
+== nginx.suspendAcceptance() and nginx.resumeAcceptance()
+
+Per-worker acceptance control (Phase 1).  These are synchronous, instant,
+and affect only the calling worker.
+
+=== Signatures
+
+[source,text]
+----
+nginx.suspendAcceptance(): undefined
+nginx.resumeAcceptance(): undefined
+----
+
+=== Behaviour
+
+`suspendAcceptance()` — removes all listening socket read events from this
+worker's event loop.  Incoming TCP connections continue to queue in the
+OS SYN backlog (up to `net.core.somaxconn`) and will be accepted once
+`resumeAcceptance()` is called.  *Other workers continue accepting
+normally.*
+
+`resumeAcceptance()` — re-adds the listening socket read events.  No-op
+if acceptance was not suspended.
+
+Both functions are only callable from a worker process.  Calling from
+config phase throws a `TypeError`.
+
+=== Use case: atomic multi-field mutation
+
+Wrap a batch of COM mutations that must appear atomic from new connections'
+perspective.  Without suspension, a new connection could arrive between
+two mutations and observe a partially-updated configuration:
+
+[source,js]
+----
+function atomicUpdate(req) {
+    nginx.suspendAcceptance();
+    try {
+        // Both mutations applied before any new connection is accepted
+        nginx.http.upstreams[0].peers[0].weight = 200;
+        nginx.http.servers[0].locations
+              .find(l => l.path === '/api').root = '/var/www/api-v2';
+    } finally {
+        nginx.resumeAcceptance();
+    }
+    req.respond(200, {}, 'updated\n');
+}
+----
+
+----
+  Worker N
+  ├─ nginx.suspendAcceptance()   ← remove listen read events
+  │        (new conns queue in OS backlog)
+  │
+  ├─ mutation 1 (upstream weight)
+  ├─ mutation 2 (location root)
+  │
+  └─ nginx.resumeAcceptance()    ← restore listen read events
+           (queued conns now accepted with updated config)
+----
+
+NOTE: Because this is per-worker, parallel workers may accept connections
+with the old config while this worker is suspended.  For cluster-wide
+atomicity use `suspendAllWorkers()` instead.
+
+== nginx.suspendAllWorkers() and nginx.resumeAllWorkers()
+
+Cross-worker acceptance control (Phase 2).  Asynchronous; coordinates
+through the manager process.
+
+=== Signatures
+
+[source,text]
+----
+nginx.suspendAllWorkers(): Promise<undefined>
+nginx.resumeAllWorkers():  Promise<undefined>
+----
+
+=== Behaviour
+
+Both functions return a `Promise` that resolves after *every* worker in
+the nginx pool has acknowledged the suspend/resume command.
+
+Protocol:
+
+[source,text]
+----
+  Worker 0 (request handler)
+       │
+       ├─ await nginx.suspendAllWorkers()
+       │          │
+       │          ├─ sends NGX_JS_MGR_CMD_SUSPEND_ACCEPT to manager
+       │          │
+       │   Manager process
+       │   ├─ broadcasts suspend command to Worker 0, 1, 2 …
+       │   ├─ waits for acks (500 ms timeout)
+       │   └─ writes 1-byte reply on reply_fd
+       │          │
+       │          └─ reply_fd read event fires → resolve Promise
+       │
+       ├─ all workers now suspended
+       ├─ perform cluster-wide COM mutations
+       │
+       └─ await nginx.resumeAllWorkers()   (same protocol)
+----
+
+=== Timeout
+
+If not all workers ack within 500 ms the manager resolves anyway so the
+calling worker is not stuck.  Slow workers will resume acceptance on their
+own when the next `resumeAllWorkers` broadcast arrives.
+
+=== nginx.withSuspendedAcceptance(fn)
+
+A convenience wrapper defined in pure JavaScript during `ngx_js_com_init`:
+
+[source,js]
+----
+nginx.withSuspendedAcceptance = async function(fn) {
+    await nginx.suspendAllWorkers();
+    try {
+        await fn();
+    } finally {
+        await nginx.resumeAllWorkers();
+    }
+};
+----
+
+Use this instead of the raw pair to guarantee `resumeAllWorkers` is
+called even if `fn` throws.
+
+=== Example: cluster-wide atomic server reconfiguration
+
+[source,js]
+----
+async function hotReloadServers(req) {
+    await nginx.withSuspendedAcceptance(async () => {
+        // All workers suspended; no new connections accepted anywhere
+
+        // Remove old API server
+        nginx.http.removeServer('api-v1.example.com');
+
+        // Add new API server
+        const srv = nginx.http.addServer('api-v2.example.com');
+        srv.addLocation('/').handler = apiV2Handler;
+
+        // Rebuild routing hash
+        nginx.http.rebuildVhostDispatch();
+    });
+    // All workers resumed with new config
+
+    req.respond(200, {}, 'hot reload complete\n');
+}
+----
+
+----
+  Worker 0 (request handler)
+       │
+       ├─ await nginx.withSuspendedAcceptance(async () => {
+       │          │
+       │          │  suspendAllWorkers()
+       │          │    → manager broadcasts suspend → all workers ack
+       │          │
+       │          ├─ removeServer('api-v1.example.com')
+       │          ├─ addServer('api-v2.example.com') + addLocation
+       │          ├─ rebuildVhostDispatch()
+       │          │
+       │          │  resumeAllWorkers()
+       │          │    → manager broadcasts resume → all workers ack
+       │          │
+       │          └─ Promise resolves
+       │
+       └─ req.respond(200, {}, 'done\n')
+----
+
+NOTE: Worker 0 is also suspended during this window (it cannot accept new
+connections).  In-flight requests on Worker 0 continue executing.
+
+== nginx.createSocket(address)
+
+Creates a TCP listening socket.  See
+link:js-reconfig-guide-http.adoc[Guide 6] for the full NginxSocket API
+and the Phase A-D provisioning pipeline.
+
+=== Signature
+
+[source,text]
+----
+nginx.createSocket(address: string): NginxSocket
+----
+
+=== Phase A vs Phase F
+
+[cols="1,1,3", options="header"]
+|===
+| Phase | Context | Behaviour
+
+| A (pre-fork)
+| Config phase (`js_source` top-level code)
+| Calls `socket()` + `bind()` + `listen()` directly in the master.
+  All workers inherit the fd on fork.
+
+| F (post-fork)
+| Worker request handler
+| Sends the bind address to the manager thread via AF_UNIX + SCM_RIGHTS.
+  The manager creates the socket and returns the fd to the requesting
+  worker.  Use `sock.broadcast()` to share it with sibling workers.
+|===
+
+[source,js]
+----
+// Config phase (Phase A)
+const httpSock   = nginx.createSocket('0.0.0.0:8080');
+const httpListen = nginx.http.attach(httpSock);
+
+const streamSock   = nginx.createSocket('0.0.0.0:5000');
+const streamListen = nginx.stream.attach(streamSock);
+----
+
+== nginx.workerMemoryLimit and nginx.workerRequestTimeout
+
+Two writable properties that configure per-worker resource limits.  They
+are read by `init_process` (after fork) and cannot be changed at runtime.
+
+=== workerMemoryLimit
+
+[source,text]
+----
+nginx.workerMemoryLimit: number  (bytes, 0 = no limit)
+----
+
+Caps the QuickJS heap size for each worker's JS runtime.  After fork,
+`init_process` calls `JS_SetMemoryLimit(rt, workerMemoryLimit)` if the
+value is non-zero.
+
+[source,js]
+----
+// Limit each worker to 128 MB of JS heap
+nginx.workerMemoryLimit = 128 * 1024 * 1024;
+----
+
+=== workerRequestTimeout
+
+[source,text]
+----
+nginx.workerRequestTimeout: number  (ms, 0 = no timeout)
+----
+
+Caps the wall-clock time a single JS request handler invocation may run.
+After fork, `init_process` installs a QuickJS interrupt handler that
+checks a monotonic-clock deadline set around each `JS_Call` in the content
+handler.  If the deadline passes, the interrupt handler throws a
+`SyntaxError` to terminate the runaway script.
+
+[source,js]
+----
+// Kill any request handler that runs for more than 5 seconds
+nginx.workerRequestTimeout = 5000;
+----
+
+NOTE: The timeout applies to synchronous execution time within a single
+`JS_Call` invocation.  Async handlers that `await nginx.setTimeout()` are
+not penalised for the wall-clock time spent waiting; the deadline is reset
+at each resume.
+
+== Complete examples
+
+=== Example 1: Startup audit — dump the full nginx object tree
+
+[source,js]
+----
+(function auditAll() {
+    const c = nginx.cycle;
+    const ev = nginx.events;
+
+    nginx.log(8, '=== nginx global audit ===');
+    nginx.log(8, `version:     ${nginx.version}`);
+    nginx.log(8, `cpu_count:   ${nginx.cpu_count}`);
+
+    nginx.log(8, `cycle.hostname:       ${c.hostname}`);
+    nginx.log(8, `cycle.prefix:         ${c.prefix}`);
+    nginx.log(8, `cycle.installPrefix:  ${c.installPrefix}`);
+    nginx.log(8, `cycle.confFile:       ${c.confFile}`);
+    nginx.log(8, `cycle.errorLog:       ${c.errorLog}`);
+    nginx.log(8, `cycle.pid:            ${c.pid}`);
+    nginx.log(8, `cycle.workers:        ${c.workers}`);
+    nginx.log(8, `cycle.connectionN:    ${c.connectionN}`);
+    nginx.log(8, `cycle.daemon:         ${c.daemon}`);
+    nginx.log(8, `cycle.master:         ${c.master}`);
+    nginx.log(8, `cycle.timerResolution:${c.timerResolution} ms`);
+    nginx.log(8, `cycle.shutdownTimeout:${c.shutdownTimeout} ms`);
+    nginx.log(8, `cycle.priority:       ${c.priority}`);
+    nginx.log(8, `cycle.rlimitNofile:   ${c.rlimitNofile}`);
+    nginx.log(8, `cycle.workingDir:     ${c.workingDirectory}`);
+
+    nginx.log(8, `events.use:              ${ev.use}`);
+    nginx.log(8, `events.connections:      ${ev.connections}`);
+    nginx.log(8, `events.multiAccept:      ${ev.multiAccept}`);
+    nginx.log(8, `events.acceptMutex:      ${ev.acceptMutex}`);
+    nginx.log(8, `events.acceptMutexDelay: ${ev.acceptMutexDelay} ms`);
+
+    nginx.log(8, `http.servers:   ${nginx.http.servers.length}`);
+    nginx.log(8, `http.sockets:   ${nginx.http.sockets.length}`);
+    nginx.log(8, `stream.servers: ${(nginx.stream.servers||[]).length}`);
+
+    const allSocks = c.sockets;
+    nginx.log(8, `total sockets: ${allSocks.length}`);
+    for (const s of allSocks) {
+        nginx.log(8, `  ${s.address}:${s.port} ssl=${s.ssl} http2=${s.http2||false}`);
+    }
+})();
+----
+
+=== Example 2: Adaptive worker count
+
+Set `workers` to the CPU count minus one (leave a core for the OS) and
+cap the memory per worker:
+
+[source,js]
+----
+const cpus = nginx.cpu_count;
+nginx.cycle.workers = Math.max(1, cpus - 1);
+nginx.workerMemoryLimit = 64 * 1024 * 1024;   // 64 MB per worker
+nginx.log(7, `workers=${nginx.cycle.workers}  memLimit=64MB`);
+----
+
+=== Example 3: Per-worker warm-up with setTimeout
+
+After fork, each worker runs a warm-up routine that pre-builds caches
+and logs its startup sequence:
+
+[source,js]
+----
+nginx.broadcast(async function workerWarmUp() {
+    nginx.log(8, 'worker warm-up started');
+
+    // Stagger workers to avoid thundering-herd on a shared resource
+    const jitter = Math.floor(Math.random() * 500);
+    await nginx.setTimeout(jitter);
+
+    // … pre-populate caches, connect to local resources …
+
+    nginx.log(8, 'worker warm-up complete');
+});
+----
+
+=== Example 4: Graceful config reload with cluster-wide suspension
+
+A handler that reloads routing config from an external source and applies
+it atomically across all workers:
+
+[source,js]
+----
+async function reloadConfig(req) {
+    let newRoutes;
+    try {
+        // Fetch new routing table (async, workers still accepting)
+        newRoutes = await fetchRoutingTable();
+    } catch (e) {
+        req.respond(500, {}, `fetch failed: ${e.message}\n`);
+        return;
+    }
+
+    await nginx.withSuspendedAcceptance(async () => {
+        // Validate before applying
+        for (const { host, path, upstream } of newRoutes) {
+            if (!nginx.http.servers.find(s => s.names.includes(host))) {
+                nginx.http.addServer(host);
+            }
+            const srv = nginx.http.servers.find(s => s.names.includes(host));
+            const loc = srv.addLocation(path);
+            loc.proxyPass = upstream;
+        }
+        nginx.http.rebuildVhostDispatch();
+    });
+
+    req.respond(200, {}, `reload complete (${newRoutes.length} routes)\n`);
+}
+----
+
+=== Example 5: Stream server property inspection and tuning
+
+[source,js]
+----
+// Inspect and tune all stream servers at startup
+
+for (const srv of nginx.stream.servers) {
+    nginx.log(8, `stream server: ${srv.serverName || '<unnamed>'}`);
+    if (srv.proxy) {
+        nginx.log(8, `  proxy.pass=${srv.proxy.pass}`);
+        nginx.log(8, `  proxy.connectTimeout=${srv.proxy.connectTimeout} ms`);
+
+        // Reduce connection timeout for internal servers
+        if (srv.proxy.pass && srv.proxy.pass.startsWith('internal_')) {
+            srv.proxy.connectTimeout = 1000;   // 1 s
+            srv.proxy.timeout        = 30000;  // 30 s
+        }
+    }
+}
+----
+
+=== Example 6: Dynamic stream listener provisioning
+
+[source,js]
+----
+// Provision a new TCP proxy listener at config phase
+
+const sock     = nginx.createSocket('0.0.0.0:7000');
+const listener = nginx.stream.attach(sock);
+
+// Use the first existing stream server as default
+if (nginx.stream.servers.length > 0) {
+    listener.addServer(nginx.stream.servers[0]);
+    nginx.log(7, 'stream port 7000 ready');
+} else {
+    nginx.log(5, 'no stream servers available; skipping port 7000');
+}
+----
+
+== API Reference
+
+=== nginx (global object)
+
+[cols="2,1,3", options="header"]
+|===
+| Member | R/W | Description
+
+| `version`
+| R
+| nginx version string (e.g. `"1.27.3"`).
+
+| `cpu_count`
+| R
+| Number of logical CPUs.
+
+| `log(level, msg)`
+| —
+| Write to the error log.
+
+| `cycle`
+| R
+| `NginxCycle` — core process configuration.
+
+| `events`
+| R
+| `NginxEvents` — events{} block configuration.
+
+| `http`
+| R
+| `NginxHttp` — HTTP subsystem.  See Guide 6.
+
+| `stream`
+| R
+| Plain object — stream{} subsystem.
+
+| `createSocket(addr)`
+| —
+| Create a TCP listening socket.  Returns `NginxSocket`.
+
+| `broadcast(fn)`
+| —
+| Register a per-worker startup callback (or call immediately in worker).
+
+| `setTimeout(ms)`
+| —
+| Async timer.  Returns `Promise<undefined>`.
+
+| `suspendAcceptance()`
+| —
+| Disable accept events in the current worker (synchronous, worker-only).
+
+| `resumeAcceptance()`
+| —
+| Re-enable accept events in the current worker (synchronous, worker-only).
+
+| `suspendAllWorkers()`
+| —
+| Broadcast suspend to all workers.  Returns `Promise<undefined>`.
+
+| `resumeAllWorkers()`
+| —
+| Broadcast resume to all workers.  Returns `Promise<undefined>`.
+
+| `withSuspendedAcceptance(fn)`
+| —
+| Convenience: `suspendAllWorkers → fn() → resumeAllWorkers`.
+  Returns `Promise<undefined>`.
+
+| `workerMemoryLimit`
+| R/W
+| Per-worker JS heap cap in bytes.  0 = no limit.
+  Read at `init_process`; config-phase write only.
+
+| `workerRequestTimeout`
+| R/W
+| Per-request JS execution timeout in ms.  0 = no timeout.
+  Read at `init_process`; config-phase write only.
+|===
+
+=== NginxCycle
+
+[cols="2,1,3", options="header"]
+|===
+| Property | R/W | Description
+
+| `hostname`         | R   | Machine hostname.
+| `prefix`           | R   | Config directory.
+| `installPrefix`    | R   | Installation directory.
+| `confFile`         | R   | Full config file path.
+| `errorLog`         | R   | Error log path.
+| `pid`              | R   | PID file path.
+| `workers`          | R/W | Worker process count.
+| `connectionN`      | R   | Max connections per worker.
+| `daemon`           | R   | Daemon mode (boolean).
+| `master`           | R   | master_process on/off (boolean).
+| `timerResolution`  | R   | `timer_resolution` (ms).
+| `shutdownTimeout`  | R   | `worker_shutdown_timeout` (ms).
+| `priority`         | R   | `worker_priority` nice value.
+| `rlimitNofile`     | R   | `worker_rlimit_nofile` (-1 if unset).
+| `workingDirectory` | R   | `working_directory` ("" if unset).
+| `sockets[]`        | R   | All listening sockets (HTTP + stream).
+|===
+
+=== NginxEvents
+
+[cols="2,1,3", options="header"]
+|===
+| Property | R/W | Description
+
+| `connections`      | R   | `worker_connections`.
+| `use`              | R   | Event method name ("epoll", "kqueue", …).
+| `multiAccept`      | R/W | `multi_accept on/off`.
+| `acceptMutex`      | R/W | `accept_mutex on/off`.
+| `acceptMutexDelay` | R/W | `accept_mutex_delay` (ms).
+|===
+
+=== NginxStreamServer
+
+[cols="2,1,3", options="header"]
+|===
+| Property | R/W | Description
+
+| `serverName`            | R   | Primary server name.
+| `tcpNodelay`            | R/W | `tcp_nodelay on/off`.
+| `prereadBufferSize`     | R/W | `preread_buffer_size` (bytes).
+| `prereadTimeout`        | R/W | `preread_timeout` (ms).
+| `resolverTimeout`       | R/W | `resolver_timeout` (ms).
+| `proxyProtocolTimeout`  | R/W | `proxy_protocol_timeout` (ms).
+| `proxy`                 | R   | NginxStreamProxy sub-object.
+| `access`                | R   | NginxStreamAccess sub-object.
+| `ssl`                   | R   | NginxStreamSSL sub-object.
+| `handler`               | W   | Session handler function.
+|===
+
+=== NginxStreamProxy
+
+[cols="2,1,3", options="header"]
+|===
+| Property | R/W | Description
+
+| `connectTimeout`       | R/W | `proxy_connect_timeout` (ms).
+| `timeout`              | R/W | `proxy_timeout` (ms).
+| `nextUpstreamTimeout`  | R/W | `proxy_next_upstream_timeout` (ms).
+| `bufferSize`           | R/W | `proxy_buffer_size` (bytes).
+| `requests`             | R   | `proxy_requests`.
+| `responses`            | R   | `proxy_responses`.
+| `nextUpstreamTries`    | R/W | `proxy_next_upstream_tries`.
+| `nextUpstream`         | R/W | `proxy_next_upstream on/off`.
+| `proxyProtocol`        | R/W | `proxy_protocol on/off`.
+| `halfClose`            | R/W | `proxy_half_close on/off`.
+| `socketKeepalive`      | R/W | `proxy_socket_keepalive on/off`.
+| `pass`                 | R   | `proxy_pass` target.
+|===
+
+=== NginxStreamListener
+
+[cols="2,1,3", options="header"]
+|===
+| Member | R/W | Description
+
+| `address`              | R | Bind address.
+| `socket`               | R | Associated NginxSocket.
+| `serverNames`          | R | Registered server-name strings.
+| `serverByName(name)`   | — | Returns NginxStreamServer or null.
+| `addServer(srv)`       | — | Phase C — set default server, activate listener.
+| `addVirtualServer(srv)`| — | Phase D — add named virtual server.
+|===
+
+== Design notes
+
+=== Why nginx.cycle.workers is writable
+
+`workers` is the only writable `NginxCycle` property because it modifies
+the `worker_processes` field in `ngx_core_conf_t` — a plain integer read
+at fork time.  All other cycle fields are either structural (memory pool
+layouts, allocated arrays) or already computed at config parse time in
+ways that cannot be safely changed after-the-fact.
+
+=== broadcast() and the init_process hook
+
+JavaScript code evaluated at config phase (inside `js_source`) runs in
+the master process before any workers fork.  Functions in `__broadcast_queue`
+are stored as JS values in the shared context.  Because workers inherit
+the JS runtime via copy-on-write after fork, the queue is accessible in
+all workers.  `init_process` iterates the queue and calls each function
+with the worker context opaque already installed, so `nginx.setTimeout`
+and request-level COM objects work correctly inside broadcast callbacks.
+
+=== withSuspendedAcceptance is pure JS
+
+`withSuspendedAcceptance` is not a C function — it is a short async
+function defined in a script string evaluated during `ngx_js_com_init`.
+This makes it easy to inspect or override: `nginx.withSuspendedAcceptance`
+can be reassigned from JS code for testing purposes.
+
+=== workerRequestTimeout and QuickJS interrupts
+
+The timeout is implemented with `JS_SetInterruptHandler`.  Before each
+`JS_Call` into a request handler, the C layer records `clock_gettime(CLOCK_MONOTONIC)`
++ `workerRequestTimeout` as a deadline.  The interrupt handler fires
+periodically (QuickJS checks at branch-back points) and compares the
+current time to the deadline.  If exceeded it returns 1, which causes
+QuickJS to throw a `SyntaxError("Script interrupted")`.  Async suspend
+points (`await`) do not advance the deadline; the deadline is re-stamped
+each time the event loop resumes the handler from a timer or I/O event.
