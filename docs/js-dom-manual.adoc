@@ -8,6 +8,7 @@
 :experimental:
 :revdate: 2026-03-19
 :revremark: Draft for comments
+:docinfo: shared
 
 // ── External reference targets ──────────────────────────────────────────────
 :nginx-docs:       https://nginx.org/en/docs
@@ -178,15 +179,18 @@ nginx start
 
 === Process and Thread Topology
 
-....
+:tabsize: 4
+
+[source,text]
+----
   ┌─────────────────────────────────────────────────────────────────┐
   │  Master process                                                 │
   │                                                                 │
-  │  ┌──────────────────────┐  ┌──────────────────────┐            │
-  │  │  SharedWorker A      │  │  SharedWorker B       │            │
-  │  │  (pthread)           │  │  (pthread)            │            │
-  │  │  long-lived JS state │  │  e.g. rate-limiter    │            │
-  │  └──────────────────────┘  └──────────────────────┘            │
+  │  ┌──────────────────────┐  ┌──────────────────────┐             │
+  │  │  SharedWorker A      │  │  SharedWorker B      │             │
+  │  │  (pthread)           │  │  (pthread)           │             │
+  │  │  long-lived JS state │  │  e.g. rate-limiter   │             │
+  │  └──────────────────────┘  └──────────────────────┘             │
   └────────────────────────┬────────────────────────────────────────┘
                            │  AF_UNIX SEQPACKET
                            │  each worker gets one channel per SharedWorker
@@ -200,7 +204,7 @@ nginx start
   │  Event loop  │  │  Event loop  │  │  Event loop  │
   │  JS Workers  │  │  JS Workers  │  │  JS Workers  │
   └──────────────┘  └──────────────┘  └──────────────┘
-....
+----
 
 Key properties of this topology:
 

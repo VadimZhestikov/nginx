@@ -4,6 +4,7 @@
 :sectnums:
 :source-highlighter: highlight.js
 :icons: font
+:docinfo: shared
 
 [WARNING]
 ====

@@ -435,6 +435,16 @@ body.book #toc,body.book #preamble,body.book h1.sect0,body.book .sect1>h2{page-b
 </style>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/styles/github.min.css">
+<style>
+.listingblock pre,
+.literalblock pre,
+pre,
+code {
+  font-family: "DejaVu Sans Mono", "Noto Sans Mono", monospace;
+  white-space: pre;
+  line-height: 1.15;
+}
+</style>
 </head>
 <body class="article toc2 toc-left">
 <div id="header">
@@ -841,16 +851,16 @@ upstreams, locations, modules).  See the
 </div>
 <div class="sect2">
 <h3 id="_process_and_thread_topology">2.2. Process and Thread Topology</h3>
-<div class="literalblock">
+<div class="listingblock">
 <div class="content">
-<pre>  ┌─────────────────────────────────────────────────────────────────┐
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  ┌─────────────────────────────────────────────────────────────────┐
   │  Master process                                                 │
   │                                                                 │
-  │  ┌──────────────────────┐  ┌──────────────────────┐            │
-  │  │  SharedWorker A      │  │  SharedWorker B       │            │
-  │  │  (pthread)           │  │  (pthread)            │            │
-  │  │  long-lived JS state │  │  e.g. rate-limiter    │            │
-  │  └──────────────────────┘  └──────────────────────┘            │
+  │  ┌──────────────────────┐  ┌──────────────────────┐             │
+  │  │  SharedWorker A      │  │  SharedWorker B      │             │
+  │  │  (pthread)           │  │  (pthread)           │             │
+  │  │  long-lived JS state │  │  e.g. rate-limiter   │             │
+  │  └──────────────────────┘  └──────────────────────┘             │
   └────────────────────────┬────────────────────────────────────────┘
                            │  AF_UNIX SEQPACKET
                            │  each worker gets one channel per SharedWorker
@@ -863,7 +873,7 @@ upstreams, locations, modules).  See the
   │  (CoW copy)  │  │  (CoW copy)  │  │  (CoW copy)  │
   │  Event loop  │  │  Event loop  │  │  Event loop  │
   │  JS Workers  │  │  JS Workers  │  │  JS Workers  │
-  └──────────────┘  └──────────────┘  └──────────────┘</pre>
+  └──────────────┘  └──────────────┘  └──────────────┘</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -5543,7 +5553,7 @@ NginxStreamSSL  (streamServer.ssl  in stream context) — same properties plus:
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-19 12:35:24 -0700
+Last updated 2026-03-23 08:47:06 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

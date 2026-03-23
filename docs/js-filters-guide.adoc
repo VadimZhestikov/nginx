@@ -8,6 +8,7 @@
 :experimental:
 :revdate: 2026-03-19
 :revremark: Draft
+:docinfo: shared
 
 // ── External reference targets ───────────────────────────────────────────────
 :nginx-docs:   https://nginx.org/en/docs

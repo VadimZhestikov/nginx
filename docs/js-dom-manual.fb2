@@ -16,7 +16,7 @@
         <nickname>asciidoctor + html2fb2.py</nickname>
       </author>
       <date>2026-03-19</date>
-      <id>d6c614f3-f98d-4b65-a9cf-36af43202d1d</id>
+      <id>15bc5c8c-71a0-4568-bba6-09130a1029f6</id>
       <version>1.0</version>
     </document-info>
   </description>
@@ -148,11 +148,11 @@
             <v>  ┌─────────────────────────────────────────────────────────────────┐</v>
             <v>  │  Master process                                                 │</v>
             <v>  │                                                                 │</v>
-            <v>  │  ┌──────────────────────┐  ┌──────────────────────┐            │</v>
-            <v>  │  │  SharedWorker A      │  │  SharedWorker B       │            │</v>
-            <v>  │  │  (pthread)           │  │  (pthread)            │            │</v>
-            <v>  │  │  long-lived JS state │  │  e.g. rate-limiter    │            │</v>
-            <v>  │  └──────────────────────┘  └──────────────────────┘            │</v>
+            <v>  │  ┌──────────────────────┐  ┌──────────────────────┐             │</v>
+            <v>  │  │  SharedWorker A      │  │  SharedWorker B      │             │</v>
+            <v>  │  │  (pthread)           │  │  (pthread)           │             │</v>
+            <v>  │  │  long-lived JS state │  │  e.g. rate-limiter   │             │</v>
+            <v>  │  └──────────────────────┘  └──────────────────────┘             │</v>
             <v>  └────────────────────────┬────────────────────────────────────────┘</v>
             <v>                           │  AF_UNIX SEQPACKET</v>
             <v>                           │  each worker gets one channel per SharedWorker</v>
