@@ -537,7 +537,7 @@ workers share <em>no memory</em> — not even memory marked <code>write_mode='gl
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>                 ┌────────────────┐
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">                 ┌────────────────┐
                  │  Master (pid 1)│
                  │  (no requests) │
                  └────────┬───────┘
@@ -554,7 +554,7 @@ workers share <em>no memory</em> — not even memory marked <code>write_mode='gl
          │  diverge on    │                │
          │  first write   │                │
          ▼                ▼                ▼
-   independent copies after any write_mode='global' mutation</pre>
+   independent copies after any write_mode='global' mutation</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -656,7 +656,7 @@ from config phase or from a Worker/SharedWorker thread.
 <h3 id="_flow_diagram">2.3. Flow diagram</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker 0 (handler):              Master process:          Other workers:
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0 (handler):              Master process:          Other workers:
 
   await suspendAllWorkers()
     │ ── cmd ──────────────────►  broadcast SUSPEND
@@ -675,7 +675,7 @@ from config phase or from a Worker/SharedWorker thread.
     │                                  │ ──────────────► Worker 1: resume ack
     │                                  │ ──────────────► Worker 2: resume ack
     │ ◄── reply_fd readable ──────  all acked
-    (Promise resolves — all workers accepting again)</pre>
+    (Promise resolves — all workers accepting again)</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -808,7 +808,7 @@ state.  When any worker receives a config-change request, it:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  HTTP request ──► Worker 0
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  HTTP request ──► Worker 0
                       │
                       ├─ validate change
                       ├─ apply locally (write_mode='global')
@@ -819,7 +819,7 @@ state.  When any worker receives a config-change request, it:</p>
                                               │        │        │
                                          Worker 0  Worker 1  Worker 2
                                          (already  apply     apply
-                                          done)    change    change</pre>
+                                          done)    change    change</code></pre>
 </div>
 </div>
 </div>
@@ -902,7 +902,7 @@ onmessage = (msg) =&gt; {
 <h3 id="_flow_diagram_broadcast_timeline">3.4. Flow diagram: broadcast timeline</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Time ────────────────────────────────────────────────────────────►
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Time ────────────────────────────────────────────────────────────►
 
   Worker 0: receives /admin/set-weight
     ├─ applyChange(change)     ← local apply
@@ -915,7 +915,7 @@ onmessage = (msg) =&gt; {
                                               applyChange  applyChange
   ─────────────────────────────────────────────────────────────────►
   Eventual consistency: all workers reach the same state
-  within one event-loop tick after the fan-out completes.</pre>
+  within one event-loop tick after the fan-out completes.</code></pre>
 </div>
 </div>
 </div>
@@ -1225,7 +1225,7 @@ the strategies described in this guide.</p>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 14:00:56 -0700
+Last updated 2026-03-23 08:16:13 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

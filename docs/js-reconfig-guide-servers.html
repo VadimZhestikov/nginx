@@ -587,7 +587,7 @@ servers, including their SSL configuration.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Phase 1 — Structural change:
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Phase 1 — Structural change:
     nginx.http.addServer(name)      ← server added to nginx.http.servers[]
     nginx.http.removeServer(name)   ← server removed from nginx.http.servers[]
     srv.setNames([...])             ← server_name list updated in memory
@@ -600,7 +600,7 @@ servers, including their SSL configuration.</p>
     nginx.http.rebuildVhostDispatch()
 
     After Phase 2: the server-name hash is rebuilt from all current
-    nginx.http.servers[].  New requests are dispatched to the updated set.</pre>
+    nginx.http.servers[].  New requests are dispatched to the updated set.</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -774,10 +774,10 @@ route requests as expected before enabling them for real traffic.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  match('/api/v2/users', 'api.example.com'):
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  match('/api/v2/users', 'api.example.com'):
     Scans prefix_locs[]  → /api/v2/  (longest prefix match)
     Checks regex_locs[]  → no match
-    Returns: NginxLocation { path: '/api/v2/', matchType: 'prefix' }</pre>
+    Returns: NginxLocation { path: '/api/v2/', matchType: 'prefix' }</code></pre>
 </div>
 </div>
 </div>
@@ -913,7 +913,7 @@ nginx.http.rebuildVhostDispatch();</code></pre>
 <h3 id="_flow_diagram_addserver_two_phase">3.5. Flow diagram: addServer two-phase</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Phase 1: nginx.http.addServer('new.example.com')
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Phase 1: nginx.http.addServer('new.example.com')
   ─────────────────────────────────────────────────
 
   nginx.http.servers[]      vhost dispatch tables
@@ -931,7 +931,7 @@ nginx.http.rebuildVhostDispatch();</code></pre>
   vhost dispatch tables rebuilt:
     hash: example.com     → [0]
           api.example.com → [1]
-          new.example.com → [2]   ← NOW ACTIVE</pre>
+          new.example.com → [2]   ← NOW ACTIVE</code></pre>
 </div>
 </div>
 </div>
@@ -1004,7 +1004,7 @@ withTemporaryServer('maintenance.example.com',
 <h3 id="_flow_diagram_removeserver_two_phase">4.3. Flow diagram: removeServer two-phase</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Before removeServer('api.example.com'):
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Before removeServer('api.example.com'):
     servers[]: example.com, api.example.com, cdn.example.com
     hash: all three names routable
 
@@ -1015,7 +1015,7 @@ withTemporaryServer('maintenance.example.com',
 
   Phase 2: nginx.http.rebuildVhostDispatch()
     hash rebuilt: example.com, cdn.example.com
-    Requests for api.example.com → no match → default server</pre>
+    Requests for api.example.com → no match → default server</code></pre>
 </div>
 </div>
 </div>
@@ -1070,7 +1070,7 @@ to update both), or use <code>write_mode='local'</code> for per-request isolatio
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  srv.clone('mirror.example.com'):
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  srv.clone('mirror.example.com'):
 
   primary.locations:              mirror.locations (after clone):
     /api/   → clcf_A  ─────────────► /api/   → clcf_A  (shared pointer)
@@ -1081,7 +1081,7 @@ to update both), or use <code>write_mode='local'</code> for per-request isolatio
     /mirror-only/ → clcf_NEW  ← independent, only in mirror
 
   primary.findLocation('/api/').handler = v2;  ← modifies clcf_A
-    → affects BOTH primary and mirror /api/</pre>
+    → affects BOTH primary and mirror /api/</code></pre>
 </div>
 </div>
 </div>
@@ -1849,7 +1849,7 @@ loc.handler = async (req) =&gt; {
 <h3 id="_flow_diagram_cross_worker_addserver_rebuildvhostdispatch">10.3. Flow diagram: cross-worker addServer + rebuildVhostDispatch</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker 0:
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0:
 
   await suspendAllWorkers()
   ─────────────────────────────────────────► all workers suspended
@@ -1865,7 +1865,7 @@ loc.handler = async (req) =&gt; {
                                                                     rebuildVhostDispatch()
   await resumeAllWorkers()
   ─────────────────────────────────────────► all workers resume
-  All workers now route requests to new.example.com.</pre>
+  All workers now route requests to new.example.com.</code></pre>
 </div>
 </div>
 </div>
@@ -2087,7 +2087,7 @@ calling <code>addServer()</code> if strict routing is required.</p>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 15:51:10 -0700
+Last updated 2026-03-23 08:16:13 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

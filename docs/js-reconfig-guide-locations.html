@@ -615,7 +615,7 @@ combined with <code>suspendAllWorkers()</code> (see <em>for all workers</em> gui
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Incoming URI
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Incoming URI
       │
       ▼
   1.  Exact-match locations (= /path)  ← checked first; wins immediately on match
@@ -635,7 +635,7 @@ combined with <code>suspendAllWorkers()</code> (see <em>for all workers</em> gui
           └─► No match     ← fall back to the remembered prefix winner
       │
       ▼
-  4.  Named locations (@name) — reachable only from error_page / try_files</pre>
+  4.  Named locations (@name) — reachable only from error_page / try_files</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -924,10 +924,10 @@ health.handler = (req) =&gt; {
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Matching:
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Matching:
     /health       ── exact match (= /health)  ✓  highest priority
     /health/more  ── prefix match /health      ✓  (if /health exists)
-    /healthz      ── no match                  ✗</pre>
+    /healthz      ── no match                  ✗</code></pre>
 </div>
 </div>
 </div>
@@ -948,10 +948,10 @@ fallback.root = '/var/www/html';</code></pre>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Regex check order (definition order):
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Regex check order (definition order):
     [0]  ~ /\.php$         ← index:0 → inserted first
     [1]  ~* /\.html?$      ← appended (default)
-    ...  (existing regex locs)</pre>
+    ...  (existing regex locs)</code></pre>
 </div>
 </div>
 </div>
@@ -992,7 +992,7 @@ v2.handler = v2Handler;</code></pre>
 <h3 id="_flow_diagram_addlocation_bst_rebuild">3.8. Flow diagram: addLocation BST rebuild</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Before addLocation('/api/v2/'):
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Before addLocation('/api/v2/'):
 
   Server location BST:
     /             (prefix)
@@ -1014,7 +1014,7 @@ v2.handler = v2Handler;</code></pre>
     /api/v1/      (prefix, nested under /api/)
     /api/v2/      (prefix, nested under /api/)   ← NEW
     /static/      (prefix)
-    ~ /\.php$     (regex[0])</pre>
+    ~ /\.php$     (regex[0])</code></pre>
 </div>
 </div>
 </div>
@@ -1131,7 +1131,7 @@ Removing a location while iterating <code>srv.locations</code> is safe because
 <h3 id="_flow_diagram_removelocation_bst_rebuild">4.4. Flow diagram: removeLocation BST rebuild</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Before removeLocation('/api/v1/'):
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Before removeLocation('/api/v1/'):
 
   prefix_locs[]:  /, /api/, /api/v1/, /api/v2/, /static/
   BST:            /
@@ -1150,7 +1150,7 @@ Removing a location while iterating <code>srv.locations</code> is safe because
   BST:            /
                   ├─ /api/
                   │   └─ /api/v2/
-                  └─ /static/</pre>
+                  └─ /static/</code></pre>
 </div>
 </div>
 <div class="admonitionblock warning">
@@ -1237,7 +1237,7 @@ v2.handler = (req) =&gt; {
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Source tree (/api/v1/):
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Source tree (/api/v1/):
     /api/v1/
     /api/v1/users
     /api/v1/orders
@@ -1248,7 +1248,7 @@ v2.handler = (req) =&gt; {
     /api/v1/orders           (unchanged)
     /api/v2/                 (new, copy of /api/v1/)
     /api/v2/users            (new, copy of /api/v1/users)
-    /api/v2/orders           (new, copy of /api/v1/orders)</pre>
+    /api/v2/orders           (new, copy of /api/v1/orders)</code></pre>
 </div>
 </div>
 </div>
@@ -1424,9 +1424,9 @@ await swapLocations(srv, '/beta/', '/prod/', prodHandler, '/var/www/prod');</cod
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Before swap:            After swap:
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Before swap:            After swap:
     /beta/      (active)    /prod/      (active, immediate)
-    /prod/      (absent)    /beta/      (absent)</pre>
+    /prod/      (absent)    /beta/      (absent)</code></pre>
 </div>
 </div>
 </div>
@@ -1516,7 +1516,7 @@ to a locally defined function (e.g. via a registry map).
 <h3 id="_flow_diagram_cross_worker_addlocation">8.3. Flow diagram: cross-worker addLocation</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker 0 (handler):          SharedWorker:          Workers 1…N:
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0 (handler):          SharedWorker:          Workers 1…N:
 
   await suspendAllWorkers()
   ─────────────────────────►   (all workers suspended)
@@ -1527,7 +1527,7 @@ to a locally defined function (e.g. via a registry map).
                                     │ ──────────────► Worker N: addLocation → BST updated
   await resumeAllWorkers()
   ─────────────────────────►   (all workers resume accepting)
-  All workers now have identical BST.</pre>
+  All workers now have identical BST.</code></pre>
 </div>
 </div>
 </div>
@@ -1963,7 +1963,7 @@ cfgWorker.onmessage = (msg) =&gt; {
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 15:31:12 -0700
+Last updated 2026-03-23 08:16:13 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

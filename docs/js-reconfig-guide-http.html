@@ -637,12 +637,12 @@ h.attach(sock)                    // → NginxHttpListener  (Phase B)</code></pr
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>Phase A  nginx.createSocket('addr:port')   →  NginxSocket
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">Phase A  nginx.createSocket('addr:port')   →  NginxSocket
 Phase B  nginx.http.attach(sock)           →  NginxHttpListener
 Phase C  listener.addServer(srv)           activates the listener
 Phase D  listener.addVirtualServer(srv)    adds a virtual-host entry
 Phase F  nginx.createSocket('addr:port')   →  NginxSocket  (post-fork,
-                                              via manager SCM_RIGHTS)</pre>
+                                              via manager SCM_RIGHTS)</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -653,7 +653,7 @@ so the new names are reachable immediately.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  [nginx.createSocket]          [nginx.http.attach]
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  [nginx.createSocket]          [nginx.http.attach]
       Phase A                       Phase B
   ┌──────────┐  NginxSocket   ┌─────────────────┐  NginxHttpListener
   │  socket  │ ─────────────► │   HTTP wiring   │ ──────────────────►
@@ -665,7 +665,7 @@ so the new names are reachable immediately.</p>
                    ▼ Phase C                               ▼ Phase D
           listener.addServer(srv)             listener.addVirtualServer(srv)
           (activates cycle-&gt;listening,         (adds name to virtual_names hash,
-           sets default server)                rebuilds inline)</pre>
+           sets default server)                rebuilds inline)</code></pre>
 </div>
 </div>
 </div>
@@ -816,7 +816,7 @@ socket until <code>sock.broadcast()</code> is called.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Phase A (pre-fork)             Phase F (post-fork)
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Phase A (pre-fork)             Phase F (post-fork)
   ─────────────────              ───────────────────
   master: createSocket()         Worker 0: createSocket()
         │                               │
@@ -827,7 +827,7 @@ socket until <code>sock.broadcast()</code> is called.</p>
         │                         Workers 1,2,… know nothing
         ├──► Worker 0  (fd inherited)
         ├──► Worker 1  (fd inherited)     ◄── broadcast() fills these
-        └──► Worker 2  (fd inherited)</pre>
+        └──► Worker 2  (fd inherited)</code></pre>
 </div>
 </div>
 </div>
@@ -838,7 +838,7 @@ socket until <code>sock.broadcast()</code> is called.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  F1  Pre-fork setup (manager start)
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  F1  Pre-fork setup (manager start)
       ngx_js_sw_manager_start() creates one socketpair per worker:
         bcast_fds[wi][0]  — master/manager writes
         bcast_fds[wi][1]  — worker reads
@@ -867,12 +867,12 @@ socket until <code>sock.broadcast()</code> is called.</p>
           SCM_RIGHTS: sock_fd   (dup sent to each worker)
       Manager closes its own copy of sock_fd.
       Manager → Worker: status byte 0 (success) on reply_fd.
-      broadcast() returns.</pre>
+      broadcast() returns.</code></pre>
 </div>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker 0 (sender)                    Manager thread
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0 (sender)                    Manager thread
   ─────────────────                    ──────────────
   sock.broadcast()
     │
@@ -897,7 +897,7 @@ socket until <code>sock.broadcast()</code> is called.</p>
                                           nginx.onSocket(sock)  ← if set
 
                                         Worker 2 (receiver, async)
-                                        └─ (same as Worker 1)</pre>
+                                        └─ (same as Worker 1)</code></pre>
 </div>
 </div>
 </div>
@@ -1189,7 +1189,7 @@ connections on any port:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker 0
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0
   ├─ await nginx.withSuspendedAcceptance(async () =&gt; {
   │        │
   │        │  suspendAllWorkers() → manager → all workers ack
@@ -1207,7 +1207,7 @@ connections on any port:</p>
   │  Workers drain bcast fd BEFORE first epoll accept event
   │  → nginx.onSocket(sock) called in each worker
   │
-  └─ req.respond(200, {}, 'done\n')</pre>
+  └─ req.respond(200, {}, 'done\n')</code></pre>
 </div>
 </div>
 </div>
@@ -1334,7 +1334,7 @@ listener.addVirtualServer(appSrv);</code></pre>
 <h4 id="_flow_diagram">4.4.1. Flow diagram</h4>
 <div class="listingblock">
 <div class="content">
-<pre>nginx.createSocket('0.0.0.0:8888')
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx.createSocket('0.0.0.0:8888')
           │
           │  NginxSocket (fd=N)
           ▼
@@ -1352,7 +1352,7 @@ nginx.http.attach(sock)
           │
           └──── addVirtualServer(appSrv) [Phase D]
                     └─► inserts into virtual_names hash
-                        (inline rebuild)</pre>
+                        (inline rebuild)</code></pre>
 </div>
 </div>
 </div>
@@ -1627,14 +1627,14 @@ Incoming requests continue to use the old dispatch table until the rebuild.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  nginx.http.addServer('new.example.com')
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  nginx.http.addServer('new.example.com')
              │
              │  registered internally
              │  (not yet routable)
              │
   nginx.http.rebuildVhostDispatch()
              │
-             └─► routing hash rebuilt — new.example.com now reachable</pre>
+             └─► routing hash rebuilt — new.example.com now reachable</code></pre>
 </div>
 </div>
 <div class="listingblock">
@@ -2019,7 +2019,7 @@ changes to all workers use one of the three strategies from
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker 0 (request handler)
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0 (request handler)
   ├─ nginx.http.addServer('new.example.com')
   ├─ srv.addLocation('/').handler = fn
   ├─ nginx.http.rebuildVhostDispatch()
@@ -2037,7 +2037,7 @@ changes to all workers use one of the three strategies from
   └─ nginx.http.rebuildVhostDispatch()
 
   Worker 2 (SharedWorker onmessage)
-  └─ (same as Worker 1)</pre>
+  └─ (same as Worker 1)</code></pre>
 </div>
 </div>
 <div class="admonitionblock warning">
@@ -2403,7 +2403,7 @@ the worker is busy.</p>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 16:42:45 -0700
+Last updated 2026-03-23 08:16:13 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

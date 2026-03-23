@@ -185,6 +185,7 @@ function applyStep(step, req) {
 The SharedWorker holds the checkpoint store.  Any worker can save or load a
 checkpoint by posting a message and awaiting the reply.
 
+[source,text]
 ----
   Worker 0                SharedWorker pthread              Worker 1
   ────────                ────────────────────              ────────
@@ -464,6 +465,7 @@ loc.handler = async (req) => {
 
 === Flow diagram: checkpoint restore lifecycle
 
+[source,text]
 ----
   Worker 0 (handler):              All workers:
 
@@ -537,6 +539,7 @@ try {
 
 === Flow diagram: full persistent checkpoint lifecycle
 
+[source,text]
 ----
   Nginx starts / reloads
        │

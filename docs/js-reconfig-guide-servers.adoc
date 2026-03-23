@@ -26,6 +26,7 @@ Prerequisites: read the _for single worker_ guide first for `write_mode`,
 Server-level structural operations (add, remove, rename) follow a
 **two-phase** model:
 
+[source,text]
 ----
   Phase 1 — Structural change:
     nginx.http.addServer(name)      ← server added to nginx.http.servers[]
@@ -157,6 +158,7 @@ const loc2 = nginx.http.match('/static/img.png', 'cdn.example.com');
 Useful for verifying that `addLocation()` / `removeLocation()` changes
 route requests as expected before enabling them for real traffic.
 
+[source,text]
 ----
   match('/api/v2/users', 'api.example.com'):
     Scans prefix_locs[]  → /api/v2/  (longest prefix match)
@@ -260,6 +262,7 @@ nginx.http.rebuildVhostDispatch();
 
 === Flow diagram: addServer two-phase
 
+[source,text]
 ----
   Phase 1: nginx.http.addServer('new.example.com')
   ─────────────────────────────────────────────────
@@ -332,6 +335,7 @@ withTemporaryServer('maintenance.example.com',
 
 === Flow diagram: removeServer two-phase
 
+[source,text]
 ----
   Before removeServer('api.example.com'):
     servers[]: example.com, api.example.com, cdn.example.com
@@ -380,6 +384,7 @@ this forces a copy-on-write.  Or set the field you want to differ: the
 setter will write to the shared struct (which is still correct if you intend
 to update both), or use `write_mode='local'` for per-request isolation.
 
+[source,text]
 ----
   srv.clone('mirror.example.com'):
 
@@ -1025,6 +1030,7 @@ loc.handler = async (req) => {
 
 === Flow diagram: cross-worker addServer + rebuildVhostDispatch
 
+[source,text]
 ----
   Worker 0:
 

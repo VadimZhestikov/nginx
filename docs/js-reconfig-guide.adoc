@@ -129,6 +129,7 @@ sub-object setters (`proxy`, `gzip`, `headers`, `rewrite`) also honour it.
 
 === Flow diagram: write_mode interactions
 
+[source,text]
 ----
                         ┌──────────────────────┐
                         │   Request N starts   │
@@ -206,6 +207,7 @@ the event loop may dispatch a second request between any two consecutive
 assignments in a handler.  Without suspension a concurrent request on this
 worker could observe a _half-updated_ config:
 
+[source,text]
 ----
   req.location.root              = '/new';   // ← request B starts here ...
   req.location.proxy.readTimeout = 5000;     //     ... and misses this write
@@ -284,6 +286,7 @@ then execute only synchronous writes inside the window.
 
 === Flow diagram
 
+[source,text]
 ----
   Request handler:                     Event loop (this worker):
 
@@ -386,6 +389,7 @@ for the duration of the restore call, then restores the original values.
 
 === Interaction table: snapshot × write_mode
 
+[source,text]
 ----
 Scenario                   | snapshot captures | restore() writes to
 ───────────────────────────┼───────────────────┼─────────────────────
@@ -408,6 +412,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)
 
 === Flow diagram: snapshot lifecycle
 
+[source,text]
 ----
   Time ──────────────────────────────────────────────────────────►
 
@@ -437,6 +442,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)
 
 === Flow diagram: local isolation with deliberate commit
 
+[source,text]
 ----
   Time ──────────────────────────────────────────────────────────►
 

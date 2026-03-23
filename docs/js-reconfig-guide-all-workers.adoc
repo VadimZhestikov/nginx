@@ -28,6 +28,7 @@ nginx runs as a master process plus N worker processes.  Each worker is a
 separate OS process with its own address space.  After the initial fork, the
 workers share _no memory_ — not even memory marked `write_mode='global'`.
 
+[source,text]
 ----
                  ┌────────────────┐
                  │  Master (pid 1)│
@@ -108,6 +109,7 @@ from config phase or from a Worker/SharedWorker thread.
 
 === Flow diagram
 
+[source,text]
 ----
   Worker 0 (handler):              Master process:          Other workers:
 
@@ -237,6 +239,7 @@ state.  When any worker receives a config-change request, it:
 3. The SharedWorker fans out the message to all other workers.
 4. Each receiving worker applies the change via `write_mode='global'`.
 
+[source,text]
 ----
   HTTP request ──► Worker 0
                       │
@@ -326,6 +329,7 @@ loc.handler = async (req) => {
 
 === Flow diagram: broadcast timeline
 
+[source,text]
 ----
   Time ────────────────────────────────────────────────────────────►
 

@@ -708,7 +708,7 @@ sub-object setters (<code>proxy</code>, <code>gzip</code>, <code>headers</code>,
 <h3 id="_flow_diagram_write_mode_interactions">2.5. Flow diagram: write_mode interactions</h3>
 <div class="listingblock">
 <div class="content">
-<pre>                        ┌──────────────────────┐
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">                        ┌──────────────────────┐
                         │   Request N starts   │
                         │  write_mode='global' │  ← default
                         └──────────┬───────────┘
@@ -728,7 +728,7 @@ sub-object setters (<code>proxy</code>, <code>gzip</code>, <code>headers</code>,
              │  the new value immediately        └──────────────────┘
              ▼
     Request N+1 reads the
-    mutated global value</pre>
+    mutated global value</code></pre>
 </div>
 </div>
 </div>
@@ -794,8 +794,8 @@ worker could observe a <em>half-updated</em> config:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  req.location.root              = '/new';   // ← request B starts here ...
-  req.location.proxy.readTimeout = 5000;     //     ... and misses this write</pre>
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  req.location.root              = '/new';   // ← request B starts here ...
+  req.location.proxy.readTimeout = 5000;     //     ... and misses this write</code></pre>
 </div>
 </div>
 <div class="paragraph">
@@ -900,7 +900,7 @@ then execute only synchronous writes inside the window.
 <h3 id="_flow_diagram">3.4. Flow diagram</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Request handler:                     Event loop (this worker):
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Request handler:                     Event loop (this worker):
 
   nginx.suspendAcceptance()
   │  removes listen read events ───────────────────────────────►
@@ -913,7 +913,7 @@ then execute only synchronous writes inside the window.
   │
   nginx.resumeAcceptance()
   │  re-adds listen read events ───────────────────────────────►
-                                        queued connections accepted</pre>
+                                        queued connections accepted</code></pre>
 </div>
 </div>
 </div>
@@ -1041,7 +1041,7 @@ for the duration of the restore call, then restores the original values.</p>
 <h3 id="_interaction_table_snapshot_write_mode">4.4. Interaction table: snapshot × write_mode</h3>
 <div class="listingblock">
 <div class="content">
-<pre>Scenario                   | snapshot captures | restore() writes to
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">Scenario                   | snapshot captures | restore() writes to
 ───────────────────────────┼───────────────────┼─────────────────────
 write_mode='global'        │ current global    │ global
   default, no override     │ values            │ (other reqs see it)
@@ -1057,7 +1057,7 @@ Any write_mode +           │ whatever          │ forced global
 restore({mode:'global'})   │ read_mode says    │
 ───────────────────────────┼───────────────────┼─────────────────────
 write_mode='local' +       │ local values      │ forced global
-restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
+restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</code></pre>
 </div>
 </div>
 </div>
@@ -1065,7 +1065,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 <h3 id="_flow_diagram_snapshot_lifecycle">4.5. Flow diagram: snapshot lifecycle</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Time ──────────────────────────────────────────────────────────►
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Time ──────────────────────────────────────────────────────────►
 
   Request N:
     │
@@ -1088,7 +1088,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
            │  → ngx_js_proxy_set_core() → plcf-&gt;upstream.read_timeout = orig_val
            │
            ▼
-        global config is back to what it was at [1]</pre>
+        global config is back to what it was at [1]</code></pre>
 </div>
 </div>
 </div>
@@ -1096,7 +1096,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
 <h3 id="_flow_diagram_local_isolation_with_deliberate_commit">4.6. Flow diagram: local isolation with deliberate commit</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Time ──────────────────────────────────────────────────────────►
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Time ──────────────────────────────────────────────────────────►
 
   Request N:
     │
@@ -1120,7 +1120,7 @@ restore({mode:'global'})   │ (post-mutation)   │ (deliberate commit)</pre>
   Request N+1 (concurrent):
     │  No write_mode set — reads from global
     │  Sees original value UNTIL Request N commits
-    └─ …</pre>
+    └─ …</code></pre>
 </div>
 </div>
 </div>
@@ -1637,7 +1637,7 @@ methods directly rather than relying on <code>snapshot()</code>.</p>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 14:00:56 -0700
+Last updated 2026-03-23 08:16:13 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

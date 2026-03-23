@@ -648,7 +648,7 @@ nginx.workerRequestTimeout     // r/w number — per-request JS timeout (ms, 0 =
 <h3 id="_object_hierarchy">1.2. Object hierarchy</h3>
 <div class="listingblock">
 <div class="content">
-<pre>nginx
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">nginx
 ├── version               (string, r/o)
 ├── cpu_count             (number, r/o)
 ├── log(level, msg)
@@ -702,7 +702,7 @@ nginx.workerRequestTimeout     // r/w number — per-request JS timeout (ms, 0 =
 ├── resumeAcceptance()
 ├── suspendAllWorkers()   → Promise
 ├── resumeAllWorkers()    → Promise
-└── withSuspendedAcceptance(fn) → Promise</pre>
+└── withSuspendedAcceptance(fn) → Promise</code></pre>
 </div>
 </div>
 </div>
@@ -1523,13 +1523,13 @@ nginx.log(7, 'stream port 5555 ready');</code></pre>
 </table>
 <div class="listingblock">
 <div class="content">
-<pre>  Config phase (master)                  Workers (after fork)
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Config phase (master)                  Workers (after fork)
   ─────────────────────                  ────────────────────
   nginx.broadcast(fn)                    init_process:
         │                                  calls fn() in Worker 0
         │  appended to                     calls fn() in Worker 1
         ▼  __broadcast_queue              calls fn() in Worker 2 …
-  [ fn, fn2, … ]</pre>
+  [ fn, fn2, … ]</code></pre>
 </div>
 </div>
 </div>
@@ -1631,7 +1631,7 @@ nginx requests (awaiting the same timer) are finalized.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  request handler
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  request handler
        │
        ├─ await nginx.setTimeout(200)
        │          │
@@ -1642,7 +1642,7 @@ nginx requests (awaiting the same timer) are finalized.</p>
        │          │  drain microtasks
        │          │  ngx_js_async_check → finalize request
        │
-       └─ execution resumes here</pre>
+       └─ execution resumes here</code></pre>
 </div>
 </div>
 </div>
@@ -1749,7 +1749,7 @@ two mutations and observe a partially-updated configuration:</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker N
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker N
   ├─ nginx.suspendAcceptance()   ← remove listen read events
   │        (new conns queue in OS backlog)
   │
@@ -1757,7 +1757,7 @@ two mutations and observe a partially-updated configuration:</p>
   ├─ mutation 2 (location root)
   │
   └─ nginx.resumeAcceptance()    ← restore listen read events
-           (queued conns now accepted with updated config)</pre>
+           (queued conns now accepted with updated config)</code></pre>
 </div>
 </div>
 <div class="admonitionblock note">
@@ -1804,7 +1804,7 @@ the nginx pool has acknowledged the suspend/resume command.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-none hljs">  Worker 0 (request handler)
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0 (request handler)
        │
        ├─ await nginx.suspendAllWorkers()
        │          │
@@ -1880,7 +1880,7 @@ called even if <code>fn</code> throws.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker 0 (request handler)
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0 (request handler)
        │
        ├─ await nginx.withSuspendedAcceptance(async () =&gt; {
        │          │
@@ -1896,7 +1896,7 @@ called even if <code>fn</code> throws.</p>
        │          │
        │          └─ Promise resolves
        │
-       └─ req.respond(200, {}, 'done\n')</pre>
+       └─ req.respond(200, {}, 'done\n')</code></pre>
 </div>
 </div>
 <div class="admonitionblock note">
@@ -2709,7 +2709,7 @@ each time the event loop resumes the handler from a timer or I/O event.</p>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 16:25:57 -0700
+Last updated 2026-03-23 08:16:13 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

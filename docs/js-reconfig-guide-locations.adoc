@@ -46,6 +46,7 @@ combined with `suspendAllWorkers()` (see _for all workers_ guide).
 
 Understanding the matching order is essential when adding locations:
 
+[source,text]
 ----
   Incoming URI
       │
@@ -274,6 +275,7 @@ health.handler = (req) => {
 };
 ----
 
+[source,text]
 ----
   Matching:
     /health       ── exact match (= /health)  ✓  highest priority
@@ -296,6 +298,7 @@ const fallback = srv.addLocation('~* /\\.html?$');
 fallback.root = '/var/www/html';
 ----
 
+[source,text]
 ----
   Regex check order (definition order):
     [0]  ~ /\.php$         ← index:0 → inserted first
@@ -336,6 +339,7 @@ v2.handler = v2Handler;
 
 === Flow diagram: addLocation BST rebuild
 
+[source,text]
 ----
   Before addLocation('/api/v2/'):
 
@@ -444,6 +448,7 @@ NOTE: Removing a location while iterating `srv.locations` is safe because
 
 === Flow diagram: removeLocation BST rebuild
 
+[source,text]
 ----
   Before removeLocation('/api/v1/'):
 
@@ -523,6 +528,7 @@ v2.handler = (req) => {
 };
 ----
 
+[source,text]
 ----
   Source tree (/api/v1/):
     /api/v1/
@@ -681,6 +687,7 @@ async function swapLocations(srv, oldPattern, newPattern, newHandler, newRoot) {
 await swapLocations(srv, '/beta/', '/prod/', prodHandler, '/var/www/prod');
 ----
 
+[source,text]
 ----
   Before swap:            After swap:
     /beta/      (active)    /prod/      (active, immediate)
@@ -754,6 +761,7 @@ to a locally defined function (e.g. via a registry map).
 
 === Flow diagram: cross-worker addLocation
 
+[source,text]
 ----
   Worker 0 (handler):          SharedWorker:          Workers 1…N:
 

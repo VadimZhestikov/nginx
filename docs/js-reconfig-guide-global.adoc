@@ -69,6 +69,7 @@ nginx.workerRequestTimeout     // r/w number — per-request JS timeout (ms, 0 =
 
 === Object hierarchy
 
+[source,text]
 ----
 nginx
 ├── version               (string, r/o)
@@ -675,6 +676,7 @@ The behaviour differs depending on *where* `broadcast` is called:
   other workers is performed.
 |===
 
+[source,text]
 ----
   Config phase (master)                  Workers (after fork)
   ─────────────────────                  ────────────────────
@@ -752,6 +754,7 @@ nginx.setTimeout(ms: number): Promise<undefined>
 * After the promise resolves, microtasks are drained and any suspended
   nginx requests (awaiting the same timer) are finalized.
 
+[source,text]
 ----
   request handler
        │
@@ -855,6 +858,7 @@ function atomicUpdate(req) {
 }
 ----
 
+[source,text]
 ----
   Worker N
   ├─ nginx.suspendAcceptance()   ← remove listen read events
@@ -961,6 +965,7 @@ async function hotReloadServers(req) {
 }
 ----
 
+[source,text]
 ----
   Worker 0 (request handler)
        │

@@ -733,14 +733,14 @@ checkpoint by posting a message and awaiting the reply.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker 0                SharedWorker pthread              Worker 1
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0                SharedWorker pthread              Worker 1
   ────────                ────────────────────              ────────
   req → saveCheckpoint()  checkpoints Map                  req → loadCheckpoint()
      postMessage('save')  ─────────────                       postMessage('load')
                           │ name → snap │  ←── snapshots       ← postMessage(snap)
                           │   (JS obj) │      are JS objs
                           │            │      serialised
-                          └────────────┘      via structured clone</pre>
+                          └────────────┘      via structured clone</code></pre>
 </div>
 </div>
 <div class="admonitionblock note">
@@ -1041,7 +1041,7 @@ checkpoint" are always consistent:</p>
 <h3 id="_flow_diagram_checkpoint_restore_lifecycle">4.5. Flow diagram: checkpoint restore lifecycle</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Worker 0 (handler):              All workers:
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Worker 0 (handler):              All workers:
 
   await suspendAllWorkers()
   ─────────────────────────────►   all suspended (no new requests anywhere)
@@ -1056,7 +1056,7 @@ checkpoint" are always consistent:</p>
   await resumeAllWorkers()
   ─────────────────────────────►   all resume (queued connections accepted)
 
-  All workers now have identical config matching the checkpoint.</pre>
+  All workers now have identical config matching the checkpoint.</code></pre>
 </div>
 </div>
 </div>
@@ -1123,7 +1123,7 @@ try {
 <h3 id="_flow_diagram_full_persistent_checkpoint_lifecycle">5.3. Flow diagram: full persistent checkpoint lifecycle</h3>
 <div class="listingblock">
 <div class="content">
-<pre>  Nginx starts / reloads
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">  Nginx starts / reloads
        │
        ▼
   js_preprocess runs
@@ -1147,7 +1147,7 @@ try {
        │
        ▼
   js_preprocess reads stable.json → injects into new config
-  Workers fork with checkpoint baked in</pre>
+  Workers fork with checkpoint baked in</code></pre>
 </div>
 </div>
 </div>
@@ -1244,7 +1244,7 @@ rename-from-temp to mitigate:</p>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-20 14:00:56 -0700
+Last updated 2026-03-23 08:16:13 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

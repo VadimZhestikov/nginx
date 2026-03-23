@@ -63,6 +63,7 @@ h.attach(sock)                    // → NginxHttpListener  (Phase B)
 Socket provisioning spans four phases.  Phases A-D are all pre-fork
 (config phase / `init_conf`).  Post-fork socket creation uses Phase F.
 
+[source,text]
 ----
 Phase A  nginx.createSocket('addr:port')   →  NginxSocket
 Phase B  nginx.http.attach(sock)           →  NginxHttpListener
@@ -77,6 +78,7 @@ HTTP connection pipeline, and virtual-host hash are built up incrementally.
 Each `addServer` / `addVirtualServer` call triggers an inline hash rebuild
 so the new names are reachable immediately.
 
+[source,text]
 ----
   [nginx.createSocket]          [nginx.http.attach]
       Phase A                       Phase B
@@ -189,6 +191,7 @@ returns the fd via SCM_RIGHTS to the requesting worker only.  Every other
 worker has its own separate fd table and knows nothing about the new
 socket until `sock.broadcast()` is called.
 
+[source,text]
 ----
   Phase A (pre-fork)             Phase F (post-fork)
   ─────────────────              ───────────────────
@@ -208,6 +211,7 @@ socket until `sock.broadcast()` is called.
 
 `sock.broadcast()` goes through four sub-phases:
 
+[source,text]
 ----
   F1  Pre-fork setup (manager start)
       ngx_js_sw_manager_start() creates one socketpair per worker:
@@ -241,6 +245,7 @@ socket until `sock.broadcast()` is called.
       broadcast() returns.
 ----
 
+[source,text]
 ----
   Worker 0 (sender)                    Manager thread
   ─────────────────                    ──────────────
@@ -492,6 +497,7 @@ async function atomicPortRollout(req) {
 }
 ----
 
+[source,text]
 ----
   Worker 0
   ├─ await nginx.withSuspendedAcceptance(async () => {
@@ -600,6 +606,7 @@ listener.addVirtualServer(appSrv);
 
 ==== Flow diagram
 
+[source,text]
 ----
 nginx.createSocket('0.0.0.0:8888')
           │
@@ -806,6 +813,7 @@ link:js-reconfig-guide-servers.adoc[Guide 5] for full details.
 server-name routing hash until `rebuildVhostDispatch()` is called.
 Incoming requests continue to use the old dispatch table until the rebuild.
 
+[source,text]
 ----
   nginx.http.addServer('new.example.com')
              │
@@ -1158,6 +1166,7 @@ link:js-reconfig-guide-all-workers.adoc[Guide 2].
 The diagram below shows the full provisioning pipeline for a post-fork
 `addServer` broadcast:
 
+[source,text]
 ----
   Worker 0 (request handler)
   ├─ nginx.http.addServer('new.example.com')
