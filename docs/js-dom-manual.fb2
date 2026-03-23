@@ -16,7 +16,7 @@
         <nickname>asciidoctor + html2fb2.py</nickname>
       </author>
       <date>2026-03-19</date>
-      <id>9359d20c-0df0-49aa-8876-253a80fa1f64</id>
+      <id>6ce8b8d4-6890-4c3f-9cc5-f809f30f6f3c</id>
       <version>1.0</version>
     </document-info>
   </description>
@@ -43,7 +43,7 @@
           <strong>Write</strong> configuration properties — upstream peer weights, SSL certificates, location directives, gzip settings, and much more — with immediate effect, either for the current worker or atomically for all workers at once.</p>
         <p>•   </p>
         <p>
-          <strong>Generate</strong> server and location blocks at parse time, before nginx has even finished reading its configuration file.</p>
+          <strong>Generate</strong> server and location blocks at parse time, before nginx has even finished reading its configuration file, and at run-time, when traffic events are processed by nginx workers in their nginx event loops.</p>
         <p>•   </p>
         <p>
           <strong>Handle requests</strong> in JavaScript, using the same event-driven async model as nginx itself.</p>

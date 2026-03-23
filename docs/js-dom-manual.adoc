@@ -47,7 +47,8 @@ the *Configuration Object Model (COM)*.  Through the COM, JavaScript can:
   location directives, gzip settings, and much more — with immediate effect,
   either for the current worker or atomically for all workers at once.
 * *Generate* server and location blocks at parse time, before nginx has even
-  finished reading its configuration file.
+  finished reading its configuration file, and at run-time, when traffic events
+  are processed by nginx workers in their nginx event loops.
 * *Handle requests* in JavaScript, using the same event-driven async model as
   nginx itself.
 * *Offload* CPU-intensive work to background threads (Workers) without
