@@ -1,4 +1,4 @@
-#!/usr/bin/env qjs
+#!/usr/bin/env -S qjs --std
 'use strict';
 /*
  * repl-client.js — interactive REPL client for the nginx JS REPL.
@@ -29,8 +29,7 @@
  *     "* LOG nginx:<level> <msg>\n"
  */
 
-import * as std from 'std';
-import * as os  from 'os';
+/* std and os are provided as globals by the --std flag */
 
 /* ------------------------------------------------------------------ */
 /* Argument parsing                                                     */

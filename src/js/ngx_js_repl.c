@@ -272,6 +272,15 @@ ngx_js_repl_attach(JSContext *ctx, JSValueConst this_val,
 {
     static const char  script_fmt[] =
         "(function(fd, minLevel, nginxLevel) {"
+        "  var _p = nginx.repl.__orig;"
+        "  if (_p) {"
+        "    console.debug = _p.debug;"
+        "    console.log   = _p.log;"
+        "    console.warn  = _p.warn;"
+        "    console.error = _p.error;"
+        "    nginx.log     = _p.nginxLog;"
+        "    delete nginx.repl.__orig;"
+        "  }"
         "  const _wfd = nginx.repl._writeFd;"
         "  const _nl  = nginx.log;"
         "  const _cd  = console.debug;"
