@@ -140,7 +140,7 @@ like($snap_id, qr/^0001-/, 'snap_id_format: id starts with 0001-');
 
 # 3. Verify snapshot JSON contains the weight
 my $r_content = http("GET /snap_content HTTP/1.0\r\nHost: localhost\r\n\r\n");
-like($r_content, qr/"weight".*7|7.*"weight"/, 'snap_has_peer: snapshot records weight 7');
+like($r_content, qr/weight.*\b7\b|\b7\b.*weight/s, 'snap_has_peer: snapshot records weight 7');
 
 # 4. List snapshots contains the new id
 my $r_list = http("GET /list_snaps HTTP/1.0\r\nHost: localhost\r\n\r\n");

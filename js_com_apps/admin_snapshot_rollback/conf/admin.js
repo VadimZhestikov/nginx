@@ -164,15 +164,101 @@ function _applyOps(ops) {
 /*
  * _applySnapshot(snap) — reset to base, then apply snap's ops.
  * Called inside nginx.broadcast() so it runs on every worker.
+ *
+ * Supports both the current ops-list format ({id, ts, ops: [...]}) and
+ * the legacy format ({id, ts, peers: [...], handlers: [...]}).
  */
 function _applySnapshot(snap) {
     /* 1. Reset all tracked paths to base */
     _applyOps(_base);
 
-    /* 2. Apply snapshot deltas */
-    if (snap && snap.ops) {
+    if (!snap) { return; }
+
+    /* 2a. New format: ops-list */
+    if (snap.ops) {
         _applyOps(snap.ops);
+        return;
     }
+
+    /* 2b. Legacy format: peers + handlers arrays */
+    if (snap.peers) {
+        snap.peers.forEach(function (entry) {
+            var u = nginx.http.upstreams.find(function (u) {
+                return u.name === entry.upstream;
+            });
+            if (!u) { return; }
+            u.peers.forEach(function (p) {
+                if (p.address !== entry.address) { return; }
+                if (entry.weight !== undefined) { p.weight = entry.weight; }
+                if (entry.down   !== undefined) { p.down   = !!entry.down; }
+            });
+        });
+    }
+
+    if (snap.handlers) {
+        snap.handlers.forEach(function (entry) {
+            var loc = _findLocation(entry.path);
+            if (!loc) { return; }
+            if (entry.handler === null || entry.handler === undefined) {
+                loc.clearHandler();
+            } else {
+                var fn = _handlers[entry.handler];
+                if (fn) { loc.handler = fn; }
+            }
+        });
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ * Diff compaction                                                     *
+ * ------------------------------------------------------------------ */
+
+/*
+ * compactOps(ops [, baseOps]) — reduce an ops-list by applying these rules:
+ *
+ *   1. Last-write-wins: if the same path appears multiple times, keep only
+ *      the last op for that path (earlier ones are shadowed).
+ *
+ *   2. Identity removal: if a {path,value} op sets the value to the same
+ *      value already recorded in baseOps, the op is a no-op and is removed.
+ *      (Only applies when baseOps is supplied.)
+ *
+ * Handler ops {path, handler} are deduplicated by location path (last wins).
+ * Passing baseOps = _base removes ops that restore to the baseline.
+ */
+function compactOps(ops, baseOps) {
+    if (!ops || !ops.length) { return []; }
+
+    /* Build a base-value lookup keyed by path */
+    var baseVal = {};
+    if (baseOps) {
+        baseOps.forEach(function (b) {
+            if ('value' in b) { baseVal[b.path] = b.value; }
+        });
+    }
+
+    /* Walk in reverse; keep the LAST occurrence of each path */
+    var seen    = {};
+    var compact = [];
+
+    for (var i = ops.length - 1; i >= 0; i--) {
+        var op  = ops[i];
+        var key = ('handler' in op) ? ('H:' + op.path) : ('V:' + op.path);
+
+        if (seen[key]) { continue; }   /* earlier duplicate — skip */
+        seen[key] = true;
+
+        /* Identity removal for value ops */
+        if ('value' in op && (op.path in baseVal)
+            && op.value === baseVal[op.path])
+        {
+            continue;   /* restores to base — no-op */
+        }
+
+        compact.unshift(op);            /* preserve original order */
+    }
+
+    return compact;
 }
 
 /* ------------------------------------------------------------------ *
@@ -180,6 +266,11 @@ function _applySnapshot(snap) {
  * ------------------------------------------------------------------ */
 
 var admin = {};
+
+/* admin.options — tunables */
+admin.options = {
+    compact: false,   /* auto-compact ops on createSnapshot */
+};
 
 admin.registerHandler = function (name, fn) {
     _handlers[name] = fn;
@@ -234,10 +325,15 @@ admin.createSnapshot = function (name) {
     var id  = (seq < 10 ? '000' : seq < 100 ? '00' : seq < 1000 ? '0' : '') +
               seq + '-' + name;
 
+    var ops = _getDelta();
+    if (admin.options.compact) {
+        ops = compactOps(ops, _base);
+    }
+
     var snap = {
         id:  id,
         ts:  Math.floor(Date.now() / 1000),
-        ops: _getDelta(),
+        ops: ops,
     };
 
     _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
@@ -285,6 +381,72 @@ admin.pin = function (id) {
         if (!text) { throw new Error('snapshot not found: ' + id); }
     }
     _pinnedId = id;
+};
+
+/*
+ * admin.compactSnapshot(id) — rewrite a snapshot's ops-list in place,
+ * removing redundant ops (last-write-wins + identity removal vs base).
+ * Returns the number of ops removed.
+ */
+admin.compactSnapshot = function (id) {
+    var text = _readFile(_snapshotPath(id));
+    if (!text) { throw new Error('snapshot not found: ' + id); }
+
+    var snap;
+    try { snap = JSON.parse(text); } catch (e) {
+        throw new Error('snapshot parse error: ' + e.message);
+    }
+
+    var before  = snap.ops ? snap.ops.length : 0;
+    snap.ops    = compactOps(snap.ops || [], _base);
+    var removed = before - snap.ops.length;
+
+    _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
+    return removed;
+};
+
+/*
+ * admin.squash(ids, name) — merge multiple snapshots into a single new
+ * snapshot that encodes the net effect of applying them in sequence.
+ *
+ * The merged ops-list is built by concatenating all ops and then compacting
+ * (last-write-wins per path, identity removal).  Returns the new snapshot id.
+ */
+admin.squash = function (ids, name) {
+    if (!ids || !ids.length) { throw new Error('squash: ids array required'); }
+    if (!name)               { throw new Error('squash: name required'); }
+
+    /* Collect all ops in sequence */
+    var allOps = [];
+    ids.forEach(function (id) {
+        var text = _readFile(_snapshotPath(id));
+        if (!text) { throw new Error('squash: snapshot not found: ' + id); }
+        var snap;
+        try { snap = JSON.parse(text); } catch (e) {
+            throw new Error('squash: parse error in ' + id + ': ' + e.message);
+        }
+        if (snap.ops) {
+            snap.ops.forEach(function (op) { allOps.push(op); });
+        }
+    });
+
+    /* Compact: last-write-wins + identity removal */
+    var compacted = compactOps(allOps, _base);
+
+    var existing = admin.listSnapshots();
+    var seq = existing.length + 1;
+    var id  = (seq < 10 ? '000' : seq < 100 ? '00' : seq < 1000 ? '0' : '') +
+              seq + '-' + name;
+
+    var snap = {
+        id:  id,
+        ts:  Math.floor(Date.now() / 1000),
+        ops: compacted,
+    };
+
+    _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
+    _pinnedId = id;
+    return id;
 };
 
 /* ------------------------------------------------------------------ *
