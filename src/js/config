@@ -46,7 +46,8 @@ ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
                  $ngx_addon_dir/ngx_js_stream_listener.c \
                  $ngx_addon_dir/ngx_js_com_stream_upstream.c \
                  $ngx_addon_dir/ngx_js_stream_module.c \
-                 $ngx_addon_dir/ngx_js_http_module.c"
+                 $ngx_addon_dir/ngx_js_http_module.c \
+                 $ngx_addon_dir/ngx_js_repl.c"
 ngx_module_deps="$ngx_addon_dir/ngx_js.h \
                  $ngx_addon_dir/ngx_js_com.h \
                  $ngx_addon_dir/ngx_js_worker.h \
@@ -54,7 +55,8 @@ ngx_module_deps="$ngx_addon_dir/ngx_js.h \
                  $ngx_addon_dir/ngx_js_socket.h \
                  $ngx_addon_dir/ngx_js_listener.h \
                  $ngx_addon_dir/ngx_js_stream_listener.h \
-                 $ngx_addon_dir/ngx_js_stream_module.h"
+                 $ngx_addon_dir/ngx_js_stream_module.h \
+                 $ngx_addon_dir/ngx_js_repl.h"
 ngx_module_libs=-lpthread
 
 . auto/module

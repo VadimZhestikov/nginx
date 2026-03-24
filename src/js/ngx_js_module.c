@@ -886,6 +886,21 @@ ngx_js_init_process(ngx_cycle_t *cycle)
      */
     JS_SetContextOpaque(w->ctx, w);
 
+    /* Update nginx.workerIdx to the actual 0-based worker index. */
+    {
+        JSValue  global, nginx_obj;
+
+        global    = JS_GetGlobalObject(w->ctx);
+        nginx_obj = JS_GetPropertyStr(w->ctx, global, "nginx");
+        JS_FreeValue(w->ctx, global);
+
+        if (!JS_IsException(nginx_obj) && !JS_IsUndefined(nginx_obj)) {
+            JS_SetPropertyStr(w->ctx, nginx_obj, "workerIdx",
+                              JS_NewInt32(w->ctx, (int32_t) ngx_worker));
+            JS_FreeValue(w->ctx, nginx_obj);
+        }
+    }
+
     /*
      * Run any functions registered via nginx.broadcast() during init_conf.
      * The context opaque is already the worker pointer at this point, so

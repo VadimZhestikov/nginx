@@ -447,6 +447,7 @@ typedef struct {
     ngx_int_t            respond_rc;  /* rc from ngx_http_output_filter */
     unsigned             responded:1;    /* set when req.respond()/finish() called */
     unsigned             headers_sent:1; /* set after writeHead()/first write() */
+    unsigned             hijacked:1;     /* set by req.hijack() */
 } ngx_js_request_opaque_t;
 
 
@@ -4132,6 +4133,51 @@ ngx_js_request_send_buffer(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * req.hijack()
+ *
+ * Takes ownership of the underlying TCP connection fd.
+ * Returns the raw file descriptor (number).
+ *
+ * After calling hijack(), the JS handler must NOT call req.respond(),
+ * req.finish(), or return normally.  The content handler will return
+ * NGX_DONE (keeping the request alive) so the connection can be used
+ * for arbitrary I/O via nginx.repl.listen().  When the connection is
+ * closed, the read handler finalises the request.
+ *
+ * Only callable from a worker process (content handler context).
+ */
+static JSValue
+ngx_js_request_hijack(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    r = op->r;
+    if (r == NULL) {
+        return JS_ThrowTypeError(ctx, "req.hijack: request already finalized");
+    }
+
+    if (ngx_process != NGX_PROCESS_WORKER) {
+        return JS_ThrowTypeError(ctx,
+                                 "req.hijack: only callable from worker process");
+    }
+
+    if (!op->hijacked) {
+        op->hijacked = 1;
+        r->main->count++;
+    }
+
+    return JS_NewInt32(ctx, (int32_t) r->connection->fd);
+}
+
+
 static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("method",        ngx_js_request_get, NULL,  0),
     JS_CGETSET_MAGIC_DEF("uri",           ngx_js_request_get, NULL,  1),
@@ -4180,6 +4226,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("sleep",               1, ngx_js_request_sleep),
     JS_CFUNC_DEF("fetch",               1, ngx_js_request_fetch),
     JS_CFUNC_DEF("sendBuffer",          1, ngx_js_request_send_buffer),
+    JS_CFUNC_DEF("hijack",              0, ngx_js_request_hijack),
 };
 
 
@@ -4775,11 +4822,20 @@ ngx_js_content_handler(ngx_http_request_t *r)
 
     /* Synchronous exception (includes interrupt-on-timeout) */
     if (JS_IsException(result)) {
+        ngx_js_request_opaque_t  *exc_op;
+
         w->current_request = NULL;
         w->request_deadline_ms = 0;
         ngx_js_log_exception(ctx, r->connection->log);
         JS_FreeValue(ctx, result);
+
+        /* If the connection was already hijacked before the throw, stay alive
+         * (don't send an HTTP error response on the hijacked fd).            */
+        exc_op = JS_GetOpaque(req_obj, ngx_js_request_class_id);
         JS_FreeValue(ctx, req_obj);
+        if (exc_op && exc_op->hijacked) {
+            return NGX_DONE;
+        }
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -4873,7 +4929,20 @@ ngx_js_content_handler(ngx_http_request_t *r)
     w->current_request = NULL;
     w->request_deadline_ms = 0;
 
-    req_op   = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+    req_op = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+
+    /*
+     * Hijacked connection: req.hijack() already incremented r->main->count.
+     * Return NGX_DONE so the content phase doesn't finalise the request;
+     * ngx_js_repl_read_handler will call ngx_http_finalize_request when the
+     * connection is closed.
+     */
+    if (req_op && req_op->hijacked) {
+        JS_FreeValue(ctx, req_obj);
+        JS_FreeValue(ctx, result);
+        return NGX_DONE;
+    }
+
     final_rc = (req_op && req_op->responded)
                ? req_op->respond_rc
                : NGX_HTTP_INTERNAL_SERVER_ERROR;

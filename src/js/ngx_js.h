@@ -159,6 +159,7 @@ typedef struct {
     ngx_str_t              wb_body;        /* whole-body filter: current body string */
     ngx_chain_t           *stream_out;     /* sendBuffer accumulator (streaming)    */
     ngx_chain_t          **stream_out_last;/* tail of stream_out                    */
+    void                  *repl;           /* ngx_js_repl_conn_t* when hijacked     */
 } ngx_js_req_ctx_t;
 
 

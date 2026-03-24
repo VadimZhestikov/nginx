@@ -17,6 +17,7 @@
 #include "ngx_js_socket.h"
 #include "ngx_js_listener.h"
 #include "ngx_js_stream_listener.h"
+#include "ngx_js_repl.h"
 
 
 /* ------------------------------------------------------------------ */
@@ -1018,6 +1019,16 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                                       "resumeAllWorkers", 0));
 
     /*
+     * nginx.workerIdx — 0-based worker index, -1 in master / init_conf.
+     * Writable so that init_process can update it to the real worker index.
+     */
+    JS_DefinePropertyValueStr(ctx, nginx_obj, "workerIdx",
+                              JS_NewInt32(ctx,
+                                  ngx_process == NGX_PROCESS_WORKER
+                                  ? (int32_t) ngx_worker : -1),
+                              JS_PROP_WRITABLE | JS_PROP_ENUMERABLE);
+
+    /*
      * nginx.workerMemoryLimit — per-worker JS heap cap in bytes (0 = none).
      * js_source scripts write this value; init_process reads it and calls
      * JS_SetMemoryLimit on the worker's private runtime copy after fork.
@@ -1084,7 +1095,44 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
+    /* nginx.repl.{eval, attach, detach, listen, _writeFd} */
+    if (ngx_js_repl_install(ctx, nginx_obj) != NGX_OK) {
+        JS_FreeValue(ctx, nginx_obj);
+        JS_FreeValue(ctx, global);
+        return NGX_ERROR;
+    }
+
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
+
+    /*
+     * Global console object: debug/log/warn/error forwarded to nginx.log.
+     * nginx.repl.attach() overrides these to also stream to the REPL fd.
+     */
+    {
+        static const char  script[] =
+            "(function(){"
+            "  var nl = nginx.log;"
+            "  function fmt(a){"
+            "    return Array.prototype.slice.call(a).map(function(x){"
+            "      return (typeof x==='object'&&x!==null)?JSON.stringify(x):String(x);"
+            "    }).join(' ');"
+            "  }"
+            "  globalThis.console = {"
+            "    debug: function(){ nl(8, fmt(arguments)); },"
+            "    log:   function(){ nl(6, fmt(arguments)); },"
+            "    warn:  function(){ nl(4, fmt(arguments)); },"
+            "    error: function(){ nl(3, fmt(arguments)); }"
+            "  };"
+            "})();";
+        JSValue  ret;
+
+        ret = JS_Eval(ctx, script, sizeof(script) - 1,
+                      "<console-init>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(ret)) {
+            ngx_js_log_exception(ctx, cycle->log);
+        }
+        JS_FreeValue(ctx, ret);
+    }
 
     /*
      * nginx.withSuspendedAcceptance(fn) — convenience wrapper (pure JS).
