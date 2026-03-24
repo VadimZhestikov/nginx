@@ -85,6 +85,12 @@
             var arg   = sp2 < 0 ? ''   : rest.slice(sp2 + 1);
 
             if (cmd === 'EVAL') {
+                var nWorkers = nginx.cycle.workers;
+                if (target < 0 || target >= nWorkers) {
+                    nginx.repl._writeFd(fd, token + ' ERR worker ' + target +
+                        ' out of range (0..' + (nWorkers - 1) + ')\n');
+                    return;
+                }
                 if (target === nginx.workerIdx) {
                     nginx.repl._writeFd(fd, _fmt(token, nginx.repl.eval(arg)));
                 } else {
