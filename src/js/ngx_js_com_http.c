@@ -7792,6 +7792,59 @@ ngx_js_http_register_classes(JSRuntime *rt)
 
 
 /*
+ * ngx_js_settable_props(ctx, obj) — return a JS array of settable property
+ * name strings for a known COM object.  Returns an empty array for objects
+ * whose class is not in the settable table.
+ *
+ * Handles: NginxLocation, NginxProxy, NginxGzip, NginxHeaders, NginxRewrite,
+ *          NginxPeer, NginxRrPeer.
+ */
+JSValue
+ngx_js_settable_props(JSContext *ctx, JSValueConst obj)
+{
+    JSClassID             cid;
+    const char * const   *names;
+    JSValue               arr;
+    uint32_t              i;
+
+    cid   = JS_GetClassID(obj);
+    names = NULL;
+
+    if (cid == ngx_js_location_class_id) {
+        names = ngx_js_loc_snap_props;
+
+    } else if (cid == ngx_js_proxy_class_id) {
+        names = ngx_js_proxy_snap_props;
+
+    } else if (cid == ngx_js_gzip_class_id) {
+        names = ngx_js_gzip_snap_props;
+
+    } else if (cid == ngx_js_headers_class_id) {
+        names = ngx_js_headers_snap_props;
+
+    } else if (cid == ngx_js_rewrite_class_id) {
+        names = ngx_js_rewrite_snap_props;
+
+    } else if (cid == ngx_js_peer_class_id
+               || cid == ngx_js_rr_peer_class_id) {
+        names = ngx_js_peer_settable_props();
+    }
+
+    arr = JS_NewArray(ctx);
+
+    if (JS_IsException(arr) || names == NULL) {
+        return arr;
+    }
+
+    for (i = 0; names[i] != NULL; i++) {
+        JS_SetPropertyUint32(ctx, arr, i, JS_NewString(ctx, names[i]));
+    }
+
+    return arr;
+}
+
+
+/*
  * Build nginx.http and attach it to nginx_obj.
  *
  *   nginx.http.servers[]    — Array of NginxServer

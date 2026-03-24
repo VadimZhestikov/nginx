@@ -262,6 +262,21 @@ struct ngx_http_core_loc_conf_s;
 JSValue  ngx_js_wrap_location(JSContext *ctx,
     struct ngx_http_core_loc_conf_s *clcf);
 
+
+/*
+ * ngx_js_peer_settable_props() — returns the static settable-prop list
+ * for NginxPeer / NginxRrPeer objects.  Defined in ngx_js_com_upstream.c.
+ */
+const char * const *ngx_js_peer_settable_props(void);
+
+/*
+ * ngx_js_settable_props(ctx, obj) — returns a JS array of settable property
+ * name strings for any known COM object (NginxLocation, NginxProxy, NginxPeer,
+ * etc.).  Returns an empty array for unknown classes.
+ * Defined in ngx_js_com_http.c.
+ */
+JSValue  ngx_js_settable_props(JSContext *ctx, JSValueConst obj);
+
 /*
  * ngx_js_com_events.c — create a NginxEvents wrapper.
  * Include <ngx_event.h> before this header to get the full prototype;

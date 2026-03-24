@@ -88,6 +88,13 @@ ngx_js_peer_get(JSContext *ctx, JSValueConst this_val, int magic)
 }
 
 
+const char * const *
+ngx_js_peer_settable_props(void)
+{
+    return ngx_js_peer_snap_props;
+}
+
+
 static JSValue
 ngx_js_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
 {

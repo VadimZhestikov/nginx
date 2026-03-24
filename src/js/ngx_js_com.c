@@ -931,6 +931,251 @@ ngx_js_resume_all_workers(JSContext *ctx, JSValueConst this_val,
 
 
 /* ------------------------------------------------------------------ */
+/* nginx.get / nginx.set / nginx.settable — generic path accessors      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Normalise a path string in-place: replace '[' with '.' and remove ']'.
+ * tmp must be at least path_len + 1 bytes.
+ */
+static void
+ngx_js_path_normalise(char *tmp, const char *path, size_t path_len)
+{
+    char  *p;
+
+    ngx_memcpy(tmp, path, path_len);
+    tmp[path_len] = '\0';
+
+    for (p = tmp; *p; p++) {
+        if (*p == '[') {
+            *p = '.';
+        } else if (*p == ']') {
+            ngx_memmove(p, p + 1, ngx_strlen(p));
+            p--;   /* re-examine at same position */
+        }
+    }
+}
+
+
+/*
+ * Traverse a normalised dot-path from root.
+ *
+ * stop_at_parent == 0: traverse every segment, return the final value.
+ * stop_at_parent != 0: traverse every segment except the last one;
+ *   copy the last segment name into last_key (must be ≥ 256 bytes).
+ *   Returns the parent object so the caller can set the final property.
+ *
+ * Returns the traversed object (caller owns it); JS_EXCEPTION on error.
+ */
+static JSValue
+ngx_js_path_traverse(JSContext *ctx, JSValueConst root,
+    char *path, ngx_uint_t stop_at_parent, char *last_key)
+{
+    JSValue        cur, next;
+    char          *seg, *dot;
+    char          *endptr;
+    unsigned long  n;
+
+    cur = JS_DupValue(ctx, root);
+    seg = path;
+
+    while (*seg == '.') { seg++; }   /* skip leading dots */
+
+    for (;;) {
+        if (!*seg) { break; }
+
+        dot = strchr(seg, '.');
+
+        if (stop_at_parent && dot == NULL) {
+            /*
+             * seg is the last segment (no more dots).
+             * Store it as the key for the caller and stop WITHOUT traversing.
+             */
+            if (last_key) {
+                ngx_cpystrn((u_char *) last_key, (u_char *) seg,
+                            ngx_strlen(seg) + 1);
+            }
+            break;
+        }
+
+        /* Advance past this segment */
+        if (dot) { *dot = '\0'; }
+
+        n = strtoul(seg, &endptr, 10);
+        if (*endptr == '\0' && endptr != seg) {
+            next = JS_GetPropertyUint32(ctx, cur, (uint32_t) n);
+        } else {
+            next = JS_GetPropertyStr(ctx, cur, seg);
+        }
+
+        JS_FreeValue(ctx, cur);
+        cur = next;
+
+        if (JS_IsException(cur)) {
+            return cur;
+        }
+
+        if (dot == NULL) {
+            break;
+        }
+
+        seg = dot + 1;
+        while (*seg == '.') { seg++; }
+    }
+
+    return cur;
+}
+
+
+/*
+ * nginx.get(path) — read any property in the nginx.* object tree by path.
+ *
+ * Examples:
+ *   nginx.get("http.upstreams[0].peers[0].weight")
+ *   nginx.get("http.servers[0].locations[0].root")
+ */
+static JSValue
+ngx_js_nginx_fn_get(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    const char  *path;
+    size_t       plen;
+    char         tmp[512];
+    JSValue      result;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "nginx.get: path string required");
+    }
+
+    path = JS_ToCStringLen(ctx, &plen, argv[0]);
+    if (!path) { return JS_EXCEPTION; }
+
+    if (plen + 1 > sizeof(tmp)) {
+        JS_FreeCString(ctx, path);
+        return JS_ThrowTypeError(ctx, "nginx.get: path too long");
+    }
+
+    ngx_js_path_normalise(tmp, path, plen);
+    JS_FreeCString(ctx, path);
+
+    result = ngx_js_path_traverse(ctx, this_val, tmp, 0, NULL);
+    return result;
+}
+
+
+/*
+ * nginx.set(path, value) — write any settable property in the nginx.* tree.
+ *
+ * Examples:
+ *   nginx.set("http.upstreams[0].peers[0].weight", 10)
+ *   nginx.set("http.servers[0].locations[0].root", "/new/path")
+ */
+static JSValue
+ngx_js_nginx_fn_set(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    const char  *path;
+    size_t       plen;
+    char         tmp[512];
+    char         last_key[256];
+    JSValue      parent;
+    char        *endptr;
+    unsigned long n;
+    int          rc;
+
+    if (argc < 2 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.set: path string and value required");
+    }
+
+    path = JS_ToCStringLen(ctx, &plen, argv[0]);
+    if (!path) { return JS_EXCEPTION; }
+
+    if (plen + 1 > sizeof(tmp)) {
+        JS_FreeCString(ctx, path);
+        return JS_ThrowTypeError(ctx, "nginx.set: path too long");
+    }
+
+    ngx_js_path_normalise(tmp, path, plen);
+    JS_FreeCString(ctx, path);
+
+    last_key[0] = '\0';
+    parent = ngx_js_path_traverse(ctx, this_val, tmp, 1, last_key);
+    if (JS_IsException(parent)) { return parent; }
+
+    if (last_key[0] == '\0') {
+        JS_FreeValue(ctx, parent);
+        return JS_ThrowTypeError(ctx,
+            "nginx.set: path must have at least one segment");
+    }
+
+    n = strtoul(last_key, &endptr, 10);
+    if (*endptr == '\0' && endptr != last_key) {
+        rc = JS_SetPropertyUint32(ctx, parent, (uint32_t) n,
+                                  JS_DupValue(ctx, argv[1]));
+    } else {
+        rc = JS_SetPropertyStr(ctx, parent, last_key,
+                               JS_DupValue(ctx, argv[1]));
+    }
+
+    JS_FreeValue(ctx, parent);
+
+    return (rc < 0) ? JS_EXCEPTION : JS_UNDEFINED;
+}
+
+
+/*
+ * nginx.settable(path_or_obj) — return an array of settable property names
+ * for the COM object at the given path (string) or directly (object).
+ *
+ * Examples:
+ *   nginx.settable("http.upstreams[0].peers[0]")
+ *   // → ["weight","maxFails","down","failTimeout","maxConns"]
+ *
+ *   nginx.settable(nginx.http.servers[0].locations[0])
+ *   // → ["root","sendfile","tcpNopush", ...]
+ */
+static JSValue
+ngx_js_nginx_fn_settable(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue     obj;
+    const char *path;
+    size_t      plen;
+    char        tmp[512];
+    JSValue     result;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.settable: path or object required");
+    }
+
+    if (JS_IsString(argv[0])) {
+        path = JS_ToCStringLen(ctx, &plen, argv[0]);
+        if (!path) { return JS_EXCEPTION; }
+
+        if (plen + 1 > sizeof(tmp)) {
+            JS_FreeCString(ctx, path);
+            return JS_ThrowTypeError(ctx, "nginx.settable: path too long");
+        }
+
+        ngx_js_path_normalise(tmp, path, plen);
+        JS_FreeCString(ctx, path);
+
+        obj = ngx_js_path_traverse(ctx, this_val, tmp, 0, NULL);
+        if (JS_IsException(obj)) { return obj; }
+
+        result = ngx_js_settable_props(ctx, obj);
+        JS_FreeValue(ctx, obj);
+        return result;
+    }
+
+    /* Object passed directly */
+    return ngx_js_settable_props(ctx, argv[0]);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* ngx_js_com_init — main entry point called from ngx_js_module.c      */
 /* ------------------------------------------------------------------ */
 
@@ -1101,6 +1346,15 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_FreeValue(ctx, global);
         return NGX_ERROR;
     }
+
+    /* nginx.get / nginx.set / nginx.settable */
+    JS_SetPropertyStr(ctx, nginx_obj, "get",
+                      JS_NewCFunction(ctx, ngx_js_nginx_fn_get, "get", 1));
+    JS_SetPropertyStr(ctx, nginx_obj, "set",
+                      JS_NewCFunction(ctx, ngx_js_nginx_fn_set, "set", 2));
+    JS_SetPropertyStr(ctx, nginx_obj, "settable",
+                      JS_NewCFunction(ctx, ngx_js_nginx_fn_settable,
+                                      "settable", 1));
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
 
