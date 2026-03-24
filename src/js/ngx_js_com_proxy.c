@@ -4,8 +4,8 @@
  *
  * HTTP COM layer — Stage 4: proxy_pass / ngx_http_proxy_loc_conf_t.
  *
- * Exposes location.proxy as a NginxProxy object with read-only properties:
- *   pass                string | null | "dynamic"
+ * Exposes location.proxy as a NginxProxy object with properties:
+ *   pass                string | null | "dynamic"  (r/w: set to upstream name)
  *   httpVersion         "1.0" | "1.1"
  *   connectTimeout      number (ms)
  *   sendTimeout         number (ms)
@@ -124,9 +124,9 @@ static JSValue
 ngx_js_proxy_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
     int magic)
 {
-    ngx_js_proxy_opaque_t      *op;
-    ngx_http_upstream_conf_t   *ucf;
-    int64_t                     n;
+    ngx_js_proxy_opaque_t          *op;
+    ngx_http_upstream_conf_t       *ucf;
+    int64_t                         n;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_proxy_class_id);
     if (!op) { return JS_EXCEPTION; }
@@ -134,6 +134,62 @@ ngx_js_proxy_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
     ucf = &op->plcf->upstream;
 
     switch (magic) {
+    case 0: /* pass — upstream name (e.g. "backend" or "http://backend") */
+    {
+        const char                     *cstr;
+        size_t                          slen;
+        const char                     *name;
+        size_t                          nlen;
+        u_char                         *data;
+        ngx_http_conf_ctx_t            *http_ctx;
+        ngx_http_upstream_main_conf_t  *umcf;
+        ngx_http_upstream_srv_conf_t  **uscfp;
+        ngx_uint_t                      i;
+
+        cstr = JS_ToCStringLen(ctx, &slen, val);
+        if (!cstr) { return JS_EXCEPTION; }
+
+        /* Strip optional scheme prefix to get the bare upstream name */
+        name = cstr;
+        nlen = slen;
+        if (nlen > 7 && ngx_strncmp(name, "http://", 7) == 0) {
+            name += 7; nlen -= 7;
+        } else if (nlen > 8 && ngx_strncmp(name, "https://", 8) == 0) {
+            name += 8; nlen -= 8;
+        }
+        /* Strip trailing slash */
+        while (nlen > 0 && name[nlen - 1] == '/') { nlen--; }
+
+        http_ctx = (ngx_http_conf_ctx_t *) ngx_cycle->conf_ctx[ngx_http_module.index];
+        umcf     = http_ctx->main_conf[ngx_http_upstream_module.ctx_index];
+        uscfp    = umcf->upstreams.elts;
+
+        for (i = 0; i < umcf->upstreams.nelts; i++) {
+            if (!(uscfp[i]->flags & NGX_HTTP_UPSTREAM_CREATE)) { continue; }
+            if (uscfp[i]->host.len == nlen
+                && ngx_strncasecmp(uscfp[i]->host.data,
+                                   (u_char *) name, nlen) == 0)
+            {
+                data = ngx_pnalloc(ngx_cycle->pool, slen + 1);
+                if (data == NULL) {
+                    JS_FreeCString(ctx, cstr);
+                    return JS_ThrowOutOfMemory(ctx);
+                }
+                ngx_memcpy(data, cstr, slen + 1);
+                JS_FreeCString(ctx, cstr);
+
+                op->plcf->upstream.upstream = uscfp[i];
+                op->plcf->url.data          = data;
+                op->plcf->url.len           = slen;
+                return JS_UNDEFINED;
+            }
+        }
+
+        JS_ThrowTypeError(ctx, "proxy.pass: upstream not found");
+        JS_FreeCString(ctx, cstr);
+        return JS_EXCEPTION;
+    }
+
     case 1: /* httpVersion — "1.0" or "1.1" */
     {
         const char  *s;
@@ -440,7 +496,7 @@ ngx_js_proxy_get_cache(JSContext *ctx, JSValueConst this_val)
 
 
 static const JSCFunctionListEntry ngx_js_proxy_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("pass",                ngx_js_proxy_get, NULL,  0),
+    JS_CGETSET_MAGIC_DEF("pass",                ngx_js_proxy_get, ngx_js_proxy_set,  0),
     JS_CGETSET_MAGIC_DEF("httpVersion",         ngx_js_proxy_get, ngx_js_proxy_set,  1),
     JS_CGETSET_MAGIC_DEF("connectTimeout",      ngx_js_proxy_get, ngx_js_proxy_set,  2),
     JS_CGETSET_MAGIC_DEF("sendTimeout",         ngx_js_proxy_get, ngx_js_proxy_set,  3),
