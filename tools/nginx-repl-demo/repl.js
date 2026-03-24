@@ -26,9 +26,10 @@
      * Setting it only at init_conf time (in the master, where ngx_worker=0)
      * would leave workers 1-N without a handler, silently dropping messages.
      *
-     * We also defer the register postMessage to setTimeout(0) so that
-     * ngx_js_sw_activate() runs after ngx_event_process_init() has
-     * initialised free_connections (it is NULL during ngx_js_init_process).
+     * nginx.broadcast() callbacks run from ngx_js_http_module.init_process
+     * (after ngx_event_process_init has initialised free_connections and the
+     * timer rbtree), so nginx.setTimeout() and SharedWorker.postMessage()
+     * both work correctly here.
      */
     nginx.broadcast(function () {
         relay.onmessage = function (e) {
