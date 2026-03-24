@@ -39,9 +39,11 @@ import * as os  from 'os';
 
 (function () {
 
-var _base     = null;   /* [{path, value}] — baseline of all settable peer props */
-var _handlers = {};     /* name → function(req) */
-var _pinnedId = null;   /* id of snapshot to apply on next restart */
+var _base            = null;   /* [{path, value}] — baseline of all settable peer props */
+var _baseServerNames = null;   /* [name, ...] — server names at init */
+var _baseLocations   = null;   /* {name: [pattern, ...]} — per-server location patterns at init */
+var _handlers        = {};     /* name → function(req) */
+var _pinnedId        = null;   /* id of snapshot to apply on next restart */
 
 /* ------------------------------------------------------------------ *
  * Helpers                                                             *
@@ -106,6 +108,13 @@ function _captureBaseState() {
     });
 
     _base = ops;
+
+    /* Structural baseline: server names and per-server location patterns */
+    _baseServerNames = nginx.http.servers.map(function (s) { return s.name; });
+    _baseLocations = {};
+    nginx.http.servers.forEach(function (s) {
+        _baseLocations[s.name] = s.locations.map(function (l) { return l.pattern; });
+    });
 }
 
 /* ------------------------------------------------------------------ *
@@ -118,12 +127,49 @@ function _captureBaseState() {
  */
 function _getDelta() {
     var delta = [];
+
+    /* Property delta: peer props that differ from base */
     _base.forEach(function (entry) {
         var cur = nginx.get(entry.path);
         if (cur !== entry.value) {
             delta.push({ path: entry.path, value: cur });
         }
     });
+
+    /* Structural delta: servers added after init */
+    nginx.http.servers.forEach(function (s) {
+        if (_baseServerNames.indexOf(s.name) < 0) {
+            delta.push({ op: 'addServer', name: s.name });
+        }
+    });
+
+    /* Structural delta: servers removed since init */
+    _baseServerNames.forEach(function (name) {
+        var found = nginx.http.servers.find(function (s) { return s.name === name; });
+        if (!found) {
+            delta.push({ op: 'removeServer', name: name });
+        }
+    });
+
+    /* Structural delta: locations added/removed per base server */
+    nginx.http.servers.forEach(function (s) {
+        if (_baseServerNames.indexOf(s.name) < 0) { return; } /* skip new servers */
+        var baseLocs = _baseLocations[s.name] || [];
+
+        s.locations.forEach(function (l) {
+            if (baseLocs.indexOf(l.pattern) < 0) {
+                delta.push({ op: 'addLocation', serverName: s.name, pattern: l.pattern });
+            }
+        });
+
+        baseLocs.forEach(function (pat) {
+            var found = s.locations.find(function (l) { return l.pattern === pat; });
+            if (!found) {
+                delta.push({ op: 'removeLocation', serverName: s.name, pattern: pat });
+            }
+        });
+    });
+
     return delta;
 }
 
@@ -135,6 +181,54 @@ function _getDelta() {
 function _applyOps(ops) {
     if (!ops || !ops.length) { return; }
     ops.forEach(function (op) {
+        /* Structural ops */
+        if (op.op === 'addServer') {
+            nginx.http.addServer(op.name);
+            nginx.http.rebuildVhostDispatch();
+            return;
+        }
+        if (op.op === 'removeServer') {
+            nginx.http.removeServer(op.name);
+            nginx.http.rebuildVhostDispatch();
+            return;
+        }
+        if (op.op === 'addLocation') {
+            var srvAdd = nginx.http.servers.find(function (s) {
+                return s.name === op.serverName;
+            });
+            if (!srvAdd) {
+                nginx.log('admin: addLocation: server not found: ' + op.serverName);
+                return;
+            }
+            var loc = srvAdd.addLocation(op.pattern);
+            if (op.handler) {
+                var fn = _handlers[op.handler];
+                if (fn) { loc.handler = fn; }
+                else { nginx.log('admin: addLocation: unknown handler: ' + op.handler); }
+            }
+            return;
+        }
+        if (op.op === 'removeLocation') {
+            var srvRm = nginx.http.servers.find(function (s) {
+                return s.name === op.serverName;
+            });
+            if (srvRm) { srvRm.removeLocation(op.pattern); }
+            return;
+        }
+        if (op.op === 'addListener') {
+            var sock = nginx.createSocket(op.address);
+            var listener = nginx.http.attach(sock);
+            if (op.serverName !== undefined) {
+                var srvL = nginx.http.servers.find(function (s) {
+                    return s.name === op.serverName;
+                });
+                if (srvL) { listener.addServer(srvL); }
+                else { nginx.log('admin: addListener: server not found: ' + op.serverName); }
+            }
+            return;
+        }
+
+        /* Property / handler ops */
         if ('handler' in op) {
             var loc = _findLocation(op.path);
             if (!loc) {
@@ -169,8 +263,63 @@ function _applyOps(ops) {
  * the legacy format ({id, ts, peers: [...], handlers: [...]}).
  */
 function _applySnapshot(snap) {
-    /* 1. Reset all tracked paths to base */
+    /* 1. Reset all tracked peer prop paths to base */
     _applyOps(_base);
+
+    /* 2. Reset structural state to base:
+     *    - remove servers that were added after init
+     *    - remove locations that were added to base servers after init
+     * Note: servers/locations removed since init are NOT restored (irreversible).
+     */
+    if (_baseServerNames) {
+        var srvChanged = false;
+
+        /* Collect wrappers AND names for extra-server removal.
+         * Keep the JS wrapper objects alive (held in removedRefs) until
+         * AFTER rebuildVhostDispatch() so that the QuickJS finalizer does
+         * not destroy op->tree_pool / op->dyn_pool prematurely.
+         * rebuildVhostDispatch iterates entry->servers (already spliced),
+         * but having the pools alive avoids any subtle use-after-free if
+         * QuickJS runs an internal GC pass during the rebuild. */
+        var serversToRemove = [];
+        var removedRefs     = [];
+        nginx.http.servers.forEach(function (s) {
+            if (_baseServerNames.indexOf(s.name) < 0) {
+                removedRefs.push(s);   /* +1 ref — blocks finalizer */
+                serversToRemove.push(s.name);
+            }
+        });
+        serversToRemove.forEach(function (name) {
+            nginx.http.removeServer(name);
+            srvChanged = true;
+        });
+
+        /* Rebuild the vhost hash after server removal; pools still live. */
+        if (srvChanged) {
+            nginx.http.rebuildVhostDispatch();
+        }
+
+        /* Release held references — finalizers run now, after the hash
+         * is already updated and no longer routes to the removed cscfs. */
+        removedRefs = null;
+
+        /* Remove locations added to base servers after init.
+         * Location changes do NOT require rebuildVhostDispatch (that is
+         * only for server-level dispatch). */
+        nginx.http.servers.forEach(function (s) {
+            var baseLocs = _baseLocations[s.name];
+            if (!baseLocs) { return; }
+            var locsToRemove = [];
+            s.locations.forEach(function (l) {
+                if (baseLocs.indexOf(l.pattern) < 0) {
+                    locsToRemove.push(l.pattern);
+                }
+            });
+            locsToRemove.forEach(function (pat) {
+                s.removeLocation(pat);
+            });
+        });
+    }
 
     if (!snap) { return; }
 
@@ -243,7 +392,15 @@ function compactOps(ops, baseOps) {
 
     for (var i = ops.length - 1; i >= 0; i--) {
         var op  = ops[i];
-        var key = ('handler' in op) ? ('H:' + op.path) : ('V:' + op.path);
+        var key;
+        if ('op' in op) {
+            key = 'S:' + op.op + ':' + (op.name || '') + ':' +
+                  (op.serverName || '') + ':' + (op.pattern || '') + ':' + (op.address || '');
+        } else if ('handler' in op) {
+            key = 'H:' + op.path;
+        } else {
+            key = 'V:' + op.path;
+        }
 
         if (seen[key]) { continue; }   /* earlier duplicate — skip */
         seen[key] = true;
@@ -329,6 +486,32 @@ admin.createSnapshot = function (name) {
     if (admin.options.compact) {
         ops = compactOps(ops, _base);
     }
+
+    var snap = {
+        id:  id,
+        ts:  Math.floor(Date.now() / 1000),
+        ops: ops,
+    };
+
+    _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
+    _pinnedId = id;
+    return id;
+};
+
+/*
+ * admin.createRawSnapshot(name, ops) — write a snapshot with an explicit
+ * ops-list instead of computing the current delta.  Useful for tests and
+ * tooling that need to inject structural ops (addLocation, addServer, etc.)
+ * along with handler names that cannot be auto-captured by createSnapshot().
+ */
+admin.createRawSnapshot = function (name, ops) {
+    if (!name) { throw new Error('snapshot name required'); }
+    if (!ops || !Array.isArray(ops)) { throw new Error('ops array required'); }
+
+    var existing = admin.listSnapshots();
+    var seq = existing.length + 1;
+    var id  = (seq < 10 ? '000' : seq < 100 ? '00' : seq < 1000 ? '0' : '') +
+              seq + '-' + name;
 
     var snap = {
         id:  id,

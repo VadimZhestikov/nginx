@@ -5448,11 +5448,34 @@ ngx_js_location_fn_clone(JSContext *ctx, JSValueConst this_val,
 static void
 ngx_js_server_finalizer(JSRuntime *rt, JSValue val)
 {
-    ngx_js_server_opaque_t *op;
+    ngx_js_server_opaque_t   *op;
+    ngx_http_core_loc_conf_t *root_clcf;
 
     op = JS_GetOpaque(val, ngx_js_server_class_id);
     if (op) {
         if (op->tree_pool) {
+            /*
+             * tree_pool owns the BST nodes (static_locations),
+             * regex_locations array, and named_locations array.
+             * NULL these pointers out before destroying the pool so
+             * that no stale pointer remains in any clcf after we free
+             * the memory — e.g. the request-phase location matcher or
+             * another finalizer running during JS_FreeRuntime teardown.
+             */
+            if (op->cscf && op->cscf->ctx) {
+                root_clcf = op->cscf->ctx->loc_conf[
+                                ngx_http_core_module.ctx_index];
+                if (root_clcf) {
+                    root_clcf->static_locations = NULL;
+#if (NGX_PCRE)
+                    root_clcf->regex_locations  = NULL;
+#endif
+                }
+            }
+            if (op->cscf) {
+                op->cscf->named_locations = NULL;
+            }
+
             ngx_destroy_pool(op->tree_pool);
             op->tree_pool = NULL;
         }
@@ -6264,10 +6287,17 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
      *
      * The individual name.data pointers are in cycle->pool already, so
      * copying the ngx_str_t structs is sufficient — no deep copy needed.
+     *
+     * We also relocate cscf->server_names.elts into cycle->pool so that
+     * rebuildVhostDispatch() can safely iterate the full server_names
+     * array (including sn->regex and sn->server fields) in worker context,
+     * long after cf->temp_pool has been destroyed.
      */
     if (ngx_process != NGX_PROCESS_WORKER
         && cscf->server_names.nelts > 0)
     {
+        ngx_http_server_name_t  *sn_copy;
+
         op->nnames = cscf->server_names.nelts;
 
         op->names = ngx_palloc(cycle->pool,
@@ -6282,6 +6312,19 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
         for (n = 0; n < op->nnames; n++) {
             op->names[n] = sn[n].name;
         }
+
+        /* Relocate the elts array itself so it survives cf->temp_pool
+         * destruction.  The pointer fields inside each entry (regex,
+         * server, name.data) already live in cycle->pool.             */
+        sn_copy = ngx_palloc(cycle->pool,
+                             op->nnames * sizeof(ngx_http_server_name_t));
+        if (sn_copy == NULL) {
+            js_free(ctx, op);
+            return JS_EXCEPTION;
+        }
+        ngx_memcpy(sn_copy, sn,
+                   op->nnames * sizeof(ngx_http_server_name_t));
+        cscf->server_names.elts = sn_copy;
     }
 
     /*
