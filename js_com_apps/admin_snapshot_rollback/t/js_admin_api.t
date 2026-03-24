@@ -105,7 +105,7 @@ like($r_list1, qr/0001-w7/, 'list1: new snapshot id in list');
 # 5. GET /admin/snapshots/:id — returns snapshot content with weight 7
 my $r_snap = http_get("/admin/snapshots/$snap_id");
 like($r_snap, qr/200/,          'snap_get: 200 response');
-like($r_snap, qr/"weight".*[^1-69]7|7.*"weight"/, 'snap_get: snapshot has weight 7');
+like($r_snap, qr/weight.*\b7\b|\b7\b.*weight/s, 'snap_get: snapshot has weight 7');
 
 # 6. POST /admin/apply/:id — re-apply after weight reset
 http_get('/weight?w=1');    # reset to 1

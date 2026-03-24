@@ -2,7 +2,7 @@ import * as std from 'std';
 import * as os  from 'os';
 
 /*
- * admin.js — nginx dynamic-config admin with snapshot / rollback.
+ * admin.js — nginx dynamic-config admin with ops-list snapshots.
  *
  * Exposes nginx.admin with:
  *
@@ -16,24 +16,30 @@ import * as os  from 'os';
  *
  * Snapshot JSON format:
  *   {
- *     "id":       "0001-my-snapshot",
- *     "ts":       1710000000,
- *     "peers": [
- *       { "upstream": "backend", "address": "127.0.0.1:8091", "weight": 10,
- *         "down": false }
- *     ],
- *     "handlers": [
- *       { "path": "/foo/", "handler": "myHandler" }
+ *     "id":  "0001-my-snapshot",
+ *     "ts":  1710000000,
+ *     "ops": [
+ *       {"path": "http.upstreams[0].peers[0].weight", "value": 10},
+ *       {"path": "http.upstreams[0].peers[1].down",   "value": true},
+ *       {"path": "/foo/", "handler": "myHandler"}
  *     ]
  *   }
  *
+ * Each op is either:
+ *   {path, value}     — set a property via nginx.set(path, value)
+ *   {path, handler}   — install/clear a named JS handler on a location
+ *
  * Handler names are resolved via nginx.admin.registerHandler(name, fn).
- * A null handler name means clearHandler() is called for that location.
+ * A null handler means clearHandler() is called for that location.
+ *
+ * Base-state capture enumerates all settable properties of every upstream peer
+ * via nginx.settable(), so the diff automatically covers any peer scalar
+ * (weight, down, maxFails, failTimeout, maxConns).
  */
 
 (function () {
 
-var _base     = null;   /* base state captured at startup */
+var _base     = null;   /* [{path, value}] — baseline of all settable peer props */
 var _handlers = {};     /* name → function(req) */
 var _pinnedId = null;   /* id of snapshot to apply on next restart */
 
@@ -41,23 +47,16 @@ var _pinnedId = null;   /* id of snapshot to apply on next restart */
  * Helpers                                                             *
  * ------------------------------------------------------------------ */
 
-function _findUpstream(name) {
-    return nginx.http.upstreams.find(function (u) {
-        return u.name === name;
-    });
-}
-
-function _findLocation(path) {
+function _findLocation(locPath) {
     var loc = null;
     nginx.http.servers.forEach(function (srv) {
         srv.locations.forEach(function (l) {
-            if (l.path === path) { loc = l; }
+            if (l.path === locPath) { loc = l; }
         });
     });
     return loc;
 }
 
-/* Snapshot directory — co-located with this script */
 var _snapshotsDir = nginx.cycle.prefix + 'snapshots/';
 
 function _snapshotPath(id) {
@@ -76,7 +75,6 @@ function _writeFile(path, text) {
 }
 
 function _listFiles(dir) {
-    /* os.readdir returns [names, err] */
     var res = os.readdir(dir);
     if (res[1] !== 0) { return []; }
     return res[0].filter(function (n) {
@@ -90,70 +88,71 @@ function _listFiles(dir) {
 
 /*
  * _captureBaseState() — called once at init_conf time.
- * Records the as-delivered upstream peer weights/down flags so that
- * applySnapshot can always reset to this baseline before applying a delta.
+ *
+ * Walks every upstream peer and records each settable property value as a
+ * {path, value} entry.  nginx.settable(peer) returns the canonical list
+ * (weight, maxFails, down, failTimeout, maxConns) so no hardcoding is needed.
  */
 function _captureBaseState() {
-    var peers = [];
+    var ops = [];
 
-    nginx.http.upstreams.forEach(function (u) {
-        u.peers.forEach(function (p) {
-            peers.push({
-                upstream: u.name,
-                address:  p.address,
-                weight:   p.weight,
-                down:     !!p.down,
+    nginx.http.upstreams.forEach(function (u, ui) {
+        u.peers.forEach(function (p, pi) {
+            var base = 'http.upstreams[' + ui + '].peers[' + pi + ']';
+            nginx.settable(p).forEach(function (prop) {
+                ops.push({ path: base + '.' + prop, value: p[prop] });
             });
         });
     });
 
-    _base = { peers: peers };
+    _base = ops;
 }
 
 /* ------------------------------------------------------------------ *
- * Sync helpers                                                        *
+ * Ops helpers                                                         *
  * ------------------------------------------------------------------ */
 
 /*
- * Apply a peers array (from a snapshot or from _base) to the live config.
- * Only weight and down are mutable; address is used for lookup only.
+ * _getDelta() — compare every tracked path against its base value.
+ * Returns only the entries that differ (the ops-list diff).
  */
-function _syncPeers(peersArr) {
-    if (!peersArr || !peersArr.length) { return; }
-
-    peersArr.forEach(function (entry) {
-        var u = _findUpstream(entry.upstream);
-        if (!u) { return; }
-
-        u.peers.forEach(function (p) {
-            if (p.address !== entry.address) { return; }
-            if (entry.weight !== undefined) { p.weight = entry.weight; }
-            if (entry.down   !== undefined) { p.down   = !!entry.down; }
-        });
+function _getDelta() {
+    var delta = [];
+    _base.forEach(function (entry) {
+        var cur = nginx.get(entry.path);
+        if (cur !== entry.value) {
+            delta.push({ path: entry.path, value: cur });
+        }
     });
+    return delta;
 }
 
 /*
- * Apply a handlers array from a snapshot.
- * Each entry: { "path": "/foo/", "handler": "name" | null }
- * null → clearHandler(); a registered name → location.handler = fn.
+ * _applyOps(ops) — apply an ops-list to the live configuration.
+ * {path, value}   → nginx.set(path, value)
+ * {path, handler} → install or clear the named handler on the location
  */
-function _syncLocations(handlersArr) {
-    if (!handlersArr || !handlersArr.length) { return; }
-
-    handlersArr.forEach(function (entry) {
-        var loc = _findLocation(entry.path);
-        if (!loc) { return; }
-
-        if (entry.handler === null || entry.handler === undefined) {
-            loc.clearHandler();
-        } else {
-            var fn = _handlers[entry.handler];
-            if (!fn) {
-                nginx.log('admin: unknown handler name: ' + entry.handler);
+function _applyOps(ops) {
+    if (!ops || !ops.length) { return; }
+    ops.forEach(function (op) {
+        if ('handler' in op) {
+            var loc = _findLocation(op.path);
+            if (!loc) {
+                nginx.log('admin: location not found: ' + op.path);
                 return;
             }
-            loc.handler = fn;
+            if (op.handler === null || op.handler === undefined) {
+                loc.clearHandler();
+            } else {
+                var fn = _handlers[op.handler];
+                if (!fn) {
+                    nginx.log('admin: unknown handler name: ' + op.handler);
+                    return;
+                }
+                loc.handler = fn;
+            }
+        } else {
+            nginx.set(op.path, op.value);
         }
     });
 }
@@ -163,17 +162,16 @@ function _syncLocations(handlersArr) {
  * ------------------------------------------------------------------ */
 
 /*
- * Reset to base state, then apply snap's deltas.
+ * _applySnapshot(snap) — reset to base, then apply snap's ops.
  * Called inside nginx.broadcast() so it runs on every worker.
  */
 function _applySnapshot(snap) {
-    /* 1. Reset peers to base */
-    _syncPeers(_base.peers);
+    /* 1. Reset all tracked paths to base */
+    _applyOps(_base);
 
     /* 2. Apply snapshot deltas */
-    if (snap) {
-        _syncPeers(snap.peers);
-        _syncLocations(snap.handlers);
+    if (snap && snap.ops) {
+        _applyOps(snap.ops);
     }
 }
 
@@ -193,32 +191,38 @@ admin.listSnapshots = function () {
     });
 };
 
+/*
+ * admin.state() — return the current live config delta vs base as an ops-list.
+ * The returned object has a `peers` field for backward compatibility with
+ * tooling that expects the old format, plus `ops` for the new format.
+ */
 admin.state = function () {
     if (!_base) { return null; }
-    var result = { peers: [], handlers: [] };
 
-    nginx.http.upstreams.forEach(function (u) {
-        u.peers.forEach(function (p) {
-            /* find matching base entry */
-            var base = null;
-            _base.peers.forEach(function (b) {
-                if (b.upstream === u.name && b.address === p.address) {
-                    base = b;
-                }
-            });
-            if (!base) { return; }
-            if (p.weight !== base.weight || !!p.down !== base.down) {
-                result.peers.push({
-                    upstream: u.name,
-                    address:  p.address,
-                    weight:   p.weight,
-                    down:     !!p.down,
-                });
-            }
-        });
+    var delta = _getDelta();
+
+    /* Backward-compat: also build a peers array from delta ops */
+    var peersMap = {};
+    delta.forEach(function (op) {
+        /* Parse "http.upstreams[ui].peers[pi].prop" */
+        var m = op.path.match(/^http\.upstreams\[(\d+)\]\.peers\[(\d+)\]\.(\w+)$/);
+        if (!m) { return; }
+        var key = m[1] + ',' + m[2];
+        if (!peersMap[key]) {
+            var u = nginx.http.upstreams[parseInt(m[1], 10)];
+            var p = u ? u.peers[parseInt(m[2], 10)] : null;
+            peersMap[key] = {
+                upstream: u ? u.name : '?',
+                address:  p ? p.address : '?',
+            };
+        }
+        peersMap[key][m[3]] = op.value;
     });
 
-    return result;
+    var peers = [];
+    Object.keys(peersMap).forEach(function (k) { peers.push(peersMap[k]); });
+
+    return { ops: delta, peers: peers };
 };
 
 admin.createSnapshot = function (name) {
@@ -231,10 +235,9 @@ admin.createSnapshot = function (name) {
               seq + '-' + name;
 
     var snap = {
-        id:       id,
-        ts:       Math.floor(Date.now() / 1000),
-        peers:    admin.state().peers,
-        handlers: admin.state().handlers,
+        id:  id,
+        ts:  Math.floor(Date.now() / 1000),
+        ops: _getDelta(),
     };
 
     _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
@@ -263,13 +266,12 @@ admin.rollback = function () {
     var list = admin.listSnapshots();
     if (!list.length) { throw new Error('no snapshots available'); }
 
-    var idx = _pinnedId ? list.indexOf(_pinnedId) : list.length;
+    var idx  = _pinnedId ? list.indexOf(_pinnedId) : list.length;
     var prev = idx > 0 ? list[idx - 1] : null;
 
     if (prev) {
         admin.applySnapshot(prev);
     } else {
-        /* Roll back to clean base state */
         nginx.broadcast(function () { _applySnapshot(null); });
         _pinnedId = null;
     }
