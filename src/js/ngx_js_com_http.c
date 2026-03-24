@@ -332,6 +332,7 @@ ngx_js_parse_rw_mode(JSContext *ctx, JSValueConst mode_val, uint32_t *out)
  *   18 — rewrite           (r/o: NginxRewrite for rewrite/set/return conf)
  *   19 — access            (r/o: NginxAccess for allow/deny rules)
  *   20 — auth              (r/o: NginxAuth for auth_basic realm/user_file)
+ *   82 — hasHandler        (r/o: bool, true when a JS content handler is set)
  */
 static JSValue
 ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
@@ -1126,6 +1127,14 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
             js_free(ctx, buf);
             return s;
         }
+
+    case 82: /* hasHandler — true when a JS content handler is installed */
+    {
+        ngx_js_loc_conf_t  *jlcf;
+
+        jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+        return JS_NewBool(ctx, jlcf && jlcf->handler_idx >= 0);
+    }
 
     }
 
@@ -3680,6 +3689,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("directioAlignment",        ngx_js_location_get, ngx_js_location_set, 79),
     JS_CGETSET_MAGIC_DEF("matchType",                ngx_js_location_get, NULL,                80),
     JS_CGETSET_MAGIC_DEF("pattern",                 ngx_js_location_get, NULL,                81),
+    JS_CGETSET_MAGIC_DEF("hasHandler",              ngx_js_location_get, NULL,                82),
     JS_CGETSET_DEF       ("errorPage",             ngx_js_location_get_error_page,
                                                    ngx_js_location_set_error_page),
 
