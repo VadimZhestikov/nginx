@@ -19,6 +19,7 @@
 #include <quickjs-libc.h>
 #include "ngx_js.h"
 #include "ngx_js_com.h"
+#include "ngx_js_sw.h"
 
 
 /* ------------------------------------------------------------------ */
@@ -4737,6 +4738,11 @@ ngx_js_content_handler(ngx_http_request_t *r)
 
     /* F4: lazily activate the bcast event handler on first request */
     ngx_js_bcast_ensure_active(w);
+
+    /* Activate this worker's channel for every static SharedWorker so that
+     * relay messages from the SW thread are delivered even to workers that
+     * have never called sw.postMessage() themselves. */
+    ngx_js_sw_ensure_all_active(w->ctx);
 
     /* Allocate the request-lifetime JS context; lives for the full request */
     rctx = ngx_pcalloc(r->pool, sizeof(ngx_js_req_ctx_t));

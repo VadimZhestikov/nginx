@@ -46,61 +46,43 @@ def cyan(s):   return f'\x1b[36m{s}\x1b[0m'
 def yellow(s): return f'\x1b[33m{s}\x1b[0m'
 def bold(s):   return f'\x1b[1m{s}\x1b[0m'
 
-# ── TCP connect + HTTP upgrade (with worker-selection retry) ──────────────────
+# ── TCP connect + HTTP upgrade ────────────────────────────────────────────────
 def _connect_and_upgrade():
-    """Connect to the REPL endpoint, retrying if nginx sends us to a wrong worker.
-    Returns (sock, leftover_bytes)."""
+    """Connect to the REPL endpoint.  Returns (sock, leftover_bytes).
+    When WORKER >= 0 the server relays all evals to that worker via a
+    SharedWorker broker — no retry needed."""
     qs = 'loglevel=2&nginxlevel=4'
     if worker >= 0:
         qs += f'&w={worker}'
 
-    for attempt in range(50):
-        s = socket.create_connection((host, port), timeout=10)
-        s.settimeout(None)
+    s = socket.create_connection((host, port), timeout=10)
+    s.settimeout(None)
 
-        req = (
-            f'GET {path}?{qs} HTTP/1.1\r\n'
-            f'Host: {host}:{port}\r\n'
-            f'Connection: upgrade\r\n'
-            f'Upgrade: nginx-repl\r\n'
-            f'\r\n'
-        )
-        s.sendall(req.encode())
+    req = (
+        f'GET {path}?{qs} HTTP/1.1\r\n'
+        f'Host: {host}:{port}\r\n'
+        f'Connection: upgrade\r\n'
+        f'Upgrade: nginx-repl\r\n'
+        f'\r\n'
+    )
+    s.sendall(req.encode())
 
-        # Read response headers
-        buf = b''
-        while b'\r\n\r\n' not in buf:
-            chunk = s.recv(4096)
-            if not chunk:
-                s.close()
-                sys.exit('server closed connection during handshake')
-            buf += chunk
-
-        headers_raw, _, leftover = buf.partition(b'\r\n\r\n')
-        status_line = headers_raw.split(b'\r\n')[0].decode(errors='replace')
-
-        if '101' in status_line:
-            return s, leftover   # success
-
-        if '421' in status_line:
-            # Wrong worker — read body (actual worker index) and retry
-            body = leftover
-            try:
-                # Content-Length may be present; read a few more bytes to be safe
-                chunk = s.recv(16)
-                body += chunk
-            except Exception:
-                pass
+    buf = b''
+    while b'\r\n\r\n' not in buf:
+        chunk = s.recv(4096)
+        if not chunk:
             s.close()
-            actual = body.strip().decode(errors='replace')
-            print(cyan(f'[worker {actual} → retrying for worker {worker}]'),
-                  file=sys.stderr)
-            continue
+            sys.exit('server closed connection during handshake')
+        buf += chunk
 
-        s.close()
-        sys.exit(f'upgrade failed: {status_line}')
+    headers_raw, _, leftover = buf.partition(b'\r\n\r\n')
+    status_line = headers_raw.split(b'\r\n')[0].decode(errors='replace')
 
-    sys.exit(f'could not reach worker {worker} after 50 attempts')
+    if '101' in status_line or '200' in status_line:
+        return s, leftover
+
+    s.close()
+    sys.exit(f'upgrade failed: {status_line}')
 
 
 sock, leftover = _connect_and_upgrade()
@@ -202,7 +184,7 @@ def _print_log(line):
     print(f'\r{prefix} {msg}', file=sys.stderr)
 
 # ── main REPL loop ────────────────────────────────────────────────────────────
-worker_label = f'  worker {worker}' if worker >= 0 else '  (any worker)'
+worker_label = f'  → worker {worker}' if worker >= 0 else ''
 print(bold('nginx JS REPL') + f'  {host}:{port}{path}' + worker_label, file=sys.stderr)
 print('Type JS to evaluate.  Ctrl-D to exit.\n', file=sys.stderr)
 

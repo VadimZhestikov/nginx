@@ -130,6 +130,13 @@ int  ngx_js_socket_mgr_broadcast(uint32_t handle,
 int  ngx_js_mgr_accept_control(uint32_t cmd_type);
 
 /*
+ * Activate this worker's channel for every static SharedWorker.
+ * Idempotent; safe to call on every request (no-op after first call).
+ * Must only be called from within the nginx event loop.
+ */
+void  ngx_js_sw_ensure_all_active(JSContext *ctx);
+
+/*
  * Return the worker-readable end of the per-worker broadcast socketpair.
  * Used by ngx_js_init_process() to register the bcast event handler.
  * Returns -1 if the broadcast infrastructure is not available.

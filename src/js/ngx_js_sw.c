@@ -1229,6 +1229,39 @@ ngx_js_sw_activate(JSContext *ctx, ngx_js_sw_state_t *state, ngx_uint_t wi)
 }
 
 
+/*
+ * ngx_js_sw_ensure_all_active — activate the current worker's channel for
+ * every static SharedWorker in jcf->sw_list.  Idempotent; skips SWs that
+ * are already active.  Must be called from within the nginx event loop
+ * (i.e. from a request handler), after ngx_event_process_init() has run.
+ *
+ * This is the SharedWorker analogue of ngx_js_bcast_ensure_active().
+ * It guarantees that relay messages sent by the SW thread to this worker
+ * are delivered even if the worker never called sw.postMessage() itself.
+ */
+void
+ngx_js_sw_ensure_all_active(JSContext *ctx)
+{
+    ngx_js_conf_t      *jcf;
+    ngx_js_sw_state_t  *sw;
+
+    if (ngx_cycle->free_connections == NULL) {
+        return;   /* event pool not ready — skip */
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL) {
+        return;
+    }
+
+    for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
+        if (ngx_worker < sw->nchannels) {
+            (void) ngx_js_sw_activate(ctx, sw, (ngx_uint_t) ngx_worker);
+        }
+    }
+}
+
+
 /* ------------------------------------------------------------------ */
 /* nginx event: message arrived from SW thread                         */
 /* ------------------------------------------------------------------ */
