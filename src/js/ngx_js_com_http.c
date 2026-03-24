@@ -227,6 +227,9 @@ static JSValue ngx_js_location_fn_remove_location(JSContext *ctx,
 static JSValue ngx_js_location_fn_clone(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 
+static JSValue ngx_js_location_fn_clear_handler(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv);
+
 static JSValue ngx_js_http_fn_match(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 
@@ -1417,6 +1420,13 @@ ngx_js_location_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
         JS_FreeValue(ctx, registry);
 
         jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+
+        /* Save original clcf->handler on the very first JS assignment so
+         * that clearHandler() can restore it later.                        */
+        if (jlcf->handler_idx < 0) {
+            jlcf->original_handler = (ngx_js_http_handler_pt) clcf->handler;
+        }
+
         jlcf->handler_idx = (ngx_int_t) idx;
 
         /* Wire up the content handler pointer */
@@ -3679,6 +3689,9 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CFUNC_DEF("setProperty",    2, ngx_js_location_fn_set_property),
     JS_CFUNC_DEF("getProperty",    1, ngx_js_location_fn_get_property),
 
+    /* Handler management */
+    JS_CFUNC_DEF("clearHandler",   0, ngx_js_location_fn_clear_handler),
+
     /* Nested-location management (requires srv_op; not on r.location) */
     JS_CFUNC_DEF("addLocation",    1, ngx_js_location_fn_add_location),
     JS_CFUNC_DEF("removeLocation", 1, ngx_js_location_fn_remove_location),
@@ -5158,6 +5171,43 @@ ngx_js_location_fn_add_location(JSContext *ctx, JSValueConst this_val,
     }
 
     return ngx_js_do_add_location(ctx, loc_op->srv_op, argc, argv);
+}
+
+
+/*
+ * loc.clearHandler()
+ *
+ * Removes the JS content handler from this location, restoring clcf->handler
+ * to the value it had before the first location.handler = fn assignment.
+ * If no JS handler was ever set this is a no-op.
+ *
+ * Typical use: rollback — when a snapshot that set a handler is replaced by
+ * one that does not mention this location's handler.
+ */
+static JSValue
+ngx_js_location_fn_clear_handler(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *loc_op;
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_js_loc_conf_t         *jlcf;
+
+    loc_op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!loc_op) {
+        return JS_EXCEPTION;
+    }
+
+    clcf = loc_op->clcf;
+    jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+
+    if (jlcf->handler_idx < 0) {
+        return JS_UNDEFINED;   /* no JS handler — nothing to do */
+    }
+
+    clcf->handler     = (ngx_http_handler_pt) jlcf->original_handler;  /* restore */
+    jlcf->handler_idx = -1;
+
+    return JS_UNDEFINED;
 }
 
 

@@ -15,6 +15,10 @@
 struct ngx_js_sw_state_s;
 typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
 
+/* Forward declaration to allow ngx_js_loc_conf_t to store original_handler */
+struct ngx_http_request_s;
+typedef ngx_int_t (*ngx_js_http_handler_pt)(struct ngx_http_request_s *r);
+
 /* Forward declaration for socket state (ngx_js_socket.h) */
 struct ngx_js_socket_state_s;
 typedef struct ngx_js_socket_state_s ngx_js_socket_state_t;
@@ -199,13 +203,16 @@ typedef struct {
  * 0 = pointer inherited from parent (copy-on-first-write on next mutation).
  */
 typedef struct {
-    ngx_int_t   handler_idx;
-    ngx_array_t *header_filters;      /* ngx_js_filter_entry_t[] */
-    ngx_array_t *body_filters;        /* ngx_js_filter_entry_t[] */
-    ngx_uint_t   own_header_filters;  /* 1 = owned; 0 = inherited */
-    ngx_uint_t   own_body_filters;
-    ngx_uint_t   body_filter_has_wb;  /* 1 if any WB_SYNC/WB_ASYNC in list */
-    ngx_pool_t  *pool;  /* cf->pool from create_loc_conf; used for filter allocs */
+    ngx_int_t             handler_idx;
+    ngx_js_http_handler_pt original_handler; /* clcf->handler before first JS
+                                              * assignment; restored by
+                                              * location.clearHandler()       */
+    ngx_array_t          *header_filters;    /* ngx_js_filter_entry_t[]      */
+    ngx_array_t          *body_filters;      /* ngx_js_filter_entry_t[]      */
+    ngx_uint_t            own_header_filters;/* 1 = owned; 0 = inherited     */
+    ngx_uint_t            own_body_filters;
+    ngx_uint_t            body_filter_has_wb;/* 1 if any WB_SYNC/WB_ASYNC    */
+    ngx_pool_t           *pool; /* cf->pool from create_loc_conf             */
 } ngx_js_loc_conf_t;
 
 
