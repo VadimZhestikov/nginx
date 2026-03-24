@@ -238,6 +238,7 @@ admin.createSnapshot = function (name) {
     };
 
     _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
+    _pinnedId = id;
     return id;
 };
 
