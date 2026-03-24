@@ -1,0 +1,59 @@
+# nginx JS REPL — demo
+#
+# All commands run from the repo root (fixes.github/tmp/nginx/).
+#
+# Layout
+# -------
+#   tools/nginx-repl-demo/nginx.conf   nginx config (4 workers, port 8099)
+#   tools/nginx-repl-demo/repl.js      js_source: REPL handler + relay setup
+#   tools/nginx-repl-demo/repl-relay.js SharedWorker that routes cross-worker EVALs
+#   tools/repl-client.py               interactive REPL client (Python 3)
+
+# ── Build ──────────────────────────────────────────────────────────────────
+make -C quickjs libquickjs.a
+
+cd nginx && auto/configure \
+  --add-module=../nginx/src/js \
+  --with-cc-opt="-I../quickjs -Wno-cast-function-type" \
+  --with-ld-opt="-L../quickjs -lquickjs -lm" \
+  --with-http_ssl_module \
+  --with-stream
+make -j$(nproc)
+cd ..
+
+# ── Start nginx ────────────────────────────────────────────────────────────
+# Run from the repo root so that relative paths in nginx.conf resolve:
+#   pid        nginx-repl-demo/nginx.pid   → tools/nginx-repl-demo/nginx.pid
+#   js_source  nginx-repl-demo/repl.js     → tools/nginx-repl-demo/repl.js
+#
+mkdir -p tools/nginx-repl-demo/logs
+nginx/objs/nginx -p tools -c nginx-repl-demo/nginx.conf
+
+# To stop:
+kill $(cat tools/nginx-repl-demo/nginx.pid)
+
+# ── Connect ────────────────────────────────────────────────────────────────
+# Any worker (nginx picks one):
+python3 tools/repl-client.py
+
+# Specific worker (0-based index, 0..3 with worker_processes 4):
+python3 tools/repl-client.py 127.0.0.1 8099 /repl/ 0
+python3 tools/repl-client.py 127.0.0.1 8099 /repl/ 1
+python3 tools/repl-client.py 127.0.0.1 8099 /repl/ 2
+python3 tools/repl-client.py 127.0.0.1 8099 /repl/ 3
+
+# Worker targeting is direct — one connection, no retries.
+# The gateway worker transparently relays EVALs to the target
+# via repl-relay.js (a SharedWorker running in the master process).
+
+# ── Session example ────────────────────────────────────────────────────────
+# $ python3 tools/repl-client.py 127.0.0.1 8099 /repl/ 2
+# nginx JS REPL  127.0.0.1:8099/repl/  → worker 2
+# Type JS to evaluate.  Ctrl-D to exit.
+#
+# >>> nginx.workerIdx
+# 2
+# >>> nginx.version
+# "1.29.6"
+# >>> 1 + 2
+# 3
