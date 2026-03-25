@@ -174,6 +174,11 @@ char *ngx_http_merge_types(ngx_conf_t *cf, ngx_array_t **keys,
 ngx_int_t ngx_http_set_default_types(ngx_conf_t *cf, ngx_array_t **types,
     ngx_str_t *default_type);
 
+/* Bootstrap the HTTP module without a parsed http{} block.
+ * Used by JS COM nginx.createHttp().
+ * directives: optional http{}-level directives string (may be NULL). */
+ngx_int_t ngx_http_init_synthesized(ngx_conf_t *cf, ngx_str_t *directives);
+
 #if (NGX_HTTP_DEGRADATION)
 ngx_uint_t  ngx_http_degraded(ngx_http_request_t *);
 #endif

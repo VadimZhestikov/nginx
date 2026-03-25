@@ -347,6 +347,224 @@ failed:
 }
 
 
+/*
+ * ngx_http_init_synthesized — initialise the HTTP module without a parsed
+ * http{} block.  Equivalent to ngx_http_block() with an empty body.
+ *
+ * Used by JS COM nginx.createHttp() so that the entire HTTP configuration
+ * can be built programmatically from a js_source script when nginx.conf
+ * has no http{} block at all.
+ *
+ * cf must have pool, temp_pool, log, and cycle populated.  cf->ctx is
+ * overwritten to the new ngx_http_conf_ctx_t during the call.
+ *
+ * On success cycle->conf_ctx[ngx_http_module.index] is set and the HTTP
+ * module is fully ready: phase engine, variable hash, and all
+ * postconfiguration handlers are initialised.
+ */
+ngx_int_t
+ngx_http_init_synthesized(ngx_conf_t *cf, ngx_str_t *directives)
+{
+    char                        *rv;
+    ngx_uint_t                   mi, m;
+    ngx_http_module_t           *module;
+    ngx_http_conf_ctx_t         *ctx;
+    ngx_http_core_main_conf_t   *cmcf;
+    int                          fd;
+    ssize_t                      n;
+    char                         tmppath[] = "/tmp/ngx_js_ch_XXXXXX";
+    ngx_str_t                    tmpstr;
+
+    if ((ngx_http_conf_ctx_t *) cf->cycle->conf_ctx[ngx_http_module.index]
+        != NULL)
+    {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                      "ngx_http_init_synthesized: http context already set");
+        return NGX_ERROR;
+    }
+
+    ctx = ngx_pcalloc(cf->pool, sizeof(ngx_http_conf_ctx_t));
+    if (ctx == NULL) {
+        return NGX_ERROR;
+    }
+
+    cf->cycle->conf_ctx[ngx_http_module.index] = (void *) ctx;
+
+    ngx_http_max_module = ngx_count_modules(cf->cycle, NGX_HTTP_MODULE);
+
+    ctx->main_conf = ngx_pcalloc(cf->pool,
+                                 sizeof(void *) * ngx_http_max_module);
+    ctx->srv_conf  = ngx_pcalloc(cf->pool,
+                                 sizeof(void *) * ngx_http_max_module);
+    ctx->loc_conf  = ngx_pcalloc(cf->pool,
+                                 sizeof(void *) * ngx_http_max_module);
+
+    if (ctx->main_conf == NULL || ctx->srv_conf == NULL
+        || ctx->loc_conf == NULL)
+    {
+        return NGX_ERROR;
+    }
+
+    cf->ctx         = ctx;
+    cf->module_type = NGX_HTTP_MODULE;
+    cf->cmd_type    = NGX_HTTP_MAIN_CONF;
+
+    /* create_main_conf / create_srv_conf / create_loc_conf */
+    for (m = 0; cf->cycle->modules[m]; m++) {
+        if (cf->cycle->modules[m]->type != NGX_HTTP_MODULE) {
+            continue;
+        }
+
+        module = cf->cycle->modules[m]->ctx;
+        mi     = cf->cycle->modules[m]->ctx_index;
+
+        if (module->create_main_conf) {
+            ctx->main_conf[mi] = module->create_main_conf(cf);
+            if (ctx->main_conf[mi] == NULL) {
+                return NGX_ERROR;
+            }
+        }
+
+        if (module->create_srv_conf) {
+            ctx->srv_conf[mi] = module->create_srv_conf(cf);
+            if (ctx->srv_conf[mi] == NULL) {
+                return NGX_ERROR;
+            }
+        }
+
+        if (module->create_loc_conf) {
+            ctx->loc_conf[mi] = module->create_loc_conf(cf);
+            if (ctx->loc_conf[mi] == NULL) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    /* preconfiguration */
+    for (m = 0; cf->cycle->modules[m]; m++) {
+        if (cf->cycle->modules[m]->type != NGX_HTTP_MODULE) {
+            continue;
+        }
+
+        module = cf->cycle->modules[m]->ctx;
+
+        if (module->preconfiguration) {
+            if (module->preconfiguration(cf) != NGX_OK) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    /*
+     * Parse optional http{}-level directives supplied by the caller.
+     * Written to a temp file so ngx_conf_parse() treats them as
+     * parse_file (required for block-aware parsing).
+     */
+    if (directives != NULL && directives->len > 0) {
+        /* ngx_conf_read_token() requires cf->args to be allocated. */
+        if (cf->args == NULL) {
+            cf->args = ngx_array_create(cf->temp_pool, 10, sizeof(ngx_str_t));
+            if (cf->args == NULL) {
+                return NGX_ERROR;
+            }
+        }
+
+        fd = mkstemp(tmppath);
+        if (fd == -1) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, ngx_errno,
+                          "ngx_http_init_synthesized: mkstemp failed");
+            return NGX_ERROR;
+        }
+
+        n = write(fd, directives->data, directives->len);
+        close(fd);
+
+        if ((size_t) n != directives->len) {
+            unlink(tmppath);
+            ngx_log_error(NGX_LOG_ERR, cf->log, ngx_errno,
+                          "ngx_http_init_synthesized: write to tmpfile failed");
+            return NGX_ERROR;
+        }
+
+        tmpstr.data = (u_char *) tmppath;
+        tmpstr.len  = ngx_strlen(tmppath);
+
+        rv = ngx_conf_parse(cf, &tmpstr);
+        unlink(tmppath);
+
+        if (rv != NGX_CONF_OK) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                          "ngx_http_init_synthesized: directive parse failed");
+            return NGX_ERROR;
+        }
+    }
+
+    cmcf = ctx->main_conf[ngx_http_core_module.ctx_index];
+
+    /* init_main_conf + merge_servers (no servers → merge is a no-op) */
+    for (m = 0; cf->cycle->modules[m]; m++) {
+        if (cf->cycle->modules[m]->type != NGX_HTTP_MODULE) {
+            continue;
+        }
+
+        module = cf->cycle->modules[m]->ctx;
+        mi     = cf->cycle->modules[m]->ctx_index;
+
+        if (module->init_main_conf) {
+            rv = module->init_main_conf(cf, ctx->main_conf[mi]);
+            if (rv != NGX_CONF_OK) {
+                return NGX_ERROR;
+            }
+        }
+
+        rv = ngx_http_merge_servers(cf, cmcf, module, mi);
+        if (rv != NGX_CONF_OK) {
+            return NGX_ERROR;
+        }
+    }
+
+    /* (no servers → skip init_locations, init_static_location_trees) */
+
+    if (ngx_http_init_phases(cf, cmcf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_init_headers_in_hash(cf, cmcf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    /* postconfiguration */
+    for (m = 0; cf->cycle->modules[m]; m++) {
+        if (cf->cycle->modules[m]->type != NGX_HTTP_MODULE) {
+            continue;
+        }
+
+        module = cf->cycle->modules[m]->ctx;
+
+        if (module->postconfiguration) {
+            if (module->postconfiguration(cf) != NGX_OK) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    if (ngx_http_variables_init_vars(cf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_init_phase_handlers(cf, cmcf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    /* ngx_http_optimize_servers handles NULL ports gracefully */
+    if (ngx_http_optimize_servers(cf, cmcf, cmcf->ports) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
 static ngx_int_t
 ngx_http_init_phases(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
 {

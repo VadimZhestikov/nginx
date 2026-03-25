@@ -8080,6 +8080,90 @@ ngx_js_settable_props(JSContext *ctx, JSValueConst obj)
 
 
 /*
+ * nginx.createHttp()
+ *
+ * Bootstraps the HTTP module at init_conf time when nginx.conf has no
+ * http{} block.  Calls ngx_http_init_synthesized() to create the full
+ * HTTP module context (phase engine, variable hash, postconfiguration
+ * handlers), then re-installs nginx.http with all its methods.
+ *
+ * After a successful call nginx.http behaves exactly as it would if an
+ * empty http{} block were present: addServer(), attach(), upstreams[],
+ * rebuildVhostDispatch() etc. are all available.
+ *
+ * Must be called at most once.  Throws if http context already exists or
+ * initialisation fails.
+ */
+static JSValue
+ngx_js_create_http(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_conf_t           fake_cf;
+    ngx_conf_file_t      fake_file;
+    ngx_cycle_t         *cycle;
+    ngx_str_t            directives, *dirp;
+    const char          *dirstr;
+    static u_char        fname[] = "[js-createHttp]";
+
+    cycle = ngx_js_http_cycle ? ngx_js_http_cycle : (ngx_cycle_t *) ngx_cycle;
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "createHttp: cycle unavailable");
+    }
+
+    if (cycle->conf_ctx[ngx_http_module.index] != NULL) {
+        return JS_ThrowInternalError(ctx,
+            "createHttp: http context already initialised"
+            " (http{} block present or createHttp() already called)");
+    }
+
+    /* Optional first argument: string of http{}-level directives */
+    dirp = NULL;
+    if (argc > 0 && JS_IsString(argv[0])) {
+        dirstr = JS_ToCStringLen(ctx, &directives.len, argv[0]);
+        if (dirstr == NULL) {
+            return JS_EXCEPTION;
+        }
+        directives.data = (u_char *) dirstr;
+        dirp = &directives;
+    }
+
+    ngx_memzero(&fake_cf,   sizeof(ngx_conf_t));
+    ngx_memzero(&fake_file, sizeof(ngx_conf_file_t));
+    fake_file.file.name.data = fname;
+    fake_file.file.name.len  = sizeof(fname) - 1;
+    fake_cf.pool             = cycle->pool;
+    fake_cf.temp_pool        = cycle->pool;
+    fake_cf.log              = cycle->log;
+    fake_cf.cycle            = cycle;
+    fake_cf.conf_file        = &fake_file;
+
+    if (ngx_http_init_synthesized(&fake_cf, dirp) != NGX_OK) {
+        if (dirp) {
+            JS_FreeCString(ctx, (const char *) directives.data);
+        }
+        return JS_ThrowInternalError(ctx,
+            "createHttp: ngx_http_init_synthesized failed");
+    }
+
+    if (dirp) {
+        JS_FreeCString(ctx, (const char *) directives.data);
+    }
+
+    /*
+     * Re-install nginx.http now that the http context exists.
+     * this_val is the nginx global object (createHttp was called as
+     * nginx.createHttp() so this === nginx).
+     */
+    if (ngx_js_http_com_install(ctx, this_val, cycle) != NGX_OK) {
+        return JS_ThrowInternalError(ctx,
+            "createHttp: ngx_js_http_com_install failed");
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
  * Build nginx.http and attach it to nginx_obj.
  *
  *   nginx.http.servers[]    — Array of NginxServer
@@ -8095,18 +8179,26 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
     ngx_http_core_srv_conf_t   **cscfp;
     ngx_uint_t                   i;
 
+    /* Save cycle always — needed by createHttp() and addServer() */
+    ngx_js_http_cycle = cycle;
+
     http_ctx = (ngx_http_conf_ctx_t *) cycle->conf_ctx[ngx_http_module.index];
     if (http_ctx == NULL) {
-        /* http{} block was not present in nginx.conf */
+        /*
+         * http{} block was not present in nginx.conf.
+         * Install nginx.createHttp() so JS can bootstrap the HTTP module
+         * on demand, and leave nginx.http as an empty placeholder object
+         * (it will be replaced by the createHttp() call).
+         */
         http_obj = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, nginx_obj, "http", http_obj);
+        JS_SetPropertyStr(ctx, nginx_obj, "createHttp",
+                          JS_NewCFunction(ctx, ngx_js_create_http,
+                                          "createHttp", 0));
         return NGX_OK;
     }
 
     cmcf = http_ctx->main_conf[ngx_http_core_module.ctx_index];
-
-    /* Save cycle for addServer() when nginx.http.servers[] is empty */
-    ngx_js_http_cycle = cycle;
 
     /* ---- Build nginx.http.servers[] ---- */
 
