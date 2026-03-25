@@ -369,6 +369,11 @@ void ngx_stream_session_handler(ngx_event_t *rev);
 void ngx_stream_finalize_session(ngx_stream_session_t *s, ngx_uint_t rc);
 
 
+/* Bootstrap the stream module without a parsed stream{} block.
+ * Used by JS COM nginx.createStream().
+ * directives: optional stream{}-level directives string (may be NULL). */
+ngx_int_t ngx_stream_init_synthesized(ngx_conf_t *cf, ngx_str_t *directives);
+
 extern ngx_module_t  ngx_stream_module;
 extern ngx_uint_t    ngx_stream_max_module;
 extern ngx_module_t  ngx_stream_core_module;

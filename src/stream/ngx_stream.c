@@ -277,6 +277,195 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/*
+ * ngx_stream_init_synthesized — initialise the stream module without a
+ * parsed stream{} block.  Equivalent to ngx_stream_block() with an empty
+ * body.
+ *
+ * Used by JS COM nginx.createStream() so that the entire stream
+ * configuration can be built programmatically from a js_source script
+ * when nginx.conf has no stream{} block at all.
+ *
+ * directives: optional stream{}-level directives (may be NULL).
+ */
+ngx_int_t
+ngx_stream_init_synthesized(ngx_conf_t *cf, ngx_str_t *directives)
+{
+    char                          *rv;
+    ngx_uint_t                     mi, m;
+    ngx_stream_module_t           *module;
+    ngx_stream_conf_ctx_t         *ctx;
+    ngx_stream_core_main_conf_t   *cmcf;
+    int                            fd;
+    ssize_t                        n;
+    char                           tmppath[] = "/tmp/ngx_js_cs_XXXXXX";
+    ngx_str_t                      tmpstr;
+
+    if (cf->cycle->conf_ctx[ngx_stream_module.index] != NULL) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                      "ngx_stream_init_synthesized: stream context already set");
+        return NGX_ERROR;
+    }
+
+    ctx = ngx_pcalloc(cf->pool, sizeof(ngx_stream_conf_ctx_t));
+    if (ctx == NULL) {
+        return NGX_ERROR;
+    }
+
+    cf->cycle->conf_ctx[ngx_stream_module.index] = (void *) ctx;
+
+    ngx_stream_max_module = ngx_count_modules(cf->cycle, NGX_STREAM_MODULE);
+
+    ctx->main_conf = ngx_pcalloc(cf->pool,
+                                 sizeof(void *) * ngx_stream_max_module);
+    ctx->srv_conf  = ngx_pcalloc(cf->pool,
+                                 sizeof(void *) * ngx_stream_max_module);
+
+    if (ctx->main_conf == NULL || ctx->srv_conf == NULL) {
+        return NGX_ERROR;
+    }
+
+    cf->ctx         = ctx;
+    cf->module_type = NGX_STREAM_MODULE;
+    cf->cmd_type    = NGX_STREAM_MAIN_CONF;
+
+    /* create_main_conf / create_srv_conf */
+    for (m = 0; cf->cycle->modules[m]; m++) {
+        if (cf->cycle->modules[m]->type != NGX_STREAM_MODULE) {
+            continue;
+        }
+
+        module = cf->cycle->modules[m]->ctx;
+        mi     = cf->cycle->modules[m]->ctx_index;
+
+        if (module->create_main_conf) {
+            ctx->main_conf[mi] = module->create_main_conf(cf);
+            if (ctx->main_conf[mi] == NULL) {
+                return NGX_ERROR;
+            }
+        }
+
+        if (module->create_srv_conf) {
+            ctx->srv_conf[mi] = module->create_srv_conf(cf);
+            if (ctx->srv_conf[mi] == NULL) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    /* preconfiguration */
+    for (m = 0; cf->cycle->modules[m]; m++) {
+        if (cf->cycle->modules[m]->type != NGX_STREAM_MODULE) {
+            continue;
+        }
+
+        module = cf->cycle->modules[m]->ctx;
+
+        if (module->preconfiguration) {
+            if (module->preconfiguration(cf) != NGX_OK) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    /* parse optional stream{}-level directives */
+    if (directives != NULL && directives->len > 0) {
+        if (cf->args == NULL) {
+            cf->args = ngx_array_create(cf->temp_pool, 10, sizeof(ngx_str_t));
+            if (cf->args == NULL) {
+                return NGX_ERROR;
+            }
+        }
+
+        fd = mkstemp(tmppath);
+        if (fd == -1) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, ngx_errno,
+                          "ngx_stream_init_synthesized: mkstemp failed");
+            return NGX_ERROR;
+        }
+
+        n = write(fd, directives->data, directives->len);
+        close(fd);
+
+        if ((size_t) n != directives->len) {
+            unlink(tmppath);
+            ngx_log_error(NGX_LOG_ERR, cf->log, ngx_errno,
+                          "ngx_stream_init_synthesized: write failed");
+            return NGX_ERROR;
+        }
+
+        tmpstr.data = (u_char *) tmppath;
+        tmpstr.len  = ngx_strlen(tmppath);
+
+        rv = ngx_conf_parse(cf, &tmpstr);
+        unlink(tmppath);
+
+        if (rv != NGX_CONF_OK) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                          "ngx_stream_init_synthesized: directive parse failed");
+            return NGX_ERROR;
+        }
+    }
+
+    cmcf = ctx->main_conf[ngx_stream_core_module.ctx_index];
+
+    /* init_main_conf + merge_servers (no servers → merge loop is empty) */
+    for (m = 0; cf->cycle->modules[m]; m++) {
+        if (cf->cycle->modules[m]->type != NGX_STREAM_MODULE) {
+            continue;
+        }
+
+        module = cf->cycle->modules[m]->ctx;
+        mi     = cf->cycle->modules[m]->ctx_index;
+
+        cf->ctx = ctx;
+
+        if (module->init_main_conf) {
+            rv = module->init_main_conf(cf, ctx->main_conf[mi]);
+            if (rv != NGX_CONF_OK) {
+                return NGX_ERROR;
+            }
+        }
+
+        /* no servers → merge_srv_conf loop is a no-op */
+    }
+
+    if (ngx_stream_init_phases(cf, cmcf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    /* postconfiguration */
+    for (m = 0; cf->cycle->modules[m]; m++) {
+        if (cf->cycle->modules[m]->type != NGX_STREAM_MODULE) {
+            continue;
+        }
+
+        module = cf->cycle->modules[m]->ctx;
+
+        if (module->postconfiguration) {
+            if (module->postconfiguration(cf) != NGX_OK) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    if (ngx_stream_variables_init_vars(cf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_stream_init_phase_handlers(cf, cmcf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    /* ngx_stream_optimize_servers handles NULL ports gracefully */
+    if (ngx_stream_optimize_servers(cf, cmcf, cmcf->ports) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
 static ngx_int_t
 ngx_stream_init_phases(ngx_conf_t *cf, ngx_stream_core_main_conf_t *cmcf)
 {

@@ -46,6 +46,10 @@ JSClassID  ngx_js_stream_server_class_id;
 JSClassID  ngx_js_stream_listener_class_id;
 JSClassID  ngx_js_stream_proxy_class_id;
 
+/* Saved at ngx_js_stream_install() time so that createStream() and
+ * addServer() can reach the cycle without a conf pointer. */
+static ngx_cycle_t  *ngx_js_stream_cycle;
+
 ngx_js_stream_listener_state_t
     *ngx_js_stream_listener_reg[NGX_JS_STREAM_LISTENER_REG_MAX];
 
@@ -1368,6 +1372,222 @@ ngx_js_stream_socket_entries(JSContext *ctx, JSValue arr,
 
 
 /* ================================================================== */
+/* nginx.stream.addServer()                                           */
+/* ================================================================== */
+
+/*
+ * nginx.stream.addServer()
+ *
+ * Dynamically creates a new stream server at init_conf time.  Allocates
+ * a fresh ngx_stream_conf_ctx_t, runs create_srv_conf + merge_srv_conf
+ * for every stream module against the stream{}-level parent, appends the
+ * new ngx_stream_core_srv_conf_t to cmcf->servers, and returns a
+ * NginxStreamServer JS wrapper.
+ *
+ * The returned server has a settable .handler property.
+ * Use nginx.stream.attach(sock).addServer(srv) to bind a socket.
+ */
+static JSValue
+ngx_js_stream_add_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_conf_t                    fake_cf;
+    ngx_conf_file_t               fake_file;
+    ngx_cycle_t                  *cycle;
+    ngx_stream_conf_ctx_t        *stream_ctx, *new_ctx;
+    ngx_stream_core_main_conf_t  *cmcf;
+    ngx_stream_core_srv_conf_t   *cscf, **cscfpp;
+    ngx_stream_module_t          *module;
+    ngx_uint_t                    m, mi;
+    char                         *rv;
+    static u_char                 fname[] = "[js-stream-addServer]";
+
+    cycle = ngx_js_stream_cycle ? ngx_js_stream_cycle
+                                : (ngx_cycle_t *) ngx_cycle;
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx,
+            "stream.addServer: cycle unavailable");
+    }
+
+    stream_ctx = (ngx_stream_conf_ctx_t *)
+                     cycle->conf_ctx[ngx_stream_module.index];
+    if (stream_ctx == NULL) {
+        return JS_ThrowInternalError(ctx,
+            "stream.addServer: no stream context;"
+            " call nginx.createStream() first");
+    }
+
+    cmcf = stream_ctx->main_conf[ngx_stream_core_module.ctx_index];
+
+    /* Build fake_cf for create_srv_conf / merge_srv_conf */
+    ngx_memzero(&fake_cf,   sizeof(ngx_conf_t));
+    ngx_memzero(&fake_file, sizeof(ngx_conf_file_t));
+    fake_file.file.name.data = fname;
+    fake_file.file.name.len  = sizeof(fname) - 1;
+    fake_cf.pool             = cycle->pool;
+    fake_cf.temp_pool        = cycle->pool;
+    fake_cf.log              = cycle->log;
+    fake_cf.cycle            = cycle;
+    fake_cf.conf_file        = &fake_file;
+    fake_cf.module_type      = NGX_STREAM_MODULE;
+    fake_cf.cmd_type         = NGX_STREAM_SRV_CONF;
+
+    /* Allocate a new per-server ctx; share main_conf from stream{} ctx */
+    new_ctx = ngx_pcalloc(cycle->pool, sizeof(ngx_stream_conf_ctx_t));
+    if (new_ctx == NULL) {
+        return JS_ThrowInternalError(ctx,
+            "stream.addServer: pcalloc new_ctx failed");
+    }
+
+    new_ctx->main_conf = stream_ctx->main_conf;
+
+    new_ctx->srv_conf = ngx_pcalloc(cycle->pool,
+                                    sizeof(void *) * ngx_stream_max_module);
+    if (new_ctx->srv_conf == NULL) {
+        return JS_ThrowInternalError(ctx,
+            "stream.addServer: pcalloc srv_conf failed");
+    }
+
+    fake_cf.ctx = new_ctx;
+
+    /* Phase 1: create_srv_conf for every stream module */
+    for (m = 0; cycle->modules[m]; m++) {
+        if (cycle->modules[m]->type != NGX_STREAM_MODULE) {
+            continue;
+        }
+
+        module = cycle->modules[m]->ctx;
+        mi     = cycle->modules[m]->ctx_index;
+
+        if (module->create_srv_conf) {
+            new_ctx->srv_conf[mi] = module->create_srv_conf(&fake_cf);
+            if (new_ctx->srv_conf[mi] == NULL) {
+                return JS_ThrowInternalError(ctx,
+                    "stream.addServer: create_srv_conf failed");
+            }
+        }
+    }
+
+    cscf = new_ctx->srv_conf[ngx_stream_core_module.ctx_index];
+    cscf->ctx = new_ctx;
+
+    /* Phase 2: merge_srv_conf against stream{}-level parent */
+    for (m = 0; cycle->modules[m]; m++) {
+        if (cycle->modules[m]->type != NGX_STREAM_MODULE) {
+            continue;
+        }
+
+        module = cycle->modules[m]->ctx;
+        mi     = cycle->modules[m]->ctx_index;
+
+        fake_cf.ctx = new_ctx;
+
+        if (module->merge_srv_conf) {
+            rv = module->merge_srv_conf(&fake_cf,
+                                        stream_ctx->srv_conf[mi],
+                                        new_ctx->srv_conf[mi]);
+            if (rv != NGX_CONF_OK) {
+                return JS_ThrowInternalError(ctx,
+                    "stream.addServer: merge_srv_conf failed");
+            }
+        }
+    }
+
+    /* Append to cmcf->servers */
+    cscfpp = ngx_array_push(&cmcf->servers);
+    if (cscfpp == NULL) {
+        return JS_ThrowInternalError(ctx,
+            "stream.addServer: servers array_push failed");
+    }
+
+    *cscfpp = cscf;
+
+    return ngx_js_wrap_stream_server(ctx, cscf, cycle);
+}
+
+
+/* ================================================================== */
+/* nginx.createStream()                                               */
+/* ================================================================== */
+
+/*
+ * nginx.createStream([directives])
+ *
+ * Bootstraps the stream module at init_conf time when nginx.conf has no
+ * stream{} block.  Calls ngx_stream_init_synthesized() then re-installs
+ * nginx.stream with full servers[]/attach()/addServer() API.
+ *
+ * Optional first argument: string of stream{}-level directives.
+ */
+static JSValue
+ngx_js_create_stream(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_conf_t           fake_cf;
+    ngx_conf_file_t      fake_file;
+    ngx_cycle_t         *cycle;
+    ngx_str_t            directives, *dirp;
+    const char          *dirstr;
+    static u_char        fname[] = "[js-createStream]";
+
+    cycle = ngx_js_stream_cycle ? ngx_js_stream_cycle
+                                : (ngx_cycle_t *) ngx_cycle;
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "createStream: cycle unavailable");
+    }
+
+    if (cycle->conf_ctx[ngx_stream_module.index] != NULL) {
+        return JS_ThrowInternalError(ctx,
+            "createStream: stream context already initialised"
+            " (stream{} block present or createStream() already called)");
+    }
+
+    dirp = NULL;
+    if (argc > 0 && JS_IsString(argv[0])) {
+        dirstr = JS_ToCStringLen(ctx, &directives.len, argv[0]);
+        if (dirstr == NULL) {
+            return JS_EXCEPTION;
+        }
+        directives.data = (u_char *) dirstr;
+        dirp = &directives;
+    }
+
+    ngx_memzero(&fake_cf,   sizeof(ngx_conf_t));
+    ngx_memzero(&fake_file, sizeof(ngx_conf_file_t));
+    fake_file.file.name.data = fname;
+    fake_file.file.name.len  = sizeof(fname) - 1;
+    fake_cf.pool             = cycle->pool;
+    fake_cf.temp_pool        = cycle->pool;
+    fake_cf.log              = cycle->log;
+    fake_cf.cycle            = cycle;
+    fake_cf.conf_file        = &fake_file;
+
+    if (ngx_stream_init_synthesized(&fake_cf, dirp) != NGX_OK) {
+        if (dirp) {
+            JS_FreeCString(ctx, (const char *) directives.data);
+        }
+        return JS_ThrowInternalError(ctx,
+            "createStream: ngx_stream_init_synthesized failed");
+    }
+
+    if (dirp) {
+        JS_FreeCString(ctx, (const char *) directives.data);
+    }
+
+    /*
+     * Re-install nginx.stream now that the stream context exists.
+     * this_val is the nginx global object.
+     */
+    if (ngx_js_stream_install(ctx, this_val, cycle) != NGX_OK) {
+        return JS_ThrowInternalError(ctx,
+            "createStream: ngx_js_stream_install failed");
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/* ================================================================== */
 /* nginx.stream object — servers[] + attach()                         */
 /* ================================================================== */
 
@@ -1378,6 +1598,24 @@ ngx_js_stream_install(JSContext *ctx, JSValue nginx_obj, ngx_cycle_t *cycle)
     ngx_stream_core_main_conf_t  *cmcf;
     ngx_stream_core_srv_conf_t  **cscfp;
     ngx_uint_t                    i;
+
+    /* Save cycle — needed by createStream() and addServer() */
+    ngx_js_stream_cycle = cycle;
+
+    /*
+     * If stream{} block was not present (and createStream() has not yet
+     * been called), install nginx.createStream() and leave nginx.stream
+     * as an empty placeholder.  createStream() will call us again once
+     * the context is ready.
+     */
+    if (cycle->conf_ctx[ngx_stream_module.index] == NULL) {
+        stream_obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, nginx_obj, "stream", stream_obj);
+        JS_SetPropertyStr(ctx, nginx_obj, "createStream",
+                          JS_NewCFunction(ctx, ngx_js_create_stream,
+                                          "createStream", 0));
+        return NGX_OK;
+    }
 
     stream_obj = JS_NewObject(ctx);
     if (JS_IsException(stream_obj)) {
@@ -1391,24 +1629,20 @@ ngx_js_stream_install(JSContext *ctx, JSValue nginx_obj, ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
-    cmcf = NULL;
+    cmcf = ngx_stream_cycle_get_module_main_conf(cycle, ngx_stream_core_module);
 
-    if (cycle->conf_ctx != NULL) {
-        cmcf = ngx_stream_cycle_get_module_main_conf(cycle,
-                                                     ngx_stream_core_module);
-        if (cmcf != NULL) {
-            cscfp = cmcf->servers.elts;
+    if (cmcf != NULL) {
+        cscfp = cmcf->servers.elts;
 
-            for (i = 0; i < cmcf->servers.nelts; i++) {
-                srv_obj = ngx_js_wrap_stream_server(ctx, cscfp[i], cycle);
-                if (JS_IsException(srv_obj)) {
-                    JS_FreeValue(ctx, servers_arr);
-                    JS_FreeValue(ctx, stream_obj);
-                    return NGX_ERROR;
-                }
-
-                JS_SetPropertyUint32(ctx, servers_arr, (uint32_t) i, srv_obj);
+        for (i = 0; i < cmcf->servers.nelts; i++) {
+            srv_obj = ngx_js_wrap_stream_server(ctx, cscfp[i], cycle);
+            if (JS_IsException(srv_obj)) {
+                JS_FreeValue(ctx, servers_arr);
+                JS_FreeValue(ctx, stream_obj);
+                return NGX_ERROR;
             }
+
+            JS_SetPropertyUint32(ctx, servers_arr, (uint32_t) i, srv_obj);
         }
     }
 
@@ -1431,6 +1665,11 @@ ngx_js_stream_install(JSContext *ctx, JSValue nginx_obj, ngx_cycle_t *cycle)
         JS_FreeValue(ctx, stream_obj);
         return NGX_ERROR;
     }
+
+    /* nginx.stream.addServer() — dynamic server creation */
+    JS_SetPropertyStr(ctx, stream_obj, "addServer",
+                      JS_NewCFunction(ctx, ngx_js_stream_add_server,
+                                      "addServer", 0));
 
     /* attach(sock) */
     JS_SetPropertyStr(ctx, stream_obj, "attach",
