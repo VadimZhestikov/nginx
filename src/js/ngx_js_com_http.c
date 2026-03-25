@@ -196,6 +196,20 @@ static ngx_js_addr_entry_t *ngx_js_vhost_entries;
 static ngx_uint_t           ngx_js_vhost_hash_max_size;
 static ngx_uint_t           ngx_js_vhost_hash_bucket_size;
 
+/*
+ * Saved at ngx_js_http_com_install time so that addServer() can obtain
+ * the correct cycle pointer even when nginx.http.servers[] is empty.
+ * (ngx_cycle is still pointing at the old cycle during init_conf.)
+ */
+static ngx_cycle_t                *ngx_js_http_cycle;
+
+/*
+ * Synthetic template server conf built when nginx.conf has an http{} block
+ * but no server{} blocks inside.  Used as the copy-source by addServer()
+ * when nginx.http.servers[] is empty.
+ */
+static ngx_http_core_srv_conf_t   *ngx_js_default_cscf;
+
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                                 */
@@ -6731,6 +6745,156 @@ ngx_js_http_rebuild_vhost_dispatch(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * ngx_js_build_default_server_conf
+ *
+ * Builds a synthetic ngx_http_core_srv_conf_t suitable for use as the
+ * copy-source template in ngx_js_http_add_server() when nginx.http.servers[]
+ * is empty (i.e., nginx.conf has an http{} block but no server{} blocks).
+ *
+ * Each HTTP module's create_srv_conf / create_loc_conf callback is invoked
+ * with a minimal fake ngx_conf_t (pool = cycle->pool) so every slot in the
+ * srv_conf[] / loc_conf[] arrays is properly initialised (NGX_CONF_UNSET
+ * values rather than raw zeroes, matching what nginx sets during a normal
+ * config parse).  The ngx_http_core_module server-level defaults are then
+ * applied inline, mirroring ngx_http_core_merge_srv_conf().
+ */
+static ngx_http_core_srv_conf_t *
+ngx_js_build_default_server_conf(ngx_cycle_t *cycle,
+    ngx_http_conf_ctx_t *http_ctx)
+{
+    char                        *rv;
+    ngx_conf_t                   fake_cf;
+    ngx_conf_file_t              fake_file;
+    ngx_http_conf_ctx_t          fake_ctx;
+    ngx_module_t               **mods;
+    ngx_http_module_t           *hmod;
+    ngx_http_core_srv_conf_t    *cscf;
+    ngx_http_core_loc_conf_t    *clcf;
+    ngx_http_conf_ctx_t         *new_ctx;
+    void                       **srv_conf, **loc_conf, *mconf;
+    ngx_uint_t                   i;
+    static u_char                fname[] = "[js-synthesized]";
+
+    /*
+     * Minimal fake ngx_conf_t.  Module create_* functions use cf->pool and
+     * cf->temp_pool for allocations, cf->log / cf->cycle for diagnostics,
+     * and cf->conf_file only to record file_name / line for error messages.
+     * Module merge_* functions additionally use cf->ctx to locate the
+     * current http/srv/loc context chain.
+     */
+    ngx_memzero(&fake_cf,   sizeof(ngx_conf_t));
+    ngx_memzero(&fake_file, sizeof(ngx_conf_file_t));
+    ngx_memzero(&fake_ctx,  sizeof(ngx_http_conf_ctx_t));
+    fake_file.file.name.data = fname;
+    fake_file.file.name.len  = sizeof(fname) - 1;
+    fake_cf.pool             = cycle->pool;
+    fake_cf.temp_pool        = cycle->pool;
+    fake_cf.log              = cycle->log;
+    fake_cf.cycle            = cycle;
+    fake_cf.conf_file        = &fake_file;
+    fake_cf.ctx              = &fake_ctx;
+    fake_cf.module_type      = NGX_HTTP_MODULE;
+    fake_cf.cmd_type         = NGX_HTTP_SRV_CONF;
+
+    /* fake_ctx starts as a copy of http_ctx (the http{}-level parent) */
+    fake_ctx = *http_ctx;
+
+    srv_conf = ngx_pcalloc(cycle->pool, sizeof(void *) * ngx_http_max_module);
+    loc_conf = ngx_pcalloc(cycle->pool, sizeof(void *) * ngx_http_max_module);
+    if (srv_conf == NULL || loc_conf == NULL) {
+        return NULL;
+    }
+
+    mods = cycle->modules;
+
+    /* Phase 1: call create_srv_conf / create_loc_conf for every http module */
+    for (i = 0; mods[i]; i++) {
+        if (mods[i]->type != NGX_HTTP_MODULE) {
+            continue;
+        }
+
+        hmod = mods[i]->ctx;
+
+        if (hmod->create_srv_conf) {
+            mconf = hmod->create_srv_conf(&fake_cf);
+            if (mconf == NULL) {
+                return NULL;
+            }
+            srv_conf[mods[i]->ctx_index] = mconf;
+        }
+
+        if (hmod->create_loc_conf) {
+            mconf = hmod->create_loc_conf(&fake_cf);
+            if (mconf == NULL) {
+                return NULL;
+            }
+            loc_conf[mods[i]->ctx_index] = mconf;
+        }
+    }
+
+    cscf = srv_conf[ngx_http_core_module.ctx_index];
+    clcf = loc_conf[ngx_http_core_module.ctx_index];
+
+    if (cscf == NULL || clcf == NULL) {
+        return NULL;
+    }
+
+    /*
+     * Phase 2: merge against the http{}-level parent confs.
+     * This mirrors what ngx_http_merge_servers() does for every server{}
+     * block: call merge_srv_conf(parent=http_ctx->srv_conf[i], child=new)
+     * and merge_loc_conf(parent=http_ctx->loc_conf[i], child=new).
+     * After merging, all module-specific fields (logs, error_log, timeouts,
+     * etc.) inherit the http{}-level defaults, exactly as a server{} block
+     * with no overrides would.
+     */
+    fake_ctx.srv_conf = srv_conf;
+    fake_ctx.loc_conf = loc_conf;
+
+    for (i = 0; mods[i]; i++) {
+        if (mods[i]->type != NGX_HTTP_MODULE) {
+            continue;
+        }
+
+        hmod = mods[i]->ctx;
+
+        if (hmod->merge_srv_conf) {
+            rv = hmod->merge_srv_conf(&fake_cf,
+                                      http_ctx->srv_conf[mods[i]->ctx_index],
+                                      srv_conf[mods[i]->ctx_index]);
+            if (rv != NGX_CONF_OK) {
+                return NULL;
+            }
+        }
+
+        if (hmod->merge_loc_conf) {
+            rv = hmod->merge_loc_conf(&fake_cf,
+                                      http_ctx->loc_conf[mods[i]->ctx_index],
+                                      loc_conf[mods[i]->ctx_index]);
+            if (rv != NGX_CONF_OK) {
+                return NULL;
+            }
+        }
+    }
+
+    /* Wire up the server conf context */
+    new_ctx = ngx_palloc(cycle->pool, sizeof(ngx_http_conf_ctx_t));
+    if (new_ctx == NULL) {
+        return NULL;
+    }
+    new_ctx->main_conf = http_ctx->main_conf;
+    new_ctx->srv_conf  = srv_conf;
+    new_ctx->loc_conf  = loc_conf;
+    cscf->ctx          = new_ctx;
+
+    /* self-reference required by ngx_http_core_find_location */
+    clcf->loc_conf = loc_conf;
+
+    return cscf;
+}
+
+
+/*
  * nginx.http.addServer(name [, opts])
  *
  * Creates a new virtual server and registers it in every
@@ -6787,21 +6951,31 @@ ngx_js_http_add_server(JSContext *ctx, JSValueConst this_val,
     JS_ToUint32(ctx, &servers_len, lv);
     JS_FreeValue(ctx, lv);
 
-    if (servers_len == 0) {
-        JS_FreeValue(ctx, servers_arr);
-        JS_FreeCString(ctx, name_str);
-        return JS_ThrowInternalError(ctx, "addServer: no existing servers");
-    }
+    if (servers_len > 0) {
+        s0    = JS_GetPropertyUint32(ctx, servers_arr, 0);
+        op    = JS_GetOpaque(s0, ngx_js_server_class_id);
+        cycle = op ? op->cycle : NULL;
+        JS_FreeValue(ctx, s0);
 
-    s0    = JS_GetPropertyUint32(ctx, servers_arr, 0);
-    op    = JS_GetOpaque(s0, ngx_js_server_class_id);
-    cycle = op ? op->cycle : NULL;
-    JS_FreeValue(ctx, s0);
+        if (cycle == NULL) {
+            JS_FreeValue(ctx, servers_arr);
+            JS_FreeCString(ctx, name_str);
+            return JS_ThrowInternalError(ctx, "addServer: cycle unavailable");
+        }
 
-    if (cycle == NULL) {
-        JS_FreeValue(ctx, servers_arr);
-        JS_FreeCString(ctx, name_str);
-        return JS_ThrowInternalError(ctx, "addServer: cycle unavailable");
+    } else {
+        /*
+         * No existing servers — use the cycle saved when the http module
+         * was installed.  ngx_cycle cannot be used here because during
+         * init_conf it still points to the old cycle.
+         */
+        cycle = ngx_js_http_cycle ? ngx_js_http_cycle
+                                  : (ngx_cycle_t *) ngx_cycle;
+        if (cycle == NULL) {
+            JS_FreeValue(ctx, servers_arr);
+            JS_FreeCString(ctx, name_str);
+            return JS_ThrowInternalError(ctx, "addServer: cycle unavailable");
+        }
     }
 
     http_ctx = (ngx_http_conf_ctx_t *)
@@ -6853,7 +7027,25 @@ ngx_js_http_add_server(JSContext *ctx, JSValueConst this_val,
 
     JS_FreeValue(ctx, servers_arr);
 
-    tmpl_cscf = cscfp[tmpl_idx];
+    if (cmcf->servers.nelts == 0) {
+        /*
+         * No static server{} blocks — use the pre-built default template.
+         * ngx_js_default_cscf is constructed in ngx_js_http_com_install()
+         * when it detects an empty servers list.
+         */
+        tmpl_cscf = ngx_js_default_cscf;
+        if (tmpl_cscf == NULL) {
+            JS_FreeCString(ctx, name_str);
+            return JS_ThrowInternalError(ctx,
+                "addServer: no server template available"
+                " (http{} has no server{} blocks and default conf"
+                " could not be built)");
+        }
+
+    } else {
+        tmpl_cscf = cscfp[tmpl_idx];
+    }
+
     tmpl_root = tmpl_cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
 
     /* allocate a new cscf as a shallow copy of the template */
@@ -7913,6 +8105,9 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
 
     cmcf = http_ctx->main_conf[ngx_http_core_module.ctx_index];
 
+    /* Save cycle for addServer() when nginx.http.servers[] is empty */
+    ngx_js_http_cycle = cycle;
+
     /* ---- Build nginx.http.servers[] ---- */
 
     servers_arr = JS_NewArray(ctx);
@@ -7925,6 +8120,21 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
     for (i = 0; i < cmcf->servers.nelts; i++) {
         JS_SetPropertyUint32(ctx, servers_arr, (uint32_t) i,
                              ngx_js_wrap_server(ctx, cscfp[i], cycle));
+    }
+
+    /*
+     * When nginx.conf has an http{} block but no server{} blocks, build a
+     * synthetic default server conf so that addServer() has something to
+     * copy defaults from (connection pool sizes, header timeouts, etc.).
+     */
+    if (cmcf->servers.nelts == 0) {
+        ngx_js_default_cscf =
+            ngx_js_build_default_server_conf(cycle, http_ctx);
+        if (ngx_js_default_cscf == NULL) {
+            ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                          "js: failed to build default server conf;"
+                          " addServer() will fail when servers[] is empty");
+        }
     }
 
     /* ---- Assemble nginx.http ---- */
