@@ -52,6 +52,17 @@ sig_atomic_t  ngx_noaccept;
 ngx_uint_t    ngx_noaccepting;
 ngx_uint_t    ngx_restart;
 
+/*
+ * Optional JS hook: set by the JS module's init_module callback.
+ * Called at key points in the master supervisory loop.
+ * NULL when the JS module is not loaded.
+ */
+void  (*ngx_js_master_event)(ngx_cycle_t *cycle, const char *event,
+    ngx_pid_t pid, ngx_int_t slot, int status);
+
+#define ngx_js_emit(ev, p, s, st) \
+    if (ngx_js_master_event) { ngx_js_master_event(cycle, ev, p, s, st); }
+
 
 static u_char  master_process[] = "master process";
 
@@ -78,6 +89,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     size_t             size;
     ngx_int_t          i;
     ngx_uint_t         sigio;
+    ngx_uint_t         quit_fired;
     sigset_t           set;
     struct itimerval   itv;
     ngx_uint_t         live;
@@ -135,6 +147,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     delay = 0;
     sigio = 0;
     live = 1;
+    quit_fired = 0;
 
     for ( ;; ) {
         if (delay) {
@@ -181,6 +194,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         if (ngx_terminate) {
             if (delay == 0) {
                 delay = 50;
+                ngx_js_emit("terminate", -1, -1, 0);
             }
 
             if (sigio) {
@@ -201,6 +215,10 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         }
 
         if (ngx_quit) {
+            if (!quit_fired) {
+                quit_fired = 1;
+                ngx_js_emit("quit", -1, -1, 0);
+            }
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
             ngx_close_listening_sockets(cycle);
@@ -222,6 +240,8 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reconfiguring");
 
+            ngx_js_emit("reload", -1, -1, 0);
+
             cycle = ngx_init_cycle(cycle);
             if (cycle == NULL) {
                 cycle = (ngx_cycle_t *) ngx_cycle;
@@ -239,6 +259,8 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_msleep(100);
 
             live = 1;
+            quit_fired = 0;
+            ngx_js_emit("reloaded", -1, -1, 0);
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
         }
@@ -254,6 +276,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         if (ngx_reopen) {
             ngx_reopen = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reopening logs");
+            ngx_js_emit("reopen", -1, -1, 0);
             ngx_reopen_files(cycle, ccf->user);
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_REOPEN_SIGNAL));
@@ -301,6 +324,12 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
 
         if (ngx_terminate || ngx_quit) {
 
+            if (ngx_terminate) {
+                ngx_js_emit("terminate", -1, -1, 0);
+            } else {
+                ngx_js_emit("quit", -1, -1, 0);
+            }
+
             for (i = 0; cycle->modules[i]; i++) {
                 if (cycle->modules[i]->exit_process) {
                     cycle->modules[i]->exit_process(cycle);
@@ -314,6 +343,8 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
             ngx_reconfigure = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reconfiguring");
 
+            ngx_js_emit("reload", -1, -1, 0);
+
             cycle = ngx_init_cycle(cycle);
             if (cycle == NULL) {
                 cycle = (ngx_cycle_t *) ngx_cycle;
@@ -321,11 +352,13 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
             }
 
             ngx_cycle = cycle;
+            ngx_js_emit("reloaded", -1, -1, 0);
         }
 
         if (ngx_reopen) {
             ngx_reopen = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reopening logs");
+            ngx_js_emit("reopen", -1, -1, 0);
             ngx_reopen_files(cycle, (ngx_uid_t) -1);
         }
     }
@@ -345,6 +378,12 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
                           (void *) (intptr_t) i, "worker process", type);
 
         ngx_pass_open_channel(cycle);
+
+        if (ngx_processes[ngx_process_slot].pid != NGX_INVALID_PID) {
+            ngx_js_emit("workerSpawned",
+                        ngx_processes[ngx_process_slot].pid,
+                        ngx_process_slot, 0);
+        }
     }
 }
 
@@ -562,6 +601,12 @@ ngx_reap_children(ngx_cycle_t *cycle)
 
         if (ngx_processes[i].exited) {
 
+            if (ngx_processes[i].proc == ngx_worker_process_cycle) {
+                ngx_js_emit("workerExited",
+                            ngx_processes[i].pid,
+                            i, ngx_processes[i].status);
+            }
+
             if (!ngx_processes[i].detached) {
                 ngx_close_channel(ngx_processes[i].channel, cycle->log);
 
@@ -608,6 +653,14 @@ ngx_reap_children(ngx_cycle_t *cycle)
 
 
                 ngx_pass_open_channel(cycle);
+
+                if (ngx_processes[i].proc == ngx_worker_process_cycle
+                    && ngx_processes[ngx_process_slot].pid != NGX_INVALID_PID)
+                {
+                    ngx_js_emit("workerSpawned",
+                                ngx_processes[ngx_process_slot].pid,
+                                ngx_process_slot, 0);
+                }
 
                 live = 1;
 

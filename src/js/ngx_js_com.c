@@ -1179,6 +1179,75 @@ ngx_js_nginx_fn_settable(JSContext *ctx, JSValueConst this_val,
 /* ngx_js_com_init — main entry point called from ngx_js_module.c      */
 /* ------------------------------------------------------------------ */
 
+/*
+ * nginx.on(event, fn)
+ *
+ * Registers fn as a handler for the named master-process lifecycle event.
+ * Valid event names: 'terminate', 'quit', 'reload', 'reloaded', 'reopen',
+ * 'workerSpawned', 'workerExited'.
+ *
+ * Multiple handlers per event are supported.
+ * Returns nginx (this_val) for chaining.
+ * Only callable from master (init_conf) context — throws in workers.
+ */
+static JSValue
+ngx_js_nginx_on(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_cycle_t    *cycle;
+    ngx_js_conf_t  *jcf;
+    const char     *event;
+    JSValue         arr, len_val;
+    uint32_t        len;
+
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsFunction(ctx, argv[1])) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.on(event, fn): string event name and function required");
+    }
+
+    if (ngx_process != NGX_PROCESS_MASTER && ngx_process != NGX_PROCESS_SINGLE) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.on: only callable in master process (init_conf context)");
+    }
+
+    cycle = JS_GetContextOpaque(ctx);
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "nginx.on: no cycle context");
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL || JS_IsUninitialized(jcf->master_handlers)) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.on: master_handlers not initialised");
+    }
+
+    event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
+
+    /* Get or create the per-event handler array */
+    arr = JS_GetPropertyStr(ctx, jcf->master_handlers, event);
+    if (!JS_IsArray(ctx, arr)) {
+        JS_FreeValue(ctx, arr);
+        arr = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, jcf->master_handlers, event,
+                          JS_DupValue(ctx, arr));
+    }
+
+    /* arr.push(fn) */
+    len_val = JS_GetPropertyStr(ctx, arr, "length");
+    JS_ToUint32(ctx, &len, len_val);
+    JS_FreeValue(ctx, len_val);
+    JS_SetPropertyUint32(ctx, arr, len, JS_DupValue(ctx, argv[1]));
+
+    JS_FreeValue(ctx, arr);
+    JS_FreeCString(ctx, event);
+
+    return JS_DupValue(ctx, this_val);   /* return nginx for chaining */
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -1355,6 +1424,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "settable",
                       JS_NewCFunction(ctx, ngx_js_nginx_fn_settable,
                                       "settable", 1));
+
+    /* nginx.on(event, fn) — master lifecycle event handler registration */
+    JS_SetPropertyStr(ctx, nginx_obj, "on",
+                      JS_NewCFunction(ctx, ngx_js_nginx_on, "on", 2));
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
 

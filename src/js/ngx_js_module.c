@@ -321,10 +321,13 @@ static void *ngx_js_create_conf(ngx_cycle_t *cycle);
 static char *ngx_js_init_conf(ngx_cycle_t *cycle, void *conf);
 
 static int       ngx_js_interrupt_handler(JSRuntime *rt, void *opaque);
+static ngx_int_t ngx_js_init_module(ngx_cycle_t *cycle);
 static ngx_int_t ngx_js_init_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_master(ngx_cycle_t *cycle);
 static void      ngx_js_bcast_recv_handler(ngx_event_t *ev);
+static void      ngx_js_dispatch_master_event(ngx_cycle_t *cycle,
+    const char *event, ngx_pid_t pid, ngx_int_t slot, int status);
 
 static char   *ngx_js_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -390,7 +393,7 @@ ngx_module_t  ngx_js_module = {
     ngx_js_commands,                   /* module directives */
     NGX_CORE_MODULE,                   /* module type */
     NULL,                              /* init master */
-    NULL,                              /* init module */
+    ngx_js_init_module,                /* init module */
     ngx_js_init_process,               /* init process */
     NULL,                              /* init thread */
     NULL,                              /* exit thread */
@@ -417,6 +420,7 @@ ngx_js_create_conf(ngx_cycle_t *cycle)
     }
 
     /* rt, ctx, worker are NULL after pcalloc */
+    jcf->master_handlers = JS_UNINITIALIZED;
 
     return jcf;
 }
@@ -506,6 +510,15 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     if (ngx_js_com_init(jcf->ctx, cycle) != NGX_OK) {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
                       "js: COM initialisation failed");
+        goto failed_ctx;
+    }
+
+    /* ---- Initialise master lifecycle event handler registry ---- */
+
+    jcf->master_handlers = JS_NewObject(jcf->ctx);
+    if (JS_IsException(jcf->master_handlers)) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "js: failed to create master_handlers object");
         goto failed_ctx;
     }
 
@@ -1017,6 +1030,19 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
     }
 
     if (w->ctx) {
+        /*
+         * master_handlers is a GC-tracked JSValue held in the shared jcf.
+         * Workers do not own it (only the master registers/fires it), but
+         * they inherited a COW copy of the JS heap.  Each process has its
+         * own private heap copy after the first write, so freeing it here
+         * is safe — every process decrements its own ref_count independently.
+         * This must happen before JS_FreeContext to avoid the QuickJS
+         * "list_empty(&rt->gc_obj_list)" assertion on JS_FreeRuntime.
+         */
+        if (!JS_IsUninitialized(jcf->master_handlers)) {
+            JS_FreeValue(w->ctx, jcf->master_handlers);
+        }
+
         JS_FreeContext(w->ctx);
         w->ctx = NULL;
     }
@@ -1025,6 +1051,122 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
         js_std_free_handlers(w->rt);
         JS_FreeRuntime(w->rt);
         w->rt = NULL;
+    }
+}
+
+
+/*
+ * ngx_js_init_module — called by ngx_init_cycle() after config parse.
+ * Sets the global hook pointer so ngx_process_cycle.c can fire JS events
+ * without including any JS headers.
+ */
+
+/* Defined in ngx_process_cycle.c — no JS headers needed there. */
+extern void  (*ngx_js_master_event)(ngx_cycle_t *cycle, const char *event,
+    ngx_pid_t pid, ngx_int_t slot, int status);
+
+static ngx_int_t
+ngx_js_init_module(ngx_cycle_t *cycle)
+{
+    ngx_js_master_event = ngx_js_dispatch_master_event;
+    return NGX_OK;
+}
+
+
+/*
+ * ngx_js_dispatch_master_event — invoked from the master supervisory loop
+ * at key lifecycle points.  Looks up all JS handlers registered via
+ * nginx.on(event, fn) and calls them synchronously.
+ *
+ * For 'workerSpawned': argv = [pid, slot]
+ * For 'workerExited':  argv = [pid, slot, status]
+ * For all others:      argv = []
+ */
+static void
+ngx_js_dispatch_master_event(ngx_cycle_t *cycle, const char *event,
+    ngx_pid_t pid, ngx_int_t slot, int status)
+{
+    ngx_js_conf_t  *jcf;
+    JSContext      *ctx;
+    JSValue         arr, len_val, fn, ret;
+    JSValue         argv[3];
+    uint32_t        i, len;
+    int             argc;
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL || jcf->ctx == NULL) {
+        return;
+    }
+
+    if (JS_IsUninitialized(jcf->master_handlers)) {
+        return;
+    }
+
+    ctx = jcf->ctx;
+
+    arr = JS_GetPropertyStr(ctx, jcf->master_handlers, event);
+    if (JS_IsUndefined(arr) || !JS_IsArray(ctx, arr)) {
+        JS_FreeValue(ctx, arr);
+        return;
+    }
+
+    len_val = JS_GetPropertyStr(ctx, arr, "length");
+    JS_ToUint32(ctx, &len, len_val);
+    JS_FreeValue(ctx, len_val);
+
+    if (strcmp(event, "workerSpawned") == 0) {
+        argv[0] = JS_NewInt64(ctx, (int64_t) pid);
+        argv[1] = JS_NewInt32(ctx, (int32_t) slot);
+        argc = 2;
+
+    } else if (strcmp(event, "workerExited") == 0) {
+        argv[0] = JS_NewInt64(ctx, (int64_t) pid);
+        argv[1] = JS_NewInt32(ctx, (int32_t) slot);
+        argv[2] = JS_NewInt32(ctx, status);
+        argc = 3;
+
+    } else {
+        argc = 0;
+    }
+
+    for (i = 0; i < len; i++) {
+        fn = JS_GetPropertyUint32(ctx, arr, i);
+
+        if (!JS_IsFunction(ctx, fn)) {
+            JS_FreeValue(ctx, fn);
+            continue;
+        }
+
+        ret = JS_Call(ctx, fn, JS_UNDEFINED, argc, argc ? argv : NULL);
+
+        if (JS_IsException(ret)) {
+            JSValue  exc;
+            const char  *str;
+
+            exc = JS_GetException(ctx);
+            str = JS_ToCString(ctx, exc);
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "nginx.on('%s') handler exception: %s",
+                          event, str ? str : "(null)");
+            JS_FreeCString(ctx, str);
+            JS_FreeValue(ctx, exc);
+        }
+
+        JS_FreeValue(ctx, ret);
+        JS_FreeValue(ctx, fn);
+    }
+
+    /* free argv values */
+    for (i = 0; i < (uint32_t) argc; i++) {
+        JS_FreeValue(ctx, argv[i]);
+    }
+
+    JS_FreeValue(ctx, arr);
+
+    /* drain any microtasks the handlers may have enqueued */
+    {
+        JSContext  *pctx;
+        while (JS_ExecutePendingJob(jcf->rt, &pctx) > 0) { /* nothing */ }
     }
 }
 
@@ -1039,6 +1181,10 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
     ngx_js_sw_exit_master(jcf);
 
     if (jcf->ctx) {
+        if (!JS_IsUninitialized(jcf->master_handlers)) {
+            JS_FreeValue(jcf->ctx, jcf->master_handlers);
+            jcf->master_handlers = JS_UNINITIALIZED;
+        }
         JS_FreeContext(jcf->ctx);
         jcf->ctx = NULL;
     }
