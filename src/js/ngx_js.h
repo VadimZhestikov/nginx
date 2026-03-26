@@ -15,6 +15,18 @@
 struct ngx_js_sw_state_s;
 typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
 
+/* Max payload bytes for a single nginx.sendToWorker() message. */
+#define NGX_JS_MSG_MAX  (64 * 1024)
+
+/*
+ * SOCK_SEQPACKET pair for master → worker JS messaging.
+ * Created before fork; master writes to master_fd, worker reads from worker_fd.
+ */
+typedef struct {
+    int  master_fd;
+    int  worker_fd;
+} ngx_js_msg_channel_t;
+
 /* Forward declaration to allow ngx_js_loc_conf_t to store original_handler */
 struct ngx_http_request_s;
 typedef ngx_int_t (*ngx_js_http_handler_pt)(struct ngx_http_request_s *r);
@@ -31,12 +43,14 @@ typedef struct ngx_js_socket_state_s ngx_js_socket_state_t;
  * directives during ngx_conf_parse(), executed by init_conf().
  */
 typedef struct {
-    ngx_array_t         sources;         /* ngx_str_t: paths from js_source  */
-    JSRuntime          *rt;              /* master-process QuickJS runtime   */
-    JSContext          *ctx;             /* master-process QuickJS context   */
-    void               *worker;          /* ngx_js_worker_t* after fork      */
-    ngx_js_sw_state_t  *sw_list;        /* linked list of SharedWorker states */
-    JSValue             master_handlers; /* {event:[fn,...]} — nginx.on() registry */
+    ngx_array_t          sources;         /* ngx_str_t: paths from js_source  */
+    JSRuntime           *rt;              /* master-process QuickJS runtime   */
+    JSContext           *ctx;             /* master-process QuickJS context   */
+    void                *worker;          /* ngx_js_worker_t* after fork      */
+    ngx_js_sw_state_t   *sw_list;        /* linked list of SharedWorker states */
+    JSValue              master_handlers; /* {event:[fn,...]} — nginx.on() registry */
+    ngx_js_msg_channel_t msg_channel[NGX_MAX_PROCESSES]; /* master→worker channels */
+    ngx_uint_t           n_msg_channels;  /* how many were created             */
 } ngx_js_conf_t;
 
 
@@ -91,6 +105,13 @@ typedef struct {
      */
     int                      bcast_fd;
     ngx_connection_t        *bcast_conn;  /* non-NULL after activation */
+    /*
+     * F5 — master→worker JS message channel.
+     * msg_fd is the worker end of a SOCK_SEQPACKET pair created before fork.
+     * msg_conn is registered lazily (alongside bcast_conn) on first request.
+     */
+    int                      msg_fd;
+    ngx_connection_t        *msg_conn;
 } ngx_js_worker_t;
 
 
@@ -239,6 +260,7 @@ ngx_int_t  ngx_js_disable_accept_events(ngx_cycle_t *cycle);
  * (i.e., after ngx_event_process_init has run).
  */
 void  ngx_js_bcast_ensure_active(ngx_js_worker_t *w);
+void  ngx_js_msg_ensure_active(ngx_js_worker_t *w);
 
 /*
  * config.write(text) — feeds config text back into ngx_conf_parse() via a

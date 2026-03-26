@@ -9,6 +9,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_event.h>
+#include <sys/socket.h>
 #include <cutils.h>
 #include "ngx_js.h"
 #include "ngx_js_com.h"
@@ -1248,6 +1249,133 @@ ngx_js_nginx_on(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * nginx.sendToWorker(slot, data)
+ *
+ * Serializes `data` with JS_WriteObject and sends it over the
+ * pre-fork SOCK_SEQPACKET channel to worker slot `slot`.
+ * Only callable from the master process (init_conf or nginx.on() callbacks).
+ * The worker dispatches it to nginx.on('message', fn) handlers.
+ */
+static JSValue
+ngx_js_send_to_worker(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_cycle_t    *cycle;
+    ngx_js_conf_t  *jcf;
+    int32_t         slot;
+    uint8_t        *buf;
+    size_t          len;
+    ssize_t         sent;
+
+    if (ngx_process != NGX_PROCESS_MASTER && ngx_process != NGX_PROCESS_SINGLE) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.sendToWorker: only callable in master process");
+    }
+
+    if (argc < 2 || JS_ToInt32(ctx, &slot, argv[0]) < 0) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.sendToWorker(slot, data): integer slot required");
+    }
+
+    cycle = (ngx_cycle_t *) JS_GetContextOpaque(ctx);
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "nginx.sendToWorker: no cycle");
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
+
+    if (slot < 0 || (ngx_uint_t) slot >= jcf->n_msg_channels) {
+        return JS_ThrowRangeError(ctx,
+            "nginx.sendToWorker: slot %d out of range (0..%d)",
+            slot, (int) jcf->n_msg_channels - 1);
+    }
+
+    if (jcf->msg_channel[slot].master_fd < 0) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.sendToWorker: channel fd not available for slot %d", slot);
+    }
+
+    buf = JS_WriteObject(ctx, &len, argv[1], JS_WRITE_OBJ_REFERENCE);
+    if (buf == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (len > NGX_JS_MSG_MAX) {
+        js_free(ctx, buf);
+        return JS_ThrowRangeError(ctx,
+            "nginx.sendToWorker: message too large (%zu > %d)", len, NGX_JS_MSG_MAX);
+    }
+
+    sent = send(jcf->msg_channel[slot].master_fd, buf, len, 0);
+    js_free(ctx, buf);
+
+    if (sent < 0) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.sendToWorker: send() failed: %s", strerror(errno));
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * nginx.broadcastToWorkers(data)
+ *
+ * Sends `data` to every worker slot that has an active channel.
+ * Equivalent to calling sendToWorker(slot, data) for each slot.
+ */
+static JSValue
+ngx_js_broadcast_to_workers(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_cycle_t    *cycle;
+    ngx_js_conf_t  *jcf;
+    uint8_t        *buf;
+    size_t          len;
+    ngx_uint_t      k;
+
+    if (ngx_process != NGX_PROCESS_MASTER && ngx_process != NGX_PROCESS_SINGLE) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.broadcastToWorkers: only callable in master process");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.broadcastToWorkers(data): data required");
+    }
+
+    cycle = (ngx_cycle_t *) JS_GetContextOpaque(ctx);
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "nginx.broadcastToWorkers: no cycle");
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
+
+    buf = JS_WriteObject(ctx, &len, argv[0], JS_WRITE_OBJ_REFERENCE);
+    if (buf == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (len > NGX_JS_MSG_MAX) {
+        js_free(ctx, buf);
+        return JS_ThrowRangeError(ctx,
+            "nginx.broadcastToWorkers: message too large (%zu > %d)",
+            len, NGX_JS_MSG_MAX);
+    }
+
+    for (k = 0; k < jcf->n_msg_channels; k++) {
+        if (jcf->msg_channel[k].master_fd >= 0) {
+            (void) send(jcf->msg_channel[k].master_fd, buf, len, 0);
+        }
+    }
+
+    js_free(ctx, buf);
+
+    return JS_UNDEFINED;
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -1428,6 +1556,16 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     /* nginx.on(event, fn) — master lifecycle event handler registration */
     JS_SetPropertyStr(ctx, nginx_obj, "on",
                       JS_NewCFunction(ctx, ngx_js_nginx_on, "on", 2));
+
+    /* nginx.sendToWorker(slot, data) — master → specific worker */
+    JS_SetPropertyStr(ctx, nginx_obj, "sendToWorker",
+                      JS_NewCFunction(ctx, ngx_js_send_to_worker,
+                                      "sendToWorker", 2));
+
+    /* nginx.broadcastToWorkers(data) — master → all workers */
+    JS_SetPropertyStr(ctx, nginx_obj, "broadcastToWorkers",
+                      JS_NewCFunction(ctx, ngx_js_broadcast_to_workers,
+                                      "broadcastToWorkers", 1));
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
 

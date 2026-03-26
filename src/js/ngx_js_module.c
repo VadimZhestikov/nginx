@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/socket.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
@@ -326,6 +327,7 @@ static ngx_int_t ngx_js_init_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_master(ngx_cycle_t *cycle);
 static void      ngx_js_bcast_recv_handler(ngx_event_t *ev);
+static void      ngx_js_msg_recv_handler(ngx_event_t *ev);
 static void      ngx_js_dispatch_master_event(ngx_cycle_t *cycle,
     const char *event, ngx_pid_t pid, ngx_int_t slot, int status);
 
@@ -419,7 +421,7 @@ ngx_js_create_conf(ngx_cycle_t *cycle)
         return NULL;
     }
 
-    /* rt, ctx, worker are NULL after pcalloc */
+    /* rt, ctx, worker, n_msg_channels are 0/NULL after pcalloc */
     jcf->master_handlers = JS_UNINITIALIZED;
 
     return jcf;
@@ -555,6 +557,45 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
      */
     if (ngx_js_sw_manager_start(jcf, cycle) != NGX_OK) {
         goto failed_ctx;
+    }
+
+    /* ---- Create per-worker master→worker message channels ---- */
+
+    {
+        ngx_core_conf_t  *ccf;
+        ngx_uint_t        nw, k;
+        int               sv[2];
+
+        ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+        nw  = (ngx_uint_t) ccf->worker_processes;
+        if (nw > NGX_MAX_PROCESSES) {
+            nw = NGX_MAX_PROCESSES;
+        }
+
+        jcf->n_msg_channels = 0;
+
+        for (k = 0; k < nw; k++) {
+            jcf->msg_channel[k].master_fd = -1;
+            jcf->msg_channel[k].worker_fd = -1;
+
+            if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) == -1) {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                              "js: socketpair() failed for msg_channel[%ui]", k);
+                goto failed_ctx;
+            }
+
+            if (fcntl(sv[1], F_SETFL, O_NONBLOCK) == -1) {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                              "js: fcntl(O_NONBLOCK) failed for msg_channel[%ui]", k);
+                (void) close(sv[0]);
+                (void) close(sv[1]);
+                goto failed_ctx;
+            }
+
+            jcf->msg_channel[k].master_fd = sv[0];
+            jcf->msg_channel[k].worker_fd = sv[1];
+            jcf->n_msg_channels++;
+        }
     }
 
     return NGX_CONF_OK;
@@ -835,6 +876,128 @@ ngx_js_bcast_ensure_active(ngx_js_worker_t *w)
 }
 
 
+/* ------------------------------------------------------------------ */
+/* F5 — master→worker JS message channel                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Called by the worker event loop when master_fd[ngx_worker] is readable.
+ * Reads serialized JS messages and dispatches them to nginx.on('message') handlers.
+ */
+static void
+ngx_js_msg_recv_handler(ngx_event_t *ev)
+{
+    ngx_connection_t  *conn;
+    ngx_js_worker_t   *w;
+    ngx_js_conf_t     *jcf;
+    JSContext         *ctx;
+    JSValue            msg, arr, len_val, fn, ret;
+    uint32_t           i, len;
+    ssize_t            n;
+    static uint8_t     buf[NGX_JS_MSG_MAX];
+
+    conn = ev->data;
+    w    = conn->data;
+    ctx  = w->ctx;
+    jcf  = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+
+    for ( ;; ) {
+        n = recv(conn->fd, buf, sizeof(buf), MSG_DONTWAIT);
+        if (n <= 0) {
+            break;
+        }
+
+        msg = JS_ReadObject(ctx, buf, (size_t) n, JS_READ_OBJ_REFERENCE);
+        if (JS_IsException(msg)) {
+            JSValue      exc;
+            const char  *str;
+
+            exc = JS_GetException(ctx);
+            str = JS_ToCString(ctx, exc);
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                          "js: message channel: deserialize error: %s",
+                          str ? str : "(null)");
+            JS_FreeCString(ctx, str);
+            JS_FreeValue(ctx, exc);
+            continue;
+        }
+
+        /* Dispatch to nginx.on('message', ...) handlers */
+        if (!JS_IsUninitialized(jcf->master_handlers)) {
+            arr = JS_GetPropertyStr(ctx, jcf->master_handlers, "message");
+            if (JS_IsArray(ctx, arr)) {
+                len_val = JS_GetPropertyStr(ctx, arr, "length");
+                JS_ToUint32(ctx, &len, len_val);
+                JS_FreeValue(ctx, len_val);
+
+                for (i = 0; i < len; i++) {
+                    fn = JS_GetPropertyUint32(ctx, arr, i);
+                    if (JS_IsFunction(ctx, fn)) {
+                        ret = JS_Call(ctx, fn, JS_UNDEFINED, 1, &msg);
+                        if (JS_IsException(ret)) {
+                            JSValue      exc;
+                            const char  *str;
+
+                            exc = JS_GetException(ctx);
+                            str = JS_ToCString(ctx, exc);
+                            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                                          "js: nginx.on('message') exception: %s",
+                                          str ? str : "(null)");
+                            JS_FreeCString(ctx, str);
+                            JS_FreeValue(ctx, exc);
+                        }
+                        JS_FreeValue(ctx, ret);
+                    }
+                    JS_FreeValue(ctx, fn);
+                }
+            }
+            JS_FreeValue(ctx, arr);
+        }
+
+        JS_FreeValue(ctx, msg);
+
+        /* drain microtasks */
+        {
+            JSContext  *pctx;
+            while (JS_ExecutePendingJob(w->rt, &pctx) > 0) { /* nothing */ }
+        }
+    }
+}
+
+
+/*
+ * Registers the worker's message channel fd with the event loop.
+ * Must be called from inside the event loop (after ngx_event_process_init).
+ * Idempotent — safe to call on every request.
+ */
+void
+ngx_js_msg_ensure_active(ngx_js_worker_t *w)
+{
+    ngx_connection_t  *conn;
+
+    if (w == NULL || w->msg_conn != NULL || w->msg_fd < 0) {
+        return;
+    }
+
+    conn = ngx_get_connection(w->msg_fd, ngx_cycle->log);
+    if (conn == NULL) {
+        return;
+    }
+
+    conn->data          = w;
+    conn->read->handler = ngx_js_msg_recv_handler;
+    conn->read->log     = ngx_cycle->log;
+
+    if (ngx_add_event(conn->read, NGX_READ_EVENT, 0) != NGX_OK) {
+        ngx_free_connection(conn);
+        conn->fd = (ngx_socket_t) -1;
+        return;
+    }
+
+    w->msg_conn = conn;
+}
+
+
 /*
  * ngx_js_init_process — called in each worker after fork().
  *
@@ -934,6 +1097,31 @@ ngx_js_init_process(ngx_cycle_t *cycle)
     w->bcast_fd   = ngx_js_sw_get_bcast_fd((ngx_uint_t) ngx_worker);
     w->bcast_conn = NULL;
 
+    /*
+     * F5: set up the master→worker message channel.
+     * Close all master_fds (those belong to the master only) and other
+     * workers' worker_fds.  Keep only our own worker_fd, which is registered
+     * lazily via ngx_js_msg_ensure_active() on the first request.
+     */
+    w->msg_fd   = -1;
+    w->msg_conn = NULL;
+
+    {
+        ngx_uint_t  k;
+
+        for (k = 0; k < jcf->n_msg_channels; k++) {
+            if (jcf->msg_channel[k].master_fd >= 0) {
+                (void) close(jcf->msg_channel[k].master_fd);
+            }
+
+            if (k == (ngx_uint_t) ngx_worker) {
+                w->msg_fd = jcf->msg_channel[k].worker_fd;
+            } else if (jcf->msg_channel[k].worker_fd >= 0) {
+                (void) close(jcf->msg_channel[k].worker_fd);
+            }
+        }
+    }
+
     return NGX_OK;
 }
 
@@ -990,6 +1178,19 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
         if (bcast_ctx != NULL) {
             ngx_free(bcast_ctx);
         }
+    }
+
+    /* F5: deregister master→worker message channel */
+    if (w->msg_conn != NULL) {
+        ngx_del_event(w->msg_conn->read, NGX_READ_EVENT, 0);
+        ngx_free_connection(w->msg_conn);
+        w->msg_conn->fd = (ngx_socket_t) -1;
+        w->msg_conn     = NULL;
+    }
+
+    if (w->msg_fd >= 0) {
+        (void) close(w->msg_fd);
+        w->msg_fd = -1;
     }
 
     ngx_js_sw_exit_process(cycle, jcf);
@@ -1068,7 +1269,29 @@ extern void  (*ngx_js_master_event)(ngx_cycle_t *cycle, const char *event,
 static ngx_int_t
 ngx_js_init_module(ngx_cycle_t *cycle)
 {
+    ngx_js_conf_t  *old_jcf;
+    ngx_uint_t      i;
+
     ngx_js_master_event = ngx_js_dispatch_master_event;
+
+    /*
+     * On reload, ngx_cycle still points to the OLD cycle at this point.
+     * Close the old master_fds so they don't leak — workers will close
+     * their own worker_fds when they exit.
+     */
+    if (ngx_cycle != NULL && ngx_cycle->conf_ctx != NULL) {
+        old_jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx,
+                                                  ngx_js_module);
+        if (old_jcf != NULL) {
+            for (i = 0; i < old_jcf->n_msg_channels; i++) {
+                if (old_jcf->msg_channel[i].master_fd >= 0) {
+                    (void) close(old_jcf->msg_channel[i].master_fd);
+                    old_jcf->msg_channel[i].master_fd = -1;
+                }
+            }
+        }
+    }
+
     return NGX_OK;
 }
 
@@ -1179,6 +1402,19 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
     jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
 
     ngx_js_sw_exit_master(jcf);
+
+    /* Close master-side message channel fds */
+    {
+        ngx_uint_t  k;
+
+        for (k = 0; k < jcf->n_msg_channels; k++) {
+            if (jcf->msg_channel[k].master_fd >= 0) {
+                (void) close(jcf->msg_channel[k].master_fd);
+                jcf->msg_channel[k].master_fd = -1;
+            }
+            /* worker_fds: workers closed their own in exit_process */
+        }
+    }
 
     if (jcf->ctx) {
         if (!JS_IsUninitialized(jcf->master_handlers)) {
