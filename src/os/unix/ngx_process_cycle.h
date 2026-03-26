@@ -18,6 +18,8 @@
 #define NGX_CMD_QUIT           3
 #define NGX_CMD_TERMINATE      4
 #define NGX_CMD_REOPEN         5
+#define NGX_CMD_JS_MESSAGE     6   /* master → worker: JS payload follows */
+#define NGX_CMD_JS_WORKER_MSG  7   /* worker → master: JS payload follows */
 
 
 #define NGX_PROCESS_SINGLE     0

@@ -4739,9 +4739,6 @@ ngx_js_content_handler(ngx_http_request_t *r)
     /* F4: lazily activate the bcast event handler on first request */
     ngx_js_bcast_ensure_active(w);
 
-    /* F5: lazily activate the master→worker message channel */
-    ngx_js_msg_ensure_active(w);
-
     /* Activate this worker's channel for every static SharedWorker so that
      * relay messages from the SW thread are delivered even to workers that
      * have never called sw.postMessage() themselves. */

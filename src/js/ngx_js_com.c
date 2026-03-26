@@ -9,6 +9,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_event.h>
+#include <ngx_channel.h>
 #include <sys/socket.h>
 #include <cutils.h>
 #include "ngx_js.h"
@@ -1250,23 +1251,63 @@ ngx_js_nginx_on(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * ngx_js_channel_send — write NGX_CMD_JS_MESSAGE header + payload to `fd`.
+ * Uses a single sendmsg() with two iov vectors (header + payload) so that
+ * both land in the kernel buffer atomically.  The channel is SOCK_STREAM
+ * AF_UNIX; both ends are O_NONBLOCK (set by ngx_spawn_process).
+ * Returns NGX_OK or NGX_ERROR.
+ */
+static ngx_int_t
+ngx_js_channel_send(ngx_socket_t fd, ngx_uint_t command, ngx_uint_t slot_arg,
+    const uint8_t *buf, size_t len, ngx_log_t *log)
+{
+    ngx_channel_t   ch;
+    struct iovec    iov[2];
+    struct msghdr   mh;
+    ssize_t         n;
+
+    ngx_memzero(&ch, sizeof(ch));
+    ch.command = command;
+    ch.pid     = ngx_pid;
+    ch.slot    = (ngx_int_t) slot_arg;
+    ch.fd      = (ngx_fd_t) len;   /* payload_len */
+
+    iov[0].iov_base = &ch;
+    iov[0].iov_len  = sizeof(ch);
+    iov[1].iov_base = (void *) buf;
+    iov[1].iov_len  = len;
+
+    ngx_memzero(&mh, sizeof(mh));
+    mh.msg_iov    = iov;
+    mh.msg_iovlen = 2;
+
+    n = sendmsg(fd, &mh, 0);
+    if (n < 0) {
+        ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                      "js: channel sendmsg() failed");
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+/*
  * nginx.sendToWorker(slot, data)
  *
- * Serializes `data` with JS_WriteObject and sends it over the
- * pre-fork SOCK_SEQPACKET channel to worker slot `slot`.
- * Only callable from the master process (init_conf or nginx.on() callbacks).
- * The worker dispatches it to nginx.on('message', fn) handlers.
+ * Serializes `data` with JS_WriteObject and sends it over the nginx channel
+ * (ngx_processes[slot].channel[0]) to worker `slot` using the new
+ * NGX_CMD_JS_MESSAGE command.  Only callable from the master process.
+ * The worker's ngx_channel_handler dispatches it to nginx.on('message') handlers.
  */
 static JSValue
 ngx_js_send_to_worker(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     ngx_cycle_t    *cycle;
-    ngx_js_conf_t  *jcf;
     int32_t         slot;
     uint8_t        *buf;
     size_t          len;
-    ssize_t         sent;
 
     if (ngx_process != NGX_PROCESS_MASTER && ngx_process != NGX_PROCESS_SINGLE) {
         return JS_ThrowInternalError(ctx,
@@ -1283,17 +1324,11 @@ ngx_js_send_to_worker(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowInternalError(ctx, "nginx.sendToWorker: no cycle");
     }
 
-    jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
-
-    if (slot < 0 || (ngx_uint_t) slot >= jcf->n_msg_channels) {
+    if (slot < 0 || slot >= ngx_last_process
+        || ngx_processes[slot].channel[0] < 0)
+    {
         return JS_ThrowRangeError(ctx,
-            "nginx.sendToWorker: slot %d out of range (0..%d)",
-            slot, (int) jcf->n_msg_channels - 1);
-    }
-
-    if (jcf->msg_channel[slot].master_fd < 0) {
-        return JS_ThrowInternalError(ctx,
-            "nginx.sendToWorker: channel fd not available for slot %d", slot);
+            "nginx.sendToWorker: slot %d has no active channel", slot);
     }
 
     buf = JS_WriteObject(ctx, &len, argv[1], JS_WRITE_OBJ_REFERENCE);
@@ -1304,16 +1339,14 @@ ngx_js_send_to_worker(JSContext *ctx, JSValueConst this_val,
     if (len > NGX_JS_MSG_MAX) {
         js_free(ctx, buf);
         return JS_ThrowRangeError(ctx,
-            "nginx.sendToWorker: message too large (%zu > %d)", len, NGX_JS_MSG_MAX);
+            "nginx.sendToWorker: message too large (%zu > %d)", len,
+            NGX_JS_MSG_MAX);
     }
 
-    sent = send(jcf->msg_channel[slot].master_fd, buf, len, 0);
+    ngx_js_channel_send(ngx_processes[slot].channel[0],
+                        NGX_CMD_JS_MESSAGE, (ngx_uint_t) slot,
+                        buf, len, cycle->log);
     js_free(ctx, buf);
-
-    if (sent < 0) {
-        return JS_ThrowInternalError(ctx,
-            "nginx.sendToWorker: send() failed: %s", strerror(errno));
-    }
 
     return JS_UNDEFINED;
 }
@@ -1322,7 +1355,7 @@ ngx_js_send_to_worker(JSContext *ctx, JSValueConst this_val,
 /*
  * nginx.broadcastToWorkers(data)
  *
- * Sends `data` to every worker slot that has an active channel.
+ * Sends `data` to every active worker channel.
  * Equivalent to calling sendToWorker(slot, data) for each slot.
  */
 static JSValue
@@ -1330,10 +1363,9 @@ ngx_js_broadcast_to_workers(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     ngx_cycle_t    *cycle;
-    ngx_js_conf_t  *jcf;
     uint8_t        *buf;
     size_t          len;
-    ngx_uint_t      k;
+    ngx_int_t       k;
 
     if (ngx_process != NGX_PROCESS_MASTER && ngx_process != NGX_PROCESS_SINGLE) {
         return JS_ThrowInternalError(ctx,
@@ -1350,8 +1382,6 @@ ngx_js_broadcast_to_workers(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowInternalError(ctx, "nginx.broadcastToWorkers: no cycle");
     }
 
-    jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
-
     buf = JS_WriteObject(ctx, &len, argv[0], JS_WRITE_OBJ_REFERENCE);
     if (buf == NULL) {
         return JS_EXCEPTION;
@@ -1364,12 +1394,73 @@ ngx_js_broadcast_to_workers(JSContext *ctx, JSValueConst this_val,
             len, NGX_JS_MSG_MAX);
     }
 
-    for (k = 0; k < jcf->n_msg_channels; k++) {
-        if (jcf->msg_channel[k].master_fd >= 0) {
-            (void) send(jcf->msg_channel[k].master_fd, buf, len, 0);
+    for (k = 0; k < ngx_last_process; k++) {
+        if (ngx_processes[k].channel[0] >= 0) {
+            ngx_js_channel_send(ngx_processes[k].channel[0],
+                                NGX_CMD_JS_MESSAGE, (ngx_uint_t) k,
+                                buf, len, cycle->log);
         }
     }
 
+    js_free(ctx, buf);
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * nginx.sendToMaster(data)
+ *
+ * Worker → master JS message.  Serializes `data` and sends it over the
+ * existing nginx channel (ngx_channel = channel[1]) using NGX_CMD_JS_WORKER_MSG.
+ * The master receives it on SIGIO, reads from channel[0], and dispatches
+ * to nginx.on('workerMessage', fn(slot, data)) handlers.
+ * Only callable from worker processes.
+ */
+static JSValue
+ngx_js_send_to_master(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_cycle_t  *cycle;
+    uint8_t      *buf;
+    size_t        len;
+
+    if (ngx_process != NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.sendToMaster: only callable in worker process");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.sendToMaster(data): data required");
+    }
+
+    cycle = (ngx_cycle_t *) JS_GetContextOpaque(ctx);
+    if (cycle == NULL) {
+        /* worker context opaque is ngx_js_worker_t*, not cycle */
+        cycle = (ngx_cycle_t *) ngx_cycle;
+    }
+
+    if (ngx_channel < 0) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.sendToMaster: channel not available");
+    }
+
+    buf = JS_WriteObject(ctx, &len, argv[0], JS_WRITE_OBJ_REFERENCE);
+    if (buf == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (len > NGX_JS_MSG_MAX) {
+        js_free(ctx, buf);
+        return JS_ThrowRangeError(ctx,
+            "nginx.sendToMaster: message too large (%zu > %d)", len,
+            NGX_JS_MSG_MAX);
+    }
+
+    ngx_js_channel_send(ngx_channel, NGX_CMD_JS_WORKER_MSG,
+                        (ngx_uint_t) ngx_worker, buf, len,
+                        (cycle != NULL) ? cycle->log : ngx_cycle->log);
     js_free(ctx, buf);
 
     return JS_UNDEFINED;
@@ -1566,6 +1657,11 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "broadcastToWorkers",
                       JS_NewCFunction(ctx, ngx_js_broadcast_to_workers,
                                       "broadcastToWorkers", 1));
+
+    /* nginx.sendToMaster(data) — worker → master */
+    JS_SetPropertyStr(ctx, nginx_obj, "sendToMaster",
+                      JS_NewCFunction(ctx, ngx_js_send_to_master,
+                                      "sendToMaster", 1));
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
 

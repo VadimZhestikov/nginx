@@ -60,6 +60,19 @@ ngx_uint_t    ngx_restart;
 void  (*ngx_js_master_event)(ngx_cycle_t *cycle, const char *event,
     ngx_pid_t pid, ngx_int_t slot, int status);
 
+/*
+ * Phase 2: called in the worker when NGX_CMD_JS_MESSAGE arrives on the
+ * nginx channel.  fd is the readable channel fd; payload_len is the
+ * number of serialized JS bytes that follow (ch.fd field, repurposed).
+ */
+void  (*ngx_js_worker_channel_msg)(ngx_socket_t fd, ngx_int_t payload_len);
+
+/*
+ * Phase 3: called in the master after SIGIO to drain worker→master JS
+ * messages from all channel[0] fds via non-blocking reads.
+ */
+void  (*ngx_js_master_channel_msg)(ngx_cycle_t *cycle);
+
 #define ngx_js_emit(ev, p, s, st) \
     if (ngx_js_master_event) { ngx_js_master_event(cycle, ev, p, s, st); }
 
@@ -179,6 +192,13 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
         ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                        "wake up, sigio %i", sigio);
+
+        if (ngx_sigio) {
+            ngx_sigio = 0;
+            if (ngx_js_master_channel_msg) {
+                ngx_js_master_channel_msg(cycle);
+            }
+        }
 
         if (ngx_reap) {
             ngx_reap = 0;
@@ -1132,6 +1152,17 @@ ngx_channel_handler(ngx_event_t *ev)
             }
 
             ngx_processes[ch.slot].channel[0] = -1;
+            break;
+
+        case NGX_CMD_JS_MESSAGE:
+            /*
+             * Variable-length JS payload follows in the stream.
+             * ch.fd is repurposed as payload_len (bytes to read next).
+             * The JS module hook reads the payload and dispatches it.
+             */
+            if (ngx_js_worker_channel_msg) {
+                ngx_js_worker_channel_msg(c->fd, (ngx_int_t) ch.fd);
+            }
             break;
         }
     }
