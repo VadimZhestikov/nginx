@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 :icons: font
 :experimental:
-:revdate: 2026-03-19
+:revdate: 2026-03-26
 :revremark: Draft for comments
 :docinfo: shared
 
@@ -119,6 +119,28 @@ The sections that follow cover these components:
   from any thread with zero copy.  Combined with
   link:{mdn-atomics}[`Atomics`], they enable lock-free counters, mutexes,
   and condition variables.
+
+| Bootstrap functions
+| `nginx.createHttp()` / `nginx.createStream()` — instantiate the HTTP or
+  stream module entirely from JavaScript, without an `http {}` or `stream {}`
+  block in `nginx.conf`.  Combine with `nginx.http.addServer()` and
+  `nginx.createSocket()` for a fully JS-defined server topology.
+
+| Master/worker scripting
+| `nginx.on(event, fn)` hooks into master lifecycle events (worker spawn,
+  reload, SIGUSR1, …).  `nginx.sendToWorker()` / `nginx.broadcastToWorkers()`
+  push messages from master to workers; `nginx.sendToMaster()` sends from
+  a worker back to the master.
+
+| `nginx.repl`
+| An interactive JavaScript REPL that evaluates expressions inside a running
+  nginx worker over a plain HTTP upgrade connection.  Useful for live
+  introspection, ad-hoc mutations, and debugging.
+
+| `location.clearHandler()`
+| Removes a previously installed JS content handler and restores the
+  original nginx C handler for that location.  Used by snapshot/rollback
+  to undo handler changes atomically.
 
 | Accept control
 | `nginx.suspendAcceptance()` / `nginx.suspendAllWorkers()` — pause
@@ -250,7 +272,53 @@ All COM mutations go through one of three scopes:
 This section goes from "hello world" to "live upstream rebalancing" in four
 steps, each building on the previous one.
 
-=== Hello World Handler
+=== Hello World — Minimal (No http{} block)
+
+The most compact nginx JS DOM server needs only a `js_source` directive and an
+`events {}` block.  Everything else — the HTTP module, socket, virtual server,
+and location handler — is created from JavaScript at init time:
+
+[source,nginx]
+----
+# nginx.conf
+js_source /etc/nginx/js/hello_world.js;
+
+events { }
+----
+
+[source,javascript]
+----
+// hello_world.js — evaluated once in the master process after config parsing.
+// Creates the entire server topology from JS; no http{}/server{}/location{}
+// blocks are needed in nginx.conf.
+
+(function () {
+
+    // 1. Bootstrap the HTTP module (equivalent to an empty http{} block).
+    //    Pass any http-level directives as a string argument.
+    nginx.createHttp('access_log /var/log/nginx/access.log;');
+
+    // 2. Create a new virtual server.
+    var srv = nginx.http.addServer('hello-world.local');
+
+    // 3. Add a location and install the JS content handler inline.
+    srv.addLocation('/hello').handler = function (req) {
+        req.respond(200, { 'content-type': 'text/plain' },
+                    'JS COM: Hello World!\n');
+    };
+
+    // 4. Bind a TCP socket, attach it to the HTTP module,
+    //    and register the server on that listener.
+    var sock = nginx.createSocket('0.0.0.0:8080');
+    nginx.http.attach(sock).addServer(srv);
+
+})();
+----
+
+=== Hello World — Classic (with http{} block)
+
+When `http {}` is already present in `nginx.conf`, just find the location
+placeholder and assign a handler function:
 
 [source,nginx]
 ----
@@ -1892,6 +1960,510 @@ peers[0].weight = 20;
 ----
 
 
+== Bootstrap Functions (`nginx.createHttp` / `nginx.createStream`)
+
+These two functions let you instantiate the nginx HTTP or stream module
+entirely from JavaScript, without an `http {}` or `stream {}` block in
+`nginx.conf`.  They are called inside a `js_source` script at init time and
+may be combined with `nginx.http.addServer()`, `nginx.createSocket()`, and
+`nginx.http.attach()` to build a completely JS-defined server topology.
+
+=== `nginx.createHttp([directives])`
+
+Creates the HTTP module as if an empty `http {}` block were present in
+`nginx.conf`.
+
+[cols="1,3", options="header"]
+|===
+| Parameter | Description
+
+| `directives` (optional)
+| A string containing http-context directives that would normally appear
+  inside `http { … }`, e.g. `'access_log /var/log/nginx/access.log;'`.
+  Multiple directives may be separated by whitespace.
+|===
+
+After `nginx.createHttp()` returns, `nginx.http` is available and fully
+functional.  You can immediately call `nginx.http.addServer()`,
+`nginx.http.upstreams`, etc.
+
+Full working example (from `t/hello_world.t`):
+
+[source,javascript]
+----
+(function () {
+
+    // 1. Bootstrap the HTTP module.
+    nginx.createHttp('access_log /var/log/nginx/access.log;');
+
+    // 2. Create a virtual server (nginx builds a default template when
+    //    servers[] is empty).
+    var srv = nginx.http.addServer('hello-world.local');
+
+    // 3. Add a location and its JS content handler.
+    srv.addLocation('/hello').handler = function (req) {
+        req.respond(200, { 'content-type': 'text/plain' },
+                    'JS COM: Hello World!\n');
+    };
+
+    // 4. Bind a TCP socket, attach it to the HTTP listener,
+    //    and register the server.
+    var sock = nginx.createSocket('0.0.0.0:8080');
+    nginx.http.attach(sock).addServer(srv);
+
+})();
+----
+
+=== `nginx.createStream([directives])`
+
+Creates the stream module as if an empty `stream {}` block were present in
+`nginx.conf`.
+
+[cols="1,3", options="header"]
+|===
+| Parameter | Description
+
+| `directives` (optional)
+| A string containing stream-context directives, e.g.
+  `'proxy_timeout 30s;'`.
+|===
+
+After `nginx.createStream()` returns, `nginx.stream` is available.
+
+Full working example (from `t/hello_stream.t`):
+
+[source,javascript]
+----
+(function () {
+
+    // 1. Bootstrap the stream module.
+    nginx.createStream();
+
+    // 2. Create a stream server and attach a handler.
+    var srv = nginx.stream.addServer();
+    srv.handler = function (session) {
+        session.finalize(200);   // accept and close cleanly
+    };
+
+    // 3. Bind a TCP socket, attach it to the stream module,
+    //    and register the server.
+    var sock = nginx.createSocket('0.0.0.0:9000');
+    nginx.stream.attach(sock).addServer(srv);
+
+})();
+----
+
+=== When to Use Bootstrap Functions
+
+[cols="1,2", options="header"]
+|===
+| Situation | Recommendation
+
+| Full server topology defined in JS (dynamic, data-driven)
+| Use `nginx.createHttp()` / `nginx.createStream()`.  No static
+  `http {}` / `stream {}` needed.
+
+| `http {}` block already in `nginx.conf`, only handlers vary
+| Skip `createHttp()`; use `nginx.http.addServer()` and `addLocation()`
+  to augment the existing topology.
+
+| Mix of static and dynamic servers
+| Include a minimal `http {}` block in `nginx.conf` for any static servers;
+  call `nginx.http.addServer()` for additional dynamic ones.
+|===
+
+
+== Master/Worker Scripting
+
+In addition to running handlers in worker event loops, `js_source` scripts
+run in the *master process* and can hook into the master's supervisory loop:
+reacting to worker lifecycle events, sending data to workers, and receiving
+data back.
+
+=== Master Lifecycle Events (`nginx.on`)
+
+Register callbacks with `nginx.on(event, fn)` in any `js_source` script.
+The callbacks run in the master process.
+
+[cols="1,2,3", options="header"]
+|===
+| Event | Callback signature | When it fires
+
+| `'workerSpawned'`  | `fn(pid, slot)`          | A new worker process has started
+| `'workerExited'`   | `fn(pid, slot, status)`  | A worker process has exited
+| `'reload'`         | `fn()`                   | SIGHUP received, old config still active
+| `'reloaded'`       | `fn()`                   | SIGHUP complete, new workers are running
+| `'reopen'`         | `fn()`                   | SIGUSR1 received (rotate logs)
+| `'quit'`           | `fn()`                   | SIGQUIT received (graceful shutdown)
+| `'message'`        | `fn(data)`               | Worker sent data to master via `sendToMaster()`
+                                                  _(alias: `'workerMessage'` with `fn(slot, data)`)_
+|===
+
+NOTE: `'message'` and `'workerMessage'` are two spellings of the same hook.
+Use `'workerMessage'` when you need the sender's `slot` index; use `'message'`
+when you don't.
+
+Example — log every worker lifecycle event to a file:
+
+[source,javascript]
+----
+import * as std from 'std';
+
+var evlog = '/var/log/nginx/worker-events.log';
+
+function append(msg) {
+    var f = std.open(evlog, 'a');
+    if (f) { f.puts(msg + '\n'); f.close(); }
+}
+
+nginx.on('workerSpawned', function(pid, slot) {
+    append('workerSpawned pid=' + pid + ' slot=' + slot);
+});
+
+nginx.on('workerExited', function(pid, slot, status) {
+    append('workerExited pid=' + pid + ' slot=' + slot + ' status=' + status);
+});
+
+nginx.on('quit',     function() { append('quit');     });
+nginx.on('reload',   function() { append('reload');   });
+nginx.on('reloaded', function() { append('reloaded'); });
+nginx.on('reopen',   function() { append('reopen');   });
+----
+
+=== Master → Worker Messages
+
+The master can push arbitrary JSON-serializable data to one or all workers.
+
+[cols="2,3", options="header"]
+|===
+| Method | Description
+
+| `nginx.sendToWorker(slot, data)`
+| Send `data` to the worker at index `slot`.  The worker receives it
+  via `nginx.on('message', fn)`.
+
+| `nginx.broadcastToWorkers(data)`
+| Send `data` to every running worker.  Each worker receives its own
+  copy via `nginx.on('message', fn)`.
+|===
+
+`data` must be JSON-serializable.  It is transferred through the existing
+nginx channel socketpairs (the same fds used by `ngx_channel_t`), so no
+extra file descriptors are required.
+
+Example — greet each worker as it spawns:
+
+[source,javascript]
+----
+nginx.on('workerSpawned', function(pid, slot) {
+    nginx.sendToWorker(slot, { event: 'hello', slot: slot, pid: pid });
+});
+
+// In the same js_source script, workers receive:
+nginx.on('message', function(data) {
+    nginx.log(nginx.INFO,
+        'worker ' + nginx.workerIdx + ' received: ' + JSON.stringify(data));
+});
+----
+
+=== Worker → Master Messages
+
+Workers can send data back to the master at any time — typically from inside
+a request handler.
+
+[cols="2,3", options="header"]
+|===
+| Method | Description
+
+| `nginx.sendToMaster(data)`
+| Send `data` from the current worker to the master.  `data` is
+  JSON-serializable.
+
+| `nginx.on('workerMessage', fn(slot, data))`
+| Register a master-side handler.  `slot` is the sender's worker index;
+  `data` is the received object.
+|===
+
+The master's event loop is woken via SIGIO (already set up by nginx for
+other channel operations), so no polling is needed.
+
+Example — worker sends a health ping; master writes it to a log file:
+
+[source,javascript]
+----
+import * as std from 'std';
+
+// Master side: receive and log
+nginx.on('workerMessage', function(slot, data) {
+    var f = std.open('/var/log/nginx/worker-msgs.log', 'a');
+    if (f) {
+        f.puts('slot:' + slot + ' msg:' + data.msg + '\n');
+        f.close();
+    }
+});
+
+// Worker side: send on HTTP request
+nginx.http.servers[0].locations
+    .find(function(l) { return l.path === '/ping'; })
+    .handler = function(req) {
+        nginx.sendToMaster({ slot: nginx.workerIdx, msg: 'ping' });
+        req.respond(200, {'content-type': 'text/plain'}, 'sent\n');
+    };
+----
+
+=== `nginx.workerIdx`
+
+Inside a worker process, `nginx.workerIdx` returns the zero-based slot index
+of the current worker (matches the `slot` parameter in lifecycle callbacks).
+In the master process it returns `undefined`.
+
+
+== nginx.repl — Interactive JavaScript REPL
+
+`nginx.repl` provides an in-process JavaScript REPL that evaluates expressions
+inside a running nginx worker over a plain HTTP upgrade connection.  It is
+useful for live introspection, ad-hoc mutations, and debugging without a
+restart.
+
+=== How It Works
+
+A request handler calls `req.hijack()` to take ownership of the raw TCP
+connection, then calls `nginx.repl.attach()` to redirect `console.log` /
+`nginx.log` output to that connection, and `nginx.repl.listen()` to install
+a line-by-line read loop.  Each line received is evaluated by
+`nginx.repl.eval()` and the result is written back.
+
+=== REPL API
+
+[cols="2,3", options="header"]
+|===
+| Method | Description
+
+| `nginx.repl.eval(line)`
+| Evaluate one line of JavaScript in the current worker's context.
+  Returns `{ status, value, message, stack }`.  `status` is `"ok"`,
+  `"err"`, `"incomplete"`, or `"stack"`.  `value` is the JSON-serialised
+  result on success.
+
+| `nginx.repl.attach(fd, loglevel, nginxlevel)`
+| Start streaming `console.log` / `console.warn` / `console.error` and
+  `nginx.log` output to `fd`.  `loglevel` filters JS console methods
+  (0 = log+warn+err, 1 = warn+err, 2 = err only); `nginxlevel` is the
+  nginx log severity threshold.
+
+| `nginx.repl.detach()`
+| Stop streaming; restore normal log routing.
+
+| `nginx.repl.listen(fd, fn)`
+| Install a line-by-line read handler on `fd`.  Each complete line
+  (delimited by `\n`) is passed to `fn(line)`.
+
+| `nginx.repl._writeFd(fd, str)`
+| Write raw bytes to a file descriptor.  Used internally to send
+  prompt and result lines.
+
+| `req.hijack()`
+| Detach the HTTP connection from nginx's connection pool and return
+  the raw file descriptor.  The caller is now responsible for I/O and
+  closing.
+|===
+
+=== Wire Protocol
+
+The client connects with an HTTP GET and the `Upgrade: nginx-repl` header.
+After the 101 upgrade response, the connection becomes a line-oriented
+plain-text stream:
+
+[source,text]
+----
+# Client → server
+<token> EVAL <javascript-expression>\n
+
+# Server → client
+<token> OK [<json-value>]\n      # success
+<token> ERR <message>\n          # runtime error
+<token> INCOMPLETE\n             # expression needs more input
+<token> STACK <frame>\n          # stack trace line (one per frame)
+----
+
+Multiline input is handled by re-sending with accumulated lines until the
+server replies with something other than `INCOMPLETE`.
+
+=== Embedding the REPL
+
+[source,javascript]
+----
+// Install a REPL endpoint on /repl
+nginx.http.servers[0].locations
+    .find(function(l) { return l.path === '/repl'; })
+    .handler = function(req) {
+        if ((req.headers['upgrade'] || '').toLowerCase() !== 'nginx-repl') {
+            return req.respond(400, {}, 'Expected Upgrade: nginx-repl\n');
+        }
+
+        var params = req.queryParams;
+        var loglevel   = parseInt(params.loglevel   || '0');
+        var nginxlevel = parseInt(params.nginxlevel || '6');
+
+        req.respond(101, {
+            'upgrade':    'nginx-repl',
+            'connection': 'upgrade'
+        }, '');
+
+        var fd = req.hijack();
+        nginx.repl.attach(fd, loglevel, nginxlevel);
+        nginx.repl.listen(fd, function(line) {
+            var r = nginx.repl.eval(line);
+            if (r.status === 'ok') {
+                nginx.repl._writeFd(fd,
+                    '- OK' + (r.value !== undefined ? ' ' + r.value : '') + '\n');
+            } else if (r.status === 'incomplete') {
+                nginx.repl._writeFd(fd, '- INCOMPLETE\n');
+            } else {
+                nginx.repl._writeFd(fd, '- ERR ' + (r.message || '') + '\n');
+            }
+        });
+    };
+----
+
+=== The nginx-repl Tool
+
+A ready-made REPL server and client are provided in `js_com_tools/nginx-repl/`:
+
+* `nginx-repl-demo/` — self-contained demo: `nginx.conf`, `repl.js`,
+  `repl-relay.js` (SharedWorker for multi-worker routing).
+* `repl-client.py` — interactive Python client with readline support.
+* `repl-client.js` — Node.js client.
+
+Quick start:
+
+[source,shell]
+----
+# Build nginx with the JS module
+auto/configure --add-module=src/js ...
+make -j$(nproc)
+
+# Start the demo server
+./objs/nginx -c js_com_tools/nginx-repl/nginx-repl-demo/nginx.conf
+
+# Connect with the Python client (targets worker 0 by default)
+python3 js_com_tools/nginx-repl/repl-client.py
+
+# Connect targeting a specific worker index
+python3 js_com_tools/nginx-repl/repl-client.py --worker 1
+----
+
+Once connected you can evaluate any JavaScript that is valid in the worker's
+context:
+
+[source,text]
+----
+> nginx.version
+"1.29.7"
+> nginx.workerIdx
+0
+> nginx.http.upstreams[0].peers.map(p => p.addr)
+["192.168.1.10:8080","192.168.1.11:8080"]
+> nginx.http.upstreams[0].peers[0].weight = 10
+10
+----
+
+CAUTION: The REPL evaluates JavaScript with full COM write access inside a
+live worker process.  Bind the endpoint to loopback (`127.0.0.1`) only and
+protect it with a firewall or `ngx_http_access_module` `allow`/`deny` rules.
+
+
+== Applications
+
+=== admin_snapshot_rollback
+
+`js_com_apps/admin_snapshot_rollback/` is a self-contained reference
+application that demonstrates live configuration management without an nginx
+restart.
+
+==== Concept
+
+Operators mutate the live nginx config through the JS COM API (upstream peer
+weights, location handlers, added/removed servers).  After a successful
+change, the current state is captured as a *snapshot* — a JSON ops-list that
+records every write made since the last base-state capture.  Snapshots can be
+applied, rolled back, pinned, and compacted.
+
+==== Admin HTTP API
+
+[cols="2,1,3", options="header"]
+|===
+| Endpoint | Method | Description
+
+| `/admin/state`          | GET  | Return the current config delta vs. base state (JSON ops-list)
+| `/admin/snapshots`      | GET  | List all saved snapshots
+| `/admin/snapshots`      | POST | Create a new snapshot from the current state
+| `/admin/snapshots/:id`  | GET  | Retrieve the JSON for snapshot `id`
+| `/admin/apply/:id`      | POST | Apply snapshot `id` to the live config
+| `/admin/rollback`       | POST | Step back one snapshot (undo last apply)
+|===
+
+==== JavaScript API (`nginx.admin`)
+
+[cols="2,3", options="header"]
+|===
+| Method | Description
+
+| `nginx.admin.state()`             | Return ops-list of mutations since base-state capture
+| `nginx.admin.createSnapshot(name)`| Capture current state as a named snapshot
+| `nginx.admin.listSnapshots()`     | Return array of `{id, name, ts}` objects
+| `nginx.admin.applySnapshot(id)`   | Apply the ops-list of snapshot `id`
+| `nginx.admin.rollback()`          | Revert to the state before the last `applySnapshot`
+| `nginx.admin.pin(id)`             | Pin a snapshot as the rollback target
+| `nginx.admin.registerHandler(name, fn)` | Register a named handler function for structural ops
+| `nginx.admin.compactSnapshot(id)` | Reduce a snapshot to minimal ops
+| `nginx.admin.squash(ids, name)`   | Merge multiple snapshots into one
+|===
+
+==== `location.clearHandler()`
+
+`location.clearHandler()` is a low-level primitive used internally by the
+admin application to undo handler installations during rollback.
+
+[source,javascript]
+----
+// Install a handler
+loc.handler = function(req) { req.respond(200, {}, 'hello'); };
+
+// Later — remove the handler and restore the original C handler
+loc.clearHandler();
+----
+
+If no JS handler was ever assigned to the location, `clearHandler()` is a
+no-op.  After `clearHandler()`, `location.hasHandler` returns `false`.
+
+==== Running the Demo
+
+[source,shell]
+----
+cd js_com_apps/admin_snapshot_rollback
+
+# Start nginx (requires the JS module binary in ../../objs/nginx)
+../../objs/nginx -c nginx.conf
+
+# Inspect current state
+curl http://127.0.0.1:8090/admin/state
+
+# Create a snapshot
+curl -X POST http://127.0.0.1:8090/admin/snapshots
+
+# Apply a snapshot
+curl -X POST http://127.0.0.1:8090/admin/apply/0001-initial
+
+# Roll back
+curl -X POST http://127.0.0.1:8090/admin/rollback
+----
+
+The test suite in `js_com_apps/admin_snapshot_rollback/t/` covers base-state
+capture, delta computation, snapshot create/apply/rollback, compaction, and
+structural operations (addServer / addLocation / rollback).
+
+
 == External Config Sources and Full Reload
 
 === Pattern A — File at Startup (`js_preprocess`)
@@ -2397,6 +2969,39 @@ with the same OS privileges.  The following restrictions apply:
 | `nginx.resumeAcceptance()`    | — | Re-add listening sockets to this worker's epoll
 | `nginx.suspendAllWorkers()`   | Promise | Quiesce all workers (async)
 | `nginx.resumeAllWorkers()`    | Promise | Resume all workers (async)
+
+| `nginx.createHttp([directives])` | — | Bootstrap the HTTP module at init time (equivalent
+  to an empty `http {}` block). `directives` is an optional string of nginx directives
+  (e.g. `'access_log /var/log/nginx/access.log;'`). After the call, `nginx.http` is
+  available. No-op if called more than once.
+
+| `nginx.createStream([directives])` | — | Bootstrap the stream module at init time
+  (equivalent to an empty `stream {}` block). After the call, `nginx.stream` is
+  available. No-op if called more than once.
+
+| `nginx.createSocket(addr)` | object | Create a new TCP listening socket bound to `addr`
+  (`"ip:port"` string). Returns a socket object that can be passed to
+  `nginx.http.attach(sock)` or `nginx.stream.attach(sock)`.
+
+| `nginx.on(event, fn)` | — | Register a master-process lifecycle callback. See
+  <<master-lifecycle-events>>. Valid events: `'workerSpawned'`, `'workerExited'`,
+  `'quit'`, `'reload'`, `'reloaded'`, `'reopen'`, `'message'`, `'workerMessage'`.
+
+| `nginx.sendToWorker(slot, data)` | — | (Master only) Send `data` to the worker at
+  index `slot`. The worker receives it via `nginx.on('message', fn)`.
+
+| `nginx.broadcastToWorkers(data)` | — | (Master only) Send `data` to all workers.
+  Each worker receives it via `nginx.on('message', fn)`.
+
+| `nginx.sendToMaster(data)` | — | (Worker only) Send `data` to the master process.
+  The master receives it via `nginx.on('workerMessage', fn(slot, data))`.
+
+| `nginx.workerIdx` | number | (Worker only) Zero-based index of the current worker
+  process (0 … workerProcesses−1). Constant for the lifetime of the worker.
+
+| `nginx.repl` | object | Interactive JavaScript REPL object. See
+  <<nginx-repl-interactive-javascript-repl>>. Properties: `eval(line)`,
+  `attach(fd, loglevel, nginxlevel)`, `detach()`, `listen(fd, fn)`, `_writeFd(fd, str)`.
 |===
 
 === `nginx.http` Object
@@ -2417,6 +3022,9 @@ with the same OS privileges.  The following restrictions apply:
 | `removeServer(name)`       | boolean | Remove a virtual server; returns false if not found
 | `rebuildVhostDispatch()`   | —      | Recompile the server_name dispatch hash
 | `match(req, conditions)`   | boolean | Evaluate nginx `if` conditions against a request
+| `attach(sock)`             | object  | Attach a socket (from `nginx.createSocket()`) to
+  the HTTP module; returns a listener object on which `addServer(srv)` registers a
+  virtual server for that socket.
 |===
 
 === NginxRequest Methods and Properties
@@ -2689,6 +3297,9 @@ NginxLocation  (server.locations[i]  or  server.addLocation(…))
 ├── jsCreated         bool    r/o   true if created by addLocation()
 │
 ├── handler                   r/w   JS async (req) => {} content handler
+├── hasHandler        bool    r/o   true if a JS handler is currently installed
+├── clearHandler()            fn    Remove the JS handler; restore the original nginx
+│                                   C content handler (no-op if no handler installed)
 ├── headerFilters[]   array   r/o   installed header filter entries
 ├── bodyFilters[]     array   r/o   installed body filter entries
 │
