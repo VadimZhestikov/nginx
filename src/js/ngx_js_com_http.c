@@ -7933,6 +7933,7 @@ static const char * const ngx_js_loc_snap_props[] = {
 };
 
 static const char * const ngx_js_proxy_snap_props[] = {
+    "pass",
     "httpVersion",
     "connectTimeout",
     "sendTimeout",
@@ -8405,7 +8406,6 @@ ngx_js_http_register_classes(JSRuntime *rt)
     if (ngx_js_realip_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
-    "pass",
 #endif
 
     if (ngx_js_charset_register_class(rt) != NGX_OK) {
