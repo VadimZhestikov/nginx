@@ -16,7 +16,7 @@
         <nickname>asciidoctor + html2fb2.py</nickname>
       </author>
       <date>2026-03-19</date>
-      <id>6ce8b8d4-6890-4c3f-9cc5-f809f30f6f3c</id>
+      <id>86a7107a-62ba-4e25-b698-518da1ab1a3d</id>
       <version>1.0</version>
     </document-info>
   </description>
@@ -80,6 +80,10 @@
         <p>Workers │ Standard Web Worker API. A per-nginx-worker background thread for CPU-bound work. Does not block the event loop.</p>
         <p>SharedWorkers │ A single long-lived thread in the master process, connected to every nginx worker via UNIX sockets. The canonical place for mutable state that must be consistent across all workers.</p>
         <p>SharedArrayBuffers + Atomics │ Binary shared-memory regions (MDN reference) accessible from any thread with zero copy. Combined with Atomics, they enable lock-free counters, mutexes, and condition variables.</p>
+        <p>Bootstrap functions │ nginx.createHttp() / nginx.createStream() — instantiate the HTTP or stream module entirely from JavaScript, without an http {} or stream {} block in nginx.conf. Combine with nginx.http.addServer() and nginx.createSocket() for a fully JS-defined server topology.</p>
+        <p>Master/worker scripting │ nginx.on(event, fn) hooks into master lifecycle events (worker spawn, reload, SIGUSR1, …). nginx.sendToWorker() / nginx.broadcastToWorkers() push messages from master to workers; nginx.sendToMaster() sends from a worker back to the master.</p>
+        <p>nginx.repl │ An interactive JavaScript REPL that evaluates expressions inside a running nginx worker over a plain HTTP upgrade connection. Useful for live introspection, ad-hoc mutations, and debugging.</p>
+        <p>location.clearHandler() │ Removes a previously installed JS content handler and restores the original nginx C handler for that location. Used by snapshot/rollback to undo handler changes atomically.</p>
         <p>Accept control │ nginx.suspendAcceptance() / nginx.suspendAllWorkers() — pause connection acceptance during a mutation window, then resume.</p>
         <p>Resource limits │ nginx.workerMemoryLimit and nginx.workerRequestTimeout cap heap usage and CPU time per request; JS exceptions are caught; the worker survives.</p>
         <empty-line />
@@ -199,8 +203,52 @@
       <p>This section goes from "hello world" to "live upstream rebalancing" in four steps, each building on the previous one.</p>
       <section>
         <title>
-          <p>Hello World Handler</p>
+          <p>Hello World — Minimal (No http{} block)</p>
         </title>
+        <p>The most compact nginx JS DOM server needs only a <code>js_source</code> directive and an <code>events {}</code> block. Everything else — the HTTP module, socket, virtual server, and location handler — is created from JavaScript at init time:</p>
+        <poem>
+          <stanza>
+            <v># nginx.conf</v>
+            <v>js_source /etc/nginx/js/hello_world.js;</v>
+            <v />
+            <v>events { }</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// hello_world.js — evaluated once in the master process after config parsing.</v>
+            <v>// Creates the entire server topology from JS; no http{}/server{}/location{}</v>
+            <v>// blocks are needed in nginx.conf.</v>
+            <v />
+            <v>(function () {</v>
+            <v />
+            <v>    // 1. Bootstrap the HTTP module (equivalent to an empty http{} block).</v>
+            <v>    //    Pass any http-level directives as a string argument.</v>
+            <v>    nginx.createHttp('access_log /var/log/nginx/access.log;');</v>
+            <v />
+            <v>    // 2. Create a new virtual server.</v>
+            <v>    var srv = nginx.http.addServer('hello-world.local');</v>
+            <v />
+            <v>    // 3. Add a location and install the JS content handler inline.</v>
+            <v>    srv.addLocation('/hello').handler = function (req) {</v>
+            <v>        req.respond(200, { 'content-type': 'text/plain' },</v>
+            <v>                    'JS COM: Hello World!\n');</v>
+            <v>    };</v>
+            <v />
+            <v>    // 4. Bind a TCP socket, attach it to the HTTP module,</v>
+            <v>    //    and register the server on that listener.</v>
+            <v>    var sock = nginx.createSocket('0.0.0.0:8080');</v>
+            <v>    nginx.http.attach(sock).addServer(srv);</v>
+            <v />
+            <v>})();</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Hello World — Classic (with http{} block)</p>
+        </title>
+        <p>When <code>http {}</code> is already present in <code>nginx.conf</code>, just find the location placeholder and assign a handler function:</p>
         <poem>
           <stanza>
             <v># nginx.conf</v>
@@ -1876,6 +1924,420 @@
     </section>
     <section>
       <title>
+        <p>Bootstrap Functions (nginx.createHttp/nginx.createStream)</p>
+      </title>
+      <p>These two functions let you instantiate the nginx HTTP or stream module entirely from JavaScript, without an <code>http {}</code> or <code>stream {}</code> block in <code>nginx.conf</code>. They are called inside a <code>js_source</code> script at init time and may be combined with <code>nginx.http.addServer()</code>, <code>nginx.createSocket()</code>, and <code>nginx.http.attach()</code> to build a completely JS-defined server topology.</p>
+      <section>
+        <title>
+          <p>14.1.nginx.createHttp([directives])</p>
+        </title>
+        <p>Creates the HTTP module as if an empty <code>http {}</code> block were present in <code>nginx.conf</code>.</p>
+        <p>Parameter │ Description</p>
+        <p>directives (optional) │ A string containing http-context directives that would normally appear inside http { … }, e.g. 'access_log /var/log/nginx/access.log;'. Multiple directives may be separated by whitespace.</p>
+        <empty-line />
+        <p>After <code>nginx.createHttp()</code> returns, <code>nginx.http</code> is available and fully functional. You can immediately call <code>nginx.http.addServer()</code>, <code>nginx.http.upstreams</code>, etc.</p>
+        <p>Full working example (from <code>t/hello_world.t</code>):</p>
+        <poem>
+          <stanza>
+            <v>(function () {</v>
+            <v />
+            <v>    // 1. Bootstrap the HTTP module.</v>
+            <v>    nginx.createHttp('access_log /var/log/nginx/access.log;');</v>
+            <v />
+            <v>    // 2. Create a virtual server (nginx builds a default template when</v>
+            <v>    //    servers[] is empty).</v>
+            <v>    var srv = nginx.http.addServer('hello-world.local');</v>
+            <v />
+            <v>    // 3. Add a location and its JS content handler.</v>
+            <v>    srv.addLocation('/hello').handler = function (req) {</v>
+            <v>        req.respond(200, { 'content-type': 'text/plain' },</v>
+            <v>                    'JS COM: Hello World!\n');</v>
+            <v>    };</v>
+            <v />
+            <v>    // 4. Bind a TCP socket, attach it to the HTTP listener,</v>
+            <v>    //    and register the server.</v>
+            <v>    var sock = nginx.createSocket('0.0.0.0:8080');</v>
+            <v>    nginx.http.attach(sock).addServer(srv);</v>
+            <v />
+            <v>})();</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>14.2.nginx.createStream([directives])</p>
+        </title>
+        <p>Creates the stream module as if an empty <code>stream {}</code> block were present in <code>nginx.conf</code>.</p>
+        <p>Parameter │ Description</p>
+        <p>directives (optional) │ A string containing stream-context directives, e.g. 'proxy_timeout 30s;'.</p>
+        <empty-line />
+        <p>After <code>nginx.createStream()</code> returns, <code>nginx.stream</code> is available.</p>
+        <p>Full working example (from <code>t/hello_stream.t</code>):</p>
+        <poem>
+          <stanza>
+            <v>(function () {</v>
+            <v />
+            <v>    // 1. Bootstrap the stream module.</v>
+            <v>    nginx.createStream();</v>
+            <v />
+            <v>    // 2. Create a stream server and attach a handler.</v>
+            <v>    var srv = nginx.stream.addServer();</v>
+            <v>    srv.handler = function (session) {</v>
+            <v>        session.finalize(200);   // accept and close cleanly</v>
+            <v>    };</v>
+            <v />
+            <v>    // 3. Bind a TCP socket, attach it to the stream module,</v>
+            <v>    //    and register the server.</v>
+            <v>    var sock = nginx.createSocket('0.0.0.0:9000');</v>
+            <v>    nginx.stream.attach(sock).addServer(srv);</v>
+            <v />
+            <v>})();</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>When to Use Bootstrap Functions</p>
+        </title>
+        <p>Situation │ Recommendation</p>
+        <p>Full server topology defined in JS (dynamic, data-driven) │ Use nginx.createHttp() / nginx.createStream(). No static http {} / stream {} needed.</p>
+        <p>http {} block already in nginx.conf, only handlers vary │ Skip createHttp(); use nginx.http.addServer() and addLocation() to augment the existing topology.</p>
+        <p>Mix of static and dynamic servers │ Include a minimal http {} block in nginx.conf for any static servers; call nginx.http.addServer() for additional dynamic ones.</p>
+        <empty-line />
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Master/Worker Scripting</p>
+      </title>
+      <p>In addition to running handlers in worker event loops, <code>js_source</code> scripts run in the <strong>master process</strong> and can hook into the master’s supervisory loop: reacting to worker lifecycle events, sending data to workers, and receiving data back.</p>
+      <section>
+        <title>
+          <p>Master Lifecycle Events (nginx.on)</p>
+        </title>
+        <p>Register callbacks with <code>nginx.on(event, fn)</code> in any <code>js_source</code> script. The callbacks run in the master process.</p>
+        <p>Event │ Callback signature │ When it fires</p>
+        <p>'workerSpawned' │ fn(pid, slot) │ A new worker process has started</p>
+        <p>'workerExited' │ fn(pid, slot, status) │ A worker process has exited</p>
+        <p>'reload' │ fn() │ SIGHUP received, old config still active</p>
+        <p>'reloaded' │ fn() │ SIGHUP complete, new workers are running</p>
+        <p>'reopen' │ fn() │ SIGUSR1 received (rotate logs)</p>
+        <p>'quit' │ fn() │ SIGQUIT received (graceful shutdown)</p>
+        <p>'message' │ fn(data) │ Worker sent data to master via sendToMaster() (alias: 'workerMessage' with fn(slot, data))</p>
+        <empty-line />
+        <p>
+          <strong>: </strong>
+          <code>'message'</code> and <code>'workerMessage'</code> are two spellings of the same hook. Use <code>'workerMessage'</code> when you need the sender’s <code>slot</code> index; use <code>'message'</code> when you don’t. </p>
+        <p>Example — log every worker lifecycle event to a file:</p>
+        <poem>
+          <stanza>
+            <v>import * as std from 'std';</v>
+            <v />
+            <v>var evlog = '/var/log/nginx/worker-events.log';</v>
+            <v />
+            <v>function append(msg) {</v>
+            <v>    var f = std.open(evlog, 'a');</v>
+            <v>    if (f) { f.puts(msg + '\n'); f.close(); }</v>
+            <v>}</v>
+            <v />
+            <v>nginx.on('workerSpawned', function(pid, slot) {</v>
+            <v>    append('workerSpawned pid=' + pid + ' slot=' + slot);</v>
+            <v>});</v>
+            <v />
+            <v>nginx.on('workerExited', function(pid, slot, status) {</v>
+            <v>    append('workerExited pid=' + pid + ' slot=' + slot + ' status=' + status);</v>
+            <v>});</v>
+            <v />
+            <v>nginx.on('quit',     function() { append('quit');     });</v>
+            <v>nginx.on('reload',   function() { append('reload');   });</v>
+            <v>nginx.on('reloaded', function() { append('reloaded'); });</v>
+            <v>nginx.on('reopen',   function() { append('reopen');   });</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Master → Worker Messages</p>
+        </title>
+        <p>The master can push arbitrary JSON-serializable data to one or all workers.</p>
+        <p>Method │ Description</p>
+        <p>nginx.sendToWorker(slot, data) │ Send data to the worker at index slot. The worker receives it via nginx.on('message', fn).</p>
+        <p>nginx.broadcastToWorkers(data) │ Send data to every running worker. Each worker receives its own copy via nginx.on('message', fn).</p>
+        <empty-line />
+        <p>
+          <code>data</code> must be JSON-serializable. It is transferred through the existing nginx channel socketpairs (the same fds used by <code>ngx_channel_t</code>), so no extra file descriptors are required.</p>
+        <p>Example — greet each worker as it spawns:</p>
+        <poem>
+          <stanza>
+            <v>nginx.on('workerSpawned', function(pid, slot) {</v>
+            <v>    nginx.sendToWorker(slot, { event: 'hello', slot: slot, pid: pid });</v>
+            <v>});</v>
+            <v />
+            <v>// In the same js_source script, workers receive:</v>
+            <v>nginx.on('message', function(data) {</v>
+            <v>    nginx.log(nginx.INFO,</v>
+            <v>        'worker ' + nginx.workerIdx + ' received: ' + JSON.stringify(data));</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Worker → Master Messages</p>
+        </title>
+        <p>Workers can send data back to the master at any time — typically from inside a request handler.</p>
+        <p>Method │ Description</p>
+        <p>nginx.sendToMaster(data) │ Send data from the current worker to the master. data is JSON-serializable.</p>
+        <p>nginx.on('workerMessage', fn(slot, data)) │ Register a master-side handler. slot is the sender’s worker index; data is the received object.</p>
+        <empty-line />
+        <p>The master’s event loop is woken via SIGIO (already set up by nginx for other channel operations), so no polling is needed.</p>
+        <p>Example — worker sends a health ping; master writes it to a log file:</p>
+        <poem>
+          <stanza>
+            <v>import * as std from 'std';</v>
+            <v />
+            <v>// Master side: receive and log</v>
+            <v>nginx.on('workerMessage', function(slot, data) {</v>
+            <v>    var f = std.open('/var/log/nginx/worker-msgs.log', 'a');</v>
+            <v>    if (f) {</v>
+            <v>        f.puts('slot:' + slot + ' msg:' + data.msg + '\n');</v>
+            <v>        f.close();</v>
+            <v>    }</v>
+            <v>});</v>
+            <v />
+            <v>// Worker side: send on HTTP request</v>
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(function(l) { return l.path === '/ping'; })</v>
+            <v>    .handler = function(req) {</v>
+            <v>        nginx.sendToMaster({ slot: nginx.workerIdx, msg: 'ping' });</v>
+            <v>        req.respond(200, {'content-type': 'text/plain'}, 'sent\n');</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>15.4.nginx.workerIdx</p>
+        </title>
+        <p>Inside a worker process, <code>nginx.workerIdx</code> returns the zero-based slot index of the current worker (matches the <code>slot</code> parameter in lifecycle callbacks). In the master process it returns <code>undefined</code>.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>nginx.repl — Interactive JavaScript REPL</p>
+      </title>
+      <p>
+        <code>nginx.repl</code> provides an in-process JavaScript REPL that evaluates expressions inside a running nginx worker over a plain HTTP upgrade connection. It is useful for live introspection, ad-hoc mutations, and debugging without a restart.</p>
+      <section>
+        <title>
+          <p>How It Works</p>
+        </title>
+        <p>A request handler calls <code>req.hijack()</code> to take ownership of the raw TCP connection, then calls <code>nginx.repl.attach()</code> to redirect <code>console.log</code> / <code>nginx.log</code> output to that connection, and <code>nginx.repl.listen()</code> to install a line-by-line read loop. Each line received is evaluated by <code>nginx.repl.eval()</code> and the result is written back.</p>
+      </section>
+      <section>
+        <title>
+          <p>REPL API</p>
+        </title>
+        <p>Method │ Description</p>
+        <p>nginx.repl.eval(line) │ Evaluate one line of JavaScript in the current worker’s context. Returns { status, value, message, stack }. status is "ok", "err", "incomplete", or "stack". value is the JSON-serialised result on success.</p>
+        <p>nginx.repl.attach(fd, loglevel, nginxlevel) │ Start streaming console.log / console.warn / console.error and nginx.log output to fd. loglevel filters JS console methods (0 = log+warn+err, 1 = warn+err, 2 = err only); nginxlevel is the nginx log severity threshold.</p>
+        <p>nginx.repl.detach() │ Stop streaming; restore normal log routing.</p>
+        <p>nginx.repl.listen(fd, fn) │ Install a line-by-line read handler on fd. Each complete line (delimited by \n) is passed to fn(line).</p>
+        <p>nginx.repl._writeFd(fd, str) │ Write raw bytes to a file descriptor. Used internally to send prompt and result lines.</p>
+        <p>req.hijack() │ Detach the HTTP connection from nginx’s connection pool and return the raw file descriptor. The caller is now responsible for I/O and closing.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Wire Protocol</p>
+        </title>
+        <p>The client connects with an HTTP GET and the <code>Upgrade: nginx-repl</code> header. After the 101 upgrade response, the connection becomes a line-oriented plain-text stream:</p>
+        <poem>
+          <stanza>
+            <v># Client → server</v>
+            <v>&lt;token&gt; EVAL &lt;javascript-expression&gt;\n</v>
+            <v />
+            <v># Server → client</v>
+            <v>&lt;token&gt; OK [&lt;json-value&gt;]\n      # success</v>
+            <v>&lt;token&gt; ERR &lt;message&gt;\n          # runtime error</v>
+            <v>&lt;token&gt; INCOMPLETE\n             # expression needs more input</v>
+            <v>&lt;token&gt; STACK &lt;frame&gt;\n          # stack trace line (one per frame)</v>
+          </stanza>
+        </poem>
+        <p>Multiline input is handled by re-sending with accumulated lines until the server replies with something other than <code>INCOMPLETE</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>Embedding the REPL</p>
+        </title>
+        <poem>
+          <stanza>
+            <v>// Install a REPL endpoint on /repl</v>
+            <v>nginx.http.servers[0].locations</v>
+            <v>    .find(function(l) { return l.path === '/repl'; })</v>
+            <v>    .handler = function(req) {</v>
+            <v>        if ((req.headers['upgrade'] || '').toLowerCase() !== 'nginx-repl') {</v>
+            <v>            return req.respond(400, {}, 'Expected Upgrade: nginx-repl\n');</v>
+            <v>        }</v>
+            <v />
+            <v>        var params = req.queryParams;</v>
+            <v>        var loglevel   = parseInt(params.loglevel   || '0');</v>
+            <v>        var nginxlevel = parseInt(params.nginxlevel || '6');</v>
+            <v />
+            <v>        req.respond(101, {</v>
+            <v>            'upgrade':    'nginx-repl',</v>
+            <v>            'connection': 'upgrade'</v>
+            <v>        }, '');</v>
+            <v />
+            <v>        var fd = req.hijack();</v>
+            <v>        nginx.repl.attach(fd, loglevel, nginxlevel);</v>
+            <v>        nginx.repl.listen(fd, function(line) {</v>
+            <v>            var r = nginx.repl.eval(line);</v>
+            <v>            if (r.status === 'ok') {</v>
+            <v>                nginx.repl._writeFd(fd,</v>
+            <v>                    '- OK' + (r.value !== undefined ? ' ' + r.value : '') + '\n');</v>
+            <v>            } else if (r.status === 'incomplete') {</v>
+            <v>                nginx.repl._writeFd(fd, '- INCOMPLETE\n');</v>
+            <v>            } else {</v>
+            <v>                nginx.repl._writeFd(fd, '- ERR ' + (r.message || '') + '\n');</v>
+            <v>            }</v>
+            <v>        });</v>
+            <v>    };</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>The nginx-repl Tool</p>
+        </title>
+        <p>A ready-made REPL server and client are provided in <code>js_com_tools/nginx-repl/</code>:</p>
+        <p>•   </p>
+        <p>
+          <code>nginx-repl-demo/</code> — self-contained demo: <code>nginx.conf</code>, <code>repl.js</code>, <code>repl-relay.js</code> (SharedWorker for multi-worker routing).</p>
+        <p>•   </p>
+        <p>
+          <code>repl-client.py</code> — interactive Python client with readline support.</p>
+        <p>•   </p>
+        <p>
+          <code>repl-client.js</code> — Node.js client.</p>
+        <p>Quick start:</p>
+        <poem>
+          <stanza>
+            <v># Build nginx with the JS module</v>
+            <v>auto/configure --add-module=src/js ...</v>
+            <v>make -j$(nproc)</v>
+            <v />
+            <v># Start the demo server</v>
+            <v>./objs/nginx -c js_com_tools/nginx-repl/nginx-repl-demo/nginx.conf</v>
+            <v />
+            <v># Connect with the Python client (targets worker 0 by default)</v>
+            <v>python3 js_com_tools/nginx-repl/repl-client.py</v>
+            <v />
+            <v># Connect targeting a specific worker index</v>
+            <v>python3 js_com_tools/nginx-repl/repl-client.py --worker 1</v>
+          </stanza>
+        </poem>
+        <p>Once connected you can evaluate any JavaScript that is valid in the worker’s context:</p>
+        <poem>
+          <stanza>
+            <v>&gt; nginx.version</v>
+            <v>"1.29.7"</v>
+            <v>&gt; nginx.workerIdx</v>
+            <v>0</v>
+            <v>&gt; nginx.http.upstreams[0].peers.map(p =&gt; p.addr)</v>
+            <v>["192.168.1.10:8080","192.168.1.11:8080"]</v>
+            <v>&gt; nginx.http.upstreams[0].peers[0].weight = 10</v>
+            <v>10</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong> The REPL evaluates JavaScript with full COM write access inside a live worker process. Bind the endpoint to loopback (<code>127.0.0.1</code>) only and protect it with a firewall or <code>ngx_http_access_module</code>
+          <code>allow</code>/<code>deny</code> rules. </p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Applications</p>
+      </title>
+      <section>
+        <title>
+          <p>admin_snapshot_rollback</p>
+        </title>
+        <p>
+          <code>js_com_apps/admin_snapshot_rollback/</code> is a self-contained reference application that demonstrates live configuration management without an nginx restart.</p>
+        <p>
+          <strong>17.1.1. Concept</strong>
+        </p>
+        <p>Operators mutate the live nginx config through the JS COM API (upstream peer weights, location handlers, added/removed servers). After a successful change, the current state is captured as a <strong>snapshot</strong> — a JSON ops-list that records every write made since the last base-state capture. Snapshots can be applied, rolled back, pinned, and compacted.</p>
+        <p>
+          <strong>17.1.2. Admin HTTP API</strong>
+        </p>
+        <p>Endpoint │ Method │ Description</p>
+        <p>/admin/state │ GET │ Return the current config delta vs. base state (JSON ops-list)</p>
+        <p>/admin/snapshots │ GET │ List all saved snapshots</p>
+        <p>/admin/snapshots │ POST │ Create a new snapshot from the current state</p>
+        <p>/admin/snapshots/:id │ GET │ Retrieve the JSON for snapshot id</p>
+        <p>/admin/apply/:id │ POST │ Apply snapshot id to the live config</p>
+        <p>/admin/rollback │ POST │ Step back one snapshot (undo last apply)</p>
+        <empty-line />
+        <p>
+          <strong>17.1.3. JavaScript API (<code>nginx.admin</code>)</strong>
+        </p>
+        <p>Method │ Description</p>
+        <p>nginx.admin.state() │ Return ops-list of mutations since base-state capture</p>
+        <p>nginx.admin.createSnapshot(name) │ Capture current state as a named snapshot</p>
+        <p>nginx.admin.listSnapshots() │ Return array of {id, name, ts} objects</p>
+        <p>nginx.admin.applySnapshot(id) │ Apply the ops-list of snapshot id</p>
+        <p>nginx.admin.rollback() │ Revert to the state before the last applySnapshot</p>
+        <p>nginx.admin.pin(id) │ Pin a snapshot as the rollback target</p>
+        <p>nginx.admin.registerHandler(name, fn) │ Register a named handler function for structural ops</p>
+        <p>nginx.admin.compactSnapshot(id) │ Reduce a snapshot to minimal ops</p>
+        <p>nginx.admin.squash(ids, name) │ Merge multiple snapshots into one</p>
+        <empty-line />
+        <p>
+          <strong>17.1.4. <code>location.clearHandler()</code>
+          </strong>
+        </p>
+        <p>
+          <code>location.clearHandler()</code> is a low-level primitive used internally by the admin application to undo handler installations during rollback.</p>
+        <poem>
+          <stanza>
+            <v>// Install a handler</v>
+            <v>loc.handler = function(req) { req.respond(200, {}, 'hello'); };</v>
+            <v />
+            <v>// Later — remove the handler and restore the original C handler</v>
+            <v>loc.clearHandler();</v>
+          </stanza>
+        </poem>
+        <p>If no JS handler was ever assigned to the location, <code>clearHandler()</code> is a no-op. After <code>clearHandler()</code>, <code>location.hasHandler</code> returns <code>false</code>.</p>
+        <p>
+          <strong>17.1.5. Running the Demo</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>cd js_com_apps/admin_snapshot_rollback</v>
+            <v />
+            <v># Start nginx (requires the JS module binary in ../../objs/nginx)</v>
+            <v>../../objs/nginx -c nginx.conf</v>
+            <v />
+            <v># Inspect current state</v>
+            <v>curl http://127.0.0.1:8090/admin/state</v>
+            <v />
+            <v># Create a snapshot</v>
+            <v>curl -X POST http://127.0.0.1:8090/admin/snapshots</v>
+            <v />
+            <v># Apply a snapshot</v>
+            <v>curl -X POST http://127.0.0.1:8090/admin/apply/0001-initial</v>
+            <v />
+            <v># Roll back</v>
+            <v>curl -X POST http://127.0.0.1:8090/admin/rollback</v>
+          </stanza>
+        </poem>
+        <p>The test suite in <code>js_com_apps/admin_snapshot_rollback/t/</code> covers base-state capture, delta computation, snapshot create/apply/rollback, compaction, and structural operations (addServer / addLocation / rollback).</p>
+      </section>
+    </section>
+    <section>
+      <title>
         <p>External Config Sources and Full Reload</p>
       </title>
       <section>
@@ -2326,7 +2788,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
       </section>
       <section>
         <title>
-          <p>17.2.nginxGlobal Object</p>
+          <p>21.2.nginxGlobal Object</p>
         </title>
         <p>Property / Method │ Type │ Description</p>
         <p>nginx.version │ string │ nginx version string ("1.27.x")</p>
@@ -2346,11 +2808,20 @@ memory</code>. The worker process remains healthy; the individual request receiv
         <p>nginx.resumeAcceptance() │ — │ Re-add listening sockets to this worker’s epoll</p>
         <p>nginx.suspendAllWorkers() │ Promise │ Quiesce all workers (async)</p>
         <p>nginx.resumeAllWorkers() │ Promise │ Resume all workers (async)</p>
+        <p>nginx.createHttp([directives]) │ — │ Bootstrap the HTTP module at init time (equivalent to an empty http {} block). directives is an optional string of nginx directives (e.g. 'access_log /var/log/nginx/access.log;'). After the call, nginx.http is available. No-op if called more than once.</p>
+        <p>nginx.createStream([directives]) │ — │ Bootstrap the stream module at init time (equivalent to an empty stream {} block). After the call, nginx.stream is available. No-op if called more than once.</p>
+        <p>nginx.createSocket(addr) │ object │ Create a new TCP listening socket bound to addr ("ip:port" string). Returns a socket object that can be passed to nginx.http.attach(sock) or nginx.stream.attach(sock).</p>
+        <p>nginx.on(event, fn) │ — │ Register a master-process lifecycle callback. See [master-lifecycle-events]. Valid events: 'workerSpawned', 'workerExited', 'quit', 'reload', 'reloaded', 'reopen', 'message', 'workerMessage'.</p>
+        <p>nginx.sendToWorker(slot, data) │ — │ (Master only) Send data to the worker at index slot. The worker receives it via nginx.on('message', fn).</p>
+        <p>nginx.broadcastToWorkers(data) │ — │ (Master only) Send data to all workers. Each worker receives it via nginx.on('message', fn).</p>
+        <p>nginx.sendToMaster(data) │ — │ (Worker only) Send data to the master process. The master receives it via nginx.on('workerMessage', fn(slot, data)).</p>
+        <p>nginx.workerIdx │ number │ (Worker only) Zero-based index of the current worker process (0 … workerProcesses−1). Constant for the lifetime of the worker.</p>
+        <p>nginx.repl │ object │ Interactive JavaScript REPL object. See [nginx-repl-interactive-javascript-repl]. Properties: eval(line), attach(fd, loglevel, nginxlevel), detach(), listen(fd, fn), _writeFd(fd, str).</p>
         <empty-line />
       </section>
       <section>
         <title>
-          <p>17.3.nginx.httpObject</p>
+          <p>21.3.nginx.httpObject</p>
         </title>
         <p>Property / Method │ Type │ Description</p>
         <p>servers[] │ array │ Array of NginxServer objects</p>
@@ -2365,6 +2836,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
         <p>removeServer(name) │ boolean │ Remove a virtual server; returns false if not found</p>
         <p>rebuildVhostDispatch() │ — │ Recompile the server_name dispatch hash</p>
         <p>match(req, conditions) │ boolean │ Evaluate nginx if conditions against a request</p>
+        <p>attach(sock) │ object │ Attach a socket (from nginx.createSocket()) to the HTTP module; returns a listener object on which addServer(srv) registers a virtual server for that socket.</p>
         <empty-line />
       </section>
       <section>
@@ -2609,7 +3081,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
           </stanza>
         </poem>
         <p>
-          <strong>18.8.1. NginxServer properties</strong>
+          <strong>22.8.1. NginxServer properties</strong>
         </p>
         <poem>
           <stanza>
@@ -2639,7 +3111,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
           </stanza>
         </poem>
         <p>
-          <strong>18.8.2. NginxLocation properties</strong>
+          <strong>22.8.2. NginxLocation properties</strong>
         </p>
         <poem>
           <stanza>
@@ -2652,6 +3124,9 @@ memory</code>. The worker process remains healthy; the individual request receiv
             <v>├── jsCreated         bool    r/o   true if created by addLocation()</v>
             <v>│</v>
             <v>├── handler                   r/w   JS async (req) =&gt; {} content handler</v>
+            <v>├── hasHandler        bool    r/o   true if a JS handler is currently installed</v>
+            <v>├── clearHandler()            fn    Remove the JS handler; restore the original nginx</v>
+            <v>│                                   C content handler (no-op if no handler installed)</v>
             <v>├── headerFilters[]   array   r/o   installed header filter entries</v>
             <v>├── bodyFilters[]     array   r/o   installed body filter entries</v>
             <v>│</v>
@@ -2750,7 +3225,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
           </stanza>
         </poem>
         <p>
-          <strong>18.8.3. NginxUpstream, NginxPeer, NginxRRPeer</strong>
+          <strong>22.8.3. NginxUpstream, NginxPeer, NginxRRPeer</strong>
         </p>
         <poem>
           <stanza>
@@ -2779,7 +3254,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
           </stanza>
         </poem>
         <p>
-          <strong>18.8.4. NginxSocket and NginxHttpListener / NginxStreamListener</strong>
+          <strong>22.8.4. NginxSocket and NginxHttpListener / NginxStreamListener</strong>
         </p>
         <poem>
           <stanza>
@@ -2803,7 +3278,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
           </stanza>
         </poem>
         <p>
-          <strong>18.8.5. NginxStreamServer and NginxStreamProxy</strong>
+          <strong>22.8.5. NginxStreamServer and NginxStreamProxy</strong>
         </p>
         <poem>
           <stanza>
@@ -2835,7 +3310,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
           </stanza>
         </poem>
         <p>
-          <strong>18.8.6. NginxRequest and NginxStreamSession</strong>
+          <strong>22.8.6. NginxRequest and NginxStreamSession</strong>
         </p>
         <poem>
           <stanza>
@@ -2913,7 +3388,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
           </stanza>
         </poem>
         <p>
-          <strong>18.8.7. Worker and SharedWorker</strong>
+          <strong>22.8.7. Worker and SharedWorker</strong>
         </p>
         <poem>
           <stanza>
@@ -2936,7 +3411,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
           </stanza>
         </poem>
         <p>
-          <strong>18.8.8. NginxSSL and NginxStreamSSL</strong>
+          <strong>22.8.8. NginxSSL and NginxStreamSSL</strong>
         </p>
         <poem>
           <stanza>
@@ -2964,7 +3439,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
           <p>I: Full Nginx JS Class Reference</p>
         </title>
         <p>
-          <strong>18.9.1. Class Index</strong>
+          <strong>22.9.1. Class Index</strong>
         </p>
         <p>Class name │ JS constructor / access path │ Purpose</p>
         <p>NginxCycle │ nginx.cycle │ Cycle-level nginx globals</p>
@@ -3025,7 +3500,7 @@ memory</code>. The worker process remains healthy; the individual request receiv
         <p>NginxStreamAccess │ streamServer.access │ Stream access rules</p>
         <empty-line />
         <p>
-          <strong>18.9.2. Module COM Class Properties</strong>
+          <strong>22.9.2. Module COM Class Properties</strong>
         </p>
         <p>Class │ Property │ Mode │ Notes</p>
         <p>NginxProxy │ pass │ r/o │ upstream URL or name</p>

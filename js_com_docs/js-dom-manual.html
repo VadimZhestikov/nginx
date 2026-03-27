@@ -450,7 +450,7 @@ code {
 <div id="header">
 <h1>NGINX JS DOM — Developer Manual</h1>
 <div class="details">
-<span id="revdate">2026-03-19</span>
+<span id="revdate">2026-03-26</span>
 <br><span id="revremark">Draft for comments</span>
 </div>
 <div id="toc" class="toc2">
@@ -472,10 +472,11 @@ code {
 </li>
 <li><a href="#_quick_start">3. Quick Start</a>
 <ul class="sectlevel2">
-<li><a href="#_hello_world_handler">3.1. Hello World Handler</a></li>
-<li><a href="#_reading_request_data">3.2. Reading Request Data</a></li>
-<li><a href="#_async_fetch_and_transform">3.3. Async Fetch and Transform</a></li>
-<li><a href="#_live_upstream_rebalancing">3.4. Live Upstream Rebalancing</a></li>
+<li><a href="#_hello_world_minimal_no_http_block">3.1. Hello World — Minimal (No http{} block)</a></li>
+<li><a href="#_hello_world_classic_with_http_block">3.2. Hello World — Classic (with http{} block)</a></li>
+<li><a href="#_reading_request_data">3.3. Reading Request Data</a></li>
+<li><a href="#_async_fetch_and_transform">3.4. Async Fetch and Transform</a></li>
+<li><a href="#_live_upstream_rebalancing">3.5. Live Upstream Rebalancing</a></li>
 </ul>
 </li>
 <li><a href="#_request_handlers">4. Request Handlers</a>
@@ -571,68 +572,105 @@ code {
 </ul>
 </li>
 <li><a href="#_stream_tcpudp_support">13. Stream (TCP/UDP) Support</a></li>
-<li><a href="#_external_config_sources_and_full_reload">14. External Config Sources and Full Reload</a>
+<li><a href="#_bootstrap_functions_nginx_createhttp_nginx_createstream">14. Bootstrap Functions (<code>nginx.createHttp</code> / <code>nginx.createStream</code>)</a>
 <ul class="sectlevel2">
-<li><a href="#_pattern_a_file_at_startup_js_preprocess">14.1. Pattern A — File at Startup (<code>js_preprocess</code>)</a></li>
-<li><a href="#_pattern_b_network_at_startup_js_preprocess_std_urlget">14.2. Pattern B — Network at Startup (<code>js_preprocess</code> + <code>std.urlGet</code>)</a></li>
-<li><a href="#_pattern_c_live_reload_via_handler_zero_downtime">14.3. Pattern C — Live Reload via Handler (Zero Downtime)</a></li>
-<li><a href="#_decision_guide">14.4. Decision Guide</a></li>
+<li><a href="#_nginx_createhttpdirectives">14.1. <code>nginx.createHttp([directives])</code></a></li>
+<li><a href="#_nginx_createstreamdirectives">14.2. <code>nginx.createStream([directives])</code></a></li>
+<li><a href="#_when_to_use_bootstrap_functions">14.3. When to Use Bootstrap Functions</a></li>
 </ul>
 </li>
-<li><a href="#_third_party_module_integration">15. Third-Party Module Integration</a>
+<li><a href="#_masterworker_scripting">15. Master/Worker Scripting</a>
 <ul class="sectlevel2">
-<li><a href="#_overview_2">15.1. Overview</a></li>
-<li><a href="#_step_1_identify_the_config_structs">15.2. Step 1 — Identify the Config Structs</a></li>
-<li><a href="#_step_2_write_the_com_bridge_file">15.3. Step 2 — Write the COM Bridge File</a></li>
-<li><a href="#_step_3_register_the_bridge_in_the_com_initialiser">15.4. Step 3 — Register the Bridge in the COM Initialiser</a></li>
-<li><a href="#_step_4_use_from_javascript">15.5. Step 4 — Use from JavaScript</a></li>
-<li><a href="#_location_level_config">15.6. Location-Level Config</a></li>
+<li><a href="#_master_lifecycle_events_nginx_on">15.1. Master Lifecycle Events (<code>nginx.on</code>)</a></li>
+<li><a href="#_master_worker_messages">15.2. Master → Worker Messages</a></li>
+<li><a href="#_worker_master_messages">15.3. Worker → Master Messages</a></li>
+<li><a href="#_nginx_workeridx">15.4. <code>nginx.workerIdx</code></a></li>
 </ul>
 </li>
-<li><a href="#_resource_protection">16. Resource Protection</a>
+<li><a href="#_nginx_repl_interactive_javascript_repl">16. nginx.repl — Interactive JavaScript REPL</a>
 <ul class="sectlevel2">
-<li><a href="#_worker_memory_limit">16.1. Worker Memory Limit</a></li>
-<li><a href="#_worker_request_timeout">16.2. Worker Request Timeout</a></li>
-<li><a href="#_error_isolation">16.3. Error Isolation</a></li>
-<li><a href="#_what_js_cannot_do">16.4. What JS Cannot Do</a></li>
+<li><a href="#_how_it_works">16.1. How It Works</a></li>
+<li><a href="#_repl_api">16.2. REPL API</a></li>
+<li><a href="#_wire_protocol">16.3. Wire Protocol</a></li>
+<li><a href="#_embedding_the_repl">16.4. Embedding the REPL</a></li>
+<li><a href="#_the_nginx_repl_tool">16.5. The nginx-repl Tool</a></li>
 </ul>
 </li>
-<li><a href="#_reference">17. Reference</a>
+<li><a href="#_applications">17. Applications</a>
 <ul class="sectlevel2">
-<li><a href="#_directives">17.1. Directives</a></li>
-<li><a href="#_nginx_global_object">17.2. <code>nginx</code> Global Object</a></li>
-<li><a href="#_nginx_http_object">17.3. <code>nginx.http</code> Object</a></li>
-<li><a href="#_nginxrequest_methods_and_properties">17.4. NginxRequest Methods and Properties</a></li>
-<li><a href="#_worker_sharedworker_api">17.5. Worker / SharedWorker API</a></li>
-<li><a href="#_sharedarraybuffer_and_atomics_support_matrix">17.6. SharedArrayBuffer and Atomics Support Matrix</a></li>
-<li><a href="#_log_level_constants">17.7. Log Level Constants</a></li>
-</ul>
-</li>
-<li><a href="#_appendix_flow_charts">18. Appendix — Flow Charts</a>
-<ul class="sectlevel2">
-<li><a href="#_a_simple_synchronous_handler">18.1. A: Simple Synchronous Handler</a></li>
-<li><a href="#_b_async_handler_with_worker_offload">18.2. B: Async Handler with Worker Offload</a></li>
-<li><a href="#_c_cross_worker_com_mutation_suspendallworkers">18.3. C: Cross-Worker COM Mutation (suspendAllWorkers)</a></li>
-<li><a href="#_d_sharedworker_state_coordination">18.4. D: SharedWorker State Coordination</a></li>
-<li><a href="#_e_sab_lock_free_counter_pre_fork">18.5. E: SAB Lock-Free Counter (Pre-Fork)</a></li>
-<li><a href="#_f_pre_fork_config_generation">18.6. F: Pre-Fork Config Generation</a></li>
-<li><a href="#_g_live_reload_from_config_service">18.7. G: Live Reload from Config Service</a></li>
-<li><a href="#_h_complete_nginx_object_tree">18.8. H: Complete nginx.* Object Tree</a>
+<li><a href="#_admin_snapshot_rollback">17.1. admin_snapshot_rollback</a>
 <ul class="sectlevel3">
-<li><a href="#_nginxserver_properties">18.8.1. NginxServer properties</a></li>
-<li><a href="#_nginxlocation_properties">18.8.2. NginxLocation properties</a></li>
-<li><a href="#_nginxupstream_nginxpeer_nginxrrpeer">18.8.3. NginxUpstream, NginxPeer, NginxRRPeer</a></li>
-<li><a href="#_nginxsocket_and_nginxhttplistener_nginxstreamlistener">18.8.4. NginxSocket and NginxHttpListener / NginxStreamListener</a></li>
-<li><a href="#_nginxstreamserver_and_nginxstreamproxy">18.8.5. NginxStreamServer and NginxStreamProxy</a></li>
-<li><a href="#_nginxrequest_and_nginxstreamsession">18.8.6. NginxRequest and NginxStreamSession</a></li>
-<li><a href="#_worker_and_sharedworker">18.8.7. Worker and SharedWorker</a></li>
-<li><a href="#_nginxssl_and_nginxstreamssl">18.8.8. NginxSSL and NginxStreamSSL</a></li>
+<li><a href="#_concept">17.1.1. Concept</a></li>
+<li><a href="#_admin_http_api">17.1.2. Admin HTTP API</a></li>
+<li><a href="#_javascript_api_nginx_admin">17.1.3. JavaScript API (<code>nginx.admin</code>)</a></li>
+<li><a href="#_location_clearhandler">17.1.4. <code>location.clearHandler()</code></a></li>
+<li><a href="#_running_the_demo">17.1.5. Running the Demo</a></li>
 </ul>
 </li>
-<li><a href="#_i_full_nginx_js_class_reference">18.9. I: Full Nginx JS Class Reference</a>
+</ul>
+</li>
+<li><a href="#_external_config_sources_and_full_reload">18. External Config Sources and Full Reload</a>
+<ul class="sectlevel2">
+<li><a href="#_pattern_a_file_at_startup_js_preprocess">18.1. Pattern A — File at Startup (<code>js_preprocess</code>)</a></li>
+<li><a href="#_pattern_b_network_at_startup_js_preprocess_std_urlget">18.2. Pattern B — Network at Startup (<code>js_preprocess</code> + <code>std.urlGet</code>)</a></li>
+<li><a href="#_pattern_c_live_reload_via_handler_zero_downtime">18.3. Pattern C — Live Reload via Handler (Zero Downtime)</a></li>
+<li><a href="#_decision_guide">18.4. Decision Guide</a></li>
+</ul>
+</li>
+<li><a href="#_third_party_module_integration">19. Third-Party Module Integration</a>
+<ul class="sectlevel2">
+<li><a href="#_overview_2">19.1. Overview</a></li>
+<li><a href="#_step_1_identify_the_config_structs">19.2. Step 1 — Identify the Config Structs</a></li>
+<li><a href="#_step_2_write_the_com_bridge_file">19.3. Step 2 — Write the COM Bridge File</a></li>
+<li><a href="#_step_3_register_the_bridge_in_the_com_initialiser">19.4. Step 3 — Register the Bridge in the COM Initialiser</a></li>
+<li><a href="#_step_4_use_from_javascript">19.5. Step 4 — Use from JavaScript</a></li>
+<li><a href="#_location_level_config">19.6. Location-Level Config</a></li>
+</ul>
+</li>
+<li><a href="#_resource_protection">20. Resource Protection</a>
+<ul class="sectlevel2">
+<li><a href="#_worker_memory_limit">20.1. Worker Memory Limit</a></li>
+<li><a href="#_worker_request_timeout">20.2. Worker Request Timeout</a></li>
+<li><a href="#_error_isolation">20.3. Error Isolation</a></li>
+<li><a href="#_what_js_cannot_do">20.4. What JS Cannot Do</a></li>
+</ul>
+</li>
+<li><a href="#_reference">21. Reference</a>
+<ul class="sectlevel2">
+<li><a href="#_directives">21.1. Directives</a></li>
+<li><a href="#_nginx_global_object">21.2. <code>nginx</code> Global Object</a></li>
+<li><a href="#_nginx_http_object">21.3. <code>nginx.http</code> Object</a></li>
+<li><a href="#_nginxrequest_methods_and_properties">21.4. NginxRequest Methods and Properties</a></li>
+<li><a href="#_worker_sharedworker_api">21.5. Worker / SharedWorker API</a></li>
+<li><a href="#_sharedarraybuffer_and_atomics_support_matrix">21.6. SharedArrayBuffer and Atomics Support Matrix</a></li>
+<li><a href="#_log_level_constants">21.7. Log Level Constants</a></li>
+</ul>
+</li>
+<li><a href="#_appendix_flow_charts">22. Appendix — Flow Charts</a>
+<ul class="sectlevel2">
+<li><a href="#_a_simple_synchronous_handler">22.1. A: Simple Synchronous Handler</a></li>
+<li><a href="#_b_async_handler_with_worker_offload">22.2. B: Async Handler with Worker Offload</a></li>
+<li><a href="#_c_cross_worker_com_mutation_suspendallworkers">22.3. C: Cross-Worker COM Mutation (suspendAllWorkers)</a></li>
+<li><a href="#_d_sharedworker_state_coordination">22.4. D: SharedWorker State Coordination</a></li>
+<li><a href="#_e_sab_lock_free_counter_pre_fork">22.5. E: SAB Lock-Free Counter (Pre-Fork)</a></li>
+<li><a href="#_f_pre_fork_config_generation">22.6. F: Pre-Fork Config Generation</a></li>
+<li><a href="#_g_live_reload_from_config_service">22.7. G: Live Reload from Config Service</a></li>
+<li><a href="#_h_complete_nginx_object_tree">22.8. H: Complete nginx.* Object Tree</a>
 <ul class="sectlevel3">
-<li><a href="#_class_index">18.9.1. Class Index</a></li>
-<li><a href="#_module_com_class_properties">18.9.2. Module COM Class Properties</a></li>
+<li><a href="#_nginxserver_properties">22.8.1. NginxServer properties</a></li>
+<li><a href="#_nginxlocation_properties">22.8.2. NginxLocation properties</a></li>
+<li><a href="#_nginxupstream_nginxpeer_nginxrrpeer">22.8.3. NginxUpstream, NginxPeer, NginxRRPeer</a></li>
+<li><a href="#_nginxsocket_and_nginxhttplistener_nginxstreamlistener">22.8.4. NginxSocket and NginxHttpListener / NginxStreamListener</a></li>
+<li><a href="#_nginxstreamserver_and_nginxstreamproxy">22.8.5. NginxStreamServer and NginxStreamProxy</a></li>
+<li><a href="#_nginxrequest_and_nginxstreamsession">22.8.6. NginxRequest and NginxStreamSession</a></li>
+<li><a href="#_worker_and_sharedworker">22.8.7. Worker and SharedWorker</a></li>
+<li><a href="#_nginxssl_and_nginxstreamssl">22.8.8. NginxSSL and NginxStreamSSL</a></li>
+</ul>
+</li>
+<li><a href="#_i_full_nginx_js_class_reference">22.9. I: Full Nginx JS Class Reference</a>
+<ul class="sectlevel3">
+<li><a href="#_class_index">22.9.1. Class Index</a></li>
+<li><a href="#_module_com_class_properties">22.9.2. Module COM Class Properties</a></li>
 </ul>
 </li>
 </ul>
@@ -783,6 +821,32 @@ upstreams, locations, modules).  See the
   from any thread with zero copy.  Combined with
   <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics"><code>Atomics</code></a>, they enable lock-free counters, mutexes,
   and condition variables.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bootstrap functions</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.createHttp()</code> / <code>nginx.createStream()</code> — instantiate the HTTP or
+  stream module entirely from JavaScript, without an <code>http {}</code> or <code>stream {}</code>
+  block in <code>nginx.conf</code>.  Combine with <code>nginx.http.addServer()</code> and
+  <code>nginx.createSocket()</code> for a fully JS-defined server topology.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Master/worker scripting</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.on(event, fn)</code> hooks into master lifecycle events (worker spawn,
+  reload, SIGUSR1, …).  <code>nginx.sendToWorker()</code> / <code>nginx.broadcastToWorkers()</code>
+  push messages from master to workers; <code>nginx.sendToMaster()</code> sends from
+  a worker back to the master.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">An interactive JavaScript REPL that evaluates expressions inside a running
+  nginx worker over a plain HTTP upgrade connection.  Useful for live
+  introspection, ad-hoc mutations, and debugging.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>location.clearHandler()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Removes a previously installed JS content handler and restores the
+  original nginx C handler for that location.  Used by snapshot/rollback
+  to undo handler changes atomically.</p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Accept control</p></td>
@@ -953,7 +1017,56 @@ nginx worker.</p>
 steps, each building on the previous one.</p>
 </div>
 <div class="sect2">
-<h3 id="_hello_world_handler">3.1. Hello World Handler</h3>
+<h3 id="_hello_world_minimal_no_http_block">3.1. Hello World — Minimal (No http{} block)</h3>
+<div class="paragraph">
+<p>The most compact nginx JS DOM server needs only a <code>js_source</code> directive and an
+<code>events {}</code> block.  Everything else — the HTTP module, socket, virtual server,
+and location handler — is created from JavaScript at init time:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-nginx hljs" data-lang="nginx"># nginx.conf
+js_source /etc/nginx/js/hello_world.js;
+
+events { }</code></pre>
+</div>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// hello_world.js — evaluated once in the master process after config parsing.
+// Creates the entire server topology from JS; no http{}/server{}/location{}
+// blocks are needed in nginx.conf.
+
+(function () {
+
+    // 1. Bootstrap the HTTP module (equivalent to an empty http{} block).
+    //    Pass any http-level directives as a string argument.
+    nginx.createHttp('access_log /var/log/nginx/access.log;');
+
+    // 2. Create a new virtual server.
+    var srv = nginx.http.addServer('hello-world.local');
+
+    // 3. Add a location and install the JS content handler inline.
+    srv.addLocation('/hello').handler = function (req) {
+        req.respond(200, { 'content-type': 'text/plain' },
+                    'JS COM: Hello World!\n');
+    };
+
+    // 4. Bind a TCP socket, attach it to the HTTP module,
+    //    and register the server on that listener.
+    var sock = nginx.createSocket('0.0.0.0:8080');
+    nginx.http.attach(sock).addServer(srv);
+
+})();</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_hello_world_classic_with_http_block">3.2. Hello World — Classic (with http{} block)</h3>
+<div class="paragraph">
+<p>When <code>http {}</code> is already present in <code>nginx.conf</code>, just find the location
+placeholder and assign a handler function:</p>
+</div>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-nginx hljs" data-lang="nginx"># nginx.conf
@@ -986,7 +1099,7 @@ loc.handler = (req) =&gt; {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_reading_request_data">3.2. Reading Request Data</h3>
+<h3 id="_reading_request_data">3.3. Reading Request Data</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// Read everything you might want from an incoming request.
@@ -1028,7 +1141,7 @@ loc.handler = async (req) =&gt; {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_async_fetch_and_transform">3.3. Async Fetch and Transform</h3>
+<h3 id="_async_fetch_and_transform">3.4. Async Fetch and Transform</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// Non-blocking upstream call.  While this handler awaits, the nginx event
@@ -1073,7 +1186,7 @@ loc.handler = async (req) =&gt; {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_live_upstream_rebalancing">3.4. Live Upstream Rebalancing</h3>
+<h3 id="_live_upstream_rebalancing">3.5. Live Upstream Rebalancing</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// An admin endpoint that atomically updates upstream peer weights across
@@ -3032,10 +3145,774 @@ peers[0].weight = 20;</code></pre>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_external_config_sources_and_full_reload">14. External Config Sources and Full Reload</h2>
+<h2 id="_bootstrap_functions_nginx_createhttp_nginx_createstream">14. Bootstrap Functions (<code>nginx.createHttp</code> / <code>nginx.createStream</code>)</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>These two functions let you instantiate the nginx HTTP or stream module
+entirely from JavaScript, without an <code>http {}</code> or <code>stream {}</code> block in
+<code>nginx.conf</code>.  They are called inside a <code>js_source</code> script at init time and
+may be combined with <code>nginx.http.addServer()</code>, <code>nginx.createSocket()</code>, and
+<code>nginx.http.attach()</code> to build a completely JS-defined server topology.</p>
+</div>
+<div class="sect2">
+<h3 id="_nginx_createhttpdirectives">14.1. <code>nginx.createHttp([directives])</code></h3>
+<div class="paragraph">
+<p>Creates the HTTP module as if an empty <code>http {}</code> block were present in
+<code>nginx.conf</code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Parameter</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>directives</code> (optional)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A string containing http-context directives that would normally appear
+  inside <code>http { … }</code>, e.g. <code>'access_log /var/log/nginx/access.log;'</code>.
+  Multiple directives may be separated by whitespace.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>After <code>nginx.createHttp()</code> returns, <code>nginx.http</code> is available and fully
+functional.  You can immediately call <code>nginx.http.addServer()</code>,
+<code>nginx.http.upstreams</code>, etc.</p>
+</div>
+<div class="paragraph">
+<p>Full working example (from <code>t/hello_world.t</code>):</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">(function () {
+
+    // 1. Bootstrap the HTTP module.
+    nginx.createHttp('access_log /var/log/nginx/access.log;');
+
+    // 2. Create a virtual server (nginx builds a default template when
+    //    servers[] is empty).
+    var srv = nginx.http.addServer('hello-world.local');
+
+    // 3. Add a location and its JS content handler.
+    srv.addLocation('/hello').handler = function (req) {
+        req.respond(200, { 'content-type': 'text/plain' },
+                    'JS COM: Hello World!\n');
+    };
+
+    // 4. Bind a TCP socket, attach it to the HTTP listener,
+    //    and register the server.
+    var sock = nginx.createSocket('0.0.0.0:8080');
+    nginx.http.attach(sock).addServer(srv);
+
+})();</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginx_createstreamdirectives">14.2. <code>nginx.createStream([directives])</code></h3>
+<div class="paragraph">
+<p>Creates the stream module as if an empty <code>stream {}</code> block were present in
+<code>nginx.conf</code>.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Parameter</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>directives</code> (optional)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A string containing stream-context directives, e.g.
+  <code>'proxy_timeout 30s;'</code>.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>After <code>nginx.createStream()</code> returns, <code>nginx.stream</code> is available.</p>
+</div>
+<div class="paragraph">
+<p>Full working example (from <code>t/hello_stream.t</code>):</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">(function () {
+
+    // 1. Bootstrap the stream module.
+    nginx.createStream();
+
+    // 2. Create a stream server and attach a handler.
+    var srv = nginx.stream.addServer();
+    srv.handler = function (session) {
+        session.finalize(200);   // accept and close cleanly
+    };
+
+    // 3. Bind a TCP socket, attach it to the stream module,
+    //    and register the server.
+    var sock = nginx.createSocket('0.0.0.0:9000');
+    nginx.stream.attach(sock).addServer(srv);
+
+})();</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_when_to_use_bootstrap_functions">14.3. When to Use Bootstrap Functions</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 66.6667%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Situation</th>
+<th class="tableblock halign-left valign-top">Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Full server topology defined in JS (dynamic, data-driven)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Use <code>nginx.createHttp()</code> / <code>nginx.createStream()</code>.  No static
+  <code>http {}</code> / <code>stream {}</code> needed.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>http {}</code> block already in <code>nginx.conf</code>, only handlers vary</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Skip <code>createHttp()</code>; use <code>nginx.http.addServer()</code> and <code>addLocation()</code>
+  to augment the existing topology.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Mix of static and dynamic servers</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Include a minimal <code>http {}</code> block in <code>nginx.conf</code> for any static servers;
+  call <code>nginx.http.addServer()</code> for additional dynamic ones.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_masterworker_scripting">15. Master/Worker Scripting</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>In addition to running handlers in worker event loops, <code>js_source</code> scripts
+run in the <strong>master process</strong> and can hook into the master&#8217;s supervisory loop:
+reacting to worker lifecycle events, sending data to workers, and receiving
+data back.</p>
+</div>
+<div class="sect2">
+<h3 id="_master_lifecycle_events_nginx_on">15.1. Master Lifecycle Events (<code>nginx.on</code>)</h3>
+<div class="paragraph">
+<p>Register callbacks with <code>nginx.on(event, fn)</code> in any <code>js_source</code> script.
+The callbacks run in the master process.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 16.6666%;">
+<col style="width: 33.3333%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Event</th>
+<th class="tableblock halign-left valign-top">Callback signature</th>
+<th class="tableblock halign-left valign-top">When it fires</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'workerSpawned'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fn(pid, slot)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A new worker process has started</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'workerExited'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fn(pid, slot, status)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">A worker process has exited</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'reload'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fn()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">SIGHUP received, old config still active</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'reloaded'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fn()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">SIGHUP complete, new workers are running</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'reopen'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fn()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">SIGUSR1 received (rotate logs)</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'quit'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fn()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">SIGQUIT received (graceful shutdown)</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'message'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>fn(data)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Worker sent data to master via <code>sendToMaster()</code>
+                                                  <em>(alias: <code>'workerMessage'</code> with <code>fn(slot, data)</code>)</em></p></td>
+</tr>
+</tbody>
+</table>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-note" title="Note"></i>
+</td>
+<td class="content">
+<code>'message'</code> and <code>'workerMessage'</code> are two spellings of the same hook.
+Use <code>'workerMessage'</code> when you need the sender&#8217;s <code>slot</code> index; use <code>'message'</code>
+when you don&#8217;t.
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>Example — log every worker lifecycle event to a file:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">import * as std from 'std';
+
+var evlog = '/var/log/nginx/worker-events.log';
+
+function append(msg) {
+    var f = std.open(evlog, 'a');
+    if (f) { f.puts(msg + '\n'); f.close(); }
+}
+
+nginx.on('workerSpawned', function(pid, slot) {
+    append('workerSpawned pid=' + pid + ' slot=' + slot);
+});
+
+nginx.on('workerExited', function(pid, slot, status) {
+    append('workerExited pid=' + pid + ' slot=' + slot + ' status=' + status);
+});
+
+nginx.on('quit',     function() { append('quit');     });
+nginx.on('reload',   function() { append('reload');   });
+nginx.on('reloaded', function() { append('reloaded'); });
+nginx.on('reopen',   function() { append('reopen');   });</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_master_worker_messages">15.2. Master → Worker Messages</h3>
+<div class="paragraph">
+<p>The master can push arbitrary JSON-serializable data to one or all workers.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 40%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Method</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.sendToWorker(slot, data)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Send <code>data</code> to the worker at index <code>slot</code>.  The worker receives it
+  via <code>nginx.on('message', fn)</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.broadcastToWorkers(data)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Send <code>data</code> to every running worker.  Each worker receives its own
+  copy via <code>nginx.on('message', fn)</code>.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p><code>data</code> must be JSON-serializable.  It is transferred through the existing
+nginx channel socketpairs (the same fds used by <code>ngx_channel_t</code>), so no
+extra file descriptors are required.</p>
+</div>
+<div class="paragraph">
+<p>Example — greet each worker as it spawns:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">nginx.on('workerSpawned', function(pid, slot) {
+    nginx.sendToWorker(slot, { event: 'hello', slot: slot, pid: pid });
+});
+
+// In the same js_source script, workers receive:
+nginx.on('message', function(data) {
+    nginx.log(nginx.INFO,
+        'worker ' + nginx.workerIdx + ' received: ' + JSON.stringify(data));
+});</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_worker_master_messages">15.3. Worker → Master Messages</h3>
+<div class="paragraph">
+<p>Workers can send data back to the master at any time — typically from inside
+a request handler.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 40%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Method</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.sendToMaster(data)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Send <code>data</code> from the current worker to the master.  <code>data</code> is
+  JSON-serializable.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.on('workerMessage', fn(slot, data))</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Register a master-side handler.  <code>slot</code> is the sender&#8217;s worker index;
+  <code>data</code> is the received object.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>The master&#8217;s event loop is woken via SIGIO (already set up by nginx for
+other channel operations), so no polling is needed.</p>
+</div>
+<div class="paragraph">
+<p>Example — worker sends a health ping; master writes it to a log file:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">import * as std from 'std';
+
+// Master side: receive and log
+nginx.on('workerMessage', function(slot, data) {
+    var f = std.open('/var/log/nginx/worker-msgs.log', 'a');
+    if (f) {
+        f.puts('slot:' + slot + ' msg:' + data.msg + '\n');
+        f.close();
+    }
+});
+
+// Worker side: send on HTTP request
+nginx.http.servers[0].locations
+    .find(function(l) { return l.path === '/ping'; })
+    .handler = function(req) {
+        nginx.sendToMaster({ slot: nginx.workerIdx, msg: 'ping' });
+        req.respond(200, {'content-type': 'text/plain'}, 'sent\n');
+    };</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_nginx_workeridx">15.4. <code>nginx.workerIdx</code></h3>
+<div class="paragraph">
+<p>Inside a worker process, <code>nginx.workerIdx</code> returns the zero-based slot index
+of the current worker (matches the <code>slot</code> parameter in lifecycle callbacks).
+In the master process it returns <code>undefined</code>.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_nginx_repl_interactive_javascript_repl">16. nginx.repl — Interactive JavaScript REPL</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p><code>nginx.repl</code> provides an in-process JavaScript REPL that evaluates expressions
+inside a running nginx worker over a plain HTTP upgrade connection.  It is
+useful for live introspection, ad-hoc mutations, and debugging without a
+restart.</p>
+</div>
+<div class="sect2">
+<h3 id="_how_it_works">16.1. How It Works</h3>
+<div class="paragraph">
+<p>A request handler calls <code>req.hijack()</code> to take ownership of the raw TCP
+connection, then calls <code>nginx.repl.attach()</code> to redirect <code>console.log</code> /
+<code>nginx.log</code> output to that connection, and <code>nginx.repl.listen()</code> to install
+a line-by-line read loop.  Each line received is evaluated by
+<code>nginx.repl.eval()</code> and the result is written back.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_repl_api">16.2. REPL API</h3>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 40%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Method</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl.eval(line)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Evaluate one line of JavaScript in the current worker&#8217;s context.
+  Returns <code>{ status, value, message, stack }</code>.  <code>status</code> is <code>"ok"</code>,
+  <code>"err"</code>, <code>"incomplete"</code>, or <code>"stack"</code>.  <code>value</code> is the JSON-serialised
+  result on success.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl.attach(fd, loglevel, nginxlevel)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Start streaming <code>console.log</code> / <code>console.warn</code> / <code>console.error</code> and
+  <code>nginx.log</code> output to <code>fd</code>.  <code>loglevel</code> filters JS console methods
+  (0 = log+warn+err, 1 = warn+err, 2 = err only); <code>nginxlevel</code> is the
+  nginx log severity threshold.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl.detach()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Stop streaming; restore normal log routing.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl.listen(fd, fn)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Install a line-by-line read handler on <code>fd</code>.  Each complete line
+  (delimited by <code>\n</code>) is passed to <code>fn(line)</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl._writeFd(fd, str)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Write raw bytes to a file descriptor.  Used internally to send
+  prompt and result lines.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>req.hijack()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Detach the HTTP connection from nginx&#8217;s connection pool and return
+  the raw file descriptor.  The caller is now responsible for I/O and
+  closing.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect2">
+<h3 id="_wire_protocol">16.3. Wire Protocol</h3>
+<div class="paragraph">
+<p>The client connects with an HTTP GET and the <code>Upgrade: nginx-repl</code> header.
+After the 101 upgrade response, the connection becomes a line-oriented
+plain-text stream:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text"># Client → server
+&lt;token&gt; EVAL &lt;javascript-expression&gt;\n
+
+# Server → client
+&lt;token&gt; OK [&lt;json-value&gt;]\n      # success
+&lt;token&gt; ERR &lt;message&gt;\n          # runtime error
+&lt;token&gt; INCOMPLETE\n             # expression needs more input
+&lt;token&gt; STACK &lt;frame&gt;\n          # stack trace line (one per frame)</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Multiline input is handled by re-sending with accumulated lines until the
+server replies with something other than <code>INCOMPLETE</code>.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_embedding_the_repl">16.4. Embedding the REPL</h3>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// Install a REPL endpoint on /repl
+nginx.http.servers[0].locations
+    .find(function(l) { return l.path === '/repl'; })
+    .handler = function(req) {
+        if ((req.headers['upgrade'] || '').toLowerCase() !== 'nginx-repl') {
+            return req.respond(400, {}, 'Expected Upgrade: nginx-repl\n');
+        }
+
+        var params = req.queryParams;
+        var loglevel   = parseInt(params.loglevel   || '0');
+        var nginxlevel = parseInt(params.nginxlevel || '6');
+
+        req.respond(101, {
+            'upgrade':    'nginx-repl',
+            'connection': 'upgrade'
+        }, '');
+
+        var fd = req.hijack();
+        nginx.repl.attach(fd, loglevel, nginxlevel);
+        nginx.repl.listen(fd, function(line) {
+            var r = nginx.repl.eval(line);
+            if (r.status === 'ok') {
+                nginx.repl._writeFd(fd,
+                    '- OK' + (r.value !== undefined ? ' ' + r.value : '') + '\n');
+            } else if (r.status === 'incomplete') {
+                nginx.repl._writeFd(fd, '- INCOMPLETE\n');
+            } else {
+                nginx.repl._writeFd(fd, '- ERR ' + (r.message || '') + '\n');
+            }
+        });
+    };</code></pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_the_nginx_repl_tool">16.5. The nginx-repl Tool</h3>
+<div class="paragraph">
+<p>A ready-made REPL server and client are provided in <code>js_com_tools/nginx-repl/</code>:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>nginx-repl-demo/</code> — self-contained demo: <code>nginx.conf</code>, <code>repl.js</code>,
+<code>repl-relay.js</code> (SharedWorker for multi-worker routing).</p>
+</li>
+<li>
+<p><code>repl-client.py</code> — interactive Python client with readline support.</p>
+</li>
+<li>
+<p><code>repl-client.js</code> — Node.js client.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Quick start:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell"># Build nginx with the JS module
+auto/configure --add-module=src/js ...
+make -j$(nproc)
+
+# Start the demo server
+./objs/nginx -c js_com_tools/nginx-repl/nginx-repl-demo/nginx.conf
+
+# Connect with the Python client (targets worker 0 by default)
+python3 js_com_tools/nginx-repl/repl-client.py
+
+# Connect targeting a specific worker index
+python3 js_com_tools/nginx-repl/repl-client.py --worker 1</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Once connected you can evaluate any JavaScript that is valid in the worker&#8217;s
+context:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-text hljs" data-lang="text">&gt; nginx.version
+"1.29.7"
+&gt; nginx.workerIdx
+0
+&gt; nginx.http.upstreams[0].peers.map(p =&gt; p.addr)
+["192.168.1.10:8080","192.168.1.11:8080"]
+&gt; nginx.http.upstreams[0].peers[0].weight = 10
+10</code></pre>
+</div>
+</div>
+<div class="admonitionblock caution">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-caution" title="Caution"></i>
+</td>
+<td class="content">
+The REPL evaluates JavaScript with full COM write access inside a
+live worker process.  Bind the endpoint to loopback (<code>127.0.0.1</code>) only and
+protect it with a firewall or <code>ngx_http_access_module</code> <code>allow</code>/<code>deny</code> rules.
+</td>
+</tr>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_applications">17. Applications</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_pattern_a_file_at_startup_js_preprocess">14.1. Pattern A — File at Startup (<code>js_preprocess</code>)</h3>
+<h3 id="_admin_snapshot_rollback">17.1. admin_snapshot_rollback</h3>
+<div class="paragraph">
+<p><code>js_com_apps/admin_snapshot_rollback/</code> is a self-contained reference
+application that demonstrates live configuration management without an nginx
+restart.</p>
+</div>
+<div class="sect3">
+<h4 id="_concept">17.1.1. Concept</h4>
+<div class="paragraph">
+<p>Operators mutate the live nginx config through the JS COM API (upstream peer
+weights, location handlers, added/removed servers).  After a successful
+change, the current state is captured as a <strong>snapshot</strong> — a JSON ops-list that
+records every write made since the last base-state capture.  Snapshots can be
+applied, rolled back, pinned, and compacted.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_admin_http_api">17.1.2. Admin HTTP API</h4>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 16.6666%;">
+<col style="width: 50.0001%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Endpoint</th>
+<th class="tableblock halign-left valign-top">Method</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>/admin/state</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">GET</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Return the current config delta vs. base state (JSON ops-list)</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>/admin/snapshots</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">GET</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">List all saved snapshots</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>/admin/snapshots</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">POST</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Create a new snapshot from the current state</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>/admin/snapshots/:id</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">GET</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Retrieve the JSON for snapshot <code>id</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>/admin/apply/:id</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">POST</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Apply snapshot <code>id</code> to the live config</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>/admin/rollback</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">POST</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Step back one snapshot (undo last apply)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect3">
+<h4 id="_javascript_api_nginx_admin">17.1.3. JavaScript API (<code>nginx.admin</code>)</h4>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 40%;">
+<col style="width: 60%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Method</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.admin.state()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Return ops-list of mutations since base-state capture</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.admin.createSnapshot(name)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Capture current state as a named snapshot</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.admin.listSnapshots()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Return array of <code>{id, name, ts}</code> objects</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.admin.applySnapshot(id)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Apply the ops-list of snapshot <code>id</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.admin.rollback()</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Revert to the state before the last <code>applySnapshot</code></p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.admin.pin(id)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Pin a snapshot as the rollback target</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.admin.registerHandler(name, fn)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Register a named handler function for structural ops</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.admin.compactSnapshot(id)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Reduce a snapshot to minimal ops</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.admin.squash(ids, name)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Merge multiple snapshots into one</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="sect3">
+<h4 id="_location_clearhandler">17.1.4. <code>location.clearHandler()</code></h4>
+<div class="paragraph">
+<p><code>location.clearHandler()</code> is a low-level primitive used internally by the
+admin application to undo handler installations during rollback.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// Install a handler
+loc.handler = function(req) { req.respond(200, {}, 'hello'); };
+
+// Later — remove the handler and restore the original C handler
+loc.clearHandler();</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>If no JS handler was ever assigned to the location, <code>clearHandler()</code> is a
+no-op.  After <code>clearHandler()</code>, <code>location.hasHandler</code> returns <code>false</code>.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_running_the_demo">17.1.5. Running the Demo</h4>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell">cd js_com_apps/admin_snapshot_rollback
+
+# Start nginx (requires the JS module binary in ../../objs/nginx)
+../../objs/nginx -c nginx.conf
+
+# Inspect current state
+curl http://127.0.0.1:8090/admin/state
+
+# Create a snapshot
+curl -X POST http://127.0.0.1:8090/admin/snapshots
+
+# Apply a snapshot
+curl -X POST http://127.0.0.1:8090/admin/apply/0001-initial
+
+# Roll back
+curl -X POST http://127.0.0.1:8090/admin/rollback</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The test suite in <code>js_com_apps/admin_snapshot_rollback/t/</code> covers base-state
+capture, delta computation, snapshot create/apply/rollback, compaction, and
+structural operations (addServer / addLocation / rollback).</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_external_config_sources_and_full_reload">18. External Config Sources and Full Reload</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_pattern_a_file_at_startup_js_preprocess">18.1. Pattern A — File at Startup (<code>js_preprocess</code>)</h3>
 <div class="paragraph">
 <p>Config data is written to a file by an external process (deploy script,
 Kubernetes operator, config management tool) and read synchronously during
@@ -3066,7 +3943,7 @@ truth.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_pattern_b_network_at_startup_js_preprocess_std_urlget">14.2. Pattern B — Network at Startup (<code>js_preprocess</code> + <code>std.urlGet</code>)</h3>
+<h3 id="_pattern_b_network_at_startup_js_preprocess_std_urlget">18.2. Pattern B — Network at Startup (<code>js_preprocess</code> + <code>std.urlGet</code>)</h3>
 <div class="paragraph">
 <p>See the example in <a href="#example-fetching-config-from-a-network-service">[example-fetching-config-from-a-network-service]</a>.
 Use this pattern for tooling environments where network availability is
@@ -3076,7 +3953,7 @@ availability.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_pattern_c_live_reload_via_handler_zero_downtime">14.3. Pattern C — Live Reload via Handler (Zero Downtime)</h3>
+<h3 id="_pattern_c_live_reload_via_handler_zero_downtime">18.3. Pattern C — Live Reload via Handler (Zero Downtime)</h3>
 <div class="paragraph">
 <p>For changes that do not require a full restart — upstream weights, SSL
 certificates, location handlers — apply mutations via the COM from a request
@@ -3160,7 +4037,7 @@ while (true) {
 </div>
 </div>
 <div class="sect2">
-<h3 id="_decision_guide">14.4. Decision Guide</h3>
+<h3 id="_decision_guide">18.4. Decision Guide</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 40%;">
@@ -3219,10 +4096,10 @@ while (true) {
 </div>
 </div>
 <div class="sect1">
-<h2 id="_third_party_module_integration">15. Third-Party Module Integration</h2>
+<h2 id="_third_party_module_integration">19. Third-Party Module Integration</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_overview_2">15.1. Overview</h3>
+<h3 id="_overview_2">19.1. Overview</h3>
 <div class="paragraph">
 <p>Any nginx module can expose its configuration to the COM by implementing a
 small bridge file that reads the module&#8217;s C config structs and projects them
@@ -3234,7 +4111,7 @@ module with a main-level config struct.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_step_1_identify_the_config_structs">15.2. Step 1 — Identify the Config Structs</h3>
+<h3 id="_step_1_identify_the_config_structs">19.2. Step 1 — Identify the Config Structs</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-c hljs" data-lang="c">/* ngx_http_mymod.h */
@@ -3255,7 +4132,7 @@ extern ngx_module_t  ngx_http_mymod_module;</code></pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_step_2_write_the_com_bridge_file">15.3. Step 2 — Write the COM Bridge File</h3>
+<h3 id="_step_2_write_the_com_bridge_file">19.3. Step 2 — Write the COM Bridge File</h3>
 <div class="paragraph">
 <p>Create <code>ngx_js_com_mymod.c</code> next to your module sources:</p>
 </div>
@@ -3373,7 +4250,7 @@ ngx_js_com_mymod_install(JSContext *ctx, JSValueConst nginx_obj)
 </div>
 </div>
 <div class="sect2">
-<h3 id="_step_3_register_the_bridge_in_the_com_initialiser">15.4. Step 3 — Register the Bridge in the COM Initialiser</h3>
+<h3 id="_step_3_register_the_bridge_in_the_com_initialiser">19.4. Step 3 — Register the Bridge in the COM Initialiser</h3>
 <div class="paragraph">
 <p>In <code>ngx_js_com.c</code>, locate <code>ngx_js_install_nginx_com</code> and add a call to your
 bridge function, guarded by whether the module was compiled in:</p>
@@ -3390,7 +4267,7 @@ bridge function, guarded by whether the module was compiled in:</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_step_4_use_from_javascript">15.5. Step 4 — Use from JavaScript</h3>
+<h3 id="_step_4_use_from_javascript">19.5. Step 4 — Use from JavaScript</h3>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">// init.js
@@ -3408,7 +4285,7 @@ nginx.http.servers[0].locations
 </div>
 </div>
 <div class="sect2">
-<h3 id="_location_level_config">15.6. Location-Level Config</h3>
+<h3 id="_location_level_config">19.6. Location-Level Config</h3>
 <div class="paragraph">
 <p>For per-location config, retrieve the conf pointer from the request&#8217;s
 <code>loc_conf</code> array rather than the cycle:</p>
@@ -3438,10 +4315,10 @@ ngx_js_mymod_loc_get_timeout(JSContext *ctx, JSValueConst this_val, int magic)
 </div>
 </div>
 <div class="sect1">
-<h2 id="_resource_protection">16. Resource Protection</h2>
+<h2 id="_resource_protection">20. Resource Protection</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_worker_memory_limit">16.1. Worker Memory Limit</h3>
+<h3 id="_worker_memory_limit">20.1. Worker Memory Limit</h3>
 <div class="paragraph">
 <p><code>nginx.workerMemoryLimit</code> caps the QuickJS heap for all JS allocations in a
 worker process.  The limit applies on top of nginx&#8217;s own memory — it measures
@@ -3476,7 +4353,7 @@ a 500 error.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_worker_request_timeout">16.2. Worker Request Timeout</h3>
+<h3 id="_worker_request_timeout">20.2. Worker Request Timeout</h3>
 <div class="paragraph">
 <p><code>nginx.workerRequestTimeout</code> sets the maximum wall-clock time (in milliseconds)
 a single JS handler invocation may consume.  If the handler runs longer than
@@ -3501,7 +4378,7 @@ nginx.http.servers[0].locations
 </div>
 </div>
 <div class="sect2">
-<h3 id="_error_isolation">16.3. Error Isolation</h3>
+<h3 id="_error_isolation">20.3. Error Isolation</h3>
 <div class="paragraph">
 <p>JavaScript exceptions in a handler are caught by the module framework and
 converted to HTTP 500 responses.  The worker process never crashes due to an
@@ -3518,7 +4395,7 @@ unhandled JS exception.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_what_js_cannot_do">16.4. What JS Cannot Do</h3>
+<h3 id="_what_js_cannot_do">20.4. What JS Cannot Do</h3>
 <div class="paragraph">
 <p>The JS runtime runs inside an nginx worker process (or master, for SharedWorkers)
 with the same OS privileges.  The following restrictions apply:</p>
@@ -3548,10 +4425,10 @@ request timeout if <code>nginx.workerRequestTimeout</code> is set.</p>
 </div>
 </div>
 <div class="sect1">
-<h2 id="_reference">17. Reference</h2>
+<h2 id="_reference">21. Reference</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_directives">17.1. Directives</h3>
+<h3 id="_directives">21.1. Directives</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 25%;">
@@ -3595,7 +4472,7 @@ request timeout if <code>nginx.workerRequestTimeout</code> is set.</p>
 </table>
 </div>
 <div class="sect2">
-<h3 id="_nginx_global_object">17.2. <code>nginx</code> Global Object</h3>
+<h3 id="_nginx_global_object">21.2. <code>nginx</code> Global Object</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 28.5714%;">
@@ -3695,11 +4572,71 @@ request timeout if <code>nginx.workerRequestTimeout</code> is set.</p>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Promise</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Resume all workers (async)</p></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.createHttp([directives])</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bootstrap the HTTP module at init time (equivalent
+  to an empty <code>http {}</code> block). <code>directives</code> is an optional string of nginx directives
+  (e.g. <code>'access_log /var/log/nginx/access.log;'</code>). After the call, <code>nginx.http</code> is
+  available. No-op if called more than once.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.createStream([directives])</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Bootstrap the stream module at init time
+  (equivalent to an empty <code>stream {}</code> block). After the call, <code>nginx.stream</code> is
+  available. No-op if called more than once.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.createSocket(addr)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">object</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Create a new TCP listening socket bound to <code>addr</code>
+  (<code>"ip:port"</code> string). Returns a socket object that can be passed to
+  <code>nginx.http.attach(sock)</code> or <code>nginx.stream.attach(sock)</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.on(event, fn)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Register a master-process lifecycle callback. See
+  <a href="#master-lifecycle-events">[master-lifecycle-events]</a>. Valid events: <code>'workerSpawned'</code>, <code>'workerExited'</code>,
+  <code>'quit'</code>, <code>'reload'</code>, <code>'reloaded'</code>, <code>'reopen'</code>, <code>'message'</code>, <code>'workerMessage'</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.sendToWorker(slot, data)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">(Master only) Send <code>data</code> to the worker at
+  index <code>slot</code>. The worker receives it via <code>nginx.on('message', fn)</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.broadcastToWorkers(data)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">(Master only) Send <code>data</code> to all workers.
+  Each worker receives it via <code>nginx.on('message', fn)</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.sendToMaster(data)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">—</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">(Worker only) Send <code>data</code> to the master process.
+  The master receives it via <code>nginx.on('workerMessage', fn(slot, data))</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.workerIdx</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">number</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">(Worker only) Zero-based index of the current worker
+  process (0 … workerProcesses−1). Constant for the lifetime of the worker.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">object</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Interactive JavaScript REPL object. See
+  <a href="#nginx-repl-interactive-javascript-repl">[nginx-repl-interactive-javascript-repl]</a>. Properties: <code>eval(line)</code>,
+  <code>attach(fd, loglevel, nginxlevel)</code>, <code>detach()</code>, <code>listen(fd, fn)</code>, <code>_writeFd(fd, str)</code>.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
 <div class="sect2">
-<h3 id="_nginx_http_object">17.3. <code>nginx.http</code> Object</h3>
+<h3 id="_nginx_http_object">21.3. <code>nginx.http</code> Object</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 28.5714%;">
@@ -3774,17 +4711,24 @@ request timeout if <code>nginx.workerRequestTimeout</code> is set.</p>
 <td class="tableblock halign-left valign-top"><p class="tableblock">boolean</p></td>
 <td class="tableblock halign-left valign-top"><p class="tableblock">Evaluate nginx <code>if</code> conditions against a request</p></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>attach(sock)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">object</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Attach a socket (from <code>nginx.createSocket()</code>) to
+  the HTTP module; returns a listener object on which <code>addServer(srv)</code> registers a
+  virtual server for that socket.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
 <div class="sect2">
-<h3 id="_nginxrequest_methods_and_properties">17.4. NginxRequest Methods and Properties</h3>
+<h3 id="_nginxrequest_methods_and_properties">21.4. NginxRequest Methods and Properties</h3>
 <div class="paragraph">
 <p>See <a href="#nginxrequest-reference">[nginxrequest-reference]</a>.</p>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_worker_sharedworker_api">17.5. Worker / SharedWorker API</h3>
+<h3 id="_worker_sharedworker_api">21.5. Worker / SharedWorker API</h3>
 <div class="paragraph">
 <p>JS DOM implements a subset of the standard Web Worker and SharedWorker APIs.</p>
 </div>
@@ -3847,7 +4791,7 @@ request timeout if <code>nginx.workerRequestTimeout</code> is set.</p>
 </table>
 </div>
 <div class="sect2">
-<h3 id="_sharedarraybuffer_and_atomics_support_matrix">17.6. SharedArrayBuffer and Atomics Support Matrix</h3>
+<h3 id="_sharedarraybuffer_and_atomics_support_matrix">21.6. SharedArrayBuffer and Atomics Support Matrix</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 42.8571%;">
@@ -3940,7 +4884,7 @@ in the event loop and <code>Atomics.wait</code> in Workers / SharedWorker thread
 </div>
 </div>
 <div class="sect2">
-<h3 id="_log_level_constants">17.7. Log Level Constants</h3>
+<h3 id="_log_level_constants">21.7. Log Level Constants</h3>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 50%;">
@@ -3991,10 +4935,10 @@ in the event loop and <code>Atomics.wait</code> in Workers / SharedWorker thread
 </div>
 </div>
 <div class="sect1">
-<h2 id="_appendix_flow_charts">18. Appendix — Flow Charts</h2>
+<h2 id="_appendix_flow_charts">22. Appendix — Flow Charts</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_a_simple_synchronous_handler">18.1. A: Simple Synchronous Handler</h3>
+<h3 id="_a_simple_synchronous_handler">22.1. A: Simple Synchronous Handler</h3>
 <div class="literalblock">
 <div class="content">
 <pre>Client → nginx → location matched → handler(req) → req.json() → response</pre>
@@ -4002,7 +4946,7 @@ in the event loop and <code>Atomics.wait</code> in Workers / SharedWorker thread
 </div>
 </div>
 <div class="sect2">
-<h3 id="_b_async_handler_with_worker_offload">18.2. B: Async Handler with Worker Offload</h3>
+<h3 id="_b_async_handler_with_worker_offload">22.2. B: Async Handler with Worker Offload</h3>
 <div class="literalblock">
 <div class="content">
 <pre>Client → nginx → handler called
@@ -4017,7 +4961,7 @@ in the event loop and <code>Atomics.wait</code> in Workers / SharedWorker thread
 </div>
 </div>
 <div class="sect2">
-<h3 id="_c_cross_worker_com_mutation_suspendallworkers">18.3. C: Cross-Worker COM Mutation (suspendAllWorkers)</h3>
+<h3 id="_c_cross_worker_com_mutation_suspendallworkers">22.3. C: Cross-Worker COM Mutation (suspendAllWorkers)</h3>
 <div class="literalblock">
 <div class="content">
 <pre>Client → handler
@@ -4035,7 +4979,7 @@ in the event loop and <code>Atomics.wait</code> in Workers / SharedWorker thread
 </div>
 </div>
 <div class="sect2">
-<h3 id="_d_sharedworker_state_coordination">18.4. D: SharedWorker State Coordination</h3>
+<h3 id="_d_sharedworker_state_coordination">22.4. D: SharedWorker State Coordination</h3>
 <div class="literalblock">
 <div class="content">
 <pre>Worker 0 ──postMessage──► SharedWorker (master process)
@@ -4046,7 +4990,7 @@ Worker N ──postMessage──►         │
 </div>
 </div>
 <div class="sect2">
-<h3 id="_e_sab_lock_free_counter_pre_fork">18.5. E: SAB Lock-Free Counter (Pre-Fork)</h3>
+<h3 id="_e_sab_lock_free_counter_pre_fork">22.5. E: SAB Lock-Free Counter (Pre-Fork)</h3>
 <div class="literalblock">
 <div class="content">
 <pre>js_source: const sab = new SharedArrayBuffer(8);  ← master creates
@@ -4057,7 +5001,7 @@ Worker B: Atomics.add(hits, 0, 1n)  ──┘  (no user-space lock needed)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_f_pre_fork_config_generation">18.6. F: Pre-Fork Config Generation</h3>
+<h3 id="_f_pre_fork_config_generation">22.6. F: Pre-Fork Config Generation</h3>
 <div class="literalblock">
 <div class="content">
 <pre>nginx start → conf parse → js_preprocess fires
@@ -4074,7 +5018,7 @@ Worker B: Atomics.add(hits, 0, 1n)  ──┘  (no user-space lock needed)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_g_live_reload_from_config_service">18.7. G: Live Reload from Config Service</h3>
+<h3 id="_g_live_reload_from_config_service">22.7. G: Live Reload from Config Service</h3>
 <div class="literalblock">
 <div class="content">
 <pre>Config service updates                Nginx workers running
@@ -4094,7 +5038,7 @@ Worker B: Atomics.add(hits, 0, 1n)  ──┘  (no user-space lock needed)</pre>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_h_complete_nginx_object_tree">18.8. H: Complete nginx.* Object Tree</h3>
+<h3 id="_h_complete_nginx_object_tree">22.8. H: Complete nginx.* Object Tree</h3>
 <div class="paragraph">
 <p>The following tree lists every property and method reachable from the global
 <code>nginx</code> object, with types and mutability.  <code>r/o</code> = read-only;
@@ -4162,7 +5106,7 @@ Worker B: Atomics.add(hits, 0, 1n)  ──┘  (no user-space lock needed)</pre>
 </div>
 </div>
 <div class="sect3">
-<h4 id="_nginxserver_properties">18.8.1. NginxServer properties</h4>
+<h4 id="_nginxserver_properties">22.8.1. NginxServer properties</h4>
 <div class="literalblock">
 <div class="content">
 <pre>NginxServer  (nginx.http.servers[i])
@@ -4192,7 +5136,7 @@ Worker B: Atomics.add(hits, 0, 1n)  ──┘  (no user-space lock needed)</pre>
 </div>
 </div>
 <div class="sect3">
-<h4 id="_nginxlocation_properties">18.8.2. NginxLocation properties</h4>
+<h4 id="_nginxlocation_properties">22.8.2. NginxLocation properties</h4>
 <div class="literalblock">
 <div class="content">
 <pre>NginxLocation  (server.locations[i]  or  server.addLocation(…))
@@ -4204,6 +5148,9 @@ Worker B: Atomics.add(hits, 0, 1n)  ──┘  (no user-space lock needed)</pre>
 ├── jsCreated         bool    r/o   true if created by addLocation()
 │
 ├── handler                   r/w   JS async (req) =&gt; {} content handler
+├── hasHandler        bool    r/o   true if a JS handler is currently installed
+├── clearHandler()            fn    Remove the JS handler; restore the original nginx
+│                                   C content handler (no-op if no handler installed)
 ├── headerFilters[]   array   r/o   installed header filter entries
 ├── bodyFilters[]     array   r/o   installed body filter entries
 │
@@ -4303,7 +5250,7 @@ Worker B: Atomics.add(hits, 0, 1n)  ──┘  (no user-space lock needed)</pre>
 </div>
 </div>
 <div class="sect3">
-<h4 id="_nginxupstream_nginxpeer_nginxrrpeer">18.8.3. NginxUpstream, NginxPeer, NginxRRPeer</h4>
+<h4 id="_nginxupstream_nginxpeer_nginxrrpeer">22.8.3. NginxUpstream, NginxPeer, NginxRRPeer</h4>
 <div class="literalblock">
 <div class="content">
 <pre>NginxUpstream  (nginx.http.upstreams[i]  or  nginx.stream.upstreams[i])
@@ -4332,7 +5279,7 @@ NginxStreamPeer / NginxStreamRRPeer  — identical structure to HTTP equivalents
 </div>
 </div>
 <div class="sect3">
-<h4 id="_nginxsocket_and_nginxhttplistener_nginxstreamlistener">18.8.4. NginxSocket and NginxHttpListener / NginxStreamListener</h4>
+<h4 id="_nginxsocket_and_nginxhttplistener_nginxstreamlistener">22.8.4. NginxSocket and NginxHttpListener / NginxStreamListener</h4>
 <div class="literalblock">
 <div class="content">
 <pre>NginxSocket  (nginx.cycle.sockets[i]  or  nginx.http.sockets[i])
@@ -4356,7 +5303,7 @@ NginxStreamListener  — same shape as NginxHttpListener but returns NginxStream
 </div>
 </div>
 <div class="sect3">
-<h4 id="_nginxstreamserver_and_nginxstreamproxy">18.8.5. NginxStreamServer and NginxStreamProxy</h4>
+<h4 id="_nginxstreamserver_and_nginxstreamproxy">22.8.5. NginxStreamServer and NginxStreamProxy</h4>
 <div class="literalblock">
 <div class="content">
 <pre>NginxStreamServer  (nginx.stream.servers[i])
@@ -4388,7 +5335,7 @@ NginxStreamProxy
 </div>
 </div>
 <div class="sect3">
-<h4 id="_nginxrequest_and_nginxstreamsession">18.8.6. NginxRequest and NginxStreamSession</h4>
+<h4 id="_nginxrequest_and_nginxstreamsession">22.8.6. NginxRequest and NginxStreamSession</h4>
 <div class="literalblock">
 <div class="content">
 <pre>NginxRequest  (handler argument in HTTP content handlers)
@@ -4466,7 +5413,7 @@ NginxStreamSession  (handler argument in stream content handlers)
 </div>
 </div>
 <div class="sect3">
-<h4 id="_worker_and_sharedworker">18.8.7. Worker and SharedWorker</h4>
+<h4 id="_worker_and_sharedworker">22.8.7. Worker and SharedWorker</h4>
 <div class="literalblock">
 <div class="content">
 <pre>Worker  (new Worker(url))
@@ -4489,7 +5436,7 @@ clients[]               array    all connected MessagePort objects (for broadcas
 </div>
 </div>
 <div class="sect3">
-<h4 id="_nginxssl_and_nginxstreamssl">18.8.8. NginxSSL and NginxStreamSSL</h4>
+<h4 id="_nginxssl_and_nginxstreamssl">22.8.8. NginxSSL and NginxStreamSSL</h4>
 <div class="literalblock">
 <div class="content">
 <pre>NginxSSL  (server.ssl  in http context)
@@ -4513,9 +5460,9 @@ NginxStreamSSL  (streamServer.ssl  in stream context) — same properties plus:
 </div>
 </div>
 <div class="sect2">
-<h3 id="_i_full_nginx_js_class_reference">18.9. I: Full Nginx JS Class Reference</h3>
+<h3 id="_i_full_nginx_js_class_reference">22.9. I: Full Nginx JS Class Reference</h3>
 <div class="sect3">
-<h4 id="_class_index">18.9.1. Class Index</h4>
+<h4 id="_class_index">22.9.1. Class Index</h4>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 33.3333%;">
@@ -4814,7 +5761,7 @@ NginxStreamSSL  (streamServer.ssl  in stream context) — same properties plus:
 </table>
 </div>
 <div class="sect3">
-<h4 id="_module_com_class_properties">18.9.2. Module COM Class Properties</h4>
+<h4 id="_module_com_class_properties">22.9.2. Module COM Class Properties</h4>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 25%;">
@@ -5554,7 +6501,7 @@ NginxStreamSSL  (streamServer.ssl  in stream context) — same properties plus:
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-23 11:03:14 -0700
+Last updated 2026-03-27 12:31:44 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>
