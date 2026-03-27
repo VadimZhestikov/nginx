@@ -1,2 +1,0 @@
-  Notable finding: access_log off sets llcf->off = 1 — the logs array is NULL in that case, not an empty array. The test verifies both the off flag and that logs is an array (empty when off is true,
-  per the getter that returns [] when logs == NULL).

@@ -1,5 +1,0 @@
-  Key notes from this stage:
-  - NGX_HTTP_REALIP is a compile-time define — both the C file and proto_funcs entry need #if (NGX_HTTP_REALIP) guards
-  - The register call in ngx_js_http_register_classes and the declaration in ngx_js_com.h are also guarded
-  - from CIDR /32 entries (single host like 127.0.0.1) are rendered without the prefix since the mask has all 32 bits set — the test confirms from[0] === "127.0.0.1" (no /32)
-  - Build now includes --with-http_realip_module

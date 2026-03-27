@@ -1,5 +1,0 @@
-Two things worth noting from this stage:
-
-  1. params_source element type: fastcgi_param uses ngx_http_upstream_param_set_slot which stores ngx_http_upstream_param_t (3 fields: key, value, skip_empty), not plain ngx_keyval_t (2 fields).
-  Wrong type → wrong element stride → crash on second element.
-  2. pass address: upstream.upstream->host is hostname only; port is in ->port (host byte order). Formatted as host:port when !no_port && port != 0.
