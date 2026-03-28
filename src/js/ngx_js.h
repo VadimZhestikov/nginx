@@ -105,9 +105,16 @@ typedef struct {
 /*
  * Suspend/resume entry for a wholeBodyAsync filter.
  * Allocated in r->pool; linked into w->bf_pending.
+ * For generator mode (NGX_JS_FILTER_GENERATOR):
+ *   gen     — DupValue'd generator object (JS_UNDEFINED for non-generator)
+ *   gen_out — accumulated output chain head from yielded values
+ *   gen_out_last — tail pointer for gen_out
  */
 struct ngx_js_bf_pending_s {
     JSValue                     promise;    /* DupValue'd filter return Promise */
+    JSValue                     gen;        /* generator object or JS_UNDEFINED */
+    ngx_chain_t                *gen_out;       /* output chain head for generator yields */
+    ngx_chain_t               **gen_out_last;  /* tail pointer for gen_out */
     ngx_uint_t                  resume_idx; /* next filter index to run on resolve */
     ngx_js_worker_t            *w;
     struct ngx_http_request_s  *r;
@@ -192,6 +199,7 @@ typedef struct {
 #define NGX_JS_FILTER_WB_ASYNC     1   /* 'wholeBodyAsync'  async fn(req,body)→str */
 #define NGX_JS_FILTER_STREAM_SYNC  2   /* 'streamingSync'   fn(req,chunk,flags)  */
 #define NGX_JS_FILTER_STREAM_ASYNC 3   /* 'streamingAsync'  async fn(req,chunk,flags) */
+#define NGX_JS_FILTER_GENERATOR    4   /* async function*(body,req) yields chunks */
 
 typedef struct {
     uint32_t    fn_idx;   /* index into global __ngx_filters__ array */
@@ -239,7 +247,7 @@ typedef struct {
     ngx_array_t          *body_filters;      /* ngx_js_filter_entry_t[]      */
     ngx_uint_t            own_header_filters;/* 1 = owned; 0 = inherited     */
     ngx_uint_t            own_body_filters;
-    ngx_uint_t            body_filter_has_wb;/* 1 if any WB_SYNC/WB_ASYNC    */
+    ngx_uint_t            body_filter_has_wb;/* 1 if any WB_SYNC/WB_ASYNC/GENERATOR */
     ngx_pool_t           *pool; /* cf->pool from create_loc_conf             */
     ngx_array_t          *hooks;           /* array of uint32_t fn indices into __ngx_hooks__ */
     ngx_uint_t            own_hooks;       /* 1 = owned; 0 = inherited ptr */

@@ -4370,6 +4370,218 @@ ngx_js_wrap_request(JSContext *ctx, ngx_http_request_t *r)
 /* Async body filter check — resume suspended wholeBodyAsync filters    */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Drive a suspended async generator forward from its current state.
+ * bf_p->gen holds the generator; bf_p->gen_out/gen_out_last hold already-
+ * yielded output.  Called when bf_p->promise (a gen.next() result) has
+ * settled.
+ *
+ * Processes the settled iter-result {value,done} and continues iterating
+ * synchronously until the generator is done, an error occurs, or the next
+ * gen.next() Promise is pending again.
+ *
+ * Returns:
+ *   NGX_OK    — generator is done; rctx->wb_body updated; bf_p->promise freed
+ *   NGX_AGAIN — new suspension recorded in w->bf_pending; bf_p->promise freed
+ *   NGX_ERROR — error logged; bf_p->promise freed
+ *
+ * In all cases bf_p->promise is freed before return (caller must not free it).
+ * bf_p->gen is freed on NGX_OK and NGX_ERROR.
+ * On NGX_AGAIN, bf_p->gen ownership passes to the new bf_pending entry.
+ */
+static ngx_int_t
+ngx_js_gen_drive(ngx_js_worker_t *w, ngx_js_bf_pending_t *bf_p,
+    ngx_js_req_ctx_t *rctx)
+{
+    JSContext    *ctx;
+    JSRuntime    *rt;
+    JSContext    *job_ctx;
+    JSValue       iter_result, done_v, value_v, next_fn, next_result;
+    JSValue       reason, str_v;
+    ngx_chain_t  *gen_out, **gen_out_last;
+    const char   *cs;
+    int           done;
+    ngx_chain_t  *cl;
+    size_t        total;
+    u_char       *p, *pp;
+    ngx_buf_t    *yb;
+    ngx_chain_t  *yl;
+    const char   *ystr;
+    size_t        ylen;
+    u_char       *ydata;
+    ngx_js_bf_pending_t  *new_bf_p;
+
+    ctx          = w->ctx;
+    rt           = w->rt;
+    gen_out      = bf_p->gen_out;
+    gen_out_last = bf_p->gen_out_last;
+
+    next_fn = JS_GetPropertyStr(ctx, bf_p->gen, "next");
+
+    for (;;) {
+        /* Process the currently settled promise */
+        iter_result = JS_PromiseResult(ctx, bf_p->promise);
+        JS_FreeValue(ctx, bf_p->promise);
+        bf_p->promise = JS_UNDEFINED;
+
+        done_v = JS_GetPropertyStr(ctx, iter_result, "done");
+        done   = JS_ToBool(ctx, done_v);
+        JS_FreeValue(ctx, done_v);
+
+        if (done) {
+            JS_FreeValue(ctx, iter_result);
+            JS_FreeValue(ctx, next_fn);
+            JS_FreeValue(ctx, bf_p->gen);
+            bf_p->gen = JS_UNDEFINED;
+            goto collapse;
+        }
+
+        /* Append yielded value */
+        value_v = JS_GetPropertyStr(ctx, iter_result, "value");
+        JS_FreeValue(ctx, iter_result);
+
+        if (!JS_IsUndefined(value_v) && !JS_IsNull(value_v)) {
+            ystr = JS_ToCStringLen(ctx, &ylen, value_v);
+            if (ystr && ylen > 0) {
+                ydata = ngx_pnalloc(bf_p->r->pool, ylen);
+                if (ydata) {
+                    ngx_memcpy(ydata, ystr, ylen);
+                    yb = ngx_calloc_buf(bf_p->r->pool);
+                    yl = ngx_alloc_chain_link(bf_p->r->pool);
+                    if (yb && yl) {
+                        yb->pos    = ydata;
+                        yb->last   = ydata + ylen;
+                        yb->memory = 1;
+                        yl->buf    = yb;
+                        yl->next   = NULL;
+                        *gen_out_last = yl;
+                        gen_out_last  = &yl->next;
+                        /*
+                         * gen_out_last may have pointed at &bf_p->gen_out
+                         * (when gen_out was NULL).  After the first append,
+                         * sync the local gen_out with bf_p->gen_out so the
+                         * collapse loop below sees the chain.
+                         */
+                        if (gen_out == NULL) {
+                            gen_out = bf_p->gen_out;
+                        }
+                    }
+                }
+                JS_FreeCString(ctx, ystr);
+            }
+        }
+        JS_FreeValue(ctx, value_v);
+
+        /* Call gen.next() for the next step */
+        next_result = JS_Call(ctx, next_fn, bf_p->gen, 0, NULL);
+        while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+
+        if (JS_IsException(next_result)) {
+            ngx_js_log_exception(ctx, bf_p->r->connection->log);
+            JS_FreeValue(ctx, next_result);
+            JS_FreeValue(ctx, next_fn);
+            JS_FreeValue(ctx, bf_p->gen);
+            bf_p->gen = JS_UNDEFINED;
+            return NGX_ERROR;
+        }
+
+        switch (JS_PromiseState(ctx, next_result)) {
+
+        case JS_PROMISE_FULFILLED:
+            /* Already settled — loop to process it */
+            bf_p->promise = next_result;
+            continue;
+
+        case JS_PROMISE_REJECTED: {
+            reason = JS_PromiseResult(ctx, next_result);
+            str_v  = JS_ToString(ctx, reason);
+            cs     = JS_ToCString(ctx, str_v);
+            if (cs) {
+                ngx_log_error(NGX_LOG_ERR, bf_p->r->connection->log, 0,
+                              "js: generator body filter rejected: %s", cs);
+                JS_FreeCString(ctx, cs);
+            }
+            JS_FreeValue(ctx, str_v);
+            JS_FreeValue(ctx, reason);
+            JS_FreeValue(ctx, next_result);
+            JS_FreeValue(ctx, next_fn);
+            JS_FreeValue(ctx, bf_p->gen);
+            bf_p->gen = JS_UNDEFINED;
+            return NGX_ERROR;
+        }
+
+        case JS_PROMISE_PENDING:
+            /* Suspend again */
+            new_bf_p = ngx_pcalloc(bf_p->r->pool,
+                                   sizeof(ngx_js_bf_pending_t));
+            if (new_bf_p == NULL) {
+                JS_FreeValue(ctx, next_result);
+                JS_FreeValue(ctx, next_fn);
+                JS_FreeValue(ctx, bf_p->gen);
+                bf_p->gen = JS_UNDEFINED;
+                return NGX_ERROR;
+            }
+
+            new_bf_p->promise      = JS_DupValue(ctx, next_result);
+            new_bf_p->gen          = bf_p->gen;  /* ownership transfer */
+            bf_p->gen              = JS_UNDEFINED;
+            new_bf_p->gen_out      = gen_out;
+            /*
+             * gen_out_last must point into pool-allocated memory.
+             * If no yields have been collected yet, point at
+             * new_bf_p->gen_out itself; otherwise gen_out_last already
+             * points to the last link's next field (pool-allocated).
+             */
+            new_bf_p->gen_out_last = (gen_out == NULL)
+                                      ? &new_bf_p->gen_out
+                                      : gen_out_last;
+            new_bf_p->resume_idx   = bf_p->resume_idx;
+            new_bf_p->w            = w;
+            new_bf_p->r            = bf_p->r;
+            new_bf_p->next         = w->bf_pending;
+            w->bf_pending          = new_bf_p;
+
+            JS_FreeValue(ctx, next_result);
+            JS_FreeValue(ctx, next_fn);
+            return NGX_AGAIN;
+        }
+    }
+
+collapse:
+    /* Collapse gen_out chain into rctx->wb_body */
+    total = 0;
+    for (cl = gen_out; cl; cl = cl->next) {
+        ngx_buf_t *b = cl->buf;
+        if (ngx_buf_in_memory(b)) {
+            total += (size_t)(b->last - b->pos);
+        }
+    }
+
+    if (total > 0) {
+        p = ngx_pnalloc(bf_p->r->pool, total);
+        if (p) {
+            pp = p;
+            for (cl = gen_out; cl; cl = cl->next) {
+                ngx_buf_t *b = cl->buf;
+                if (ngx_buf_in_memory(b)) {
+                    pp = ngx_copy(pp, b->pos, (size_t)(b->last - b->pos));
+                }
+            }
+            rctx->wb_body.data = p;
+            rctx->wb_body.len  = total;
+        } else {
+            rctx->wb_body.data = (u_char *) "";
+            rctx->wb_body.len  = 0;
+        }
+    } else {
+        rctx->wb_body.data = (u_char *) "";
+        rctx->wb_body.len  = 0;
+    }
+
+    return NGX_OK;
+}
+
+
 void
 ngx_js_bf_async_check(ngx_js_worker_t *w)
 {
@@ -4396,6 +4608,36 @@ ngx_js_bf_async_check(ngx_js_worker_t *w)
 
             rctx = ngx_http_get_module_ctx(bf_p->r, ngx_js_http_module);
             jlcf = ngx_http_get_module_loc_conf(bf_p->r, ngx_js_http_module);
+
+            /*
+             * Generator mode: drive the generator forward until done or
+             * pending again, then run remaining filters from resume_idx+1.
+             */
+            if (!JS_IsUndefined(bf_p->gen)) {
+                rc = ngx_js_gen_drive(w, bf_p, rctx);
+
+                if (rc == NGX_AGAIN) {
+                    /*
+                     * Re-suspended: new entry pushed to w->bf_pending.
+                     * We do NOT release the request hold here — the existing
+                     * count++ from the original suspension keeps the request
+                     * alive for the new suspension.  No finalize call.
+                     */
+                    break;
+                }
+
+                if (rc == NGX_ERROR) {
+                    ngx_http_finalize_request(bf_p->r, NGX_ERROR);
+                    break;
+                }
+
+                /* Done — resume the remaining filter chain */
+                rc = ngx_js_body_filter_run_from(bf_p->w, bf_p->r, rctx,
+                                                 jlcf, bf_p->resume_idx + 1);
+                (void) rc;
+                ngx_http_finalize_request(bf_p->r, NGX_DONE);
+                break;
+            }
 
             /* Update wb_body with the resolved value if it is a string. */
             result = JS_PromiseResult(ctx, bf_p->promise);
@@ -4436,6 +4678,10 @@ ngx_js_bf_async_check(ngx_js_worker_t *w)
 
         case JS_PROMISE_REJECTED:
             *pp = bf_p->next;
+
+            if (!JS_IsUndefined(bf_p->gen)) {
+                JS_FreeValue(ctx, bf_p->gen);
+            }
 
             reason = JS_PromiseResult(ctx, bf_p->promise);
             str    = JS_ToString(ctx, reason);

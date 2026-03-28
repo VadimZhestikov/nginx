@@ -104,11 +104,11 @@ a browser DevTools tab).
 | `listener.on('accept', fn(conn))` — TCP connection level hook.
   `conn.remoteAddr`, `conn.remotePort`, `conn.reject()`.
 
-| P5
-| Generator body filter
+| P5 ✓
+| <<p5-gen-filter.adoc#,Generator body filter>>
 | Upgrade `addBodyFilter` to accept async generator functions
-  (`async function*(chunks, req)`).  Chunks arrive as an async iterable; yield
-  transformed chunks.
+  (`async function*(body, req)`).  Body is buffered; generator yields zero or
+  more output chunks and may `await` between yields.
 
 | P6
 | L4 data filter
