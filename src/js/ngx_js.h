@@ -100,6 +100,7 @@ struct ngx_js_async_ctx_s {
 /* Forward declarations — full definitions follow ngx_js_worker_t below. */
 typedef struct ngx_js_bf_pending_s  ngx_js_bf_pending_t;
 typedef struct ngx_js_sf_pending_s  ngx_js_sf_pending_t;
+typedef struct ngx_js_l4_pending_s  ngx_js_l4_pending_t;
 
 
 /*
@@ -112,6 +113,7 @@ typedef struct {
     ngx_js_async_ctx_t      *async_pending;       /* list of suspended content handlers */
     ngx_js_bf_pending_t     *bf_pending;          /* list of suspended WB async filters */
     ngx_js_sf_pending_t     *sf_pending;          /* list of suspended streaming filters */
+    ngx_js_l4_pending_t     *l4_pending;          /* P12: async L4 connections */
     ngx_js_sw_state_t       *local_sw_list;       /* dynamic SWs created post-fork  */
     uint64_t                 request_deadline_ms;  /* 0 = none; CLOCK_MONOTONIC ms   */
     size_t                   baseline_malloc_size; /* rt malloc_size right after fork */
@@ -467,6 +469,12 @@ void ngx_js_bf_async_check(ngx_js_worker_t *w);
  * event-loop post-drain site.
  */
 void ngx_js_sf_async_check(ngx_js_worker_t *w);
+
+/*
+ * Inspect pending L4 async generator connections and finalize settled ones.
+ * Called alongside ngx_js_async_check from every event-loop post-drain site.
+ */
+void ngx_js_l4_async_check(ngx_js_worker_t *w);
 
 
 /*

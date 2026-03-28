@@ -20,6 +20,7 @@
 #include "ngx_js.h"
 #include "ngx_js_com.h"
 #include "ngx_js_sw.h"
+#include "ngx_js_listener.h"
 
 
 /* ------------------------------------------------------------------ */
@@ -1351,6 +1352,7 @@ ngx_js_body_done(ngx_http_request_t *r)
     ngx_js_async_check(bctx->w);
     ngx_js_bf_async_check(bctx->w);
     ngx_js_sf_async_check(bctx->w);
+    ngx_js_l4_async_check(bctx->w);
     ngx_http_finalize_request(r, NGX_DONE);
 
     bctx->w->current_request = NULL;
@@ -1790,6 +1792,7 @@ ngx_js_subreq_resume(ngx_http_request_t *r)
     ngx_js_async_check(sctx->w);
     ngx_js_bf_async_check(sctx->w);
     ngx_js_sf_async_check(sctx->w);
+    ngx_js_l4_async_check(sctx->w);
 }
 
 
@@ -2448,6 +2451,7 @@ ngx_js_sleep_timer_handler(ngx_event_t *ev)
     ngx_js_async_check(t->w);
     ngx_js_bf_async_check(t->w);
     ngx_js_sf_async_check(t->w);
+    ngx_js_l4_async_check(t->w);
 }
 
 
@@ -2574,6 +2578,7 @@ ngx_js_fetch_resume_handler(ngx_event_t *ev)
     ngx_js_async_check(fctx->w);
     ngx_js_bf_async_check(fctx->w);
     ngx_js_sf_async_check(fctx->w);
+    ngx_js_l4_async_check(fctx->w);
 }
 
 

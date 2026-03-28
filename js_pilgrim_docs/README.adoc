@@ -157,13 +157,14 @@ a browser DevTools tab).
   `ngx_shared_memory_add` in HTTP postconfiguration; init callback zeroes
   on first start, preserves entries across hot-reload.
 
-| P12
-| L4 full-stream + async
-| Upgrade `listener.addL4Filter` to a true async generator: filter is
-  resumed on every read event (not just the first), and `await` is
-  permitted inside the generator.  Requires per-connection
-  `ngx_js_l4_state_t` holding the live generator object; each recv event
-  drives the next iteration.
+| P12 ✓
+| <<p12-l4-stream.adoc#,L4 full-stream + async>>
+| Upgrade `listener.addL4Filter` to a true streaming async generator:
+  `async function*(source)` with `for await (const chunk of source)`.
+  `await` is permitted inside the loop.  Multiple TCP segments feed the
+  same live generator via a JS async-iterable source factory.  Per-connection
+  `ngx_js_l4_pending_t` tracks the live generator; `ngx_js_l4_async_check`
+  resumes parked connections from the event loop.
 
 | P13
 | L4 server→client direction

@@ -128,5 +128,11 @@ ngx_http_core_srv_conf_t *ngx_js_server_get_cscf(JSValueConst srv,
  */
 JSValue  ngx_js_wrap_listener(JSContext *ctx, uint32_t handle);
 
+/*
+ * P12: Install the __ngx_l4_make_source__ async-iterable factory into the
+ * global object of ctx.  Called from ngx_js_com_init().
+ */
+ngx_int_t  ngx_js_l4_install_source_factory(JSContext *ctx);
+
 
 #endif /* _NGX_JS_LISTENER_H_INCLUDED_ */

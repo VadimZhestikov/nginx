@@ -1,0 +1,252 @@
+= JS-Pilgrim P12 — L4 Full-Stream + Async Generator
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-28
+
+Upgrades `listener.addL4Filter` from the P6 single-shot synchronous model to
+a full streaming async model where the generator receives ALL TCP byte chunks
+via a `for await` loop and `await` is permitted inside the generator body.
+
+== What changed from P6
+
+[cols="1,2,2", options="header"]
+|===
+| Aspect | P6 (before) | P12 (after)
+
+| Generator signature
+| `async function*(bytes)` — bytes is the first chunk (Uint8Array)
+| `async function*(source)` — source is an async iterable
+
+| Iteration
+| Single implicit next() call; generator must return after first yield
+| `for await (const chunk of source)` — receives each TCP segment
+
+| `await` inside body
+| Not supported (treated as error, connection rejected)
+| Fully supported — generator is suspended; re-driven when Promise settles
+
+| Multi-segment protocols
+| Not possible
+| Generator can loop to accumulate multiple chunks before yielding
+
+| Filter chaining
+| Output of filter N passed as bytes to filter N+1
+| Same model — output of filter N delivered as single chunk to filter N+1's source
+|===
+
+== New JS API
+
+[source,javascript]
+----
+listener.addL4Filter(async function*(source) {
+    for await (const chunk of source) {
+        // chunk is Uint8Array of raw TCP bytes
+        // await is permitted here
+        await nginx.setTimeout(10);   // example async op
+        yield transform(chunk);
+        return;  // stop after first chunk (typical case)
+        // OR keep looping to accumulate:
+        //   buf = concat(buf, chunk);
+        //   if (buf includes terminator) { yield buf; return; }
+    }
+});
+----
+
+=== Source async iterable
+
+The `source` argument implements the async iterable protocol:
+
+[source,javascript]
+----
+source[Symbol.asyncIterator]() // returns self
+source.next()                  // returns Promise<{value, done}>
+----
+
+Internally, `source.next()` sets `_isWaiting = true` and creates a Promise.
+When a new TCP segment arrives, `source._deliver(chunk, false)` is called
+from C, which resolves the pending Promise with the chunk.  When the filter
+chain is done, `source._deliver(undefined, true)` signals EOF.
+
+=== Return / break
+
+Call `return` inside the loop to stop processing after the first chunk.  This
+is the typical pattern for prefix-stripping filters.  Leaving the loop
+naturally (by iterating to EOF) also works for multi-filter chaining scenarios.
+
+== Control flow
+
+=== C-level state machine
+
+Each accepted connection that has L4 filters gets a `ngx_js_l4_pending_t`
+allocated in `c->pool`:
+
+[source,c]
+----
+typedef struct ngx_js_l4_pending_s {
+    ngx_connection_t              *c;
+    ngx_js_http_listener_state_t  *st;
+    JSValue                        gen;         /* live async generator */
+    JSValue                        next_fn;
+    JSValue                        gen_result;  /* pending gen.next() Promise */
+    JSValue                        source_obj;  /* async iterable */
+    JSValue                        deliver_fn;  /* source._deliver */
+    ngx_uint_t                     fi;          /* current filter index */
+    u_char                        *out_buf;     /* accumulated output */
+    size_t                         out_len;
+    size_t                         out_cap;
+    struct ngx_js_l4_pending_s    *next;        /* intrusive list */
+} ngx_js_l4_pending_t;
+----
+
+=== `ngx_js_l4_collect` return values
+
+[cols="1,3"]
+|===
+| `NGX_OK`    | Generator returned `{done:true}` — filter fi is complete
+| `NGX_AGAIN` | Promise is pending AND `source._isWaiting == true` — needs
+                 next TCP chunk; read event is re-armed
+| `NGX_DONE`  | Promise is pending AND `source._isWaiting == false` — generator
+                 is awaiting an async op; connection added to `w->l4_pending`
+                 and read event disabled
+| `NGX_ERROR` | Promise rejected or JS exception
+|===
+
+=== `ngx_js_l4_async_check`
+
+Called from all event-loop post-drain sites alongside the existing
+`ngx_js_bf_async_check` / `ngx_js_sf_async_check`.  Iterates
+`w->l4_pending`, drains microtasks, and checks each connection's
+`gen_result` Promise state:
+
+- Still `PENDING` → skip, leave in list
+- `FULFILLED` / `REJECTED` → remove from list, call `ngx_js_l4_collect`, then:
+  - `NGX_OK` → advance filter chain if needed, call `ngx_js_l4_finish`,
+    `ngx_http_init_connection`
+  - `NGX_AGAIN` → re-enable read event
+  - `NGX_DONE` → re-add to pending list
+  - error → close connection
+
+=== Filter chaining
+
+When filter fi completes, its `out_buf` becomes the input to filter fi+1.
+`ngx_js_l4_chain_next_filter` saves the accumulated output, resets the
+output buffer, starts a fresh `ngx_js_l4_start_filter` for fi+1, and
+delivers the saved output as a single chunk.  This is offline chaining:
+chained filters see the full previous filter output as one `for await`
+iteration.
+
+=== Source factory
+
+The `__ngx_l4_make_source__` global is installed by
+`ngx_js_l4_install_source_factory` (called from `ngx_js_com_init`):
+
+[source,javascript]
+----
+globalThis.__ngx_l4_make_source__ = function() {
+    var _res, _waiting = false;
+    return {
+        [Symbol.asyncIterator]() { return this; },
+        next() {
+            _waiting = true;
+            return new Promise(function(r) { _res = r; });
+        },
+        _deliver: function(val, done) {
+            if (_res) {
+                _waiting = false;
+                var r = _res; _res = undefined;
+                r({value: val, done: !!done});
+            }
+        },
+        get _isWaiting() { return _waiting; }
+    };
+};
+----
+
+== Examples
+
+=== Strip a binary prefix (passthrough after first chunk)
+
+[source,javascript]
+----
+listener.addL4Filter(async function*(source) {
+    for await (const chunk of source) {
+        const s = String.fromCharCode(...chunk);
+        yield s.startsWith('MAGIC:') ? s.slice(6) : s;
+        return;  // one chunk is enough
+    }
+});
+----
+
+=== Async filter (with timer or fetch)
+
+[source,javascript]
+----
+listener.addL4Filter(async function*(source) {
+    for await (const chunk of source) {
+        await nginx.setTimeout(5);  // simulate async lookup
+        yield chunk;
+        return;
+    }
+});
+----
+
+=== Two chained filters
+
+[source,javascript]
+----
+// Filter 1: strip outer envelope
+listener.addL4Filter(async function*(source) {
+    for await (const chunk of source) {
+        yield stripOuter(chunk);
+        return;
+    }
+});
+
+// Filter 2: decrypt inner payload
+listener.addL4Filter(async function*(source) {
+    for await (const chunk of source) {
+        yield decrypt(chunk);
+        return;
+    }
+});
+----
+
+Filter 1's output is delivered as a single chunk to filter 2's source.
+
+== Files changed
+
+[cols="2,5"]
+|===
+| File | Change
+
+| `src/js/ngx_js.h`
+| Added `l4_pending` field to `ngx_js_worker_t`; declared
+  `ngx_js_l4_async_check`; forward-declared `ngx_js_l4_pending_t`
+
+| `src/js/ngx_js_listener.h`
+| Added `ngx_js_l4_install_source_factory` export
+
+| `src/js/ngx_js_listener.c`
+| Replaced `ngx_js_l4_run_filters` with new P12 infrastructure:
+  `ngx_js_l4_pending_t`, `ngx_js_l4_collect`, `ngx_js_l4_start_filter`,
+  `ngx_js_l4_deliver_bytes`, `ngx_js_l4_chain_next_filter`,
+  `ngx_js_l4_finish`, updated `ngx_js_l4_read_handler`,
+  new `ngx_js_l4_async_check`, new `ngx_js_l4_install_source_factory`
+
+| `src/js/ngx_js_com.c`
+| Call `ngx_js_l4_install_source_factory` in `ngx_js_com_init`; add
+  `ngx_js_l4_async_check` at timer and accept callback drain sites
+
+| `src/js/ngx_js_http_module.c`
+| Added `#include "ngx_js_listener.h"`; added `ngx_js_l4_async_check`
+  at all 4 async-check call sites
+
+| `t/js_pilgrim_p6_l4_filter.t`
+| Updated filter JS to new `async function*(source)` / `for await` API
+
+| `t/js_pilgrim_p12_l4_stream.t`
+| New test: passthrough, async with setTimeout, chained filters,
+  multi-connection isolation (20 tests + 2 auto-checks)
+|===

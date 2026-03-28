@@ -429,6 +429,7 @@ ngx_js_timer_handler(ngx_event_t *ev)
     ngx_js_async_check(t->w);
     ngx_js_bf_async_check(t->w);
     ngx_js_sf_async_check(t->w);
+    ngx_js_l4_async_check(t->w);
 
     ngx_free(t);
 }
@@ -810,6 +811,7 @@ ngx_js_accept_ctrl_reply_handler(ngx_event_t *ev)
     ngx_js_async_check(actx->w);
     ngx_js_bf_async_check(actx->w);
     ngx_js_sf_async_check(actx->w);
+    ngx_js_l4_async_check(actx->w);
 
     /* Clean up the reply fd connection */
     ngx_del_event(conn->read, NGX_READ_EVENT, NGX_CLOSE_EVENT);
@@ -2309,6 +2311,12 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
             ngx_js_log_exception(ctx, cycle->log);
         }
         JS_FreeValue(ctx, ret);
+    }
+
+    /* P12: install L4 async source factory */
+    if (ngx_js_l4_install_source_factory(ctx) != NGX_OK) {
+        JS_FreeValue(ctx, global);
+        return NGX_ERROR;
     }
 
     /* global Worker constructor */

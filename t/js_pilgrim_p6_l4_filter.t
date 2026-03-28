@@ -54,13 +54,16 @@ var listener = nginx.http.attach(sock);
 listener.addServer(srv);
 
 // L4 filter: strip "FILT:" prefix (5 bytes) from incoming bytes, count runs
-listener.addL4Filter(async function*(bytes) {
-    filterRuns++;
-    var s = String.fromCharCode.apply(null, Array.from(bytes));
-    if (s.substring(0, 5) === 'FILT:') {
-        yield s.substring(5);
-    } else {
-        yield s;
+listener.addL4Filter(async function*(source) {
+    for await (var chunk of source) {
+        filterRuns++;
+        var s = String.fromCharCode.apply(null, Array.from(chunk));
+        if (s.substring(0, 5) === 'FILT:') {
+            yield s.substring(5);
+        } else {
+            yield s;
+        }
+        return;
     }
 });
 
