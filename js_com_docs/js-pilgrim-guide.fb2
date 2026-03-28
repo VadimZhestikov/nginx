@@ -1,0 +1,1020 @@
+<?xml version='1.0' encoding='utf-8'?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>computers</genre>
+      <author>
+        <first-name />
+        <last-name>NGINX JS DOM Project</last-name>
+      </author>
+      <book-title>NGINX JS DOM — Full-Proxy Programming Guide</book-title>
+      <date>2026-03-19</date>
+      <lang>en</lang>
+    </title-info>
+    <document-info>
+      <author>
+        <nickname>asciidoctor + html2fb2.py</nickname>
+      </author>
+      <date>2026-03-19</date>
+      <id>e6dd1ea1-3794-48df-bf17-9501853bc0e9</id>
+      <version>1.0</version>
+    </document-info>
+  </description>
+  <body>
+    <title>
+      <p>NGINX JS DOM — Full-Proxy Programming Guide</p>
+    </title>
+    <section>
+      <title>
+        <p>Introduction</p>
+      </title>
+      <section>
+        <title>
+          <p>What JS-Pilgrim Provides</p>
+        </title>
+        <p>The NGINX JS DOM exposes the nginx configuration tree as a JavaScript object model (COM) and lets JavaScript handle HTTP requests. <strong>JS-Pilgrim</strong> is the layer above the COM: it gives JavaScript complete control over every phase of connection and request processing.</p>
+        <p>Without JS-Pilgrim, JavaScript can read and mutate configuration, assign request handlers to locations, and install body filters (see the Filters Guide [js-filters-guide.adoc]). With JS-Pilgrim, JavaScript also controls:</p>
+        <p>•   </p>
+        <p>
+          <strong>Accept hooks</strong> — fire immediately after <code>accept(2)</code>, before HTTP parsing. Inspect or reject connections by IP address, rate limit at TCP level.</p>
+        <p>•   </p>
+        <p>
+          <strong>L4 stream filters</strong> — transform raw byte streams in both directions before or after HTTP processing, without writing a C module.</p>
+        <p>•   </p>
+        <p>
+          <strong>Request phase hooks</strong> — run before the content handler at location, server, or global HTTP scope. Async hooks, middleware-style <code>next()</code> wrapping, and early <code>req.respond()</code> short-circuit are all supported.</p>
+        <p>•   </p>
+        <p>
+          <strong>Response hooks</strong> — modify response headers after the content handler has selected them, before they are sent to the client.</p>
+        <p>•   </p>
+        <p>
+          <strong>Upstream filters</strong> — transform the body sent to or received from a proxied backend, in addition to the client-side body filters.</p>
+        <p>•   </p>
+        <p>
+          <strong>Per-request context</strong> — a plain JS object (<code>req.ctx</code>) that persists across async suspend/resume and across the access-phase → content-phase boundary.</p>
+        <p>•   </p>
+        <p>
+          <strong>Cross-worker shared state</strong> — <code>nginx.shared</code>, a flat key/value store backed by shared memory, visible to all worker processes simultaneously.</p>
+        <p>•   </p>
+        <p>
+          <strong>Master lifecycle events</strong> — <code>nginx.on('workerSpawned', fn)</code> and friends let JS react to nginx process events.</p>
+        <p>•   </p>
+        <p>
+          <strong>Module packaging</strong> — <code>nginx.use(path, config)</code> loads directory-based plugin packages; <code>nginx.install(fn, config)</code> installs inline plugins.</p>
+      </section>
+      <section>
+        <title>
+          <p>The Layered Architecture</p>
+        </title>
+        <p>Every incoming connection passes through a stack of independently programmable layers:</p>
+        <poem>
+          <stanza>
+            <v>Client TCP</v>
+            <v>  ↓</v>
+            <v>[Accept hooks]         listener.on / server.on                  (sync)</v>
+            <v>  ↓</v>
+            <v>[L4 inbound filters]   listener/server.addL4Filter              (async gen*)</v>
+            <v>  ↓</v>
+            <v>[HTTP parsing]         nginx built-in</v>
+            <v>  ↓</v>
+            <v>[Access phase hooks]   nginx.http.addHook / server.addHook      (async, next())</v>
+            <v>  ↓</v>
+            <v>[Content phase hooks]  location.addHook                         (async, next())</v>
+            <v>  ↓</v>
+            <v>[Content handler]      location.handler  or  nginx built-in</v>
+            <v>  ↓</v>
+            <v>[Header filter]        location.addResponseHook                 (sync)</v>
+            <v>  ↓</v>
+            <v>[Body filter]          location.addBodyFilter                   (see Filters Guide)</v>
+            <v>  ↓</v>
+            <v>[Upstream req filter]  location.addUpstreamRequestFilter        (async gen*)</v>
+            <v>  ↓</v>
+            <v>[Upstream response filter] location.addUpstreamFilter           (async gen*)</v>
+            <v>  ↓</v>
+            <v>[L4 outbound filters]  listener/server.addL4SendFilter          (async gen*)</v>
+            <v>  ↓</v>
+            <v>Client TCP</v>
+          </stanza>
+        </poem>
+        <p>A layer that does nothing passes through automatically. A layer that calls <code>req.respond()</code> (or <code>conn.reject()</code>) short-circuits everything below it.</p>
+      </section>
+      <section>
+        <title>
+          <p>How to Read This Guide</p>
+        </title>
+        <p>This guide covers JS-Pilgrim hooks and filters. For the COM object tree (<code>nginx.http.servers[]</code>, upstream config, SSL settings, etc.) see the Developer Manual [js-dom-manual.adoc]. For body filters (<code>addBodyFilter</code>, <code>addHeaderFilter</code>) see the Filters Guide [js-filters-guide.adoc]. For dynamic reconfiguration (<code>write_mode</code>, <code>snapshot()</code>, <code>restore()</code>) see the Reconfiguration Guide [js-reconfig-guide.adoc].</p>
+        <p>All JS-Pilgrim hooks must be registered from a <code>js_source</code> script that runs at config time (before workers are forked), unless stated otherwise.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Request Phase Hooks</p>
+      </title>
+      <section>
+        <title>
+          <p>Overview</p>
+        </title>
+        <p>Request phase hooks are JS callbacks that run inside nginx’s access or content phase, before the content handler produces a response. They share a three- outcome model:</p>
+        <p>Outcome │ Behaviour</p>
+        <p>Return normally (no req.respond()) │ Hook passes — the chain advances to the next hook or to the content handler.</p>
+        <p>req.respond(status, headers, body) │ Chain stops — remaining hooks and the content handler are skipped.</p>
+        <p>throw / rejected Promise │ nginx logs the error and sends a 500 response.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Location Hooks:location.addHook(fn)</p>
+        </title>
+        <p>Location hooks fire in the <strong>content phase</strong> for every request matched to that location.</p>
+        <poem>
+          <stanza>
+            <v>const loc = nginx.http.servers[0].locations[0];</v>
+            <v />
+            <v>// Synchronous hook</v>
+            <v>loc.addHook(function(req) {</v>
+            <v>    if (!req.headers['x-api-key']) {</v>
+            <v>        req.respond(401, {}, 'Missing API key\n');</v>
+            <v>    }</v>
+            <v>});</v>
+            <v />
+            <v>// Asynchronous hook</v>
+            <v>loc.addHook(async function(req) {</v>
+            <v>    const result = await nginx.setTimeout(10);   // yield to event loop</v>
+            <v>    req.respond(200, {}, 'ok\n');</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>Returns <code>location</code> for chaining. Multiple <code>addHook</code> calls register multiple hooks; they run in registration order.</p>
+      </section>
+      <section>
+        <title>
+          <p>Server Hooks:server.addHook(fn)</p>
+        </title>
+        <p>Server hooks fire in the <strong>access phase</strong> for every request that matches the virtual server, regardless of which location ultimately handles the request.</p>
+        <poem>
+          <stanza>
+            <v>nginx.http.servers[0].addHook(async function(req) {</v>
+            <v>    if (req.uri.startsWith('/internal/')) {</v>
+            <v>        req.respond(403, {}, 'Forbidden\n');</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Global HTTP Hooks:nginx.http.addHook(fn)</p>
+        </title>
+        <p>Global HTTP hooks fire in the <strong>access phase</strong> for every request handled by the HTTP block, across all virtual servers.</p>
+        <poem>
+          <stanza>
+            <v>nginx.http.addHook(function(req) {</v>
+            <v>    nginx.log(nginx.INFO,</v>
+            <v>              '[global] ' + req.method + ' ' + req.uri);</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Execution Order</p>
+        </title>
+        <p>For a given request, hooks execute in the order: global HTTP hooks → server hooks → content-phase (location) hooks → content handler.</p>
+        <p>Within each scope, hooks run in the order they were registered.</p>
+      </section>
+      <section>
+        <title>
+          <p>Async Hooks</p>
+        </title>
+        <p>Any hook callback may be an <code>async function</code>. When a hook returns a pending Promise, nginx suspends the request (incrementing <code>r→main→count</code>) and returns <code>NGX_DONE</code>. The event loop continues processing other connections. When the Promise settles, <code>ngx_js_async_check</code> resumes the request.</p>
+        <poem>
+          <stanza>
+            <v>nginx.http.addHook(async function(req) {</v>
+            <v>    // Simulate an async token validation call</v>
+            <v>    await nginx.setTimeout(20);</v>
+            <v />
+            <v>    var token = req.headers['authorization'] || '';</v>
+            <v>    if (!token.startsWith('Bearer ')) {</v>
+            <v>        req.respond(401, {}, 'Unauthorized\n');</v>
+            <v>    }</v>
+            <v>    // otherwise: pass through to next hook / content handler</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>Only one request is suspended per worker at a time (serialised through the event loop). For high-concurrency async gating, use a SharedWorker.</p>
+      </section>
+      <section>
+        <title>
+          <p>Middleware Chains:next()</p>
+        </title>
+        <p>Every hook callback receives an optional second argument <code>next</code>. Calling <code>next()</code> runs the remaining hooks in the chain and returns a Promise that resolves when they complete. Code after <code>await next()</code> runs before the content handler.</p>
+        <poem>
+          <stanza>
+            <v>// Wrap an entire hook chain with timing</v>
+            <v>loc.addHook(async function(req, next) {</v>
+            <v>    var t0 = Date.now();</v>
+            <v>    await next();            // run remaining hooks</v>
+            <v>    var elapsed = Date.now() - t0;</v>
+            <v>    nginx.log(nginx.INFO, 'hook chain took ' + elapsed + 'ms');</v>
+            <v>    // content handler runs after this function returns</v>
+            <v>});</v>
+            <v />
+            <v>loc.addHook(function(req) {</v>
+            <v>    req.respond(200, {}, 'hello\n');</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>Hooks that do not call <code>next()</code> auto-advance (backward-compatible with pre-P9 code). Calling <code>next()</code> more than once returns the cached result.</p>
+        <p>The chain runner is a Koa-style middleware stack:</p>
+        <poem>
+          <stanza>
+            <v>hook A (calls next())</v>
+            <v>  hook B (calls next())</v>
+            <v>    [no more hooks → next() resolves immediately]</v>
+            <v>  hook B post-next code</v>
+            <v>hook A post-next code</v>
+            <v>[chain settles → content handler runs]</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Per-Request Context:req.ctx</p>
+        </title>
+        <p>
+          <code>req.ctx</code> is a plain JS object allocated on first access and tied to the nginx request pool. It persists across async suspend/resume and across the access-phase → content-phase boundary, making it the right place to pass data from an access hook to the content handler.</p>
+        <poem>
+          <stanza>
+            <v>// Access-phase hook: validate and store decoded token</v>
+            <v>nginx.http.addHook(async function(req) {</v>
+            <v>    var token = parseJWT(req.headers['authorization']);</v>
+            <v>    if (!token) {</v>
+            <v>        req.respond(401, {}, 'Unauthorized\n');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>    req.ctx.user = token.sub;    // survives async suspend</v>
+            <v>    req.ctx.role = token.role;</v>
+            <v>});</v>
+            <v />
+            <v>// Content handler: read token data stored by the hook</v>
+            <v>loc.handler = function(req) {</v>
+            <v>    req.respond(200, {}, 'Hello, ' + req.ctx.user + '\n');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>
+          <code>req.ctx</code> is lazily created on first access. It is freed automatically via <code>ngx_pool_cleanup_add</code> when the request ends. It is <code>undefined</code> before first access (reading it does not allocate).</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Response Hooks</p>
+      </title>
+      <section>
+        <title>
+          <p>3.1.location.addResponseHook(fn)</p>
+        </title>
+        <p>Response hooks fire after the content handler has set response headers, before they are sent to the client.</p>
+        <poem>
+          <stanza>
+            <v>loc.addResponseHook(function(req) {</v>
+            <v>    // Inspect and mutate response headers</v>
+            <v>    req.setResponseHeader('x-powered-by', 'nginx-js');</v>
+            <v>    req.removeResponseHeader('server');</v>
+            <v />
+            <v>    // Read or change the status code</v>
+            <v>    if (req.status === 404) {</v>
+            <v>        req.status = 200;</v>
+            <v>        // body is already determined at this point</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>Returns <code>location</code> for chaining. Multiple calls register multiple response hooks; they run in registration order.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Upstream Filters</p>
+      </title>
+      <p>Upstream filters run in the body-filter chain but only when the location proxies to an upstream (<code>proxy_pass</code>, <code>fastcgi_pass</code>, etc.). They are independent of <code>addBodyFilter</code>.</p>
+      <section>
+        <title>
+          <p>Response Body:location.addUpstreamFilter(fn)</p>
+        </title>
+        <p>Transforms the upstream’s response body before it reaches the client.</p>
+        <poem>
+          <stanza>
+            <v>loc.addUpstreamFilter(async function*(body, req) {</v>
+            <v>    // body — full upstream response body as a string</v>
+            <v>    yield body.replace(/internal-hostname/g, 'public-hostname');</v>
+            <v>});</v>
+            <v />
+            <v>// Chain two upstream response filters</v>
+            <v>loc.addUpstreamFilter(async function*(body, req) {</v>
+            <v>    yield body.toUpperCase();</v>
+            <v>});</v>
+            <v>loc.addUpstreamFilter(async function*(body, req) {</v>
+            <v>    yield '[' + body + ']';   // receives output of first filter</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Request Body:location.addUpstreamRequestFilter(fn)</p>
+        </title>
+        <p>Transforms the client’s request body before it is forwarded to the upstream.</p>
+        <poem>
+          <stanza>
+            <v>loc.addUpstreamRequestFilter(async function*(body, req) {</v>
+            <v>    // body — full client request body as a string</v>
+            <v>    var obj = JSON.parse(body);</v>
+            <v>    obj.processed_by = 'nginx-js';</v>
+            <v>    yield JSON.stringify(obj);</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Chaining</p>
+        </title>
+        <p>Multiple <code>addUpstreamFilter</code> calls chain in registration order: the output of filter N becomes the input of filter N+1. The same applies to <code>addUpstreamRequestFilter</code>.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Accept Hooks</p>
+      </title>
+      <p>Accept hooks fire immediately after <code>accept(2)</code>, before nginx begins HTTP parsing. They can inspect or reject connections based on TCP-level information.</p>
+      <section>
+        <title>
+          <p>On JS-Managed Listeners:listener.on('accept', fn)</p>
+        </title>
+        <p>For listeners created with <code>nginx.http.attach(sock)</code>:</p>
+        <poem>
+          <stanza>
+            <v>const sock = nginx.createSocket('0.0.0.0:8443');</v>
+            <v>const lst  = nginx.http.attach(sock);</v>
+            <v>lst.addServer(defaultSrv);</v>
+            <v />
+            <v>lst.on('accept', function(conn) {</v>
+            <v>    if (!isAllowed(conn.remoteAddr)) {</v>
+            <v>        conn.reject();</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>On Standard Listen Sockets:server.on('accept', fn)</p>
+        </title>
+        <p>For sockets declared with nginx’s <code>listen</code> directive:</p>
+        <poem>
+          <stanza>
+            <v>// server {} whose listen directive owns port 8080</v>
+            <v>var srv = nginx.http.servers.find(function(s) {</v>
+            <v>    return s.name === 'my-server';</v>
+            <v>});</v>
+            <v />
+            <v>srv.on('accept', function(conn) {</v>
+            <v>    nginx.log(nginx.INFO,</v>
+            <v>              'new connection from ' + conn.remoteAddr);</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>
+          <code>server.on()</code> installs the hook during <code>init_conf</code> by replacing <code>ls→handler</code> on every listen socket whose default server is <code>srv</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>NginxConnection</p>
+        </title>
+        <p>Both APIs deliver a <code>NginxConnection</code> object to the callback:</p>
+        <p>Property / Method │ Type │ Description</p>
+        <p>conn.remoteAddr │ string (read-only) │ Client IP address, e.g. "192.168.1.10". IPv4 and IPv6.</p>
+        <p>conn.remotePort │ number (read-only) │ Client TCP port, e.g. 54321.</p>
+        <p>conn.reject() │ void │ Close the connection immediately. All remaining accept hooks are skipped; nginx never starts HTTP processing for this connection.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Constraints</p>
+        </title>
+        <p>Accept hooks are <strong>synchronous only</strong>. Returning a pending Promise from an accept hook causes the connection to be rejected and a warning to be logged.</p>
+        <p>Multiple <code>on('accept', fn)</code> calls register multiple hooks; they run in registration order. If any hook calls <code>conn.reject()</code>, subsequent hooks are not called.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>L4 Stream Filters</p>
+      </title>
+      <p>L4 filters intercept raw byte streams at the TCP level, before or after HTTP processing. They are expressed as <strong>async generator functions</strong> — the JS-Pilgrim stream primitive.</p>
+      <section>
+        <title>
+          <p>Inbound:addL4Filter(fn)</p>
+        </title>
+        <p>Intercepts bytes travelling from client to nginx, before the HTTP parser sees them.</p>
+        <p>
+          <strong>6.1.1. On JS-managed listeners</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>listener.addL4Filter(async function*(source) {</v>
+            <v>    for await (const chunk of source) {</v>
+            <v>        // chunk — Uint8Array of raw TCP bytes</v>
+            <v>        yield chunk;   // pass through unchanged</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>6.1.2. On standard listen sockets</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>srv.addL4Filter(async function*(source) {</v>
+            <v>    for await (const chunk of source) {</v>
+            <v>        const s = String.fromCharCode(...chunk);</v>
+            <v>        yield s.startsWith('MAGIC:') ? s.slice(6) : s;</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>6.1.3. Generator protocol</strong>
+        </p>
+        <p>The <code>source</code> argument is a async iterable [https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols#the_async_iterator_and_async_iterable_protocols]:</p>
+        <poem>
+          <stanza>
+            <v>for await (const chunk of source) {</v>
+            <v>    // chunk: Uint8Array — one TCP segment</v>
+            <v>    // await is permitted here</v>
+            <v>    yield transform(chunk);   // send transformed bytes downstream</v>
+            <v>    // return to stop after first chunk (common for prefix-stripping)</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>Yield value │ Meaning</p>
+        <p>Uint8Array │ Raw bytes copied verbatim.</p>
+        <p>string │ Bytes interpreted as UTF-8 / ASCII characters.</p>
+        <p>No yield before return │ No bytes emitted (HTTP parser receives empty input — likely a 400 response).</p>
+        <p>throw / exception │ Connection closed; error logged.</p>
+        <empty-line />
+        <p>
+          <strong>6.1.4. Filter chaining</strong>
+        </p>
+        <p>Multiple <code>addL4Filter</code> calls chain in registration order. The accumulated output of filter N is delivered as a single chunk to filter N+1’s <code>source</code>.</p>
+        <poem>
+          <stanza>
+            <v>// Filter 1: strip a 4-byte binary frame header</v>
+            <v>srv.addL4Filter(async function*(source) {</v>
+            <v>    for await (const chunk of source) {</v>
+            <v>        yield chunk.slice(4);</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>});</v>
+            <v />
+            <v>// Filter 2: log the stripped payload</v>
+            <v>srv.addL4Filter(async function*(source) {</v>
+            <v>    for await (const chunk of source) {</v>
+            <v>        nginx.log(nginx.DEBUG,</v>
+            <v>                  'inbound ' + chunk.length + ' bytes after strip');</v>
+            <v>        yield chunk;</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Outbound:addL4SendFilter(fn)</p>
+        </title>
+        <p>Intercepts bytes travelling from nginx to the client, after the HTTP response is fully formed.</p>
+        <p>
+          <strong>6.2.1. On JS-managed listeners</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>listener.addL4SendFilter(async function*(source) {</v>
+            <v>    for await (const chunk of source) {</v>
+            <v>        yield appendSignature(chunk);</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>6.2.2. On standard listen sockets</strong>
+        </p>
+        <poem>
+          <stanza>
+            <v>srv.addL4SendFilter(async function*(source) {</v>
+            <v>    for await (const chunk of source) {</v>
+            <v>        yield chunk;   // pass through; can transform instead</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+        <p>The generator protocol is identical to <code>addL4Filter</code>. The filter hooks into <code>c→send</code> / <code>c→send_chain</code> via pool-cleanup type-tagged state. EOF is delivered lazily inside the collect loop after the first yield.</p>
+      </section>
+      <section>
+        <title>
+          <p>Availability Matrix</p>
+        </title>
+        <p>Target │ addL4Filter │ addL4SendFilter</p>
+        <p>JS-managed listener (nginx.http.attach(sock)) │ Yes │ Yes</p>
+        <p>Standard listen socket (via server.addL4Filter) │ Yes │ Yes</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Async vs. Sync Inside the Generator</p>
+        </title>
+        <p>
+          <code>await</code> is fully supported inside L4 generator bodies. When the generator suspends at an <code>await</code>, the connection is parked in <code>w→l4_pending</code> and the event loop continues processing other requests. When the awaited Promise settles, <code>ngx_js_l4_async_check</code> resumes the generator.</p>
+        <poem>
+          <stanza>
+            <v>// Example: async lookup before forwarding</v>
+            <v>srv.addL4Filter(async function*(source) {</v>
+            <v>    for await (const chunk of source) {</v>
+            <v>        await nginx.setTimeout(5);   // simulate async work</v>
+            <v>        yield chunk;</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Cross-Worker Shared State</p>
+      </title>
+      <section>
+        <title>
+          <p>7.1.nginx.shared</p>
+        </title>
+        <p>
+          <code>nginx.shared</code> is a flat key/value store backed by a dedicated shared-memory zone. All nginx worker processes read and write the same memory region — a value written in one worker is immediately visible to every other worker.</p>
+        <poem>
+          <stanza>
+            <v>// Write from any request handler</v>
+            <v>nginx.shared.set('rate:192.168.1.1', '42');</v>
+            <v />
+            <v>// Read from any worker</v>
+            <v>var hits = nginx.shared.get('rate:192.168.1.1');   // → '42' or undefined</v>
+            <v />
+            <v>// Atomic counter</v>
+            <v>nginx.shared.incr('total_requests');               // → 1, 2, 3, …</v>
+            <v>nginx.shared.incr('total_requests', 5);            // add 5</v>
+            <v />
+            <v>// Cleanup</v>
+            <v>nginx.shared.delete('rate:192.168.1.1');           // → true | false</v>
+            <v>var keys = nginx.shared.keys();                    // → string[]</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Method Reference</p>
+        </title>
+        <p>Method │ Returns │ Behaviour</p>
+        <p>get(key) │ string | undefined │ Returns the stored value, or undefined if the key does not exist.</p>
+        <p>set(key, val) │ undefined │ Stores val for key. Creates or overwrites. Throws RangeError if key &gt; 127 chars or value &gt; 511 chars. Throws InternalError if the store is full (256 entries).</p>
+        <p>delete(key) │ boolean │ Removes key. Returns true if the key existed.</p>
+        <p>keys() │ string[] │ Returns an unsorted array of all live keys.</p>
+        <p>incr(key[, delta=1]) │ number │ Parses the current value as a base-10 integer, adds delta (default 1), stores and returns the result. Non-numeric values are treated as 0; missing keys start at 0. The entire operation is atomic.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Limits</p>
+        </title>
+        <p>Limit │ Value</p>
+        <p>Maximum key length │ 127 characters</p>
+        <p>Maximum value length │ 511 characters</p>
+        <p>Maximum entries │ 256</p>
+        <p>Total zone size │ ≈ 163 kB</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Whennginx.sharedIs Available</p>
+        </title>
+        <p>The shared-memory zone is mapped after config parsing. <code>nginx.shared</code> methods are safe to call from request-phase handlers, hooks, and timer callbacks. Calling them from top-level <code>js_source</code> code (i.e., during <code>init_conf</code>) throws <code>InternalError</code>.</p>
+      </section>
+      <section>
+        <title>
+          <p>Concurrency</p>
+        </title>
+        <p>All five methods acquire a spinlock for the duration of the operation. <code>incr</code> is atomic — no application-level locking is required.</p>
+      </section>
+      <section>
+        <title>
+          <p>Persistence Across Hot-Reload</p>
+        </title>
+        <p>
+          <code>nginx.shared</code> data survives <code>nginx -s reload</code>. The init callback detects the hot-reload case (<code>data != NULL</code>) and preserves existing entries.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Master Lifecycle Events</p>
+      </title>
+      <section>
+        <title>
+          <p>8.1.nginx.on(event, fn)</p>
+        </title>
+        <p>Registers a callback to be invoked in the master process when nginx lifecycle events occur.</p>
+        <poem>
+          <stanza>
+            <v>nginx.on('workerSpawned', function(pid, slot) {</v>
+            <v>    nginx.log(nginx.INFO, 'worker ' + pid + ' started (slot ' + slot + ')');</v>
+            <v>});</v>
+            <v />
+            <v>nginx.on('workerExited', function(pid, slot, status) {</v>
+            <v>    nginx.log(nginx.WARN, 'worker ' + pid + ' exited with status ' + status);</v>
+            <v>});</v>
+            <v />
+            <v>nginx.on('quit',     function() { /* SIGQUIT received */ });</v>
+            <v>nginx.on('reload',   function() { /* SIGHUP received  */ });</v>
+            <v>nginx.on('reloaded', function() { /* new config active */ });</v>
+            <v>nginx.on('reopen',   function() { /* SIGUSR1 received */ });</v>
+          </stanza>
+        </poem>
+        <p>Multiple calls register multiple listeners for the same event; all run in registration order.</p>
+      </section>
+      <section>
+        <title>
+          <p>Event Reference</p>
+        </title>
+        <p>Event │ Callback signature │ When it fires</p>
+        <p>workerSpawned │ function(pid, slot) │ A new worker process has been forked. pid — OS process ID. slot — index in ngx_processes[].</p>
+        <p>workerExited │ function(pid, slot, status) │ A worker process has exited. status — the raw waitpid status value (use WEXITSTATUS(status) etc. in C; in JS this is the raw integer).</p>
+        <p>quit │ function() │ SIGQUIT received. The master is beginning graceful shutdown.</p>
+        <p>reload │ function() │ SIGHUP received. nginx is about to re-read the configuration file.</p>
+        <p>reloaded │ function() │ Hot-reload is complete and the new worker generation is active.</p>
+        <p>reopen │ function() │ SIGUSR1 received. Log files are being reopened (log rotation).</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Constraints</p>
+        </title>
+        <p>•   </p>
+        <p>Callbacks run in the <strong>master process</strong> JS context, not in a worker.</p>
+        <p>•   </p>
+        <p>Callbacks must be synchronous. Returning a Promise is ignored.</p>
+        <p>•   </p>
+        <p>
+          <code>nginx.on()</code> must be called from <code>js_source</code> (init time), not from a request handler.</p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Module System</p>
+      </title>
+      <section>
+        <title>
+          <p>Loading Filesystem Plugins:nginx.use(path[, config])</p>
+        </title>
+        <p>Loads a plugin package from the local filesystem.</p>
+        <poem>
+          <stanza>
+            <v>nginx.use('/opt/plugins/auth-guard', { secret: process.env.AUTH_SECRET });</v>
+            <v>nginx.use('/opt/plugins/rate-limiter', { rps: 500 });</v>
+          </stanza>
+        </poem>
+        <p>Returns <code>nginx</code> for chaining.</p>
+        <p>
+          <strong>9.1.1. Entry-point resolution</strong>
+        </p>
+        <p>1.   </p>
+        <p>Read <code>&lt;path&gt;/package.json</code> if it exists.</p>
+        <p>2.   </p>
+        <p>If <code>package.json</code> has a <code>ngxjs.main</code> key, use <code>&lt;path&gt;/&lt;ngxjs.main&gt;</code>.</p>
+        <p>3.   </p>
+        <p>Otherwise fall back to <code>&lt;path&gt;/index.js</code>.</p>
+        <p>
+          <strong>9.1.2. <code>package.json</code> format</strong>
+        </p>
+        <p>Only the <code>ngxjs</code> key is read; all other fields are ignored:</p>
+        <poem>
+          <stanza>
+            <v>{</v>
+            <v>  "name": "my-plugin",</v>
+            <v>  "version": "1.0.0",</v>
+            <v>  "ngxjs": {</v>
+            <v>    "main": "src/plugin.js"</v>
+            <v>  }</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>9.1.3. Inside the plugin script</strong>
+        </p>
+        <p>The entry file is evaluated as an ES module. <code>nginx.pluginConfig</code> holds the <code>config</code> argument:</p>
+        <poem>
+          <stanza>
+            <v>// opt/plugins/auth-guard/index.js</v>
+            <v>var cfg = nginx.pluginConfig;</v>
+            <v />
+            <v>nginx.http.addHook(function(req) {</v>
+            <v>    if (req.headers['x-token'] !== cfg.secret) {</v>
+            <v>        req.respond(401, {}, 'Unauthorized\n');</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Installing Inline Plugins:nginx.install(plugin[, config])</p>
+        </title>
+        <p>Installs a plugin without touching the filesystem.</p>
+        <poem>
+          <stanza>
+            <v>// Object with .install method</v>
+            <v>nginx.install({</v>
+            <v>    install: function(cfg) {</v>
+            <v>        nginx.http.addHook(function(req) {</v>
+            <v>            req.respond(200, {}, cfg.greeting + '\n');</v>
+            <v>        });</v>
+            <v>    }</v>
+            <v>}, { greeting: 'Hello!' });</v>
+            <v />
+            <v>// Bare function</v>
+            <v>nginx.install(function(cfg) {</v>
+            <v>    nginx.log(nginx.INFO, 'plugin config: ' + JSON.stringify(cfg));</v>
+            <v>}, { debug: true });</v>
+          </stanza>
+        </poem>
+        <p>Returns the return value of the plugin call.</p>
+      </section>
+      <section>
+        <title>
+          <p>Hot Reload:nginx.use()from a Request Handler</p>
+        </title>
+        <p>
+          <code>nginx.use()</code> can also be called from a worker request handler (not only at init time). When called from a worker, the plugin is loaded locally, then a <code>NGX_CMD_JS_USE_PLUGIN</code> message is sent to the master, which broadcasts a <code>NGX_CMD_JS_LOAD_PLUGIN</code> command to all other workers. All workers end up with the same plugin loaded without nginx restart or reload.</p>
+        <poem>
+          <stanza>
+            <v>loc.handler = async function(req) {</v>
+            <v>    var path = req.headers['x-plugin-path'];</v>
+            <v>    if (path) {</v>
+            <v>        nginx.use(path);   // loads locally + broadcasts to all workers</v>
+            <v>        req.respond(200, {}, 'plugin loaded\n');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>    req.respond(404, {}, 'not found\n');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+        <p>
+          <strong>: </strong>  Hot-loaded plugins are not persisted across nginx restart. Add the <code>nginx.use()</code> call to the <code>js_source</code> script to make a plugin permanent.  </p>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Complete Examples</p>
+      </title>
+      <section>
+        <title>
+          <p>Authentication Middleware</p>
+        </title>
+        <p>Global auth check with per-request context passing:</p>
+        <poem>
+          <stanza>
+            <v>// Global HTTP hook: validate JWT and store claims in req.ctx</v>
+            <v>nginx.http.addHook(async function(req) {</v>
+            <v>    var authHeader = req.headers['authorization'] || '';</v>
+            <v>    if (!authHeader.startsWith('Bearer ')) {</v>
+            <v>        req.respond(401, {'WWW-Authenticate': 'Bearer realm="api"'}, '');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>    var token = parseJWT(authHeader.slice(7));</v>
+            <v>    if (!token) {</v>
+            <v>        req.respond(403, {}, 'Invalid token\n');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>    req.ctx.userId = token.sub;</v>
+            <v>    req.ctx.roles  = token.roles;</v>
+            <v>});</v>
+            <v />
+            <v>// Content handler: use claims from req.ctx</v>
+            <v>nginx.http.servers[0].locations[0].handler = function(req) {</v>
+            <v>    if (!req.ctx.roles.includes('admin')) {</v>
+            <v>        req.respond(403, {}, 'Forbidden\n');</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v>    req.respond(200, {}, 'Hello admin ' + req.ctx.userId + '\n');</v>
+            <v>};</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Rate Limiting at the TCP Level</p>
+        </title>
+        <p>Accept hook with a per-IP token bucket stored in <code>nginx.shared</code>:</p>
+        <poem>
+          <stanza>
+            <v>var srv = nginx.http.servers[0];</v>
+            <v />
+            <v>srv.on('accept', function(conn) {</v>
+            <v>    var key  = 'rate:' + conn.remoteAddr;</v>
+            <v>    var now  = Math.floor(Date.now() / 1000);</v>
+            <v>    var ts   = parseInt(nginx.shared.get(key + ':ts') || '0');</v>
+            <v />
+            <v>    // Refill tokens (max 10, 1 per second)</v>
+            <v>    var tokens = parseInt(nginx.shared.get(key + ':t') || '10');</v>
+            <v>    if (now &gt; ts) {</v>
+            <v>        tokens = Math.min(10, tokens + (now - ts));</v>
+            <v>        nginx.shared.set(key + ':ts', String(now));</v>
+            <v>    }</v>
+            <v />
+            <v>    if (tokens &lt;= 0) {</v>
+            <v>        nginx.log(nginx.WARN, 'rate-limit: ' + conn.remoteAddr);</v>
+            <v>        conn.reject();</v>
+            <v>        return;</v>
+            <v>    }</v>
+            <v />
+            <v>    nginx.shared.set(key + ':t', String(tokens - 1));</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Middleware Timing Wrapper</p>
+        </title>
+        <p>Wrap the entire hook chain for a location with request timing:</p>
+        <poem>
+          <stanza>
+            <v>var loc = nginx.http.servers[0].locations.find(</v>
+            <v>    function(l) { return l.path === '/api/'; }</v>
+            <v>);</v>
+            <v />
+            <v>// Outer: measures total hook + handler time</v>
+            <v>loc.addHook(async function(req, next) {</v>
+            <v>    var t0 = Date.now();</v>
+            <v>    await next();</v>
+            <v>    nginx.log(nginx.INFO,</v>
+            <v>              req.method + ' ' + req.uri + ' ' + (Date.now() - t0) + 'ms');</v>
+            <v>});</v>
+            <v />
+            <v>// Inner: the actual auth check</v>
+            <v>loc.addHook(function(req) {</v>
+            <v>    if (!req.headers['x-api-key']) {</v>
+            <v>        req.respond(401, {}, 'Missing key\n');</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>L4 Protocol Negotiation</p>
+        </title>
+        <p>Strip a custom binary handshake before HTTP parsing:</p>
+        <poem>
+          <stanza>
+            <v>const MAGIC = 'NGXJS:';</v>
+            <v />
+            <v>nginx.http.servers[0].addL4Filter(async function*(source) {</v>
+            <v>    for await (const chunk of source) {</v>
+            <v>        var s = String.fromCharCode(...chunk);</v>
+            <v>        if (s.startsWith(MAGIC)) {</v>
+            <v>            nginx.log(nginx.INFO, 'ngxjs handshake from client');</v>
+            <v>            yield s.slice(MAGIC.length);</v>
+            <v>        } else {</v>
+            <v>            yield s;   // plain HTTP — forward unchanged</v>
+            <v>        }</v>
+            <v>        return;    // one chunk is enough</v>
+            <v>    }</v>
+            <v>});</v>
+          </stanza>
+        </poem>
+      </section>
+      <section>
+        <title>
+          <p>Cross-Worker Hit Counter Plugin</p>
+        </title>
+        <p>A plugin loaded with <code>nginx.use()</code> that counts requests across all workers:</p>
+        <poem>
+          <stanza>
+            <v>// /opt/plugins/hit-counter/index.js</v>
+            <v>var cfg = nginx.pluginConfig;</v>
+            <v>var location = cfg.location;   // e.g. '/stats'</v>
+            <v />
+            <v>nginx.http.addHook(function(req) {</v>
+            <v>    nginx.shared.incr('hits');</v>
+            <v>});</v>
+            <v />
+            <v>var statsLoc = nginx.http.servers[0].locations.find(</v>
+            <v>    function(l) { return l.path === location; }</v>
+            <v>);</v>
+            <v>if (statsLoc) {</v>
+            <v>    statsLoc.handler = function(req) {</v>
+            <v>        var n = nginx.shared.get('hits') || '0';</v>
+            <v>        req.respond(200, {'Content-Type': 'text/plain'}, 'hits: ' + n + '\n');</v>
+            <v>    };</v>
+            <v>}</v>
+          </stanza>
+        </poem>
+        <poem>
+          <stanza>
+            <v>// js_source:</v>
+            <v>nginx.use('/opt/plugins/hit-counter', { location: '/stats' });</v>
+          </stanza>
+        </poem>
+      </section>
+    </section>
+    <section>
+      <title>
+        <p>Reference</p>
+      </title>
+      <section>
+        <title>
+          <p>Hook API Summary</p>
+        </title>
+        <p>Method │ Scope │ When it fires</p>
+        <p>nginx.http.addHook(fn) │ Global HTTP │ Access phase — every request in the HTTP block</p>
+        <p>server.addHook(fn) │ Virtual server │ Access phase — every request on this server</p>
+        <p>location.addHook(fn) │ Location │ Content phase — every request matched to this location</p>
+        <p>location.addResponseHook(fn) │ Location │ After content handler selects headers, before they are sent</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Accept Hook API Summary</p>
+        </title>
+        <p>Method │ Target │ Notes</p>
+        <p>listener.on('accept', fn) │ JS-managed listener │ JS-managed listeners created via nginx.http.attach(sock).</p>
+        <p>server.on('accept', fn) │ Standard listen socket │ Sockets declared with nginx’s listen directive.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>L4 Filter API Summary</p>
+        </title>
+        <p>Method │ Direction │ Notes</p>
+        <p>listener.addL4Filter(fn) / server.addL4Filter(fn) │ Client → nginx (inbound) │ Before HTTP parsing. Async generator, await supported.</p>
+        <p>listener.addL4SendFilter(fn) / server.addL4SendFilter(fn) │ Nginx → client (outbound) │ After HTTP response is formed. Async generator, await supported.</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Upstream Filter API Summary</p>
+        </title>
+        <p>Method │ Direction</p>
+        <p>location.addUpstreamFilter(fn) │ Upstream response body (server → client)</p>
+        <p>location.addUpstreamRequestFilter(fn) │ Client request body (client → upstream)</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>11.5.nginx.onEvent Reference</p>
+        </title>
+        <p>Event │ Signature │ Trigger</p>
+        <p>workerSpawned │ fn(pid, slot) │ Worker forked</p>
+        <p>workerExited │ fn(pid, slot, status) │ Worker exited</p>
+        <p>quit │ fn() │ SIGQUIT — graceful shutdown begins</p>
+        <p>reload │ fn() │ SIGHUP — config re-read begins</p>
+        <p>reloaded │ fn() │ New worker generation active</p>
+        <p>reopen │ fn() │ SIGUSR1 — log rotation</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>11.6.nginx.sharedLimits</p>
+        </title>
+        <p>Limit │ Value</p>
+        <p>Max key length │ 127 characters</p>
+        <p>Max value length │ 511 characters</p>
+        <p>Max entries │ 256</p>
+        <p>Zone size │ ≈ 163 kB</p>
+        <empty-line />
+      </section>
+      <section>
+        <title>
+          <p>Error Handling Summary</p>
+        </title>
+        <p>Situation │ Behaviour</p>
+        <p>Hook throws synchronously │ nginx logs the error; 500 response sent.</p>
+        <p>Async hook’s Promise rejects │ nginx logs the error; 500 response sent.</p>
+        <p>Accept hook returns a Promise │ Connection rejected; warning logged.</p>
+        <p>L4 filter generator throws │ Connection closed; error logged.</p>
+        <p>nginx.shared.set when full │ InternalError thrown to the caller.</p>
+        <p>nginx.shared.set with oversized key/value │ RangeError thrown to the caller.</p>
+        <p>nginx.on callback throws │ Error logged; remaining listeners for the same event still run.</p>
+        <empty-line />
+      </section>
+    </section>
+  </body>
+</FictionBook>
