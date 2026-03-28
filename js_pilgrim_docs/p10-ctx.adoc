@@ -1,0 +1,131 @@
+= JS-Pilgrim P10 — req.ctx: Persistent Per-Request Context
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-28
+
+P10 adds `req.ctx`, a plain JS object that persists for the full
+lifetime of an nginx request.  Because `req` wrappers are replaced on
+async re-entry (a new `NginxRequest` object is created on each call to
+`ngx_js_wrap_request`), properties set directly on `req` are lost
+across `await` boundaries.  `req.ctx` solves this by anchoring the
+object to the nginx request pool rather than to the JS wrapper.
+
+== API
+
+[source,javascript]
+----
+// Set state in a P2 hook, read it in the handler
+nginx.http.addHook(async function(req) {
+    req.ctx.userId = await lookupUser(req.headers['x-token']);
+});
+
+location.handler = function(req) {
+    var uid = req.ctx.userId;  // same object, survives phase transition
+    req.respond(200, {}, 'user:' + uid + '\n');
+};
+----
+
+`req.ctx` is:
+
+* **Lazily created** — the plain object is allocated on first access.
+* **Stable across async boundaries** — the underlying JS object lives
+  in a C-level slot (`ngx_js_req_ctx_t.ctx_obj`) tied to the nginx
+  request pool, not to any particular req wrapper.
+* **Stable across phase transitions** — the same object is accessible
+  in P2 (access-phase) hooks and in P1 content-phase hooks/handlers
+  for the same request.
+* **Per-request isolated** — each nginx request gets its own fresh
+  object; no state leaks between requests.
+* **Read-only accessor** — `req.ctx = value` is silently ignored
+  (the property has no setter).
+
+== Why req properties are lost
+
+Every time nginx re-enters the JS content or access handler after an
+async suspend, `ngx_js_wrap_request` creates a *new* `NginxRequest`
+object.  Properties set directly on the old wrapper (e.g.
+`req._myFlag = true`) are lost when the wrapper is garbage-collected.
+
+`req.ctx` avoids this by storing the JS object at the C level:
+
+[source]
+----
+Before await:   req (wrapper A)  →  req.ctx (JS plain object, refcount=1)
+                sets req.ctx.x = 1
+
+Async suspend:  wrapper A may be GC'd — req.ctx.x is safe in C-level slot
+
+After resume:   req (new wrapper B)  →  req.ctx returns SAME JS object
+                req.ctx.x === 1  ✓
+----
+
+== Lifetime & Cleanup
+
+The `ctx_obj` slot is initialized to `JS_UNDEFINED` in
+`ngx_js_req_ctx_t`.  On first access a `JS_NewObject` is created and a
+pool cleanup entry is registered via `ngx_pool_cleanup_add`.  When
+nginx frees the request pool (after the response is fully sent), the
+cleanup handler calls `JS_FreeValue` to release the single reference.
+
+There is exactly **one** JS reference to the ctx object at all times —
+held by `rctx->ctx_obj`.  The getter returns `JS_DupValue` for the
+caller (temporary +1 that the JS engine releases normally).
+
+== Implementation Notes
+
+=== New field
+
+`ngx_js_req_ctx_t.ctx_obj` (type `JSValue`, initialized to
+`JS_UNDEFINED`) stores the persistent context object.
+
+=== Getter (magic=26)
+
+`ngx_js_request_get` case 26:
+
+1. Gets `rctx` from `ngx_http_get_module_ctx`.
+2. If `JS_IsUndefined(rctx->ctx_obj)`: creates a new plain object,
+   registers pool cleanup, stores in `rctx->ctx_obj`.
+3. Returns `JS_DupValue(ctx, rctx->ctx_obj)`.
+
+=== Pool cleanup
+
+```c
+typedef struct {
+    JSContext         *js_ctx;
+    ngx_js_req_ctx_t  *rctx;
+} ngx_js_ctx_obj_cleanup_t;
+```
+
+The cleanup stores a pointer to `rctx` (not a second reference to the
+JSValue) and calls `JS_FreeValue(js_ctx, rctx->ctx_obj)` when invoked.
+Both `rctx` and the cleanup data live in the same nginx pool, so the
+pointer is valid when the cleanup fires.
+
+=== Initialization sites
+
+`rctx->ctx_obj = JS_UNDEFINED` is set in three places that allocate
+`ngx_js_req_ctx_t`:
+- `ngx_js_body_filter` (body filter entry)
+- `ngx_js_http_access_handler` (P2 access phase)
+- `ngx_js_content_handler` (P1 content phase)
+
+This is required because `ngx_pcalloc` zeroes memory, and the zero
+JSValue tag is not `JS_UNDEFINED` in QuickJS's tagged representation.
+
+== Test Coverage
+
+`t/js_pilgrim_p10_ctx.t` (15 explicit + 2 auto = 17 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2  | Sync hook sets `ctx.token`, handler reads it
+| 3–4  | Async hook sets `ctx.token` after `await`, handler reads it (wrapper replaced)
+| 5–6  | P2 async hook sets `ctx.source`, P1 content handler reads it (cross-phase)
+| 7–10 | Two sequential requests each get a fresh ctx (no state leak)
+| 11–13 | Repeated requests for all three endpoints
+| 14–17 | Auto: nginx started, no alerts in error.log
+|===

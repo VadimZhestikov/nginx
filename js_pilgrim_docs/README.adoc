@@ -139,6 +139,15 @@ a browser DevTools tab).
   Implemented as a Koa-style JS IIFE (`__ngx_hook_chain__`) evaluated once
   per context.  `req.responded` (read-only) bridges JS/C for short-circuit
   detection.  `ngx_js_run_chain` replaces the old per-hook C loop.
+
+| P10 ✓
+| <<p10-ctx.adoc#,req.ctx — persistent per-request context>>
+| `req.ctx` — a plain JS object tied to the nginx request pool, not to
+  the JS req wrapper.  Survives async suspend/resume (wrapper replaced),
+  and spans the P2-access → P1-content phase boundary.  Lazily created
+  on first access; freed via pool cleanup when the request ends.
+  Implemented as a C-level `JSValue ctx_obj` slot in `ngx_js_req_ctx_t`
+  with a `ngx_pool_cleanup_add` finalizer.
 |===
 
 == Hook Cancellation Model

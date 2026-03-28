@@ -304,6 +304,7 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         rctx->write_mode     = NGX_JS_WRITE_GLOBAL;
         rctx->read_mode      = NGX_JS_WRITE_GLOBAL;
         rctx->body_bufs_last = &rctx->body_bufs;
+        rctx->ctx_obj        = JS_UNDEFINED;
         ngx_http_set_ctx(r, rctx, ngx_js_http_module);
     }
 
@@ -523,6 +524,23 @@ typedef struct {
 } ngx_js_request_opaque_t;
 
 
+/* Pool cleanup that releases the req.ctx JS object when the request ends. */
+typedef struct {
+    JSContext         *js_ctx;
+    ngx_js_req_ctx_t  *rctx;
+} ngx_js_ctx_obj_cleanup_t;
+
+static void
+ngx_js_ctx_obj_cleanup(void *data)
+{
+    ngx_js_ctx_obj_cleanup_t  *cl = data;
+    if (!JS_IsUndefined(cl->rctx->ctx_obj)) {
+        JS_FreeValue(cl->js_ctx, cl->rctx->ctx_obj);
+        cl->rctx->ctx_obj = JS_UNDEFINED;
+    }
+}
+
+
 static void
 ngx_js_request_finalizer(JSRuntime *rt, JSValue val)
 {
@@ -569,6 +587,7 @@ static JSClassDef ngx_js_request_class = {
  *  23 — requestLength (r/o number, total bytes received for this request)
  *  24 — statusCode    (r/w number, response status; 0 when unset)
  *  25 — responded     (r/o boolean, true after req.respond() was called)
+ *  26 — ctx           (r/o object, persistent per-request plain object — P10)
  */
 
 /* Forward declaration — defined after ngx_js_request_set_variable */
@@ -956,6 +975,40 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
     case 25: /* responded — true after req.respond() was called */
         op = JS_GetOpaque(this_val, ngx_js_request_class_id);
         return JS_NewBool(ctx, op != NULL && op->responded);
+
+    case 26: /* ctx — persistent per-request plain object (P10) */
+    {
+        ngx_js_req_ctx_t          *rctx;
+        ngx_pool_cleanup_t        *cln;
+        ngx_js_ctx_obj_cleanup_t  *cl;
+
+        rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+        if (rctx == NULL) {
+            return JS_ThrowInternalError(ctx, "req.ctx: no request context");
+        }
+
+        if (JS_IsUndefined(rctx->ctx_obj)) {
+            rctx->ctx_obj = JS_NewObject(ctx);
+            if (JS_IsException(rctx->ctx_obj)) {
+                return JS_EXCEPTION;
+            }
+
+            cln = ngx_pool_cleanup_add(r->pool,
+                                       sizeof(ngx_js_ctx_obj_cleanup_t));
+            if (cln == NULL) {
+                JS_FreeValue(ctx, rctx->ctx_obj);
+                rctx->ctx_obj = JS_UNDEFINED;
+                return JS_ThrowInternalError(ctx, "req.ctx: pool cleanup alloc failed");
+            }
+
+            cl          = cln->data;
+            cl->js_ctx  = ctx;
+            cl->rctx    = rctx;
+            cln->handler = ngx_js_ctx_obj_cleanup;
+        }
+
+        return JS_DupValue(ctx, rctx->ctx_obj);
+    }
 
     }
 
@@ -4295,6 +4348,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("requestLength", ngx_js_request_get, NULL,               23),
     JS_CGETSET_MAGIC_DEF("statusCode",    ngx_js_request_get, ngx_js_request_set, 24),
     JS_CGETSET_MAGIC_DEF("responded",    ngx_js_request_get, NULL,               25),
+    JS_CGETSET_MAGIC_DEF("ctx",          ngx_js_request_get, NULL,               26),
     JS_CFUNC_DEF("readBody",            0, ngx_js_request_read_body),
     JS_CFUNC_DEF("sendfile",            1, ngx_js_request_sendfile),
     JS_CFUNC_DEF("redirect",            1, ngx_js_request_redirect),
@@ -5439,6 +5493,7 @@ ngx_js_http_access_handler(ngx_http_request_t *r)
         if (rctx == NULL) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
+        rctx->ctx_obj = JS_UNDEFINED;
         ngx_http_set_ctx(r, rctx, ngx_js_http_module);
     }
 
@@ -5544,6 +5599,7 @@ ngx_js_content_handler(ngx_http_request_t *r)
         rctx->write_mode     = NGX_JS_WRITE_GLOBAL;
         rctx->read_mode      = NGX_JS_WRITE_GLOBAL;
         rctx->body_bufs_last = &rctx->body_bufs;
+        rctx->ctx_obj        = JS_UNDEFINED;
         ngx_http_set_ctx(r, rctx, ngx_js_http_module);
     }
     /* else: re-entry after P1 chain async suspend; p1_chain_done will be set */
