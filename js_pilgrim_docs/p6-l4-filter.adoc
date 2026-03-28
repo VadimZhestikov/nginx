@@ -1,0 +1,226 @@
+= JS-Pilgrim P6 — L4 Data Filter
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-27
+
+Raw TCP byte-stream filter on JS-managed HTTP listeners.  Intercepts the
+first block of bytes from the client *before* nginx begins HTTP protocol
+parsing, allowing custom framing, prefix stripping, or byte-level
+transformation.
+
+== Concept
+
+P6 hooks run between the OS `accept(2)` call and `ngx_http_init_connection`
+— at the same point as P4 accept hooks, but operating on *data* rather than
+metadata.
+
+....
+TCP SYN  →  OS accept()
+               ↓
+       [ACCEPT HOOKS]  listener.on('accept', fn(conn))  (P4)
+               ↓
+       [L4 DATA FILTER]  listener.addL4Filter(fn)       ← P6
+               ↓
+       ngx_http_init_connection
+               ↓
+       [ACCESS PHASE]  nginx.http.addHook / server.addHook  (P2)
+               ↓
+       [CONTENT PHASE]  location.addHook / handler  (P1)
+               ↓
+       [HEADER FILTER]  location.addResponseHook  (P3)
+               ↓
+       Client ← response
+....
+
+The filter receives the first chunk of client bytes as a `Uint8Array`.
+Yielded strings or `Uint8Array` values replace the bytes that nginx's HTTP
+parser will see.  The connection is rejected if the generator raises an
+exception or yields nothing and the HTTP parser has nothing to work with.
+
+== API
+
+=== `listener.addL4Filter(fn)`
+
+[source,javascript]
+----
+const listener = nginx.http.attach(sock);
+listener.addServer(srv);
+
+listener.addL4Filter(async function*(bytes) {
+    // bytes — Uint8Array of raw TCP bytes from the client
+    // yield string or Uint8Array — the transformed bytes
+    yield transform(bytes);
+});
+----
+
+[cols="1,3"]
+|===
+| Parameter | Description
+
+| `fn`
+| `async function*(bytes)` — called with the client's initial byte block.
+  Must yield the bytes that nginx's HTTP parser should see.
+
+| `bytes`
+| `Uint8Array` — the first block of raw bytes read from the client socket
+  (up to 8 KB).  For small requests that fit in a single TCP segment, this
+  contains the entire request.
+|===
+
+Returns `listener` for chaining.
+
+Multiple calls register multiple filters; they run in registration order,
+each filter's output becoming the next filter's input.
+
+=== Yield semantics
+
+[cols="1,3"]
+|===
+| `yield string`        | Bytes interpreted as UTF-8 / ASCII characters
+| `yield Uint8Array`    | Raw bytes copied verbatim
+| Return without yield  | No bytes emitted (empty input to next filter or
+                          HTTP parser — connection likely closes with 400)
+| `throw` / exception   | Connection closed, error logged
+|===
+
+=== Sync-only
+
+L4 filter generators must **not** contain `await`.  If a generator step
+returns a pending Promise (i.e. the body suspended at an `await`), nginx
+logs a warning and closes the connection.  Async I/O inside L4 filters is
+planned for a future step.
+
+=== Pre-fork only
+
+`listener.addL4Filter(fn)` must be called before fork (from a `js_source`
+script evaluated at init time).  Calling it from a worker throws an error.
+
+=== Relationship to P4 accept hooks
+
+P4 hooks run first (synchronously at accept, before any socket reads).
+P6 filters run after P4 hooks pass, once the first data block arrives.
+If a P4 hook calls `conn.reject()`, the P6 filter never runs.
+
+=== Server→client direction
+
+Only the **client→server** direction (inbound bytes before HTTP parsing)
+is filtered in P6.  Outbound filtering is planned for a later step.
+
+== Examples
+
+=== Passthrough
+
+[source,javascript]
+----
+listener.addL4Filter(async function*(bytes) {
+    yield bytes;  // forward unchanged
+});
+----
+
+=== Strip a custom binary prefix
+
+[source,javascript]
+----
+const PREFIX = 'MY-HEADER:';  // 10-byte prefix
+
+listener.addL4Filter(async function*(bytes) {
+    const s = String.fromCharCode.apply(null, Array.from(bytes));
+    if (s.startsWith(PREFIX)) {
+        yield s.slice(PREFIX.length);
+    } else {
+        yield s;
+    }
+});
+----
+
+=== Traffic logging
+
+[source,javascript]
+----
+listener.addL4Filter(async function*(bytes) {
+    nginx.log(nginx.INFO,
+              'l4 inbound ' + bytes.length + ' bytes from client');
+    yield bytes;
+});
+----
+
+=== Chaining two filters
+
+[source,javascript]
+----
+// Filter 1: log the raw bytes
+listener.addL4Filter(async function*(bytes) {
+    nginx.log(nginx.DEBUG, 'raw: ' + bytes.length + ' bytes');
+    yield bytes;
+});
+
+// Filter 2: strip a 4-byte length prefix
+listener.addL4Filter(async function*(bytes) {
+    // Skip first 4 bytes (custom framing header)
+    yield bytes.slice(4);
+});
+----
+
+== Limitations (P6)
+
+* **Client→server only**: only inbound bytes (before HTTP parsing) are
+  filtered.  Server→client (response bytes) filtering is not yet supported.
+* **First block only**: only the bytes available in the first `recv()` call
+  (~8 KB) are filtered.  Large requests sent across multiple TCP segments
+  will have subsequent bytes pass through unfiltered.
+* **Sync generators only**: `await` inside the generator body is not
+  supported.  The generator must complete synchronously on each `next()`
+  call.
+* **JS-managed listeners only**: works on listeners created with
+  `nginx.http.attach(sock)`.  Regular nginx `listen` directive sockets are
+  not supported.
+* **Pre-fork only**: filters must be registered before workers are forked.
+* **String/Uint8Array yields**: yield values are coerced to bytes via
+  string conversion or typed-array byte extraction.  Other JS types are
+  ignored.
+
+== Implementation Notes
+
+Filter functions are stored in a global `__ngx_l4_filters__` JS array
+(GC root, parallel to `__ngx_accept_hooks__`).  Their uint32 indices are
+stored in `ngx_js_http_listener_state_t.l4_filters[]`.
+
+When L4 filters are registered, `ls->handler` is set to
+`ngx_js_http_accept_handler` (same as P4).  After P4 accept hooks complete
+without rejection, the handler checks `st->n_l4_filters > 0` and redirects
+the read event to `ngx_js_l4_read_handler`.
+
+`ngx_js_l4_read_handler`:
+1. Does a single `c->recv()` into an 8 KB stack buffer.
+2. Passes the bytes to `ngx_js_l4_run_filters()`.
+3. Calls `ngx_http_init_connection(c)`.
+
+`ngx_js_l4_run_filters()`:
+1. For each filter: wraps current bytes as `Uint8Array`, calls `fn(bytes)`
+   to get the generator, drives it via the `JS_PromiseState` / `gen.next()`
+   loop, collecting yielded values.
+2. Allocates `c->buffer` with the filtered output (empty initially).
+3. Stores state in `c->buffer->tag` as `ngx_js_l4_state_t`.
+4. Replaces `c->recv` with `ngx_js_l4_recv`.
+5. Sets `c->read->ready = 1`.
+
+`ngx_js_l4_recv` reads from the `ngx_js_l4_state_t` buffer first.  When
+the pre-filtered bytes are exhausted, it restores the original `c->recv`
+for subsequent socket reads.
+
+== Test Coverage
+
+`t/js_pilgrim_p6_l4_filter.t` (12 explicit + 2 auto = 14 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2   | "FILT:" prefix stripped; nginx receives valid HTTP request
+| 3–4   | Second connection: filter counter increments to 2
+| 5–6   | No prefix: filter still runs, bytes passed through unchanged
+| 7–8   | Port 8080 (no L4 filter): normal HTTP unaffected
+| 9–10  | Plain HTTP request through filtered port: 200 OK
+|===

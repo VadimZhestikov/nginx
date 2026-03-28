@@ -110,10 +110,11 @@ a browser DevTools tab).
   (`async function*(body, req)`).  Body is buffered; generator yields zero or
   more output chunks and may `await` between yields.
 
-| P6
-| L4 data filter
-| `listener.addL4Filter(asyncGenFn)` — raw bidirectional TCP byte-stream filter.
-  Both client→server and server→client directions as async iterables.
+| P6 ✓
+| <<p6-l4-filter.adoc#,L4 data filter>>
+| `listener.addL4Filter(asyncGenFn)` — raw TCP byte-stream filter on
+  JS-managed listeners.  Client→server direction: intercepts bytes before
+  HTTP parsing.  Generator receives `Uint8Array`, yields transformed bytes.
 
 | P7
 | Module packaging

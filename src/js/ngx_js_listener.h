@@ -32,6 +32,7 @@
 #define NGX_JS_LISTENER_REG_MAX      32
 #define NGX_JS_LISTENER_VSERVERS_MAX 32
 #define NGX_JS_ACCEPT_HANDLERS_MAX   8
+#define NGX_JS_L4_FILTERS_MAX        8
 
 
 /*
@@ -71,6 +72,10 @@ typedef struct {
     uint32_t                  accept_handlers[NGX_JS_ACCEPT_HANDLERS_MAX];
     ngx_uint_t                n_accept_handlers;
     ngx_listening_t          *ls;                 /* back-pointer, set on activate */
+
+    /* L4 data filters — JS-Pilgrim P6 */
+    uint32_t                  l4_filters[NGX_JS_L4_FILTERS_MAX];
+    ngx_uint_t                n_l4_filters;
 } ngx_js_http_listener_state_t;
 
 
