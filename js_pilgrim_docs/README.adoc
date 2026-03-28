@@ -156,6 +156,61 @@ a browser DevTools tab).
   all request-phase handlers and timer callbacks.  Zone registered via
   `ngx_shared_memory_add` in HTTP postconfiguration; init callback zeroes
   on first start, preserves entries across hot-reload.
+
+| P12
+| L4 full-stream + async
+| Upgrade `listener.addL4Filter` to a true async generator: filter is
+  resumed on every read event (not just the first), and `await` is
+  permitted inside the generator.  Requires per-connection
+  `ngx_js_l4_state_t` holding the live generator object; each recv event
+  drives the next iteration.
+
+| P13
+| L4 server→client direction
+| Filter bytes flowing from nginx to the client at the raw TCP level —
+  the outbound direction that P6/P12 leave untouched.  Hooks into
+  `c->send` / `c->send_chain`; the L4 state struct gains an outbound
+  buffer and send chain.
+
+| P14
+| Upstream JS filters
+| `location.addUpstreamFilter(asyncGenFn)` (response) and
+  `location.addUpstreamRequestFilter(asyncGenFn)` (request body) — JS
+  generators hooked into `ngx_http_upstream_t` input/output filter chain.
+  Completes the top-level architecture diagram layer that P5 covers only
+  at HTTP level.
+
+| P15
+| P5 multi-filter composition
+| Allow multiple `addBodyFilter` calls on the same location; each
+  filter's output becomes the next filter's input.  `body_filters`
+  becomes an ordered array; the runner chains them in sequence.
+
+| P16
+| Post-fork plugin loading (nginx.use hot reload)
+| `nginx.use(path, config)` callable from a worker request handler —
+  loads a plugin into the current worker's runtime without a full nginx
+  reload.  A broadcast mechanism propagates the load to all workers.
+
+| P17
+| Standard listen socket support for P4/P6
+| `server.on('accept', fn)` and `server.addL4Filter(fn)` on the existing
+  `NginxServer` COM object, so accept hooks and L4 filters work on
+  sockets declared with the `listen` directive — not only JS-created
+  listeners.
+
+| P18
+| Online package registry for nginx.use
+| `nginx.use('vendor/plugin@1.2.3', config)` — resolve from a central
+  registry.  Implemented as a CLI tool (`ngxjs install`) that downloads
+  to a local cache; the JS runtime stays network-free.
+
+| P19
+| Admin shell
+| Browser-based admin UI using `nginx.repl` and WebSocket.  Each
+  installed package contributes a panel (analogous to a DevTools tab).
+  Provides runtime visibility into loaded plugins, hook chains, shared
+  state, and live log streaming.
 |===
 
 == Hook Cancellation Model
