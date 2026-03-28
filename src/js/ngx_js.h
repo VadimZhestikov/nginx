@@ -60,7 +60,8 @@ struct ngx_js_async_ctx_s {
     JSValue                     req_obj;   /* DupValue'd from content handler */
     JSValue                     promise;   /* outer handler Promise */
     ngx_js_async_ctx_t         *next;      /* intrusive list in async_pending */
-    unsigned                    is_hook:1; /* 1 = suspended in hook chain */
+    unsigned                    is_hook:1;    /* 1 = suspended in P1 hook chain */
+    unsigned                    is_p2_hook:1; /* 1 = suspended in P2 access hook */
 };
 
 
@@ -170,6 +171,7 @@ typedef struct ngx_js_module_snap_s {
 typedef struct {
     unsigned               loc_conf_snapshotted:1;  /* r->loc_conf array copied */
     unsigned               core_clcf_snapshotted:1; /* core loc_conf deep-copied */
+    unsigned               p1_chain_done:1;         /* P1 hook chain completed   */
     uint32_t               write_mode;  /* NGX_JS_WRITE_GLOBAL by default */
     uint32_t               read_mode;   /* NGX_JS_WRITE_GLOBAL by default */
     ngx_js_module_snap_t  *snapped;     /* per-module snapshot linked list */
@@ -180,7 +182,6 @@ typedef struct {
     ngx_chain_t           *stream_out;     /* sendBuffer accumulator (streaming)    */
     ngx_chain_t          **stream_out_last;/* tail of stream_out                    */
     void                  *repl;           /* ngx_js_repl_conn_t* when hijacked     */
-    ngx_uint_t             hook_idx;       /* next hook index to run; 0 on first entry */
 } ngx_js_req_ctx_t;
 
 

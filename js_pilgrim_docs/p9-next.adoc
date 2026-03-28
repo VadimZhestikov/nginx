@@ -1,0 +1,175 @@
+= JS-Pilgrim P9 — next() / Middleware Wrapping
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-28
+
+P9 adds a `next` argument to every hook callback.  Calling `next()` runs
+the remaining hooks in the chain and returns a Promise that resolves when
+they complete.  Hooks that do not call `next()` auto-advance (backward-
+compatible with P1–P8 code).
+
+== API
+
+[source,javascript]
+----
+// P1 — location hook
+location.addHook(async function(req, next) {
+    // pre-processing
+    await next();          // run remaining location hooks
+    // post-processing (runs before the content handler)
+});
+
+// P2 — global hook
+nginx.http.addHook(async function(req, next) {
+    // pre-processing
+    await next();          // run remaining P2 hooks (global + server)
+    // post-processing (runs before the content phase)
+});
+
+// P2 — server hook
+nginx.http.servers[0].addHook(async function(req, next) {
+    await next();
+});
+----
+
+The three outcomes from P2 still apply to each hook:
+
+[cols="1,3"]
+|===
+| Outcome | Behaviour
+
+| Return normally (no `req.respond()`)
+| Hook passes; auto-advance to the next hook.
+
+| `req.respond(status, headers, body)`
+| Chain stops; remaining hooks and the content handler are skipped.
+
+| `throw` (or rejected Promise)
+| nginx logs the error and sends a 500 response.
+|===
+
+== Execution Order
+
+The chain is a Koa-style middleware stack.  For a P1 location with two
+hooks and a handler:
+
+[source]
+----
+hook A (calls next())
+  hook B (calls next())
+    [no more hooks — next() resolves]
+  hook B post-next code
+hook A post-next code
+[chain settles]
+content handler runs
+----
+
+*Key point*: post-`next()` code inside a P1 or P2 hook runs **before** the
+content handler, not after.  The content handler (P1) or content phase (P2)
+runs only once the entire chain Promise has settled.
+
+If no handler has been registered for the location, `next()` resolves when
+all remaining hooks pass.
+
+== Backward Compatibility
+
+A hook that does not call `next()` is treated as if it called `next()`
+and returned — the chain auto-advances to the next hook.  Existing P1–P8
+hook code requires no modification.
+
+[source,javascript]
+----
+// Old-style (P1) — still works unchanged
+location.addHook(function(req) {
+    req.respond(401, {}, 'Unauthorized\n');
+});
+
+// New-style (P9) — explicit next() for wrapping
+location.addHook(async function(req, next) {
+    var t0 = Date.now();
+    await next();
+    nginx.log('hook took ' + (Date.now() - t0) + 'ms');
+});
+----
+
+== Implementation Notes
+
+=== Chain runner (`__ngx_hook_chain__`)
+
+A JS IIFE evaluated once per JSContext in
+`ngx_js_request_install_proto` and stored as `__ngx_hook_chain__` on the
+global object:
+
+[source,javascript]
+----
+(function() { 'use strict';
+  function run(h, i, r) {
+    if (i >= h.length) return;
+    var nc = false, nr;
+    function next() {
+      if (nc) return nr !== undefined ? nr : Promise.resolve();
+      nc = true;
+      nr = run(h, i+1, r);
+      return nr !== undefined ? nr : Promise.resolve();
+    }
+    var res;
+    try { res = h[i](r, next); } catch(e) { return Promise.reject(e); }
+    function adv() {
+      if (r.responded) return;
+      if (!nc) return run(h, i+1, r);   // auto-advance
+      return nr;
+    }
+    if (res && typeof res.then === 'function')
+      return res.then(adv, function(e) { return Promise.reject(e); });
+    return adv();
+  }
+  return function(h, r) { return run(h, 0, r); };
+})()
+----
+
+Each hook receives `(req, next)`.  If the hook calls `next()` more than
+once the cached result (`nr`) is returned — idempotent.  If it does not
+call `next()`, `adv()` auto-advances.
+
+=== `ngx_js_run_chain`
+
+Replaces the old per-hook `ngx_js_run_hook_fn` loop.  Builds a JS Array
+of hook functions, calls the chain runner, drains microtasks, then inspects
+the resulting Promise:
+
+* `undefined` or FULFILLED → `NGX_JS_CHAIN_DONE` / `NGX_JS_CHAIN_RESPONDED`
+* PENDING → `NGX_JS_CHAIN_SUSPENDED` (actx queued, `r->main->count++`)
+* REJECTED → `NGX_JS_CHAIN_ERROR`
+
+=== `req.responded` (magic=25)
+
+A read-only JS property on `NginxRequest` that exposes
+`req_op->responded`.  The chain runner reads this after every hook to
+detect early termination without a C callback.
+
+=== `p1_chain_done` flag
+
+`ngx_js_req_ctx_t.p1_chain_done:1` is set in `ngx_js_async_check` when
+the P1 chain Promise fulfils (without having responded).
+`ngx_js_content_handler` checks this flag on re-entry to skip the hook
+phase and proceed directly to the content handler.
+
+== Test Coverage
+
+`t/js_pilgrim_p9_next.t` (20 explicit + 2 auto = 22 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–4  | P1 sync hook with `next()`: pre:1,post:1 — post code runs before handler
+| 5–6  | P1 hook without `next()`: auto-advances, handler reached
+| 7–8  | P1 async wrap: A→B→D→handler(C) confirms execution order
+| 9–12 | P2 global sync hook with `next()`: same semantics as P1
+| 13–14 | P2 global hook without `next()`: auto-advances to content phase
+| 15–16 | P2 global async wrap: same ABDC order
+| 17–18 | Repeated requests: state correctly reset
+| 19–22 | Auto: nginx started, no alerts in error.log
+|===

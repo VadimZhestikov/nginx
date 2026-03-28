@@ -129,6 +129,16 @@ a browser DevTools tab).
   suspended (count++) while the Promise is pending; resumed when it
   settles.  Throwing rejects with 500; `req.respond()` short-circuits the
   content handler exactly as in the sync case.
+
+| P9 ✓
+| <<p9-next.adoc#,next() / middleware wrapping>>
+| All hook callbacks now receive a second argument `next`.  Calling
+  `next()` runs the remaining hooks and returns a Promise; code after
+  `await next()` in a P1/P2 hook executes before the content handler.
+  Hooks that do not call `next()` auto-advance (backward-compatible).
+  Implemented as a Koa-style JS IIFE (`__ngx_hook_chain__`) evaluated once
+  per context.  `req.responded` (read-only) bridges JS/C for short-circuit
+  detection.  `ngx_js_run_chain` replaces the old per-hook C loop.
 |===
 
 == Hook Cancellation Model
