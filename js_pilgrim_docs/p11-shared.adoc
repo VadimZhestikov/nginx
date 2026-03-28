@@ -1,0 +1,173 @@
+= JS-Pilgrim P11 — nginx.shared: Cross-Worker Shared Key/Value Store
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-28
+
+P11 adds `nginx.shared`, a plain object with five methods backed by a
+fixed-size shared-memory zone.  Every nginx worker process reads and writes
+the same region of memory, so state set in one worker is immediately visible
+to all others.
+
+== API
+
+[source,javascript]
+----
+// set a value (any worker)
+nginx.shared.set('session:abc', JSON.stringify({ uid: 42 }));
+
+// read it back (any worker)
+var raw = nginx.shared.get('session:abc');  // → string or undefined
+
+// remove a key
+var deleted = nginx.shared.delete('session:abc');  // → true | false
+
+// list all live keys
+var ks = nginx.shared.keys();  // → string[]
+
+// atomic increment / decrement
+var n = nginx.shared.incr('hits');         // → 1 (new key starts at 0)
+var m = nginx.shared.incr('hits', 5);     // → 6
+var p = nginx.shared.incr('hits', -3);    // → 3
+----
+
+=== Method reference
+
+[cols="1,1,4"]
+|===
+| Method | Returns | Behaviour
+
+| `get(key)`
+| `string \| undefined`
+| Returns the stored string value, or `undefined` if the key does not exist.
+
+| `set(key, val)`
+| `undefined`
+| Stores `val` for `key`.  Creates the entry if `key` is new; overwrites if
+  it already exists.  Throws `RangeError` if key > 127 chars or value > 511
+  chars.  Throws `InternalError` if the store is full (256 entries).
+
+| `delete(key)`
+| `boolean`
+| Removes `key` from the store.  Returns `true` if the key existed, `false`
+  otherwise.
+
+| `keys()`
+| `string[]`
+| Returns an unsorted array of all live keys.
+
+| `incr(key[, delta=1])`
+| `number`
+| Parses the current value as a base-10 integer, adds `delta` (default 1),
+  stores and returns the result.  If `key` does not exist it is created with
+  value `delta`.  Non-numeric existing values are treated as 0.
+|===
+
+== When is nginx.shared available?
+
+`nginx.shared` methods operate on a shared-memory zone that is mapped **after**
+config parsing (`ngx_shared_memory_add` is called from `postconfiguration`).
+They are safe to call from:
+
+* request-phase handlers and hooks (P1, P2, P3)
+* timer callbacks (`nginx.setTimeout`)
+
+They will throw `InternalError` if called at config-evaluation time (i.e. from
+top-level JS code that runs during `init_conf`).
+
+== Limits
+
+[cols="1,1"]
+|===
+| Limit | Value
+
+| Maximum key length   | 127 characters
+| Maximum value length | 511 characters
+| Maximum entries      | 256
+| Total zone size      | ≈ 163 kB
+|===
+
+These constants are defined in `ngx_js.h`:
+
+[source,c]
+----
+#define NGX_JS_SHARED_KEY_LEN   128
+#define NGX_JS_SHARED_VAL_LEN   512
+#define NGX_JS_SHARED_CAPACITY  256
+----
+
+== Concurrency
+
+All five methods acquire a `ngx_spinlock` before reading or writing the entry
+array.  The lock covers the entire operation so `incr` is atomic — no
+application-level locking is required.
+
+== Implementation
+
+=== Data layout
+
+The zone is a single flat allocation:
+
+[source]
+----
+[ ngx_js_shared_hdr_t ][ ngx_js_shared_entry_t × capacity ]
+----
+
+`ngx_js_shared_hdr_t`:
+
+[source,c]
+----
+typedef struct {
+    ngx_atomic_t  lock;      /* spinlock — 0 = free */
+    ngx_uint_t    count;     /* number of used entries */
+    ngx_uint_t    capacity;  /* = NGX_JS_SHARED_CAPACITY */
+} ngx_js_shared_hdr_t;
+----
+
+`ngx_js_shared_entry_t`:
+
+[source,c]
+----
+typedef struct {
+    u_char  used;
+    char    key[NGX_JS_SHARED_KEY_LEN];
+    char    val[NGX_JS_SHARED_VAL_LEN];
+} ngx_js_shared_entry_t;
+----
+
+=== Zone registration
+
+`ngx_js_http_postconfiguration` calls `ngx_shared_memory_add(cf, "ngx_js_shared",
+NGX_JS_SHARED_SIZE, &ngx_js_http_module)` and stores the result in
+`ngx_js_conf_t.shared_zone`.  The `init` callback (`ngx_js_shared_zone_init`)
+zeroes the zone on first startup; on hot-reload it preserves existing entries
+(`data != NULL` path).
+
+=== JS binding
+
+Five C functions (`ngx_js_shared_fn_get/set/delete/keys/incr`) are attached to
+a plain `nginx.shared` object in `ngx_js_com_init`.  Each function calls
+`ngx_js_shared_get_hdr` which validates that the zone is mapped before
+acquiring the spinlock.
+
+== Test Coverage
+
+`t/js_pilgrim_p11_shared.t` (18 explicit + 2 auto = 20 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2   | `set` key, 200 OK
+| 3–4   | `get` the same key — value matches
+| 5     | `get` a missing key — returns `"undefined"`
+| 6–7   | `delete` existing key returns `true`
+| 8     | `get` deleted key — gone
+| 9     | `delete` missing key returns `false`
+| 10–12 | `keys()` lists alpha and beta after two sets
+| 13–14 | `incr` creates counter (→ 1)
+| 15    | `incr` with delta 5 (→ 6)
+| 16    | `incr` with delta −3 (→ 3)
+| 17–20 | Auto: nginx started, no alerts/sanitizer errors
+|===

@@ -485,10 +485,33 @@ static void       ngx_js_p2_hook_resume(ngx_js_worker_t *w,
 
 
 static ngx_int_t
+ngx_js_shared_zone_init(ngx_shm_zone_t *shm_zone, void *data)
+{
+    ngx_js_shared_hdr_t  *hdr;
+
+    /* data != NULL means hot-reload: keep existing contents */
+    if (data) {
+        shm_zone->data = data;
+        return NGX_OK;
+    }
+
+    hdr = (ngx_js_shared_hdr_t *) shm_zone->shm.addr;
+    ngx_memzero(hdr, NGX_JS_SHARED_SIZE);
+    hdr->capacity = NGX_JS_SHARED_CAPACITY;
+
+    shm_zone->data = hdr;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
 ngx_js_http_postconfiguration(ngx_conf_t *cf)
 {
     ngx_http_core_main_conf_t  *cmcf;
     ngx_http_handler_pt        *h;
+    ngx_js_conf_t              *jcf;
+    ngx_str_t                   zone_name;
 
     /* Register access-phase handler for P2 global + server hooks */
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
@@ -506,6 +529,21 @@ ngx_js_http_postconfiguration(ngx_conf_t *cf)
 
     ngx_js_next_body_filter = ngx_http_top_body_filter;
     ngx_http_top_body_filter = ngx_js_body_filter;
+
+    /* P11: allocate nginx.shared zone */
+    jcf = (ngx_js_conf_t *) ngx_get_conf(cf->cycle->conf_ctx, ngx_js_module);
+
+    ngx_str_set(&zone_name, "ngx_js_shared");
+
+    jcf->shared_zone = ngx_shared_memory_add(cf, &zone_name,
+                                              NGX_JS_SHARED_SIZE,
+                                              &ngx_js_http_module);
+    if (jcf->shared_zone == NULL) {
+        return NGX_ERROR;
+    }
+
+    jcf->shared_zone->init = ngx_js_shared_zone_init;
+    jcf->shared_zone->data = NULL;
 
     return NGX_OK;
 }

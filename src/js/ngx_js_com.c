@@ -1691,6 +1691,347 @@ ngx_js_install(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* P11 — nginx.shared: cross-worker shared key/value store              */
+/* ------------------------------------------------------------------ */
+
+static ngx_js_shared_hdr_t *
+ngx_js_shared_get_hdr(JSContext *ctx)
+{
+    ngx_js_worker_t  *w;
+    ngx_js_conf_t    *jcf;
+
+    w = JS_GetContextOpaque(ctx);
+
+    if (w == NULL || ngx_cycle->conf_ctx == NULL) {
+        JS_ThrowInternalError(ctx, "nginx.shared not available at config time");
+        return NULL;
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+
+    if (jcf->shared_zone == NULL || jcf->shared_zone->data == NULL) {
+        JS_ThrowInternalError(ctx, "nginx.shared zone not initialised");
+        return NULL;
+    }
+
+    return (ngx_js_shared_hdr_t *) jcf->shared_zone->data;
+}
+
+
+static JSValue
+ngx_js_shared_fn_get(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    const char             *key;
+    ngx_uint_t              i;
+    JSValue                 result;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "shared.get(key): key must be a string");
+    }
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    key = JS_ToCString(ctx, argv[0]);
+    if (key == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    entries = (ngx_js_shared_entry_t *)(hdr + 1);
+
+    ngx_spinlock(&hdr->lock, 1, 2048);
+
+    result = JS_UNDEFINED;
+
+    for (i = 0; i < hdr->capacity; i++) {
+        if (entries[i].used
+            && ngx_strcmp(entries[i].key, key) == 0)
+        {
+            result = JS_NewString(ctx, entries[i].val);
+            break;
+        }
+    }
+
+    ngx_unlock(&hdr->lock);
+
+    JS_FreeCString(ctx, key);
+
+    return result;
+}
+
+
+static JSValue
+ngx_js_shared_fn_set(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    const char             *key, *val;
+    ngx_uint_t              i, free_slot;
+    int                     found;
+
+    if (argc < 2 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "shared.set(key, val): key must be a string");
+    }
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    key = JS_ToCString(ctx, argv[0]);
+    if (key == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    val = JS_ToCString(ctx, argv[1]);
+    if (val == NULL) {
+        JS_FreeCString(ctx, key);
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_strlen(key) >= NGX_JS_SHARED_KEY_LEN) {
+        JS_FreeCString(ctx, val);
+        JS_FreeCString(ctx, key);
+        return JS_ThrowRangeError(ctx, "shared.set: key too long (max %d)",
+                                  NGX_JS_SHARED_KEY_LEN - 1);
+    }
+
+    if (ngx_strlen(val) >= NGX_JS_SHARED_VAL_LEN) {
+        JS_FreeCString(ctx, val);
+        JS_FreeCString(ctx, key);
+        return JS_ThrowRangeError(ctx, "shared.set: value too long (max %d)",
+                                  NGX_JS_SHARED_VAL_LEN - 1);
+    }
+
+    entries = (ngx_js_shared_entry_t *)(hdr + 1);
+
+    ngx_spinlock(&hdr->lock, 1, 2048);
+
+    found = 0;
+    free_slot = (ngx_uint_t) -1;
+
+    for (i = 0; i < hdr->capacity; i++) {
+        if (entries[i].used) {
+            if (ngx_strcmp(entries[i].key, key) == 0) {
+                ngx_cpystrn((u_char *) entries[i].val, (u_char *) val,
+                            NGX_JS_SHARED_VAL_LEN);
+                found = 1;
+                break;
+            }
+        } else if (free_slot == (ngx_uint_t) -1) {
+            free_slot = i;
+        }
+    }
+
+    if (!found) {
+        if (free_slot == (ngx_uint_t) -1) {
+            ngx_unlock(&hdr->lock);
+            JS_FreeCString(ctx, val);
+            JS_FreeCString(ctx, key);
+            return JS_ThrowInternalError(ctx, "nginx.shared: store full");
+        }
+
+        entries[free_slot].used = 1;
+        ngx_cpystrn((u_char *) entries[free_slot].key, (u_char *) key,
+                    NGX_JS_SHARED_KEY_LEN);
+        ngx_cpystrn((u_char *) entries[free_slot].val, (u_char *) val,
+                    NGX_JS_SHARED_VAL_LEN);
+        hdr->count++;
+    }
+
+    ngx_unlock(&hdr->lock);
+
+    JS_FreeCString(ctx, val);
+    JS_FreeCString(ctx, key);
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_shared_fn_delete(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    const char             *key;
+    ngx_uint_t              i;
+    int                     deleted;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "shared.delete(key): key must be a string");
+    }
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    key = JS_ToCString(ctx, argv[0]);
+    if (key == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    entries = (ngx_js_shared_entry_t *)(hdr + 1);
+
+    ngx_spinlock(&hdr->lock, 1, 2048);
+
+    deleted = 0;
+
+    for (i = 0; i < hdr->capacity; i++) {
+        if (entries[i].used
+            && ngx_strcmp(entries[i].key, key) == 0)
+        {
+            ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
+            hdr->count--;
+            deleted = 1;
+            break;
+        }
+    }
+
+    ngx_unlock(&hdr->lock);
+
+    JS_FreeCString(ctx, key);
+
+    return JS_NewBool(ctx, deleted);
+}
+
+
+static JSValue
+ngx_js_shared_fn_keys(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    JSValue                 arr;
+    ngx_uint_t              i, idx;
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    entries = (ngx_js_shared_entry_t *)(hdr + 1);
+
+    arr = JS_NewArray(ctx);
+    idx = 0;
+
+    ngx_spinlock(&hdr->lock, 1, 2048);
+
+    for (i = 0; i < hdr->capacity; i++) {
+        if (entries[i].used) {
+            JS_SetPropertyUint32(ctx, arr, idx++,
+                                 JS_NewString(ctx, entries[i].key));
+        }
+    }
+
+    ngx_unlock(&hdr->lock);
+
+    return arr;
+}
+
+
+static JSValue
+ngx_js_shared_fn_incr(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    const char             *key;
+    ngx_uint_t              i, free_slot;
+    int64_t                 delta, cur;
+    char                    buf[32];
+    int                     found;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "shared.incr(key[, delta]): key must be a string");
+    }
+
+    delta = 1;
+    if (argc >= 2 && !JS_IsUndefined(argv[1])) {
+        if (JS_ToInt64(ctx, &delta, argv[1]) < 0) {
+            return JS_EXCEPTION;
+        }
+    }
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    key = JS_ToCString(ctx, argv[0]);
+    if (key == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_strlen(key) >= NGX_JS_SHARED_KEY_LEN) {
+        JS_FreeCString(ctx, key);
+        return JS_ThrowRangeError(ctx, "shared.incr: key too long (max %d)",
+                                  NGX_JS_SHARED_KEY_LEN - 1);
+    }
+
+    entries = (ngx_js_shared_entry_t *)(hdr + 1);
+
+    ngx_spinlock(&hdr->lock, 1, 2048);
+
+    found = 0;
+    free_slot = (ngx_uint_t) -1;
+    cur = 0;
+
+    for (i = 0; i < hdr->capacity; i++) {
+        if (entries[i].used) {
+            if (ngx_strcmp(entries[i].key, key) == 0) {
+                cur = ngx_atoi((u_char *) entries[i].val,
+                               ngx_strlen(entries[i].val));
+                if (cur == NGX_ERROR) {
+                    cur = 0;
+                }
+                cur += delta;
+                ngx_snprintf((u_char *) entries[i].val,
+                             NGX_JS_SHARED_VAL_LEN - 1, "%l", cur);
+                entries[i].val[NGX_JS_SHARED_VAL_LEN - 1] = '\0';
+                found = 1;
+                break;
+            }
+        } else if (free_slot == (ngx_uint_t) -1) {
+            free_slot = i;
+        }
+    }
+
+    if (!found) {
+        if (free_slot == (ngx_uint_t) -1) {
+            ngx_unlock(&hdr->lock);
+            JS_FreeCString(ctx, key);
+            return JS_ThrowInternalError(ctx, "nginx.shared: store full");
+        }
+
+        cur = delta;
+        entries[free_slot].used = 1;
+        ngx_cpystrn((u_char *) entries[free_slot].key, (u_char *) key,
+                    NGX_JS_SHARED_KEY_LEN);
+        ngx_snprintf((u_char *) entries[free_slot].val,
+                     NGX_JS_SHARED_VAL_LEN - 1, "%l", cur);
+        entries[free_slot].val[NGX_JS_SHARED_VAL_LEN - 1] = '\0';
+        hdr->count++;
+    }
+
+    ngx_unlock(&hdr->lock);
+
+    JS_FreeCString(ctx, key);
+
+    (void) buf;  /* silence unused-variable warning */
+
+    return JS_NewInt64(ctx, cur);
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -1894,6 +2235,25 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     /* nginx.install(plugin[, config]) — JS-Pilgrim P7: inline plugin caller */
     JS_SetPropertyStr(ctx, nginx_obj, "install",
                       JS_NewCFunction(ctx, ngx_js_install, "install", 1));
+
+    /* nginx.shared — JS-Pilgrim P11: cross-worker key/value store */
+    {
+        JSValue  shared_obj;
+
+        shared_obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, shared_obj, "get",
+                          JS_NewCFunction(ctx, ngx_js_shared_fn_get, "get", 1));
+        JS_SetPropertyStr(ctx, shared_obj, "set",
+                          JS_NewCFunction(ctx, ngx_js_shared_fn_set, "set", 2));
+        JS_SetPropertyStr(ctx, shared_obj, "delete",
+                          JS_NewCFunction(ctx, ngx_js_shared_fn_delete,
+                                          "delete", 1));
+        JS_SetPropertyStr(ctx, shared_obj, "keys",
+                          JS_NewCFunction(ctx, ngx_js_shared_fn_keys, "keys", 0));
+        JS_SetPropertyStr(ctx, shared_obj, "incr",
+                          JS_NewCFunction(ctx, ngx_js_shared_fn_incr, "incr", 1));
+        JS_SetPropertyStr(ctx, nginx_obj, "shared", shared_obj);
+    }
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
 

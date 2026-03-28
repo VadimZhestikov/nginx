@@ -148,6 +148,14 @@ a browser DevTools tab).
   on first access; freed via pool cleanup when the request ends.
   Implemented as a C-level `JSValue ctx_obj` slot in `ngx_js_req_ctx_t`
   with a `ngx_pool_cleanup_add` finalizer.
+
+| P11 ✓
+| <<p11-shared.adoc#,nginx.shared — cross-worker key/value store>>
+| `nginx.shared.get/set/delete/keys/incr` — flat fixed-size shared-memory
+  zone (256 entries, 163 kB) protected by `ngx_spinlock`.  Available in
+  all request-phase handlers and timer callbacks.  Zone registered via
+  `ngx_shared_memory_add` in HTTP postconfiguration; init callback zeroes
+  on first start, preserves entries across hot-reload.
 |===
 
 == Hook Cancellation Model

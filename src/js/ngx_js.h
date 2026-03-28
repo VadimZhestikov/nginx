@@ -44,7 +44,39 @@ typedef struct {
     void                *worker;          /* ngx_js_worker_t* after fork      */
     ngx_js_sw_state_t   *sw_list;        /* linked list of SharedWorker states */
     JSValue              master_handlers; /* {event:[fn,...]} — nginx.on() registry */
+    ngx_shm_zone_t      *shared_zone;    /* P11: nginx.shared memory zone    */
 } ngx_js_conf_t;
+
+
+/*
+ * P11 — nginx.shared: cross-worker shared key/value store.
+ *
+ * The zone is a flat array of fixed-size entries preceded by a header.
+ * All cross-worker access is protected by an ngx_atomic spinlock.
+ *
+ * Layout inside the shared memory zone:
+ *   [ngx_js_shared_hdr_t][ngx_js_shared_entry_t * capacity]
+ */
+
+#define NGX_JS_SHARED_KEY_LEN   128
+#define NGX_JS_SHARED_VAL_LEN   512
+#define NGX_JS_SHARED_CAPACITY  256
+#define NGX_JS_SHARED_SIZE      \
+    (sizeof(ngx_js_shared_hdr_t) \
+     + NGX_JS_SHARED_CAPACITY * sizeof(ngx_js_shared_entry_t))
+
+typedef struct {
+    u_char  used;
+    char    key[NGX_JS_SHARED_KEY_LEN];
+    char    val[NGX_JS_SHARED_VAL_LEN];
+} ngx_js_shared_entry_t;
+
+typedef struct {
+    ngx_atomic_t  lock;
+    ngx_uint_t    count;     /* number of used entries */
+    ngx_uint_t    capacity;  /* total slots (= NGX_JS_SHARED_CAPACITY) */
+    /* ngx_js_shared_entry_t entries[capacity] follow immediately */
+} ngx_js_shared_hdr_t;
 
 
 /*
