@@ -116,10 +116,11 @@ a browser DevTools tab).
   JS-managed listeners.  Client→server direction: intercepts bytes before
   HTTP parsing.  Generator receives `Uint8Array`, yields transformed bytes.
 
-| P7
-| Module packaging
-| `nginx.use(name, config)` / `nginx.install(plugin)` API.  Package manifest
-  (`package.json` with `ngxjs` key), local resolution, online registry.
+| P7 ✓
+| <<p7-module.adoc#,Module packaging>>
+| `nginx.use(path, config?)` / `nginx.install(plugin, config?)` API.
+  Directory-based packages with `package.json` (`ngxjs.main` entry),
+  inline function/object plugins, `nginx.pluginConfig` config injection.
 |===
 
 == Hook Cancellation Model

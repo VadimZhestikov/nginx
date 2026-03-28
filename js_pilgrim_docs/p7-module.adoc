@@ -1,0 +1,252 @@
+= JS-Pilgrim P7 — Module Packaging
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-27
+
+JavaScript plugin packages for NGINX JS.  A plugin is either a directory on
+the local filesystem (loaded with `nginx.use`) or an inline JS object or
+function (loaded with `nginx.install`).
+
+== Concept
+
+Plugins extend the NGINX JS runtime by calling the same COM APIs that
+`js_source` scripts use — registering hooks, setting location handlers,
+configuring upstreams, and so on.  The packaging API provides two entry
+points:
+
+[cols="1,3"]
+|===
+| `nginx.use(path, config?)`     | Load a plugin from the filesystem
+| `nginx.install(plugin, config?)` | Install an in-process plugin object or function
+|===
+
+Both APIs are **pre-fork only**: they must be called from a `js_source`
+script that runs during `init_conf` (before workers are forked).  Calling
+them from a request handler throws an error.
+
+== API
+
+=== `nginx.use(path[, config])`
+
+Load a plugin package from the local filesystem.
+
+[source,javascript]
+----
+nginx.use('/opt/plugins/auth-guard', { secret: 'tok123' });
+----
+
+[cols="1,3"]
+|===
+| Parameter | Description
+
+| `path`
+| String — directory path.  May be absolute or relative to `nginx.cycle.prefix`.
+
+| `config`
+| Optional JS value exposed as `nginx.pluginConfig` before the plugin is
+  evaluated.  Defaults to `{}`.
+|===
+
+Returns `nginx` for chaining:
+
+[source,javascript]
+----
+nginx
+  .use('/opt/plugins/auth-guard',  { secret: 'tok123' })
+  .use('/opt/plugins/rate-limiter', { rps: 100 });
+----
+
+==== Entry-point resolution
+
+`nginx.use` looks for a plugin entry point in this order:
+
+1. Read `<path>/package.json` if it exists.
+2. If `package.json` has a top-level `ngxjs` object with a `main` key,
+   use `<path>/<ngxjs.main>` as the entry file.
+3. Otherwise use `<path>/index.js`.
+
+If `package.json` is absent the directory is still a valid plugin —
+`nginx.use` silently falls back to `index.js`.
+
+==== `package.json` format
+
+Only the `ngxjs` key is read; all other fields are ignored.
+
+[source,json]
+----
+{
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "ngxjs": {
+    "main": "src/plugin.js"
+  }
+}
+----
+
+==== Plugin script evaluation
+
+The entry file is evaluated as an **ES module** (same as `js_source` files).
+`nginx.pluginConfig` is set to the `config` argument before evaluation, so
+the plugin can read it at the top level:
+
+[source,javascript]
+----
+// src/plugin.js
+var cfg = nginx.pluginConfig;   // { secret: 'tok123' }
+
+nginx.http.servers[0].locations[0].handler = function(r) {
+    if (r.headers['x-token'] !== cfg.secret) {
+        r.respond(401, {}, 'Unauthorized\n');
+        return;
+    }
+    r.respond(200, {}, 'OK\n');
+};
+----
+
+=== `nginx.install(plugin[, config])`
+
+Install an in-process plugin without touching the filesystem.
+
+[source,javascript]
+----
+nginx.install({
+    install: function(cfg) {
+        nginx.http.servers[0].locations[0].handler = function(r) {
+            r.respond(200, {}, cfg.greeting + '\n');
+        };
+    }
+}, { greeting: 'Hello!' });
+----
+
+`plugin` may be:
+
+* An **object** with an `.install` method — `plugin.install(config)` is called.
+* A **function** — called directly as `plugin(config)`.
+
+[cols="1,3"]
+|===
+| Parameter | Description
+
+| `plugin`
+| Object with `.install(config)` method, or bare function.
+
+| `config`
+| Optional JS value passed as the sole argument.  Defaults to `{}`.
+|===
+
+Returns the return value of the plugin call.
+
+== Examples
+
+=== Load two filesystem plugins
+
+[source,javascript]
+----
+nginx
+  .use('/opt/plugins/auth-guard',   { secret: process.env.SECRET })
+  .use('/opt/plugins/rate-limiter', { rps: 500 });
+----
+
+=== Inline plugin as an object
+
+[source,javascript]
+----
+var myPlugin = {
+    install: function(cfg) {
+        nginx.http.servers[0].locations.forEach(function(loc) {
+            loc.addHook(function(req) {
+                nginx.log(nginx.DEBUG, '[my-plugin] ' + req.uri);
+            });
+        });
+    }
+};
+
+nginx.install(myPlugin, {});
+----
+
+=== Inline plugin as a function
+
+[source,javascript]
+----
+nginx.install(function(cfg) {
+    nginx.http.addHook(function(req) {
+        if (!req.headers['x-request-id']) {
+            req.headers['x-request-id'] = Math.random().toString(36).slice(2);
+        }
+    });
+}, {});
+----
+
+=== Mixing filesystem and inline plugins
+
+[source,javascript]
+----
+// Load a shared logging helper from disk
+nginx.use('/opt/plugins/json-logger', { level: 'info' });
+
+// Add an inline auth check on top
+nginx.install(function(cfg) {
+    nginx.http.addHook(function(req) {
+        if (!req.headers['authorization']) {
+            req.respond(401, {}, 'Unauthorized\n');
+        }
+    });
+}, {});
+----
+
+== Limitations (P7)
+
+* **Pre-fork only**: `nginx.use` and `nginx.install` must be called from a
+  `js_source` script evaluated during `init_conf`.  Calling them from a
+  worker request handler throws a TypeError.
+* **Local filesystem only**: `nginx.use` resolves paths on the local
+  filesystem.  Online registry support is planned for a future step.
+* **First `recv()` block only (inherited from js_source evaluation)**: The
+  plugin entry file is read once at startup; live-reloading without nginx
+  reload is not supported.
+* **`nginx.pluginConfig` is shared**: If two plugins are loaded
+  concurrently (they are not; evaluation is sequential), the second call
+  would overwrite `nginx.pluginConfig` before the first finishes.  In
+  practice this is not an issue because plugin evaluation is synchronous.
+
+== Implementation Notes
+
+Both functions are registered as C-level methods on the `nginx` JS object in
+`ngx_js_com.c` (`ngx_js_use` / `ngx_js_install`).
+
+`ngx_js_use` implementation:
+
+1. Checks `ngx_process` — throws if called from a worker.
+2. Resolves the directory path (prepends `cycle->prefix` if relative).
+3. Probes `<dir>/package.json` with `ngx_open_file` (no log on `ENOENT`).
+   If present, reads and parses it with `JS_ParseJSON`; extracts
+   `ngxjs.main` (or top-level `main`) for the entry point.
+4. Falls back to `index.js` when `package.json` is absent or has no `main`.
+5. Sets `nginx.pluginConfig = config || {}` on the global `nginx` object.
+6. Evaluates the entry file via `ngx_js_eval_module` (same path as
+   `js_source` evaluation).
+
+`ngx_js_install` implementation:
+
+1. Extracts `plugin` and `config` arguments.
+2. If `plugin` is a function: calls `plugin(config)`.
+3. If `plugin` is an object with `.install`: calls `plugin.install(config)`.
+4. Otherwise throws a TypeError.
+
+== Test Coverage
+
+`t/js_pilgrim_p7_module.t` (12 explicit + 2 auto = 14 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2   | `nginx.use` with no `package.json`; `index.js` entry; `config.tag` visible
+| 3–4   | `nginx.use` with `package.json` `ngxjs.main`; `config.msg` visible
+| 5–6   | `nginx.install` with object `.install` method; `config.val` visible
+| 7–8   | `nginx.install` with bare function; `config.x` visible
+| 9–10  | Both plugins still active after sequential use() calls (no state clobbering)
+| 11–12 | Auto: nginx started, no alerts in error.log
+|===

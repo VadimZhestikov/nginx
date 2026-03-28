@@ -1470,6 +1470,227 @@ ngx_js_send_to_master(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * nginx.use(path[, config]) — JS-Pilgrim P7
+ *
+ * Load a JS plugin package from the filesystem.
+ *
+ * path   — directory path; may be absolute or relative to cycle->prefix.
+ *          If the directory contains a package.json with an "ngxjs" object
+ *          whose "main" key names the entry file, that file is loaded.
+ *          Otherwise the directory's index.js is loaded.
+ * config — optional JS value exposed as nginx.pluginConfig before the
+ *          plugin script is evaluated.  Defaults to {}.
+ *
+ * Returns nginx (for chaining).
+ * Only callable before fork (init_conf / master process).
+ */
+static JSValue
+ngx_js_use(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_cycle_t  *cycle;
+    JSRuntime    *rt;
+    const char   *path_str, *main_str;
+    u_char       *src;
+    size_t        src_len;
+    ngx_str_t     entry_path, pkg_path;
+    JSValue       config, global, nginx_obj;
+    JSValue       pkg_val, ngxjs_val, main_val;
+    char          dir_buf[NGX_MAX_PATH];
+    char          entry_buf[NGX_MAX_PATH];
+    char          pkg_buf[NGX_MAX_PATH];
+    u_char       *pkg_src;
+    size_t        pkg_len;
+
+    if (ngx_process != NGX_PROCESS_MASTER
+        && ngx_process != NGX_PROCESS_SINGLE)
+    {
+        return JS_ThrowTypeError(ctx,
+            "nginx.use: only callable before fork (init_conf)");
+    }
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.use(path[, config]): string path required");
+    }
+
+    cycle = JS_GetContextOpaque(ctx);
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "nginx.use: no cycle context");
+    }
+
+    path_str = JS_ToCString(ctx, argv[0]);
+    if (!path_str) {
+        return JS_EXCEPTION;
+    }
+
+    /* resolve path relative to cycle->prefix if not absolute */
+    {
+        u_char *p;
+        if (path_str[0] == '/') {
+            p = ngx_snprintf((u_char *) dir_buf, sizeof(dir_buf) - 1,
+                             "%s", path_str);
+        } else {
+            p = ngx_snprintf((u_char *) dir_buf, sizeof(dir_buf) - 1,
+                             "%V%s", &cycle->prefix, path_str);
+        }
+        *p = '\0';
+    }
+    JS_FreeCString(ctx, path_str);
+
+    /* default entry point: <dir>/index.js */
+    {
+        u_char *p = ngx_snprintf((u_char *) entry_buf, sizeof(entry_buf) - 1,
+                                 "%s/index.js", dir_buf);
+        *p = '\0';
+    }
+
+    /* check package.json for a custom entry point */
+    {
+        u_char *p = ngx_snprintf((u_char *) pkg_buf, sizeof(pkg_buf) - 1,
+                                 "%s/package.json", dir_buf);
+        *p = '\0';
+    }
+
+    pkg_path.data = (u_char *) pkg_buf;
+    pkg_path.len  = ngx_strlen(pkg_buf);
+
+    /*
+     * package.json is optional — try to open it quietly.
+     * ngx_js_read_file logs NGX_LOG_EMERG on open failure, which is
+     * too noisy for an absent optional file, so check existence first.
+     */
+    pkg_src = NULL;
+    pkg_len = 0;
+    {
+        ngx_fd_t  fd = ngx_open_file(pkg_path.data, NGX_FILE_RDONLY,
+                                     NGX_FILE_OPEN, 0);
+        if (fd != NGX_INVALID_FILE) {
+            ngx_close_file(fd);
+            pkg_src = ngx_js_read_file(cycle, &pkg_path, &pkg_len);
+        }
+        /* ENOENT (or any other open error) → skip package.json silently */
+    }
+
+    if (pkg_src != NULL) {
+        pkg_val = JS_ParseJSON(ctx, (const char *) pkg_src, pkg_len,
+                               "package.json");
+        if (!JS_IsException(pkg_val)) {
+            /* prefer ngxjs.main key over top-level main */
+            ngxjs_val = JS_GetPropertyStr(ctx, pkg_val, "ngxjs");
+            if (JS_IsObject(ngxjs_val)) {
+                main_val = JS_GetPropertyStr(ctx, ngxjs_val, "main");
+            } else {
+                main_val = JS_GetPropertyStr(ctx, pkg_val, "main");
+            }
+            JS_FreeValue(ctx, ngxjs_val);
+
+            if (JS_IsString(main_val)) {
+                main_str = JS_ToCString(ctx, main_val);
+                if (main_str) {
+                    u_char *p = ngx_snprintf(
+                        (u_char *) entry_buf, sizeof(entry_buf) - 1,
+                        "%s/%s", dir_buf, main_str);
+                    *p = '\0';
+                    JS_FreeCString(ctx, main_str);
+                }
+            }
+            JS_FreeValue(ctx, main_val);
+            JS_FreeValue(ctx, pkg_val);
+        } else {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+        }
+    }
+
+    /* read the plugin entry point */
+    entry_path.data = (u_char *) entry_buf;
+    entry_path.len  = ngx_strlen(entry_buf);
+
+    src = ngx_js_read_file(cycle, &entry_path, &src_len);
+    if (src == NULL) {
+        return JS_ThrowTypeError(ctx, "nginx.use: failed to read '%s'",
+                                 entry_buf);
+    }
+
+    /* expose config as nginx.pluginConfig before plugin runs */
+    config = (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1]))
+             ? JS_DupValue(ctx, argv[1])
+             : JS_NewObject(ctx);
+
+    global    = JS_GetGlobalObject(ctx);
+    nginx_obj = JS_GetPropertyStr(ctx, global, "nginx");
+    JS_SetPropertyStr(ctx, nginx_obj, "pluginConfig", config);
+    JS_FreeValue(ctx, nginx_obj);
+    JS_FreeValue(ctx, global);
+
+    /* evaluate the plugin as an ES module */
+    rt = JS_GetRuntime(ctx);
+    if (ngx_js_eval_module(ctx, rt, src, src_len,
+                           (const u_char *) entry_buf, cycle->log)
+        != NGX_CONF_OK)
+    {
+        return JS_EXCEPTION;
+    }
+
+    return JS_DupValue(ctx, this_val);  /* return nginx for chaining */
+}
+
+
+/*
+ * nginx.install(plugin[, config]) — JS-Pilgrim P7
+ *
+ * Invoke an inline (in-process) plugin.
+ *
+ * plugin — a function OR an object with an .install method.
+ *          Called with (config || {}) as the sole argument.
+ * config — optional config value.  Defaults to {}.
+ *
+ * Returns the result of the plugin call.
+ */
+static JSValue
+ngx_js_install(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue  plugin, install_fn, config, args[1], ret;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.install(plugin[, config]): plugin required");
+    }
+
+    plugin = argv[0];
+    config = (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1]))
+             ? JS_DupValue(ctx, argv[1])
+             : JS_NewObject(ctx);
+    args[0] = config;
+
+    if (JS_IsFunction(ctx, plugin)) {
+        ret = JS_Call(ctx, plugin, JS_UNDEFINED, 1, args);
+
+    } else if (JS_IsObject(plugin)) {
+        install_fn = JS_GetPropertyStr(ctx, plugin, "install");
+        if (!JS_IsFunction(ctx, install_fn)) {
+            JS_FreeValue(ctx, install_fn);
+            JS_FreeValue(ctx, config);
+            return JS_ThrowTypeError(ctx,
+                "nginx.install: plugin must be a function or have an "
+                ".install method");
+        }
+        ret = JS_Call(ctx, install_fn, plugin, 1, args);
+        JS_FreeValue(ctx, install_fn);
+
+    } else {
+        JS_FreeValue(ctx, config);
+        return JS_ThrowTypeError(ctx,
+            "nginx.install: plugin must be a function or object");
+    }
+
+    JS_FreeValue(ctx, config);
+    return ret;
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -1665,6 +1886,14 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "sendToMaster",
                       JS_NewCFunction(ctx, ngx_js_send_to_master,
                                       "sendToMaster", 1));
+
+    /* nginx.use(path[, config]) — JS-Pilgrim P7: filesystem plugin loader */
+    JS_SetPropertyStr(ctx, nginx_obj, "use",
+                      JS_NewCFunction(ctx, ngx_js_use, "use", 1));
+
+    /* nginx.install(plugin[, config]) — JS-Pilgrim P7: inline plugin caller */
+    JS_SetPropertyStr(ctx, nginx_obj, "install",
+                      JS_NewCFunction(ctx, ngx_js_install, "install", 1));
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
 
