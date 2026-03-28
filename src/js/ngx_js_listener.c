@@ -46,6 +46,7 @@ extern JSValue  ngx_js_wrap_server(JSContext *ctx,
 
 
 JSClassID                     ngx_js_http_listener_class_id;
+JSClassID                     ngx_js_connection_class_id;
 ngx_js_http_listener_state_t *ngx_js_listener_reg[NGX_JS_LISTENER_REG_MAX];
 
 
@@ -74,6 +75,125 @@ static JSClassDef  ngx_js_listener_class = {
     "NginxHttpListener",
     .finalizer = ngx_js_listener_finalizer,
 };
+
+
+/* ------------------------------------------------------------------ */
+/* NginxConnection — JS wrapper for a freshly-accepted ngx_connection_t */
+/* P4: created inside ngx_js_http_accept_handler, short-lived.         */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    ngx_connection_t  *c;
+    unsigned           rejected:1;
+} ngx_js_conn_opaque_t;
+
+
+static void
+ngx_js_connection_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_conn_opaque_t  *op;
+
+    op = JS_GetOpaque(val, ngx_js_connection_class_id);
+    if (op) {
+        js_free_rt(rt, op);
+    }
+}
+
+
+static JSClassDef  ngx_js_connection_class = {
+    "NginxConnection",
+    .finalizer = ngx_js_connection_finalizer,
+};
+
+
+/* magic: 0=remoteAddr  1=remotePort */
+static JSValue
+ngx_js_connection_get(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_conn_opaque_t  *op;
+    ngx_connection_t      *c;
+    u_char                 buf[NGX_SOCKADDR_STRLEN];
+    size_t                 len;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_connection_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    c = op->c;
+
+    switch (magic) {
+    case 0: /* remoteAddr — IP only, no port */
+        len = ngx_sock_ntop(c->sockaddr, c->socklen, buf, sizeof(buf), 0);
+        if (len == 0) {
+            return JS_NewString(ctx, "");
+        }
+        return JS_NewStringLen(ctx, (char *) buf, len);
+
+    case 1: /* remotePort */
+        switch (c->sockaddr->sa_family) {
+        case AF_INET:
+            return JS_NewInt32(ctx, ntohs(
+                ((struct sockaddr_in *) c->sockaddr)->sin_port));
+#if (NGX_HAVE_INET6)
+        case AF_INET6:
+            return JS_NewInt32(ctx, ntohs(
+                ((struct sockaddr_in6 *) c->sockaddr)->sin6_port));
+#endif
+        default:
+            return JS_NewInt32(ctx, 0);
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_connection_reject(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_conn_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_connection_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    op->rejected = 1;
+    return JS_UNDEFINED;
+}
+
+
+static const JSCFunctionListEntry  ngx_js_connection_proto_funcs[] = {
+    JS_CGETSET_MAGIC_DEF("remoteAddr", ngx_js_connection_get, NULL, 0),
+    JS_CGETSET_MAGIC_DEF("remotePort", ngx_js_connection_get, NULL, 1),
+    JS_CFUNC_DEF(        "reject",     0, ngx_js_connection_reject),
+};
+
+
+static JSValue
+ngx_js_wrap_connection(JSContext *ctx, ngx_connection_t *c)
+{
+    ngx_js_conn_opaque_t  *op;
+    JSValue                obj;
+
+    op = js_mallocz(ctx, sizeof(ngx_js_conn_opaque_t));
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    op->c = c;
+
+    obj = JS_NewObjectClass(ctx, ngx_js_connection_class_id);
+    if (JS_IsException(obj)) {
+        js_free(ctx, op);
+        return obj;
+    }
+
+    JS_SetOpaque(obj, op);
+    return obj;
+}
 
 
 /* ------------------------------------------------------------------ */
@@ -155,6 +275,144 @@ ngx_js_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
     }
 
     return JS_UNDEFINED;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Accept hook registry — P4                                           */
+/* Functions stored in global __ngx_accept_hooks__ array (GC root).   */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_accept_hooks_get_registry(JSContext *ctx)
+{
+    JSValue  global, reg;
+
+    global = JS_GetGlobalObject(ctx);
+    reg    = JS_GetPropertyStr(ctx, global, "__ngx_accept_hooks__");
+
+    if (JS_IsUndefined(reg)) {
+        JS_FreeValue(ctx, reg);
+        reg = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, global, "__ngx_accept_hooks__",
+                          JS_DupValue(ctx, reg));
+    }
+
+    JS_FreeValue(ctx, global);
+    return reg;
+}
+
+
+static uint32_t
+ngx_js_accept_hook_register_fn(JSContext *ctx, JSValueConst fn)
+{
+    JSValue   reg, lenval;
+    uint32_t  idx;
+
+    reg    = ngx_js_accept_hooks_get_registry(ctx);
+    lenval = JS_GetPropertyStr(ctx, reg, "length");
+    JS_ToUint32(ctx, &idx, lenval);
+    JS_FreeValue(ctx, lenval);
+    JS_SetPropertyUint32(ctx, reg, idx, JS_DupValue(ctx, fn));
+    JS_FreeValue(ctx, reg);
+
+    return idx;
+}
+
+
+static JSValue
+ngx_js_accept_hook_get_fn(JSContext *ctx, uint32_t idx)
+{
+    JSValue  reg, fn;
+
+    reg = ngx_js_accept_hooks_get_registry(ctx);
+    fn  = JS_GetPropertyUint32(ctx, reg, idx);
+    JS_FreeValue(ctx, reg);
+
+    return fn;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* C accept handler — replaces ngx_http_init_connection for JS        */
+/* listeners that have at least one accept hook registered.            */
+/* ------------------------------------------------------------------ */
+
+static void
+ngx_js_http_accept_handler(ngx_connection_t *c)
+{
+    ngx_js_http_listener_state_t  *st;
+    ngx_js_conf_t                 *jcf;
+    ngx_js_conn_opaque_t          *op;
+    JSContext                     *ctx;
+    JSRuntime                     *rt;
+    JSValue                        conn_obj, fn, ret;
+    uint32_t                      *indices;
+    ngx_uint_t                     i;
+
+    /*
+     * Recover the listener state from ls->servers, which points to &st->port.
+     * Use offsetof to convert the port pointer back to the containing struct.
+     */
+    st = (ngx_js_http_listener_state_t *)
+             ((u_char *) c->listening->servers
+              - offsetof(ngx_js_http_listener_state_t, port));
+
+    /*
+     * Get the JS context.  jcf->ctx is COW-shared; in worker processes
+     * its opaque points to the current ngx_js_worker_t.
+     */
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL || jcf->ctx == NULL) {
+        ngx_http_init_connection(c);
+        return;
+    }
+
+    ctx = jcf->ctx;
+    rt  = JS_GetRuntime(ctx);
+
+    /* Wrap the raw connection */
+    conn_obj = ngx_js_wrap_connection(ctx, c);
+    if (JS_IsException(conn_obj)) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "js accept hook: failed to allocate NginxConnection");
+        ngx_http_init_connection(c);
+        return;
+    }
+
+    op      = JS_GetOpaque(conn_obj, ngx_js_connection_class_id);
+    indices = st->accept_handlers;
+
+    for (i = 0; i < st->n_accept_handlers; i++) {
+        fn  = ngx_js_accept_hook_get_fn(ctx, indices[i]);
+        ret = JS_Call(ctx, fn, JS_UNDEFINED, 1, &conn_obj);
+        JS_FreeValue(ctx, fn);
+
+        if (JS_IsException(ret)) {
+            ngx_js_log_exception(ctx, c->log);
+            JS_FreeValue(ctx, ret);
+            op->rejected = 1;
+            break;
+        }
+
+        JS_FreeValue(ctx, ret);
+
+        /* Drain microtasks */
+        while (JS_ExecutePendingJob(rt, NULL) > 0) { /* empty */ }
+
+        if (op->rejected) {
+            break;
+        }
+    }
+
+    if (op->rejected) {
+        JS_FreeValue(ctx, conn_obj);
+        ngx_close_connection(c);
+        return;
+    }
+
+    JS_FreeValue(ctx, conn_obj);
+    ngx_http_init_connection(c);
 }
 
 
@@ -581,6 +839,81 @@ ngx_js_listener_server_by_name(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* listener.on(event, fn) — P4: register accept hook                  */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_listener_on(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_listener_opaque_t      *op;
+    ngx_js_http_listener_state_t  *st;
+    const char                    *event;
+    uint32_t                       idx;
+
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "listener.on: cannot register hooks after fork");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_http_listener_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->handle >= NGX_JS_LISTENER_REG_MAX
+        || ngx_js_listener_reg[op->handle] == NULL)
+    {
+        return JS_ThrowInternalError(ctx, "NginxHttpListener: invalid handle");
+    }
+
+    st = ngx_js_listener_reg[op->handle];
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "listener.on: expected (event, fn)");
+    }
+
+    event = JS_ToCString(ctx, argv[0]);
+    if (!event) {
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_strcmp(event, "accept") != 0) {
+        JS_FreeCString(ctx, event);
+        return JS_ThrowTypeError(ctx,
+            "listener.on: unknown event (expected 'accept')");
+    }
+
+    JS_FreeCString(ctx, event);
+
+    if (!JS_IsFunction(ctx, argv[1])) {
+        return JS_ThrowTypeError(ctx,
+            "listener.on: second argument must be a function");
+    }
+
+    if (st->n_accept_handlers >= NGX_JS_ACCEPT_HANDLERS_MAX) {
+        return JS_ThrowInternalError(ctx,
+            "listener.on: accept handler limit reached (max %d)",
+            NGX_JS_ACCEPT_HANDLERS_MAX);
+    }
+
+    idx = ngx_js_accept_hook_register_fn(ctx, argv[1]);
+    st->accept_handlers[st->n_accept_handlers++] = idx;
+
+    /*
+     * If this is the first handler and the listener is already activated,
+     * switch ls->handler from ngx_http_init_connection to our wrapper.
+     * If not yet activated, ngx_js_listener_activate will pick this up.
+     */
+    if (st->n_accept_handlers == 1 && st->ls != NULL) {
+        st->ls->handler = ngx_js_http_accept_handler;
+    }
+
+    return JS_DupValue(ctx, this_val);   /* allow chaining */
+}
+
+
 static const JSCFunctionListEntry  ngx_js_listener_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("address",          ngx_js_listener_get,              NULL, 0),
     JS_CGETSET_MAGIC_DEF("socket",           ngx_js_listener_get,              NULL, 1),
@@ -588,15 +921,26 @@ static const JSCFunctionListEntry  ngx_js_listener_proto_funcs[] = {
     JS_CFUNC_DEF(        "serverByName",     1, ngx_js_listener_server_by_name),
     JS_CFUNC_DEF(        "addServer",        1, ngx_js_listener_add_server),
     JS_CFUNC_DEF(        "addVirtualServer", 1, ngx_js_listener_add_virtual_server),
+    JS_CFUNC_DEF(        "on",               2, ngx_js_listener_on),
 };
 
 
 ngx_int_t
 ngx_js_listener_register_class(JSRuntime *rt)
 {
-    return JS_NewClass(rt, ngx_js_http_listener_class_id,
-                       &ngx_js_listener_class) < 0
-           ? NGX_ERROR : NGX_OK;
+    if (JS_NewClass(rt, ngx_js_http_listener_class_id,
+                    &ngx_js_listener_class) < 0)
+    {
+        return NGX_ERROR;
+    }
+
+    if (JS_NewClass(rt, ngx_js_connection_class_id,
+                    &ngx_js_connection_class) < 0)
+    {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
 }
 
 
@@ -615,6 +959,19 @@ ngx_js_listener_install_proto(JSContext *ctx)
                                countof(ngx_js_listener_proto_funcs));
 
     JS_SetClassProto(ctx, ngx_js_http_listener_class_id, proto);
+
+    /* NginxConnection proto */
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto,
+                               ngx_js_connection_proto_funcs,
+                               countof(ngx_js_connection_proto_funcs));
+
+    JS_SetClassProto(ctx, ngx_js_connection_class_id, proto);
+
     return NGX_OK;
 }
 
@@ -686,7 +1043,10 @@ ngx_js_listener_activate(ngx_js_http_listener_state_t *st,
     ls->rcvbuf  = -1;
     ls->sndbuf  = -1;
 
-    ls->handler = ngx_http_init_connection;
+    ls->handler = (st->n_accept_handlers > 0)
+                  ? ngx_js_http_accept_handler
+                  : ngx_http_init_connection;
+    st->ls = ls;
     ls->servers = &st->port;
 
     ls->sockaddr = (struct sockaddr *) &st->sin;

@@ -62,7 +62,7 @@ config.write(`
         }
 
         server {
-            listen       127.0.0.1:8081;
+            listen       127.0.0.1:%%PORT_8081%%;
             server_name  localhost;
 
             location /second/ {
@@ -97,11 +97,11 @@ like(http_get('/world/'),
 
 # --- Server 2 (port 8081) ---
 
-like(http_get('/second/', PeerAddr => '127.0.0.1:8081'),
+like(http_get('/second/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
      qr|200 OK|,
      'second generated server responds 200');
 
-like(http_get('/second/', PeerAddr => '127.0.0.1:8081'),
+like(http_get('/second/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
      qr|Second server|,
      'second generated server body correct');
 
@@ -113,6 +113,6 @@ like(http_get('/hello/'),
      qr|200 OK|,
      'js_preprocess does not break basic request handling');
 
-like(http_get('/second/', PeerAddr => '127.0.0.1:8081'),
+like(http_get('/second/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
      qr|200 OK|,
      'second server still responds after repeated requests');

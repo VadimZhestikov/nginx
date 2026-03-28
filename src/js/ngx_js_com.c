@@ -543,6 +543,7 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_events_class_id);
         JS_NewClassID(&ngx_js_socket_class_id);
         JS_NewClassID(&ngx_js_http_listener_class_id);
+        JS_NewClassID(&ngx_js_connection_class_id);
         JS_NewClassID(&ngx_js_stream_server_class_id);
         JS_NewClassID(&ngx_js_stream_listener_class_id);
         JS_NewClassID(&ngx_js_stream_proxy_class_id);

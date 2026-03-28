@@ -49,7 +49,7 @@ http {
     }
 
     server {
-        listen       127.0.0.1:8081;
+        listen       127.0.0.1:%%PORT_8081%%;
         server_name  gone;
         location /gone/ { return 200 "should be deleted"; }
     }
@@ -77,11 +77,11 @@ JS
     # 'gone' server was deleted — port 8081 should be unbound
     my $conn = IO::Socket::INET->new(
         PeerAddr => '127.0.0.1',
-        PeerPort => 8081,
+        PeerPort => port(8081),
         Proto    => 'tcp',
         Timeout  => 1,
     );
-    ok(!$conn, 'delServer: port 8081 not bound after delServer');
+    ok(!$conn, 'delServer: port ' . port(8081) . ' not bound after delServer');
     $conn->close() if $conn;
 
     # delServer returns 0 for unknown name
@@ -169,7 +169,7 @@ http {
     }
 
     server {
-        listen       127.0.0.1:8081;
+        listen       127.0.0.1:%%PORT_8081%%;
         server_name  scratch;
         location /scratch/ { return 200 "scratch"; }
     }
@@ -178,7 +178,7 @@ http {
 }
 EOF
 
-    $t->write_file('del_combined.js', <<'JS');
+    $t->write_file_expand('del_combined.js', <<'JS');
 // Remove the /old/ location from base
 nginx.http.delLocation('base', '/old/');
 
@@ -187,7 +187,7 @@ nginx.http.delServer('scratch');
 
 // Add a brand-new server
 nginx.http.addServer({
-    listen:      ['127.0.0.1:8082'],
+    listen:      ['127.0.0.1:%%PORT_8082%%'],
     serverNames: ['fresh'],
     locations:   [{ path: '/fresh/', return: '200 "fresh"' }]
 });
@@ -202,10 +202,10 @@ JS
          qr|404|,
          'combined: /old/ removed from base');
 
-    like(http_get('/fresh/', PeerAddr => '127.0.0.1:8082'),
+    like(http_get('/fresh/', PeerAddr => '127.0.0.1', PeerPort => port(8082)),
          qr|200 OK|,
          'combined: new server added and responds 200');
-    like(http_get('/fresh/', PeerAddr => '127.0.0.1:8082'),
+    like(http_get('/fresh/', PeerAddr => '127.0.0.1', PeerPort => port(8082)),
          qr|fresh|,
          'combined: new server body correct');
 }

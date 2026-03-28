@@ -31,6 +31,7 @@
 
 #define NGX_JS_LISTENER_REG_MAX      32
 #define NGX_JS_LISTENER_VSERVERS_MAX 32
+#define NGX_JS_ACCEPT_HANDLERS_MAX   8
 
 
 /*
@@ -65,6 +66,11 @@ typedef struct {
     ngx_uint_t                nvservers;
 
     unsigned                  activated:1;     /* 1 after cycle->listening push */
+
+    /* Accept hooks — JS-Pilgrim P4 */
+    uint32_t                  accept_handlers[NGX_JS_ACCEPT_HANDLERS_MAX];
+    ngx_uint_t                n_accept_handlers;
+    ngx_listening_t          *ls;                 /* back-pointer, set on activate */
 } ngx_js_http_listener_state_t;
 
 

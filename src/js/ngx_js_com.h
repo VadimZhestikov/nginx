@@ -65,6 +65,7 @@ extern JSClassID  ngx_js_mirror_class_id;       /* mirror loc conf       (Stage 
 extern JSClassID  ngx_js_events_class_id;       /* nginx.events          (Stage 14) */
 extern JSClassID  ngx_js_socket_class_id;             /* nginx.createSocket()     (Stage 52) */
 extern JSClassID  ngx_js_http_listener_class_id;     /* nginx.http.attach()      (Stage 52) */
+extern JSClassID  ngx_js_connection_class_id;        /* NginxConnection          (P4)       */
 extern JSClassID  ngx_js_stream_server_class_id;     /* nginx.stream.servers[]   (Stage 52G) */
 extern JSClassID  ngx_js_stream_listener_class_id;   /* nginx.stream.attach()    (Stage 52G) */
 extern JSClassID  ngx_js_stream_proxy_class_id;      /* server.proxy             (Stage 53)  */

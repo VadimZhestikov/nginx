@@ -55,7 +55,7 @@ EOF
     $t->write_file_expand('add_server.js', <<'JS');
 config.write(`
     server {
-        listen       127.0.0.1:8081;
+        listen       127.0.0.1:%%PORT_8081%%;
         server_name  added;
         location /added/ {
             return 200 "added by js_init_http";
@@ -75,10 +75,10 @@ JS
          'base server body correct');
 
     # Added server works
-    like(http_get('/added/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/added/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|200 OK|,
          'js_init_http added server responds 200');
-    like(http_get('/added/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/added/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|added by js_init_http|,
          'js_init_http added server body correct');
 }
@@ -113,7 +113,7 @@ EOF
 
     # conditional.js: only add "new-server" if it does not already exist.
     # Also verifies that the existing server IS visible in servers[].
-    $t->write_file('conditional.js', <<'JS');
+    $t->write_file_expand('conditional.js', <<'JS');
 const names = nginx.http.servers.map(s => s.name);
 
 if (!names.includes('existing')) {
@@ -123,7 +123,7 @@ if (!names.includes('existing')) {
 if (!names.includes('new-server')) {
     config.write(`
         server {
-            listen       127.0.0.1:8081;
+            listen       127.0.0.1:%%PORT_8081%%;
             server_name  new-server;
             location /new/ { return 200 "conditionally added"; }
         }
@@ -140,10 +140,10 @@ JS
          qr|existing|,
          'conditional: existing server body correct');
 
-    like(http_get('/new/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/new/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|200 OK|,
          'conditional: added server responds 200');
-    like(http_get('/new/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/new/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|conditionally added|,
          'conditional: added server body correct');
 }

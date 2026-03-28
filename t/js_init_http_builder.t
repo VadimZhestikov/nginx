@@ -51,9 +51,9 @@ http {
 }
 EOF
 
-    $t->write_file('builder_chain.js', <<'JS');
+    $t->write_file_expand('builder_chain.js', <<'JS');
 const srv = nginx.http.addServer({
-    listen:      ['127.0.0.1:8081'],
+    listen:      ['127.0.0.1:%%PORT_8081%%'],
     serverNames: ['chain-srv']
 });
 
@@ -70,10 +70,10 @@ JS
          qr|base|,
          'builder: base server body correct');
 
-    like(http_get('/hello/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/hello/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|200 OK|,
          'builder: chained addLocation /hello/ responds 200');
-    like(http_get('/hello/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/hello/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|hello from builder|,
          'builder: chained addLocation /hello/ body correct');
 }
@@ -105,9 +105,9 @@ http {
 }
 EOF
 
-    $t->write_file('builder_inline.js', <<'JS');
+    $t->write_file_expand('builder_inline.js', <<'JS');
 nginx.http.addServer({
-    listen:      ['127.0.0.1:8081'],
+    listen:      ['127.0.0.1:%%PORT_8081%%'],
     serverNames: ['inline-srv'],
     locations: [
         { path: '/a/', return: '200 "inline-a"' },
@@ -125,10 +125,10 @@ JS
          qr|base2|,
          'inline: base server body correct');
 
-    like(http_get('/a/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/a/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|200 OK|,
          'inline: /a/ responds 200');
-    like(http_get('/a/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/a/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|inline-a|,
          'inline: /a/ body correct');
 }
@@ -160,15 +160,15 @@ http {
 }
 EOF
 
-    $t->write_file('builder_multi.js', <<'JS');
+    $t->write_file_expand('builder_multi.js', <<'JS');
 nginx.http.addServer({
-    listen:      ['127.0.0.1:8081'],
+    listen:      ['127.0.0.1:%%PORT_8081%%'],
     serverNames: ['first'],
     locations: [{ path: '/first/', return: '200 "first server"' }]
 });
 
 nginx.http.addServer({
-    listen:      ['127.0.0.1:8082'],
+    listen:      ['127.0.0.1:%%PORT_8082%%'],
     serverNames: ['second'],
     locations: [{ path: '/second/', return: '200 "second server"' }]
 });
@@ -176,17 +176,17 @@ JS
 
     $t->run();
 
-    like(http_get('/first/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/first/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|200 OK|,
          'multi: first server responds 200');
-    like(http_get('/first/', PeerAddr => '127.0.0.1:8081'),
+    like(http_get('/first/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
          qr|first server|,
          'multi: first server body correct');
 
-    like(http_get('/second/', PeerAddr => '127.0.0.1:8082'),
+    like(http_get('/second/', PeerAddr => '127.0.0.1', PeerPort => port(8082)),
          qr|200 OK|,
          'multi: second server responds 200');
-    like(http_get('/second/', PeerAddr => '127.0.0.1:8082'),
+    like(http_get('/second/', PeerAddr => '127.0.0.1', PeerPort => port(8082)),
          qr|second server|,
          'multi: second server body correct');
 }

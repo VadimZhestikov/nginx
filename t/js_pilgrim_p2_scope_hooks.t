@@ -42,7 +42,7 @@ http {
     }
 
     server {
-        listen       127.0.0.1:8081;
+        listen       127.0.0.1:%%PORT_8081%%;
         server_name  server2;
 
         location /pass/        { }
@@ -142,64 +142,64 @@ $t->try_run('no js module')->plan(15);
 # -------------------------------------------------------------------------
 # Test 1: global hook passes through — JS handler serves response
 # -------------------------------------------------------------------------
-like(http_get('/pass/', PeerAddr => '127.0.0.1', PeerPort => 8080),
+like(http_get('/pass/', PeerAddr => '127.0.0.1', PeerPort => port(8080)),
      qr/200 OK/, 'global pass: 200 OK');
-like(http_get('/pass/', PeerAddr => '127.0.0.1', PeerPort => 8080),
+like(http_get('/pass/', PeerAddr => '127.0.0.1', PeerPort => port(8080)),
      qr/js-pass/, 'global pass: JS handler body');
 
 # -------------------------------------------------------------------------
 # Test 2: global hook cancels — returns 403, JS handler never runs
 # -------------------------------------------------------------------------
-like(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => 8080),
+like(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => port(8080)),
      qr/403/, 'global cancel: 403 status');
-like(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => 8080),
+like(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => port(8080)),
      qr/global-cancel/, 'global cancel: hook body');
-unlike(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => 8080),
+unlike(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => port(8080)),
        qr/js-cancel-body/, 'global cancel: JS handler not called');
 
 # -------------------------------------------------------------------------
 # Test 3: server1 hook fires for server1 — adds X-SrvHook header
 # -------------------------------------------------------------------------
-like(http_get('/srv1only/', PeerAddr => '127.0.0.1', PeerPort => 8080),
+like(http_get('/srv1only/', PeerAddr => '127.0.0.1', PeerPort => port(8080)),
      qr/X-SrvHook:\s*s1/i, 'srv1 hook fires for srv1');
 
 # -------------------------------------------------------------------------
 # Test 4: server1 hook does NOT fire for server2
 # -------------------------------------------------------------------------
-unlike(http_get('/srv2only/', PeerAddr => '127.0.0.1', PeerPort => 8081),
+unlike(http_get('/srv2only/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
        qr/X-SrvHook/i, 'srv1 hook not fired for srv2');
 
 # -------------------------------------------------------------------------
 # Test 5: global hook fires for server2 requests too
 # -------------------------------------------------------------------------
-like(http_get('/global_fires/', PeerAddr => '127.0.0.1', PeerPort => 8081),
+like(http_get('/global_fires/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
      qr/200 OK/, 'global hook fires for srv2: 200 OK');
 
 # -------------------------------------------------------------------------
 # Test 6: execution order: global hook runs before server hook
 # -------------------------------------------------------------------------
-like(http_get('/order/', PeerAddr => '127.0.0.1', PeerPort => 8080),
+like(http_get('/order/', PeerAddr => '127.0.0.1', PeerPort => port(8080)),
      qr/global,server/, 'execution order: global before server');
 
 # -------------------------------------------------------------------------
 # Test 7: P1 location hook runs after P2 server hook
 # -------------------------------------------------------------------------
-my $r7 = http_get('/p1_after/', PeerAddr => '127.0.0.1', PeerPort => 8080);
+my $r7 = http_get('/p1_after/', PeerAddr => '127.0.0.1', PeerPort => port(8080));
 like($r7, qr/X-Phase:\s*p2/i,   'p2 server hook ran (X-Phase: p2)');
 like($r7, qr/X-Phase2:\s*p1/i,  'p1 location hook ran (X-Phase2: p1)');
 
 # -------------------------------------------------------------------------
 # Test 8: global cancel also works for server2
 # -------------------------------------------------------------------------
-like(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => 8081),
+like(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
      qr/403/, 'global cancel fires for srv2 too: 403');
-like(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => 8081),
+like(http_get('/cancel/', PeerAddr => '127.0.0.1', PeerPort => port(8081)),
      qr/global-cancel/, 'global cancel fires for srv2: body');
 
 # -------------------------------------------------------------------------
 # Test 9: global pass + srv1only is served by JS handler
 #         (confirms global hook actually ran but passed through)
 # -------------------------------------------------------------------------
-my $r9 = http_get('/srv1only/', PeerAddr => '127.0.0.1', PeerPort => 8080);
+my $r9 = http_get('/srv1only/', PeerAddr => '127.0.0.1', PeerPort => port(8080));
 like($r9, qr/200 OK/,     'srv1only: 200 OK');
 like($r9, qr/srv1-content/, 'srv1only: JS handler body');
