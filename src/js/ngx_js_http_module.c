@@ -697,7 +697,10 @@ static void       ngx_js_p2_hook_resume(ngx_js_worker_t *w,
 static ngx_int_t
 ngx_js_shared_zone_init(ngx_shm_zone_t *shm_zone, void *data)
 {
+    ngx_slab_pool_t      *sp;
     ngx_js_shared_hdr_t  *hdr;
+
+    sp = (ngx_slab_pool_t *) shm_zone->shm.addr;
 
     /* data != NULL means hot-reload: keep existing contents */
     if (data) {
@@ -708,6 +711,21 @@ ngx_js_shared_zone_init(ngx_shm_zone_t *shm_zone, void *data)
     hdr = (ngx_js_shared_hdr_t *) shm_zone->shm.addr;
     ngx_memzero(hdr, NGX_JS_SHARED_SIZE);
     hdr->capacity = NGX_JS_SHARED_CAPACITY;
+
+    /*
+     * nginx core calls ngx_unlock_mutexes(pid) from the SIGCHLD handler for
+     * every shared memory zone, treating the start of each zone as an
+     * ngx_slab_pool_t and calling ngx_shmtx_force_unlock(&sp->mutex, pid).
+     * If sp->mutex.lock is NULL (uninitialized), that CAS crashes the master.
+     *
+     * We do not use the slab allocator, but we must give the embedded mutex a
+     * valid lock pointer.  We point it at sp->lock.lock (offset 0, which is
+     * hdr->lock), and set spin = -1 so no semaphore is initialised.  If a
+     * worker exits while holding our spinlock, force_unlock will correctly
+     * clear it.
+     */
+    sp->mutex.lock = &sp->lock.lock;
+    sp->mutex.spin = (ngx_uint_t) -1;
 
     shm_zone->data = hdr;
 
