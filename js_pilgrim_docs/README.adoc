@@ -182,11 +182,13 @@ a browser DevTools tab).
   at HTTP level.  Request-body count balance: `r->main->count--` before
   resuming phases prevents "open socket" hangs.
 
-| P15
-| P5 multi-filter composition
+| P15 ✓
+| <<p15-multi-filter.adoc#,P5 multi-filter composition>>
 | Allow multiple `addBodyFilter` calls on the same location; each
   filter's output becomes the next filter's input.  `body_filters`
-  becomes an ordered array; the runner chains them in sequence.
+  is a priority-ordered `ngx_array_t`; the runner threads `body_val`
+  through all entries (GENERATOR, WB_SYNC, WB_ASYNC, STREAM_*).
+  No code changes — structurally complete since P5.
 
 | P16
 | Post-fork plugin loading (nginx.use hot reload)

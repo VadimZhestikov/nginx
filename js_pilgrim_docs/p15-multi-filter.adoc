@@ -1,0 +1,126 @@
+= JS-Pilgrim P15: Multi-Filter Composition for addBodyFilter
+:toc: left
+:toclevels: 2
+:sectnums:
+:revdate: 2026-03-28
+
+== Overview
+
+P15 formalises the ability to call `addBodyFilter` multiple times on the same
+location.  Each filter's output becomes the next filter's input, forming a
+left-to-right transform pipeline.
+
+The feature was structurally present from P5 (the filter runner already
+iterated over a `ngx_array_t`); P15 confirms and documents it with a
+dedicated test suite.
+
+== API
+
+[source,javascript]
+----
+// Any combination of filter modes can be chained.
+location.addBodyFilter(async function*(body, req) {
+    yield body.toUpperCase();
+});
+location.addBodyFilter(async function*(body, req) {
+    yield '[' + body + ']';
+});
+// GET /  → body "hello"  →  "HELLO"  →  "[HELLO]"
+----
+
+Multiple `addBodyFilter` calls on the same location append entries to the
+`body_filters` array.  Filters execute in **priority order** (ascending by
+priority number, default 50) within the array.  Registration order breaks
+ties among equal-priority filters.
+
+== Pipeline rules
+
+[cols="1,3"]
+|===
+| Rule | Description
+
+| Output → input
+| The string produced by filter N (all yielded/returned chunks concatenated)
+  is the `body` argument received by filter N+1.
+
+| Empty output
+| If a filter yields nothing (GENERATOR mode) or returns `undefined`
+  (WB_SYNC mode), the next filter sees an empty string `""`.
+
+| Error / exception
+| An exception in filter N is logged and that filter is skipped
+  (pass-through semantics for the error case); subsequent filters still run.
+
+| Async suspension
+| An `await` inside a GENERATOR or WB_ASYNC filter suspends the whole chain.
+  Filters after the suspended one run after the Promise resolves, still
+  receiving the intermediate output.
+|===
+
+== Mode mixing
+
+All body filter modes can be freely combined:
+
+[source,javascript]
+----
+// GENERATOR → WB_SYNC
+location.addBodyFilter(async function*(body, req) { yield body + '!'; });
+location.addBodyFilter('wholeBodySync', (req, body) => body.repeat(2));
+// "foo"  →  "foo!"  →  "foo!foo!"
+
+// WB_SYNC → GENERATOR
+location.addBodyFilter('wholeBodySync', (req, body) => body.toUpperCase());
+location.addBodyFilter(async function*(body, req) { yield '<' + body + '>'; });
+// "bar"  →  "BAR"  →  "<BAR>"
+----
+
+== Priority ordering
+
+The `priority` option (default 50, lower number = runs first) controls the
+insertion position of each new filter in the `body_filters` array.  Filters
+with the same priority retain registration order.
+
+[source,javascript]
+----
+location.addBodyFilter('generator', async function*(body, req) {
+    yield body + 'Z';   // priority 50 (default) → second
+}, { priority: 50 });
+
+location.addBodyFilter('generator', async function*(body, req) {
+    yield body + 'A';   // priority 10 → first despite being registered second
+}, { priority: 10 });
+
+// "p"  →  "pA"  →  "pAZ"
+----
+
+== Implementation notes
+
+* `body_filters` is a `ngx_array_t` of `ngx_js_filter_entry_t`.  There is no
+  hard limit on the number of entries.
+* The runner (`ngx_js_body_filters_run` in `ngx_js_com_http.c`) maintains a
+  local `body_val` JSValue that is updated after each filter:
+  ** GENERATOR: collapsed chain-link output → new `body_val`
+  ** WB_SYNC: returned string → `body_val`
+  ** WB_ASYNC / STREAM_ASYNC: resolved Promise string → `body_val`
+  ** STREAM_SYNC: `sendBuffer` accumulator → `body_val`
+* On async suspension (`NGX_AGAIN`), `resume_idx` records which filter to
+  restart at; when resumed, the previous `body_val` has been saved in
+  `rctx->wb_body` by the caller.
+
+== Test coverage
+
+`t/js_pilgrim_p15_multi_filter.t` — 18 explicit tests + 2 auto-checks:
+
+|===
+| Tests | Scenario
+
+| 1–2   | Two generator filters: uppercase then bracket-wrap
+| 3–4   | Three generators chained (prefix, suffix, double)
+| 5–6   | Generator followed by WB_SYNC
+| 7–8   | WB_SYNC followed by generator
+| 9–12  | Async generator (with `await`) followed by sync generator (2 requests)
+| 13–14 | Priority ordering: lower priority runs first regardless of registration order
+| 15–16 | Middle filter that yields nothing: third filter sees `""`
+| 17    | nginx started without crash
+| 18    | No alerts/emergencies in error.log
+|===
