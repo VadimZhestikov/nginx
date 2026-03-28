@@ -1,0 +1,170 @@
+= JS-Pilgrim P16: Post-Fork Plugin Loading (nginx.use Hot Reload)
+:toc: left
+:toclevels: 2
+:sectnums:
+:revdate: 2026-03-28
+
+== Overview
+
+P16 makes `nginx.use(path[, config])` callable from worker request handlers,
+in addition to the existing master-phase (P7) use.  When called from a worker:
+
+1. The plugin is loaded immediately into that worker's JS runtime.
+2. The worker sends `NGX_CMD_JS_USE_PLUGIN` to the master via the nginx channel.
+3. The master receives the request and forwards `NGX_CMD_JS_LOAD_PLUGIN` to
+   every other active worker.
+4. Each receiving worker loads the same plugin into its own runtime.
+
+No nginx reload is required.
+
+== API
+
+The `nginx.use` signature is unchanged:
+
+[source,javascript]
+----
+// From a request handler (worker context):
+location.handler = async function(req) {
+    nginx.use('/path/to/plugin', { tag: 'v2' });
+    req.respond(200, {}, 'plugin loaded\n');
+};
+----
+
+* `path` — directory path; absolute or relative to `cycle->prefix`.
+  Resolved to an absolute path before transmission so all workers see
+  the same filesystem location.
+* `config` — optional object exposed as `nginx.pluginConfig` inside the
+  plugin script.  Serialized to JSON for the broadcast payload.
+
+== Broadcast protocol
+
+=== New channel commands
+
+Two new `NGX_CMD_*` constants in `ngx_process_cycle.h`:
+
+[cols="1,1,3"]
+|===
+| Value | Name | Direction & purpose
+
+| 8 | `NGX_CMD_JS_USE_PLUGIN`  | Worker → master.  "Please broadcast this plugin load."
+| 9 | `NGX_CMD_JS_LOAD_PLUGIN` | Master → worker.  "Load this plugin now."
+|===
+
+=== Payload format
+
+Both messages use the same payload: two NUL-terminated strings concatenated:
+
+```
+<absolute_dir_path>\0<config_json>\0
+```
+
+* `absolute_dir_path` — fully resolved plugin directory.
+* `config_json` — JSON string (or empty string `""`) for `nginx.pluginConfig`.
+
+Maximum payload length: `NGX_JS_MSG_MAX` (64 kB).
+
+=== Flow diagram
+
+```
+Worker A (request):
+  nginx.use('/plugins/foo', {tag:'x'})
+    │
+    ├─ 1. ngx_js_load_plugin(this worker's ctx, ...)  ← immediate local load
+    │
+    └─ 2. channel_send(ngx_channel, NGX_CMD_JS_USE_PLUGIN,
+                       payload="/plugins/foo\0{\"tag\":\"x\"}\0")
+              │
+              ▼
+         Master (SIGIO handler):
+           ngx_js_handle_master_channel_msgs
+             ├─ reads NGX_CMD_JS_USE_PLUGIN from worker A's channel[0]
+             └─ for each other worker k ≠ A:
+                  channel_send(ngx_processes[k].channel[0],
+                               NGX_CMD_JS_LOAD_PLUGIN, same payload)
+                         │
+                         ▼
+                    Worker k (event loop):
+                      ngx_channel_handler
+                        └─ NGX_CMD_JS_LOAD_PLUGIN
+                             → ngx_js_handle_worker_load_plugin
+                                 → ngx_js_load_plugin(worker k's ctx, ...)
+```
+
+== Implementation
+
+=== `ngx_js_load_plugin` helper (`ngx_js_com.c`)
+
+The plugin loading code that was previously inlined in `ngx_js_use` is now a
+public helper:
+
+[source,c]
+----
+ngx_int_t ngx_js_load_plugin(JSContext *ctx, JSRuntime *rt,
+    ngx_cycle_t *cycle, const char *dir, const char *config_json);
+----
+
+It:
+1. Determines the entry file (via `package.json` → `ngxjs.main` → `main`, or `index.js`).
+2. Reads the source file.
+3. Parses `config_json` (or uses `{}`) and sets `nginx.pluginConfig`.
+4. Evaluates the plugin as an ES module.
+
+=== `ngx_js_use` changes (`ngx_js_com.c`)
+
+* Removed the `NGX_PROCESS_MASTER / NGX_PROCESS_SINGLE` guard.
+* Detects context opaque: in workers, uses `ngx_cycle` global instead of
+  `JS_GetContextOpaque(ctx)` (which holds `ngx_js_worker_t*` in workers).
+* Resolves path to absolute, serializes config to JSON, then calls
+  `ngx_js_load_plugin` locally.
+* If called from `NGX_PROCESS_WORKER`: sends `NGX_CMD_JS_USE_PLUGIN` via
+  `ngx_js_channel_send(ngx_channel, ...)`.
+
+=== `ngx_js_handle_worker_load_plugin` (`ngx_js_module.c`)
+
+New function registered as `ngx_js_worker_load_plugin` hook.  Called by
+`ngx_channel_handler` when `NGX_CMD_JS_LOAD_PLUGIN` arrives:
+
+1. Reads payload from the channel fd.
+2. Extracts `dir` and `config_json` (two NUL-delimited strings).
+3. Calls `ngx_js_load_plugin(w->ctx, w->rt, ngx_cycle, dir, config_json)`.
+
+=== `ngx_js_handle_master_channel_msgs` changes (`ngx_js_module.c`)
+
+Extended to also accept `NGX_CMD_JS_USE_PLUGIN` (alongside the existing
+`NGX_CMD_JS_WORKER_MSG`).  When received, it broadcasts the payload as
+`NGX_CMD_JS_LOAD_PLUGIN` to all workers except the one that sent the request.
+
+=== `ngx_js_channel_send` visibility
+
+`ngx_js_channel_send` was promoted from `static` to a module-level function
+(declared in `ngx_js.h`) so that both `ngx_js_com.c` and `ngx_js_module.c`
+can use it.
+
+== Limitations
+
+* Each worker loads the plugin independently using its own JS runtime.
+  Side effects in one worker (e.g., modifying a location handler) are private
+  to that worker.  All workers converge to the same state once the broadcast
+  completes.
+* The broadcast is fire-and-forget — there is no acknowledgement or ordering
+  guarantee relative to subsequent requests.
+* If a worker exits and restarts after a hot reload, the restarted worker
+  inherits the master's pre-fork state and will not have the dynamically
+  loaded plugin.  Persistent dynamic plugins require `js_source` in nginx.conf.
+* `nginx.use` is NOT callable from the master process via `nginx.on('workerSpawned')` or similar — the broadcast mechanism is worker-only.
+
+== Test coverage
+
+`t/js_pilgrim_p16_hot_reload.t` — 18 explicit tests + 2 auto-checks:
+
+|===
+| Tests | Scenario
+
+| 1–2   | P7 master-phase `nginx.use` still works (static plugin)
+| 3–6   | Worker `nginx.use` loads dynamic plugin, no config
+| 7–10  | Worker `nginx.use` with config object; `pluginConfig.tag` propagated
+| 11–14 | Worker `nginx.use` with `package.json` custom entry point
+| 15–16 | Repeated `nginx.use` call is harmless
+| 17    | nginx started without crash
+| 18    | No alerts/emergencies in error.log
+|===

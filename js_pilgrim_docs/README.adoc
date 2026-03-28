@@ -190,11 +190,13 @@ a browser DevTools tab).
   through all entries (GENERATOR, WB_SYNC, WB_ASYNC, STREAM_*).
   No code changes — structurally complete since P5.
 
-| P16
-| Post-fork plugin loading (nginx.use hot reload)
+| P16 ✓
+| <<p16-hot-reload.adoc#,Post-fork plugin loading (nginx.use hot reload)>>
 | `nginx.use(path, config)` callable from a worker request handler —
-  loads a plugin into the current worker's runtime without a full nginx
-  reload.  A broadcast mechanism propagates the load to all workers.
+  loads the plugin locally then sends `NGX_CMD_JS_USE_PLUGIN` to master,
+  which forwards `NGX_CMD_JS_LOAD_PLUGIN` to every other worker.
+  `ngx_js_load_plugin` is the shared helper; `ngx_js_channel_send`
+  promoted from static for reuse.
 
 | P17
 | Standard listen socket support for P4/P6

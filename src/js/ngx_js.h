@@ -338,6 +338,21 @@ u_char    *ngx_js_read_file(ngx_cycle_t *cycle, ngx_str_t *path,
 void       ngx_js_log_exception(JSContext *ctx, ngx_log_t *log);
 
 /*
+ * P16: load a plugin from `dir` (absolute path) into ctx/rt.
+ * config_json — JSON string used as nginx.pluginConfig (NULL → "{}").
+ * Returns NGX_OK on success, NGX_ERROR on failure.
+ */
+ngx_int_t  ngx_js_load_plugin(JSContext *ctx, JSRuntime *rt,
+    ngx_cycle_t *cycle, const char *dir, const char *config_json);
+
+/*
+ * P16: send an nginx channel message (header + payload) over fd.
+ * Used by both ngx_js_com.c and ngx_js_module.c for channel communication.
+ */
+ngx_int_t  ngx_js_channel_send(ngx_socket_t fd, ngx_uint_t command,
+    ngx_uint_t slot_arg, const uint8_t *buf, size_t len, ngx_log_t *log);
+
+/*
  * Compile and execute a JS file as an ES module.  Handles the compile-only
  * → JS_EvalFunction → drain-jobs → promise-rejection-check sequence that
  * QuickJS requires for module-mode evaluation.

@@ -328,6 +328,8 @@ static ngx_int_t ngx_js_init_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_process(ngx_cycle_t *cycle);
 static void      ngx_js_exit_master(ngx_cycle_t *cycle);
 static void      ngx_js_bcast_recv_handler(ngx_event_t *ev);
+static void      ngx_js_handle_worker_load_plugin(ngx_socket_t fd,
+    ngx_int_t payload_len);
 static void      ngx_js_handle_worker_channel_msg(ngx_socket_t fd,
     ngx_int_t payload_len);
 static void      ngx_js_handle_master_channel_msgs(ngx_cycle_t *cycle);
@@ -991,6 +993,71 @@ ngx_js_handle_worker_channel_msg(ngx_socket_t fd, ngx_int_t payload_len)
 
 
 /*
+ * P16: called in this worker when master sends NGX_CMD_JS_LOAD_PLUGIN.
+ * Payload format: "absolute_dir\0config_json\0".
+ * Reads the payload, then calls ngx_js_load_plugin to evaluate the plugin
+ * in this worker's runtime.
+ */
+static void
+ngx_js_handle_worker_load_plugin(ngx_socket_t fd, ngx_int_t payload_len)
+{
+    ngx_js_conf_t    *jcf;
+    ngx_js_worker_t  *w;
+    static uint8_t    buf[NGX_JS_MSG_MAX];
+    ssize_t           n;
+    ngx_int_t         total;
+    const char       *dir, *config_json;
+    size_t            dir_len;
+
+    if (payload_len <= 0 || (size_t) payload_len > NGX_JS_MSG_MAX) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "js: load_plugin: invalid payload_len %i", payload_len);
+        return;
+    }
+
+    total = 0;
+    while (total < payload_len) {
+        n = recv(fd, buf + total, (size_t) (payload_len - total), 0);
+        if (n > 0) {
+            total += (ngx_int_t) n;
+            continue;
+        }
+        if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, ngx_errno,
+                          "js: load_plugin: recv() failed");
+            return;
+        }
+    }
+
+    /* Ensure NUL-termination */
+    buf[total] = '\0';
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL) {
+        return;
+    }
+
+    w = jcf->worker;
+    if (w == NULL || w->ctx == NULL) {
+        return;
+    }
+
+    /* Parse two NUL-terminated strings from payload */
+    dir        = (const char *) buf;
+    dir_len    = strnlen(dir, (size_t) total);
+    config_json = (dir_len + 1 < (size_t) total)
+                  ? (const char *) buf + dir_len + 1
+                  : NULL;
+
+    ngx_log_debug1(NGX_LOG_DEBUG_CORE, ngx_cycle->log, 0,
+                   "js: P16: worker loading plugin from broadcast: %s", dir);
+
+    (void) ngx_js_load_plugin(w->ctx, w->rt, (ngx_cycle_t *) ngx_cycle,
+                              dir, config_json);
+}
+
+
+/*
  * Phase 3: called by the master loop after SIGIO to drain worker→master
  * JS messages from all active channel[0] fds.
  * Performs non-blocking reads; ignores EAGAIN/unknown commands.
@@ -1031,7 +1098,9 @@ ngx_js_handle_master_channel_msgs(ngx_cycle_t *cycle)
             continue;
         }
 
-        if (ch.command != NGX_CMD_JS_WORKER_MSG) {
+        if (ch.command != NGX_CMD_JS_WORKER_MSG
+            && ch.command != NGX_CMD_JS_USE_PLUGIN)
+        {
             /* Not a JS message — log and skip (shouldn't happen) */
             ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
                           "js: master channel: unexpected command %ui from slot %i",
@@ -1063,6 +1132,34 @@ ngx_js_handle_master_channel_msgs(ngx_cycle_t *cycle)
         }
 
         if (total < payload_len) {
+            continue;
+        }
+
+        /*
+         * P16: NGX_CMD_JS_USE_PLUGIN — worker requests that all OTHER
+         * workers load the same plugin.  Broadcast via NGX_CMD_JS_LOAD_PLUGIN
+         * to every worker except the one that sent the request (slot i).
+         */
+        if (ch.command == NGX_CMD_JS_USE_PLUGIN) {
+            ngx_int_t  k;
+
+            buf[total] = '\0';  /* safety NUL */
+            ngx_log_debug2(NGX_LOG_DEBUG_CORE, cycle->log, 0,
+                           "js: P16: master broadcasting plugin load from"
+                           " worker %i: %s", i, buf);
+
+            for (k = 0; k < ngx_last_process; k++) {
+                if (k == i) {
+                    continue;  /* skip the sender */
+                }
+                if (ngx_processes[k].channel[0] >= 0) {
+                    ngx_js_channel_send(ngx_processes[k].channel[0],
+                                       NGX_CMD_JS_LOAD_PLUGIN,
+                                       (ngx_uint_t) k,
+                                       buf, (size_t) total,
+                                       cycle->log);
+                }
+            }
             continue;
         }
 
@@ -1313,14 +1410,18 @@ extern void  (*ngx_js_master_event)(ngx_cycle_t *cycle, const char *event,
 extern void  (*ngx_js_worker_channel_msg)(ngx_socket_t fd,
     ngx_int_t payload_len);
 extern void  (*ngx_js_master_channel_msg)(ngx_cycle_t *cycle);
+extern void  (*ngx_js_worker_load_plugin)(ngx_socket_t fd,    /* P16 */
+    ngx_int_t payload_len);
 
 static ngx_int_t
 ngx_js_init_module(ngx_cycle_t *cycle)
 {
-    /* Wire up all three master supervisory-loop hooks. */
-    ngx_js_master_event      = ngx_js_dispatch_master_event;
+    /* Wire up master supervisory-loop hooks. */
+    ngx_js_master_event       = ngx_js_dispatch_master_event;
     ngx_js_worker_channel_msg = ngx_js_handle_worker_channel_msg;
     ngx_js_master_channel_msg = ngx_js_handle_master_channel_msgs;
+    /* P16: broadcast plugin-load from worker to this worker */
+    ngx_js_worker_load_plugin = ngx_js_handle_worker_load_plugin;
 
     return NGX_OK;
 }

@@ -1262,7 +1262,7 @@ ngx_js_nginx_on(JSContext *ctx, JSValueConst this_val,
  * AF_UNIX; both ends are O_NONBLOCK (set by ngx_spawn_process).
  * Returns NGX_OK or NGX_ERROR.
  */
-static ngx_int_t
+ngx_int_t
 ngx_js_channel_send(ngx_socket_t fd, ngx_uint_t command, ngx_uint_t slot_arg,
     const uint8_t *buf, size_t len, ngx_log_t *log)
 {
@@ -1473,85 +1473,40 @@ ngx_js_send_to_master(JSContext *ctx, JSValueConst this_val,
 
 
 /*
- * nginx.use(path[, config]) — JS-Pilgrim P7
+ * ngx_js_load_plugin — P16 shared helper.
  *
- * Load a JS plugin package from the filesystem.
+ * Load a JS plugin from absolute directory path `dir` into ctx/rt.
+ * config_json: optional JSON string used as nginx.pluginConfig (NULL → "{}").
  *
- * path   — directory path; may be absolute or relative to cycle->prefix.
- *          If the directory contains a package.json with an "ngxjs" object
- *          whose "main" key names the entry file, that file is loaded.
- *          Otherwise the directory's index.js is loaded.
- * config — optional JS value exposed as nginx.pluginConfig before the
- *          plugin script is evaluated.  Defaults to {}.
+ * Called from both the master (via nginx.use) and from workers (via the
+ * NGX_CMD_JS_LOAD_PLUGIN broadcast handler).
  *
- * Returns nginx (for chaining).
- * Only callable before fork (init_conf / master process).
+ * Returns NGX_OK on success, NGX_ERROR on failure.
  */
-static JSValue
-ngx_js_use(JSContext *ctx, JSValueConst this_val,
-    int argc, JSValueConst *argv)
+ngx_int_t
+ngx_js_load_plugin(JSContext *ctx, JSRuntime *rt, ngx_cycle_t *cycle,
+    const char *dir, const char *config_json)
 {
-    ngx_cycle_t  *cycle;
-    JSRuntime    *rt;
-    const char   *path_str, *main_str;
-    u_char       *src;
-    size_t        src_len;
+    const char   *main_str;
+    u_char       *src, *pkg_src;
+    size_t        src_len, pkg_len;
     ngx_str_t     entry_path, pkg_path;
     JSValue       config, global, nginx_obj;
     JSValue       pkg_val, ngxjs_val, main_val;
-    char          dir_buf[NGX_MAX_PATH];
     char          entry_buf[NGX_MAX_PATH];
     char          pkg_buf[NGX_MAX_PATH];
-    u_char       *pkg_src;
-    size_t        pkg_len;
-
-    if (ngx_process != NGX_PROCESS_MASTER
-        && ngx_process != NGX_PROCESS_SINGLE)
-    {
-        return JS_ThrowTypeError(ctx,
-            "nginx.use: only callable before fork (init_conf)");
-    }
-
-    if (argc < 1 || !JS_IsString(argv[0])) {
-        return JS_ThrowTypeError(ctx,
-            "nginx.use(path[, config]): string path required");
-    }
-
-    cycle = JS_GetContextOpaque(ctx);
-    if (cycle == NULL) {
-        return JS_ThrowInternalError(ctx, "nginx.use: no cycle context");
-    }
-
-    path_str = JS_ToCString(ctx, argv[0]);
-    if (!path_str) {
-        return JS_EXCEPTION;
-    }
-
-    /* resolve path relative to cycle->prefix if not absolute */
-    {
-        u_char *p;
-        if (path_str[0] == '/') {
-            p = ngx_snprintf((u_char *) dir_buf, sizeof(dir_buf) - 1,
-                             "%s", path_str);
-        } else {
-            p = ngx_snprintf((u_char *) dir_buf, sizeof(dir_buf) - 1,
-                             "%V%s", &cycle->prefix, path_str);
-        }
-        *p = '\0';
-    }
-    JS_FreeCString(ctx, path_str);
 
     /* default entry point: <dir>/index.js */
     {
         u_char *p = ngx_snprintf((u_char *) entry_buf, sizeof(entry_buf) - 1,
-                                 "%s/index.js", dir_buf);
+                                 "%s/index.js", dir);
         *p = '\0';
     }
 
     /* check package.json for a custom entry point */
     {
         u_char *p = ngx_snprintf((u_char *) pkg_buf, sizeof(pkg_buf) - 1,
-                                 "%s/package.json", dir_buf);
+                                 "%s/package.json", dir);
         *p = '\0';
     }
 
@@ -1593,7 +1548,7 @@ ngx_js_use(JSContext *ctx, JSValueConst this_val,
                 if (main_str) {
                     u_char *p = ngx_snprintf(
                         (u_char *) entry_buf, sizeof(entry_buf) - 1,
-                        "%s/%s", dir_buf, main_str);
+                        "%s/%s", dir, main_str);
                     *p = '\0';
                     JS_FreeCString(ctx, main_str);
                 }
@@ -1611,14 +1566,22 @@ ngx_js_use(JSContext *ctx, JSValueConst this_val,
 
     src = ngx_js_read_file(cycle, &entry_path, &src_len);
     if (src == NULL) {
-        return JS_ThrowTypeError(ctx, "nginx.use: failed to read '%s'",
-                                 entry_buf);
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "js: nginx.use: failed to read '%s'", entry_buf);
+        return NGX_ERROR;
     }
 
     /* expose config as nginx.pluginConfig before plugin runs */
-    config = (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1]))
-             ? JS_DupValue(ctx, argv[1])
-             : JS_NewObject(ctx);
+    if (config_json != NULL && config_json[0] != '\0') {
+        config = JS_ParseJSON(ctx, config_json, strlen(config_json),
+                              "<pluginConfig>");
+        if (JS_IsException(config)) {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            config = JS_NewObject(ctx);
+        }
+    } else {
+        config = JS_NewObject(ctx);
+    }
 
     global    = JS_GetGlobalObject(ctx);
     nginx_obj = JS_GetPropertyStr(ctx, global, "nginx");
@@ -1627,13 +1590,156 @@ ngx_js_use(JSContext *ctx, JSValueConst this_val,
     JS_FreeValue(ctx, global);
 
     /* evaluate the plugin as an ES module */
-    rt = JS_GetRuntime(ctx);
     if (ngx_js_eval_module(ctx, rt, src, src_len,
                            (const u_char *) entry_buf, cycle->log)
         != NGX_CONF_OK)
     {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+/*
+ * nginx.use(path[, config]) — JS-Pilgrim P7 / P16
+ *
+ * Load a JS plugin package from the filesystem.
+ *
+ * path   — directory path; may be absolute or relative to cycle->prefix.
+ *          If the directory contains a package.json with an "ngxjs" object
+ *          whose "main" key names the entry file, that file is loaded.
+ *          Otherwise the directory's index.js is loaded.
+ * config — optional JS value exposed as nginx.pluginConfig before the
+ *          plugin script is evaluated.  Defaults to {}.
+ *
+ * P7:  callable before fork (master process) — loads the plugin into the
+ *      master runtime so workers inherit it via COW.
+ * P16: also callable from worker request handlers — loads the plugin into
+ *      this worker's runtime immediately and broadcasts the load to all
+ *      other workers via the master (NGX_CMD_JS_USE_PLUGIN → master →
+ *      NGX_CMD_JS_LOAD_PLUGIN → each other worker).
+ *
+ * Returns nginx (for chaining).
+ */
+static JSValue
+ngx_js_use(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_cycle_t   *cycle;
+    const char    *path_str;
+    char           dir_buf[NGX_MAX_PATH];
+    const char    *config_json;
+    JSValue        config_json_val;
+    JSRuntime     *rt;
+    uint8_t        payload[NGX_JS_MSG_MAX];
+    size_t         path_payload_len, cfg_payload_len, payload_len;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.use(path[, config]): string path required");
+    }
+
+    /*
+     * In master/single mode, context opaque is ngx_cycle_t*.
+     * In worker mode, context opaque is ngx_js_worker_t* — use ngx_cycle.
+     */
+    if (ngx_process == NGX_PROCESS_MASTER
+        || ngx_process == NGX_PROCESS_SINGLE)
+    {
+        cycle = JS_GetContextOpaque(ctx);
+        if (cycle == NULL) {
+            return JS_ThrowInternalError(ctx, "nginx.use: no cycle context");
+        }
+    } else {
+        cycle = (ngx_cycle_t *) ngx_cycle;
+        if (cycle == NULL) {
+            return JS_ThrowInternalError(ctx, "nginx.use: ngx_cycle is NULL");
+        }
+    }
+
+    path_str = JS_ToCString(ctx, argv[0]);
+    if (!path_str) {
         return JS_EXCEPTION;
     }
+
+    /* resolve path relative to cycle->prefix if not absolute */
+    {
+        u_char *p;
+        if (path_str[0] == '/') {
+            p = ngx_snprintf((u_char *) dir_buf, sizeof(dir_buf) - 1,
+                             "%s", path_str);
+        } else {
+            p = ngx_snprintf((u_char *) dir_buf, sizeof(dir_buf) - 1,
+                             "%V%s", &cycle->prefix, path_str);
+        }
+        *p = '\0';
+    }
+    JS_FreeCString(ctx, path_str);
+
+    /*
+     * Serialize config to JSON string so it can be transmitted over the
+     * channel payload (P16 worker broadcast) or used directly (master).
+     */
+    config_json      = NULL;
+    config_json_val  = JS_UNDEFINED;
+
+    if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        config_json_val = JS_JSONStringify(ctx, argv[1],
+                                           JS_UNDEFINED, JS_UNDEFINED);
+        if (!JS_IsException(config_json_val)) {
+            config_json = JS_ToCString(ctx, config_json_val);
+        }
+    }
+
+    /* Load the plugin in this process's runtime */
+    rt = JS_GetRuntime(ctx);
+    if (ngx_js_load_plugin(ctx, rt, cycle, dir_buf, config_json) != NGX_OK) {
+        JS_FreeCString(ctx, config_json);
+        JS_FreeValue(ctx, config_json_val);
+        return JS_EXCEPTION;
+    }
+
+    /*
+     * P16: if we are a worker, broadcast the plugin load to all other
+     * workers via the master.
+     *
+     * Payload format: dir_buf\0config_json\0
+     * Sent as NGX_CMD_JS_USE_PLUGIN to master (via ngx_channel = channel[1]).
+     * Master handles it in ngx_js_handle_master_channel_msgs and forwards as
+     * NGX_CMD_JS_LOAD_PLUGIN to every OTHER worker.
+     */
+    if (ngx_process == NGX_PROCESS_WORKER && ngx_channel >= 0) {
+        path_payload_len = strlen(dir_buf) + 1;          /* include NUL */
+        cfg_payload_len  = config_json
+                           ? strlen(config_json) + 1     /* include NUL */
+                           : 1;                          /* just "\0" */
+        payload_len = path_payload_len + cfg_payload_len;
+
+        if (payload_len <= sizeof(payload)) {
+            ngx_memcpy(payload, dir_buf, path_payload_len);
+            if (config_json) {
+                ngx_memcpy(payload + path_payload_len,
+                           config_json, cfg_payload_len);
+            } else {
+                payload[path_payload_len] = '\0';
+            }
+
+            ngx_js_channel_send(ngx_channel,
+                                NGX_CMD_JS_USE_PLUGIN,
+                                (ngx_uint_t) ngx_worker,
+                                payload, payload_len,
+                                cycle->log);
+        } else {
+            ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                          "js: nginx.use: plugin path+config too large"
+                          " for broadcast (%uz > %uz)",
+                          payload_len, sizeof(payload));
+        }
+    }
+
+    JS_FreeCString(ctx, config_json);
+    JS_FreeValue(ctx, config_json_val);
 
     return JS_DupValue(ctx, this_val);  /* return nginx for chaining */
 }

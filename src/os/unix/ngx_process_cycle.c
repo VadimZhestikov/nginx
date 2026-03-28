@@ -68,6 +68,12 @@ void  (*ngx_js_master_event)(ngx_cycle_t *cycle, const char *event,
 void  (*ngx_js_worker_channel_msg)(ngx_socket_t fd, ngx_int_t payload_len);
 
 /*
+ * P16: called in the worker when NGX_CMD_JS_LOAD_PLUGIN arrives.
+ * Payload is "dir\0config_json\0"; the worker loads the named plugin.
+ */
+void  (*ngx_js_worker_load_plugin)(ngx_socket_t fd, ngx_int_t payload_len);
+
+/*
  * Phase 3: called in the master after SIGIO to drain worker→master JS
  * messages from all channel[0] fds via non-blocking reads.
  */
@@ -1162,6 +1168,13 @@ ngx_channel_handler(ngx_event_t *ev)
              */
             if (ngx_js_worker_channel_msg) {
                 ngx_js_worker_channel_msg(c->fd, (ngx_int_t) ch.fd);
+            }
+            break;
+
+        case NGX_CMD_JS_LOAD_PLUGIN:
+            /* P16: master broadcasts a plugin load to this worker. */
+            if (ngx_js_worker_load_plugin) {
+                ngx_js_worker_load_plugin(c->fd, (ngx_int_t) ch.fd);
             }
             break;
         }
