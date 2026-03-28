@@ -477,8 +477,10 @@ ngx_js_http_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
-/* forward declaration — defined after the hook helpers section below */
+/* forward declarations — defined after the hook helpers section below */
 static ngx_int_t  ngx_js_http_access_handler(ngx_http_request_t *r);
+static void       ngx_js_p2_hook_resume(ngx_js_worker_t *w,
+                                        ngx_js_async_ctx_t *actx);
 
 
 static ngx_int_t
@@ -4831,11 +4833,18 @@ ngx_js_async_check(ngx_js_worker_t *w)
             ngx_http_request_t  *pend_r;
             ngx_int_t            cont_rc;
 
-            *pp    = actx->next;
+            *pp = actx->next;
+
+            /* P2 access-phase async hook */
+            if (actx->is_p2_hook) {
+                ngx_js_p2_hook_resume(w, actx);
+                break;
+            }
+
             req_op = JS_GetOpaque(actx->req_obj, ngx_js_request_class_id);
 
             if (actx->is_hook && (req_op == NULL || !req_op->responded)) {
-                /* Hook fulfilled without responding — re-enter to run next
+                /* P1 hook fulfilled without responding — re-enter to run next
                  * hook or the main handler. */
                 pend_r = actx->r;
                 JS_FreeValue(ctx, actx->req_obj);
@@ -4863,7 +4872,33 @@ ngx_js_async_check(ngx_js_worker_t *w)
         }
 
         case JS_PROMISE_REJECTED:
-            *pp    = actx->next;
+            *pp = actx->next;
+
+            if (actx->is_p2_hook) {
+                /*
+                 * P2 access-phase hook rejected — log + send 500.
+                 * count is 2 here (access phase engine didn't call finalize
+                 * for NGX_DONE).  Balance count 2→1, then send 500.
+                 */
+                reason = JS_PromiseResult(ctx, actx->promise);
+                str    = JS_ToString(ctx, reason);
+                cstr   = JS_ToCString(ctx, str);
+                if (cstr) {
+                    ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
+                                  "js P2 async hook exception: %s", cstr);
+                    JS_FreeCString(ctx, cstr);
+                }
+                JS_FreeValue(ctx, str);
+                JS_FreeValue(ctx, reason);
+                JS_FreeValue(ctx, actx->req_obj);
+                JS_FreeValue(ctx, actx->promise);
+                /* Balance count 2→1 (no actual finalization at count=2). */
+                ngx_http_finalize_request(actx->r, NGX_DONE);
+                /* Send 500 (count=1 → actual finalization). */
+                ngx_http_finalize_request(actx->r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+                break;
+            }
+
             reason = JS_PromiseResult(ctx, actx->promise);
             str    = JS_ToString(ctx, reason);
             cstr   = JS_ToCString(ctx, str);
@@ -4885,6 +4920,90 @@ ngx_js_async_check(ngx_js_worker_t *w)
             break;
         }
     }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* P2 async hook resume (called from ngx_js_async_check)              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Called when a P2 (access-phase) async hook Promise settles.
+ *
+ * Count invariant when this is called:
+ *   - Access phase engine returned NGX_OK for our NGX_DONE without calling
+ *     ngx_http_finalize_request, so r->main->count is still 2 (baseline 1
+ *     plus the count++ we did on suspension).
+ *
+ * Resume logic:
+ *   - "responded": hook already sent a response internally; handler called
+ *     ngx_http_finalize_request internally which decremented count 2→1.
+ *     We call finalize(NGX_DONE) once more (count 1 → actual finalization).
+ *   - "all passed" (NGX_DECLINED): finalize(NGX_DONE) to balance count
+ *     2→1, then phase_handler++ + run_phases to continue.
+ *   - "error": finalize(NGX_DONE) to balance count 2→1, then
+ *     finalize(error_rc) to send error response.
+ *   - "another suspension" (NGX_DONE, count went 2→3): finalize(NGX_DONE)
+ *     decrements count 3→2; new suspension will handle itself.
+ */
+static void
+ngx_js_p2_hook_resume(ngx_js_worker_t *w, ngx_js_async_ctx_t *actx)
+{
+    ngx_http_request_t       *r;
+    ngx_js_request_opaque_t  *req_op;
+    ngx_int_t                 cont_rc;
+
+    ngx_int_t  responded;
+
+    r         = actx->r;
+    req_op    = JS_GetOpaque(actx->req_obj, ngx_js_request_class_id);
+    responded = (req_op != NULL && req_op->responded);
+
+    JS_FreeValue(w->ctx, actx->req_obj);
+    JS_FreeValue(w->ctx, actx->promise);
+
+    if (responded) {
+        /*
+         * Hook called req.respond() during async execution.
+         * count is 2 (access phase never calls finalize for NGX_DONE).
+         * Prevent write event re-entry, then double-finalize:
+         *   finalize(NGX_DONE) → count 2→1 (finalize_connection returns)
+         *   finalize(NGX_DONE) → count 1 → ngx_http_close_request
+         */
+        r->write_event_handler = ngx_http_request_empty_handler;
+        ngx_http_finalize_request(r, NGX_DONE);
+        ngx_http_finalize_request(r, NGX_DONE);
+        return;
+    }
+
+    /* Re-enter access handler; it picks up from the saved hook indices. */
+    w->current_request = r;
+    cont_rc = ngx_js_http_access_handler(r);
+    w->current_request = NULL;
+
+    /*
+     * Balance the count++ from our suspension.
+     *
+     * ngx_http_finalize_request(NGX_DONE) calls ngx_http_finalize_connection:
+     *   count = 2 (nothing changed)  → 2-1=1, return  (all-passed case)
+     *   count = 2 (another suspend)  → handler did count++ → 3 first,
+     *                                   3-1=2, return  (new suspension holds)
+     *   count = 2 (responded)        → handler called finalize→ count=1 already,
+     *                                   finalize_connection sees count=1 → ACTUAL
+     *                                   FINALIZATION here (which is what we want)
+     */
+    ngx_http_finalize_request(r, NGX_DONE);
+
+    if (cont_rc == NGX_DECLINED) {
+        /* All P2 hooks passed — advance to content phase. */
+        r->phase_handler++;
+        ngx_http_core_run_phases(r);
+
+    } else if (cont_rc != NGX_DONE) {
+        /* Error — send the error response (count is now 1). */
+        ngx_http_finalize_request(r, cont_rc);
+    }
+    /* NGX_DONE: either another suspension or responded; both self-manage. */
 }
 
 
@@ -5222,101 +5341,30 @@ ngx_js_response_hooks_run(ngx_js_worker_t *w, ngx_http_request_t *r,
 }
 
 
-/*
- * Sync-only hook runner for P2 access-phase hooks.
- * Returns one of NGX_JS_HOOK_CONTINUE / RESPONDED / ERROR.
- * If hook returns a pending Promise: logs error, returns NGX_JS_HOOK_ERROR.
- * Never suspends the request (no NGX_JS_HOOK_SUSPENDED).
- */
-static ngx_int_t
-ngx_js_run_hook_fn_sync(ngx_js_worker_t *w, ngx_http_request_t *r,
-    JSValue req_obj, JSValue fn)
-{
-    JSContext                *ctx, *job_ctx;
-    JSValue                   result, then, reason, str;
-    int                       is_promise;
-    const char               *cstr;
-    ngx_js_request_opaque_t  *req_op;
-
-    ctx    = w->ctx;
-    result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
-
-    if (JS_IsException(result)) {
-        ngx_js_log_exception(ctx, r->connection->log);
-        JS_FreeValue(ctx, result);
-        return NGX_JS_HOOK_ERROR;
-    }
-
-    while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { /* drain */ }
-
-    is_promise = 0;
-
-    if (JS_IsObject(result)) {
-        then       = JS_GetPropertyStr(ctx, result, "then");
-        is_promise = JS_IsFunction(ctx, then);
-        JS_FreeValue(ctx, then);
-    }
-
-    if (is_promise) {
-        switch (JS_PromiseState(ctx, result)) {
-
-        case JS_PROMISE_PENDING:
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                          "js: async hooks are not supported at server/"
-                          "global scope (P2); use location.addHook() for "
-                          "async hooks");
-            JS_FreeValue(ctx, result);
-            return NGX_JS_HOOK_ERROR;
-
-        case JS_PROMISE_REJECTED:
-            reason = JS_PromiseResult(ctx, result);
-            str    = JS_ToString(ctx, reason);
-            cstr   = JS_ToCString(ctx, str);
-            if (cstr) {
-                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                              "js hook exception: %s", cstr);
-                JS_FreeCString(ctx, cstr);
-            }
-            JS_FreeValue(ctx, str);
-            JS_FreeValue(ctx, reason);
-            JS_FreeValue(ctx, result);
-            return NGX_JS_HOOK_ERROR;
-
-        default:  /* FULFILLED */
-            JS_FreeValue(ctx, result);
-            break;
-        }
-
-    } else {
-        JS_FreeValue(ctx, result);
-    }
-
-    req_op = JS_GetOpaque(req_obj, ngx_js_request_class_id);
-    if (req_op != NULL && req_op->responded) {
-        return NGX_JS_HOOK_RESPONDED;
-    }
-
-    return NGX_JS_HOOK_CONTINUE;
-}
-
 
 /*
  * Access phase handler for JS-Pilgrim P2 global and server hooks.
- * Runs nginx.http.addHook() functions (global) then server.addHook()
- * functions (per-server) for every request, before content handler.
+ * Runs nginx.http.addHook() (global) then server.addHook() (per-server)
+ * before the content handler.
  *
- * All hooks are sync-only.  If a hook calls req.respond(), the request
- * is finalised immediately and NGX_DONE is returned to stop phase
- * processing.  If all hooks pass, NGX_DECLINED advances to next phase.
+ * Supports async hooks (hooks that return a Promise).  When a hook
+ * suspends, the request is held open via r->main->count++ and NGX_DONE
+ * is returned to stop phase processing.  On async resume the handler is
+ * re-entered directly (bypassing the phase engine) and continues from
+ * the saved hook indices stored in the per-request context.
+ *
+ * If a hook calls req.respond() (sync or async), the response has been
+ * sent and NGX_DONE is returned; finalisation is handled by the caller.
+ * If all hooks pass, NGX_DECLINED advances to the next phase.
  */
 static ngx_int_t
 ngx_js_http_access_handler(ngx_http_request_t *r)
 {
     ngx_js_http_main_conf_t  *jmcf;
-
     ngx_js_http_srv_conf_t   *jscf;
     ngx_js_conf_t            *jcf;
     ngx_js_worker_t          *w;
+    ngx_js_req_ctx_t         *rctx;
     JSContext                *ctx;
     JSValue                   req_obj;
     uint32_t                 *hooks;
@@ -5348,6 +5396,16 @@ ngx_js_http_access_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
+    /* Get or create per-request context (stores async resume indices). */
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    if (rctx == NULL) {
+        rctx = ngx_pcalloc(r->pool, sizeof(ngx_js_req_ctx_t));
+        if (rctx == NULL) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        ngx_http_set_ctx(r, rctx, ngx_js_http_module);
+    }
+
     ctx     = w->ctx;
     req_obj = ngx_js_wrap_request(ctx, r);
     if (JS_IsException(req_obj)) {
@@ -5356,13 +5414,13 @@ ngx_js_http_access_handler(ngx_http_request_t *r)
 
     w->current_request = r;
 
-    /* Run global (http-level) hooks */
+    /* Run global (http-level) hooks, resuming from saved index. */
     if (jmcf != NULL && jmcf->hooks != NULL) {
         hooks = jmcf->hooks->elts;
 
-        for (i = 0; i < jmcf->hooks->nelts; i++) {
+        for (i = rctx->p2_global_idx; i < jmcf->hooks->nelts; i++) {
             hfn     = ngx_js_hook_get_fn(ctx, hooks[i]);
-            hook_rc = ngx_js_run_hook_fn_sync(w, r, req_obj, hfn);
+            hook_rc = ngx_js_run_hook_fn(w, r, req_obj, hfn);
             JS_FreeValue(ctx, hfn);
 
             if (hook_rc == NGX_JS_HOOK_RESPONDED) {
@@ -5372,16 +5430,33 @@ ngx_js_http_access_handler(ngx_http_request_t *r)
             if (hook_rc == NGX_JS_HOOK_ERROR) {
                 goto error;
             }
+
+            if (hook_rc == NGX_JS_HOOK_SUSPENDED) {
+                /*
+                 * ngx_js_run_hook_fn already allocated actx, pushed it to
+                 * w->async_pending, and did r->main->count++.  It set
+                 * is_hook=1 (P1 path); correct that to is_p2_hook=1 so
+                 * ngx_js_async_check uses the P2 resume path.
+                 */
+                rctx->p2_global_idx          = i + 1;
+                w->async_pending->is_hook    = 0;
+                w->async_pending->is_p2_hook = 1;
+                JS_FreeValue(ctx, req_obj);
+                w->current_request     = NULL;
+                w->request_deadline_ms = 0;
+                return NGX_DONE;
+            }
         }
+        rctx->p2_global_idx = (ngx_uint_t) jmcf->hooks->nelts;
     }
 
-    /* Run server-level hooks */
+    /* Run server-level hooks, resuming from saved index. */
     if (jscf != NULL && jscf->hooks != NULL) {
         hooks = jscf->hooks->elts;
 
-        for (i = 0; i < jscf->hooks->nelts; i++) {
+        for (i = rctx->p2_server_idx; i < jscf->hooks->nelts; i++) {
             hfn     = ngx_js_hook_get_fn(ctx, hooks[i]);
-            hook_rc = ngx_js_run_hook_fn_sync(w, r, req_obj, hfn);
+            hook_rc = ngx_js_run_hook_fn(w, r, req_obj, hfn);
             JS_FreeValue(ctx, hfn);
 
             if (hook_rc == NGX_JS_HOOK_RESPONDED) {
@@ -5390,6 +5465,16 @@ ngx_js_http_access_handler(ngx_http_request_t *r)
 
             if (hook_rc == NGX_JS_HOOK_ERROR) {
                 goto error;
+            }
+
+            if (hook_rc == NGX_JS_HOOK_SUSPENDED) {
+                rctx->p2_server_idx          = i + 1;
+                w->async_pending->is_hook    = 0;
+                w->async_pending->is_p2_hook = 1;
+                JS_FreeValue(ctx, req_obj);
+                w->current_request     = NULL;
+                w->request_deadline_ms = 0;
+                return NGX_DONE;
             }
         }
     }
@@ -5408,14 +5493,10 @@ responded:
     w->current_request     = NULL;
     w->request_deadline_ms = 0;
     /*
-     * The hook called req.respond(): headers and body have already been
-     * sent via ngx_http_output_filter.  We need to prevent the content
-     * phase (and any subsequent write-event replay) from running.
-     *
+     * The hook called req.respond(): response has been sent.
      * Set the write event handler to the empty handler so that no further
-     * phase processing is triggered when the write event fires to flush
-     * the buffered response.  Then call ngx_http_finalize_request to
-     * decrement r->main->count and schedule proper request cleanup.
+     * phase processing fires.  Then call ngx_http_finalize_request to
+     * decrement r->main->count and schedule proper cleanup.
      */
     r->write_event_handler = ngx_http_request_empty_handler;
     ngx_http_finalize_request(r, respond_rc);
