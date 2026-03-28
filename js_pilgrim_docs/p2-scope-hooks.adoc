@@ -1,0 +1,169 @@
+= JS-Pilgrim P2 — Server & Global Hooks
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-27
+
+Pre-content hooks at server and HTTP-global scope.  Fire for every matching
+request regardless of the content handler — works with `proxy_pass`, static files,
+FastCGI, and JS handlers alike.
+
+== Concept
+
+P2 hooks run in the nginx **access phase**, before the content phase where P1
+location hooks run.
+
+....
+request
+  ↓
+[ACCESS PHASE]   nginx.http.addHook hooks   ← global, all requests
+                 server.addHook hooks       ← per-server
+  ↓
+[CONTENT PHASE]  location.addHook hooks    ← per-location (P1)
+                 location.handler          ← JS or nginx handler
+....
+
+Each layer can cancel by calling `req.respond()`.  If all hooks in a layer pass
+(return without calling `req.respond()`), processing advances to the next layer.
+
+== API
+
+=== `nginx.http.addHook(fn)` — global hook
+
+Fires for every HTTP request, on every server.
+
+[source,javascript]
+----
+nginx.http.addHook(function(req) {
+    if (req.headers['x-maintenance']) {
+        req.respond(503, {}, 'Under maintenance\n');
+    }
+});
+----
+
+=== `server.addHook(fn)` — server hook
+
+Fires only for requests to the specific server block.
+
+[source,javascript]
+----
+const srv = nginx.http.servers.find(s => s.name === 'api.example.com');
+
+srv.addHook(function(req) {
+    const key = req.headers['x-api-key'];
+    if (key !== 'secret') {
+        req.respond(403, {}, 'Forbidden\n');
+    }
+});
+----
+
+`server` is a `NginxServer` object from `nginx.http.servers[]`.
+
+=== Cancellation
+
+Same as P1: call `req.respond(status, headers, body)` to cancel.  All remaining
+hooks and the content handler are skipped.
+
+=== Sync-only
+
+P2 hooks are **synchronous only**.  If a hook function returns a pending Promise
+(i.e. `async function` that awaits real I/O), nginx logs an error and returns 500.
+
+Use `location.addHook(asyncFn)` (P1) for hooks that need async work.
+
+== Full chain example
+
+[source,javascript]
+----
+// Global: log all requests
+nginx.http.addHook(function(req) {
+    nginx.log(nginx.INFO, req.method + ' ' + req.uri);
+});
+
+// Server: API key guard for api.example.com
+const apiSrv = nginx.http.servers.find(s => s.name === 'api.example.com');
+apiSrv.addHook(function(req) {
+    if (!req.headers['x-api-key']) {
+        req.respond(401, {}, 'Unauthorized\n');
+    }
+});
+
+// Location: rate limit on /api/search
+const loc = apiSrv.findLocation('/api/search');
+loc.addHook(function(req) {   // P1 hook
+    if (rateLimitExceeded(req.remoteAddr)) {
+        req.respond(429, {}, 'Rate limit exceeded\n');
+    }
+});
+loc.handler = async function(req) {
+    // ... actual handler ...
+};
+----
+
+Execution order: global log hook → API key guard → rate limit → handler.
+
+== Cross-hook communication
+
+P2 hooks run in the access phase with their own `req` wrapper.  P1 location hooks
+run in the content phase with a fresh wrapper.  Use **nginx variables** to share
+state across phases:
+
+[source,javascript]
+----
+// P2 global hook — decode JWT, store user ID
+nginx.http.addHook(function(req) {
+    const user = decodeJwt(req.headers['authorization']);
+    req.setVar('jwt_user', user.id);   // stored in nginx variable
+});
+
+// P1 location hook — read the variable set by P2
+loc.addHook(function(req) {
+    const userId = req.getVar('jwt_user');
+    if (!userId) {
+        req.respond(401, {}, 'Not authenticated\n');
+    }
+});
+----
+
+== Limitations (P2)
+
+* **Sync-only**: P2 hooks cannot await Promises.  Pending Promises produce a 500 error.
+* **No `next()` wrapping**: post-response callbacks are not available at this scope.
+* **Access phase only**: P2 hooks do not fire for subrequests (`r != r->main`).
+
+== Implementation Notes
+
+Two new per-module conf structs are added to `ngx_js_http_module`:
+- `ngx_js_http_main_conf_t` (HTTP main conf) — global hook fn-index array
+- `ngx_js_http_srv_conf_t` (server conf) — per-server hook fn-index array
+
+`ngx_js_http_postconfiguration` (formerly `ngx_js_filter_init`) registers
+`ngx_js_http_access_handler` into `NGX_HTTP_ACCESS_PHASE` in addition to
+installing the response filter chain.
+
+The access handler:
+1. Skips subrequests (`r != r->main`)
+2. Fast-exits when both hook arrays are empty (zero overhead for configs that use neither)
+3. Creates a fresh `NginxRequest` wrapper for the hooks
+4. Runs global hooks, then server hooks via `ngx_js_run_hook_fn_sync`
+5. On hook respond: calls `ngx_http_finalize_request(r, respond_rc)` then returns
+   `NGX_DONE` (prevents nginx from generating its own error page)
+6. On all pass: returns `NGX_DECLINED` (phase engine advances to content phase)
+
+== Test Coverage
+
+`t/js_pilgrim_p2_scope_hooks.t` (15 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2   | Global passthrough hook → JS handler responds
+| 3–5   | Global cancel hook → hook responds, handler skipped
+| 6–7   | Server hook fires only for its own server (not the other)
+| 8     | Global hook fires for all servers
+| 9–11  | Execution order: global (P2) → server (P2) → location (P1) → handler
+| 12–13 | Global cancel works for any server
+| 14–15 | Non-JS content handler (nginx return) with passthrough P2 hook
+|===

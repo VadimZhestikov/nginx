@@ -6355,6 +6355,56 @@ ngx_js_server_fn_clone(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * server.addHook(fn) — register a sync-only pre-content hook for all
+ * requests to this server block.  fn(req) is called in the ACCESS phase
+ * before the content handler.  Call req.respond() to short-circuit.
+ * Unlike location.addHook(), async functions are not supported here.
+ */
+static JSValue
+ngx_js_server_fn_add_hook(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t  *op;
+    ngx_http_core_srv_conf_t *cscf;
+    ngx_js_http_srv_conf_t   *jscf;
+    uint32_t                  idx;
+    uint32_t                 *entry;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        JS_ThrowTypeError(ctx, "addHook: argument must be a function");
+        return JS_EXCEPTION;
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    cscf = op->cscf;
+    jscf = cscf->ctx->srv_conf[ngx_js_http_module.ctx_index];
+    if (jscf == NULL) {
+        return JS_ThrowInternalError(ctx, "addHook: no srv_conf");
+    }
+
+    if (jscf->hooks == NULL) {
+        jscf->hooks = ngx_array_create(op->cycle->pool, 4, sizeof(uint32_t));
+        if (jscf->hooks == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+    }
+
+    idx   = ngx_js_hook_register_fn(ctx, argv[0]);
+    entry = ngx_array_push(jscf->hooks);
+    if (entry == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    *entry = idx;
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("name",                     ngx_js_server_get,                       NULL,              0),
     JS_CGETSET_MAGIC_DEF("root",                     ngx_js_server_get,                       ngx_js_server_set, 1),
@@ -6375,6 +6425,7 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CFUNC_DEF         ("removeLocation",           1, ngx_js_server_fn_remove_location),
     JS_CFUNC_DEF         ("clone",                    1, ngx_js_server_fn_clone),
     JS_CFUNC_DEF         ("findLocation",             1, ngx_js_server_fn_find_location),
+    JS_CFUNC_DEF         ("addHook",                  1, ngx_js_server_fn_add_hook),
 };
 
 
@@ -8458,6 +8509,65 @@ ngx_js_location_fn_snapshot(JSContext *ctx, JSValueConst this_val,
 /* ------------------------------------------------------------------ */
 
 /*
+ * nginx.http.addHook(fn) — register a sync-only pre-content hook for ALL
+ * HTTP requests, regardless of content handler (P2, global scope).
+ * fn(req) is called in the ACCESS phase before the content handler.
+ * Call req.respond() to short-circuit.  Async functions are not supported.
+ */
+static JSValue
+ngx_js_http_fn_add_hook(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_cycle_t              *cycle;
+    ngx_http_conf_ctx_t      *conf_ctx;
+    ngx_js_http_main_conf_t  *jmcf;
+    uint32_t                  idx;
+    uint32_t                 *entry;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        JS_ThrowTypeError(ctx, "addHook: argument must be a function");
+        return JS_EXCEPTION;
+    }
+
+    /*
+     * Use the cycle saved at http-module install time.  During init_conf,
+     * ngx_cycle still points to the old init_cycle; ngx_js_http_cycle is
+     * the new cycle where the http{} block lives.
+     */
+    cycle = ngx_js_http_cycle ? ngx_js_http_cycle : (ngx_cycle_t *) ngx_cycle;
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "addHook: cycle unavailable");
+    }
+
+    conf_ctx = (ngx_http_conf_ctx_t *)
+                   cycle->conf_ctx[ngx_http_module.index];
+    if (conf_ctx == NULL) {
+        return JS_ThrowInternalError(ctx, "addHook: no http{} block");
+    }
+
+    jmcf = conf_ctx->main_conf[ngx_js_http_module.ctx_index];
+    if (jmcf == NULL) {
+        return JS_ThrowInternalError(ctx, "addHook: no http main conf");
+    }
+
+    if (jmcf->hooks == NULL) {
+        jmcf->hooks = ngx_array_create(cycle->pool, 4, sizeof(uint32_t));
+        if (jmcf->hooks == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+    }
+
+    idx   = ngx_js_hook_register_fn(ctx, argv[0]);
+    entry = ngx_array_push(jmcf->hooks);
+    if (entry == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    *entry = idx;
+    return JS_UNDEFINED;
+}
+
+/*
  * Register the NginxServer and NginxLocation classes with this runtime.
  * Called by ngx_js_com_register_classes() from ngx_js_com.c.
  */
@@ -8932,6 +9042,11 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
     JS_SetPropertyStr(ctx, http_obj, "match",
                       JS_NewCFunction(ctx, ngx_js_http_fn_match,
                                       "match", 1));
+
+    /* nginx.http.addHook(fn) — P2 global access-phase hook */
+    JS_SetPropertyStr(ctx, http_obj, "addHook",
+                      JS_NewCFunction(ctx, ngx_js_http_fn_add_hook,
+                                      "addHook", 1));
 
     /* nginx.http.upstreams[] — delegated to upstream COM */
     if (ngx_js_upstream_com_install(ctx, http_obj, cycle) != NGX_OK) {

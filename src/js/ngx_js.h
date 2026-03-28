@@ -202,6 +202,24 @@ typedef struct {
 
 
 /*
+ * Per-http{} (global) JS hook config owned by ngx_js_http_module.
+ * hooks: array of uint32_t indices into __ngx_hooks__ JS array.
+ */
+typedef struct {
+    ngx_array_t  *hooks;
+} ngx_js_http_main_conf_t;
+
+
+/*
+ * Per-server{} JS hook config owned by ngx_js_http_module.
+ * hooks: array of uint32_t indices into __ngx_hooks__ JS array.
+ */
+typedef struct {
+    ngx_array_t  *hooks;
+} ngx_js_http_srv_conf_t;
+
+
+/*
  * Per-location JS handler config owned by ngx_js_http_module.
  * handler_idx == -1 means no JS handler is set for this location.
  * Otherwise it is an index into the global __ngx_handlers__ array

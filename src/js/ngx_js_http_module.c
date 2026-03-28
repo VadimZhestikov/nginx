@@ -426,9 +426,62 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 }
 
 
-static ngx_int_t
-ngx_js_filter_init(ngx_conf_t *cf)
+static void *
+ngx_js_http_create_main_conf(ngx_conf_t *cf)
 {
+    ngx_js_http_main_conf_t  *jmcf;
+
+    jmcf = ngx_pcalloc(cf->pool, sizeof(ngx_js_http_main_conf_t));
+    if (jmcf == NULL) {
+        return NULL;
+    }
+    /* jmcf->hooks = NULL by pcalloc */
+    return jmcf;
+}
+
+
+static void *
+ngx_js_http_create_srv_conf(ngx_conf_t *cf)
+{
+    ngx_js_http_srv_conf_t  *jscf;
+
+    jscf = ngx_pcalloc(cf->pool, sizeof(ngx_js_http_srv_conf_t));
+    if (jscf == NULL) {
+        return NULL;
+    }
+    return jscf;
+}
+
+
+static char *
+ngx_js_http_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
+{
+    /* Server hooks are per-server; no inheritance from main. */
+    return NGX_CONF_OK;
+}
+
+
+/* forward declaration — defined after the hook helpers section below */
+static ngx_int_t  ngx_js_http_access_handler(ngx_http_request_t *r);
+
+
+static ngx_int_t
+ngx_js_http_postconfiguration(ngx_conf_t *cf)
+{
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_handler_pt        *h;
+
+    /* Register access-phase handler for P2 global + server hooks */
+    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+
+    *h = ngx_js_http_access_handler;
+
+    /* Install response filter hooks (existing) */
     ngx_js_next_header_filter = ngx_http_top_header_filter;
     ngx_http_top_header_filter = ngx_js_header_filter;
 
@@ -4854,6 +4907,213 @@ ngx_js_run_hook_fn(ngx_js_worker_t *w, ngx_http_request_t *r,
 }
 
 
+/*
+ * Sync-only hook runner for P2 access-phase hooks.
+ * Returns one of NGX_JS_HOOK_CONTINUE / RESPONDED / ERROR.
+ * If hook returns a pending Promise: logs error, returns NGX_JS_HOOK_ERROR.
+ * Never suspends the request (no NGX_JS_HOOK_SUSPENDED).
+ */
+static ngx_int_t
+ngx_js_run_hook_fn_sync(ngx_js_worker_t *w, ngx_http_request_t *r,
+    JSValue req_obj, JSValue fn)
+{
+    JSContext                *ctx, *job_ctx;
+    JSValue                   result, then, reason, str;
+    int                       is_promise;
+    const char               *cstr;
+    ngx_js_request_opaque_t  *req_op;
+
+    ctx    = w->ctx;
+    result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
+
+    if (JS_IsException(result)) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        JS_FreeValue(ctx, result);
+        return NGX_JS_HOOK_ERROR;
+    }
+
+    while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { /* drain */ }
+
+    is_promise = 0;
+
+    if (JS_IsObject(result)) {
+        then       = JS_GetPropertyStr(ctx, result, "then");
+        is_promise = JS_IsFunction(ctx, then);
+        JS_FreeValue(ctx, then);
+    }
+
+    if (is_promise) {
+        switch (JS_PromiseState(ctx, result)) {
+
+        case JS_PROMISE_PENDING:
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "js: async hooks are not supported at server/"
+                          "global scope (P2); use location.addHook() for "
+                          "async hooks");
+            JS_FreeValue(ctx, result);
+            return NGX_JS_HOOK_ERROR;
+
+        case JS_PROMISE_REJECTED:
+            reason = JS_PromiseResult(ctx, result);
+            str    = JS_ToString(ctx, reason);
+            cstr   = JS_ToCString(ctx, str);
+            if (cstr) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "js hook exception: %s", cstr);
+                JS_FreeCString(ctx, cstr);
+            }
+            JS_FreeValue(ctx, str);
+            JS_FreeValue(ctx, reason);
+            JS_FreeValue(ctx, result);
+            return NGX_JS_HOOK_ERROR;
+
+        default:  /* FULFILLED */
+            JS_FreeValue(ctx, result);
+            break;
+        }
+
+    } else {
+        JS_FreeValue(ctx, result);
+    }
+
+    req_op = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+    if (req_op != NULL && req_op->responded) {
+        return NGX_JS_HOOK_RESPONDED;
+    }
+
+    return NGX_JS_HOOK_CONTINUE;
+}
+
+
+/*
+ * Access phase handler for JS-Pilgrim P2 global and server hooks.
+ * Runs nginx.http.addHook() functions (global) then server.addHook()
+ * functions (per-server) for every request, before content handler.
+ *
+ * All hooks are sync-only.  If a hook calls req.respond(), the request
+ * is finalised immediately and NGX_DONE is returned to stop phase
+ * processing.  If all hooks pass, NGX_DECLINED advances to next phase.
+ */
+static ngx_int_t
+ngx_js_http_access_handler(ngx_http_request_t *r)
+{
+    ngx_js_http_main_conf_t  *jmcf;
+
+    ngx_js_http_srv_conf_t   *jscf;
+    ngx_js_conf_t            *jcf;
+    ngx_js_worker_t          *w;
+    JSContext                *ctx;
+    JSValue                   req_obj;
+    uint32_t                 *hooks;
+    ngx_uint_t                i;
+    ngx_js_request_opaque_t  *req_op;
+    ngx_int_t                 hook_rc;
+    ngx_int_t                 respond_rc;
+    JSValue                   hfn;
+
+    /* Skip subrequests */
+    if (r != r->main) {
+        return NGX_DECLINED;
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    w   = jcf->worker;
+
+    if (w == NULL || w->ctx == NULL) {
+        return NGX_DECLINED;
+    }
+
+    jmcf = ngx_http_get_module_main_conf(r, ngx_js_http_module);
+    jscf = ngx_http_get_module_srv_conf(r, ngx_js_http_module);
+
+    /* Fast path: no hooks registered */
+    if ((jmcf == NULL || jmcf->hooks == NULL || jmcf->hooks->nelts == 0)
+        && (jscf == NULL || jscf->hooks == NULL || jscf->hooks->nelts == 0))
+    {
+        return NGX_DECLINED;
+    }
+
+    ctx     = w->ctx;
+    req_obj = ngx_js_wrap_request(ctx, r);
+    if (JS_IsException(req_obj)) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    w->current_request = r;
+
+    /* Run global (http-level) hooks */
+    if (jmcf != NULL && jmcf->hooks != NULL) {
+        hooks = jmcf->hooks->elts;
+
+        for (i = 0; i < jmcf->hooks->nelts; i++) {
+            hfn     = ngx_js_hook_get_fn(ctx, hooks[i]);
+            hook_rc = ngx_js_run_hook_fn_sync(w, r, req_obj, hfn);
+            JS_FreeValue(ctx, hfn);
+
+            if (hook_rc == NGX_JS_HOOK_RESPONDED) {
+                goto responded;
+            }
+
+            if (hook_rc == NGX_JS_HOOK_ERROR) {
+                goto error;
+            }
+        }
+    }
+
+    /* Run server-level hooks */
+    if (jscf != NULL && jscf->hooks != NULL) {
+        hooks = jscf->hooks->elts;
+
+        for (i = 0; i < jscf->hooks->nelts; i++) {
+            hfn     = ngx_js_hook_get_fn(ctx, hooks[i]);
+            hook_rc = ngx_js_run_hook_fn_sync(w, r, req_obj, hfn);
+            JS_FreeValue(ctx, hfn);
+
+            if (hook_rc == NGX_JS_HOOK_RESPONDED) {
+                goto responded;
+            }
+
+            if (hook_rc == NGX_JS_HOOK_ERROR) {
+                goto error;
+            }
+        }
+    }
+
+    /* All hooks passed */
+    JS_FreeValue(ctx, req_obj);
+    w->current_request     = NULL;
+    w->request_deadline_ms = 0;
+    return NGX_DECLINED;
+
+responded:
+    req_op     = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+    respond_rc = (req_op != NULL) ? req_op->respond_rc
+                                  : NGX_HTTP_INTERNAL_SERVER_ERROR;
+    JS_FreeValue(ctx, req_obj);
+    w->current_request     = NULL;
+    w->request_deadline_ms = 0;
+    /*
+     * The hook called req.respond(): headers and body have already been
+     * sent via ngx_http_output_filter.  We need to prevent the content
+     * phase (and any subsequent write-event replay) from running.
+     *
+     * Set the write event handler to the empty handler so that no further
+     * phase processing is triggered when the write event fires to flush
+     * the buffered response.  Then call ngx_http_finalize_request to
+     * decrement r->main->count and schedule proper request cleanup.
+     */
+    r->write_event_handler = ngx_http_request_empty_handler;
+    ngx_http_finalize_request(r, respond_rc);
+    return NGX_DONE;
+
+error:
+    JS_FreeValue(ctx, req_obj);
+    w->current_request     = NULL;
+    w->request_deadline_ms = 0;
+    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+}
+
+
 /* ------------------------------------------------------------------ */
 /* Content handler — called by NGINX in each worker process            */
 /* ------------------------------------------------------------------ */
@@ -6652,14 +6912,14 @@ static ngx_command_t  ngx_js_http_commands[] = {
 
 
 static ngx_http_module_t  ngx_js_http_module_ctx = {
-    NULL,                       /* preconfiguration  */
-    ngx_js_filter_init,         /* postconfiguration */
-    NULL,                       /* create main configuration */
-    NULL,                       /* init main configuration   */
-    NULL,                       /* create server configuration */
-    NULL,                       /* merge server configuration  */
-    ngx_js_create_loc_conf,     /* create location configuration */
-    ngx_js_merge_loc_conf       /* merge location configuration  */
+    NULL,                           /* preconfiguration  */
+    ngx_js_http_postconfiguration,  /* postconfiguration */
+    ngx_js_http_create_main_conf,   /* create main configuration */
+    NULL,                           /* init main configuration   */
+    ngx_js_http_create_srv_conf,    /* create server configuration */
+    ngx_js_http_merge_srv_conf,     /* merge server configuration  */
+    ngx_js_create_loc_conf,         /* create location configuration */
+    ngx_js_merge_loc_conf           /* merge location configuration  */
 };
 
 

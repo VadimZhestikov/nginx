@@ -88,8 +88,8 @@ a browser DevTools tab).
 | `location.addHook(fn)` — async pre-content hooks on a location.  Sync and async
   (Promise-returning) hooks; cancel by calling `req.respond()`.
 
-| P2
-| Server & global hooks
+| P2 ✓
+| <<p2-scope-hooks.adoc#,Server & global hooks>>
 | `server.addHook(fn)`, `nginx.http.addHook(fn)` — hooks at higher scopes
   via the nginx access phase; fire for every matching request regardless of
   content handler.
