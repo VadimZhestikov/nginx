@@ -847,6 +847,17 @@ ngx_js_sw_thread(void *arg)
     uint8_t                 *buf, **sab_tab;
     int                      terminate;
     ngx_uint_t               wi;
+    sigset_t                 sigmask;
+
+    /* Block all signals so process-directed signals (especially SIGCHLD
+     * from dying worker children) are delivered to the main thread's
+     * sigsuspend, not stolen by this helper thread. */
+    sigfillset(&sigmask);
+    pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
+
+    { FILE *_dbgsw = fopen("/tmp/ngx_js_dbg.log", "a");
+      if (_dbgsw) { fprintf(_dbgsw, "sw_thread: tid=%lu\n",
+          (unsigned long)pthread_self()); fclose(_dbgsw); } }
 
     ngx_js_sw_thread_active = 1;
 
@@ -1666,17 +1677,27 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
             sw->worker_slots[i].w          = NULL;
         }
 
-        if (pthread_create(&sw->tid, NULL, ngx_js_sw_thread, sw) != 0) {
-            for (i = 0; i < nchannels; i++) {
-                channel_destroy(&sw->channels[i]);
+        {
+            sigset_t  full, prev;
+            int       rc;
+
+            sigfillset(&full);
+            pthread_sigmask(SIG_BLOCK, &full, &prev);
+            rc = pthread_create(&sw->tid, NULL, ngx_js_sw_thread, sw);
+            pthread_sigmask(SIG_SETMASK, &prev, NULL);
+
+            if (rc != 0) {
+                for (i = 0; i < nchannels; i++) {
+                    channel_destroy(&sw->channels[i]);
+                }
+                ngx_free(sw->worker_slots);
+                ngx_free(sw->channels);
+                ngx_free(sw->script);
+                ngx_free(sw->url);
+                ngx_free(sw);
+                return JS_ThrowInternalError(ctx,
+                    "new SharedWorker: pthread_create failed");
             }
-            ngx_free(sw->worker_slots);
-            ngx_free(sw->channels);
-            ngx_free(sw->script);
-            ngx_free(sw->url);
-            ngx_free(sw);
-            return JS_ThrowInternalError(ctx,
-                "new SharedWorker: pthread_create failed");
         }
 
         /* Prepend to registry */
@@ -2459,6 +2480,20 @@ ngx_js_sw_manager_thread(void *arg)
     ngx_js_sw_state_t         *sw;
     struct pollfd              pfds[2];
     char                       cmdbuf[NGX_JS_SW_CMD_MAX];
+    sigset_t                   sigmask;
+
+    /* Block all process-directed signals so they are delivered to the
+     * master's main thread (which uses sigsuspend) rather than this
+     * helper thread.  In a multi-threaded process, SIGCHLD from dying
+     * worker children can otherwise be stolen by this thread, preventing
+     * sigsuspend from ever returning in the main thread. */
+    sigfillset(&sigmask);
+    pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
+
+    { FILE *_dbgmgr = fopen("/tmp/ngx_js_dbg.log", "a");
+      if (_dbgmgr) { fprintf(_dbgmgr, "mgr_thread started: tid=%lu\n",
+          (unsigned long)pthread_self()); fclose(_dbgmgr); } }
+
     uint32_t                   url_len, worker_idx;
     char                      *url;
     ngx_uint_t                 nchannels, i;
@@ -2989,18 +3024,31 @@ ngx_js_sw_manager_start(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
-    if (pthread_create(&sw_mgr_tid, NULL,
-                       ngx_js_sw_manager_thread, jcf) != 0)
+    /* Block all signals before pthread_create so the manager thread
+     * inherits a fully-blocked signal mask.  Process-directed signals
+     * (especially SIGCHLD from dying workers) must be delivered to the
+     * main thread's sigsuspend, not stolen by helper threads.
+     * Restore the main thread's mask immediately after create. */
     {
-        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
-                      "js: SharedWorker manager pthread_create failed");
-        close(sw_cmd_fds[0]);
-        close(sw_cmd_fds[1]);
-        close(sw_term_fds[0]);
-        close(sw_term_fds[1]);
-        sw_cmd_fds[0]  = sw_cmd_fds[1]  = -1;
-        sw_term_fds[0] = sw_term_fds[1] = -1;
-        return NGX_ERROR;
+        sigset_t  full, prev;
+        int       rc;
+
+        sigfillset(&full);
+        pthread_sigmask(SIG_BLOCK, &full, &prev);
+        rc = pthread_create(&sw_mgr_tid, NULL, ngx_js_sw_manager_thread, jcf);
+        pthread_sigmask(SIG_SETMASK, &prev, NULL);
+
+        if (rc != 0) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                          "js: SharedWorker manager pthread_create failed");
+            close(sw_cmd_fds[0]);
+            close(sw_cmd_fds[1]);
+            close(sw_term_fds[0]);
+            close(sw_term_fds[1]);
+            sw_cmd_fds[0]  = sw_cmd_fds[1]  = -1;
+            sw_term_fds[0] = sw_term_fds[1] = -1;
+            return NGX_ERROR;
+        }
     }
 
     sw_mgr_started = 1;

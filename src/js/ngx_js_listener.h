@@ -31,8 +31,7 @@
 
 #define NGX_JS_LISTENER_REG_MAX      32
 #define NGX_JS_LISTENER_VSERVERS_MAX 32
-#define NGX_JS_ACCEPT_HANDLERS_MAX   8
-#define NGX_JS_L4_FILTERS_MAX        8
+/* NGX_JS_ACCEPT_HANDLERS_MAX and NGX_JS_L4_FILTERS_MAX are defined in ngx_js.h */
 
 
 /*
@@ -137,6 +136,26 @@ JSValue  ngx_js_wrap_listener(JSContext *ctx, uint32_t handle);
  * global object of ctx.  Called from ngx_js_com_init().
  */
 ngx_int_t  ngx_js_l4_install_source_factory(JSContext *ctx);
+
+/*
+ * P17: Register a JS function in the accept-hook registry; return its index.
+ * Non-static so that server.on('accept', fn) in ngx_js_com_http.c can use it.
+ */
+uint32_t  ngx_js_accept_hook_register_fn(JSContext *ctx, JSValueConst fn);
+
+/*
+ * P17: Register a JS function in the L4 filter registry; return its index.
+ * Non-static so that server.addL4Filter(fn) in ngx_js_com_http.c can use it.
+ */
+uint32_t  ngx_js_l4_filter_register_fn(JSContext *ctx, JSValueConst fn);
+
+/*
+ * P17: After all JS scripts have been evaluated in init_conf, iterate
+ * cycle->listening and override ls->handler to ngx_js_srv_accept_handler
+ * on every standard HTTP socket whose default server has JS accept hooks
+ * or L4 filters registered via server.on() / server.addL4Filter().
+ */
+void  ngx_js_srv_install_accept_hooks(ngx_cycle_t *cycle);
 
 
 #endif /* _NGX_JS_LISTENER_H_INCLUDED_ */

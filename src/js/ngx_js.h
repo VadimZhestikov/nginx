@@ -246,6 +246,11 @@ typedef struct {
 } ngx_js_filter_entry_t;
 
 
+/* Shared limits for accept hook and L4 filter arrays (P4/P6/P17) */
+#define NGX_JS_ACCEPT_HANDLERS_MAX   8
+#define NGX_JS_L4_FILTERS_MAX        8
+
+
 /*
  * Per-http{} (global) JS hook config owned by ngx_js_http_module.
  * hooks: array of uint32_t indices into __ngx_hooks__ JS array.
@@ -258,9 +263,25 @@ typedef struct {
 /*
  * Per-server{} JS hook config owned by ngx_js_http_module.
  * hooks: array of uint32_t indices into __ngx_hooks__ JS array.
+ *
+ * P17: accept_handlers / l4_filters / l4_send_filters are parallel to
+ * the arrays in ngx_js_http_listener_state_t and are filled by
+ * server.on('accept', fn) / server.addL4Filter(fn) / server.addL4SendFilter(fn)
+ * during the init_conf phase.  srv_listener_state is a pointer to the
+ * ngx_js_http_listener_state_t that is built from these arrays after
+ * all JS scripts have been evaluated; it is used by the accept handler
+ * that overrides ls->handler on standard listen sockets.
  */
 typedef struct {
     ngx_array_t  *hooks;
+    /* P17: standard-socket accept hooks and L4 filters */
+    uint32_t      accept_handlers[NGX_JS_ACCEPT_HANDLERS_MAX];
+    ngx_uint_t    n_accept_handlers;
+    uint32_t      l4_filters[NGX_JS_L4_FILTERS_MAX];
+    ngx_uint_t    n_l4_filters;
+    uint32_t      l4_send_filters[NGX_JS_L4_FILTERS_MAX];
+    ngx_uint_t    n_l4_send_filters;
+    void         *srv_listener_state;  /* ngx_js_http_listener_state_t* */
 } ngx_js_http_srv_conf_t;
 
 

@@ -680,6 +680,12 @@ ngx_js_worker_thread(void *arg)
     ngx_js_msg_t           *msg;
     ngx_js_wt_sw_t         *sw;
     int                     terminate;
+    sigset_t                sigmask;
+
+    /* Block all signals: process-directed signals should be handled
+     * by the nginx main thread (event loop), not this helper thread. */
+    sigfillset(&sigmask);
+    pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
 
     rt = JS_NewRuntime();
     if (rt == NULL) {
@@ -1411,18 +1417,29 @@ ngx_js_worker_ctor(JSContext *ctx, JSValueConst new_target,
 
     /* ---- Spawn the worker thread ---- */
 
-    if (pthread_create(&state->tid, NULL,
-                       ngx_js_worker_thread, state) != 0)
+    /* Block all signals before pthread_create so the JS Worker thread
+     * inherits a fully-blocked mask.  Process-directed signals (SIGQUIT,
+     * SIGCHLD, etc.) must be handled by the nginx event-loop main thread. */
     {
-        ngx_del_event(conn->read, NGX_READ_EVENT, 0);
-        ngx_free_connection(conn);
-        ngx_free(opaque);
-        pipe_destroy(&state->from_worker);
-        pipe_destroy(&state->to_worker);
-        ngx_free(state->script);
-        ngx_free(state);
-        return JS_ThrowInternalError(ctx,
-                                     "new Worker(): pthread_create failed");
+        sigset_t  full, prev;
+        int       rc;
+
+        sigfillset(&full);
+        pthread_sigmask(SIG_BLOCK, &full, &prev);
+        rc = pthread_create(&state->tid, NULL, ngx_js_worker_thread, state);
+        pthread_sigmask(SIG_SETMASK, &prev, NULL);
+
+        if (rc != 0) {
+            ngx_del_event(conn->read, NGX_READ_EVENT, 0);
+            ngx_free_connection(conn);
+            ngx_free(opaque);
+            pipe_destroy(&state->from_worker);
+            pipe_destroy(&state->to_worker);
+            ngx_free(state->script);
+            ngx_free(state);
+            return JS_ThrowInternalError(ctx,
+                                         "new Worker(): pthread_create failed");
+        }
     }
 
     /* ---- Build the JS Worker object ---- */

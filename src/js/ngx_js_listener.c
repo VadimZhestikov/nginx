@@ -44,6 +44,9 @@
 extern JSValue  ngx_js_wrap_server(JSContext *ctx,
     ngx_http_core_srv_conf_t *cscf, ngx_cycle_t *cycle);
 
+/* P17: HTTP module — needed in ngx_js_srv_accept_handler */
+extern ngx_module_t  ngx_js_http_module;
+
 
 JSClassID                     ngx_js_http_listener_class_id;
 JSClassID                     ngx_js_connection_class_id;
@@ -303,7 +306,7 @@ ngx_js_accept_hooks_get_registry(JSContext *ctx)
 }
 
 
-static uint32_t
+uint32_t
 ngx_js_accept_hook_register_fn(JSContext *ctx, JSValueConst fn)
 {
     JSValue   reg, lenval;
@@ -358,7 +361,7 @@ ngx_js_l4_filters_get_registry(JSContext *ctx)
 }
 
 
-static uint32_t
+uint32_t
 ngx_js_l4_filter_register_fn(JSContext *ctx, JSValueConst fn)
 {
     JSValue   reg, lenval;
@@ -1360,22 +1363,24 @@ ngx_js_l4_read_handler(ngx_event_t *rev)
 
     p = (ngx_js_l4_pending_t *) c->data;
 
-    if (p == NULL) {
-        /* First recv: allocate pending and start filter chain */
-        p = ngx_pcalloc(c->pool, sizeof(ngx_js_l4_pending_t));
+    if (p == NULL || JS_IsUndefined(p->gen)) {
+        /* First recv: allocate pending (P6) or start pre-allocated (P17) */
         if (p == NULL) {
-            ngx_close_connection(c);
-            return;
+            p = ngx_pcalloc(c->pool, sizeof(ngx_js_l4_pending_t));
+            if (p == NULL) {
+                ngx_close_connection(c);
+                return;
+            }
+            p->c          = c;
+            p->st         = st;
+            p->fi         = 0;
+            p->gen        = JS_UNDEFINED;
+            p->next_fn    = JS_UNDEFINED;
+            p->gen_result = JS_UNDEFINED;
+            p->source_obj = JS_UNDEFINED;
+            p->deliver_fn = JS_UNDEFINED;
+            c->data       = p;
         }
-        p->c          = c;
-        p->st         = st;
-        p->fi         = 0;
-        p->gen        = JS_UNDEFINED;
-        p->next_fn    = JS_UNDEFINED;
-        p->gen_result = JS_UNDEFINED;
-        p->source_obj = JS_UNDEFINED;
-        p->deliver_fn = JS_UNDEFINED;
-        c->data       = p;
 
         if (ngx_js_l4_start_filter(ctx, rt, p) != NGX_OK) {
             ngx_js_l4_pending_free_jsvals(ctx, p);
@@ -1537,10 +1542,18 @@ ngx_js_l4_install_source_factory(JSContext *ctx)
 /* listeners that have at least one accept hook registered.            */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Core accept-handler logic shared between JS-created listeners (P4/P6)
+ * and standard nginx listen sockets (P17).
+ *
+ * Runs accept hooks from st->accept_handlers, then installs L4 send/recv
+ * filters from st->l4_send_filters / st->l4_filters, then calls
+ * ngx_http_init_connection(c) to hand off to the HTTP pipeline.
+ */
 static void
-ngx_js_http_accept_handler(ngx_connection_t *c)
+ngx_js_run_accept_handler(ngx_connection_t *c,
+    ngx_js_http_listener_state_t *st)
 {
-    ngx_js_http_listener_state_t  *st;
     ngx_js_conf_t                 *jcf;
     ngx_js_conn_opaque_t          *op;
     JSContext                     *ctx;
@@ -1548,14 +1561,6 @@ ngx_js_http_accept_handler(ngx_connection_t *c)
     JSValue                        conn_obj, fn, ret;
     uint32_t                      *indices;
     ngx_uint_t                     i;
-
-    /*
-     * Recover the listener state from ls->servers, which points to &st->port.
-     * Use offsetof to convert the port pointer back to the containing struct.
-     */
-    st = (ngx_js_http_listener_state_t *)
-             ((u_char *) c->listening->servers
-              - offsetof(ngx_js_http_listener_state_t, port));
 
     /*
      * Get the JS context.  jcf->ctx is COW-shared; in worker processes
@@ -1634,8 +1639,32 @@ ngx_js_http_accept_handler(ngx_connection_t *c)
         c->send_chain = ngx_js_l4_send_chain;
     }
 
-    /* P6/P12: L4 inbound filter — intercept raw bytes before HTTP init */
+    /* P6/P12/P17: L4 inbound filter — intercept raw bytes before HTTP init */
     if (st->n_l4_filters > 0) {
+        ngx_js_l4_pending_t  *p;
+
+        /*
+         * Pre-allocate the pending struct so that ngx_js_l4_read_handler
+         * can find the correct st pointer even for P17 standard sockets
+         * (where the offsetof trick on c->listening->servers does not work).
+         * The gen field is left JS_UNDEFINED so that ngx_js_l4_read_handler
+         * knows to call ngx_js_l4_start_filter on the first data event.
+         */
+        p = ngx_pcalloc(c->pool, sizeof(ngx_js_l4_pending_t));
+        if (p == NULL) {
+            ngx_close_connection(c);
+            return;
+        }
+        p->c          = c;
+        p->st         = st;
+        p->fi         = 0;
+        p->gen        = JS_UNDEFINED;
+        p->next_fn    = JS_UNDEFINED;
+        p->gen_result = JS_UNDEFINED;
+        p->source_obj = JS_UNDEFINED;
+        p->deliver_fn = JS_UNDEFINED;
+        c->data       = p;
+
         c->read->handler = ngx_js_l4_read_handler;
         if (c->read->ready) {
             ngx_js_l4_read_handler(c->read);
@@ -1648,6 +1677,241 @@ ngx_js_http_accept_handler(ngx_connection_t *c)
     }
 
     ngx_http_init_connection(c);
+}
+
+
+/*
+ * P4/P6/P13: accept handler for JS-created listeners.
+ * Recovers the listener state via the offsetof trick on ls->servers.
+ */
+static void
+ngx_js_http_accept_handler(ngx_connection_t *c)
+{
+    ngx_js_http_listener_state_t  *st;
+
+    /*
+     * Recover the listener state from ls->servers, which points to &st->port.
+     * Use offsetof to convert the port pointer back to the containing struct.
+     */
+    st = (ngx_js_http_listener_state_t *)
+             ((u_char *) c->listening->servers
+              - offsetof(ngx_js_http_listener_state_t, port));
+
+    ngx_js_run_accept_handler(c, st);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* P17: accept handler for standard nginx listen sockets               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ngx_js_srv_accept_handler — installed on standard HTTP listen sockets
+ * (ls->handler = ngx_http_init_connection by default) when the socket's
+ * default server has JS accept hooks or L4 filters registered via
+ * server.on('accept', fn) / server.addL4Filter(fn).
+ *
+ * Retrieves the per-server ngx_js_http_listener_state_t (pre-built in
+ * ngx_js_srv_install_accept_hooks) from the server's ngx_js_http_srv_conf_t,
+ * then delegates to ngx_js_run_accept_handler.
+ */
+static void
+ngx_js_srv_accept_handler(ngx_connection_t *c)
+{
+    ngx_http_port_t               *port;
+    ngx_http_in_addr_t            *addr;
+    ngx_http_core_srv_conf_t      *cscf;
+    ngx_js_http_srv_conf_t        *jscf;
+    ngx_js_http_listener_state_t  *st;
+#if (NGX_HAVE_INET6)
+    ngx_http_in6_addr_t           *addr6;
+    struct sockaddr_in6           *sin6;
+#endif
+    struct sockaddr_in            *sin;
+    ngx_uint_t                     i;
+
+    port = c->listening->servers;
+
+    if (port->naddrs > 1) {
+        /*
+         * Multiple addresses on this port — determine the actual local
+         * address the connection arrived on (same logic as
+         * ngx_http_init_connection).
+         */
+        if (ngx_connection_local_sockaddr(c, NULL, 0) != NGX_OK) {
+            ngx_http_init_connection(c);
+            return;
+        }
+
+        switch (c->local_sockaddr->sa_family) {
+
+#if (NGX_HAVE_INET6)
+        case AF_INET6:
+            sin6  = (struct sockaddr_in6 *) c->local_sockaddr;
+            addr6 = port->addrs;
+            for (i = 0; i < port->naddrs - 1; i++) {
+                if (ngx_memcmp(&addr6[i].addr6, &sin6->sin6_addr, 16) == 0) {
+                    break;
+                }
+            }
+            cscf = addr6[i].conf.default_server;
+            break;
+#endif
+
+        default: /* AF_INET */
+            sin  = (struct sockaddr_in *) c->local_sockaddr;
+            addr = port->addrs;
+            for (i = 0; i < port->naddrs - 1; i++) {
+                if (addr[i].addr == sin->sin_addr.s_addr) {
+                    break;
+                }
+            }
+            cscf = addr[i].conf.default_server;
+            break;
+        }
+
+    } else {
+
+#if (NGX_HAVE_INET6)
+        if (c->local_sockaddr->sa_family == AF_INET6) {
+            addr6 = port->addrs;
+            cscf  = addr6[0].conf.default_server;
+        } else
+#endif
+        {
+            addr = port->addrs;
+            cscf = addr[0].conf.default_server;
+        }
+    }
+
+    jscf = cscf->ctx->srv_conf[ngx_js_http_module.ctx_index];
+    st   = (ngx_js_http_listener_state_t *) jscf->srv_listener_state;
+
+    if (st == NULL) {
+        ngx_http_init_connection(c);
+        return;
+    }
+
+    ngx_js_run_accept_handler(c, st);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* P17: install accept hooks on standard listen sockets               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ngx_js_srv_install_accept_hooks — called at the end of ngx_js_init_conf
+ * after all JS scripts have been evaluated (so server.on() / addL4Filter()
+ * calls are complete).
+ *
+ * For every standard HTTP listening socket (ls->handler ==
+ * ngx_http_init_connection) whose default server has JS accept/L4 hooks
+ * registered, we:
+ *   1. Build a ngx_js_http_listener_state_t in cycle->pool that mirrors
+ *      the hook arrays from the server's ngx_js_http_srv_conf_t.
+ *   2. Store a pointer to it in jscf->srv_listener_state.
+ *   3. Override ls->handler = ngx_js_srv_accept_handler.
+ *
+ * If multiple sockets belong to the same server, they share one state
+ * (idempotent: srv_listener_state is only created once per jscf).
+ */
+void
+ngx_js_srv_install_accept_hooks(ngx_cycle_t *cycle)
+{
+    ngx_listening_t               *ls;
+    ngx_http_port_t               *port;
+    ngx_http_addr_conf_t          *aconf;
+    ngx_http_core_srv_conf_t      *cscf;
+    ngx_js_http_srv_conf_t        *jscf;
+    ngx_js_http_listener_state_t  *st;
+    ngx_uint_t                     i, j;
+    ngx_int_t                      found;
+
+    if (cycle->listening.nelts == 0) {
+        return;
+    }
+
+    ls = cycle->listening.elts;
+
+    for (i = 0; i < cycle->listening.nelts; i++) {
+
+        if (ls[i].handler != ngx_http_init_connection) {
+            continue;  /* not a standard HTTP socket */
+        }
+
+        port = ls[i].servers;
+        if (port == NULL || port->naddrs == 0) {
+            continue;
+        }
+
+        /*
+         * Scan all addresses on this port.  Override the handler if
+         * ANY addr's default server has JS hooks.
+         */
+        found = 0;
+
+        for (j = 0; j < port->naddrs; j++) {
+
+#if (NGX_HAVE_INET6)
+            if (ls[i].sockaddr->sa_family == AF_INET6) {
+                ngx_http_in6_addr_t *a6 = port->addrs;
+                aconf = &a6[j].conf;
+            } else
+#endif
+            {
+                ngx_http_in_addr_t *a = port->addrs;
+                aconf = &a[j].conf;
+            }
+
+            cscf = aconf->default_server;
+            if (cscf == NULL) {
+                continue;
+            }
+
+            jscf = cscf->ctx->srv_conf[ngx_js_http_module.ctx_index];
+            if (jscf == NULL) {
+                continue;
+            }
+
+            if (jscf->n_accept_handlers == 0
+                && jscf->n_l4_filters == 0
+                && jscf->n_l4_send_filters == 0)
+            {
+                continue;
+            }
+
+            /* Build a listener state for this server if not already done */
+            if (jscf->srv_listener_state == NULL) {
+                st = ngx_pcalloc(cycle->pool,
+                                 sizeof(ngx_js_http_listener_state_t));
+                if (st == NULL) {
+                    return;
+                }
+
+                ngx_memcpy(st->accept_handlers, jscf->accept_handlers,
+                           jscf->n_accept_handlers * sizeof(uint32_t));
+                st->n_accept_handlers = jscf->n_accept_handlers;
+
+                ngx_memcpy(st->l4_filters, jscf->l4_filters,
+                           jscf->n_l4_filters * sizeof(uint32_t));
+                st->n_l4_filters = jscf->n_l4_filters;
+
+                ngx_memcpy(st->l4_send_filters, jscf->l4_send_filters,
+                           jscf->n_l4_send_filters * sizeof(uint32_t));
+                st->n_l4_send_filters = jscf->n_l4_send_filters;
+
+                jscf->srv_listener_state = st;
+            }
+
+            found = 1;
+            break;
+        }
+
+        if (found) {
+            ls[i].handler = ngx_js_srv_accept_handler;
+        }
+    }
 }
 
 

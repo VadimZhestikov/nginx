@@ -28,6 +28,7 @@
 #include "ngx_js.h"
 #include "ngx_js_socket.h"
 #include "ngx_js_sw.h"
+#include "ngx_js_listener.h"
 
 
 /* ------------------------------------------------------------------ */
@@ -570,6 +571,15 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
      * No extra fds needed here — just set the function pointer hooks in
      * ngx_js_init_module() once the processes are spawned.
      */
+
+    /*
+     * P17: all JS scripts have now been evaluated.  Any server.on('accept')
+     * or server.addL4Filter() calls they made have been recorded in the
+     * per-server ngx_js_http_srv_conf_t.  Override ls->handler on every
+     * standard HTTP listen socket whose default server has JS hooks so that
+     * ngx_js_srv_accept_handler fires instead of ngx_http_init_connection.
+     */
+    ngx_js_srv_install_accept_hooks(cycle);
 
     return NGX_CONF_OK;
 

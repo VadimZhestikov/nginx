@@ -7124,6 +7124,168 @@ ngx_js_server_fn_add_hook(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * server.on(event, fn) — P17: register a TCP-accept hook on all standard
+ * listen sockets belonging to this server.
+ * Only 'accept' is supported.  fn(conn) receives a NginxConnection object
+ * (same as listener.on('accept', fn) for JS-created listeners).
+ */
+static JSValue
+ngx_js_server_fn_on(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t   *op;
+    ngx_http_core_srv_conf_t *cscf;
+    ngx_js_http_srv_conf_t   *jscf;
+    const char               *event;
+    uint32_t                  idx;
+
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "server.on: cannot register hooks after fork");
+    }
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "server.on: expected (event, fn)");
+    }
+
+    event = JS_ToCString(ctx, argv[0]);
+    if (event == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_strcmp(event, "accept") != 0) {
+        JS_FreeCString(ctx, event);
+        return JS_ThrowTypeError(ctx,
+            "server.on: unknown event (expected 'accept')");
+    }
+
+    JS_FreeCString(ctx, event);
+
+    if (!JS_IsFunction(ctx, argv[1])) {
+        return JS_ThrowTypeError(ctx,
+            "server.on: second argument must be a function");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    cscf = op->cscf;
+    jscf = cscf->ctx->srv_conf[ngx_js_http_module.ctx_index];
+    if (jscf == NULL) {
+        return JS_ThrowInternalError(ctx, "server.on: no srv_conf");
+    }
+
+    if (jscf->n_accept_handlers >= NGX_JS_ACCEPT_HANDLERS_MAX) {
+        return JS_ThrowInternalError(ctx,
+            "server.on: accept handler limit reached (max %d)",
+            NGX_JS_ACCEPT_HANDLERS_MAX);
+    }
+
+    idx = ngx_js_accept_hook_register_fn(ctx, argv[1]);
+    jscf->accept_handlers[jscf->n_accept_handlers++] = idx;
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * server.addL4Filter(fn) — P17: register a raw TCP inbound data filter on
+ * all standard listen sockets belonging to this server.
+ * fn is an async generator: async function*(source) { ... }
+ */
+static JSValue
+ngx_js_server_fn_add_l4_filter(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t   *op;
+    ngx_http_core_srv_conf_t *cscf;
+    ngx_js_http_srv_conf_t   *jscf;
+    uint32_t                  idx;
+
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "server.addL4Filter: cannot register filters after fork");
+    }
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "server.addL4Filter: function argument required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    cscf = op->cscf;
+    jscf = cscf->ctx->srv_conf[ngx_js_http_module.ctx_index];
+    if (jscf == NULL) {
+        return JS_ThrowInternalError(ctx, "server.addL4Filter: no srv_conf");
+    }
+
+    if (jscf->n_l4_filters >= NGX_JS_L4_FILTERS_MAX) {
+        return JS_ThrowInternalError(ctx,
+            "server.addL4Filter: filter limit reached (max %d)",
+            NGX_JS_L4_FILTERS_MAX);
+    }
+
+    idx = ngx_js_l4_filter_register_fn(ctx, argv[0]);
+    jscf->l4_filters[jscf->n_l4_filters++] = idx;
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * server.addL4SendFilter(fn) — P17: register a raw TCP outbound data filter
+ * on all standard listen sockets belonging to this server.
+ */
+static JSValue
+ngx_js_server_fn_add_l4_send_filter(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t   *op;
+    ngx_http_core_srv_conf_t *cscf;
+    ngx_js_http_srv_conf_t   *jscf;
+    uint32_t                  idx;
+
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "server.addL4SendFilter: cannot register filters after fork");
+    }
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "server.addL4SendFilter: function argument required");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    cscf = op->cscf;
+    jscf = cscf->ctx->srv_conf[ngx_js_http_module.ctx_index];
+    if (jscf == NULL) {
+        return JS_ThrowInternalError(ctx, "server.addL4SendFilter: no srv_conf");
+    }
+
+    if (jscf->n_l4_send_filters >= NGX_JS_L4_FILTERS_MAX) {
+        return JS_ThrowInternalError(ctx,
+            "server.addL4SendFilter: filter limit reached (max %d)",
+            NGX_JS_L4_FILTERS_MAX);
+    }
+
+    idx = ngx_js_l4_filter_register_fn(ctx, argv[0]);
+    jscf->l4_send_filters[jscf->n_l4_send_filters++] = idx;
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("name",                     ngx_js_server_get,                       NULL,              0),
     JS_CGETSET_MAGIC_DEF("root",                     ngx_js_server_get,                       ngx_js_server_set, 1),
@@ -7145,6 +7307,9 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CFUNC_DEF         ("clone",                    1, ngx_js_server_fn_clone),
     JS_CFUNC_DEF         ("findLocation",             1, ngx_js_server_fn_find_location),
     JS_CFUNC_DEF         ("addHook",                  1, ngx_js_server_fn_add_hook),
+    JS_CFUNC_DEF         ("on",                       2, ngx_js_server_fn_on),
+    JS_CFUNC_DEF         ("addL4Filter",              1, ngx_js_server_fn_add_l4_filter),
+    JS_CFUNC_DEF         ("addL4SendFilter",          1, ngx_js_server_fn_add_l4_send_filter),
 };
 
 
