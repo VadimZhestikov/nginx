@@ -29,6 +29,10 @@
 static ngx_http_output_header_filter_pt  ngx_js_next_header_filter;
 static ngx_http_output_body_filter_pt    ngx_js_next_body_filter;
 
+/* Forward declaration — defined after NginxRequest class setup */
+static void  ngx_js_response_hooks_run(ngx_js_worker_t *w,
+    ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf);
+
 
 static ngx_int_t
 ngx_js_header_filter(ngx_http_request_t *r)
@@ -58,7 +62,9 @@ ngx_js_header_filter(ngx_http_request_t *r)
         ngx_http_clear_content_length(r);
     }
 
-    if (jlcf->header_filters == NULL || jlcf->header_filters->nelts == 0) {
+    if ((jlcf->header_filters == NULL || jlcf->header_filters->nelts == 0)
+        && (jlcf->response_hooks == NULL || jlcf->response_hooks->nelts == 0))
+    {
         return ngx_js_next_header_filter(r);
     }
 
@@ -71,7 +77,17 @@ ngx_js_header_filter(ngx_http_request_t *r)
         w->current_request = r;
     }
 
-    ngx_js_header_filters_run(w->ctx, w->rt, r, jlcf);
+    if (jlcf->header_filters != NULL && jlcf->header_filters->nelts > 0) {
+        ngx_js_header_filters_run(w->ctx, w->rt, r, jlcf);
+    }
+
+    /* Response hooks (P3) — modify status/headers before send */
+    if (r == r->main
+        && jlcf->response_hooks != NULL
+        && jlcf->response_hooks->nelts > 0)
+    {
+        ngx_js_response_hooks_run(w, r, jlcf);
+    }
 
     if (!was_set) {
         w->current_request = NULL;
@@ -4908,6 +4924,59 @@ ngx_js_run_hook_fn(ngx_js_worker_t *w, ngx_http_request_t *r,
 
 
 /*
+ * Run all response hooks for this location in the header filter phase.
+ * Hooks can read/modify req.status and req.headersOut.
+ * Hooks must NOT call req.respond() — if they do, a warning is logged.
+ * Runs for main requests only (caller ensures r == r->main).
+ */
+static void
+ngx_js_response_hooks_run(ngx_js_worker_t *w, ngx_http_request_t *r,
+    ngx_js_loc_conf_t *jlcf)
+{
+    JSContext                *ctx, *job_ctx;
+    JSValue                   req_obj, fn, result;
+    ngx_js_request_opaque_t  *req_op;
+    uint32_t                 *hooks;
+    ngx_uint_t                i;
+
+    ctx     = w->ctx;
+    req_obj = ngx_js_wrap_request(ctx, r);
+    if (JS_IsException(req_obj)) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        return;
+    }
+
+    hooks = jlcf->response_hooks->elts;
+
+    for (i = 0; i < jlcf->response_hooks->nelts; i++) {
+        fn     = ngx_js_hook_get_fn(ctx, hooks[i]);
+        result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
+        JS_FreeValue(ctx, fn);
+
+        while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { /* drain */ }
+
+        if (JS_IsException(result)) {
+            ngx_js_log_exception(ctx, r->connection->log);
+        } else {
+            /* Warn if hook mistakenly called req.respond() */
+            req_op = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+            if (req_op != NULL && req_op->responded) {
+                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                              "js: req.respond() called from response hook "
+                              "-- ignored; use req.headersOut and req.status "
+                              "to modify the response");
+                req_op->responded = 0;  /* reset so it doesn't confuse callers */
+            }
+        }
+
+        JS_FreeValue(ctx, result);
+    }
+
+    JS_FreeValue(ctx, req_obj);
+}
+
+
+/*
  * Sync-only hook runner for P2 access-phase hooks.
  * Returns one of NGX_JS_HOOK_CONTINUE / RESPONDED / ERROR.
  * If hook returns a pending Promise: logs error, returns NGX_JS_HOOK_ERROR.
@@ -6842,6 +6911,8 @@ ngx_js_create_loc_conf(ngx_conf_t *cf)
     jlcf->pool               = cf->pool;
     jlcf->hooks              = NULL;
     jlcf->own_hooks          = 1;  /* NULL is "owned" */
+    jlcf->response_hooks     = NULL;
+    jlcf->own_response_hooks = 1;  /* NULL is "owned" */
 
     return jlcf;
 }
@@ -6876,6 +6947,12 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->hooks == NULL && prev->hooks != NULL) {
         conf->hooks     = prev->hooks;
         conf->own_hooks = 0;
+    }
+
+    /* Inherit parent response hook list */
+    if (conf->response_hooks == NULL && prev->response_hooks != NULL) {
+        conf->response_hooks     = prev->response_hooks;
+        conf->own_response_hooks = 0;
     }
 
     return NGX_CONF_OK;

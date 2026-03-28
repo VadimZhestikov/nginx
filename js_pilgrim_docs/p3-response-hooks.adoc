@@ -1,0 +1,224 @@
+= JS-Pilgrim P3 — Response Hooks
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-27
+
+Header-filter-phase hooks that run after the content handler sets
+status/headers but before they are sent to the client.  Hooks can read and
+modify `req.status` and response headers.  Sync-only.
+
+== Concept
+
+P3 hooks run in the nginx **header filter phase** — after the content phase
+handler (JS or nginx built-in) has decided the response status and headers,
+but before the headers are written to the client socket.
+
+....
+request
+  ↓
+[ACCESS PHASE]   nginx.http.addHook hooks   ← global (P2)
+                 server.addHook hooks       ← per-server (P2)
+  ↓
+[CONTENT PHASE]  location.addHook hooks    ← pre-content (P1)
+                 location.handler          ← JS or nginx handler
+  ↓
+[HEADER FILTER]  location.addResponseHook hooks  ← P3 ← you are here
+  ↓
+Client socket
+....
+
+Because response hooks fire in the header filter, they work with **any**
+content handler: a JS handler, `proxy_pass`, static file, `return`, FastCGI,
+etc.
+
+== API
+
+=== `location.addResponseHook(fn)`
+
+[source,javascript]
+----
+location.addResponseHook(fn);
+----
+
+[cols="1,3"]
+|===
+| Parameter | Description
+
+| `fn`
+| `function(req)` — called synchronously with the current `NginxRequest`
+  object.  Must not return a Promise (async functions are not supported).
+|===
+
+Multiple calls register multiple hooks in order.  All hooks run for every
+response, regardless of status code.
+
+=== Modifying the response
+
+Inside a response hook the `req` wrapper exposes the outgoing response:
+
+[source,javascript]
+----
+location.addResponseHook(function(req) {
+    // Read response status (set by the content handler)
+    nginx.log(nginx.INFO, 'status: ' + req.status);
+
+    // Replace status
+    req.status = 202;
+
+    // Add / replace a response header
+    req.setHeader('x-processed-by', 'js-pilgrim');
+
+    // Read an existing response header
+    const ct = req.headersOut['content-type'];
+});
+----
+
+=== Cancellation not supported
+
+Calling `req.respond()` inside a response hook is a programming error (the
+response is already being sent).  nginx logs a warning and ignores the call;
+the hook chain continues normally.
+
+=== Sync-only
+
+Response hooks are **synchronous only**.  Returning a pending Promise causes
+nginx to log an error.  For async work before headers are sent, use P1
+`location.addHook(asyncFn)` and call `req.respond()` there instead.
+
+== Examples
+
+=== Add a response header unconditionally
+
+[source,javascript]
+----
+const loc = nginx.http.servers[0].findLocation('/api/');
+
+loc.addResponseHook(function(req) {
+    req.setHeader('x-api-version', '2');
+});
+----
+
+=== Rewrite 200 → 202 for background jobs
+
+[source,javascript]
+----
+loc.addResponseHook(function(req) {
+    if (req.status === 200 && req.headersOut['x-async-job']) {
+        req.status = 202;
+    }
+});
+----
+
+=== Inject security headers globally (P2 + P3)
+
+[source,javascript]
+----
+// Install on every location by iterating servers / locations at init time
+for (const srv of nginx.http.servers) {
+    for (const loc of srv.locations) {
+        loc.addResponseHook(function(req) {
+            req.setHeader('x-frame-options',           'DENY');
+            req.setHeader('x-content-type-options',    'nosniff');
+            req.setHeader('referrer-policy',           'no-referrer');
+        });
+    }
+}
+----
+
+=== Works with any content handler (proxy, static, return)
+
+[source,javascript]
+----
+// nginx.conf:
+//   location /docs/ { root /var/www; }
+
+const loc = nginx.http.servers[0].findLocation('/docs/');
+
+loc.addResponseHook(function(req) {
+    req.setHeader('cache-control', 'public, max-age=3600');
+});
+----
+
+The hook fires after nginx resolves the file and sets the response headers,
+before they reach the client.
+
+== Full chain example
+
+[source,javascript]
+----
+// P2: log all requests
+nginx.http.addHook(function(req) {
+    nginx.log(nginx.INFO, req.method + ' ' + req.uri);
+});
+
+// P1: require auth token before content runs
+const loc = nginx.http.servers[0].findLocation('/secure/');
+loc.addHook(async function(req) {
+    const ok = await verifyToken(req.headers['authorization']);
+    if (!ok) {
+        req.respond(401, {}, 'Unauthorized\n');
+    }
+});
+
+// JS handler
+loc.handler = async function(req) {
+    req.respond(200, {'content-type': 'application/json'}, '{"ok":true}');
+};
+
+// P3: always stamp the response
+loc.addResponseHook(function(req) {
+    req.setHeader('x-served-by', 'js-pilgrim');
+});
+----
+
+Execution order: global log (P2) → auth hook (P1) → JS handler → response
+hook (P3) → client.
+
+== Limitations (P3)
+
+* **Sync-only**: response hooks cannot await Promises.
+* **No cancellation**: `req.respond()` from a response hook is ignored with a
+  warning — the response body has already been committed to the filter chain.
+* **No location inheritance**: response hooks are **not** automatically
+  inherited by nested locations.  Each location must register its own hooks.
+  (Location scope isolation mirrors how `handler` and `addHook` work.)
+* **Main request only**: hooks do not fire for nginx subrequests.
+
+== Implementation Notes
+
+Response hooks are stored in `ngx_js_loc_conf_t.response_hooks` (parallel to
+`hooks` from P1) with a `own_response_hooks` copy-on-write flag.
+
+`ngx_js_header_filter` (the HTTP header filter registered by the JS module)
+calls `ngx_js_response_hooks_run` before it proceeds to the next filter.
+`ngx_js_response_hooks_run`:
+
+1. Creates a fresh `NginxRequest` wrapper for the current request.
+2. Calls each registered function synchronously via `JS_Call`.
+3. Drains microtasks after each hook.
+4. If a hook calls `req.respond()`, logs a warning and resets the flag
+   (response body is untouched).
+5. Frees the request wrapper and returns.
+
+The header filter early-exit condition was updated to skip only when both
+`header_filters` and `response_hooks` are empty, so the filter is still
+entered when only P3 hooks exist.
+
+== Test Coverage
+
+`t/js_pilgrim_p3_response_hooks.t` (13 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2   | Response hook adds a header; original 200 OK preserved
+| 3     | Response hook changes status 200 → 202
+| 4–5   | Multiple hooks run in registration order (x-hook-a, x-hook-b)
+| 6–7   | Hook adds header after content handler ran; request completes 200
+| 8–9   | Parent location: response hook fires on /parent/ request
+| 10–11 | Child (sibling) location: hook not present on /parent/child/
+| 12–13 | Hook fires on 404 from non-JS nginx handler
+|===

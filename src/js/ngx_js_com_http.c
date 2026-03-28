@@ -2844,6 +2844,79 @@ ngx_js_location_fn_add_hook(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * location.addResponseHook(fn)
+ *
+ * Register a sync-only response hook for this location.
+ * fn is called as fn(req) in the header filter phase, after the content
+ * handler has set status and headers but before they are sent.
+ * Use req.status and req.headersOut to modify the response.
+ * Calling req.respond() from a response hook is not supported and will
+ * generate a warning.
+ */
+static JSValue
+ngx_js_location_fn_add_response_hook(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_js_loc_conf_t         *jlcf;
+    ngx_js_location_opaque_t  *op;
+    uint32_t                   idx;
+    uint32_t                  *entry;
+    ngx_array_t               *arr;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "addResponseHook: argument must be a function");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    clcf = op->clcf;
+    jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+    if (jlcf == NULL) {
+        return JS_ThrowInternalError(ctx, "addResponseHook: no loc_conf");
+    }
+
+    /* Copy-on-first-write: ensure we own the response_hooks array */
+    if (!jlcf->own_response_hooks || jlcf->response_hooks == NULL) {
+        arr = ngx_array_create(jlcf->pool, 4, sizeof(uint32_t));
+        if (arr == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        if (jlcf->response_hooks != NULL) {
+            /* Copy inherited entries */
+            uint32_t   i;
+            uint32_t  *src = jlcf->response_hooks->elts;
+            for (i = 0; i < jlcf->response_hooks->nelts; i++) {
+                uint32_t *dst = ngx_array_push(arr);
+                if (dst == NULL) {
+                    return JS_ThrowOutOfMemory(ctx);
+                }
+                *dst = src[i];
+            }
+        }
+
+        jlcf->response_hooks     = arr;
+        jlcf->own_response_hooks = 1;
+    }
+
+    idx   = ngx_js_hook_register_fn(ctx, argv[0]);
+    entry = ngx_array_push(jlcf->response_hooks);
+    if (entry == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    *entry = idx;
+
+    return JS_UNDEFINED;
+}
+
+
+/*
  * addBodyFilter(mode, fn[, opts])
  *
  * mode (required string):
@@ -3849,6 +3922,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("bodyFilters",   ngx_js_location_get_filter_list,
                           NULL, 1),
     JS_CFUNC_DEF("addHook",            1, ngx_js_location_fn_add_hook),
+    JS_CFUNC_DEF("addResponseHook",    1, ngx_js_location_fn_add_response_hook),
     JS_CFUNC_DEF("addHeaderFilter",    1, ngx_js_location_fn_add_header_filter),
     JS_CFUNC_DEF("addBodyFilter",      2, ngx_js_location_fn_add_body_filter),
     JS_CFUNC_DEF("removeHeaderFilter", 1, ngx_js_location_fn_remove_header_filter),

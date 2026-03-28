@@ -94,8 +94,8 @@ a browser DevTools tab).
   via the nginx access phase; fire for every matching request regardless of
   content handler.
 
-| P3
-| Response hooks
+| P3 ✓
+| <<p3-response-hooks.adoc#,Response hooks>>
 | `location.addResponseHook(fn)` — fires after upstream selects response
   headers, before they are sent to the client.  Modify status / headers.
 

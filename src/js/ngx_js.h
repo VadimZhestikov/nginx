@@ -243,6 +243,8 @@ typedef struct {
     ngx_pool_t           *pool; /* cf->pool from create_loc_conf             */
     ngx_array_t          *hooks;           /* array of uint32_t fn indices into __ngx_hooks__ */
     ngx_uint_t            own_hooks;       /* 1 = owned; 0 = inherited ptr */
+    ngx_array_t          *response_hooks;    /* uint32_t[] fn indices into __ngx_hooks__ */
+    ngx_uint_t            own_response_hooks; /* 1 = owned; 0 = inherited */
 } ngx_js_loc_conf_t;
 
 
