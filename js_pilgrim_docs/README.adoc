@@ -173,13 +173,14 @@ a browser DevTools tab).
   `c->send` / `c->send_chain` via pool-cleanup type-tagged state.  EOF
   delivered lazily inside collect loop after first yield.
 
-| P14
-| Upstream JS filters
+| P14 ✓
+| <<p14-upstream-filter.adoc#,Upstream JS filters>>
 | `location.addUpstreamFilter(asyncGenFn)` (response) and
   `location.addUpstreamRequestFilter(asyncGenFn)` (request body) — JS
   generators hooked into `ngx_http_upstream_t` input/output filter chain.
   Completes the top-level architecture diagram layer that P5 covers only
-  at HTTP level.
+  at HTTP level.  Request-body count balance: `r->main->count--` before
+  resuming phases prevents "open socket" hangs.
 
 | P15
 | P5 multi-filter composition

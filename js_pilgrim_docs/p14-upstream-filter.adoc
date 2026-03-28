@@ -1,0 +1,145 @@
+= JS-Pilgrim P14: Upstream JS Filters
+:toc: left
+:toclevels: 2
+:sectnums:
+:revdate: 2026-03-28
+
+== Overview
+
+P14 closes the last gap in the JS-Pilgrim architecture diagram by providing
+JavaScript hooks at the upstream layer:
+
+* `location.addUpstreamFilter(async function*(body, req) {...})` — transforms
+  the upstream *response* body before it reaches the client.
+* `location.addUpstreamRequestFilter(async function*(body, req) {...})` —
+  transforms the client *request* body before it is forwarded to the upstream.
+
+Both APIs use the same async-generator calling convention as `addBodyFilter`
+(P5), but they are distinct hooks that fire only when `r->upstream` is set
+(i.e., the request is handled by `proxy_pass`, `fastcgi_pass`, etc.).
+
+== API
+
+=== addUpstreamFilter
+
+[source,javascript]
+----
+location.addUpstreamFilter(async function*(body, req) {
+    yield body.replace(/hello/g, 'world');
+});
+----
+
+* Fires in nginx's body filter chain when `r->upstream != NULL`.
+* Multiple calls chain filters: the output of filter N becomes the input of
+  filter N+1.
+* `body` is a string containing the complete (buffered) response body.
+* `yield` zero or more string chunks; they are concatenated to form the output.
+* Implemented as a synchronous generator run (no `await` across the whole chain
+  today; the body is pre-buffered by the existing whole-body mode).
+
+=== addUpstreamRequestFilter
+
+[source,javascript]
+----
+location.addUpstreamRequestFilter(async function*(body, req) {
+    yield body.toUpperCase();
+});
+----
+
+* Fires in the `NGX_HTTP_ACCESS_PHASE` after the client request body is
+  fully read, before the content handler (`proxy_pass`) picks it up.
+* Multiple calls chain filters in registration order.
+* `body` is a string containing the complete (in-memory) request body.
+* The transformed body replaces `r->request_body->bufs` and
+  `r->headers_in.content_length_n` so the upstream receives the correct
+  Content-Length.
+
+== Implementation
+
+=== Response filter path
+
+`addUpstreamFilter` stores JS function references in `ngx_js_loc_conf_t.upstream_filters`
+(a `ngx_array_t` of `ngx_js_filter_entry_t`), parallel to `body_filters`.
+
+The existing `ngx_js_body_filter` was extended:
+
+1. The early-exit guard now checks *both* `body_filters` and `upstream_filters`
+   (when `r->upstream != NULL`).
+2. `ngx_js_body_filter_run_from` runs the regular `body_filters` chain first,
+   then pipes the result through `upstream_filters` by calling
+   `ngx_js_upstream_filters_run`.
+
+`ngx_js_upstream_filters_run` (in `ngx_js_com_http.c`) delegates to
+`ngx_js_run_generator_filter_array` — a shared synchronous runner that loops
+through the filter array, calls each async-generator function with
+`(body_string, req_obj)`, collects all `yield`-ed strings, and replaces the
+body in place.
+
+=== Request filter path
+
+`addUpstreamRequestFilter` stores references in `ngx_js_loc_conf_t.upstream_req_filters`.
+
+A new access-phase handler `ngx_js_upstream_req_access_handler` is registered
+during `postconfiguration`.  It runs only when `upstream_req_filters` is
+non-empty and the body has not yet been transformed (`rctx->upstream_req_filtered == 0`).
+
+It calls `ngx_http_read_client_request_body(r, ngx_js_upstream_req_body_handler)` and
+returns `NGX_DONE`.
+
+`ngx_js_upstream_req_body_handler`:
+
+1. Flattens `r->request_body->bufs` into a single `ngx_str_t`.
+2. Runs `ngx_js_upstream_req_filters_run` on the flat string.
+3. Replaces `r->request_body->bufs` with a new single-buf chain and
+   updates `r->headers_in.content_length_n`.
+4. Sets `rctx->upstream_req_filtered = 1`.
+5. **Decrements `r->main->count`** to balance the `count++` done by
+   `ngx_http_read_client_request_body`.  Without this decrement the request
+   reference count is left at 2 when the proxy content handler runs; the
+   upstream finalisation brings it to 1 and the connection never closes
+   (produces "open socket left in connection" alerts after the 60 s
+   keepalive timeout).
+6. Sets `r->write_event_handler = ngx_http_core_run_phases` and calls
+   `ngx_http_core_run_phases(r)` to resume phase processing.  Our access
+   handler is re-entered, sees `upstream_req_filtered = 1`, returns
+   `NGX_DECLINED`, and phase processing advances to the content handler.
+
+=== Copy-on-write for filter arrays
+
+`ngx_js_upstream_filter_add_core` mirrors the existing COW pattern used for
+`body_filters`: `own_upstream_filters` / `own_upstream_req_filters` flags track
+whether the current location owns its arrays.  On first write the array is
+duplicated from the parent, preventing parent locations from being mutated.
+
+=== New fields
+
+.`ngx_js_loc_conf_t` additions (ngx_js.h)
+[source,c]
+----
+ngx_array_t *upstream_filters;        /* ngx_js_filter_entry_t[] — response */
+ngx_uint_t   own_upstream_filters;
+ngx_array_t *upstream_req_filters;    /* ngx_js_filter_entry_t[] — request  */
+ngx_uint_t   own_upstream_req_filters;
+----
+
+.`ngx_js_req_ctx_t` additions (ngx_js.h)
+[source,c]
+----
+unsigned upstream_req_filtered:1;  /* request body already transformed */
+----
+
+== Test Coverage
+
+`t/js_pilgrim_p14_upstream_filter.t` — 20 explicit tests + 2 auto-checks:
+
+|===
+| Tests | Scenario
+
+| 1–2   | Baseline: `proxy_pass` with no filter passes body unchanged
+| 3–6   | `addUpstreamFilter`: replaces "hello" with "world" in response body (2 requests)
+| 7–10  | Chained `addUpstreamFilter`: uppercase then prefix (2 requests)
+| 11–14 | `addUpstreamRequestFilter`: uppercases request body echoed by backend (2 bodies)
+| 15–18 | Both filters together: request uppercased → echo → response filtered (2 requests)
+| 19    | Backend started without crash
+| 20    | No alerts/emergencies in error.log
+|===

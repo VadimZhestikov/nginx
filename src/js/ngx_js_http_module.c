@@ -157,22 +157,39 @@ ngx_js_body_filter_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
     }
 
     out_body = rctx->wb_body;
-    rc = ngx_js_body_filters_run(w->ctx, w->rt, r, jlcf,
-                                 &rctx->wb_body, &out_body, start_idx);
-    rctx->wb_body = out_body;
 
-    if (!was_set) {
-        w->current_request = NULL;
+    if (jlcf->body_filters != NULL && jlcf->body_filters->nelts > 0) {
+        rc = ngx_js_body_filters_run(w->ctx, w->rt, r, jlcf,
+                                     &rctx->wb_body, &out_body, start_idx);
+        rctx->wb_body = out_body;
+
+        if (!was_set) {
+            w->current_request = NULL;
+        }
+
+        if (rc == NGX_AGAIN) {
+            /* async suspension: keep request alive until promise settles */
+            r->main->count++;
+            return NGX_AGAIN;
+        }
+
+        if (rc == NGX_ERROR) {
+            return NGX_ERROR;
+        }
+    } else {
+        if (!was_set) {
+            w->current_request = NULL;
+        }
     }
 
-    if (rc == NGX_AGAIN) {
-        /* async suspension: keep request alive until promise settles */
-        r->main->count++;
-        return NGX_AGAIN;
-    }
-
-    if (rc == NGX_ERROR) {
-        return NGX_ERROR;
+    /* P14: upstream response filters — run after body_filters, proxied only */
+    if (r->upstream != NULL
+        && jlcf->upstream_filters != NULL
+        && jlcf->upstream_filters->nelts > 0)
+    {
+        ngx_js_upstream_filters_run(w->ctx, w->rt, r,
+                                    jlcf->upstream_filters,
+                                    &rctx->wb_body);
     }
 
     return ngx_js_body_emit_wb(r, rctx);
@@ -264,6 +281,182 @@ ngx_js_streaming_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* P14: Upstream request-body filter access handler                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Called from ngx_js_upstream_req_access_handler after the client request
+ * body is fully read.  Transforms it through upstream_req_filters, then
+ * resumes phase processing.
+ */
+static void
+ngx_js_upstream_req_body_handler(ngx_http_request_t *r)
+{
+    ngx_js_conf_t      *jcf;
+    ngx_js_worker_t    *w;
+    ngx_js_loc_conf_t  *jlcf;
+    ngx_js_req_ctx_t   *rctx;
+    ngx_str_t           body;
+    ngx_chain_t        *cl;
+    ngx_buf_t          *b;
+    size_t              total;
+    u_char             *p;
+
+    jlcf = ngx_http_get_module_loc_conf(r, ngx_js_http_module);
+    jcf  = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    w    = jcf->worker;
+
+    if (w == NULL || w->ctx == NULL
+        || r->request_body == NULL
+        || jlcf->upstream_req_filters == NULL
+        || jlcf->upstream_req_filters->nelts == 0)
+    {
+        ngx_http_core_run_phases(r);
+        return;
+    }
+
+    /* Ensure the per-request context exists */
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    if (rctx == NULL) {
+        rctx = ngx_pcalloc(r->pool, sizeof(ngx_js_req_ctx_t));
+        if (rctx == NULL) {
+            ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+            return;
+        }
+        rctx->write_mode     = NGX_JS_WRITE_GLOBAL;
+        rctx->read_mode      = NGX_JS_WRITE_GLOBAL;
+        rctx->body_bufs_last = &rctx->body_bufs;
+        rctx->ctx_obj        = JS_UNDEFINED;
+        ngx_http_set_ctx(r, rctx, ngx_js_http_module);
+    }
+
+    if (rctx->upstream_req_filtered) {
+        /* Already filtered — should not happen, but guard anyway */
+        ngx_http_core_run_phases(r);
+        return;
+    }
+
+    /* Flatten in-memory request body bufs into a single ngx_str_t */
+    total = 0;
+    for (cl = r->request_body->bufs; cl; cl = cl->next) {
+        b = cl->buf;
+        if (ngx_buf_in_memory(b)) {
+            total += (size_t)(b->last - b->pos);
+        }
+    }
+
+    if (total > 0) {
+        p = ngx_pnalloc(r->pool, total);
+        if (p == NULL) {
+            ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+            return;
+        }
+        body.data = p;
+        body.len  = total;
+        for (cl = r->request_body->bufs; cl; cl = cl->next) {
+            b = cl->buf;
+            if (ngx_buf_in_memory(b)) {
+                p = ngx_copy(p, b->pos, (size_t)(b->last - b->pos));
+            }
+        }
+    } else {
+        body.data = (u_char *) "";
+        body.len  = 0;
+    }
+
+    ngx_js_upstream_req_filters_run(w->ctx, w->rt, r,
+                                    jlcf->upstream_req_filters, &body);
+
+    /* Replace request body bufs with filtered content */
+    if (body.len > 0) {
+        ngx_buf_t    *nb;
+        ngx_chain_t  *nc;
+
+        nb = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+        nc = ngx_alloc_chain_link(r->pool);
+
+        if (nb && nc) {
+            nb->pos    = body.data;
+            nb->last   = body.data + body.len;
+            nb->memory = 1;
+            nb->last_buf = 1;
+            nc->buf  = nb;
+            nc->next = NULL;
+            r->request_body->bufs = nc;
+
+            /*
+             * Update Content-Length so the upstream module sends the correct
+             * value in the forwarded request.
+             */
+            r->headers_in.content_length_n = (off_t) body.len;
+        }
+    } else {
+        r->request_body->bufs = NULL;
+        r->headers_in.content_length_n = 0;
+    }
+
+    rctx->upstream_req_filtered = 1;
+
+    /*
+     * Balance the r->main->count++ done by ngx_http_read_client_request_body.
+     * Without this the request count sits at 2 when the content handler runs,
+     * so the upstream finalisation only brings it to 1 and the connection
+     * never closes (60 s timeout, "open socket left in connection" alert).
+     */
+    r->main->count--;
+
+    r->write_event_handler = ngx_http_core_run_phases;
+    ngx_http_core_run_phases(r);
+}
+
+
+/*
+ * Access-phase handler: reads the client request body (async if needed),
+ * then runs upstream_req_filters on the in-memory body before the content
+ * handler (proxy_pass or similar) picks it up.
+ * Returns NGX_DECLINED when no upstream_req_filters are set (fast path).
+ */
+static ngx_int_t
+ngx_js_upstream_req_access_handler(ngx_http_request_t *r)
+{
+    ngx_js_loc_conf_t  *jlcf;
+    ngx_js_req_ctx_t   *rctx;
+    ngx_int_t           rc;
+
+    if (r != r->main) {
+        return NGX_DECLINED;
+    }
+
+    jlcf = ngx_http_get_module_loc_conf(r, ngx_js_http_module);
+
+    if (jlcf->upstream_req_filters == NULL
+        || jlcf->upstream_req_filters->nelts == 0)
+    {
+        return NGX_DECLINED;
+    }
+
+    /* Avoid re-entry: if we already filtered the body, continue */
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    if (rctx != NULL && rctx->upstream_req_filtered) {
+        return NGX_DECLINED;
+    }
+
+    /*
+     * Request body not yet read.  Trigger async read; the callback
+     * (ngx_js_upstream_req_body_handler) will resume phase processing
+     * after transforming the body.
+     */
+    rc = ngx_http_read_client_request_body(r,
+                                           ngx_js_upstream_req_body_handler);
+    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+        return rc;
+    }
+
+    return NGX_DONE;
+}
+
+
 static ngx_int_t
 ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -284,8 +477,16 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     jlcf = ngx_http_get_module_loc_conf(r, ngx_js_http_module);
 
-    if (jlcf->body_filters == NULL || jlcf->body_filters->nelts == 0) {
-        return ngx_js_next_body_filter(r, in);
+    {
+        ngx_uint_t  has_bf, has_uf;
+        has_bf = (jlcf->body_filters != NULL && jlcf->body_filters->nelts > 0);
+        has_uf = (r->upstream != NULL
+                  && jlcf->upstream_filters != NULL
+                  && jlcf->upstream_filters->nelts > 0);
+
+        if (!has_bf && !has_uf) {
+            return ngx_js_next_body_filter(r, in);
+        }
     }
 
     jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
@@ -312,12 +513,19 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     /*
      * Mode B (whole-body): accumulate all chunks, then run the filter chain
      * once on the complete body.  This path is taken whenever the filter list
-     * contains at least one wholeBody* filter.
+     * contains at least one wholeBody* filter, or when upstream_filters are
+     * present (they are always whole-body GENERATOR mode).
      *
      * Mode A (streaming): each nginx body filter call = one chunk delivered
      * to all streamingSync filters.  Filters emit output via req.sendBuffer().
      */
-    if (!jlcf->body_filter_has_wb) {
+    {
+        ngx_uint_t  has_uf;
+        has_uf = (r->upstream != NULL
+                  && jlcf->upstream_filters != NULL
+                  && jlcf->upstream_filters->nelts > 0);
+
+    if (!jlcf->body_filter_has_wb && !has_uf) {
         /* ── Mode A: streaming ─────────────────────────────────────── */
 
         ngx_chain_t  *cl;
@@ -441,6 +649,7 @@ ngx_js_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
         return rc;
     }
+    } /* end has_uf scope */
 }
 
 
@@ -523,6 +732,13 @@ ngx_js_http_postconfiguration(ngx_conf_t *cf)
     }
 
     *h = ngx_js_http_access_handler;
+
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+
+    *h = ngx_js_upstream_req_access_handler;
 
     /* Install response filter hooks (existing) */
     ngx_js_next_header_filter = ngx_http_top_header_filter;
@@ -7322,8 +7538,12 @@ ngx_js_create_loc_conf(ngx_conf_t *cf)
     jlcf->pool               = cf->pool;
     jlcf->hooks              = NULL;
     jlcf->own_hooks          = 1;  /* NULL is "owned" */
-    jlcf->response_hooks     = NULL;
-    jlcf->own_response_hooks = 1;  /* NULL is "owned" */
+    jlcf->response_hooks          = NULL;
+    jlcf->own_response_hooks      = 1;  /* NULL is "owned" */
+    jlcf->upstream_filters        = NULL;
+    jlcf->own_upstream_filters    = 1;
+    jlcf->upstream_req_filters    = NULL;
+    jlcf->own_upstream_req_filters = 1;
 
     return jlcf;
 }
@@ -7364,6 +7584,19 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->response_hooks == NULL && prev->response_hooks != NULL) {
         conf->response_hooks     = prev->response_hooks;
         conf->own_response_hooks = 0;
+    }
+
+    /* Inherit parent upstream filter lists */
+    if (conf->upstream_filters == NULL && prev->upstream_filters != NULL) {
+        conf->upstream_filters     = prev->upstream_filters;
+        conf->own_upstream_filters = 0;
+    }
+
+    if (conf->upstream_req_filters == NULL
+        && prev->upstream_req_filters != NULL)
+    {
+        conf->upstream_req_filters     = prev->upstream_req_filters;
+        conf->own_upstream_req_filters = 0;
     }
 
     return NGX_CONF_OK;

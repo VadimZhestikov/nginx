@@ -217,6 +217,7 @@ typedef struct {
     ngx_chain_t          **stream_out_last;/* tail of stream_out                    */
     void                  *repl;           /* ngx_js_repl_conn_t* when hijacked     */
     JSValue                ctx_obj;        /* P10: req.ctx — persists across wrappers */
+    unsigned               upstream_req_filtered:1; /* P14: request body transformed */
 } ngx_js_req_ctx_t;
 
 
@@ -289,6 +290,12 @@ typedef struct {
     ngx_uint_t            own_hooks;       /* 1 = owned; 0 = inherited ptr */
     ngx_array_t          *response_hooks;    /* uint32_t[] fn indices into __ngx_hooks__ */
     ngx_uint_t            own_response_hooks; /* 1 = owned; 0 = inherited */
+
+    /* P14: upstream JS filters */
+    ngx_array_t          *upstream_filters;     /* ngx_js_filter_entry_t[] — response */
+    ngx_uint_t            own_upstream_filters;
+    ngx_array_t          *upstream_req_filters; /* ngx_js_filter_entry_t[] — request  */
+    ngx_uint_t            own_upstream_req_filters;
 } ngx_js_loc_conf_t;
 
 
@@ -475,6 +482,16 @@ void ngx_js_sf_async_check(ngx_js_worker_t *w);
  * Called alongside ngx_js_async_check from every event-loop post-drain site.
  */
 void ngx_js_l4_async_check(ngx_js_worker_t *w);
+
+/*
+ * P14: Run upstream response/request filters on body in-place.
+ * Both are GENERATOR-mode only, synchronous (no await).
+ * body is updated in-place with the filtered result.
+ */
+ngx_int_t  ngx_js_upstream_filters_run(JSContext *ctx, JSRuntime *rt,
+    struct ngx_http_request_s *r, ngx_array_t *filters, ngx_str_t *body);
+ngx_int_t  ngx_js_upstream_req_filters_run(JSContext *ctx, JSRuntime *rt,
+    struct ngx_http_request_s *r, ngx_array_t *filters, ngx_str_t *body);
 
 
 /*

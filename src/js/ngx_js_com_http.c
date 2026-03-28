@@ -3037,6 +3037,135 @@ ngx_js_location_fn_add_body_filter(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* P14: addUpstreamFilter / addUpstreamRequestFilter                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Shared core: append an async generator function to a per-location
+ * upstream filter array.  The arrays are simple append-only lists
+ * (no priority/before/after support — run in registration order).
+ */
+static JSValue
+ngx_js_upstream_filter_add_core(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
+    int is_req, JSValueConst fn)
+{
+    ngx_js_loc_conf_t     *jlcf;
+    ngx_array_t          **listp;
+    ngx_uint_t            *own;
+    ngx_js_filter_entry_t  entry;
+    ngx_pool_t            *pool;
+    ngx_js_filter_entry_t *slot;
+
+    jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+    pool = jlcf->pool;
+
+    listp = is_req ? &jlcf->upstream_req_filters : &jlcf->upstream_filters;
+    own   = is_req ? &jlcf->own_upstream_req_filters
+                   : &jlcf->own_upstream_filters;
+
+    /* Copy-on-first-write */
+    if (!(*own)) {
+        ngx_array_t  *copy;
+        copy = (*listp != NULL)
+               ? ngx_js_copy_filter_list(pool, *listp)
+               : ngx_array_create(pool, 4, sizeof(ngx_js_filter_entry_t));
+        if (copy == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+        *listp = copy;
+        *own   = 1;
+    }
+
+    if (*listp == NULL) {
+        *listp = ngx_array_create(pool, 4, sizeof(ngx_js_filter_entry_t));
+        if (*listp == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+    }
+
+    ngx_memzero(&entry, sizeof(ngx_js_filter_entry_t));
+    entry.fn_idx   = ngx_js_filter_register_fn(ctx, fn);
+    entry.mode     = NGX_JS_FILTER_GENERATOR;
+    entry.priority = 50;
+
+    slot = ngx_array_push(*listp);
+    if (slot == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    *slot = entry;
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * location.addUpstreamFilter(async function*(body, req) {...})
+ *
+ * Registers an async generator filter on upstream (proxied) response bodies.
+ * The filter receives the full response body as a string and req object.
+ * Yields replace the body.  Runs only when r->upstream != NULL.
+ */
+static JSValue
+ngx_js_location_fn_add_upstream_filter(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "addUpstreamFilter: argument must be a function");
+    }
+
+    if (!ngx_js_is_async_gen_fn(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "addUpstreamFilter: requires an async generator "
+                                 "function (async function*)");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_upstream_filter_add_core(ctx, op->clcf, 0, argv[0]);
+}
+
+
+/*
+ * location.addUpstreamRequestFilter(async function*(body, req) {...})
+ *
+ * Registers an async generator filter on request bodies sent to the upstream.
+ * The filter receives the full request body as a string and req object.
+ * Yields replace the body.  Runs in the access phase before the proxy handler.
+ */
+static JSValue
+ngx_js_location_fn_add_upstream_req_filter(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *op;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "addUpstreamRequestFilter: argument must be "
+                                 "a function");
+    }
+
+    if (!ngx_js_is_async_gen_fn(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "addUpstreamRequestFilter: requires an async "
+                                 "generator function (async function*)");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_upstream_filter_add_core(ctx, op->clcf, 1, argv[0]);
+}
+
+
 /*
  * Core remove logic shared by removeHeaderFilter and removeBodyFilter.
  * ref is a string name or function reference.
@@ -3848,6 +3977,242 @@ ngx_js_flatten_stream_out(ngx_http_request_t *r, ngx_js_req_ctx_t *rctx,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* P14: Upstream response/request filter runners                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Shared helper: run an array of GENERATOR-mode filters synchronously on
+ * *body.  Each filter's output replaces *body for the next.  No await is
+ * supported; if the generator suspends (PENDING promise) the filter is
+ * bypassed with a WARN log and the body is passed through unchanged.
+ *
+ * Used by both ngx_js_upstream_filters_run (response) and
+ * ngx_js_upstream_req_filters_run (request).
+ */
+static void
+ngx_js_run_generator_filter_array(JSContext *ctx, JSRuntime *rt,
+    ngx_http_request_t *r, ngx_array_t *filters, ngx_str_t *body,
+    const char *filter_kind)
+{
+    ngx_js_filter_entry_t  *elts;
+    ngx_uint_t              i, nelts;
+    JSValue                 req_obj, fn, body_val;
+    JSContext              *job_ctx;
+
+    nelts = filters->nelts;
+    elts  = filters->elts;
+
+    req_obj  = ngx_js_wrap_request(ctx, r);
+    if (JS_IsException(req_obj)) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        return;
+    }
+
+    body_val = JS_NewStringLen(ctx, (const char *) body->data, body->len);
+
+    for (i = 0; i < nelts; i++) {
+        JSValue       gen, next_fn, next_result, iter_result;
+        JSValue       done_v, value_v, gen_args[2];
+        ngx_chain_t  *gen_out, **gen_out_last;
+        int           done;
+
+        fn = ngx_js_filter_get_fn(ctx, elts[i].fn_idx);
+        if (!JS_IsFunction(ctx, fn)) {
+            JS_FreeValue(ctx, fn);
+            continue;
+        }
+
+        gen_args[0] = body_val;
+        gen_args[1] = req_obj;
+        gen = JS_Call(ctx, fn, JS_UNDEFINED, 2, gen_args);
+        JS_FreeValue(ctx, fn);
+
+        while (JS_ExecutePendingJob(rt, &job_ctx) > 0) {}
+
+        if (JS_IsException(gen)) {
+            ngx_js_log_exception(ctx, r->connection->log);
+            JS_FreeValue(ctx, gen);
+            continue;
+        }
+
+        gen_out      = NULL;
+        gen_out_last = &gen_out;
+        next_fn = JS_GetPropertyStr(ctx, gen, "next");
+
+        for (;;) {
+            next_result = JS_Call(ctx, next_fn, gen, 0, NULL);
+            while (JS_ExecutePendingJob(rt, &job_ctx) > 0) {}
+
+            if (JS_IsException(next_result)) {
+                ngx_js_log_exception(ctx, r->connection->log);
+                JS_FreeValue(ctx, next_result);
+                break;
+            }
+
+            if (JS_PromiseState(ctx, next_result) == JS_PROMISE_PENDING) {
+                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                              "js %s filter: await not supported;"
+                              " passing body through unchanged",
+                              filter_kind);
+                JS_FreeValue(ctx, next_result);
+                gen_out = NULL;  /* discard partial output */
+                break;
+            }
+
+            if (JS_PromiseState(ctx, next_result) == JS_PROMISE_REJECTED) {
+                JSValue  reason, str_v;
+                const char *cs;
+                reason = JS_PromiseResult(ctx, next_result);
+                str_v  = JS_ToString(ctx, reason);
+                cs     = JS_ToCString(ctx, str_v);
+                if (cs) {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                                  "js %s filter rejected: %s",
+                                  filter_kind, cs);
+                    JS_FreeCString(ctx, cs);
+                }
+                JS_FreeValue(ctx, str_v);
+                JS_FreeValue(ctx, reason);
+                JS_FreeValue(ctx, next_result);
+                gen_out = NULL;
+                break;
+            }
+
+            iter_result = JS_PromiseResult(ctx, next_result);
+            JS_FreeValue(ctx, next_result);
+
+            done_v = JS_GetPropertyStr(ctx, iter_result, "done");
+            done   = JS_ToBool(ctx, done_v);
+            JS_FreeValue(ctx, done_v);
+
+            if (done) {
+                JS_FreeValue(ctx, iter_result);
+                break;
+            }
+
+            value_v = JS_GetPropertyStr(ctx, iter_result, "value");
+            JS_FreeValue(ctx, iter_result);
+
+            if (!JS_IsUndefined(value_v) && !JS_IsNull(value_v)) {
+                const char  *ystr;
+                size_t       ylen;
+                u_char      *ydata;
+                ngx_buf_t   *yb;
+                ngx_chain_t *yl;
+
+                ystr = JS_ToCStringLen(ctx, &ylen, value_v);
+                if (ystr && ylen > 0) {
+                    ydata = ngx_pnalloc(r->pool, ylen);
+                    if (ydata) {
+                        ngx_memcpy(ydata, ystr, ylen);
+                        yb = ngx_calloc_buf(r->pool);
+                        yl = ngx_alloc_chain_link(r->pool);
+                        if (yb && yl) {
+                            yb->pos    = ydata;
+                            yb->last   = ydata + ylen;
+                            yb->memory = 1;
+                            yl->buf    = yb;
+                            yl->next   = NULL;
+                            *gen_out_last = yl;
+                            gen_out_last  = &yl->next;
+                        }
+                    }
+                    JS_FreeCString(ctx, ystr);
+                }
+            }
+            JS_FreeValue(ctx, value_v);
+        }
+
+        JS_FreeValue(ctx, next_fn);
+        JS_FreeValue(ctx, gen);
+
+        /* Collapse gen_out chain → new body_val */
+        JS_FreeValue(ctx, body_val);
+        if (gen_out != NULL) {
+            ngx_chain_t  *cl;
+            ngx_buf_t    *b;
+            size_t        total;
+            u_char       *p;
+
+            total = 0;
+            for (cl = gen_out; cl; cl = cl->next) {
+                b = cl->buf;
+                if (ngx_buf_in_memory(b)) {
+                    total += (size_t)(b->last - b->pos);
+                }
+            }
+
+            if (total > 0) {
+                p = ngx_pnalloc(r->pool, total);
+                if (p) {
+                    u_char *pp = p;
+                    for (cl = gen_out; cl; cl = cl->next) {
+                        b = cl->buf;
+                        if (ngx_buf_in_memory(b)) {
+                            pp = ngx_copy(pp, b->pos,
+                                          (size_t)(b->last - b->pos));
+                        }
+                    }
+                    body_val = JS_NewStringLen(ctx, (const char *) p, total);
+                } else {
+                    body_val = JS_NewStringLen(ctx, "", 0);
+                }
+            } else {
+                body_val = JS_NewStringLen(ctx, "", 0);
+            }
+        } else {
+            /* passthrough: keep previous body_val */
+            body_val = JS_NewStringLen(ctx, (const char *) body->data,
+                                       body->len);
+        }
+    }
+
+    /* Materialise final body_val back into body ngx_str_t */
+    {
+        const char  *s;
+        size_t       slen;
+
+        s = JS_ToCStringLen(ctx, &slen, body_val);
+        if (s && slen > 0) {
+            u_char *p = ngx_pnalloc(r->pool, slen);
+            if (p) {
+                ngx_memcpy(p, s, slen);
+                body->data = p;
+                body->len  = slen;
+            }
+            JS_FreeCString(ctx, s);
+        } else {
+            body->data = (u_char *) "";
+            body->len  = 0;
+        }
+    }
+
+    JS_FreeValue(ctx, body_val);
+    JS_FreeValue(ctx, req_obj);
+}
+
+
+ngx_int_t
+ngx_js_upstream_filters_run(JSContext *ctx, JSRuntime *rt,
+    ngx_http_request_t *r, ngx_array_t *filters, ngx_str_t *body)
+{
+    ngx_js_run_generator_filter_array(ctx, rt, r, filters, body,
+                                      "upstream response");
+    return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_js_upstream_req_filters_run(JSContext *ctx, JSRuntime *rt,
+    ngx_http_request_t *r, ngx_array_t *filters, ngx_str_t *body)
+{
+    ngx_js_run_generator_filter_array(ctx, rt, r, filters, body,
+                                      "upstream request");
+    return NGX_OK;
+}
+
+
 /*
  * Streaming filter chain: each filter receives the PREVIOUS filter's output
  * as its input (composing semantics).  STREAM_SYNC filters emit via
@@ -4201,8 +4566,10 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
                           NULL, 1),
     JS_CFUNC_DEF("addHook",            1, ngx_js_location_fn_add_hook),
     JS_CFUNC_DEF("addResponseHook",    1, ngx_js_location_fn_add_response_hook),
-    JS_CFUNC_DEF("addHeaderFilter",    1, ngx_js_location_fn_add_header_filter),
-    JS_CFUNC_DEF("addBodyFilter",      2, ngx_js_location_fn_add_body_filter),
+    JS_CFUNC_DEF("addHeaderFilter",          1, ngx_js_location_fn_add_header_filter),
+    JS_CFUNC_DEF("addBodyFilter",            2, ngx_js_location_fn_add_body_filter),
+    JS_CFUNC_DEF("addUpstreamFilter",        1, ngx_js_location_fn_add_upstream_filter),
+    JS_CFUNC_DEF("addUpstreamRequestFilter", 1, ngx_js_location_fn_add_upstream_req_filter),
     JS_CFUNC_DEF("removeHeaderFilter", 1, ngx_js_location_fn_remove_header_filter),
     JS_CFUNC_DEF("removeBodyFilter",   1, ngx_js_location_fn_remove_body_filter),
     JS_CFUNC_DEF("getHeaderFilter",    1, ngx_js_location_fn_get_header_filter),
