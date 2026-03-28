@@ -166,12 +166,12 @@ a browser DevTools tab).
   `ngx_js_l4_pending_t` tracks the live generator; `ngx_js_l4_async_check`
   resumes parked connections from the event loop.
 
-| P13
-| L4 server→client direction
-| Filter bytes flowing from nginx to the client at the raw TCP level —
-  the outbound direction that P6/P12 leave untouched.  Hooks into
-  `c->send` / `c->send_chain`; the L4 state struct gains an outbound
-  buffer and send chain.
+| P13 ✓
+| <<p13-l4-send.adoc#,L4 server→client direction>>
+| `listener.addL4SendFilter(asyncGenFn)` — intercepts raw outbound bytes
+  after HTTP processing, before they reach the client socket.  Hooks into
+  `c->send` / `c->send_chain` via pool-cleanup type-tagged state.  EOF
+  delivered lazily inside collect loop after first yield.
 
 | P14
 | Upstream JS filters

@@ -400,6 +400,451 @@ typedef struct {
 } ngx_js_l4_state_t;
 
 
+/* ------------------------------------------------------------------ */
+/* P13 — per-connection send filter state                              */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    ngx_send_pt                    orig_send;
+    ngx_send_chain_pt              orig_send_chain;
+    ngx_connection_t              *c;
+    ngx_js_http_listener_state_t  *st;
+} ngx_js_l4_send_state_t;
+
+/*
+ * Pool cleanup used as a type tag so ngx_js_l4_send / ngx_js_l4_send_chain
+ * can recover the send state by scanning c->pool->cleanup.
+ * No JS values are stored here, so the handler is a no-op.
+ */
+static void
+ngx_js_l4_send_state_cleanup(void *data)
+{
+    (void) data;
+}
+
+static ngx_js_l4_send_state_t *
+ngx_js_l4_send_state_get(ngx_connection_t *c)
+{
+    ngx_pool_cleanup_t  *cln;
+
+    for (cln = c->pool->cleanup; cln != NULL; cln = cln->next) {
+        if (cln->handler == ngx_js_l4_send_state_cleanup) {
+            return (ngx_js_l4_send_state_t *) cln->data;
+        }
+    }
+    return NULL;
+}
+
+
+/*
+ * Run all registered L4 send filters on outbound bytes.
+ * Uses fresh generator instances (per-call model): deliver chunk → EOF → done.
+ * Sync-only: if a generator step is pending (await inside filter), log a
+ * warning and pass bytes through unchanged.
+ *
+ * On success, *out / *out_len contain the filtered result (pool-allocated if
+ * different from raw, or raw pointer reused if all filters pass through).
+ * Returns NGX_OK or NGX_ERROR.
+ */
+static ngx_int_t
+ngx_js_l4_run_send_filters(ngx_connection_t *c,
+    ngx_js_http_listener_state_t *st,
+    JSContext *ctx, JSRuntime *rt,
+    const u_char *raw, size_t raw_len,
+    u_char **out, size_t *out_len)
+{
+    JSValue     global, ctor, make_fn, source, deliver_fn, fn;
+    JSValue     ab, ta, gen, next_fn, gen_result, iter_result;
+    JSValue     done_v, value_v, args[2];
+    JSContext  *job_ctx;
+    ngx_uint_t  fi;
+    u_char     *cur_buf, *filt_buf, *new_filt;
+    size_t      cur_len, filt_len, filt_cap, ylen, extra;
+    int         done;
+    const char *cs;
+    size_t      slen;
+
+    cur_buf = (u_char *) raw;
+    cur_len = raw_len;
+
+    global  = JS_GetGlobalObject(ctx);
+    ctor    = JS_GetPropertyStr(ctx, global, "Uint8Array");
+    make_fn = JS_GetPropertyStr(ctx, global, "__ngx_l4_make_source__");
+    JS_FreeValue(ctx, global);
+
+    if (JS_IsUndefined(make_fn) || JS_IsException(make_fn)) {
+        JS_FreeValue(ctx, make_fn);
+        JS_FreeValue(ctx, ctor);
+        *out     = cur_buf;
+        *out_len = cur_len;
+        return NGX_OK;
+    }
+
+    for (fi = 0; fi < st->n_l4_send_filters; fi++) {
+
+        /* Create fresh source for this filter invocation */
+        source = JS_Call(ctx, make_fn, JS_UNDEFINED, 0, NULL);
+        if (JS_IsException(source)) {
+            ngx_js_log_exception(ctx, c->log);
+            continue;
+        }
+
+        deliver_fn = JS_GetPropertyStr(ctx, source, "_deliver");
+
+        fn  = ngx_js_l4_filter_get_fn(ctx, st->l4_send_filters[fi]);
+        gen = JS_Call(ctx, fn, JS_UNDEFINED, 1, &source);
+        JS_FreeValue(ctx, fn);
+
+        if (JS_IsException(gen)) {
+            ngx_js_log_exception(ctx, c->log);
+            JS_FreeValue(ctx, deliver_fn);
+            JS_FreeValue(ctx, source);
+            continue;
+        }
+
+        next_fn    = JS_GetPropertyStr(ctx, gen, "next");
+        gen_result = JS_Call(ctx, next_fn, gen, 0, NULL);
+        while (JS_ExecutePendingJob(rt, &job_ctx) > 0) {}
+
+        if (JS_IsException(gen_result)) {
+            ngx_js_log_exception(ctx, c->log);
+            JS_FreeValue(ctx, next_fn);
+            JS_FreeValue(ctx, gen);
+            JS_FreeValue(ctx, deliver_fn);
+            JS_FreeValue(ctx, source);
+            continue;
+        }
+
+        /* Deliver the outbound chunk */
+        ab = JS_NewArrayBufferCopy(ctx, cur_buf, cur_len);
+        if (!JS_IsException(ab)) {
+            ta = JS_CallConstructor(ctx, ctor, 1, &ab);
+            JS_FreeValue(ctx, ab);
+        } else {
+            ta = JS_EXCEPTION;
+        }
+
+        if (!JS_IsException(ta)) {
+            args[0] = ta;
+            args[1] = JS_FALSE;
+            JS_Call(ctx, deliver_fn, source, 2, args);
+            JS_FreeValue(ctx, ta);
+        }
+        while (JS_ExecutePendingJob(rt, &job_ctx) > 0) {}
+
+        /* Collect yielded output synchronously.
+         * EOF is delivered lazily inside the loop: after the generator yields
+         * its first value it loops back to source.next(), making gen_result
+         * PENDING again.  Only then does _deliver(undefined, true) have a
+         * live _res to resolve.  Delivering EOF before the collect loop is a
+         * no-op because _res is undefined while the generator is suspended at
+         * the yield statement rather than at the for-await call. */
+        filt_cap = (cur_len < 4096) ? 4096 : cur_len + 256;
+        filt_buf = ngx_palloc(c->pool, filt_cap);
+        filt_len = 0;
+
+        if (filt_buf == NULL) {
+            JS_FreeValue(ctx, gen_result);
+            JS_FreeValue(ctx, next_fn);
+            JS_FreeValue(ctx, gen);
+            JS_FreeValue(ctx, deliver_fn);
+            JS_FreeValue(ctx, source);
+            break;
+        }
+
+        {
+        int  eof_delivered = 0;
+        for (;;) {
+            while (JS_ExecutePendingJob(rt, &job_ctx) > 0) {}
+
+            if (JS_PromiseState(ctx, gen_result) == JS_PROMISE_PENDING) {
+                if (!eof_delivered) {
+                    /*
+                     * Generator has looped back to source.next() (or is still
+                     * waiting for the first chunk because deliver failed).
+                     * Signal EOF so the for-await terminates.
+                     */
+                    args[0] = JS_UNDEFINED;
+                    args[1] = JS_TRUE;
+                    JS_Call(ctx, deliver_fn, source, 2, args);
+                    eof_delivered = 1;
+                    while (JS_ExecutePendingJob(rt, &job_ctx) > 0) {}
+                    continue;
+                }
+                ngx_log_error(NGX_LOG_WARN, c->log, 0,
+                              "js l4 send filter: await not supported;"
+                              " passing bytes through unchanged");
+                filt_len = 0;   /* signal passthrough */
+                break;
+            }
+
+            if (JS_PromiseState(ctx, gen_result) == JS_PROMISE_REJECTED) {
+                JSValue  reason, str;
+                reason = JS_PromiseResult(ctx, gen_result);
+                str    = JS_ToString(ctx, reason);
+                cs     = JS_ToCString(ctx, str);
+                if (cs) {
+                    ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                                  "js l4 send filter: rejected: %s", cs);
+                    JS_FreeCString(ctx, cs);
+                }
+                JS_FreeValue(ctx, str);
+                JS_FreeValue(ctx, reason);
+                filt_len = 0;
+                break;
+            }
+
+            iter_result = JS_PromiseResult(ctx, gen_result);
+            JS_FreeValue(ctx, gen_result);
+            gen_result = JS_UNDEFINED;
+
+            done_v = JS_GetPropertyStr(ctx, iter_result, "done");
+            done   = JS_ToBool(ctx, done_v);
+            JS_FreeValue(ctx, done_v);
+
+            if (done) {
+                JS_FreeValue(ctx, iter_result);
+                break;
+            }
+
+            value_v = JS_GetPropertyStr(ctx, iter_result, "value");
+            JS_FreeValue(ctx, iter_result);
+
+            if (!JS_IsUndefined(value_v) && !JS_IsNull(value_v)) {
+                JSValue   vab;
+                size_t    boff, blen, bpe, ab_len;
+                uint8_t  *vptr = NULL;
+
+                vab = JS_GetTypedArrayBuffer(ctx, value_v,
+                                             &boff, &blen, &bpe);
+                if (!JS_IsException(vab)) {
+                    vptr = JS_GetArrayBuffer(ctx, &ab_len, vab);
+                    if (vptr) {
+                        ylen = blen;
+                        if (filt_len + ylen > filt_cap) {
+                            extra    = filt_len + ylen - filt_cap + 256;
+                            new_filt = ngx_palloc(c->pool, filt_cap + extra);
+                            if (new_filt) {
+                                ngx_memcpy(new_filt, filt_buf, filt_len);
+                                filt_buf  = new_filt;
+                                filt_cap += extra;
+                            }
+                        }
+                        if (filt_len + ylen <= filt_cap) {
+                            ngx_memcpy(filt_buf + filt_len,
+                                       vptr + boff, ylen);
+                            filt_len += ylen;
+                        }
+                    }
+                    JS_FreeValue(ctx, vab);
+                } else {
+                    JS_FreeValue(ctx, JS_GetException(ctx));
+                }
+
+                if (vptr == NULL) {
+                    cs = JS_ToCStringLen(ctx, &slen, value_v);
+                    if (cs && slen > 0) {
+                        if (filt_len + slen > filt_cap) {
+                            extra    = filt_len + slen - filt_cap + 256;
+                            new_filt = ngx_palloc(c->pool, filt_cap + extra);
+                            if (new_filt) {
+                                ngx_memcpy(new_filt, filt_buf, filt_len);
+                                filt_buf  = new_filt;
+                                filt_cap += extra;
+                            }
+                        }
+                        if (filt_len + slen <= filt_cap) {
+                            ngx_memcpy(filt_buf + filt_len, cs, slen);
+                            filt_len += slen;
+                        }
+                        JS_FreeCString(ctx, cs);
+                    }
+                }
+            }
+
+            JS_FreeValue(ctx, value_v);
+
+            gen_result = JS_Call(ctx, next_fn, gen, 0, NULL);
+            while (JS_ExecutePendingJob(rt, &job_ctx) > 0) {}
+        }
+        } /* end eof_delivered scope */
+
+        JS_FreeValue(ctx, gen_result);
+        JS_FreeValue(ctx, next_fn);
+        JS_FreeValue(ctx, gen);
+        JS_FreeValue(ctx, deliver_fn);
+        JS_FreeValue(ctx, source);
+
+        if (filt_len > 0) {
+            cur_buf = filt_buf;
+            cur_len = filt_len;
+        }
+        /* else: passthrough / error — keep cur_buf/cur_len unchanged */
+    }
+
+    JS_FreeValue(ctx, make_fn);
+    JS_FreeValue(ctx, ctor);
+
+    *out     = cur_buf;
+    *out_len = cur_len;
+    return NGX_OK;
+}
+
+
+/*
+ * Replacement c->send: runs outbound bytes through L4 send filters
+ * then writes to the real socket via orig_send.
+ */
+static ssize_t
+ngx_js_l4_send(ngx_connection_t *c, u_char *buf, size_t size)
+{
+    ngx_js_l4_send_state_t  *ss;
+    ngx_js_conf_t           *jcf;
+    JSContext               *ctx;
+    JSRuntime               *rt;
+    u_char                  *out;
+    size_t                   out_len;
+
+    ss = ngx_js_l4_send_state_get(c);
+    if (ss == NULL) {
+        /* Should not happen; fall through to real send */
+        return c->send(c, buf, size);
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL || jcf->ctx == NULL) {
+        return ss->orig_send(c, buf, size);
+    }
+
+    ctx = jcf->ctx;
+    rt  = JS_GetRuntime(ctx);
+
+    if (ngx_js_l4_run_send_filters(c, ss->st, ctx, rt,
+                                    buf, size, &out, &out_len) != NGX_OK)
+    {
+        return ss->orig_send(c, buf, size);
+    }
+
+    return ss->orig_send(c, out, out_len);
+}
+
+
+/*
+ * Replacement c->send_chain: flattens the in-memory chain, runs it through
+ * L4 send filters, then writes the result via orig_send.
+ * File buffers are not filtered — fall back to orig_send_chain unchanged.
+ * Returns NULL (all consumed) on success; remaining chain on partial write.
+ */
+static ngx_chain_t *
+ngx_js_l4_send_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
+{
+    ngx_js_l4_send_state_t  *ss;
+    ngx_js_conf_t           *jcf;
+    JSContext               *ctx;
+    JSRuntime               *rt;
+    ngx_chain_t             *cl;
+    ngx_buf_t               *b;
+    u_char                  *flat, *p, *out;
+    size_t                   total, blen, out_len;
+    off_t                    acc;
+    ssize_t                  n;
+
+    ss = ngx_js_l4_send_state_get(c);
+    if (ss == NULL) {
+        /* No state — should not happen; call orig directly */
+        return in;
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL || jcf->ctx == NULL) {
+        return ss->orig_send_chain(c, in, limit);
+    }
+
+    /* Check for file buffers — don't filter those */
+    for (cl = in; cl != NULL; cl = cl->next) {
+        if (cl->buf->in_file) {
+            return ss->orig_send_chain(c, in, limit);
+        }
+    }
+
+    /* Measure total bytes (respect limit) */
+    total = 0;
+    acc   = 0;
+    for (cl = in; cl != NULL; cl = cl->next) {
+        blen   = (size_t) (cl->buf->last - cl->buf->pos);
+        total += blen;
+        acc   += (off_t) blen;
+        if (limit > 0 && acc >= limit) {
+            break;
+        }
+    }
+
+    if (total == 0) {
+        return ss->orig_send_chain(c, in, limit);
+    }
+
+    /* Flatten to contiguous buffer */
+    flat = ngx_palloc(c->pool, total);
+    if (flat == NULL) {
+        return ss->orig_send_chain(c, in, limit);
+    }
+
+    p   = flat;
+    acc = 0;
+    for (cl = in; cl != NULL; cl = cl->next) {
+        b    = cl->buf;
+        blen = (size_t) (b->last - b->pos);
+        ngx_memcpy(p, b->pos, blen);
+        p   += blen;
+        acc += (off_t) blen;
+        if (limit > 0 && acc >= limit) {
+            break;
+        }
+    }
+
+    ctx = jcf->ctx;
+    rt  = JS_GetRuntime(ctx);
+
+    if (ngx_js_l4_run_send_filters(c, ss->st, ctx, rt,
+                                    flat, total, &out, &out_len) != NGX_OK)
+    {
+        out     = flat;
+        out_len = total;
+    }
+
+    /* Write filtered output; mark original chain buffers as consumed */
+    p = out;
+    while (out_len > 0) {
+        n = ss->orig_send(c, p, out_len);
+        if (n <= 0) {
+            break;
+        }
+        p       += (size_t) n;
+        out_len -= (size_t) n;
+    }
+
+    /* Advance input chain: mark consumed buffers */
+    acc = 0;
+    for (cl = in; cl != NULL; cl = cl->next) {
+        b    = cl->buf;
+        blen = (size_t) (b->last - b->pos);
+        b->pos = b->last;  /* consumed */
+        acc   += (off_t) blen;
+        if (limit > 0 && acc >= limit) {
+            break;
+        }
+    }
+
+    /* Return remaining (unsent) chain — NULL if everything consumed */
+    for (cl = in; cl != NULL; cl = cl->next) {
+        if (cl->buf->pos < cl->buf->last) {
+            return cl;
+        }
+    }
+    return NULL;
+}
+
+
 /*
  * Custom recv: serves pre-filtered bytes first, then restores the
  * original recv for subsequent socket reads.  Stored pointer lives
@@ -1167,7 +1612,29 @@ ngx_js_http_accept_handler(ngx_connection_t *c)
 
     JS_FreeValue(ctx, conn_obj);
 
-    /* P6: L4 data filter — intercept raw bytes before HTTP init */
+    /* P13: install send filter hooks before HTTP init */
+    if (st->n_l4_send_filters > 0) {
+        ngx_pool_cleanup_t      *cln;
+        ngx_js_l4_send_state_t  *ss;
+
+        cln = ngx_pool_cleanup_add(c->pool, sizeof(ngx_js_l4_send_state_t));
+        if (cln == NULL) {
+            ngx_close_connection(c);
+            return;
+        }
+
+        ss               = cln->data;
+        ss->orig_send       = c->send;
+        ss->orig_send_chain = c->send_chain;
+        ss->c               = c;
+        ss->st              = st;
+        cln->handler        = ngx_js_l4_send_state_cleanup;
+
+        c->send       = ngx_js_l4_send;
+        c->send_chain = ngx_js_l4_send_chain;
+    }
+
+    /* P6/P12: L4 inbound filter — intercept raw bytes before HTTP init */
     if (st->n_l4_filters > 0) {
         c->read->handler = ngx_js_l4_read_handler;
         if (c->read->ready) {
@@ -1737,6 +2204,60 @@ ngx_js_listener_add_l4_filter(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* listener.addL4SendFilter(fn) — P13: register outbound byte filter   */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_listener_add_l4_send_filter(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_listener_opaque_t      *op;
+    ngx_js_http_listener_state_t  *st;
+    uint32_t                       idx;
+
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        return JS_ThrowInternalError(ctx,
+            "listener.addL4SendFilter: cannot register filters after fork");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_http_listener_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->handle >= NGX_JS_LISTENER_REG_MAX
+        || ngx_js_listener_reg[op->handle] == NULL)
+    {
+        return JS_ThrowInternalError(ctx, "NginxHttpListener: invalid handle");
+    }
+
+    st = ngx_js_listener_reg[op->handle];
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "listener.addL4SendFilter: function argument required");
+    }
+
+    if (st->n_l4_send_filters >= NGX_JS_L4_FILTERS_MAX) {
+        return JS_ThrowInternalError(ctx,
+            "listener.addL4SendFilter: filter limit reached (max %d)",
+            NGX_JS_L4_FILTERS_MAX);
+    }
+
+    /* Reuse the same __ngx_l4_filters__ registry as recv filters */
+    idx = ngx_js_l4_filter_register_fn(ctx, argv[0]);
+    st->l4_send_filters[st->n_l4_send_filters++] = idx;
+
+    /* Ensure the accept handler is installed */
+    if (st->ls != NULL) {
+        st->ls->handler = ngx_js_http_accept_handler;
+    }
+
+    return JS_DupValue(ctx, this_val);
+}
+
+
 static const JSCFunctionListEntry  ngx_js_listener_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("address",          ngx_js_listener_get,              NULL, 0),
     JS_CGETSET_MAGIC_DEF("socket",           ngx_js_listener_get,              NULL, 1),
@@ -1746,6 +2267,7 @@ static const JSCFunctionListEntry  ngx_js_listener_proto_funcs[] = {
     JS_CFUNC_DEF(        "addVirtualServer", 1, ngx_js_listener_add_virtual_server),
     JS_CFUNC_DEF(        "on",               2, ngx_js_listener_on),
     JS_CFUNC_DEF(        "addL4Filter",      1, ngx_js_listener_add_l4_filter),
+    JS_CFUNC_DEF(        "addL4SendFilter",  1, ngx_js_listener_add_l4_send_filter),
 };
 
 
@@ -1867,7 +2389,8 @@ ngx_js_listener_activate(ngx_js_http_listener_state_t *st,
     ls->rcvbuf  = -1;
     ls->sndbuf  = -1;
 
-    ls->handler = (st->n_accept_handlers > 0 || st->n_l4_filters > 0)
+    ls->handler = (st->n_accept_handlers > 0 || st->n_l4_filters > 0
+                   || st->n_l4_send_filters > 0)
                   ? ngx_js_http_accept_handler
                   : ngx_http_init_connection;
     st->ls = ls;

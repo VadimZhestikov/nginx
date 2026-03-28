@@ -73,9 +73,13 @@ typedef struct {
     ngx_uint_t                n_accept_handlers;
     ngx_listening_t          *ls;                 /* back-pointer, set on activate */
 
-    /* L4 data filters — JS-Pilgrim P6 */
+    /* L4 inbound filters — JS-Pilgrim P6/P12 */
     uint32_t                  l4_filters[NGX_JS_L4_FILTERS_MAX];
     ngx_uint_t                n_l4_filters;
+
+    /* L4 send filters — JS-Pilgrim P13 */
+    uint32_t                  l4_send_filters[NGX_JS_L4_FILTERS_MAX];
+    ngx_uint_t                n_l4_send_filters;
 } ngx_js_http_listener_state_t;
 
 

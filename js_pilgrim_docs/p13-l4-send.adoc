@@ -1,0 +1,191 @@
+= JS-Pilgrim P13 — L4 Server→Client Send Filter
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-28
+
+P13 extends the L4 filter pipeline with an outbound direction.
+`listener.addL4SendFilter(fn)` intercepts raw bytes flowing from nginx to
+the client after all HTTP processing, before they are written to the OS
+socket.
+
+== API
+
+[source,javascript]
+----
+// Passthrough — observe bytes, forward unchanged
+listener.addL4SendFilter(async function*(source) {
+    for await (var chunk of source) {
+        yield chunk;
+    }
+});
+
+// Transform — replace content in outbound stream
+listener.addL4SendFilter(async function*(source) {
+    for await (var chunk of source) {
+        var s = String.fromCharCode.apply(null, Array.from(chunk));
+        yield s.replace(/hello/g, 'world');
+    }
+});
+
+// Chain — multiple filters compose sequentially
+listener.addL4SendFilter(async function*(source) {   // first: uppercase
+    for await (var chunk of source) {
+        var s = String.fromCharCode.apply(null, Array.from(chunk));
+        yield s.toUpperCase();
+    }
+});
+listener.addL4SendFilter(async function*(source) {   // second: add prefix
+    for await (var chunk of source) {
+        var s = String.fromCharCode.apply(null, Array.from(chunk));
+        yield s.replace(/^HELLO/m, 'FILTERED:HELLO');
+    }
+});
+----
+
+=== Contract
+
+* The generator function receives the same `source` async-iterable as P12
+  inbound filters.  It produces a `Uint8Array` chunk or a string for each
+  `yield`.  String yields are UTF-8 encoded before being sent to the client.
+* Multiple `addL4SendFilter` calls on the same listener compose in order:
+  the output of filter _N_ is the input to filter _N+1_.
+* The generator must not `await` anything other than the source iterator
+  (i.e. no `nginx.setTimeout`, no external Promises).  Doing so causes the
+  filter to be bypassed with a WARN log entry.
+
+== How it works
+
+=== Hook installation
+
+When a connection is accepted on a listener with `n_l4_send_filters > 0`
+the accept handler stores a `ngx_js_l4_send_state_t` in the connection
+pool via `ngx_pool_cleanup_add`.  It then replaces `c->send` and
+`c->send_chain` with JS-aware wrappers:
+
+----
+c->send       → ngx_js_l4_send
+c->send_chain → ngx_js_l4_send_chain
+----
+
+The original send functions are saved inside `ngx_js_l4_send_state_t`.
+
+=== State recovery
+
+HTTP processing overwrites `c->data`, so `ngx_js_l4_send_state_t` cannot
+live there.  Instead it is found by scanning `c->pool->cleanup` for the
+distinctive no-op handler `ngx_js_l4_send_state_cleanup`.  This is the same
+"pool cleanup as type tag" pattern used by P4 accept hooks.
+
+=== Per-chunk generator execution
+
+For each outbound write `ngx_js_l4_run_send_filters` is called:
+
+1. A fresh source is created via `__ngx_l4_make_source__`.
+2. A fresh generator instance is started (`fn(source)` → `gen`).
+3. `gen.next()` is called once to prime the generator.  The generator runs
+   until `for await (chunk of source)`, where it suspends waiting for the
+   first chunk.
+4. The outbound bytes are delivered as a `Uint8Array` via
+   `source._deliver(chunk, false)`.  Microtasks drain; the generator
+   processes the chunk and yields.
+5. The collect loop reads each fulfilled `gen_result`:
+   * If `{done: false, value}` — collect the value, call `gen.next()`.
+   * If `{done: true}` — collection is complete.
+   * If **PENDING** and EOF not yet delivered — the generator has looped
+     back to `source.next()` after yielding.  Deliver EOF
+     (`_deliver(undefined, true)`), drain, and continue.
+   * If **PENDING** after EOF was already delivered — a true async
+     operation was awaited; log WARN and pass bytes through unchanged.
+
+=== Why lazy EOF delivery?
+
+After a generator yields, it is suspended at the `yield` statement, not at
+`source.next()`.  The source's internal `_res` resolver is `undefined` at
+this point, so calling `_deliver` before the collect loop is a no-op.
+Only when `gen.next()` is called inside the collect loop does the generator
+loop back to `for await (chunk of source)`, calling `source.next()` and
+setting `_res`.  Delivering EOF at that moment causes the for-await loop to
+terminate naturally.
+
+== Limits
+
+* `await` inside a send filter is not supported (no event-loop re-entry
+  while holding the send call).
+* File buffers in a send chain are forwarded to the original send function
+  without filtering (file buffers are uncommon in HTTP response bodies that
+  pass through L4).
+* Maximum 8 send filters per listener (`NGX_JS_L4_FILTERS_MAX`).
+
+== Implementation
+
+=== New struct
+
+[source,c]
+----
+typedef struct {
+    ngx_send_pt                    orig_send;
+    ngx_send_chain_pt              orig_send_chain;
+    ngx_connection_t              *c;
+    ngx_js_http_listener_state_t  *st;
+} ngx_js_l4_send_state_t;
+----
+
+Stored in the connection pool via `ngx_pool_cleanup_add`; found later via the
+`ngx_js_l4_send_state_cleanup` handler pointer scan.
+
+=== Listener state
+
+`ngx_js_http_listener_state_t` in `ngx_js_listener.h` gains:
+
+[source,c]
+----
+uint32_t    l4_send_filters[NGX_JS_L4_FILTERS_MAX];
+ngx_uint_t  n_l4_send_filters;
+----
+
+=== New functions (ngx_js_listener.c)
+
+[cols="2,4"]
+|===
+| Function | Purpose
+
+| `ngx_js_l4_send_state_cleanup`
+| No-op pool cleanup handler used as a type tag.
+
+| `ngx_js_l4_send_state_get`
+| Scans `c->pool->cleanup` to recover the send state pointer.
+
+| `ngx_js_l4_run_send_filters`
+| Runs all registered send filters on a byte buffer; returns filtered
+  output in `*out` / `*out_len`.
+
+| `ngx_js_l4_send`
+| Replacement for `c->send`; recovers state, filters, calls orig.
+
+| `ngx_js_l4_send_chain`
+| Replacement for `c->send_chain`; flattens chain buffers, filters,
+  writes via orig.
+
+| `ngx_js_listener_add_l4_send_filter`
+| JS binding for `listener.addL4SendFilter(fn)`.
+|===
+
+== Test Coverage
+
+`t/js_pilgrim_p13_l4_send.t` (16 explicit + 2 auto = 18 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2   | Unfiltered port (8080) — response unchanged
+| 3–4   | Passthrough filter (port 8081) — bytes forwarded unchanged
+| 5–6   | Transform filter (port 8082) — "hello" replaced with "world"
+| 7–8   | Transform filter second request — replacement persists
+| 9–10  | Unfiltered port again — bytes not transformed
+| 11–12 | Transform filter third request — still filtered
+| 13–14 | Chained filters (port 8083) — uppercase then prefix applied
+| 15–16 | Auto: nginx started without crash, no alerts in error.log
+|===
