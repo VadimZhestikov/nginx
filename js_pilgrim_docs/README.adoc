@@ -1,0 +1,157 @@
+= JS-Pilgrim Architecture
+:toc: left
+:toc-title: Contents
+:toclevels: 2
+:sectnums:
+:revdate: 2026-03-27
+
+JS-Pilgrim is the codename for the full-proxy programmable layer built on top of
+the JS COM foundation.  The goal is to give JavaScript complete control over every
+stage of connection and request processing — from raw TCP accept through to upstream
+response body — with nginx's existing phase engine treated as one pluggable layer
+rather than the fixed centre.
+
+== Design Principles
+
+=== Full proxy framing
+
+Every incoming connection passes through a stack of independently programmable
+layers:
+
+....
+Client TCP
+  ↓
+[L4 JS filters]          ← raw Buffer async-generator streams, both directions
+  ↓
+[Protocol detection]     ← nginx stream / http selection
+  ↓
+[L7 JS hooks]            ← req / res objects, async hooks before/after phases
+  ↓
+[nginx phase engine]     ← existing modules (proxy, FastCGI, static, …)
+  ↓
+[Upstream JS filters]    ← modify what goes to / comes from backend
+  ↓
+Backend TCP
+....
+
+A layer that does nothing passes through automatically.  A layer that calls
+`req.respond()` (or equivalent) short-circuits everything below it.  This is the
+BIG-IP iRules / HUD filter model: the full proxy gives independent client-side and
+server-side streams with hook points at every protocol boundary.
+
+=== Async generators as the layer primitive
+
+Async generators compose naturally into transform pipelines:
+
+[source,javascript]
+----
+async function* gzipExpand(upstream) {
+    const dec = new DecompressStream();
+    for await (const chunk of upstream) {
+        yield* dec.write(chunk);
+    }
+    yield* dec.flush();
+}
+
+location.addBodyFilter(gzipExpand);
+----
+
+The three primitives:
+
+[cols="1,3"]
+|===
+| `yield chunk`       | passthrough (observe and forward unchanged)
+| `yield otherChunk`  | replace (emit different content)
+| `return` / `throw`  | cancel / error
+|===
+
+=== Module packaging
+
+Packages are directories with a `package.json` (`ngxjs` key) and an `index.js`
+entry point.  Installed at runtime with `nginx.use(name, config)` — no reload
+required.
+
+=== Admin shell
+
+A JS COM application that uses `nginx.repl` and WebSocket to expose a
+browser-based admin UI.  Each installed package contributes a panel (analogous to
+a browser DevTools tab).
+
+== Implementation Steps
+
+[cols="1,2,4", options="header"]
+|===
+| Step | Name | Description
+
+| P1
+| <<p1-location-hooks.adoc#,Location hooks>>
+| `location.addHook(fn)` — async pre-content hooks on a location.  Sync and async
+  (Promise-returning) hooks; cancel by calling `req.respond()`.
+
+| P2
+| Server & global hooks
+| `server.addHook(fn)`, `nginx.http.addHook(fn)` — hooks at higher scopes
+  via the nginx access phase; fire for every matching request regardless of
+  content handler.
+
+| P3
+| Response hooks
+| `location.addResponseHook(fn)` — fires after upstream selects response
+  headers, before they are sent to the client.  Modify status / headers.
+
+| P4
+| Accept hook
+| `listener.on('accept', fn(conn))` — TCP connection level hook.
+  `conn.remoteAddr`, `conn.remotePort`, `conn.reject()`.
+
+| P5
+| Generator body filter
+| Upgrade `addBodyFilter` to accept async generator functions
+  (`async function*(chunks, req)`).  Chunks arrive as an async iterable; yield
+  transformed chunks.
+
+| P6
+| L4 data filter
+| `listener.addL4Filter(asyncGenFn)` — raw bidirectional TCP byte-stream filter.
+  Both client→server and server→client directions as async iterables.
+
+| P7
+| Module packaging
+| `nginx.use(name, config)` / `nginx.install(plugin)` API.  Package manifest
+  (`package.json` with `ngxjs` key), local resolution, online registry.
+|===
+
+== Hook Cancellation Model
+
+At every layer the same three-outcome model applies:
+
+[source,javascript]
+----
+location.addHook(async function(req) {
+    // 1. Cancel — respond immediately, skip all remaining hooks + handler
+    if (!req.headers['authorization']) {
+        req.respond(401, {}, 'Unauthorized\n');
+        return;
+    }
+
+    // 2. Continue — return without responding; next hook (or handler) runs
+});
+----
+
+There is no explicit `next()` call required.  The chain advances automatically
+unless `req.respond()` is called.  (A `next()` API for middleware-style wrapping
+is planned as a later extension.)
+
+== Source Layout
+
+[cols="2,4"]
+|===
+| File | Contents
+
+| `src/js/ngx_js.h` | Shared structs; hook fields on `ngx_js_loc_conf_t`,
+  `ngx_js_req_ctx_t`, `ngx_js_async_ctx_t`
+| `src/js/ngx_js_http_module.c` | Hook runner (`ngx_js_run_hook_fn`),
+  modified content handler, modified `ngx_js_async_check`
+| `src/js/ngx_js_com_http.c` | `addHook` JS method, `__ngx_hooks__` registry
+| `t/js_pilgrim_p1_hooks.t` | P1 test suite
+|===

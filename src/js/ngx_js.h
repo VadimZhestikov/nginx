@@ -60,6 +60,7 @@ struct ngx_js_async_ctx_s {
     JSValue                     req_obj;   /* DupValue'd from content handler */
     JSValue                     promise;   /* outer handler Promise */
     ngx_js_async_ctx_t         *next;      /* intrusive list in async_pending */
+    unsigned                    is_hook:1; /* 1 = suspended in hook chain */
 };
 
 
@@ -172,6 +173,7 @@ typedef struct {
     ngx_chain_t           *stream_out;     /* sendBuffer accumulator (streaming)    */
     ngx_chain_t          **stream_out_last;/* tail of stream_out                    */
     void                  *repl;           /* ngx_js_repl_conn_t* when hijacked     */
+    ngx_uint_t             hook_idx;       /* next hook index to run; 0 on first entry */
 } ngx_js_req_ctx_t;
 
 
@@ -221,6 +223,8 @@ typedef struct {
     ngx_uint_t            own_body_filters;
     ngx_uint_t            body_filter_has_wb;/* 1 if any WB_SYNC/WB_ASYNC    */
     ngx_pool_t           *pool; /* cf->pool from create_loc_conf             */
+    ngx_array_t          *hooks;           /* array of uint32_t fn indices into __ngx_hooks__ */
+    ngx_uint_t            own_hooks;       /* 1 = owned; 0 = inherited ptr */
 } ngx_js_loc_conf_t;
 
 

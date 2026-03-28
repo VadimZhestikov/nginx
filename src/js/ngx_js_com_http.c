@@ -2237,6 +2237,49 @@ ngx_js_filter_unregister_fn(JSContext *ctx, uint32_t fn_idx)
 
 
 /*
+ * Hook function registry — parallel to __ngx_filters__ but for pre-content
+ * hooks.  Hooks are stored as plain function references indexed by uint32.
+ */
+
+static JSValue
+ngx_js_hooks_get_registry(JSContext *ctx)
+{
+    JSValue  global, reg;
+
+    global = JS_GetGlobalObject(ctx);
+    reg    = JS_GetPropertyStr(ctx, global, "__ngx_hooks__");
+    JS_FreeValue(ctx, global);
+
+    if (JS_IsUndefined(reg)) {
+        global = JS_GetGlobalObject(ctx);
+        reg    = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, global, "__ngx_hooks__",
+                          JS_DupValue(ctx, reg));
+        JS_FreeValue(ctx, global);
+    }
+
+    return reg;
+}
+
+
+static uint32_t
+ngx_js_hook_register_fn(JSContext *ctx, JSValue fn)
+{
+    JSValue   reg, lenval;
+    uint32_t  idx;
+
+    reg    = ngx_js_hooks_get_registry(ctx);
+    lenval = JS_GetPropertyStr(ctx, reg, "length");
+    JS_ToUint32(ctx, &idx, lenval);
+    JS_FreeValue(ctx, lenval);
+    JS_SetPropertyUint32(ctx, reg, idx, JS_DupValue(ctx, fn));
+    JS_FreeValue(ctx, reg);
+
+    return idx;
+}
+
+
+/*
  * Ensure *listp is owned by this conf (copy-on-first-write).
  * Creates a new empty array if *listp is NULL.
  * Sets *own = 1 on success.
@@ -2721,6 +2764,82 @@ ngx_js_location_fn_add_header_filter(JSContext *ctx, JSValueConst this_val,
     JS_FreeValue(ctx, opts.before_ref);
     JS_FreeValue(ctx, opts.after_ref);
     return ret;
+}
+
+
+/*
+ * location.addHook(fn)
+ *
+ * Register an async pre-content hook for this location.
+ * fn is called as fn(req) before the content handler.
+ * Call req.respond() to cancel; return without responding to continue.
+ */
+static JSValue
+ngx_js_location_fn_add_hook(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_http_core_loc_conf_t  *clcf;
+    ngx_js_loc_conf_t         *jlcf;
+    ngx_js_location_opaque_t  *op;
+    uint32_t                   idx;
+    uint32_t                  *entry;
+    ngx_array_t               *arr;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx, "addHook: argument must be a function");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    clcf = op->clcf;
+    jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+    if (jlcf == NULL) {
+        return JS_ThrowInternalError(ctx, "addHook: no loc_conf");
+    }
+
+    /* Copy-on-first-write: ensure we own the hooks array */
+    if (!jlcf->own_hooks || jlcf->hooks == NULL) {
+        arr = ngx_array_create(jlcf->pool, 4, sizeof(uint32_t));
+        if (arr == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        if (jlcf->hooks != NULL) {
+            /* Copy inherited entries */
+            uint32_t   i;
+            uint32_t  *src = jlcf->hooks->elts;
+            for (i = 0; i < jlcf->hooks->nelts; i++) {
+                uint32_t *dst = ngx_array_push(arr);
+                if (dst == NULL) {
+                    return JS_ThrowOutOfMemory(ctx);
+                }
+                *dst = src[i];
+            }
+        }
+
+        jlcf->hooks     = arr;
+        jlcf->own_hooks = 1;
+    }
+
+    idx   = ngx_js_hook_register_fn(ctx, argv[0]);
+    entry = ngx_array_push(jlcf->hooks);
+    if (entry == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    *entry = idx;
+
+    /* Ensure the JS content handler is installed as clcf->handler so that
+     * hooks fire even when no location.handler is set. */
+    if (clcf->handler != ngx_js_content_handler) {
+        jlcf->original_handler = (ngx_js_http_handler_pt) clcf->handler;
+        clcf->handler          = ngx_js_content_handler;
+    }
+
+    return JS_UNDEFINED;
 }
 
 
@@ -3729,6 +3848,7 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
                           NULL, 0),
     JS_CGETSET_MAGIC_DEF("bodyFilters",   ngx_js_location_get_filter_list,
                           NULL, 1),
+    JS_CFUNC_DEF("addHook",            1, ngx_js_location_fn_add_hook),
     JS_CFUNC_DEF("addHeaderFilter",    1, ngx_js_location_fn_add_header_filter),
     JS_CFUNC_DEF("addBodyFilter",      2, ngx_js_location_fn_add_body_filter),
     JS_CFUNC_DEF("removeHeaderFilter", 1, ngx_js_location_fn_remove_header_filter),

@@ -1,0 +1,189 @@
+= JS-Pilgrim P1 — Location Hooks
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-27
+
+Pre-content async hooks on a location.  Run arbitrary JS — sync or async — before
+the content handler, with the ability to cancel the chain by calling
+`req.respond()`.
+
+== Concept
+
+A hook is an async function that fires *before* `location.handler`.  Multiple hooks
+can be attached; they run in registration order.  As soon as any hook calls
+`req.respond()`, the remaining hooks and the main handler are skipped.
+
+....
+request → hook[0] → hook[1] → … → handler
+               ↘ respond()   (chain cancelled)
+....
+
+If no hook calls `req.respond()`, the chain falls through to `location.handler`.
+If `location.handler` is not set, the chain falls through to nginx's original
+content handler for the location (static files, `proxy_pass`, etc.).
+
+== API
+
+=== `location.addHook(fn)`
+
+[source,javascript]
+----
+location.addHook(asyncFn);
+----
+
+[cols="1,3"]
+|===
+| Parameter | Description
+
+| `fn`
+| `function(req)` or `async function(req)`.  Called with the current
+  `NginxRequest` object.  May return a Promise; the chain waits for it to settle.
+|===
+
+Multiple calls register multiple hooks in order.  Hooks are inherited by nested
+locations (copy-on-write).
+
+=== Cancellation
+
+Call `req.respond(status, headers, body)` inside a hook to cancel:
+
+[source,javascript]
+----
+location.addHook(function(req) {
+    if (!req.headers['x-api-key']) {
+        req.respond(401, {}, 'Missing API key\n');
+        // chain stops here — handler never runs
+    }
+    // returning undefined → continue to next hook / handler
+});
+----
+
+=== Async hooks
+
+Return a Promise (use `async function` or return one explicitly):
+
+[source,javascript]
+----
+location.addHook(async function(req) {
+    await nginx.setTimeout(0);   // yield to event loop
+    // ... do async work ...
+    if (rateLimitExceeded(req)) {
+        req.respond(429, {}, 'Rate limit exceeded\n');
+    }
+});
+----
+
+The request is suspended (non-blocking) while the Promise is pending.  All other
+nginx worker activity continues normally.
+
+== Examples
+
+=== API key guard
+
+[source,javascript]
+----
+const loc = nginx.http.servers[0].findLocation('/api/');
+
+loc.addHook(function(req) {
+    const key = req.headers['x-api-key'];
+    if (key !== 'secret') {
+        req.respond(403, {'content-type': 'text/plain'}, 'Forbidden\n');
+    }
+});
+
+loc.handler = async function(req) {
+    req.respond(200, {'content-type': 'application/json'},
+                JSON.stringify({ ok: true }));
+};
+----
+
+=== Logging hook before proxy
+
+Works without a JS handler — the hook fires, then nginx's `proxy_pass` runs:
+
+[source,javascript]
+----
+const loc = nginx.http.servers[0].findLocation('/upstream/');
+
+loc.addHook(function(req) {
+    nginx.log(nginx.INFO,
+              'upstream request: ' + req.method + ' ' + req.uri);
+    // no req.respond() — falls through to proxy_pass
+});
+----
+
+=== Async auth check
+
+[source,javascript]
+----
+loc.addHook(async function(req) {
+    const token = (req.headers['authorization'] || '').replace('Bearer ', '');
+    const ok    = await verifyToken(token);   // async call
+    if (!ok) {
+        req.respond(401, {}, 'Invalid token\n');
+    }
+});
+----
+
+=== Hook chain ordering
+
+[source,javascript]
+----
+// Hooks run in registration order: log → auth → rateLimit → handler
+loc.addHook(logHook);
+loc.addHook(authHook);
+loc.addHook(rateLimitHook);
+loc.handler = appHandler;
+----
+
+== Limitations (P1)
+
+* **No `next()` / wrapping**: hooks cannot call `next()` and resume after the
+  handler returns.  Post-handler work must use response hooks (P3) or body
+  filters.
+
+* **Separate req wrapper on async re-entry**: after an async hook suspends and
+  resumes, a fresh `NginxRequest` wrapper is created.  Custom JS properties set
+  on `req` inside a hook (e.g. `req.user = ...`) are not visible in subsequent
+  hooks after an async boundary.  Use nginx variables (`req.setVar`) for
+  cross-hook communication instead.
+
+* **Location scope only**: server-level and global hooks (P2) are not yet
+  implemented.
+
+== Implementation Notes
+
+The hook chain is driven by the content-phase handler
+(`ngx_js_content_handler`).  On first entry the function allocates the per-request
+context (`ngx_js_req_ctx_t`) and iterates hooks from `jlcf->hooks[]`.  Each hook
+is called via `ngx_js_run_hook_fn`.
+
+For async hooks that return a pending Promise, the request is suspended
+(`r->main->count++`, `NGX_DONE`) and an `ngx_js_async_ctx_t` entry with
+`is_hook = 1` is pushed onto `w->async_pending`.  When the Promise settles,
+`ngx_js_async_check` re-enters `ngx_js_content_handler` to continue the chain,
+then calls `ngx_http_finalize_request` to balance the count.
+
+Hook functions are stored in a global `__ngx_hooks__` JS array (GC root) and
+referenced by index in the C `ngx_array_t *hooks` on `ngx_js_loc_conf_t`.
+Child locations inherit the parent's hook array pointer (copy-on-write on first
+`addHook`).
+
+== Test Coverage
+
+`t/js_pilgrim_p1_hooks.t` (14 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2  | Sync passthrough hook → handler responds
+| 3–5  | Sync cancel hook → hook responds, handler skipped
+| 6–7  | Multiple hooks all pass → handler responds
+| 8–9  | First hook cancels → remaining hooks + handler skipped
+| 10–11 | Async hook (timer) passes through → handler responds
+| 12–13 | Async hook cancels after timer
+| 14   | Hook-only location (no `handler`) → hook responds
+|===

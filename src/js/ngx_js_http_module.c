@@ -4512,17 +4512,40 @@ ngx_js_async_check(ngx_js_worker_t *w)
         switch (JS_PromiseState(ctx, actx->promise)) {
 
         case JS_PROMISE_FULFILLED:
-            *pp  = actx->next;
+        {
+            ngx_http_request_t  *pend_r;
+            ngx_int_t            cont_rc;
+
+            *pp    = actx->next;
             req_op = JS_GetOpaque(actx->req_obj, ngx_js_request_class_id);
-            if (req_op == NULL || !req_op->responded) {
-                ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
-                              "js: async handler fulfilled without calling "
-                              "req.respond()");
+
+            if (actx->is_hook && (req_op == NULL || !req_op->responded)) {
+                /* Hook fulfilled without responding — re-enter to run next
+                 * hook or the main handler. */
+                pend_r = actx->r;
+                JS_FreeValue(ctx, actx->req_obj);
+                JS_FreeValue(ctx, actx->promise);
+
+                w->current_request = pend_r;
+                cont_rc = ngx_js_content_handler(pend_r);
+                w->current_request = NULL;
+
+                /* Balance the r->main->count++ from the hook suspension. */
+                ngx_http_finalize_request(pend_r, cont_rc);
+
+            } else {
+                if (!actx->is_hook && (req_op == NULL || !req_op->responded)) {
+                    ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
+                                  "js: async handler fulfilled without calling "
+                                  "req.respond()");
+                }
+                JS_FreeValue(ctx, actx->req_obj);
+                JS_FreeValue(ctx, actx->promise);
+                ngx_http_finalize_request(actx->r, NGX_DONE);
             }
-            JS_FreeValue(ctx, actx->req_obj);
-            JS_FreeValue(ctx, actx->promise);
-            ngx_http_finalize_request(actx->r, NGX_DONE);
+
             break;
+        }
 
         case JS_PROMISE_REJECTED:
             *pp    = actx->next;
@@ -4709,6 +4732,129 @@ ngx_js_is_own_conf(ngx_http_request_t *r, ngx_js_req_ctx_t *rctx,
 
 
 /* ------------------------------------------------------------------ */
+/* Hook helpers                                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Retrieve hook function at fn_idx from __ngx_hooks__.
+ * Caller must JS_FreeValue the returned value.
+ */
+static JSValue
+ngx_js_hook_get_fn(JSContext *ctx, uint32_t fn_idx)
+{
+    JSValue  global, reg, fn;
+
+    global = JS_GetGlobalObject(ctx);
+    reg    = JS_GetPropertyStr(ctx, global, "__ngx_hooks__");
+    JS_FreeValue(ctx, global);
+    fn  = JS_GetPropertyUint32(ctx, reg, fn_idx);
+    JS_FreeValue(ctx, reg);
+
+    return fn;
+}
+
+
+/*
+ * Return codes for ngx_js_run_hook_fn.
+ */
+#define NGX_JS_HOOK_CONTINUE   0    /* hook completed; continue chain    */
+#define NGX_JS_HOOK_RESPONDED  1    /* hook called req.respond()         */
+#define NGX_JS_HOOK_SUSPENDED  2    /* async hook pending (NGX_DONE)     */
+#define NGX_JS_HOOK_ERROR    (-1)   /* exception or internal error       */
+
+
+/*
+ * Call hook function fn(req_obj).  Drain microtasks.  Inspect result:
+ *   - sync / fulfilled Promise, no respond → NGX_JS_HOOK_CONTINUE
+ *   - sync / fulfilled Promise, req.respond() called → NGX_JS_HOOK_RESPONDED
+ *   - rejected Promise → log + NGX_JS_HOOK_ERROR
+ *   - pending Promise → push to w->async_pending (is_hook=1),
+ *                       return NGX_JS_HOOK_SUSPENDED
+ */
+static ngx_int_t
+ngx_js_run_hook_fn(ngx_js_worker_t *w, ngx_http_request_t *r,
+    JSValue req_obj, JSValue fn)
+{
+    JSContext                *ctx, *job_ctx;
+    JSValue                   result, then, reason, str;
+    int                       is_promise;
+    const char               *cstr;
+    ngx_js_request_opaque_t  *req_op;
+    ngx_js_async_ctx_t       *actx;
+
+    ctx    = w->ctx;
+    result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
+
+    if (JS_IsException(result)) {
+        ngx_js_log_exception(ctx, r->connection->log);
+        JS_FreeValue(ctx, result);
+        return NGX_JS_HOOK_ERROR;
+    }
+
+    /* Drain pending microtasks (e.g. resolved await inside the hook) */
+    while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { /* drain */ }
+
+    is_promise = 0;
+
+    if (JS_IsObject(result)) {
+        then       = JS_GetPropertyStr(ctx, result, "then");
+        is_promise = JS_IsFunction(ctx, then);
+        JS_FreeValue(ctx, then);
+    }
+
+    if (is_promise) {
+        switch (JS_PromiseState(ctx, result)) {
+
+        case JS_PROMISE_PENDING:
+            actx = ngx_pcalloc(r->pool, sizeof(ngx_js_async_ctx_t));
+            if (actx == NULL) {
+                JS_FreeValue(ctx, result);
+                return NGX_JS_HOOK_ERROR;
+            }
+            actx->r       = r;
+            actx->req_obj = JS_DupValue(ctx, req_obj);
+            actx->promise = result;      /* ownership transferred */
+            actx->is_hook = 1;
+            actx->next    = w->async_pending;
+            w->async_pending = actx;
+            r->main->count++;
+            return NGX_JS_HOOK_SUSPENDED;
+
+        case JS_PROMISE_REJECTED:
+            reason = JS_PromiseResult(ctx, result);
+            str    = JS_ToString(ctx, reason);
+            cstr   = JS_ToCString(ctx, str);
+            if (cstr) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "js hook async exception: %s", cstr);
+                JS_FreeCString(ctx, cstr);
+            }
+            JS_FreeValue(ctx, str);
+            JS_FreeValue(ctx, reason);
+            JS_FreeValue(ctx, result);
+            return NGX_JS_HOOK_ERROR;
+
+        default:  /* JS_PROMISE_FULFILLED */
+            JS_FreeValue(ctx, result);
+            break;
+        }
+
+    } else {
+        JS_FreeValue(ctx, result);
+    }
+
+    /* Hook completed synchronously (or fulfilled Promise).
+     * Check whether it called req.respond(). */
+    req_op = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+    if (req_op != NULL && req_op->responded) {
+        return NGX_JS_HOOK_RESPONDED;
+    }
+
+    return NGX_JS_HOOK_CONTINUE;
+}
+
+
+/* ------------------------------------------------------------------ */
 /* Content handler — called by NGINX in each worker process            */
 /* ------------------------------------------------------------------ */
 
@@ -4736,40 +4882,39 @@ ngx_js_content_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    /* F4: lazily activate the bcast event handler on first request */
-    ngx_js_bcast_ensure_active(w);
+    rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
 
-    /* Activate this worker's channel for every static SharedWorker so that
-     * relay messages from the SW thread are delivered even to workers that
-     * have never called sw.postMessage() themselves. */
-    ngx_js_sw_ensure_all_active(w->ctx);
-
-    /* Allocate the request-lifetime JS context; lives for the full request */
-    rctx = ngx_pcalloc(r->pool, sizeof(ngx_js_req_ctx_t));
     if (rctx == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        /* First entry — one-time per-request setup */
+        ngx_js_bcast_ensure_active(w);
+        ngx_js_sw_ensure_all_active(w->ctx);
+
+        rctx = ngx_pcalloc(r->pool, sizeof(ngx_js_req_ctx_t));
+        if (rctx == NULL) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        rctx->write_mode     = NGX_JS_WRITE_GLOBAL;
+        rctx->read_mode      = NGX_JS_WRITE_GLOBAL;
+        rctx->body_bufs_last = &rctx->body_bufs;
+        rctx->hook_idx       = 0;
+        ngx_http_set_ctx(r, rctx, ngx_js_http_module);
     }
-    rctx->write_mode     = NGX_JS_WRITE_GLOBAL;
-    rctx->read_mode      = NGX_JS_WRITE_GLOBAL;
-    rctx->body_bufs_last = &rctx->body_bufs;
-    /* rctx->snapped = NULL is already done by pcalloc */
-    ngx_http_set_ctx(r, rctx, ngx_js_http_module);
+    /* else: re-entry after async hook; rctx->hook_idx already advanced */
 
     ctx      = w->ctx;
     global   = JS_GetGlobalObject(ctx);
     registry = JS_GetPropertyStr(ctx, global, "__ngx_handlers__");
     JS_FreeValue(ctx, global);
 
-    fn = JS_GetPropertyUint32(ctx, registry, (uint32_t) jlcf->handler_idx);
+    if (jlcf->handler_idx >= 0) {
+        fn = JS_GetPropertyUint32(ctx, registry, (uint32_t) jlcf->handler_idx);
+    } else {
+        fn = JS_UNDEFINED;
+    }
     JS_FreeValue(ctx, registry);
 
-    if (!JS_IsFunction(ctx, fn)) {
-        JS_FreeValue(ctx, fn);
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "js: handler #%i not found or not callable",
-                      jlcf->handler_idx);
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
+    /* fn may not be a function when only hooks are set (handler_idx == -1).
+     * We check later after the hook phase, only failing if no hooks responded. */
 
     req_obj = ngx_js_wrap_request(ctx, r);
     if (JS_IsException(req_obj)) {
@@ -4822,6 +4967,69 @@ ngx_js_content_handler(ngx_http_request_t *r)
     }
 
     w->current_request = r;
+
+    /* ---- Hook phase ---- */
+    if (jlcf->hooks != NULL && rctx->hook_idx < jlcf->hooks->nelts) {
+        uint32_t                 *hook_idxs;
+        JSValue                   hfn;
+        ngx_int_t                 rc_hook;
+        ngx_js_request_opaque_t  *req_op_h;
+
+        hook_idxs = jlcf->hooks->elts;
+
+        while (rctx->hook_idx < jlcf->hooks->nelts) {
+            hfn = ngx_js_hook_get_fn(ctx, hook_idxs[rctx->hook_idx]);
+            rctx->hook_idx++;
+
+            rc_hook = ngx_js_run_hook_fn(w, r, req_obj, hfn);
+            JS_FreeValue(ctx, hfn);
+
+            switch (rc_hook) {
+
+            case NGX_JS_HOOK_CONTINUE:
+                continue;
+
+            case NGX_JS_HOOK_RESPONDED:
+                req_op_h = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+                final_rc = (req_op_h != NULL)
+                           ? req_op_h->respond_rc
+                           : NGX_HTTP_INTERNAL_SERVER_ERROR;
+                JS_FreeValue(ctx, fn);
+                JS_FreeValue(ctx, req_obj);
+                w->current_request    = NULL;
+                w->request_deadline_ms = 0;
+                return final_rc;
+
+            case NGX_JS_HOOK_SUSPENDED:
+                JS_FreeValue(ctx, fn);
+                JS_FreeValue(ctx, req_obj);
+                w->current_request    = NULL;
+                w->request_deadline_ms = 0;
+                return NGX_DONE;
+
+            default:  /* NGX_JS_HOOK_ERROR */
+                JS_FreeValue(ctx, fn);
+                JS_FreeValue(ctx, req_obj);
+                w->current_request    = NULL;
+                w->request_deadline_ms = 0;
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+        }
+    }
+    /* ---- End hook phase; fall through to main handler ---- */
+
+    /* If no JS handler is set (hooks-only location), we're done */
+    if (!JS_IsFunction(ctx, fn)) {
+        JS_FreeValue(ctx, fn);
+        JS_FreeValue(ctx, req_obj);
+        w->current_request    = NULL;
+        w->request_deadline_ms = 0;
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "js: handler #%i not found or not callable",
+                      jlcf->handler_idx);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
     result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
 
     JS_FreeValue(ctx, fn);
@@ -6372,6 +6580,8 @@ ngx_js_create_loc_conf(ngx_conf_t *cf)
     jlcf->own_body_filters   = 1;
     jlcf->body_filter_has_wb = 0;
     jlcf->pool               = cf->pool;
+    jlcf->hooks              = NULL;
+    jlcf->own_hooks          = 1;  /* NULL is "owned" */
 
     return jlcf;
 }
@@ -6400,6 +6610,12 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->body_filters       = prev->body_filters;
         conf->own_body_filters   = 0;
         conf->body_filter_has_wb = prev->body_filter_has_wb;
+    }
+
+    /* Inherit parent hook list (pointer copy, copy-on-first-write on mutation) */
+    if (conf->hooks == NULL && prev->hooks != NULL) {
+        conf->hooks     = prev->hooks;
+        conf->own_hooks = 0;
     }
 
     return NGX_CONF_OK;
