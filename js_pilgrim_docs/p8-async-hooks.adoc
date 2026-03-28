@@ -1,0 +1,184 @@
+= JS-Pilgrim P8 — Async P2/P3 Hooks
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-27
+
+Server-scope and global-scope hooks (P2) now support `await` inside the
+hook body.  The request is suspended while the Promise is pending and
+resumed transparently when it settles.
+
+== API
+
+Both hook registration methods already existed as synchronous APIs (P2).
+P8 makes them accept `async function` bodies without any API change:
+
+[source,javascript]
+----
+// Global scope — fires before every HTTP request
+nginx.http.addHook(async function(req) {
+    var token = await lookupToken(req.headers['authorization']);
+    if (!token) {
+        req.respond(401, {}, 'Unauthorized\n');
+    }
+});
+
+// Server scope — fires for every request on this virtual server
+nginx.http.servers[0].addHook(async function(req) {
+    await nginx.setTimeout(0);   // yield to event loop
+    req.headers['x-trace-id'] = generateId();
+});
+----
+
+The three outcomes from P2 still apply:
+
+[cols="1,3"]
+|===
+| Outcome | Behaviour
+
+| Return normally (no `req.respond()`)
+| Hook passes; next hook in the chain runs, then the content handler.
+
+| `req.respond(status, headers, body)`
+| Request is finalized immediately; remaining hooks and the content
+  handler are skipped.
+
+| `throw` (or rejected Promise)
+| nginx logs the error and sends a 500 response.
+|===
+
+== Suspension Model
+
+When a hook `await`s a pending Promise:
+
+1. `r->main->count` is incremented (request stays alive).
+2. The access handler returns `NGX_DONE`; nginx parks the request.
+3. When the timer (or other async source) resolves the Promise, nginx
+   drains microtasks, then calls `ngx_js_p2_hook_resume`.
+4. The resume function re-enters `ngx_js_http_access_handler` starting
+   from the saved hook index (`rctx->p2_global_idx` or
+   `rctx->p2_server_idx`).
+5. After all hooks pass, `phase_handler` advances and
+   `ngx_http_core_run_phases` continues to the content phase.
+
+=== Count invariant
+
+Unlike P1 (content phase), the nginx access phase does *not* call
+`ngx_http_finalize_request` for an `NGX_DONE` return value.  Therefore
+`r->main->count` stays at 2 while the request is parked.  Every resume
+path calls `ngx_http_finalize_request(r, NGX_DONE)` first to balance the
+count (2→1) before taking further action.
+
+[source]
+----
+Suspend:  count 1 → 2  (run_hook_fn increments)
+Resume — all-passed:
+          finalize(NGX_DONE) → 2→1
+          phase_handler++; run_phases  (content handler)
+Resume — another suspend:
+          inner hook increments → 3
+          finalize(NGX_DONE) → 3→2  (new suspension holds)
+Resume — req.respond() inside hook:
+          write_event_handler = empty_handler
+          finalize(NGX_DONE) → 2→1
+          finalize(NGX_DONE) → 1 → ngx_http_close_request
+Resume — throw (rejected Promise):
+          finalize(NGX_DONE) → 2→1
+          finalize(500) → send error response
+----
+
+== Sequential Hooks
+
+Multiple async hooks all run in registration order; each suspension
+parks the request until its individual Promise settles.  The resume
+logic re-enters the handler from the saved index so already-completed
+hooks are not re-run:
+
+[source,javascript]
+----
+nginx.http.addHook(async function(req) {
+    await nginx.setTimeout(5);
+    // hook A done
+});
+nginx.http.addHook(async function(req) {
+    await nginx.setTimeout(5);
+    // hook B done — runs after hook A resolves
+});
+----
+
+Both A and B complete before the content handler executes.
+
+== Module-Level State vs. Request Properties
+
+Each re-entry into `ngx_js_http_access_handler` creates a *new* JS
+wrapper object for the nginx request (`ngx_js_wrap_request`).  Properties
+set on the old wrapper (e.g. `req._myFlag = true`) are lost after an
+`await` boundary.
+
+Use **module-level variables** for state that must survive across async
+suspensions within the same request:
+
+[source,javascript]
+----
+// WRONG — req wrapper is replaced on re-entry
+nginx.http.addHook(async function(req) {
+    await nginx.setTimeout(5);
+    req._done = true;          // set on old wrapper, lost
+});
+handler = function(req) {
+    req._done;                 // always undefined
+};
+
+// CORRECT — module-level variable
+var done = false;
+nginx.http.addHook(async function(req) {
+    await nginx.setTimeout(5);
+    done = true;
+});
+handler = function(req) {
+    done;                      // true ✓
+    done = false;              // reset for next request
+};
+----
+
+== Implementation Notes
+
+=== New fields
+
+`ngx_js_async_ctx_t` gains `is_p2_hook:1` to distinguish P2 suspensions
+from P1 content-handler suspensions in `ngx_js_async_check`.
+
+`ngx_js_req_ctx_t` gains `p2_global_idx` and `p2_server_idx` to record
+the next hook index to run on resume.
+
+=== `ngx_js_run_hook_fn`
+
+Unchanged from P1.  Returns `NGX_JS_HOOK_SUSPENDED` for pending Promises.
+The P2 access handler immediately fixes the `is_hook` flag to
+`is_p2_hook` on the pushed actx so `ngx_js_async_check` routes to the
+correct resume path.
+
+=== `ngx_js_p2_hook_resume`
+
+Called from `ngx_js_async_check` when a P2 actx promise fulfils.
+Re-invokes `ngx_js_http_access_handler` from the saved index, then
+balances the count as described above.
+
+== Test Coverage
+
+`t/js_pilgrim_p8_async_hooks.t` (16 explicit + 2 auto = 18 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2   | Sync global hook (baseline): `syncOkFlag` set before handler runs
+| 3–4   | Async global hook: flag set after `await nginx.setTimeout(5)`
+| 5–6   | Async server-scope hook: flag set after await
+| 7–8   | Two sequential async global hooks: both increment counter (= 2)
+| 9–10  | Async hook that throws: 500 status, content handler not reached
+| 11–12 | Async hook that calls `req.respond(403)`: 403, content handler skipped
+| 13–14 | Repeated requests: state correctly reset per request
+| 15–16 | Auto: nginx started, no alerts in error.log
+|===

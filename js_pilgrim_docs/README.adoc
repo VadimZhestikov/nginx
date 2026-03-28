@@ -121,6 +121,14 @@ a browser DevTools tab).
 | `nginx.use(path, config?)` / `nginx.install(plugin, config?)` API.
   Directory-based packages with `package.json` (`ngxjs.main` entry),
   inline function/object plugins, `nginx.pluginConfig` config injection.
+
+| P8 ✓
+| <<p8-async-hooks.adoc#,Async P2/P3 hooks>>
+| `nginx.http.addHook(async fn)` / `server.addHook(async fn)` — server-
+  and global-scope hooks that may `await` inside the body.  Request is
+  suspended (count++) while the Promise is pending; resumed when it
+  settles.  Throwing rejects with 500; `req.respond()` short-circuits the
+  content handler exactly as in the sync case.
 |===
 
 == Hook Cancellation Model
