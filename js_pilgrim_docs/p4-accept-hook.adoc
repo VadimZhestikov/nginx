@@ -1,0 +1,238 @@
+= JS-Pilgrim P4 — Accept Hook
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-27
+
+TCP-connection-level hooks that fire immediately after a new connection is
+accepted, before HTTP parsing begins.  Hooks can inspect the remote address
+and port, or reject the connection outright.
+
+== Concept
+
+P4 hooks run between the OS `accept(2)` syscall and `ngx_http_init_connection`
+— the point where nginx begins HTTP protocol processing.
+
+....
+TCP SYN  →  OS accept()
+               ↓
+       [ACCEPT HOOKS]  listener.on('accept', fn(conn))  ← P4
+               ↓
+       ngx_http_init_connection
+               ↓
+       [ACCESS PHASE]  nginx.http.addHook / server.addHook  (P2)
+               ↓
+       [CONTENT PHASE]  location.addHook / handler  (P1)
+               ↓
+       [HEADER FILTER]  location.addResponseHook  (P3)
+               ↓
+       Client ← response
+....
+
+Accept hooks are available on **JS-managed listeners** — those created via
+`nginx.http.attach(sock)`.  They are not available on nginx's built-in
+`listen` directive sockets.
+
+== API
+
+=== `listener.on('accept', fn(conn))`
+
+[source,javascript]
+----
+const listener = nginx.http.attach(sock);
+listener.addServer(srv);
+
+listener.on('accept', function(conn) {
+    // conn = NginxConnection object
+});
+----
+
+[cols="1,3"]
+|===
+| Parameter | Description
+
+| `'accept'`
+| Event name (the only supported event in P4).
+
+| `fn`
+| `function(conn)` — called synchronously with a `NginxConnection` wrapper.
+  Must not return a Promise (async hooks are not supported in accept phase).
+|===
+
+Returns `listener` for chaining.
+
+Multiple calls register multiple hooks; all run in registration order.
+
+=== NginxConnection
+
+[cols="1,1,3"]
+|===
+| Property / Method | Type | Description
+
+| `conn.remoteAddr`
+| string (read-only)
+| Client IP address, e.g. `"192.168.1.10"`.  Supports IPv4 and IPv6.
+
+| `conn.remotePort`
+| number (read-only)
+| Client TCP port, e.g. `54321`.
+
+| `conn.reject()`
+| void
+| Close the connection.  All remaining hooks are skipped; nginx never starts
+  HTTP processing for this connection.
+|===
+
+=== Sync-only
+
+Accept hooks are **synchronous only**.  If a hook function returns a pending
+Promise (i.e. an `async function` that awaits I/O), nginx logs a warning and
+rejects the connection.
+
+=== Pre-fork only
+
+`listener.on('accept', fn)` must be called before fork (i.e., from a
+`js_source` script evaluated at init time, not from inside a request handler).
+Calling it from a worker throws an error.
+
+=== Registration order relative to `addServer`
+
+`listener.on()` may be called either before or after `addServer()`:
+
+[source,javascript]
+----
+// Register before activation — also valid
+listener.on('accept', fn);
+listener.addServer(srv);
+
+// Or after activation — also valid
+listener.addServer(srv);
+listener.on('accept', fn);
+----
+
+== Examples
+
+=== Log remote address
+
+[source,javascript]
+----
+const sock = nginx.createSocket("0.0.0.0:8443");
+const lst  = nginx.http.attach(sock);
+lst.addServer(defaultSrv);
+
+lst.on('accept', function(conn) {
+    nginx.log(nginx.INFO,
+              'accept: ' + conn.remoteAddr + ':' + conn.remotePort);
+});
+----
+
+=== IP allowlist
+
+[source,javascript]
+----
+const allowed = new Set(['10.0.0.1', '10.0.0.2', '192.168.100.0']);
+
+lst.on('accept', function(conn) {
+    if (!allowed.has(conn.remoteAddr)) {
+        nginx.log(nginx.WARN, 'blocked: ' + conn.remoteAddr);
+        conn.reject();
+    }
+});
+----
+
+=== Rate limit by IP (simple token-bucket sketch)
+
+[source,javascript]
+----
+const buckets = new Map();
+
+lst.on('accept', function(conn) {
+    const ip    = conn.remoteAddr;
+    const now   = Date.now();
+    const entry = buckets.get(ip) || { tokens: 10, last: now };
+
+    // Refill tokens: 1 per second, max 10
+    entry.tokens = Math.min(10,
+        entry.tokens + (now - entry.last) / 1000);
+    entry.last = now;
+
+    if (entry.tokens < 1) {
+        conn.reject();
+    } else {
+        entry.tokens--;
+    }
+
+    buckets.set(ip, entry);
+});
+----
+
+=== Chaining hooks
+
+[source,javascript]
+----
+// Hook 1: log
+lst.on('accept', function(conn) {
+    nginx.log(nginx.INFO, 'new connection from ' + conn.remoteAddr);
+});
+
+// Hook 2: enforce allowlist
+lst.on('accept', function(conn) {
+    if (!isAllowed(conn.remoteAddr)) {
+        conn.reject();
+    }
+});
+// Hook 2 calls reject() — hook chain stops, connection closed.
+----
+
+== Limitations (P4)
+
+* **JS-managed listeners only**: works on listeners created with
+  `nginx.http.attach(sock)`.  Regular nginx `listen` sockets are not
+  supported.
+* **Sync-only**: async hooks (returning a Promise) cause rejection.
+* **Pre-fork only**: hooks must be registered before workers are forked.
+* **No body access**: hooks run before HTTP is parsed — only TCP-level
+  information (remote address / port) is available.
+* **No nginx variable access**: there is no request yet, so nginx variables
+  cannot be read or written.
+
+== Implementation Notes
+
+Hook functions are stored in a global `__ngx_accept_hooks__` JS array (GC
+root, parallel to `__ngx_hooks__`).  Their uint32 indices are stored in
+`ngx_js_http_listener_state_t.accept_handlers[]`.
+
+When the first hook is registered, `ls->handler` is switched from
+`ngx_http_init_connection` to `ngx_js_http_accept_handler`.  The wrapper:
+
+1. Recovers the listener state via `ngx_container_of(c->listening->servers,
+   ngx_js_http_listener_state_t, port)`.
+2. Gets the JS context from `ngx_cycle->conf_ctx[ngx_js_module.index]`.
+3. Wraps `ngx_connection_t` as a `NginxConnection` JS object.
+4. Calls each registered hook in order, draining microtasks between calls.
+5. If `conn.reject()` was called (or a hook threw): calls
+   `ngx_close_connection(c)` and returns.
+6. Otherwise: calls `ngx_http_init_connection(c)`.
+
+`NginxConnection` is a new JS class registered alongside
+`NginxHttpListener` in `ngx_js_listener.c`.
+
+== Test Coverage
+
+`t/js_pilgrim_p4_accept_hook.t` (11 explicit + 2 auto = 13 tests):
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1     | Initial accept count is 0 (no connections yet)
+| 2     | Connection to port 8091 succeeds (hook-enabled listener works)
+| 3     | `conn.remoteAddr` is `"127.0.0.1"`
+| 4     | `conn.remotePort` is a positive integer
+| 5     | Second connection increments count
+| 6–7   | `conn.reject()` — TCP connect succeeds initially then returns EOF
+| 8     | Reject hook ran exactly once
+| 9     | Two hooks on same listener: both run (hook2Count = 2)
+| 10    | Port 8080 connections do not trigger port 8091 hook
+|===

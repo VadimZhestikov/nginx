@@ -99,8 +99,8 @@ a browser DevTools tab).
 | `location.addResponseHook(fn)` — fires after upstream selects response
   headers, before they are sent to the client.  Modify status / headers.
 
-| P4
-| Accept hook
+| P4 ✓
+| <<p4-accept-hook.adoc#,Accept hook>>
 | `listener.on('accept', fn(conn))` — TCP connection level hook.
   `conn.remoteAddr`, `conn.remotePort`, `conn.reject()`.
 
