@@ -83,7 +83,7 @@ a browser DevTools tab).
 |===
 | Step | Name | Description
 
-| P1
+| P1 ✓
 | <<p1-location-hooks.adoc#,Location hooks>>
 | `location.addHook(fn)` — async pre-content hooks on a location.  Sync and async
   (Promise-returning) hooks; cancel by calling `req.respond()`.
