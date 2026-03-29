@@ -1,0 +1,441 @@
+= JS-Pilgrim P17 — Standard Listen Socket Support for P4/P6
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-28
+
+P17 extends the accept hooks (P4) and L4 stream filters (P6/P12/P13) to
+work on sockets declared with nginx's `listen` directive.  Before P17, these
+APIs were available only on JS-managed listeners created via
+`nginx.http.attach(sock)`.  After P17 all three hooks can be installed on
+any server in `nginx.http.servers[]`:
+
+[cols="1,2,1",options="header"]
+|===
+|API |Purpose |Added in
+
+|`server.on('accept', fn)`
+|TCP-accept hook — fires before HTTP parsing
+|P17
+
+|`server.addL4Filter(fn)`
+|Inbound raw byte filter — transforms client→nginx bytes
+|P17
+
+|`server.addL4SendFilter(fn)`
+|Outbound raw byte filter — transforms nginx→client bytes
+|P17
+|===
+
+== Concept
+
+....
+Client TCP
+  ↓
+  OS accept()
+  ↓
+[server.on('accept', fn)]     ← P17 — runs synchronously per connection
+  ↓
+[server.addL4Filter(fn)]      ← P17 — async generator, client→nginx bytes
+  ↓
+ngx_http_init_connection      ← standard nginx HTTP entry point
+  ↓
+[HTTP processing ...]
+  ↓
+[server.addL4SendFilter(fn)]  ← P17 — async generator, nginx→client bytes
+  ↓
+Client TCP
+....
+
+Hooks registered via `server.on()` and `server.addL4Filter()` use the same
+`NginxConnection`, generator, and filter-chaining semantics as their P4/P6/P13
+counterparts on JS-managed listeners.  The difference is only in how they are
+installed: P17 hooks are attached to the `NginxServer` COM object and wired to
+standard `listen` sockets at the end of `init_conf`.
+
+== API
+
+=== `server.on('accept', fn)`
+
+Registers a synchronous accept hook on all standard listen sockets whose
+default virtual server is `server`.
+
+[source,javascript]
+----
+var srv = nginx.http.servers[0];
+
+srv.on('accept', function(conn) {
+    nginx.log(nginx.INFO,
+              'new connection from ' + conn.remoteAddr + ':' + conn.remotePort);
+});
+----
+
+`event`:: Must be the string `'accept'`.  No other events are supported on P17 server hooks.
+
+`fn`:: `function(conn)` — synchronous; must not return a Promise.
+A `NginxConnection` object is passed (see <<conn-api>>).
+
+Returns `server` for chaining.  Multiple `on('accept', fn)` calls register
+multiple hooks; they fire in registration order.  If any hook calls
+`conn.reject()`, subsequent hooks are skipped and the connection is closed.
+
+=== `server.addL4Filter(fn)`
+
+Registers an inbound L4 stream filter on all standard listen sockets for
+this server.
+
+[source,javascript]
+----
+var srv = nginx.http.servers[0];
+
+srv.addL4Filter(async function*(source) {
+    for await (const chunk of source) {
+        // chunk — Uint8Array of raw TCP bytes from the client
+        yield chunk;   // forward unchanged
+        return;
+    }
+});
+----
+
+`fn`:: `async function*(source)` — an async generator that receives the
+client byte stream via the `source` async iterable and yields transformed
+bytes.  `await` is permitted inside the body.  See <<l4-gen-protocol>>.
+
+Returns `server` for chaining.  Multiple calls chain in registration order:
+the output of filter N becomes the input of filter N+1.
+
+=== `server.addL4SendFilter(fn)`
+
+Registers an outbound L4 stream filter on all standard listen sockets for
+this server.
+
+[source,javascript]
+----
+srv.addL4SendFilter(async function*(source) {
+    for await (const chunk of source) {
+        // chunk — Uint8Array of outbound bytes heading to the client
+        yield chunk;
+    }
+});
+----
+
+Signature and chaining rules are identical to `addL4Filter`.  The filter
+hooks into `c->send` / `c->send_chain` via pool-cleanup type-tagged state
+(same mechanism as P13 `listener.addL4SendFilter`).
+
+[[conn-api]]
+=== NginxConnection
+
+[cols="1,1,3",options="header"]
+|===
+|Property / Method |Type |Description
+
+|`conn.remoteAddr`
+|string (read-only)
+|Client IP address, e.g. `"192.168.1.10"`.  IPv4 and IPv6.
+
+|`conn.remotePort`
+|number (read-only)
+|Client TCP port, e.g. `54321`.
+
+|`conn.reject()`
+|void
+|Close the connection immediately.  All remaining accept hooks are skipped;
+the L4 filter chain and HTTP processing never run for this connection.
+|===
+
+[[l4-gen-protocol]]
+=== L4 async generator protocol
+
+The `source` argument passed to `addL4Filter` and `addL4SendFilter`
+implements the async iterable protocol:
+
+[source,javascript]
+----
+async function*(source) {
+    for await (const chunk of source) {
+        // chunk: Uint8Array — one TCP segment
+        // await is permitted here
+        yield transform(chunk);
+        return;   // stop after first chunk (typical for inbound filters)
+        // omit return to loop over subsequent segments
+    }
+}
+----
+
+[cols="1,3",options="header"]
+|===
+|Yield value |Meaning
+
+|`Uint8Array`
+|Raw bytes copied verbatim.
+
+|`string`
+|Bytes interpreted as UTF-8 / ASCII characters.
+
+|No yield, generator returns
+|No bytes emitted (HTTP parser receives empty input — likely 400).
+
+|`throw` / exception
+|Connection closed; error logged.
+|===
+
+== Constraints
+
+=== Pre-fork only
+
+`server.on()`, `server.addL4Filter()`, and `server.addL4SendFilter()` must
+be called from a `js_source` script evaluated at init time (before workers
+are forked).  Calling them from inside a request handler throws a `TypeError`.
+
+=== Accept hooks are synchronous
+
+Accept hooks must be synchronous.  Returning a pending Promise causes the
+connection to be rejected and a warning to be logged.
+
+=== Default server only
+
+P17 hooks are attached to the listen socket based on the socket's *default*
+virtual server.  When multiple virtual servers share a port (SNI / Host
+routing), only the hooks registered on the port's default server apply.
+Hooks on non-default servers on the same port are silently ignored.
+
+=== Per-server limits
+
+[cols="1,1",options="header"]
+|===
+|Hook type |Maximum per server
+
+|`server.on('accept', fn)`
+|`NGX_JS_ACCEPT_HANDLERS_MAX` (8)
+
+|`server.addL4Filter(fn)`
+|`NGX_JS_L4_FILTERS_MAX` (8)
+
+|`server.addL4SendFilter(fn)`
+|`NGX_JS_L4_FILTERS_MAX` (8)
+|===
+
+== Examples
+
+=== IP allowlist at TCP level
+
+[source,javascript]
+----
+var allowList = new Set(['10.0.0.1', '10.0.0.2']);
+
+nginx.http.servers[0].on('accept', function(conn) {
+    if (!allowList.has(conn.remoteAddr)) {
+        nginx.log(nginx.WARN, 'blocked: ' + conn.remoteAddr);
+        conn.reject();
+    }
+});
+----
+
+=== Hit counter per IP
+
+[source,javascript]
+----
+nginx.http.servers[0].on('accept', function(conn) {
+    var key = 'conn:' + conn.remoteAddr;
+    nginx.shared.incr(key);
+    nginx.log(nginx.DEBUG, conn.remoteAddr + ' total connections: '
+              + nginx.shared.get(key));
+});
+----
+
+=== Strip a custom binary frame prefix
+
+[source,javascript]
+----
+var MAGIC = 'NGXJS:';
+
+nginx.http.servers[0].addL4Filter(async function*(source) {
+    for await (const chunk of source) {
+        var s = String.fromCharCode(...chunk);
+        yield s.startsWith(MAGIC) ? s.slice(MAGIC.length) : s;
+        return;
+    }
+});
+----
+
+=== Chain: log then strip
+
+[source,javascript]
+----
+var srv = nginx.http.servers[0];
+
+// Filter 1: log raw size before stripping
+srv.addL4Filter(async function*(source) {
+    for await (const chunk of source) {
+        nginx.log(nginx.DEBUG, 'raw inbound: ' + chunk.length + ' bytes');
+        yield chunk;
+        return;
+    }
+});
+
+// Filter 2: strip 4-byte binary header
+srv.addL4Filter(async function*(source) {
+    for await (const chunk of source) {
+        yield chunk.slice(4);
+        return;
+    }
+});
+----
+
+=== One-shot connection rejector
+
+[source,javascript]
+----
+var srv  = nginx.http.servers[0];
+var locs = srv.locations;
+var rejectNext = false;
+
+// Arm via a request to /reject-next/
+locs.find(function(l) { return l.path === '/reject-next/'; })
+    .handler = function(r) {
+        rejectNext = true;
+        r.respond(200, {}, 'armed\n');
+    };
+
+srv.on('accept', function(conn) {
+    if (rejectNext) {
+        rejectNext = false;
+        conn.reject();
+    }
+});
+----
+
+== Implementation
+
+=== Hook registration
+
+`server.on()`, `server.addL4Filter()`, and `server.addL4SendFilter()` are
+new JS methods on `NginxServer` (defined in `ngx_js_com_http.c`).  They store
+hook function indices in three arrays on `ngx_js_http_srv_conf_t`:
+
+[source,c]
+----
+typedef struct {
+    ngx_array_t  *hooks;          /* existing P1/P2 request hooks */
+    /* P17: standard-socket accept hooks and L4 filters */
+    uint32_t      accept_handlers[NGX_JS_ACCEPT_HANDLERS_MAX];
+    ngx_uint_t    n_accept_handlers;
+    uint32_t      l4_filters[NGX_JS_L4_FILTERS_MAX];
+    ngx_uint_t    n_l4_filters;
+    uint32_t      l4_send_filters[NGX_JS_L4_FILTERS_MAX];
+    ngx_uint_t    n_l4_send_filters;
+    void         *srv_listener_state;   /* ngx_js_http_listener_state_t* */
+} ngx_js_http_srv_conf_t;
+----
+
+Function indices are stored via `ngx_js_accept_hook_register_fn` (shared with
+P4) and `ngx_js_l4_filter_register_fn`.
+
+=== Install phase
+
+`ngx_js_srv_install_accept_hooks(cycle)` is called at the end of
+`ngx_js_init_conf`, after all `js_source` scripts have been evaluated.  It
+walks `cycle->listening`:
+
+1. Skips any socket whose `ls->handler` is not `ngx_http_init_connection`
+   (i.e., non-HTTP sockets or already-overridden sockets).
+2. Looks up the default server's `ngx_js_http_srv_conf_t`.
+3. Skips the socket if all three hook counts are zero.
+4. Allocates a `ngx_js_http_listener_state_t` in `cycle->pool` (once per
+   server — multiple sockets of the same server share one state).
+5. Copies the hook index arrays from the server config into the state.
+6. Stores the state pointer in `jscf->srv_listener_state`.
+7. Sets `ls->handler = ngx_js_srv_accept_handler`.
+
+Multiple `listen` sockets belonging to the same server share a single
+`ngx_js_http_listener_state_t` (the pointer is re-used, not re-allocated).
+
+=== Accept handler
+
+`ngx_js_srv_accept_handler` (in `ngx_js_listener.c`) recovers the listener
+state from `c->listening->servers` (the `ngx_http_port_t` pointer), then
+follows the same execution path as the P4 listener accept handler:
+
+1. Wraps `ngx_connection_t` as a `NginxConnection` JS object.
+2. Calls each registered accept hook in order, draining microtasks between calls.
+3. If `conn.reject()` was called (or a hook threw): closes the connection and returns.
+4. If L4 inbound filters are registered: arms the read event for
+   `ngx_js_l4_read_handler` (P12 path).
+5. Otherwise: calls `ngx_http_init_connection(c)`.
+
+The L4 send filter hooks into `c->send` / `c->send_chain` at the same point
+as P13, via `ngx_js_l4_send_state_t` in the connection pool.
+
+== Files Changed
+
+[cols="2,5",options="header"]
+|===
+|File |Change
+
+|`src/js/ngx_js.h`
+|New fields on `ngx_js_http_srv_conf_t`: `accept_handlers[]`,
+`l4_filters[]`, `l4_send_filters[]`, `srv_listener_state`.
+
+|`src/js/ngx_js_com_http.c`
+|New JS methods `server.on()`, `server.addL4Filter()`,
+`server.addL4SendFilter()`.  Added to `NginxServer` function list.
+
+|`src/js/ngx_js_listener.c`
+|New `ngx_js_srv_accept_handler` accept handler for standard sockets.
+New `ngx_js_srv_install_accept_hooks` install-phase function.
+
+|`src/js/ngx_js_listener.h`
+|Export `ngx_js_srv_install_accept_hooks`.
+
+|`src/js/ngx_js_module.c`
+|Call `ngx_js_srv_install_accept_hooks(cycle)` at end of `ngx_js_init_conf`.
+Add `#include "ngx_js_listener.h"`.
+
+|`src/js/ngx_js_sw.c`, `ngx_js_worker.c`
+|Minor: include / prototype updates required by the listener header.
+
+|`t/js_pilgrim_p17_server_accept.t`
+|New test suite (see <<test-coverage>>).
+|===
+
+[[test-coverage]]
+== Test Coverage
+
+`t/js_pilgrim_p17_server_accept.t` (14 explicit + 2 auto = 16 tests):
+
+[cols="1,3",options="header"]
+|===
+|Test |Scenario
+
+|1–2
+|Basic request with accept hooks registered — 200 OK, correct body.
+
+|3–4
+|Accept hook fires: per-connection counter incremented (`count1 >= 1`).
+
+|5
+|`conn.reject()` from hook 2: connection to armed server returns no 200.
+
+|6
+|`rejectNext` auto-cleared after single rejection — normal requests resume immediately.
+
+|7–8
+|Server continues accepting normally after the rejection episode.
+
+|9–10
+|Pass-through `addL4Filter` does not break HTTP processing.
+
+|11–12
+|Pass-through `addL4SendFilter` does not break HTTP processing.
+
+|13–14
+|Both accept hooks fire: second counter (`count2`) also incremented.
+
+|15
+|nginx started without crash (`waitforsocket` on 127.0.0.1:8080).
+
+|16
+|No alerts or emergencies in error.log.
+|===

@@ -198,12 +198,12 @@ a browser DevTools tab).
   `ngx_js_load_plugin` is the shared helper; `ngx_js_channel_send`
   promoted from static for reuse.
 
-| P17
-| Standard listen socket support for P4/P6
-| `server.on('accept', fn)` and `server.addL4Filter(fn)` on the existing
-  `NginxServer` COM object, so accept hooks and L4 filters work on
-  sockets declared with the `listen` directive — not only JS-created
-  listeners.
+| P17 ✓
+| <<p17-server-accept.adoc#,Standard listen socket support for P4/P6>>
+| `server.on('accept', fn)`, `server.addL4Filter(fn)`, and
+  `server.addL4SendFilter(fn)` on the existing `NginxServer` COM object,
+  so accept hooks and L4 filters work on sockets declared with the `listen`
+  directive — not only JS-created listeners.
 
 | P18
 | Online package registry for nginx.use
