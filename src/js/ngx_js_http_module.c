@@ -799,6 +799,7 @@ typedef struct {
     unsigned             responded:1;    /* set when req.respond()/finish() called */
     unsigned             headers_sent:1; /* set after writeHead()/first write() */
     unsigned             hijacked:1;     /* set by req.hijack() */
+    unsigned             passed:1;       /* set by req.pass() — internal redirect */
 } ngx_js_request_opaque_t;
 
 
@@ -4112,6 +4113,103 @@ ngx_js_request_redirect(JSContext *ctx, JSValueConst this_val,
 
 
 /* ------------------------------------------------------------------ */
+/* req.pass(location) — internal redirect preserving request body      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * req.pass(location) triggers an nginx internal redirect to `location`.
+ *
+ * Unlike req.subrequest(), an internal redirect:
+ *   • Preserves r->request_body — proxy_pass will stream it to the upstream
+ *     without any JS-side buffering.
+ *   • Re-enters the full nginx phase engine (server_rewrite → find_config →
+ *     … → content) so the new location's proxy_pass / fastcgi_pass fires.
+ *   • Is limited to internal locations (add `internal;` in nginx.conf).
+ *
+ * The JS handler MUST return immediately after calling req.pass().
+ * Any subsequent req.respond() will throw "already responded".
+ *
+ * Typical usage:
+ *   location /route/ { }        ← JS content handler calls req.pass(backend)
+ *   location /internal/be/ {
+ *       internal;
+ *       proxy_pass http://upstream/;
+ *   }
+ */
+static JSValue
+ngx_js_request_pass(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t  *op;
+    ngx_http_request_t       *r;
+    const char               *loc_cstr;
+    size_t                    loc_len;
+    u_char                   *p, *qmark;
+    ngx_str_t                 uri, args;
+    ngx_int_t                 rc;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "r.pass: expected location argument");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->responded) {
+        return JS_ThrowTypeError(ctx, "r.pass: already responded");
+    }
+
+    r = op->r;
+
+    loc_cstr = JS_ToCStringLen(ctx, &loc_len, argv[0]);
+    if (!loc_cstr) {
+        return JS_EXCEPTION;
+    }
+
+    /* Copy URI into request pool — it must outlive the JS string */
+    p = ngx_pnalloc(r->pool, loc_len + 1);
+    if (p == NULL) {
+        JS_FreeCString(ctx, loc_cstr);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    ngx_memcpy(p, loc_cstr, loc_len);
+    p[loc_len] = '\0';
+    JS_FreeCString(ctx, loc_cstr);
+
+    uri.data = p;
+    uri.len  = loc_len;
+    ngx_str_null(&args);
+
+    /* Split query string if '?' is present */
+    qmark = ngx_strlchr(uri.data, uri.data + uri.len, '?');
+    if (qmark != NULL) {
+        args.data = qmark + 1;
+        args.len  = (size_t) (uri.data + uri.len - (qmark + 1));
+        uri.len   = (size_t) (qmark - uri.data);
+    }
+
+    rc = ngx_http_internal_redirect(r, &uri, &args);
+    if (rc != NGX_DONE) {
+        return JS_ThrowInternalError(ctx, "r.pass: internal redirect failed (%d)",
+                                     (int) rc);
+    }
+
+    /*
+     * Mark as "responded" so req.respond() throws, and so the content
+     * handler / async_check know to run phases rather than log an error.
+     */
+    op->responded  = 1;
+    op->respond_rc = NGX_DONE;
+    op->passed     = 1;
+
+    return JS_UNDEFINED;
+}
+
+
+/* ------------------------------------------------------------------ */
 /* Streaming: r.writeHead() + r.write() + r.finish()                   */
 /* ------------------------------------------------------------------ */
 
@@ -5002,6 +5100,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CFUNC_DEF("bodyChunks",          0, ngx_js_request_body_chunks),
     JS_CFUNC_DEF("sendfile",            1, ngx_js_request_sendfile),
     JS_CFUNC_DEF("redirect",            1, ngx_js_request_redirect),
+    JS_CFUNC_DEF("pass",               1, ngx_js_request_pass),
     JS_CFUNC_DEF("writeHead",           1, ngx_js_request_write_head),
     JS_CFUNC_DEF("write",               1, ngx_js_request_write),
     JS_CFUNC_DEF("finish",              0, ngx_js_request_finish),
@@ -5664,6 +5763,21 @@ ngx_js_async_check(ngx_js_worker_t *w)
                     ngx_http_finalize_request(pend_r, cont_rc);
                 }
             } else {
+                if (req_op != NULL && req_op->passed) {
+                    /*
+                     * req.pass() was called from an async handler.
+                     * ngx_http_internal_redirect already called count++ and
+                     * ngx_http_handler(), so the phase engine has already run
+                     * for the new location.  Just call finalize to balance
+                     * the count++ that the async suspension did.
+                     */
+                    ngx_http_request_t  *pass_r = actx->r;
+                    JS_FreeValue(ctx, actx->req_obj);
+                    JS_FreeValue(ctx, actx->promise);
+                    ngx_http_finalize_request(pass_r, NGX_DONE);
+                    break;
+                }
+
                 if (req_op == NULL || !req_op->responded) {
                     ngx_log_error(NGX_LOG_ERR, actx->r->connection->log, 0,
                                   "js: async handler fulfilled without calling "
@@ -6540,6 +6654,24 @@ ngx_js_content_handler(ngx_http_request_t *r)
      * connection is closed.
      */
     if (req_op && req_op->hijacked) {
+        JS_FreeValue(ctx, req_obj);
+        JS_FreeValue(ctx, result);
+        return NGX_DONE;
+    }
+
+    /*
+     * req.pass() was called (sync handler or async Promise that settled
+     * before returning to the event loop).  ngx_http_internal_redirect
+     * already called r->main->count++ and ngx_http_handler(r), which runs
+     * the full phase engine for the new location.  For sync backends (e.g.
+     * return 200) the response is already sent and ngx_http_finalize_request
+     * was called once (count decremented back to 1).  For async backends
+     * (proxy_pass) the upstream is started and count remains 2.
+     * Either way, returning NGX_DONE here lets ngx_http_core_content_phase
+     * call ngx_http_finalize_request(NGX_DONE) which decrements count to 0
+     * (sync) or 1 (async, upstream finalises on completion).
+     */
+    if (req_op && req_op->passed) {
         JS_FreeValue(ctx, req_obj);
         JS_FreeValue(ctx, result);
         return NGX_DONE;

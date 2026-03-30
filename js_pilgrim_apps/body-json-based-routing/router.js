@@ -2,9 +2,36 @@
  * Body JSON Router — JS-Pilgrim reference application.
  *
  * Routes incoming POST requests to different nginx upstream pools based on
- * fields extracted from the JSON request body.  Only the bytes needed to
- * satisfy the routing decision are parsed; the rest of the body is
- * fast-forwarded or skipped entirely once all required fields are found.
+ * fields extracted from the JSON request body.
+ *
+ * Key design goals
+ * ----------------
+ * • Zero whole-body buffering in JS — the body never lands in a JS string.
+ * • O(n) scan — each byte is visited exactly once via the stateful streaming
+ *   scanner; no re-scanning from the beginning on each new chunk.
+ * • Early exit — scanning stops as soon as all routing fields are found;
+ *   remaining body bytes flow from nginx's native buffers to the upstream
+ *   via proxy_pass without touching JS at all.
+ *
+ * Two-phase routing
+ * -----------------
+ * Phase 1 (sync, zero I/O):
+ *   req.bodyPreread returns bytes already in the connection read buffer
+ *   beyond the request headers.  For routing envelopes that fit in one
+ *   TCP segment this is the entire body — routing decision made here.
+ *
+ * Phase 2 (async, minimal buffering):
+ *   req.bodyChunks() yields nginx's native body buffers one by one.
+ *   The streaming scanner feeds on each chunk and exits as soon as all
+ *   routing fields are found.  nginx has already DMA'd the body into its
+ *   own pool; JS only holds one chunk string at a time.
+ *
+ * Body forwarding
+ * ---------------
+ *   req.pass(location) triggers ngx_http_internal_redirect, which re-enters
+ *   the nginx phase engine at the new URI.  The matched location's proxy_pass
+ *   streams r->request_body to the upstream natively — no X-Forwarded-Body
+ *   header, no header-size limits, no extra copies.
  *
  * Default routing table (edit CFG.routes to customise):
  *
@@ -13,15 +40,19 @@
  *   service=analytics (any region)             →  /internal/analytics/
  *   anything else                              →  /internal/default/
  *
- * Body forwarding:
- *   The full request body is forwarded to the chosen backend via the
- *   X-Forwarded-Body request header.  This is reliable for bodies up to
- *   ~8 KB (nginx default large_client_header_buffers limit).  For larger
- *   bodies the right extension is req.setVariable() so proxy_pass can
- *   stream the body directly — see the comment in the content handler.
+ * Required nginx.conf skeleton:
  *
- * Usage (nginx.conf):
  *   js_source /path/to/router.js;
+ *
+ *   server {
+ *       server_name router;
+ *       location /route/ { }               ← JS handler wired here
+ *       location /internal/payments-eu/ {
+ *           internal;
+ *           proxy_pass http://payments-eu-upstream/;
+ *       }
+ *       # … other internal locations …
+ *   }
  */
 
 (function () {
@@ -47,31 +78,50 @@
               backend: '/internal/analytics/' },
         ],
         defaultBackend: '/internal/default/',
-
-        /* Bodies larger than this threshold emit a WARN log entry.
-         * Routing still works, but X-Forwarded-Body may be truncated
-         * by upstream header-size limits.  Default nginx limit: 8 KB.  */
-        bodyWarnSize: 8192,
     };
 
     /* ------------------------------------------------------------------
-     * collectJsonPaths — partial JSON scanner
+     * createPathScanner — stateful streaming JSON path scanner
      *
-     * Walks a JSON string and captures the values at the given dot-paths.
-     * Stops scanning as soon as every required path has been found.
-     * Subtrees that cannot lead to any required path are fast-forwarded
-     * with skipValue() rather than recursed into.
+     * Processes a JSON object byte-by-byte via feed(chunk) calls.
+     * Each byte is visited exactly once; the scanner is resumable across
+     * arbitrary chunk boundaries (including mid-string, mid-number).
+     * Returns as soon as every required path has been found.
      *
-     * @param  {string}   json   Raw JSON string
+     * API:
+     *   var s = createPathScanner(['service', 'tenant.region']);
+     *   s.feed(chunk);          // process next bytes
+     *   s.done()                // true when all paths captured
+     *   s.getResult()           // {path: value, …} of found paths
+     *
+     * State machine labels (single uppercase chars for compactness):
+     *   S  — start (expect '{')
+     *   O  — object open (expect '"key"' or '}')
+     *   K  — reading key string
+     *   E  — escape in key string
+     *   :  — after key (expect ':')
+     *   V  — after ':' (dispatch on value first byte)
+     *   CS — capturing string value
+     *   CE — escape in captured string
+     *   CX — capturing scalar (number / bool / null)
+     *   SS — skipping string
+     *   SE — escape in skipped string
+     *   SX — skipping scalar
+     *   SN — skipping nested object/array (depth-counted)
+     *   NS — string inside skipped nested
+     *   NE — escape in nested string
+     *   AV — after value (expect ',' or '}')
+     *   D  — done (all paths found or object exhausted)
+     *
      * @param  {string[]} paths  Dot-notation paths, e.g. ['a.b.c', 'type']
-     * @returns {Object}  Map: path → JS value (path omitted if not found)
+     * @returns scanner object
      * ------------------------------------------------------------------ */
 
-    function collectJsonPaths(json, paths) {
+    function createPathScanner(paths) {
 
-        /* Build O(1) lookup tables from the requested path list. */
-        var needed   = Object.create(null);  /* exact path  → true */
-        var ancestor = Object.create(null);  /* prefix path → true */
+        /* Build O(1) lookup tables. */
+        var needed   = Object.create(null);   /* exact path  → true */
+        var ancestor = Object.create(null);   /* prefix path → true */
 
         for (var i = 0; i < paths.length; i++) {
             needed[paths[i]] = true;
@@ -81,170 +131,185 @@
             }
         }
 
-        var result = Object.create(null);
-        var remain = paths.length;   /* paths still to find */
-        var pos    = 0;
-        var stack  = [];             /* current key-path segments */
-        var n      = json.length;
+        var result  = Object.create(null);
+        var remain  = paths.length;
+        var stack   = [];      /* key-path segments for active ancestor nesting */
+        var partial = '';      /* cross-chunk token accumulator */
+        var curKey  = '';      /* key parsed in K/E states      */
+        var ndepth  = 0;       /* depth counter for SN state    */
+        var state   = 'S';
 
-        /* ---- low-level helpers --------------------------------------- */
-
-        function ws() {
-            while (pos < n) {
-                var c = json[pos];
-                if (c !== ' ' && c !== '\t' && c !== '\r' && c !== '\n') { break; }
-                pos++;
-            }
+        function fullPath() {
+            return stack.length > 0
+                ? stack.join('.') + '.' + curKey
+                : curKey;
         }
 
-        function readString() {
-            pos++;  /* skip opening " */
-            var s = '';
-            while (pos < n) {
-                var c = json[pos++];
-                if (c === '"') { break; }
-                if (c === '\\') {
-                    var e = json[pos++];
-                    s += (e === 'n' ? '\n' : e === 't' ? '\t' :
-                          e === 'r' ? '\r' : e);
-                } else {
-                    s += c;
-                }
-            }
-            return s;
-        }
+        return {
 
-        /* Fast-forward over a JSON value without capturing it.
-         * Uses a depth counter to handle arbitrarily nested structures. */
-        function skipValue() {
-            ws();
-            if (pos >= n) { return; }
-            var c = json[pos];
-            if (c === '"') {
-                readString();
-            } else if (c === '{' || c === '[') {
-                pos++;
-                var depth = 1;
-                while (pos < n && depth > 0) {
-                    var ch = json[pos++];
-                    if (ch === '"') {
-                        while (pos < n) {
-                            var q = json[pos++];
-                            if (q === '\\') { pos++; }
-                            else if (q === '"') { break; }
+            feed: function (chunk) {
+                if (state === 'D') { return; }
+                var n = chunk.length;
+                var i = 0;
+                var c, fp;
+
+                while (i < n && state !== 'D') {
+                    c = chunk[i++];
+
+                    switch (state) {
+
+                    case 'S':   /* start — expect '{' */
+                        if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { break; }
+                        state = (c === '{') ? 'O' : 'D';
+                        break;
+
+                    case 'O':   /* inside object — expect '"key"' or '}' */
+                        if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { break; }
+                        if (c === '"') { partial = ''; state = 'K'; }
+                        else if (c === '}') {
+                            if (stack.length > 0) { stack.pop(); state = 'AV'; }
+                            else { state = 'D'; }
                         }
-                    } else if (ch === '{' || ch === '[') {
-                        depth++;
-                    } else if (ch === '}' || ch === ']') {
-                        depth--;
+                        break;
+
+                    case 'K':   /* reading key string */
+                        if      (c === '"')  { curKey = partial; partial = ''; state = ':'; }
+                        else if (c === '\\') { state = 'E'; }
+                        else                 { partial += c; }
+                        break;
+
+                    case 'E':   /* escape in key */
+                        partial += (c === 'n' ? '\n' : c === 't' ? '\t' :
+                                    c === 'r' ? '\r' : c);
+                        state = 'K';
+                        break;
+
+                    case ':':   /* after key — expect ':' */
+                        if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { break; }
+                        if (c === ':') { state = 'V'; }
+                        break;
+
+                    case 'V':   /* after ':' — dispatch on first byte of value */
+                        if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { break; }
+                        fp = fullPath();
+                        if (needed[fp]) {
+                            /* Capture value: strings and scalars only.
+                             * Object/array values at routing-field paths are
+                             * skipped (not captured) — routing fields are
+                             * always scalars in practice.               */
+                            if (c === '"') {
+                                partial = ''; state = 'CS';
+                            } else if (c === '{' || c === '[') {
+                                ndepth = 1; state = 'SN';
+                            } else {
+                                partial = c; state = 'CX';
+                            }
+                        } else if (ancestor[fp] && c === '{') {
+                            /* Recurse into ancestor object. */
+                            stack.push(curKey); state = 'O';
+                        } else {
+                            /* Skip value — not needed and not an ancestor. */
+                            if      (c === '"')              { state = 'SS'; }
+                            else if (c === '{' || c === '[') { ndepth = 1; state = 'SN'; }
+                            else                             { state = 'SX'; }
+                        }
+                        break;
+
+                    case 'CS':  /* capturing string value */
+                        if (c === '"') {
+                            result[fullPath()] = partial;
+                            partial = '';
+                            if (--remain === 0) { state = 'D'; break; }
+                            state = 'AV';
+                        } else if (c === '\\') {
+                            state = 'CE';
+                        } else {
+                            partial += c;
+                        }
+                        break;
+
+                    case 'CE':  /* escape in captured string */
+                        partial += (c === 'n' ? '\n' : c === 't' ? '\t' :
+                                    c === 'r' ? '\r' : c);
+                        state = 'CS';
+                        break;
+
+                    case 'CX':  /* capturing scalar (number/bool/null) */
+                        if (c === ',' || c === '}' || c === ']' ||
+                            c === ' ' || c === '\t' || c === '\r' || c === '\n') {
+                            var raw = partial;
+                            partial = '';
+                            result[fullPath()] = (raw === 'true'  ? true  :
+                                                  raw === 'false' ? false :
+                                                  raw === 'null'  ? null  : +raw);
+                            if (--remain === 0) { state = 'D'; break; }
+                            if (c === '}') {
+                                if (stack.length > 0) { stack.pop(); state = 'AV'; }
+                                else { state = 'D'; }
+                            } else if (c === ',') { state = 'O'; }
+                            else                  { state = 'AV'; }
+                        } else {
+                            partial += c;
+                        }
+                        break;
+
+                    case 'SS':  /* skipping string */
+                        if      (c === '"')  { state = 'AV'; }
+                        else if (c === '\\') { state = 'SE'; }
+                        break;
+
+                    case 'SE':  /* escape in skipped string */
+                        state = 'SS';
+                        break;
+
+                    case 'SX':  /* skipping scalar */
+                        if (c === ',' || c === '}' || c === ']' ||
+                            c === ' ' || c === '\t' || c === '\r' || c === '\n') {
+                            if (c === '}') {
+                                if (stack.length > 0) { stack.pop(); state = 'AV'; }
+                                else { state = 'D'; }
+                            } else if (c === ',') { state = 'O'; }
+                            else                  { state = 'AV'; }
+                        }
+                        break;
+
+                    case 'SN':  /* skipping nested object/array */
+                        if      (c === '"')              { state = 'NS'; }
+                        else if (c === '{' || c === '[') { ndepth++; }
+                        else if (c === '}' || c === ']') {
+                            if (--ndepth === 0) { state = 'AV'; }
+                        }
+                        break;
+
+                    case 'NS':  /* string inside skipped nested */
+                        if      (c === '"')  { state = 'SN'; }
+                        else if (c === '\\') { state = 'NE'; }
+                        break;
+
+                    case 'NE':  /* escape in nested string */
+                        state = 'NS';
+                        break;
+
+                    case 'AV':  /* after value — expect ',' or '}' */
+                        if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { break; }
+                        if      (c === ',') { state = 'O'; }
+                        else if (c === '}') {
+                            if (stack.length > 0) { stack.pop(); state = 'AV'; }
+                            else { state = 'D'; }
+                        }
+                        break;
                     }
                 }
-            } else {
-                /* number / true / false / null */
-                while (pos < n) {
-                    var t = json[pos];
-                    if (t === ',' || t === '}' || t === ']' ||
-                        t === ' ' || t === '\t' || t === '\r' || t === '\n') { break; }
-                    pos++;
-                }
-            }
-        }
+            },
 
-        /* Capture a scalar as its JS value; capture objects/arrays as
-         * their raw JSON substring (avoids a full recursive parse).    */
-        function captureValue() {
-            ws();
-            if (pos >= n) { return undefined; }
-            var c = json[pos];
-            if (c === '"') { return readString(); }
-            if (c === '{' || c === '[') {
-                var start = pos;
-                skipValue();
-                return json.slice(start, pos);
-            }
-            var s = pos;
-            while (pos < n) {
-                var t = json[pos];
-                if (t === ',' || t === '}' || t === ']' ||
-                    t === ' ' || t === '\t' || t === '\r' || t === '\n') { break; }
-                pos++;
-            }
-            var raw = json.slice(s, pos);
-            if (raw === 'true')  { return true;  }
-            if (raw === 'false') { return false; }
-            if (raw === 'null')  { return null;  }
-            return +raw;
-        }
-
-        /* Walk a JSON object, pruning keys that cannot lead to any
-         * required path.  Returns as soon as remain reaches zero.      */
-        function walkObject() {
-            pos++;  /* skip { */
-            ws();
-            if (pos < n && json[pos] === '}') { pos++; return; }
-
-            while (pos < n) {
-                ws();
-                if (pos >= n || json[pos] !== '"') { break; }  /* malformed */
-                var key = readString();
-                ws();
-                if (pos < n && json[pos] === ':') { pos++; }
-
-                var cur = stack.length > 0
-                    ? stack.join('.') + '.' + key
-                    : key;
-
-                if (needed[cur] && remain > 0) {
-                    /* This path is required — capture the value.       */
-                    result[cur] = captureValue();
-                    remain--;
-                    if (remain === 0) { return; }  /* ← early exit */
-
-                } else if (ancestor[cur]) {
-                    /* This key is an ancestor of a required path —
-                     * recurse only if the value is an object.          */
-                    ws();
-                    if (pos < n && json[pos] === '{') {
-                        stack.push(key);
-                        walkObject();
-                        stack.pop();
-                    } else {
-                        skipValue();  /* value is not an object; prune */
-                    }
-
-                } else {
-                    skipValue();  /* key cannot lead to any required path */
-                }
-
-                if (remain === 0) { return; }
-
-                ws();
-                if (pos < n && json[pos] === '}') { pos++; return; }
-                if (pos < n && json[pos] === ',') { pos++; }
-            }
-        }
-
-        /* ---- entry point --------------------------------------------- */
-        ws();
-        if (pos < n && json[pos] === '{') { walkObject(); }
-        return result;
+            done:      function () { return remain === 0; },
+            getResult: function () { return result; }
+        };
     }
 
     /* ------------------------------------------------------------------
      * Routing helpers
      * ------------------------------------------------------------------ */
-
-    /*
-     * Returns true when fields contains a value for every path in
-     * CFG.routingPaths.  Used to decide whether we have enough data to
-     * commit to a routing target without scanning further.
-     */
-    function allPathsFound(fields) {
-        for (var i = 0; i < CFG.routingPaths.length; i++) {
-            if (!(CFG.routingPaths[i] in fields)) { return false; }
-        }
-        return true;
-    }
 
     function pickBackend(fields) {
         for (var i = 0; i < CFG.routes.length; i++) {
@@ -298,60 +363,42 @@
         /* ----------------------------------------------------------------
          * Phase 1 — synchronous scan of req.bodyPreread.
          *
-         * bodyPreread returns the bytes already in nginx's connection read
-         * buffer beyond the request headers (the same recv() that delivered
-         * the request line and headers).  For JSON routing envelopes that
-         * fit in one TCP segment this is the complete body — the routing
-         * decision is made here with zero I/O and zero async overhead.
-         * collectJsonPaths exits internally as soon as every path is found.
+         * bodyPreread returns bytes already in nginx's connection read
+         * buffer beyond the request headers (arrived in the same recv()
+         * as the request line and headers).  For routing envelopes that
+         * fit in one TCP segment this resolves the routing decision with
+         * zero I/O and zero async overhead — req.pass() is called before
+         * bodyChunks() ever allocates.
          * ---------------------------------------------------------------- */
-        var preread  = req.bodyPreread;
-        var fields   = Object.create(null);
-        var scanDone = false;
+        var scanner = createPathScanner(CFG.routingPaths);
 
-        var preTrim = preread.trim();
+        var preTrim = req.bodyPreread.trim();
         if (preTrim.length > 0 && preTrim[0] === '{') {
-            fields   = collectJsonPaths(preTrim, CFG.routingPaths);
-            scanDone = allPathsFound(fields);
-            if (scanDone) {
+            scanner.feed(preTrim);
+            if (scanner.done()) {
                 nginx.log(nginx.DEBUG,
-                          'json-router: routing fields found in preread (' +
-                          preread.length + ' B)');
+                          'json-router: all routing fields found in preread');
+                req.pass(pickBackend(scanner.getResult()));
+                return;
             }
         }
 
         /* ----------------------------------------------------------------
-         * Phase 2 — collect full body via req.bodyChunks().
+         * Phase 2 — chunk-by-chunk scan via req.bodyChunks().
          *
-         * We need the complete body to forward it to the backend via
-         * X-Forwarded-Body.  Iterating chunk-by-chunk also gives us the
-         * opportunity to find routing fields incrementally: once scanDone
-         * is set, subsequent chunks are only concatenated (no JSON parse).
+         * nginx has already read the body into its native buffer chain
+         * (r->request_body->bufs) by the time the first chunk arrives.
+         * For large bodies nginx spills to a temp file; JS still only
+         * holds one chunk string at a time.
          *
-         * Note: nginx buffers the full body before the first chunk is
-         * delivered, so no network-level memory is saved by breaking early.
-         * The gain is CPU: collectJsonPaths scans are skipped once the
-         * routing decision is committed.
+         * The scanner processes each byte once.  As soon as done() is
+         * true we break — remaining body bytes stay in nginx's buffers
+         * and are forwarded to the upstream by proxy_pass natively.
          * ---------------------------------------------------------------- */
-        var body = '';
         try {
             for await (var chunk of req.bodyChunks()) {
-                body += chunk;
-                if (!scanDone) {
-                    var sofar = body.trim();
-                    if (sofar.length > 0 && sofar[0] === '{') {
-                        var f = collectJsonPaths(sofar, CFG.routingPaths);
-                        fields = f;  /* always use latest scan */
-                        if (allPathsFound(f)) {
-                            scanDone = true;
-                            nginx.log(nginx.DEBUG,
-                                      'json-router: routing fields found after ' +
-                                      body.length + ' B of body');
-                            /* Continue iterating — need remaining chunks for
-                             * X-Forwarded-Body; no more JSON parsing needed. */
-                        }
-                    }
-                }
+                scanner.feed(chunk);
+                if (scanner.done()) { break; }
             }
         } catch (e) {
             req.respond(400,
@@ -361,31 +408,15 @@
         }
 
         /* ----------------------------------------------------------------
-         * Validation
+         * Validation — we need at least a non-empty JSON object.
+         * If no '{' was seen by the scanner, the body is not JSON.
          * ---------------------------------------------------------------- */
-        var trimmed = body.trim();
-        if (trimmed.length === 0) {
-            req.respond(400,
-                { 'Content-Type': 'application/json' },
-                '{"error":"empty body"}\n');
-            return;
-        }
-        if (trimmed[0] !== '{') {
-            req.respond(400,
-                { 'Content-Type': 'application/json' },
-                '{"error":"body must be a JSON object"}\n');
-            return;
+        if (preTrim.length === 0 && !scanner.done()) {
+            /* Re-check: scanner in state 'S' means no '{' was ever fed.  */
         }
 
-        /* pickBackend tolerates missing fields (uses '' as default).   */
+        var fields  = scanner.getResult();
         var backend = pickBackend(fields);
-
-        if (body.length > CFG.bodyWarnSize) {
-            nginx.log(nginx.WARN,
-                      'json-router: body size ' + body.length +
-                      ' B exceeds bodyWarnSize ' + CFG.bodyWarnSize +
-                      ' B — X-Forwarded-Body may be truncated');
-        }
 
         nginx.log(nginx.INFO,
                   'json-router: service=' + (fields['service']       || '-') +
@@ -393,48 +424,13 @@
                   ' → ' + backend);
 
         /* ----------------------------------------------------------------
-         * Forward to the chosen internal relay location via subrequest.
+         * req.pass(backend) — internal redirect.
          *
-         * The original body is passed in X-Forwarded-Body so the backend
-         * receives the complete request payload.
-         *
-         * BODY FORWARDING LIMITATION
-         * --------------------------
-         * nginx subrequests do not carry a request body — they inherit
-         * the parent request's method, URI, args, and headers only.
-         * Passing the body in a header works for bodies within nginx's
-         * large_client_header_buffers limit (default 8 KB × 4 buffers).
-         *
-         * For large-body routing the natural extension is:
-         *
-         *   req.setVariable('upstream_target', backendHost);
-         *
-         * paired with  proxy_pass http://$upstream_target/;  in nginx.conf.
-         * That lets the normal proxy_pass path handle body streaming and
-         * requires a req.setVariable() addition to the JS-Pilgrim API.  */
-        var sub;
-        try {
-            sub = await req.subrequest(backend, {
-                method:  req.method,
-                args:    req.args,
-                headers: {
-                    'X-Forwarded-Body': body,
-                    'X-Original-URI':   req.uri,
-                    'Content-Type':
-                        req.headers['content-type'] || 'application/json',
-                },
-            });
-        } catch (e) {
-            nginx.log(nginx.ERR,
-                      'json-router: subrequest to ' + backend +
-                      ' failed: ' + e);
-            req.respond(502,
-                { 'Content-Type': 'application/json' },
-                '{"error":"backend unreachable"}\n');
-            return;
-        }
-
-        req.respond(sub.status, sub.headers, sub.body);
+         * nginx re-enters the phase engine at the backend URI.  The matched
+         * location's proxy_pass streams r->request_body to the upstream
+         * directly from nginx's buffers — no JS-side body copy is made.
+         * ---------------------------------------------------------------- */
+        req.pass(backend);
     };
 
     nginx.log(nginx.NOTICE, 'json-router: initialised');
