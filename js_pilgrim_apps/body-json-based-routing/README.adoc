@@ -1,0 +1,358 @@
+= Body JSON Router
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-30
+:source-highlighter: highlight.js
+:icons: font
+
+A reference application that routes incoming HTTP POST requests to different
+nginx upstream pools based on fields extracted from the JSON request body.
+Only the bytes needed to satisfy the routing decision are parsed; the
+remainder of the body is fast-forwarded or skipped entirely.
+
+== Overview
+
+The router reads the JSON request body, extracts two fields using a partial
+JSON scanner, consults a routing table, and forwards the request to one of
+four internal nginx relay locations — each with its own `proxy_pass` target.
+
+.Default routing table
+[cols="2,2,2",options="header"]
+|===
+|`service` |`tenant.region` |Backend
+
+|`payments` |`eu-west` |`/internal/payments-eu/`
+|`payments` |`us-east` |`/internal/payments-us/`
+|`analytics` |(any) |`/internal/analytics/`
+|(anything else) |(any) |`/internal/default/`
+|===
+
+== Architecture
+
+=== Request flow
+
+....
+Client POST /route/
+  │
+  ▼
+[JS content handler]
+  │  req.readBody() — full body buffered by nginx
+  │
+  ▼
+collectJsonPaths(body, ['service', 'tenant.region'])
+  │  ← stops scanning once both fields are found
+  │
+  ▼
+pickBackend(fields)
+  │
+  ├─ payments + eu-west ──► req.subrequest('/internal/payments-eu/')
+  ├─ payments + us-east ──► req.subrequest('/internal/payments-us/')
+  ├─ analytics          ──► req.subrequest('/internal/analytics/')
+  └─ default            ──► req.subrequest('/internal/default/')
+                                │
+                                ▼
+                    proxy_pass → upstream pool
+                                │
+                                ▼
+                    req.respond(sub.status, sub.headers, sub.body)
+                                │
+                                ▼
+                         Client response
+....
+
+=== Partial JSON scanning
+
+`collectJsonPaths` walks the JSON string character-by-character using a
+recursive descent parser.  Before recursing into an object key it checks
+three cases:
+
+* **Exact match** — the current dot-path is one of the required paths.
+  Capture the value, decrement `remain`, and *exit immediately* if
+  `remain === 0`.
+* **Ancestor** — the current key is a prefix of a required path
+  (e.g. `tenant` is an ancestor of `tenant.region`).  Recurse into the
+  nested object.
+* **Irrelevant** — the current key cannot lead to any required path.
+  Call `skipValue()`, which fast-forwards over the entire subtree using a
+  depth counter without parsing the contents.
+
+.Example: 4 KB body, routing fields near the start
+....
+{
+  "service":  "payments",           ← captured, remain = 1
+  "tenant": {
+    "id":     "t42",                ← skipped (not needed)
+    "region": "eu-west"             ← captured, remain = 0 → STOP
+  },
+  "payload": { /* 4 KB of data */ } ← never touched
+}
+....
+
+The `"payload"` key and its entire subtree are never parsed.  CPU savings
+are proportional to how much of the body follows the routing fields.
+
+NOTE: nginx buffers the full request body before the JS handler runs, so
+*memory* savings are not possible without a streaming body API.  Only CPU
+(parse time) is saved.
+
+== Files
+
+[cols="2,4",options="header"]
+|===
+|File |Purpose
+
+|`router.js`
+|Router application — `collectJsonPaths`, routing table, content handler.
+Drop-in `js_source` file.
+
+|`nginx.conf`
+|Reference production configuration.  Adjust upstream addresses and add
+relay locations to match `CFG.routes` in `router.js`.
+
+|`t/router.t`
+|Perl test suite (Test::Nginx).  Covers all four routing paths, error
+cases, early-exit behaviour, and body forwarding with 15 assertions.
+|===
+
+== Configuration
+
+=== nginx.conf
+
+[source,nginx]
+----
+js_source  /etc/nginx/router.js;
+
+http {
+    upstream payments-eu  { server 10.0.1.10:8080; keepalive 16; }
+    upstream payments-us  { server 10.0.1.11:8080; keepalive 16; }
+    upstream analytics    { server 10.0.2.10:8080; keepalive 16; }
+    upstream default-pool { server 10.0.3.10:8080; keepalive 16; }
+
+    server {
+        listen       80;
+        server_name  router;   # <-- must be 'router'
+
+        location /route/ {
+            client_max_body_size  8k;
+            # handler assigned by router.js
+        }
+
+        location /internal/payments-eu/ {
+            internal;
+            proxy_pass http://payments-eu/;
+        }
+        location /internal/payments-us/ {
+            internal;
+            proxy_pass http://payments-us/;
+        }
+        location /internal/analytics/ {
+            internal;
+            proxy_pass http://analytics/;
+        }
+        location /internal/default/ {
+            internal;
+            proxy_pass http://default-pool/;
+        }
+    }
+}
+----
+
+IMPORTANT: `server_name` *must* be `router`.  `router.js` locates the
+virtual server by name, falling back to `servers[0]` when the name is
+absent.
+
+=== Routing table (router.js CFG)
+
+All tunables are in the `CFG` object near the top of `router.js`:
+
+[source,javascript]
+----
+var CFG = {
+    /* JSON dot-paths to extract.  collectJsonPaths stops once all
+     * are found — add paths here if your routing key is deeper.     */
+    routingPaths: ['service', 'tenant.region'],
+
+    /* Routing table — evaluated in order, first match wins.
+     * Omitting a key from `match` makes it a wildcard.              */
+    routes: [
+        { match: { 'service': 'payments', 'tenant.region': 'eu-west' },
+          backend: '/internal/payments-eu/' },
+        { match: { 'service': 'payments', 'tenant.region': 'us-east' },
+          backend: '/internal/payments-us/' },
+        { match: { 'service': 'analytics' },
+          backend: '/internal/analytics/' },
+    ],
+    defaultBackend: '/internal/default/',
+
+    /* Bodies larger than this threshold emit a WARN log entry.      */
+    bodyWarnSize: 8192,
+};
+----
+
+Each entry in `routes` matches when *all* listed fields equal their
+expected values.  Unlisted fields are ignored.  Add routes with a single
+`match` key to create wildcard-on-second-field rules (as the `analytics`
+entry demonstrates).
+
+== Body Forwarding
+
+The original request body is passed to the backend in the `X-Forwarded-Body`
+request header so the upstream service receives the full payload:
+
+[source,nginx]
+----
+# In the internal relay location:
+proxy_set_header   X-Forwarded-Body  $http_x_forwarded_body;
+----
+
+The backend reads it from the `X-Forwarded-Body` header.
+
+=== Size limitation
+
+nginx header buffers are capped by `large_client_header_buffers` (default
+`4 × 8k`).  Keep bodies under 8 KB when using header-based forwarding.
+Set `client_max_body_size 8k;` on `/route/` to enforce this.
+
+=== Future extension: `req.setVariable()`
+
+The clean solution for large-body routing is:
+
+[source,javascript]
+----
+req.setVariable('upstream_target', 'payments-eu');
+// nginx.conf:  proxy_pass http://$upstream_target/;
+----
+
+This would let the normal `proxy_pass` path stream the body directly to
+the chosen backend without copying it into a header.  It requires a
+`req.setVariable()` addition to the JS-Pilgrim API.
+
+== Error Responses
+
+[cols="1,1,3",options="header"]
+|===
+|Status |Condition |Body
+
+|`400`
+|Empty body
+|`{"error":"empty body"}`
+
+|`400`
+|Body does not start with `{`
+|`{"error":"body must be a JSON object"}`
+
+|`400`
+|`req.readBody()` fails
+|`{"error":"could not read body"}`
+
+|`502`
+|Internal subrequest fails
+|`{"error":"backend unreachable"}`
+|===
+
+== Running the Tests
+
+[source,bash]
+----
+# One-time setup: copy Test::Nginx into t/lib/
+git clone --depth=1 https://github.com/nginx/nginx-tests.git /tmp/nginx-tests
+cp -r /tmp/nginx-tests/lib t/lib
+
+# Run the router test suite (from repo root):
+TEST_NGINX_BINARY=$(pwd)/nginx/objs/nginx \
+    prove -v js_pilgrim_apps/body-json-based-routing/t/router.t
+----
+
+=== Test coverage
+
+[cols="1,3",options="header"]
+|===
+|Tests |Scenario
+
+|1–2
+|`service=payments` + `tenant.region=eu-west` → `payments-eu` backend (200 + body).
+
+|3–4
+|`service=payments` + `tenant.region=us-east` → `payments-us` backend.
+
+|5–6
+|`service=analytics` (any region) → `analytics` backend.
+
+|7–8
+|Unknown service (`orders`) → `default` backend.
+
+|9–10
+|Empty body → 400, body contains `"error"`.
+
+|11–12
+|Non-JSON body (plain text) → 400, body contains `"error"`.
+
+|13–14
+|Large body (routing fields first, 4 KB padding after) → 200, correct route.
+Verifies early-exit: the padding is never scanned.
+
+|15
+|Body forwarding: a unique marker field in the request body is echoed back
+by the backend via `X-Forwarded-Body`.
+|===
+
+== collectJsonPaths API
+
+[source,javascript]
+----
+var fields = collectJsonPaths(jsonString, ['service', 'tenant.region']);
+// fields['service']       → 'payments'   (string scalar)
+// fields['tenant.region'] → 'eu-west'    (string scalar)
+// fields['missing']       → undefined    (path not found)
+----
+
+.Supported value types
+[cols="1,3",options="header"]
+|===
+|JSON type |Returned as
+
+|string |JavaScript string (escape sequences decoded)
+|number |JavaScript number
+|`true` / `false` |JavaScript boolean
+|`null` |JavaScript `null`
+|object / array |Raw JSON substring (e.g. `'{"id":"t1"}'`)
+|===
+
+.Dot-path syntax
+[cols="1,2",options="header"]
+|===
+|Path |Matches
+
+|`service` |Top-level key `"service"`
+|`tenant.region` |Key `"region"` inside top-level object `"tenant"`
+|`a.b.c` |Key `"c"` inside `"b"` inside `"a"`
+|===
+
+Arrays are not indexed — only object keys are walked.  If a path segment
+refers to an array element, `collectJsonPaths` will not find it and the
+path will be absent from the result.
+
+== JS-Pilgrim Features Used
+
+[cols="1,2",options="header"]
+|===
+|Feature |Usage
+
+|`location.handler`
+|Async content handler on `/route/` reads body and responds with subrequest result.
+
+|`req.readBody()`
+|Buffers the full POST body from the nginx request chain.
+
+|`req.subrequest(uri, opts)`
+|Issues an internal nginx subrequest to the chosen relay location; result
+carries `{status, headers, body}`.
+
+|`req.respond(status, headers, body)`
+|Sends the backend response (or an error) back to the client.
+
+|`nginx.log(level, msg)`
+|Structured INFO log for each routing decision; WARN for oversized bodies.
+|===
