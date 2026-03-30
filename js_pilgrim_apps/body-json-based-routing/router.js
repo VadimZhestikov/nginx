@@ -231,8 +231,20 @@
     }
 
     /* ------------------------------------------------------------------
-     * Routing decision
+     * Routing helpers
      * ------------------------------------------------------------------ */
+
+    /*
+     * Returns true when fields contains a value for every path in
+     * CFG.routingPaths.  Used to decide whether we have enough data to
+     * commit to a routing target without scanning further.
+     */
+    function allPathsFound(fields) {
+        for (var i = 0; i < CFG.routingPaths.length; i++) {
+            if (!(CFG.routingPaths[i] in fields)) { return false; }
+        }
+        return true;
+    }
 
     function pickBackend(fields) {
         for (var i = 0; i < CFG.routes.length; i++) {
@@ -283,11 +295,64 @@
 
     routeLoc.handler = async function (req) {
 
-        /* 1. Buffer the entire request body.
-         *    nginx has already fully received it by this point.        */
-        var body;
+        /* ----------------------------------------------------------------
+         * Phase 1 — synchronous scan of req.bodyPreread.
+         *
+         * bodyPreread returns the bytes already in nginx's connection read
+         * buffer beyond the request headers (the same recv() that delivered
+         * the request line and headers).  For JSON routing envelopes that
+         * fit in one TCP segment this is the complete body — the routing
+         * decision is made here with zero I/O and zero async overhead.
+         * collectJsonPaths exits internally as soon as every path is found.
+         * ---------------------------------------------------------------- */
+        var preread  = req.bodyPreread;
+        var fields   = Object.create(null);
+        var scanDone = false;
+
+        var preTrim = preread.trim();
+        if (preTrim.length > 0 && preTrim[0] === '{') {
+            fields   = collectJsonPaths(preTrim, CFG.routingPaths);
+            scanDone = allPathsFound(fields);
+            if (scanDone) {
+                nginx.log(nginx.DEBUG,
+                          'json-router: routing fields found in preread (' +
+                          preread.length + ' B)');
+            }
+        }
+
+        /* ----------------------------------------------------------------
+         * Phase 2 — collect full body via req.bodyChunks().
+         *
+         * We need the complete body to forward it to the backend via
+         * X-Forwarded-Body.  Iterating chunk-by-chunk also gives us the
+         * opportunity to find routing fields incrementally: once scanDone
+         * is set, subsequent chunks are only concatenated (no JSON parse).
+         *
+         * Note: nginx buffers the full body before the first chunk is
+         * delivered, so no network-level memory is saved by breaking early.
+         * The gain is CPU: collectJsonPaths scans are skipped once the
+         * routing decision is committed.
+         * ---------------------------------------------------------------- */
+        var body = '';
         try {
-            body = await req.readBody();
+            for await (var chunk of req.bodyChunks()) {
+                body += chunk;
+                if (!scanDone) {
+                    var sofar = body.trim();
+                    if (sofar.length > 0 && sofar[0] === '{') {
+                        var f = collectJsonPaths(sofar, CFG.routingPaths);
+                        fields = f;  /* always use latest scan */
+                        if (allPathsFound(f)) {
+                            scanDone = true;
+                            nginx.log(nginx.DEBUG,
+                                      'json-router: routing fields found after ' +
+                                      body.length + ' B of body');
+                            /* Continue iterating — need remaining chunks for
+                             * X-Forwarded-Body; no more JSON parsing needed. */
+                        }
+                    }
+                }
+            }
         } catch (e) {
             req.respond(400,
                 { 'Content-Type': 'application/json' },
@@ -295,8 +360,10 @@
             return;
         }
 
-        /* 2. Validate: require a non-empty JSON object body.           */
-        var trimmed = (body || '').trim();
+        /* ----------------------------------------------------------------
+         * Validation
+         * ---------------------------------------------------------------- */
+        var trimmed = body.trim();
         if (trimmed.length === 0) {
             req.respond(400,
                 { 'Content-Type': 'application/json' },
@@ -310,9 +377,7 @@
             return;
         }
 
-        /* 3. Extract only the routing fields — stop early once all are
-         *    found.  The rest of the body string is never parsed.      */
-        var fields  = collectJsonPaths(trimmed, CFG.routingPaths);
+        /* pickBackend tolerates missing fields (uses '' as default).   */
         var backend = pickBackend(fields);
 
         if (body.length > CFG.bodyWarnSize) {
@@ -327,7 +392,8 @@
                   ' region='              + (fields['tenant.region'] || '-') +
                   ' → ' + backend);
 
-        /* 4. Forward to the chosen internal relay location via subrequest.
+        /* ----------------------------------------------------------------
+         * Forward to the chosen internal relay location via subrequest.
          *
          * The original body is passed in X-Forwarded-Body so the backend
          * receives the complete request payload.
@@ -368,7 +434,6 @@
             return;
         }
 
-        /* 5. Relay the backend response verbatim.                      */
         req.respond(sub.status, sub.headers, sub.body);
     };
 

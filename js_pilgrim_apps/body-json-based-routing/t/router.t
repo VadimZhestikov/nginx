@@ -8,6 +8,7 @@
 #   • Early-exit scanning: large bodies with fields near the start still route
 #   • Error responses for empty and non-JSON bodies
 #   • The original request body reaches the backend via X-Forwarded-Body
+#   • Two-phase handler: bodyPreread (sync) + bodyChunks() (async iterator)
 #
 # Tests:
 #   1-2   service=payments  + tenant.region=eu-west  → payments-eu  (200 + body)
@@ -18,6 +19,8 @@
 #   11-12 Non-JSON body (plain text)                 → 400 + "error"
 #   13-14 Large body — routing fields first, 4 KB padding after → 200 + correct route
 #   15    Body forwarding — unique marker echoed back from backend
+#   16    Preread path — compact single-field match (analytics, no region needed)
+#   17    bodyChunks path — large body, service field at end, body still forwarded
 
 use warnings;
 use strict;
@@ -30,7 +33,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http proxy/)->plan(15);
+my $t = Test::Nginx->new()->has(qw/http proxy/)->plan(17);
 
 # -----------------------------------------------------------------------
 # nginx.conf
@@ -284,7 +287,7 @@ $t->write_file('init.js', <<'JS');
         }
 
         /* --------------------------------------------------------------
-         * Routing table + pickBackend
+         * Routing table + helpers
          * ------------------------------------------------------------ */
 
         var ROUTING_PATHS = ['service', 'tenant.region'];
@@ -302,6 +305,13 @@ $t->write_file('init.js', <<'JS');
         ];
         var DEFAULT_BACKEND = '/internal/default/';
 
+        function allPathsFound(fields) {
+            for (var i = 0; i < ROUTING_PATHS.length; i++) {
+                if (!(ROUTING_PATHS[i] in fields)) { return false; }
+            }
+            return true;
+        }
+
         function pickBackend(fields) {
             for (var i = 0; i < ROUTES.length; i++) {
                 var route = ROUTES[i];
@@ -318,7 +328,7 @@ $t->write_file('init.js', <<'JS');
         }
 
         /* --------------------------------------------------------------
-         * Content handler
+         * Content handler — two-phase: bodyPreread then bodyChunks()
          * ------------------------------------------------------------ */
 
         var routerSrv = nginx.http.servers[1];
@@ -329,13 +339,45 @@ $t->write_file('init.js', <<'JS');
         }
 
         routeLoc.handler = async function (req) {
-            var body;
-            try { body = await req.readBody(); } catch (e) {
+
+            /* Phase 1 — synchronous scan of req.bodyPreread.
+             * For JSON envelopes that arrive in one TCP segment this
+             * resolves the routing decision with zero I/O.             */
+            var preread  = req.bodyPreread;
+            var fields   = Object.create(null);
+            var scanDone = false;
+
+            var preTrim = preread.trim();
+            if (preTrim.length > 0 && preTrim[0] === '{') {
+                fields   = collectJsonPaths(preTrim, ROUTING_PATHS);
+                scanDone = allPathsFound(fields);
+            }
+
+            /* Phase 2 — collect full body via req.bodyChunks().
+             * Also performs incremental JSON scan while !scanDone so
+             * routing fields that span chunk boundaries are still found.
+             * The full body is always accumulated for X-Forwarded-Body. */
+            var body = '';
+            try {
+                for await (var chunk of req.bodyChunks()) {
+                    body += chunk;
+                    if (!scanDone) {
+                        var sofar = body.trim();
+                        if (sofar.length > 0 && sofar[0] === '{') {
+                            var f = collectJsonPaths(sofar, ROUTING_PATHS);
+                            fields = f;  /* always use latest scan */
+                            if (allPathsFound(f)) {
+                                scanDone = true;
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
                 req.respond(400, { 'Content-Type': 'application/json' },
                             '{"error":"could not read body"}\n'); return;
             }
 
-            var trimmed = (body || '').trim();
+            var trimmed = body.trim();
             if (trimmed.length === 0) {
                 req.respond(400, { 'Content-Type': 'application/json' },
                             '{"error":"empty body"}\n'); return;
@@ -345,7 +387,6 @@ $t->write_file('init.js', <<'JS');
                             '{"error":"body must be a JSON object"}\n'); return;
             }
 
-            var fields  = collectJsonPaths(trimmed, ROUTING_PATHS);
             var backend = pickBackend(fields);
 
             var sub;
@@ -475,3 +516,23 @@ like($r, qr{"backend":"payments-eu"}, 'large-body: correctly routed to payments-
 my $marker = 'unique-marker-' . int(rand(999999));
 $r = post_route('{"service":"echo","marker":"' . $marker . '"}');
 like($r, qr{$marker}, 'body-fwd: unique marker echoed back from backend');
+
+# -----------------------------------------------------------------------
+# 16: Preread path — single-field match (analytics needs only service).
+# A compact JSON body fits in one recv() segment so bodyPreread delivers
+# the routing fields synchronously; bodyChunks() yields no additional data.
+# -----------------------------------------------------------------------
+
+$r = post_route('{"service":"analytics"}');
+like($r, qr{"backend":"analytics"}, 'preread-path: single-field analytics routed via preread');
+
+# -----------------------------------------------------------------------
+# 17: bodyChunks accumulation — service field appears after 4 KB of noise.
+# Tests that the incremental scan inside the bodyChunks() loop correctly
+# finds routing fields even when they are deep in a large body.
+# Uses the analytics route (single-field match) so no region is needed.
+# -----------------------------------------------------------------------
+
+my $late_body = '{"noise":"' . ('z' x 4096) . '","service":"analytics"}';
+$r = post_route($late_body);
+like($r, qr{"backend":"analytics"}, 'chunks-path: service at end of large body routes to analytics');

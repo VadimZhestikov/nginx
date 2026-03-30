@@ -866,6 +866,7 @@ static JSClassDef ngx_js_request_class = {
  *  24 — statusCode    (r/w number, response status; 0 when unset)
  *  25 — responded     (r/o boolean, true after req.respond() was called)
  *  26 — ctx           (r/o object, persistent per-request plain object — P10)
+ *  27 — bodyPreread   (r/o string, bytes already in read buffer past headers)
  */
 
 /* Forward declaration — defined after ngx_js_request_set_variable */
@@ -1288,6 +1289,16 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
         return JS_DupValue(ctx, rctx->ctx_obj);
     }
 
+    case 27: /* bodyPreread — body bytes already in connection read buffer.
+              * After request headers are parsed, any data that arrived in
+              * the same recv() beyond \r\n\r\n sits in r->header_in->pos
+              * through r->header_in->last.  ngx_http_read_client_request_body
+              * consumes and zeroes this region, so after readBody() or
+              * bodyChunks() have been called this returns "".             */
+        return JS_NewStringLen(ctx,
+                               (const char *) r->header_in->pos,
+                               (size_t)(r->header_in->last - r->header_in->pos));
+
     }
 
     return JS_UNDEFINED;
@@ -1595,6 +1606,319 @@ ngx_js_body_done(ngx_http_request_t *r)
     ngx_http_finalize_request(r, NGX_DONE);
 
     bctx->w->current_request = NULL;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* req.bodyChunks() — async iterator over request body buffers         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Per-request iterator state.  Allocated from the request pool so it
+ * outlives any JS GC cycle during the request.  The JS wrapper object
+ * holds a pointer to this struct as its opaque.
+ *
+ * Lifecycle:
+ *   1. bodyChunks() allocates and returns the wrapper.
+ *   2. First .next() call triggers ngx_http_read_client_request_body and
+ *      returns a pending Promise; body_done callback resolves it with the
+ *      first chunk and marks body_ready.
+ *   3. Subsequent .next() calls iterate current_cl synchronously, each
+ *      returning an immediately-resolved Promise.
+ *   4. When current_cl is NULL .next() returns {done:true}.
+ */
+typedef struct {
+    ngx_http_request_t   *r;
+    ngx_js_req_ctx_t     *rctx;           /* saved module-ctx; restored in done */
+    JSContext            *ctx;
+    JSRuntime            *rt;
+    ngx_js_worker_t      *w;
+    JSValue               pending_resolve; /* awaiting ngx_http_read... callback */
+    JSValue               pending_reject;
+    ngx_chain_t          *current_cl;     /* iteration cursor in body buf chain */
+    unsigned              body_ready:1;   /* body fully buffered by nginx */
+} ngx_js_body_chunks_iter_t;
+
+
+static void
+ngx_js_body_chunks_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_body_chunks_iter_t  *iter;
+
+    iter = JS_GetOpaque(val, ngx_js_body_chunks_class_id);
+    if (iter == NULL) { return; }
+
+    /* Free any JSValues the iter holds (struct itself is pool-allocated) */
+    if (!JS_IsUndefined(iter->pending_resolve)) {
+        JS_FreeValueRT(rt, iter->pending_resolve);
+        iter->pending_resolve = JS_UNDEFINED;
+    }
+    if (!JS_IsUndefined(iter->pending_reject)) {
+        JS_FreeValueRT(rt, iter->pending_reject);
+        iter->pending_reject = JS_UNDEFINED;
+    }
+}
+
+
+static JSClassDef  ngx_js_body_chunks_class = {
+    "BodyChunksIterator",
+    .finalizer = ngx_js_body_chunks_finalizer,
+};
+
+
+/* [Symbol.asyncIterator]() { return this; } */
+static JSValue
+ngx_js_body_chunks_self(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    return JS_DupValue(ctx, this_val);
+}
+
+
+/*
+ * Build a {value, done} iterator result object and wrap it in an
+ * already-resolved Promise.  Transfers ownership of `value`.
+ */
+static JSValue
+ngx_js_body_chunks_make_result(JSContext *ctx, JSValue value, int done)
+{
+    JSValue  iter_result, promise, args[2];
+
+    iter_result = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, iter_result, "value", value);
+    JS_SetPropertyStr(ctx, iter_result, "done",  JS_NewBool(ctx, done));
+
+    promise = JS_NewPromiseCapability(ctx, args);
+    JS_Call(ctx, args[0], JS_UNDEFINED, 1, &iter_result);
+    JS_FreeValue(ctx, args[0]);
+    JS_FreeValue(ctx, args[1]);
+    JS_FreeValue(ctx, iter_result);
+
+    return promise;
+}
+
+
+/*
+ * Advance cl past any zero-length or file-buffered buffers.
+ * nginx may produce empty chain links (e.g. for Content-Length: 0 or
+ * when partial preread leaves a zero-span buf at the head of the chain).
+ * Only buffers that carry in-memory bytes are delivered as JS chunks.
+ */
+static ngx_chain_t *
+ngx_js_skip_empty_cl(ngx_chain_t *cl)
+{
+    while (cl != NULL) {
+        ngx_buf_t *b = cl->buf;
+        if (!b->in_file && b->last > b->pos) { break; }
+        cl = cl->next;
+    }
+    return cl;
+}
+
+
+/*
+ * Callback fired by nginx when request body has been fully buffered.
+ * Resolves the Promise that the first .next() call returned with the
+ * first chunk, then drains microtasks so the for-await loop continues
+ * processing remaining chunks synchronously.
+ */
+static void
+ngx_js_body_chunks_body_done(ngx_http_request_t *r)
+{
+    ngx_js_body_chunks_iter_t  *iter;
+    JSContext                  *ctx;
+    JSContext                  *job_ctx;
+    JSValue                     iter_result, value;
+    ngx_chain_t                *cl;
+    ngx_buf_t                  *b;
+
+    iter = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    ngx_http_set_ctx(r, iter->rctx, ngx_js_http_module);   /* restore */
+
+    iter->body_ready = 1;
+    iter->w->current_request = r;
+    ctx = iter->ctx;
+
+    /* Skip empty/in-file buffers at head of chain */
+    cl = r->request_body ? r->request_body->bufs : NULL;
+    cl = ngx_js_skip_empty_cl(cl);
+    iter->current_cl = cl;
+
+    /* Deliver first non-empty chunk (or done if body is empty) */
+    if (cl != NULL) {
+        b = cl->buf;
+        value = JS_NewStringLen(ctx, (const char *) b->pos,
+                                (size_t)(b->last - b->pos));
+
+        /* Advance past the chunk we are about to deliver; skip empties */
+        iter->current_cl = ngx_js_skip_empty_cl(cl->next);
+
+        iter_result = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, iter_result, "value", value);
+        JS_SetPropertyStr(ctx, iter_result, "done",  JS_FALSE);
+    } else {
+        iter_result = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, iter_result, "value", JS_UNDEFINED);
+        JS_SetPropertyStr(ctx, iter_result, "done",  JS_TRUE);
+    }
+
+    JS_Call(ctx, iter->pending_resolve, JS_UNDEFINED, 1, &iter_result);
+    JS_FreeValue(ctx, iter_result);
+    JS_FreeValue(ctx, iter->pending_resolve);
+    JS_FreeValue(ctx, iter->pending_reject);
+    iter->pending_resolve = JS_UNDEFINED;
+    iter->pending_reject  = JS_UNDEFINED;
+
+    /*
+     * Drain microtasks: the for-await loop processes each already-resolved
+     * .next() Promise as a microtask, so the entire iteration (including
+     * any synchronous code after each `yield`) runs before returning.
+     */
+    while (JS_ExecutePendingJob(iter->rt, &job_ctx) > 0) { }
+
+    ngx_js_async_check(iter->w);
+    ngx_js_bf_async_check(iter->w);
+    ngx_js_sf_async_check(iter->w);
+    ngx_js_l4_async_check(iter->w);
+    ngx_http_finalize_request(r, NGX_DONE);
+
+    iter->w->current_request = NULL;
+}
+
+
+/*
+ * bodyChunksIterator.next() → Promise<{value: string, done: boolean}>
+ *
+ * First call: triggers ngx_http_read_client_request_body and returns a
+ * pending Promise.  The body_done callback resolves it with the first
+ * nginx buffer as a string.
+ *
+ * Subsequent calls: body is already in r->request_body->bufs; returns
+ * an immediately-resolved Promise with the next buffer (or done).
+ */
+static JSValue
+ngx_js_body_chunks_next(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_body_chunks_iter_t  *iter;
+    ngx_http_request_t         *r;
+    JSValue                     promise, args[2];
+    ngx_chain_t                *cl;
+    ngx_buf_t                  *b;
+    ngx_int_t                   rc;
+    JSValue                     value;
+
+    iter = JS_GetOpaque2(ctx, this_val, ngx_js_body_chunks_class_id);
+    if (!iter) { return JS_EXCEPTION; }
+
+    r = iter->r;
+
+    /* ---- body not yet buffered: trigger async read ---- */
+    if (!iter->body_ready) {
+        if (!JS_IsUndefined(iter->pending_resolve)) {
+            return JS_ThrowTypeError(ctx,
+                "bodyChunks: concurrent .next() calls are not allowed");
+        }
+
+        promise = JS_NewPromiseCapability(ctx, args);
+        if (JS_IsException(promise)) { return JS_EXCEPTION; }
+
+        iter->pending_resolve = args[0];
+        iter->pending_reject  = args[1];
+        iter->rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
+        ngx_http_set_ctx(r, iter, ngx_js_http_module);
+
+        rc = ngx_http_read_client_request_body(r,
+                                               ngx_js_body_chunks_body_done);
+        if (rc == NGX_ERROR || rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+            ngx_http_set_ctx(r, iter->rctx, ngx_js_http_module);
+            JS_FreeValue(ctx, iter->pending_resolve);
+            JS_FreeValue(ctx, iter->pending_reject);
+            iter->pending_resolve = JS_UNDEFINED;
+            iter->pending_reject  = JS_UNDEFINED;
+            JS_FreeValue(ctx, promise);
+            return JS_ThrowTypeError(ctx,
+                "bodyChunks: failed to initiate request body read");
+        }
+
+        /* NGX_OK  → body_done already called, promise resolved.
+         * NGX_AGAIN → reading; promise will be resolved by body_done. */
+        return promise;
+    }
+
+    /* ---- body buffered: yield next non-empty chunk or signal done ---- */
+    cl = iter->current_cl;
+
+    if (cl == NULL) {
+        return ngx_js_body_chunks_make_result(ctx, JS_UNDEFINED, 1);
+    }
+
+    b     = cl->buf;
+    value = JS_NewStringLen(ctx, (const char *) b->pos,
+                            (size_t)(b->last - b->pos));
+
+    /* Advance cursor, skip any empty follow-on buffers */
+    iter->current_cl = ngx_js_skip_empty_cl(cl->next);
+
+    return ngx_js_body_chunks_make_result(ctx, value, 0);
+}
+
+
+/*
+ * req.bodyChunks() → BodyChunksIterator
+ *
+ * Returns an async iterator that yields each nginx request-body buffer
+ * as a string.  Typically one buffer per TCP segment received.  The
+ * iterator satisfies the async-iterable protocol so it can be used
+ * directly with `for await (const chunk of req.bodyChunks())`.
+ *
+ * Memory model:
+ *   nginx buffers the full body before the first chunk is delivered to JS.
+ *   Breaking early avoids creating JS strings for the remaining buffers
+ *   but does not reduce nginx's C-level memory usage.  Pair with
+ *   req.bodyPreread to handle the common case where routing fields fit
+ *   in the initial TCP segment with zero body-read cost.
+ *
+ * Mutual exclusion:
+ *   Do not call both readBody() and bodyChunks() on the same request.
+ *   If the body is already buffered (readBody() was called first),
+ *   bodyChunks() iterates the existing buffers without re-reading.
+ */
+static JSValue
+ngx_js_request_body_chunks(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_request_opaque_t    *op;
+    ngx_http_request_t         *r;
+    ngx_js_body_chunks_iter_t  *iter;
+    JSValue                     obj;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
+    if (!op) { return JS_EXCEPTION; }
+
+    r = op->r;
+
+    iter = ngx_pcalloc(r->pool, sizeof(ngx_js_body_chunks_iter_t));
+    if (!iter) { return JS_ThrowOutOfMemory(ctx); }
+
+    iter->r               = r;
+    iter->ctx             = ctx;
+    iter->rt              = JS_GetRuntime(ctx);
+    iter->w               = JS_GetContextOpaque(ctx);
+    iter->pending_resolve = JS_UNDEFINED;
+    iter->pending_reject  = JS_UNDEFINED;
+
+    /* Body already buffered by a prior readBody() call — iterate at once. */
+    if (r->request_body != NULL) {
+        iter->body_ready = 1;
+        iter->current_cl = ngx_js_skip_empty_cl(r->request_body->bufs);
+    }
+
+    obj = JS_NewObjectClass(ctx, ngx_js_body_chunks_class_id);
+    if (JS_IsException(obj)) { return JS_EXCEPTION; }
+
+    JS_SetOpaque(obj, iter);
+    return obj;
 }
 
 
@@ -4673,7 +4997,9 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("statusCode",    ngx_js_request_get, ngx_js_request_set, 24),
     JS_CGETSET_MAGIC_DEF("responded",    ngx_js_request_get, NULL,               25),
     JS_CGETSET_MAGIC_DEF("ctx",          ngx_js_request_get, NULL,               26),
+    JS_CGETSET_MAGIC_DEF("bodyPreread", ngx_js_request_get, NULL,               27),
     JS_CFUNC_DEF("readBody",            0, ngx_js_request_read_body),
+    JS_CFUNC_DEF("bodyChunks",          0, ngx_js_request_body_chunks),
     JS_CFUNC_DEF("sendfile",            1, ngx_js_request_sendfile),
     JS_CFUNC_DEF("redirect",            1, ngx_js_request_redirect),
     JS_CFUNC_DEF("writeHead",           1, ngx_js_request_write_head),
@@ -4694,6 +5020,12 @@ ngx_js_request_register_class(JSRuntime *rt)
     }
 
     if (JS_NewClass(rt, ngx_js_req_vars_class_id, &ngx_js_req_vars_class) < 0) {
+        return NGX_ERROR;
+    }
+
+    if (JS_NewClass(rt, ngx_js_body_chunks_class_id,
+                    &ngx_js_body_chunks_class) < 0)
+    {
         return NGX_ERROR;
     }
 
@@ -4747,6 +5079,8 @@ ngx_int_t
 ngx_js_request_install_proto(JSContext *ctx)
 {
     JSValue  proto, runner, global;
+    JSValue  chunks_proto, symbol, sym_async, self_fn;
+    JSAtom   async_iter_atom;
 
     proto = JS_NewObject(ctx);
     if (JS_IsException(proto)) {
@@ -4759,6 +5093,35 @@ ngx_js_request_install_proto(JSContext *ctx)
 
     /* JS_SetClassProto takes ownership of proto — no JS_FreeValue needed */
     JS_SetClassProto(ctx, ngx_js_request_class_id, proto);
+
+    /*
+     * Install BodyChunksIterator prototype.
+     *   .next()                    — C function defined above
+     *   [Symbol.asyncIterator]()   — returns `this` (self-referential)
+     */
+    chunks_proto = JS_NewObject(ctx);
+    if (JS_IsException(chunks_proto)) { return NGX_ERROR; }
+
+    JS_SetPropertyStr(ctx, chunks_proto, "next",
+        JS_NewCFunction(ctx, ngx_js_body_chunks_next, "next", 0));
+
+    /* Resolve Symbol.asyncIterator at runtime via the global Symbol object */
+    global     = JS_GetGlobalObject(ctx);
+    symbol     = JS_GetPropertyStr(ctx, global, "Symbol");
+    sym_async  = JS_GetPropertyStr(ctx, symbol, "asyncIterator");
+    async_iter_atom = JS_ValueToAtom(ctx, sym_async);
+    JS_FreeValue(ctx, sym_async);
+    JS_FreeValue(ctx, symbol);
+    JS_FreeValue(ctx, global);
+
+    self_fn = JS_NewCFunction(ctx, ngx_js_body_chunks_self,
+                              "[Symbol.asyncIterator]", 0);
+    JS_DefinePropertyValue(ctx, chunks_proto, async_iter_atom, self_fn,
+                           JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
+    JS_FreeAtom(ctx, async_iter_atom);
+
+    /* Ownership of chunks_proto transferred to the class */
+    JS_SetClassProto(ctx, ngx_js_body_chunks_class_id, chunks_proto);
 
     /* Evaluate and install the hook chain runner as __ngx_hook_chain__ */
     runner = JS_Eval(ctx, ngx_js_hook_chain_src,
