@@ -1,0 +1,395 @@
+= Zero-Trust API Gateway
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-28
+:source-highlighter: highlight.js
+:icons: font
+
+A reference application that demonstrates a complete, production-style API
+gateway built entirely in JavaScript using all nine JS-Pilgrim layers.  Every
+request travels through the full pipeline — raw TCP accept to proxied response —
+without a single line of C or Lua.
+
+== Overview
+
+The gateway enforces:
+
+* **JWT authentication** (global HTTP hook, Layer 3)
+* **RBAC** — `/api/admin/*` requires the `admin` role (location hook, Layer 4)
+* **IP allowlist + per-IP rate limiting** at TCP accept time (Layer 2)
+* **Audit metadata injection** into forwarded request bodies (Layer 5)
+* **Sensitive field scrubbing** from backend JSON responses (Layer 6)
+* **OWASP security headers** on every response (Layer 7)
+* **Request-ID tracing** via HTML comment injection (Layer 8)
+* **Custom TCP framing** — optional `NGXGW:` prefix stripped before HTTP parsing (Layer 1)
+
+All cross-worker state (request counters, rate-limit windows, connection counts)
+is stored in `nginx.shared` — a lock-protected fixed-size key/value zone visible
+to every worker process.
+
+== Architecture
+
+....
+Client TCP
+  │
+  ▼
+[Layer 1] addL4Filter          strip NGXGW: framing prefix
+  │
+  ▼
+[Layer 2] server.on('accept')  IP allowlist + sliding-window rate limit
+  │
+  ▼
+[Layer 3] nginx.http.addHook   JWT auth → populate req.ctx
+  │
+  ▼
+[Layer 4] location.addHook     RBAC check + request counter (with next())
+  │
+  ▼
+nginx proxy_pass               upstream backend
+  │
+  ▼
+[Layer 5] addUpstreamRequestFilter   inject _gateway audit fields
+  │
+  ▼
+[Layer 6] addUpstreamFilter    scrub _internal_* fields
+  │
+  ▼
+[Layer 7] addResponseHook      security headers + x-request-id
+  │
+  ▼
+[Layer 8] addBodyFilter        inject <!-- reqId:... --> in HTML
+  │
+  ▼
+[Layer 9] addL4SendFilter      outbound passthrough
+  │
+  ▼
+Client TCP
+....
+
+== Files
+
+[cols="2,4",options="header"]
+|===
+|File |Purpose
+
+|`gateway.js`
+|Gateway application — all nine JS-Pilgrim layers.  Drop-in `js_source` file.
+
+|`nginx.conf`
+|Reference production configuration.  Adjust ports, upstream address, and
+`js_source` path before deploying.
+
+|`t/gateway.t`
+|Perl test suite (Test::Nginx).  Covers every layer with 25 explicit assertions.
+|===
+
+== Configuration
+
+=== nginx.conf
+
+[source,nginx]
+----
+js_source  /etc/nginx/gateway.js;
+
+http {
+    upstream api_backend {
+        server  127.0.0.1:9000;
+        keepalive 16;
+    }
+
+    server {
+        listen       80;
+        server_name  gateway;   # <-- must be 'gateway'
+
+        location /healthz { }
+        location /status  { }
+
+        location /api/ {
+            proxy_pass         http://api_backend;
+            proxy_http_version 1.1;
+            proxy_set_header   Connection "";
+        }
+    }
+}
+----
+
+IMPORTANT: `server_name` *must* be `gateway`.  `gateway.js` locates the virtual
+server by name with `nginx.http.servers.find(s => s.name === 'gateway')`, falling
+back to `servers[0]` when the name is absent.
+
+=== gateway.js tuning
+
+All tunables are in the `CFG` object near the top of `gateway.js`:
+
+[source,javascript]
+----
+var CFG = {
+    l4InboundPrefix: 'NGXGW:',   // strip this prefix from raw TCP; '' to disable
+    jwtRequired:      true,        // set false only for /healthz, /status
+    adminPrefix:      '/api/admin/',
+    rateLimitMax:     60,          // max connections per IP per window
+    rateLimitWindow:  60,          // seconds
+    publicPaths:      ['/healthz', '/status'],
+};
+----
+
+For production JWT verification replace the `parseJWT()` helper with a real
+HMAC-SHA256 or RS256 check.  The demo version decodes the payload without
+verifying the signature.
+
+=== IP allowlist
+
+To restrict gateway access to specific network prefixes uncomment entries in
+`ALLOWED_PREFIXES`:
+
+[source,javascript]
+----
+var ALLOWED_PREFIXES = [
+    '10.',
+    '192.168.',
+    '127.',
+];
+----
+
+An empty array (the default) allows all IPs.
+
+== API Endpoints
+
+[cols="1,1,4",options="header"]
+|===
+|Endpoint |Auth required |Description
+
+|`GET /healthz`
+|No
+|Liveness probe.  Returns `200 ok\n`.  Never blocked by JWT or RBAC.
+
+|`GET /status`
+|No
+|Cross-worker counters as JSON: `total_requests`, `workers_started`,
+`workers_exited`.
+
+|`GET /api/*`
+|Bearer JWT
+|Proxied to the upstream backend pool.  Non-admin callers receive 401 when
+the token is missing or expired.
+
+|`GET /api/admin/*`
+|Bearer JWT + `admin` role
+|Admin paths.  Returns 403 if the `roles` claim does not contain `"admin"`.
+|===
+
+== JWT Token Format
+
+The gateway reads a standard Bearer token from the `Authorization` header.
+Required claims:
+
+[cols="1,1,3",options="header"]
+|===
+|Claim |Type |Purpose
+
+|`sub`
+|string
+|Subject identifier — propagated to `req.ctx.sub` and audit fields.
+
+|`roles`
+|string[]
+|Role list.  Must contain `"admin"` for admin-path access.
+
+|`exp`
+|number (Unix timestamp)
+|Expiry.  Tokens past their expiry are rejected with 401.
+
+|`jti`
+|string
+|JWT ID.  Echoed as the `x-request-id` response header and the HTML
+`<!-- reqId:... -->` comment.
+|===
+
+Example (unsigned, for development only):
+
+[source,javascript]
+----
+// header.payload.sig  (sig is not verified in the demo)
+const header = btoa(JSON.stringify({alg:"none"})).replace(/=/g,'');
+const payload = btoa(JSON.stringify({
+    sub:   "alice",
+    roles: ["user"],
+    exp:   9999999999,
+    jti:   "req-abc123"
+})).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+
+const token = `Bearer ${header}.${payload}.sig`;
+----
+
+== Security Headers
+
+Every response from `/api/*` carries the following headers:
+
+[cols="1,2",options="header"]
+|===
+|Header |Value
+
+|`x-content-type-options`
+|`nosniff`
+
+|`x-frame-options`
+|`DENY`
+
+|`cache-control`
+|`no-store, no-cache, must-revalidate`
+
+|`x-request-id`
+|JWT `jti` claim value
+
+|`x-response-ms`
+|Backend round-trip latency in milliseconds
+|===
+
+The `Server:` and `X-Powered-By:` response headers are removed.
+
+== Audit Metadata Injection
+
+For `POST`/`PUT` requests with a JSON body, the upstream request filter adds
+a `_gateway` object before forwarding to the backend:
+
+[source,json]
+----
+{
+  "key": "original-value",
+  "_gateway": {
+    "sub": "alice",
+    "jti": "req-abc123",
+    "ts":  "2026-03-28T12:34:56.789Z"
+  }
+}
+----
+
+Non-JSON bodies are forwarded unchanged.
+
+== Sensitive Field Scrubbing
+
+Backend responses are scanned for top-level keys that start with `_internal`.
+These keys are removed before the response reaches the client:
+
+[source,json]
+----
+// Backend response (never seen by client):
+{ "result": "ok", "_internal_trace": "secret-abc" }
+
+// Client response after scrubbing:
+{ "result": "ok" }
+----
+
+== HTML Tracing
+
+For responses with `Content-Type: text/html` the body filter injects a signed
+request-ID comment before `</body>`:
+
+[source,html]
+----
+<html><body>Hello world<!-- reqId:req-abc123 --></body></html>
+----
+
+This makes every HTML page traceable back to the original JWT `jti` without
+requiring client-side JavaScript.
+
+== Running the Tests
+
+[source,bash]
+----
+# Ensure Test::Nginx is in t/lib/ (one-time setup from repo root):
+git clone --depth=1 https://github.com/nginx/nginx-tests.git /tmp/nginx-tests
+cp -r /tmp/nginx-tests/lib t/lib
+
+# Run the gateway test suite (from repo root):
+TEST_NGINX_BINARY=$(pwd)/nginx/objs/nginx \
+    prove -v js_pilgrim_apps/zero-trust-gateway/t/gateway.t
+----
+
+=== Test coverage
+
+[cols="1,3",options="header"]
+|===
+|Tests |Scenario
+
+|1–2
+|`/healthz` — no auth required, 200 + body `ok`.
+
+|3–4
+|No `Authorization` header → 401, body contains `"unauthorized"`.
+
+|5
+|Expired JWT → 401.
+
+|6–8
+|Valid user JWT, `/api/data/` → 200, `result` field present, `_internal_trace` scrubbed.
+
+|9–11
+|Security headers: `x-content-type-options`, `x-frame-options`, no `Server:`.
+
+|12–13
+|`x-request-id` present and matches JWT `jti`.
+
+|14–15
+|User JWT on `/api/admin/items/` → 403, body contains `"forbidden"`.
+
+|16–18
+|Admin JWT on `/api/admin/items/` → 200, `admin` field present, `_internal_id` scrubbed.
+
+|19
+|HTML response has `<!-- reqId:... -->` comment injected.
+
+|20
+|L4 inbound filter: `NGXGW:` prefix stripped; raw socket request succeeds.
+
+|21–23
+|Upstream request filter: POST JSON body → echoed body contains `_gateway` + `sub`.
+
+|24–25
+|`/status` → 200, body has `total_requests` field.
+|===
+
+== JS-Pilgrim Layers Used
+
+[cols="1,1,3",options="header"]
+|===
+|Layer |JS-Pilgrim step |Gateway usage
+
+|L4 inbound filter
+|P6 / P12
+|Strip `NGXGW:` custom TCP framing prefix.
+
+|Accept hook
+|P4 / P17
+|IP allowlist enforcement; sliding-window rate limit via `nginx.shared`.
+
+|Global HTTP hook
+|P2 / P8
+|JWT authentication; populate `req.ctx.sub`, `req.ctx.roles`, `req.ctx.reqId`.
+
+|Location hook + `next()`
+|P1 / P9
+|RBAC check before proxy; request counter after proxy.
+
+|Upstream request filter
+|P14
+|Inject `_gateway` audit object into JSON request body.
+
+|Upstream response filter
+|P14
+|Scrub `_internal_*` keys from JSON response.
+
+|Response hook
+|P3
+|Add OWASP security headers; set `x-request-id`; measure latency.
+
+|Body filter
+|P5 / P15
+|Inject `<!-- reqId:... -->` HTML comment.
+
+|L4 send filter
+|P13 / P17
+|Outbound passthrough — demonstrates the send-filter layer is wired.
+|===

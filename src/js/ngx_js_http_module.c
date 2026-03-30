@@ -741,7 +741,12 @@ ngx_js_http_postconfiguration(ngx_conf_t *cf)
     ngx_js_conf_t              *jcf;
     ngx_str_t                   zone_name;
 
-    /* Register access-phase handler for P2 global + server hooks */
+    /*
+     * Register access-phase handlers.  nginx builds the phase engine by
+     * iterating cmcf->phases[i].handlers in REVERSE (last-pushed = first-run).
+     * Push upstream_req FIRST so it ends up running SECOND (after the global
+     * HTTP hook has populated req.ctx).
+     */
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
     h = ngx_array_push(&cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers);
@@ -749,14 +754,14 @@ ngx_js_http_postconfiguration(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
-    *h = ngx_js_http_access_handler;
+    *h = ngx_js_upstream_req_access_handler;
 
     h = ngx_array_push(&cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers);
     if (h == NULL) {
         return NGX_ERROR;
     }
 
-    *h = ngx_js_upstream_req_access_handler;
+    *h = ngx_js_http_access_handler;
 
     /* Install response filter hooks (existing) */
     ngx_js_next_header_filter = ngx_http_top_header_filter;
@@ -3963,6 +3968,48 @@ ngx_js_request_set_header(JSContext *ctx, JSValueConst this_val,
 
     r = op->r;
 
+    /* server: suppress by pointing r->headers_out.server at a hash=0 sentinel */
+    if (ngx_strncasecmp((u_char *) name_cstr, (u_char *) "server",
+                        nlen) == 0 && nlen == 6)
+    {
+        JS_FreeCString(ctx, name_cstr);
+
+        if (JS_IsNull(argv[1]) || JS_IsUndefined(argv[1])) {
+            /* Removing: allocate a disabled sentinel so the header filter
+             * sees server != NULL (suppresses default) but hash == 0 (not
+             * emitted by the general headers loop).                      */
+            ngx_table_elt_t  *sent;
+            sent = ngx_pcalloc(r->pool, sizeof(ngx_table_elt_t));
+            if (sent) {
+                r->headers_out.server = sent;   /* hash stays 0 */
+            }
+            return JS_UNDEFINED;
+        }
+
+        /* Setting a custom value: add to headers list and point server at it */
+        val_cstr = JS_ToCStringLen(ctx, &vlen, argv[1]);
+        if (!val_cstr) {
+            return JS_EXCEPTION;
+        }
+        {
+            ngx_table_elt_t  *sv;
+            sv = ngx_list_push(&r->headers_out.headers);
+            if (sv) {
+                data = ngx_pnalloc(r->pool, vlen + 1);
+                if (data) {
+                    ngx_memcpy(data, val_cstr, vlen + 1);
+                    sv->hash           = 1;
+                    ngx_str_set(&sv->key, "Server");
+                    sv->value.data     = data;
+                    sv->value.len      = vlen;
+                    r->headers_out.server = sv;
+                }
+            }
+        }
+        JS_FreeCString(ctx, val_cstr);
+        return JS_UNDEFINED;
+    }
+
     /* content-type lives in its own dedicated field */
     if (ngx_strncasecmp((u_char *) name_cstr, (u_char *) "content-type",
                         nlen) == 0 && nlen == 12)
@@ -5992,12 +6039,16 @@ ngx_js_content_handler(ngx_http_request_t *r)
     }
     /* ---- End hook phase; fall through to main handler ---- */
 
-    /* If no JS handler is set (hooks-only location), we're done */
+    /* If no JS handler is set but a previous content handler was saved
+     * (e.g. proxy_pass / fastcgi_pass), delegate to it now.           */
     if (!JS_IsFunction(ctx, fn)) {
         JS_FreeValue(ctx, fn);
         JS_FreeValue(ctx, req_obj);
         w->current_request    = NULL;
         w->request_deadline_ms = 0;
+        if (jlcf->original_handler != NULL) {
+            return jlcf->original_handler(r);
+        }
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "js: handler #%i not found or not callable",
                       jlcf->handler_idx);
