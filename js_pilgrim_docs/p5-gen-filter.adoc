@@ -3,40 +3,39 @@
 :toc-title: Contents
 :toclevels: 3
 :sectnums:
-:revdate: 2026-03-27
+:revdate: 2026-03-30
 
 Upgrade `addBodyFilter` to accept async generator functions.  The generator
-receives the full response body as its first argument and the request object as
-its second; it can yield zero or more output chunks and may `await` I/O between
-yields.
+receives the response body as an async-iterable `chunks` argument; iterating
+with `for await` yields one string per buffered chunk.  It may `await` I/O
+between yields, and may `yield` any number of output strings.
 
 == Concept
 
 Prior to P5, `addBodyFilter` accepted only:
 
-* a synchronous whole-body function (`'wb'` / `'wb-sync'`) — receives body,
-  returns string,
-* an asynchronous whole-body function (`'wb-async'`) — receives body, returns
-  Promise<string>,
-* a synchronous streaming function (`'stream'`) — called per chunk,
-* an asynchronous streaming function (`'stream-async'`) — called per chunk,
-  returns Promise.
+* a synchronous whole-body function (`'wholeBodySync'`) — receives body, returns string,
+* an asynchronous whole-body function (`'wholeBodyAsync'`) — receives body, returns Promise<string>,
+* a synchronous streaming function (`'streamingSync'`) — called per chunk,
+* an asynchronous streaming function (`'streamingAsync'`) — called per chunk.
 
-P5 adds a fifth mode: **async generator**.  The generator is called once with
-the complete buffered body and may `yield` any number of output chunks, optionally
-suspending with `await` between them.
+P5 adds a fifth mode: **async generator**.  The generator is called once per
+request.  Its first argument (`chunks`) is a single-element iterable containing
+the complete buffered body as a string.  The generator may `yield` any number
+of output strings; they are concatenated to form the new body.
 
 ....
 request body (buffered)
        ↓
-async function*(body, req) {
-    yield chunk1;
-    await nginx.setTimeout(0);   ← may suspend here
-    yield chunk2;
-    yield chunk3;
+async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        yield chunk.toUpperCase();  // may have multiple yields per chunk
+        await nginx.setTimeout(0);  // may suspend between yields
+        yield '!';
+    }
 }
        ↓
-output body = concat(chunk1, chunk2, chunk3)
+output body = concat(all yielded strings)
 ....
 
 == API
@@ -48,8 +47,10 @@ implementation detects `AsyncGeneratorFunction` via `fn.constructor.name`:
 
 [source,javascript]
 ----
-location.addBodyFilter(async function*(body, req) {
-    yield body.toUpperCase();
+location.addBodyFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        yield chunk.toUpperCase();
+    }
 });
 ----
 
@@ -57,9 +58,11 @@ location.addBodyFilter(async function*(body, req) {
 
 [source,javascript]
 ----
-location.addBodyFilter('generator', async function*(body, req) {
-    yield body;
-    yield '\n';
+location.addBodyFilter('generator', async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        yield chunk;
+        yield '\n';
+    }
 });
 ----
 
@@ -69,9 +72,12 @@ location.addBodyFilter('generator', async function*(body, req) {
 |===
 | Parameter | Type | Description
 
-| `body`
-| string
-| Full response body, buffered before the generator is called.
+| `chunks`
+| Iterable<string>
+| Single-element iterable `[wholeBodyString]`.  Iterate with
+  `for await (var chunk of chunks)` to receive the complete buffered body
+  as one string.  `for await` works on sync iterables, so no async overhead
+  is incurred when the body is already available.
 
 | `req`
 | NginxRequest
@@ -84,9 +90,6 @@ location.addBodyFilter('generator', async function*(body, req) {
 |===
 | `yield string`
 | Appended to the output buffer.
-
-| `yield Buffer`
-| Raw bytes appended to the output buffer.
 
 | `return` / fall-through
 | Generator done; accumulated output is sent.
@@ -107,8 +110,10 @@ awaited Promise settles (same mechanism as async content handlers).
 
 [source,javascript]
 ----
-location.addBodyFilter(async function*(body, req) {
-    yield body;
+location.addBodyFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        yield chunk;
+    }
 });
 ----
 
@@ -116,9 +121,11 @@ location.addBodyFilter(async function*(body, req) {
 
 [source,javascript]
 ----
-location.addBodyFilter(async function*(body, req) {
+location.addBodyFilter(async function*(chunks, req) {
     yield '<!-- begin -->\n';
-    yield body;
+    for await (var chunk of chunks) {
+        yield chunk;
+    }
     yield '\n<!-- end -->';
 });
 ----
@@ -127,11 +134,13 @@ location.addBodyFilter(async function*(body, req) {
 
 [source,javascript]
 ----
-location.addBodyFilter(async function*(body, req) {
-    if (req.headers['accept-encoding']?.includes('custom')) {
-        yield customEncode(body);
-    } else {
-        yield body;
+location.addBodyFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        if (req.headers['accept-encoding']?.includes('custom')) {
+            yield customEncode(chunk);
+        } else {
+            yield chunk;
+        }
     }
 });
 ----
@@ -140,11 +149,13 @@ location.addBodyFilter(async function*(body, req) {
 
 [source,javascript]
 ----
-location.addBodyFilter(async function*(body, req) {
+location.addBodyFilter(async function*(chunks, req) {
     // Wait for a timer (stand-in for any async I/O)
     await nginx.setTimeout(5);
     yield '[injected] ';
-    yield body;
+    for await (var chunk of chunks) {
+        yield chunk;
+    }
 });
 ----
 
@@ -152,31 +163,31 @@ location.addBodyFilter(async function*(body, req) {
 
 [source,javascript]
 ----
-location.addBodyFilter(async function*(body, req) {
-    // Yield nothing — output body is empty.
+location.addBodyFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        /* consume but yield nothing — output body is empty */
+    }
 });
 ----
 
 == Limitations (P5)
 
 * **Whole-body buffering required**: the complete upstream body is buffered
-  before the generator is called.  This is the same trade-off as `'wb'` /
-  `'wb-async'` modes.
-* **String and Buffer only**: yield values must be strings or Buffers.
-  Other JS values cause an error.
-* **Single filter per location** (current): composing multiple generator
-  filters is not yet supported.
-* **No streaming input**: the generator receives the body as one chunk.
-  Streaming input (async-iterable chunks) is planned for P6.
+  before the generator is called.  This is the same trade-off as `'wholeBodySync'` /
+  `'wholeBodyAsync'` modes.
+* **Single chunk per request**: `chunks` always yields exactly one element
+  (the complete body).  Multiple-chunk streaming input is a future extension.
+* **String output only**: yield values must be strings.  Other JS values are
+  coerced via `.toString()`.
 
 == Implementation Notes
 
 The async generator mode is implemented as `NGX_JS_FILTER_GENERATOR = 4`.
 It shares the whole-body buffering path (`body_filter_has_wb = 1`).
 
-After buffering, `ngx_js_body_filters_run` calls `fn.call(undefined, body, req)`
-which returns a generator object (`gen`).  `gen.next()` is then called
-iteratively:
+After buffering, `ngx_js_body_filters_run` wraps `body_val` in a one-element
+JS array `[body_val]` and calls `fn(chunks, req)`, which returns a generator
+object (`gen`).  `gen.next()` is then called iteratively:
 
 * If `gen.next()` resolves synchronously with `done=false`, the yielded value
   is appended to the output chain and `gen.next()` is called again immediately.
@@ -198,14 +209,30 @@ iteratively:
 
 == Test Coverage
 
-`t/js_pilgrim_p5_gen_filter.t` (14 explicit + 2 auto = 16 tests):
+`t/js_body_filter_generator.t` — 10 explicit + 2 auto = 12 tests:
 
 [cols="1,3"]
 |===
 | Test | Scenario
 
-| 1–2   | Passthrough: body unchanged
-| 3–4   | Multi-yield: three chunks concatenated in order
+| 1     | `for await` upper-case transform (single-arg auto-detect form)
+| 2     | Explicit `'generator'` mode string — body wrapped in brackets
+| 3     | Two yields per chunk concatenated correctly
+| 4–5   | Empty generator: 200 OK, body absent
+| 6     | Async generator with `setTimeout` — suspension and resume
+| 7     | Two generator filters chained: uppercase then append `!`
+| 8     | Generator that throws — no hang, no leak of un-yielded value
+| 9–10  | Consistency re-check (single-arg form; chain on second request)
+|===
+
+`t/js_pilgrim_p5_gen_filter.t` — 14 explicit + 2 auto = 16 tests:
+
+[cols="1,3"]
+|===
+| Test | Scenario
+
+| 1–2   | Passthrough: body unchanged via `yield chunk`
+| 3–4   | Multi-yield: prefix + body + suffix concatenated in order
 | 5–6   | Request access: `req.method` readable inside generator
 | 7–8   | Async yield: `await nginx.setTimeout(10)` before first yield
 | 9–10  | Empty generator: no yield → empty response body

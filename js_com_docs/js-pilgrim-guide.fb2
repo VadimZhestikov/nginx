@@ -305,17 +305,18 @@
         <p>Transforms the upstream’s response body before it reaches the client.</p>
         <poem>
           <stanza>
-            <v>loc.addUpstreamFilter(async function*(body, req) {</v>
-            <v>    // body — full upstream response body as a string</v>
-            <v>    yield body.replace(/internal-hostname/g, 'public-hostname');</v>
+            <v>loc.addUpstreamFilter(async function*(chunks, req) {</v>
+            <v>    for await (var chunk of chunks) {</v>
+            <v>        yield chunk.replace(/internal-hostname/g, 'public-hostname');</v>
+            <v>    }</v>
             <v>});</v>
             <v />
             <v>// Chain two upstream response filters</v>
-            <v>loc.addUpstreamFilter(async function*(body, req) {</v>
-            <v>    yield body.toUpperCase();</v>
+            <v>loc.addUpstreamFilter(async function*(chunks, req) {</v>
+            <v>    for await (var chunk of chunks) { yield chunk.toUpperCase(); }</v>
             <v>});</v>
-            <v>loc.addUpstreamFilter(async function*(body, req) {</v>
-            <v>    yield '[' + body + ']';   // receives output of first filter</v>
+            <v>loc.addUpstreamFilter(async function*(chunks, req) {</v>
+            <v>    for await (var chunk of chunks) { yield '[' + chunk + ']'; }</v>
             <v>});</v>
           </stanza>
         </poem>
@@ -327,11 +328,12 @@
         <p>Transforms the client’s request body before it is forwarded to the upstream.</p>
         <poem>
           <stanza>
-            <v>loc.addUpstreamRequestFilter(async function*(body, req) {</v>
-            <v>    // body — full client request body as a string</v>
-            <v>    var obj = JSON.parse(body);</v>
-            <v>    obj.processed_by = 'nginx-js';</v>
-            <v>    yield JSON.stringify(obj);</v>
+            <v>loc.addUpstreamRequestFilter(async function*(chunks, req) {</v>
+            <v>    for await (var chunk of chunks) {</v>
+            <v>        var obj = JSON.parse(chunk);</v>
+            <v>        obj.processed_by = 'nginx-js';</v>
+            <v>        yield JSON.stringify(obj);</v>
+            <v>    }</v>
             <v>});</v>
           </stanza>
         </poem>

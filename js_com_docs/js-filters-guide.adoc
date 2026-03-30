@@ -27,9 +27,9 @@ nginx's filter chain:
   mutate response headers in place.  The filter is always synchronous.
 
 * **Body filters** — called for each piece of the response body (streaming
-  modes) or once on the complete body (whole-body modes).  Four execution
-  modes cover every combination of sync/async and chunk/whole:
-  `wholeBodySync`, `wholeBodyAsync`, `streamingSync`, `streamingAsync`.
+  modes) or once on the complete body (whole-body modes).  Five execution
+  modes are available: `wholeBodySync`, `wholeBodyAsync`, `streamingSync`,
+  `streamingAsync`, and `generator` (async generator function).
 
 Filters are registered per-location via methods on the
 `NginxLocation` object (accessible through `nginx.http.servers[i].locations[j]`
@@ -62,17 +62,21 @@ is ignored.  `req` is a `NginxRequest` — header mutation is described in
 
 Returns `undefined`.  Throws `TypeError` if `fn` is not a function.
 
-=== `location.addBodyFilter(mode, fn [, opts])`
+=== `location.addBodyFilter([mode,] fn [, opts])`
 
 Appends a body-filter callback to the location's body filter list.
 
 [source,js]
 ----
+// Single-argument form — auto-detects async generator functions:
+location.addBodyFilter(asyncGenFn)
+
+// Two/three-argument form — explicit mode string:
 location.addBodyFilter(mode, fn)
 location.addBodyFilter(mode, fn, opts)
 ----
 
-`mode`:: *Required* string — one of:
+`mode`:: *Required* string in the two-argument form — one of:
 +
 [cols="2,4",options="header"]
 |===
@@ -105,13 +109,25 @@ Called once per nginx body-filter call.  The chunk is transformed via the
 *resolved value* of the returned Promise: a string replaces the chunk; `''`
 drops it; `undefined` (or any non-string) passes the original chunk through.
 If the Promise rejects, the connection is closed with an error.
+
+|`'generator'`
+|Async generator transform.  +
+Signature: `async function*(chunks, req)` +
+`chunks` is a single-element iterable `[wholeBodyString]`.  Iterate with
+`for await (var chunk of chunks)` to receive the complete buffered body.
+`yield` any number of strings; they are concatenated to form the new body.
+The generator may `await` between yields.  When omitted, the single-argument
+form `addBodyFilter(asyncGenFn)` auto-detects this mode from the function
+type (`AsyncGeneratorFunction`).
 |===
 
-`fn`:: *Required.*  The filter callback; signature depends on `mode`.
+`fn`:: *Required.*  The filter callback; signature depends on `mode`.  In the
+single-argument form, `fn` must be an async generator function
+(`async function*`).
 `opts`:: *Optional* object; see <<filter-options>>.
 
-Returns `undefined`.  Throws `TypeError` if `mode` is invalid or `fn` is not
-a function.
+Returns `undefined`.  Throws `TypeError` if `mode` is invalid, `fn` is not
+a function, or the single-argument form is called with a non-async-generator.
 
 === `location.removeHeaderFilter(ref)`
 

@@ -19,11 +19,11 @@ dedicated test suite.
 [source,javascript]
 ----
 // Any combination of filter modes can be chained.
-location.addBodyFilter(async function*(body, req) {
-    yield body.toUpperCase();
+location.addBodyFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) { yield chunk.toUpperCase(); }
 });
-location.addBodyFilter(async function*(body, req) {
-    yield '[' + body + ']';
+location.addBodyFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) { yield '[' + chunk + ']'; }
 });
 // GET /  → body "hello"  →  "HELLO"  →  "[HELLO]"
 ----
@@ -41,7 +41,7 @@ ties among equal-priority filters.
 
 | Output → input
 | The string produced by filter N (all yielded/returned chunks concatenated)
-  is the `body` argument received by filter N+1.
+  becomes the single element in the `chunks` iterable received by filter N+1.
 
 | Empty output
 | If a filter yields nothing (GENERATOR mode) or returns `undefined`
@@ -64,13 +64,17 @@ All body filter modes can be freely combined:
 [source,javascript]
 ----
 // GENERATOR → WB_SYNC
-location.addBodyFilter(async function*(body, req) { yield body + '!'; });
+location.addBodyFilter(async function*(chunks, req) {
+    for await (var c of chunks) { yield c + '!'; }
+});
 location.addBodyFilter('wholeBodySync', (req, body) => body.repeat(2));
 // "foo"  →  "foo!"  →  "foo!foo!"
 
 // WB_SYNC → GENERATOR
 location.addBodyFilter('wholeBodySync', (req, body) => body.toUpperCase());
-location.addBodyFilter(async function*(body, req) { yield '<' + body + '>'; });
+location.addBodyFilter(async function*(chunks, req) {
+    for await (var c of chunks) { yield '<' + c + '>'; }
+});
 // "bar"  →  "BAR"  →  "<BAR>"
 ----
 
@@ -82,12 +86,12 @@ with the same priority retain registration order.
 
 [source,javascript]
 ----
-location.addBodyFilter('generator', async function*(body, req) {
-    yield body + 'Z';   // priority 50 (default) → second
+location.addBodyFilter('generator', async function*(chunks, req) {
+    for await (var c of chunks) { yield c + 'Z'; }  // priority 50 → second
 }, { priority: 50 });
 
-location.addBodyFilter('generator', async function*(body, req) {
-    yield body + 'A';   // priority 10 → first despite being registered second
+location.addBodyFilter('generator', async function*(chunks, req) {
+    for await (var c of chunks) { yield c + 'A'; }  // priority 10 → first
 }, { priority: 10 });
 
 // "p"  →  "pA"  →  "pAZ"

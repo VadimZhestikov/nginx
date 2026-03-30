@@ -107,7 +107,8 @@ a browser DevTools tab).
 | P5 ✓
 | <<p5-gen-filter.adoc#,Generator body filter>>
 | Upgrade `addBodyFilter` to accept async generator functions
-  (`async function*(body, req)`).  Body is buffered; generator yields zero or
+  (`async function*(chunks, req)`).  `chunks` is a single-element iterable
+  `[wholeBodyString]`; iterate with `for await`.  Generator yields zero or
   more output chunks and may `await` between yields.
 
 | P6 ✓

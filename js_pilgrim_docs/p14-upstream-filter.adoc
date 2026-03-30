@@ -9,14 +9,16 @@
 P14 closes the last gap in the JS-Pilgrim architecture diagram by providing
 JavaScript hooks at the upstream layer:
 
-* `location.addUpstreamFilter(async function*(body, req) {...})` — transforms
+* `location.addUpstreamFilter(async function*(chunks, req) {...})` — transforms
   the upstream *response* body before it reaches the client.
-* `location.addUpstreamRequestFilter(async function*(body, req) {...})` —
+* `location.addUpstreamRequestFilter(async function*(chunks, req) {...})` —
   transforms the client *request* body before it is forwarded to the upstream.
 
 Both APIs use the same async-generator calling convention as `addBodyFilter`
-(P5), but they are distinct hooks that fire only when `r->upstream` is set
-(i.e., the request is handled by `proxy_pass`, `fastcgi_pass`, etc.).
+(P5): `chunks` is a single-element iterable `[wholeBodyString]`; iterate with
+`for await (var chunk of chunks)` to receive the complete buffered body.
+These hooks fire only when `r->upstream` is set (i.e., the request is handled
+by `proxy_pass`, `fastcgi_pass`, etc.).
 
 == API
 
@@ -24,32 +26,38 @@ Both APIs use the same async-generator calling convention as `addBodyFilter`
 
 [source,javascript]
 ----
-location.addUpstreamFilter(async function*(body, req) {
-    yield body.replace(/hello/g, 'world');
+location.addUpstreamFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        yield chunk.replace(/hello/g, 'world');
+    }
 });
 ----
 
 * Fires in nginx's body filter chain when `r->upstream != NULL`.
 * Multiple calls chain filters: the output of filter N becomes the input of
   filter N+1.
-* `body` is a string containing the complete (buffered) response body.
+* `chunks` is a single-element iterable `[wholeBodyString]`; iterate with
+  `for await` to receive the complete buffered response body.
 * `yield` zero or more string chunks; they are concatenated to form the output.
-* Implemented as a synchronous generator run (no `await` across the whole chain
-  today; the body is pre-buffered by the existing whole-body mode).
+* Implemented as a synchronous generator run (no `await` support; the body is
+  pre-buffered by the existing whole-body mode).
 
 === addUpstreamRequestFilter
 
 [source,javascript]
 ----
-location.addUpstreamRequestFilter(async function*(body, req) {
-    yield body.toUpperCase();
+location.addUpstreamRequestFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        yield chunk.toUpperCase();
+    }
 });
 ----
 
 * Fires in the `NGX_HTTP_ACCESS_PHASE` after the client request body is
   fully read, before the content handler (`proxy_pass`) picks it up.
 * Multiple calls chain filters in registration order.
-* `body` is a string containing the complete (in-memory) request body.
+* `chunks` is a single-element iterable `[wholeBodyString]`; iterate with
+  `for await` to receive the complete (in-memory) request body.
 * The transformed body replaces `r->request_body->bufs` and
   `r->headers_in.content_length_n` so the upstream receives the correct
   Content-Length.
@@ -71,9 +79,9 @@ The existing `ngx_js_body_filter` was extended:
 
 `ngx_js_upstream_filters_run` (in `ngx_js_com_http.c`) delegates to
 `ngx_js_run_generator_filter_array` — a shared synchronous runner that loops
-through the filter array, calls each async-generator function with
-`(body_string, req_obj)`, collects all `yield`-ed strings, and replaces the
-body in place.
+through the filter array, wraps `body_string` in a one-element JS array
+`[body_string]`, calls each async-generator function with `(chunks, req_obj)`,
+collects all `yield`-ed strings, and replaces the body in place.
 
 === Request filter path
 

@@ -321,22 +321,24 @@ Transforms the upstream's response body before it reaches the client.
 
 [source,js]
 ----
-loc.addUpstreamFilter(async function*(body, req) {
-    // body — full upstream response body as a string
-    yield body.replace(/internal-hostname/g, 'public-hostname');
+loc.addUpstreamFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        yield chunk.replace(/internal-hostname/g, 'public-hostname');
+    }
 });
 
 // Chain two upstream response filters
-loc.addUpstreamFilter(async function*(body, req) {
-    yield body.toUpperCase();
+loc.addUpstreamFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) { yield chunk.toUpperCase(); }
 });
-loc.addUpstreamFilter(async function*(body, req) {
-    yield '[' + body + ']';   // receives output of first filter
+loc.addUpstreamFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) { yield '[' + chunk + ']'; }
 });
 ----
 
-`fn`:: `async function*(body, req)`.  `body` is the full buffered response
-body string.  Yield zero or more string chunks; they are concatenated to
+`fn`:: `async function*(chunks, req)`.  `chunks` is a single-element iterable
+`[wholeBodyString]`; iterate with `for await` to receive the full buffered
+response body.  Yield zero or more string chunks; they are concatenated to
 form the final output.
 
 === Request Body: `location.addUpstreamRequestFilter(fn)`
@@ -345,18 +347,19 @@ Transforms the client's request body before it is forwarded to the upstream.
 
 [source,js]
 ----
-loc.addUpstreamRequestFilter(async function*(body, req) {
-    // body — full client request body as a string
-    var obj = JSON.parse(body);
-    obj.processed_by = 'nginx-js';
-    yield JSON.stringify(obj);
+loc.addUpstreamRequestFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        var obj = JSON.parse(chunk);
+        obj.processed_by = 'nginx-js';
+        yield JSON.stringify(obj);
+    }
 });
 ----
 
-`fn`:: Same signature as `addUpstreamFilter`.  `body` is the complete
-(buffered) client request body.  The transformed output replaces
-`r->request_body->bufs` and updates `Content-Length` before the proxy module
-runs.
+`fn`:: Same signature as `addUpstreamFilter`.  `chunks` is a single-element
+iterable `[wholeBodyString]` containing the complete (buffered) client request
+body.  The transformed output replaces `r->request_body->bufs` and updates
+`Content-Length` before the proxy module runs.
 
 === Chaining
 

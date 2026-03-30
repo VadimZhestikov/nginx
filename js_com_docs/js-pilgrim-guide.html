@@ -961,17 +961,18 @@ independent of <code>addBodyFilter</code>.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">loc.addUpstreamFilter(async function*(body, req) {
-    // body — full upstream response body as a string
-    yield body.replace(/internal-hostname/g, 'public-hostname');
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">loc.addUpstreamFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        yield chunk.replace(/internal-hostname/g, 'public-hostname');
+    }
 });
 
 // Chain two upstream response filters
-loc.addUpstreamFilter(async function*(body, req) {
-    yield body.toUpperCase();
+loc.addUpstreamFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) { yield chunk.toUpperCase(); }
 });
-loc.addUpstreamFilter(async function*(body, req) {
-    yield '[' + body + ']';   // receives output of first filter
+loc.addUpstreamFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) { yield '[' + chunk + ']'; }
 });</code></pre>
 </div>
 </div>
@@ -979,8 +980,9 @@ loc.addUpstreamFilter(async function*(body, req) {
 <dl>
 <dt class="hdlist1"><code>fn</code></dt>
 <dd>
-<p><code>async function*(body, req)</code>.  <code>body</code> is the full buffered response
-body string.  Yield zero or more string chunks; they are concatenated to
+<p><code>async function*(chunks, req)</code>.  <code>chunks</code> is a single-element iterable
+<code>[wholeBodyString]</code>; iterate with <code>for await</code> to receive the full buffered
+response body.  Yield zero or more string chunks; they are concatenated to
 form the final output.</p>
 </dd>
 </dl>
@@ -993,11 +995,12 @@ form the final output.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">loc.addUpstreamRequestFilter(async function*(body, req) {
-    // body — full client request body as a string
-    var obj = JSON.parse(body);
-    obj.processed_by = 'nginx-js';
-    yield JSON.stringify(obj);
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">loc.addUpstreamRequestFilter(async function*(chunks, req) {
+    for await (var chunk of chunks) {
+        var obj = JSON.parse(chunk);
+        obj.processed_by = 'nginx-js';
+        yield JSON.stringify(obj);
+    }
 });</code></pre>
 </div>
 </div>
@@ -1005,8 +1008,9 @@ form the final output.</p>
 <dl>
 <dt class="hdlist1"><code>fn</code></dt>
 <dd>
-<p>Same signature as <code>addUpstreamFilter</code>.  <code>body</code> is the complete
-(buffered) client request body.  The transformed output replaces
+<p>Same signature as <code>addUpstreamFilter</code>.  <code>chunks</code> is a single-element
+iterable <code>[wholeBodyString]</code> containing the complete (buffered) client
+request body.  The transformed output replaces
 <code>r&#8594;request_body&#8594;bufs</code> and updates <code>Content-Length</code> before the proxy module
 runs.</p>
 </dd>
