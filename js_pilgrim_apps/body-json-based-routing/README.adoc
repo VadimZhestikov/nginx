@@ -9,14 +9,15 @@
 
 A reference application that routes incoming HTTP POST requests to different
 nginx upstream pools based on fields extracted from the JSON request body.
-Only the bytes needed to satisfy the routing decision are parsed; the
-remainder of the body is fast-forwarded or skipped entirely.
+The routing decision is made with *zero whole-body buffering in JS* — nginx
+streams `r->request_body` directly to the chosen upstream via `proxy_pass`.
 
 == Overview
 
-The router reads the JSON request body, extracts two fields using a partial
-JSON scanner, consults a routing table, and forwards the request to one of
-four internal nginx relay locations — each with its own `proxy_pass` target.
+The router scans the JSON request body for two routing fields using a
+stateful streaming scanner, consults a routing table, and calls
+`req.pass(backend)` to hand off the request to one of four internal nginx
+relay locations.
 
 .Default routing table
 [cols="2,2,2",options="header"]
@@ -36,47 +37,87 @@ four internal nginx relay locations — each with its own `proxy_pass` target.
 ....
 Client POST /route/
   │
-  ▼
-[JS content handler]
-  │  req.readBody() — full body buffered by nginx
-  │
-  ▼
-collectJsonPaths(body, ['service', 'tenant.region'])
-  │  ← stops scanning once both fields are found
-  │
-  ▼
-pickBackend(fields)
-  │
-  ├─ payments + eu-west ──► req.subrequest('/internal/payments-eu/')
-  ├─ payments + us-east ──► req.subrequest('/internal/payments-us/')
-  ├─ analytics          ──► req.subrequest('/internal/analytics/')
-  └─ default            ──► req.subrequest('/internal/default/')
-                                │
-                                ▼
-                    proxy_pass → upstream pool
-                                │
-                                ▼
-                    req.respond(sub.status, sub.headers, sub.body)
-                                │
-                                ▼
-                         Client response
+  ├─[Phase 1: sync, zero I/O]──────────────────────────────────────────────┐
+  │  req.bodyPreread                                                         │
+  │  bytes already in the TCP recv buffer (same segment as request headers) │
+  │  scanner.feed(preread)                                                   │
+  │  scanner.done() ? → req.pass(backend)  ─────────────────────────────── │ ── ► proxy_pass
+  └─[Phase 2: async, minimal buffering]────────────────────────────────────┘
+     for await (chunk of req.bodyChunks()) {
+       scanner.feed(chunk)
+       if (scanner.done()) break   ← stop as soon as fields are found
+     }
+     req.pass(backend) ───────────────────────────────────────────────────────► proxy_pass
+                                                                                    │
+                                                         nginx streams r->request_body
+                                                         to upstream natively; JS
+                                                         holds no copy of the body.
 ....
 
-=== Partial JSON scanning
+=== Two-phase routing
 
-`collectJsonPaths` walks the JSON string character-by-character using a
-recursive descent parser.  Before recursing into an object key it checks
-three cases:
+Phase 1 (sync, zero I/O)::
+`req.bodyPreread` returns bytes already in nginx's connection read buffer
+beyond the request headers — the "preread" portion that arrived in the same
+`recv()` as the request line and headers.  For routing envelopes that fit in
+one TCP segment this is the entire body.  `scanner.feed(preread)` is called
+synchronously; if `scanner.done()` is true, `req.pass(backend)` is called
+before any async I/O starts.
 
-* **Exact match** — the current dot-path is one of the required paths.
-  Capture the value, decrement `remain`, and *exit immediately* if
-  `remain === 0`.
-* **Ancestor** — the current key is a prefix of a required path
-  (e.g. `tenant` is an ancestor of `tenant.region`).  Recurse into the
-  nested object.
-* **Irrelevant** — the current key cannot lead to any required path.
-  Call `skipValue()`, which fast-forwards over the entire subtree using a
-  depth counter without parsing the contents.
+Phase 2 (async, minimal buffering)::
+`req.bodyChunks()` yields nginx's native body buffers one at a time.  nginx
+has already DMA'd the body into its own buffer chain; JS only holds one chunk
+string at a time.  The scanner processes each chunk and exits as soon as
+`done()` is true.  Remaining bytes stay in nginx's buffers and flow to the
+upstream untouched.
+
+=== Body forwarding via req.pass()
+
+`req.pass(location)` calls `ngx_http_internal_redirect`, which re-enters the
+nginx phase engine at the new URI with `r->internal = 1` (enabling access to
+`internal;` locations).  The matched location's `proxy_pass` then streams
+`r->request_body` to the upstream *natively* — no JS-side body copy, no
+`X-Forwarded-Body` header, no header-size limits.
+
+=== Streaming scanner (createPathScanner)
+
+`createPathScanner(paths)` returns a stateful scanner object:
+
+[source,javascript]
+----
+var s = createPathScanner(['service', 'tenant.region']);
+
+s.feed(chunk);       // process next bytes (resumable across chunks)
+s.done();            // true when all paths have been captured
+s.getResult();       // {path: value, …} of captured paths
+----
+
+The scanner visits each byte exactly once, making it O(n) regardless of body
+size.  It is resumable across arbitrary chunk boundaries — a value can span
+multiple chunks without any re-scanning.  State labels:
+
+[cols="1,3",options="header"]
+|===
+|State |Meaning
+
+|`S`  |Start — expect `{`
+|`O`  |Object open — expect `"key"` or `}`
+|`K`  |Reading key string
+|`E`  |Escape in key string
+|`:`  |After key — expect `:`
+|`V`  |After `:` — dispatch on first byte of value
+|`CS` |Capturing string value
+|`CE` |Escape in captured string
+|`CX` |Capturing scalar (number / bool / null)
+|`SS` |Skipping string
+|`SE` |Escape in skipped string
+|`SX` |Skipping scalar
+|`SN` |Skipping nested object/array (depth-counted)
+|`NS` |String inside skipped nested
+|`NE` |Escape in nested string
+|`AV` |After value — expect `,` or `}`
+|`D`  |Done — all paths found or object exhausted
+|===
 
 .Example: 4 KB body, routing fields near the start
 ....
@@ -86,16 +127,13 @@ three cases:
     "id":     "t42",                ← skipped (not needed)
     "region": "eu-west"             ← captured, remain = 0 → STOP
   },
-  "payload": { /* 4 KB of data */ } ← never touched
+  "payload": { /* 4 KB of data */ } ← scanner exits, never touches this
 }
 ....
 
-The `"payload"` key and its entire subtree are never parsed.  CPU savings
-are proportional to how much of the body follows the routing fields.
-
-NOTE: nginx buffers the full request body before the JS handler runs, so
-*memory* savings are not possible without a streaming body API.  Only CPU
-(parse time) is saved.
+The scanner stops immediately when `remain === 0`.  The remaining body bytes
+stay in nginx's buffers and are forwarded to the upstream by `proxy_pass`
+without any JS involvement.
 
 == Files
 
@@ -104,16 +142,17 @@ NOTE: nginx buffers the full request body before the JS handler runs, so
 |File |Purpose
 
 |`router.js`
-|Router application — `collectJsonPaths`, routing table, content handler.
-Drop-in `js_source` file.
+|Router application — `createPathScanner`, routing table, two-phase content
+handler.  Drop-in `js_source` file.
 
 |`nginx.conf`
 |Reference production configuration.  Adjust upstream addresses and add
 relay locations to match `CFG.routes` in `router.js`.
 
 |`t/router.t`
-|Perl test suite (Test::Nginx).  Covers all four routing paths, error
-cases, early-exit behaviour, and body forwarding with 15 assertions.
+|Perl test suite (Test::Nginx).  Covers all four routing paths, error cases,
+streaming early-exit, body forwarding via `proxy_pass`, preread-path routing,
+and large-body chunked-path routing — 17 assertions.
 |===
 
 == Configuration
@@ -135,8 +174,8 @@ http {
         server_name  router;   # <-- must be 'router'
 
         location /route/ {
-            client_max_body_size  8k;
-            # handler assigned by router.js
+            # handler assigned by router.js; no client_max_body_size limit
+            # needed — body is streamed to upstream, not copied into JS
         }
 
         location /internal/payments-eu/ {
@@ -170,12 +209,11 @@ All tunables are in the `CFG` object near the top of `router.js`:
 [source,javascript]
 ----
 var CFG = {
-    /* JSON dot-paths to extract.  collectJsonPaths stops once all
-     * are found — add paths here if your routing key is deeper.     */
+    /* JSON dot-paths to extract.  Scanner stops once all are found.   */
     routingPaths: ['service', 'tenant.region'],
 
     /* Routing table — evaluated in order, first match wins.
-     * Omitting a key from `match` makes it a wildcard.              */
+     * Omitting a key from `match` makes it a wildcard.                */
     routes: [
         { match: { 'service': 'payments', 'tenant.region': 'eu-west' },
           backend: '/internal/payments-eu/' },
@@ -185,49 +223,23 @@ var CFG = {
           backend: '/internal/analytics/' },
     ],
     defaultBackend: '/internal/default/',
-
-    /* Bodies larger than this threshold emit a WARN log entry.      */
-    bodyWarnSize: 8192,
 };
 ----
 
-Each entry in `routes` matches when *all* listed fields equal their
-expected values.  Unlisted fields are ignored.  Add routes with a single
-`match` key to create wildcard-on-second-field rules (as the `analytics`
-entry demonstrates).
+Each entry in `routes` matches when *all* listed fields equal their expected
+values.  Unlisted fields are ignored.  Add routes with a single `match` key
+to create wildcard-on-second-field rules (as the `analytics` entry
+demonstrates).
 
 == Body Forwarding
 
-The original request body is passed to the backend in the `X-Forwarded-Body`
-request header so the upstream service receives the full payload:
+`req.pass(location)` triggers `ngx_http_internal_redirect`, which re-enters
+the nginx phase engine at the new URI.  The matched location's `proxy_pass`
+streams `r->request_body` to the upstream directly from nginx's buffer chain.
+There is no JS-side copy, no `X-Forwarded-Body` header, and no size limit
+from header buffers.
 
-[source,nginx]
-----
-# In the internal relay location:
-proxy_set_header   X-Forwarded-Body  $http_x_forwarded_body;
-----
-
-The backend reads it from the `X-Forwarded-Body` header.
-
-=== Size limitation
-
-nginx header buffers are capped by `large_client_header_buffers` (default
-`4 × 8k`).  Keep bodies under 8 KB when using header-based forwarding.
-Set `client_max_body_size 8k;` on `/route/` to enforce this.
-
-=== Future extension: `req.setVariable()`
-
-The clean solution for large-body routing is:
-
-[source,javascript]
-----
-req.setVariable('upstream_target', 'payments-eu');
-// nginx.conf:  proxy_pass http://$upstream_target/;
-----
-
-This would let the normal `proxy_pass` path stream the body directly to
-the chosen backend without copying it into a header.  It requires a
-`req.setVariable()` addition to the JS-Pilgrim API.
+The body the upstream receives is identical to what the client sent.
 
 == Error Responses
 
@@ -236,21 +248,16 @@ the chosen backend without copying it into a header.  It requires a
 |Status |Condition |Body
 
 |`400`
-|Empty body
-|`{"error":"empty body"}`
-
-|`400`
-|Body does not start with `{`
+|Empty body or body does not begin with `{`
 |`{"error":"body must be a JSON object"}`
 
 |`400`
-|`req.readBody()` fails
+|`req.bodyChunks()` throws (I/O error)
 |`{"error":"could not read body"}`
-
-|`502`
-|Internal subrequest fails
-|`{"error":"backend unreachable"}`
 |===
+
+All other errors (upstream unreachable, etc.) are handled natively by nginx's
+`proxy_pass` error-page machinery.
 
 == Running the Tests
 
@@ -272,7 +279,8 @@ TEST_NGINX_BINARY=$(pwd)/nginx/objs/nginx \
 |Tests |Scenario
 
 |1–2
-|`service=payments` + `tenant.region=eu-west` → `payments-eu` backend (200 + body).
+|`service=payments` + `tenant.region=eu-west` → `payments-eu` backend
+(200 + routing marker in body).
 
 |3–4
 |`service=payments` + `tenant.region=us-east` → `payments-us` backend.
@@ -291,21 +299,37 @@ TEST_NGINX_BINARY=$(pwd)/nginx/objs/nginx \
 
 |13–14
 |Large body (routing fields first, 4 KB padding after) → 200, correct route.
-Verifies early-exit: the padding is never scanned.
+Scanner exits before the padding; padding flows to backend untouched.
 
 |15
-|Body forwarding: a unique marker field in the request body is echoed back
-by the backend via `X-Forwarded-Body`.
+|Body forwarding: a unique random marker in the POST body is echoed back
+by the backend via `proxy_pass` + `r->request_body` (not X-Forwarded-Body).
+
+|16
+|Preread-path: routing fields fit in one TCP segment, decision made in
+Phase 1 with zero async I/O.
+
+|17
+|Chunks-path: `service` field appears near the end of a large body,
+forcing Phase 2 to scan multiple chunks before deciding.
 |===
 
-== collectJsonPaths API
+== createPathScanner API
 
 [source,javascript]
 ----
-var fields = collectJsonPaths(jsonString, ['service', 'tenant.region']);
-// fields['service']       → 'payments'   (string scalar)
-// fields['tenant.region'] → 'eu-west'    (string scalar)
-// fields['missing']       → undefined    (path not found)
+var scanner = createPathScanner(['service', 'tenant.region']);
+
+// Feed bytes incrementally — call as many times as needed:
+scanner.feed(chunk);          // string; resumable across chunk boundaries
+
+// After each feed():
+if (scanner.done()) {
+    var fields = scanner.getResult();
+    // fields['service']       → 'payments'   (string scalar)
+    // fields['tenant.region'] → 'eu-west'    (string scalar)
+    // fields['missing']       → undefined    (path not found)
+}
 ----
 
 .Supported value types
@@ -317,7 +341,8 @@ var fields = collectJsonPaths(jsonString, ['service', 'tenant.region']);
 |number |JavaScript number
 |`true` / `false` |JavaScript boolean
 |`null` |JavaScript `null`
-|object / array |Raw JSON substring (e.g. `'{"id":"t1"}'`)
+|object / array |Not captured — treated as "not a routing scalar";
+the path will be absent from the result.
 |===
 
 .Dot-path syntax
@@ -331,8 +356,8 @@ var fields = collectJsonPaths(jsonString, ['service', 'tenant.region']);
 |===
 
 Arrays are not indexed — only object keys are walked.  If a path segment
-refers to an array element, `collectJsonPaths` will not find it and the
-path will be absent from the result.
+refers to an array element, the scanner will not find it and the path will
+be absent from the result.
 
 == JS-Pilgrim Features Used
 
@@ -341,18 +366,26 @@ path will be absent from the result.
 |Feature |Usage
 
 |`location.handler`
-|Async content handler on `/route/` reads body and responds with subrequest result.
+|Async content handler on `/route/` drives the two-phase body scan and calls
+`req.pass()`.
 
-|`req.readBody()`
-|Buffers the full POST body from the nginx request chain.
+|`req.bodyPreread`
+|Synchronous getter.  Returns bytes already in nginx's connection read buffer
+beyond the request headers.  Phase 1 feeds these bytes to the scanner; if
+all routing fields are found here, no async I/O is needed.
 
-|`req.subrequest(uri, opts)`
-|Issues an internal nginx subrequest to the chosen relay location; result
-carries `{status, headers, body}`.
+|`req.bodyChunks()`
+|Async iterator.  Yields nginx's native body buffers one at a time.  Phase 2
+feeds each chunk to the scanner and breaks as soon as `scanner.done()` is
+true, leaving the rest of the body in nginx's buffers.
+
+|`req.pass(location)`
+|Triggers `ngx_http_internal_redirect`.  The new location's `proxy_pass`
+streams `r->request_body` to the upstream natively — zero JS-side copy.
 
 |`req.respond(status, headers, body)`
-|Sends the backend response (or an error) back to the client.
+|Sends 400 error responses when the body is missing or not JSON.
 
 |`nginx.log(level, msg)`
-|Structured INFO log for each routing decision; WARN for oversized bodies.
+|Structured INFO log for each routing decision.
 |===
