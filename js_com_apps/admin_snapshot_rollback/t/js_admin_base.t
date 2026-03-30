@@ -65,12 +65,16 @@ EOF
 # Create snapshots/ directory and a pre-seeded snapshot for request-phase test
 mkdir $t->testdir() . '/snapshots';
 
+# Resolve the actual port that %%PORT_8091%% was allocated to.
+# Test::Nginx may assign a different port in the same 8000-8499 range.
+my $peer_port = port(8091);
+
 my $snap_id = 'test-snap';
 $t->write_file('snapshots/test-snap.json', encode_json({
     id       => $snap_id,
     ts       => 0,
     peers    => [
-        { upstream => 'backend', address => '127.0.0.1:8091',
+        { upstream => 'backend', address => "127.0.0.1:$peer_port",
           weight => 5, down => 0 }
     ],
     handlers => [],
