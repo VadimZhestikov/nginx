@@ -53,29 +53,29 @@ $t->write_file('p15_init.js', <<'JS');
 
     /* /two_gen/ — two generator filters; second sees output of first */
     by['/two_gen/'].handler = function(r) { r.respond(200, {}, 'hello'); };
-    by['/two_gen/'].addBodyFilter(async function*(body, req) {
-        yield body.toUpperCase();
+    by['/two_gen/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk.toUpperCase(); }
     });
-    by['/two_gen/'].addBodyFilter(async function*(body, req) {
-        yield '[' + body + ']';
+    by['/two_gen/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield '[' + chunk + ']'; }
     });
 
     /* /three_gen/ — three generators chained */
     by['/three_gen/'].handler = function(r) { r.respond(200, {}, 'x'); };
-    by['/three_gen/'].addBodyFilter(async function*(body, req) {
-        yield 'A' + body;
+    by['/three_gen/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield 'A' + chunk; }
     });
-    by['/three_gen/'].addBodyFilter(async function*(body, req) {
-        yield body + 'B';
+    by['/three_gen/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk + 'B'; }
     });
-    by['/three_gen/'].addBodyFilter(async function*(body, req) {
-        yield body + body;   /* doubles the string */
+    by['/three_gen/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk + chunk; }   /* doubles */
     });
 
     /* /gen_wb/ — generator then whole-body-sync */
     by['/gen_wb/'].handler = function(r) { r.respond(200, {}, 'foo'); };
-    by['/gen_wb/'].addBodyFilter(async function*(body, req) {
-        yield body + '!';
+    by['/gen_wb/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk + '!'; }
     });
     by['/gen_wb/'].addBodyFilter('wholeBodySync', function(req, body) {
         return body.repeat(2);
@@ -86,39 +86,41 @@ $t->write_file('p15_init.js', <<'JS');
     by['/wb_gen/'].addBodyFilter('wholeBodySync', function(req, body) {
         return body.toUpperCase();
     });
-    by['/wb_gen/'].addBodyFilter(async function*(body, req) {
-        yield '<' + body + '>';
+    by['/wb_gen/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield '<' + chunk + '>'; }
     });
 
     /* /async_chain/ — async generator (await) followed by sync generator */
     by['/async_chain/'].handler = function(r) { r.respond(200, {}, 'val'); };
-    by['/async_chain/'].addBodyFilter(async function*(body, req) {
-        await nginx.setTimeout(5);
-        yield 'async:' + body;
+    by['/async_chain/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) {
+            await nginx.setTimeout(5);
+            yield 'async:' + chunk;
+        }
     });
-    by['/async_chain/'].addBodyFilter(async function*(body, req) {
-        yield body + ':done';
+    by['/async_chain/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk + ':done'; }
     });
 
     /* /priority/ — lower priority number runs first; default priority is 50 */
     by['/priority/'].handler = function(r) { r.respond(200, {}, 'p'); };
-    by['/priority/'].addBodyFilter('generator', async function*(body, req) {
-        yield body + 'Z';          /* registered first, priority 50 (default) */
+    by['/priority/'].addBodyFilter('generator', async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk + 'Z'; }  /* priority 50 */
     }, { name: 'second', priority: 50 });
-    by['/priority/'].addBodyFilter('generator', async function*(body, req) {
-        yield body + 'A';          /* registered second, but lower priority → runs first */
+    by['/priority/'].addBodyFilter('generator', async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk + 'A'; }  /* priority 10, runs first */
     }, { name: 'first', priority: 10 });
 
     /* /empty_mid/ — middle filter yields nothing; third filter sees empty string */
     by['/empty_mid/'].handler = function(r) { r.respond(200, {}, 'data'); };
-    by['/empty_mid/'].addBodyFilter(async function*(body, req) {
-        yield body;               /* pass through */
+    by['/empty_mid/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk; }  /* pass through */
     });
-    by['/empty_mid/'].addBodyFilter(async function*(body, req) {
-        /* yields nothing — swallows the body */
+    by['/empty_mid/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { /* swallow */ }
     });
-    by['/empty_mid/'].addBodyFilter(async function*(body, req) {
-        yield 'empty:' + body;    /* body is '' because previous yielded nothing */
+    by['/empty_mid/'].addBodyFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield 'empty:' + chunk; }
     });
 })();
 JS

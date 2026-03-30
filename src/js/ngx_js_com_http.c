@@ -2953,10 +2953,11 @@ ngx_js_is_async_gen_fn(JSContext *ctx, JSValueConst fn)
  *   'wholeBodyAsync'  — async fn(req, body) → Promise<string>
  *   'streamingSync'   — fn(req, chunk, flags) → void; uses req.sendBuffer()
  *   'streamingAsync'  — async fn(req, chunk, flags) → void; uses req.sendBuffer()
- *   'generator'       — async function*(body, req) yields chunks
+ *   'generator'       — async function*(chunks, req) — for await over chunks
  *
  * Single-argument form (auto-detect):
- *   addBodyFilter(asyncGenFn) — fn must be async function* (AsyncGeneratorFunction)
+ *   addBodyFilter(asyncGenFn) — fn must be async function*(chunks, req); chunks is
+ *                               a single-element iterable [wholeBodyString]
  *
  * opts (optional object): same {name, priority, before, after, index} as before.
  */
@@ -3511,18 +3512,36 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
         }
 
         /*
-         * GENERATOR mode: call genFn(body, req) → generator object, then
+         * GENERATOR mode: call genFn(chunks, req) → generator object, then
          * drive gen.next() until done or pending.
+         *
+         * chunks is a single-element JS array [bodyString] so that
+         * `for await (var chunk of chunks)` yields the whole body as one
+         * chunk.  `for await` works on sync iterables (arrays), so no
+         * async iterator wrapper is needed.
          */
         if (elts[i].mode == NGX_JS_FILTER_GENERATOR) {
             JSValue    gen, next_fn, next_result, iter_result;
-            JSValue    gen_args[2];
+            JSValue    gen_args[2], chunks;
             ngx_chain_t  *gen_out, **gen_out_last;
             ngx_int_t    gen_rc;
 
-            gen_args[0] = body_val;
+            chunks = JS_NewArray(ctx);
+            if (JS_IsException(chunks)) {
+                JS_FreeValue(ctx, fn);
+                continue;
+            }
+            if (JS_SetPropertyUint32(ctx, chunks, 0,
+                                     JS_DupValue(ctx, body_val)) < 0)
+            {
+                JS_FreeValue(ctx, chunks);
+                JS_FreeValue(ctx, fn);
+                continue;
+            }
+            gen_args[0] = chunks;
             gen_args[1] = req_obj;
             gen = JS_Call(ctx, fn, JS_UNDEFINED, 2, gen_args);
+            JS_FreeValue(ctx, chunks);
             JS_FreeValue(ctx, fn);
 
             while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
@@ -4023,9 +4042,25 @@ ngx_js_run_generator_filter_array(JSContext *ctx, JSRuntime *rt,
             continue;
         }
 
-        gen_args[0] = body_val;
-        gen_args[1] = req_obj;
-        gen = JS_Call(ctx, fn, JS_UNDEFINED, 2, gen_args);
+        {
+            JSValue  chunks_arr;
+            chunks_arr = JS_NewArray(ctx);
+            if (JS_IsException(chunks_arr)) {
+                JS_FreeValue(ctx, fn);
+                continue;
+            }
+            if (JS_SetPropertyUint32(ctx, chunks_arr, 0,
+                                     JS_DupValue(ctx, body_val)) < 0)
+            {
+                JS_FreeValue(ctx, chunks_arr);
+                JS_FreeValue(ctx, fn);
+                continue;
+            }
+            gen_args[0] = chunks_arr;
+            gen_args[1] = req_obj;
+            gen = JS_Call(ctx, fn, JS_UNDEFINED, 2, gen_args);
+            JS_FreeValue(ctx, chunks_arr);
+        }
         JS_FreeValue(ctx, fn);
 
         while (JS_ExecutePendingJob(rt, &job_ctx) > 0) {}

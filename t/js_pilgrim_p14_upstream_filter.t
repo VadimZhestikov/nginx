@@ -2,10 +2,11 @@
 
 # Tests for JS-Pilgrim P14: Upstream JS filters.
 #
-# location.addUpstreamFilter(async function*(body, req) {...})
+# location.addUpstreamFilter(async function*(chunks, req) {...})
 #   Filters the upstream response body; only runs when r->upstream is set.
+#   chunks is a single-element iterable [wholeBodyString].
 #
-# location.addUpstreamRequestFilter(async function*(body, req) {...})
+# location.addUpstreamRequestFilter(async function*(chunks, req) {...})
 #   Transforms the client request body before it is forwarded to the upstream.
 
 use warnings;
@@ -81,29 +82,35 @@ $t->write_file_expand('p14_init.js', <<'JS');
     for (var i = 0; i < locs.length; i++) { by[locs[i].path] = locs[i]; }
 
     // /resp/ — replace "hello" with "world" in upstream response
-    by['/resp/'].addUpstreamFilter(async function*(body, req) {
-        yield body.replace(/hello/g, 'world');
+    by['/resp/'].addUpstreamFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) {
+            yield chunk.replace(/hello/g, 'world');
+        }
     });
 
     // /chain/ — uppercase, then add prefix
-    by['/chain/'].addUpstreamFilter(async function*(body, req) {
-        yield body.toUpperCase();
+    by['/chain/'].addUpstreamFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk.toUpperCase(); }
     });
-    by['/chain/'].addUpstreamFilter(async function*(body, req) {
-        yield body.replace(/HELLO/g, 'FILTERED:HELLO');
+    by['/chain/'].addUpstreamFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) {
+            yield chunk.replace(/HELLO/g, 'FILTERED:HELLO');
+        }
     });
 
     // /req/ — uppercase the request body before it goes upstream
-    by['/req/'].addUpstreamRequestFilter(async function*(body, req) {
-        yield body.toUpperCase();
+    by['/req/'].addUpstreamRequestFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk.toUpperCase(); }
     });
 
     // /both/ — uppercase request body, and replace in response
-    by['/both/'].addUpstreamRequestFilter(async function*(body, req) {
-        yield body.toUpperCase();
+    by['/both/'].addUpstreamRequestFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) { yield chunk.toUpperCase(); }
     });
-    by['/both/'].addUpstreamFilter(async function*(body, req) {
-        yield body.replace(/HELLO/g, 'WORLD');
+    by['/both/'].addUpstreamFilter(async function*(chunks, req) {
+        for await (var chunk of chunks) {
+            yield chunk.replace(/HELLO/g, 'WORLD');
+        }
     });
 })();
 JS
