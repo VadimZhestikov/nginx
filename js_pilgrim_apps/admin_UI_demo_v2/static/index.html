@@ -549,13 +549,13 @@ function replRun(wid) {
         } else if (result && typeof result === 'object') {
             /* nginx.repl.eval returns {status, value, message, stack} */
             if (result.status === 'ok') {
-                replLog(wid, result.value != null && result.value !== '' ? String(result.value) : 'undefined', 'result');
+                replLog(wid, '← ' + (result.value != null && result.value !== '' ? String(result.value) : 'undefined'), 'result');
             } else {
                 replLog(wid, '✗ ' + (result.message || 'error'), 'err');
                 if (result.stack) replLog(wid, result.stack, 'err');
             }
         } else {
-            replLog(wid, String(result), 'result');
+            replLog(wid, '← ' + String(result), 'result');
         }
     });
 }
