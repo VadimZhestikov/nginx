@@ -39,11 +39,14 @@ nginx.broadcast(function() {
         if (!msg) { return; }
 
         if (msg.type === 'eval') {
-            /* We are the target — evaluate and send result back */
+            /* We are the target — capture console.* during eval */
+            var _rel = captureConsole();
+            var _res = nginx.repl.eval(msg.line);
+            var _logs = _rel();
             relay.postMessage({
                 type:        'result',
                 token:       msg.token,
-                result:      nginx.repl.eval(msg.line),
+                result:      { eval: _res, logs: _logs },
                 replyWorker: msg.replyWorker,
             });
         } else if (msg.type === 'result') {
@@ -266,6 +269,44 @@ function treeNodeInfo(val) {
 }
 
 /* ================================================================== */
+/* Console capture — wraps console.* during eval, collects output       */
+/* ================================================================== */
+
+/*
+ * captureConsole() temporarily overrides console.{debug,log,warn,error}
+ * to collect formatted strings.  Returns a release() function that
+ * restores the originals and returns the collected [{lvl, msg}] array.
+ *
+ * nginx.repl.eval() is a C call that never throws to JS, so no
+ * try-finally is needed — just call release() after eval returns.
+ */
+function captureConsole() {
+    var logs = [];
+    var orig = {
+        debug: console.debug,
+        log:   console.log,
+        warn:  console.warn,
+        error: console.error
+    };
+    function fmt(args) {
+        return Array.prototype.slice.call(args).map(function(a) {
+            return (typeof a === 'object' && a !== null) ? JSON.stringify(a) : String(a);
+        }).join(' ');
+    }
+    console.debug = function() { logs.push({lvl:'debug', msg:fmt(arguments)}); orig.debug.apply(console, arguments); };
+    console.log   = function() { logs.push({lvl:'log',   msg:fmt(arguments)}); orig.log.apply(console, arguments); };
+    console.warn  = function() { logs.push({lvl:'warn',  msg:fmt(arguments)}); orig.warn.apply(console, arguments); };
+    console.error = function() { logs.push({lvl:'error', msg:fmt(arguments)}); orig.error.apply(console, arguments); };
+    return function release() {
+        console.debug = orig.debug;
+        console.log   = orig.log;
+        console.warn  = orig.warn;
+        console.error = orig.error;
+        return logs;
+    };
+}
+
+/* ================================================================== */
 /* JSON-RPC dispatcher                                                  */
 /* ================================================================== */
 
@@ -319,8 +360,11 @@ function dispatch(msg, fd) {
 
         case 'nginx.eval':
             if (targetWorker === nginx.workerIdx) {
-                /* Local eval */
-                return rpcOk(id, nginx.repl.eval(params[0]));
+                /* Local eval — capture console.* output during eval */
+                var release = captureConsole();
+                var evalResult = nginx.repl.eval(params[0]);
+                var evalLogs = release();
+                return rpcOk(id, { eval: evalResult, logs: evalLogs });
             }
             /* Cross-worker eval via relay — async, no immediate return */
             (function() {

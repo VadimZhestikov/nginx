@@ -68,6 +68,7 @@ input[type=text]:focus { border-color: #5a7aae; }
 .repl-line.prompt { color: #8bc; }
 .repl-line.result { color: #bdf; padding-left: 10px; border-left: 2px solid #3a6aae; }
 .repl-line.err    { color: #c77; }
+.repl-line.warn   { color: #ca7; }
 .repl-line.info   { color: #778; font-style: italic; }
 .repl-line.cols   { color: #778; white-space: pre; }
 .repl-connect-bar { padding: 24px 16px; display: flex; align-items: center; gap: 10px; }
@@ -550,19 +551,30 @@ function replRun(wid) {
         clearTimeout(_evalTid);
         if (err) {
             replLog(wid, '✗ ' + (err.message || String(err)), 'err');
-        } else if (result && typeof result === 'object') {
-            /* nginx.repl.eval returns {status, value, message, stack} */
-            if (result.status === 'ok') {
-                var val = result.value;
+            return;
+        }
+        /* result is now {eval:{status,value,...}, logs:[{lvl,msg},...]} */
+        var logs   = (result && Array.isArray(result.logs)) ? result.logs : [];
+        var evRes  = (result && result.eval) ? result.eval : result;
+        /* Display captured console.* lines before the eval result */
+        for (var li = 0; li < logs.length; li++) {
+            var entry = logs[li];
+            var lcls  = (entry.lvl === 'error') ? 'err'
+                      : (entry.lvl === 'warn')  ? 'warn' : 'info';
+            replLog(wid, '[' + entry.lvl + '] ' + entry.msg, lcls);
+        }
+        if (evRes && typeof evRes === 'object') {
+            if (evRes.status === 'ok') {
+                var val = evRes.value;
                 replLog(wid, '← ' + (val != null && val !== '' ? String(val) : 'undefined'), 'result');
-            } else if (result.status === 'incomplete') {
+            } else if (evRes.status === 'incomplete') {
                 replLog(wid, '… (incomplete input)', 'err');
             } else {
-                replLog(wid, '✗ ' + (result.message || 'error'), 'err');
-                if (result.stack) replLog(wid, result.stack, 'err');
+                replLog(wid, '✗ ' + (evRes.message || 'error'), 'err');
+                if (evRes.stack) replLog(wid, evRes.stack, 'err');
             }
         } else {
-            replLog(wid, '← ' + String(result), 'result');
+            replLog(wid, '← ' + String(evRes), 'result');
         }
     });
 }
