@@ -77,8 +77,8 @@ input[type=text]:focus { border-color: #5a7aae; }
 .tab.error      { color: #c88; border-color: #5a3a3a; }
 .tab.active.connected { background: #1a3a2a; color: #aec; border-color: #4a7a5a; }
 @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
-.repl-inline-input { display: flex; align-items: center; padding: 1px 10px 6px;
-    font-family: monospace; font-size: 12px; flex-shrink: 0; }
+.repl-inline-input { display: flex; align-items: center; margin: 1px 0;
+    font-family: monospace; font-size: 12px; }
 .repl-inline-input input { flex: 1; background: transparent; border: none; outline: none;
     color: #8bc; font-family: monospace; font-size: 12px; padding: 0; margin: 0; }
 .repl-inline-input .repl-reconnect { background: none; border: none; color: #445;
@@ -378,15 +378,16 @@ function replMakePane(wid) {
     pane.className = 'repl-pane';
     pane.id = 'repl-pane-' + wid;
     pane.innerHTML =
-        '<div class="repl-output" id="repl-out-' + wid + '"></div>' +
+        '<div class="repl-output" id="repl-out-' + wid + '">' +
+          '<div class="repl-inline-input" id="repl-input-' + wid + '" style="display:none">' +
+            '<span style="color:#5a8;font-family:monospace;font-size:13px;margin-right:4px">›</span>' +
+            '<input type="text" id="repl-in-' + wid + '" placeholder="nginx.workerIdx">' +
+            '<button class="repl-reconnect" title="Reconnect" onclick="replConnectWorker(' + wid + ')">↺</button>' +
+          '</div>' +
+        '</div>' +
         '<div class="repl-connect-bar" id="repl-bar-' + wid + '">' +
           '<button id="repl-btn-' + wid + '" onclick="replConnectWorker(' + wid + ')">Connect Worker ' + wid + '</button>' +
           '<span class="repl-conn-status" id="repl-conn-st-' + wid + '"></span>' +
-        '</div>' +
-        '<div class="repl-inline-input" id="repl-input-' + wid + '" style="display:none">' +
-          '<span style="color:#5a8;font-family:monospace;font-size:13px;margin-right:4px">›</span>' +
-          '<input type="text" id="repl-in-' + wid + '" placeholder="nginx.workerIdx">' +
-          '<button class="repl-reconnect" title="Reconnect" onclick="replConnectWorker(' + wid + ')">↺</button>' +
         '</div>';
     document.getElementById('repl-body').appendChild(pane);
 
@@ -447,7 +448,10 @@ function replLog(wid, text, cls) {
     var line = document.createElement('div');
     line.className = 'repl-line ' + (cls || '');
     line.textContent = text;
-    out.appendChild(line);
+    /* Insert before the input row so it stays last */
+    var inputRow = document.getElementById('repl-input-' + wid);
+    if (inputRow) out.insertBefore(line, inputRow);
+    else          out.appendChild(line);
     out.scrollTop = out.scrollHeight;
 }
 
@@ -586,6 +590,9 @@ function replConnectWorker(targetWid) {
         if (inputRow) inputRow.style.display = '';
 
         replLog(targetWid, '— connected to worker ' + targetWid, 'info');
+        /* Scroll so the input line is visible */
+        var out = document.getElementById('repl-out-' + targetWid);
+        if (out) out.scrollTop = out.scrollHeight;
 
         var inp = document.getElementById('repl-in-' + targetWid);
         if (inp && activeTab === targetWid) inp.focus();
