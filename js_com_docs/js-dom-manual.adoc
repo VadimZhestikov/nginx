@@ -2259,8 +2259,19 @@ a line-by-line read loop.  Each line received is evaluated by
   (delimited by `\n`) is passed to `fn(line)`.
 
 | `nginx.repl._writeFd(fd, str)`
-| Write raw bytes to a file descriptor.  Used internally to send
+| Write a UTF-8 string to a file descriptor.  Used internally to send
   prompt and result lines.
+
+| `nginx.repl.listenRaw(fd, onData)`
+| Install a raw-data read handler on `fd`.  For each TCP segment received,
+  `onData(chunk)` is called with a `Uint8Array` of the received bytes.
+  Unlike `listen()`, data is _not_ split on newlines — suitable for binary
+  protocols (e.g. WebSocket) where frame boundaries are in the header.
+
+| `nginx.repl._writeFdRaw(fd, data)`
+| Write the raw bytes of `data` (`Uint8Array` or `ArrayBuffer`) to `fd`
+  without UTF-8 encoding.  Required for writing binary frame headers that
+  contain bytes in the range 0x80–0xFF.
 
 | `req.hijack()`
 | Detach the HTTP connection from nginx's connection pool and return
@@ -2374,6 +2385,133 @@ protect it with a firewall or `ngx_http_access_module` `allow`/`deny` rules.
 
 
 == Applications
+
+=== admin-shell / admin_UI_demo_v2
+
+`js_pilgrim_apps/admin-shell/` and `js_pilgrim_apps/admin_UI_demo_v2/` together
+form the browser-based admin UI for the nginx JS runtime (JS-Pilgrim P19).
+
+==== admin-shell
+
+The core backend.  `admin-shell.js` performs the HTTP→WebSocket upgrade, serves
+JSON-RPC 2.0 over text frames, and relays cross-worker evals through the
+`repl-relay.js` SharedWorker.  The classic SPA (`static/index.html`) exposes
+four panels: Plugins, Shared State, Eval, and Upstreams.
+
+Load it from your `init.js`:
+
+[source,javascript]
+----
+nginx.use('./js_pilgrim_apps/admin-shell');
+----
+
+Add two locations to your server block:
+
+[source,nginx]
+----
+location /admin/ {
+    alias js_pilgrim_apps/admin-shell/static/;
+    try_files $uri $uri/ /admin/index.html;
+}
+location /admin/ws { }
+----
+
+Open `http://localhost:8080/admin/`.
+
+==== admin_UI_demo_v2
+
+A full-featured demo app built on the admin-shell backend.
+
+[cols="1,3"]
+|===
+| Panel | Description
+
+| nginx.* Tree Browser (left)
+| Evaluates any JS expression and renders the result as an expandable tree.
+  Uses `tree.get` (root metadata) and `tree.getChildren` (children in one
+  round-trip) JSON-RPC methods.
+
+| Per-Worker REPL (right)
+| One tab per worker, each pinned to its worker via `?w=N` on the WebSocket
+  URL.  Cross-worker evals are relayed transparently through `repl-relay.js`.
+  Tab supports Tab-completion (columns for ambiguous matches) and command
+  history (↑/↓).  `console.log/warn/error` output captured during eval is
+  shown before the result.
+|===
+
+Quick start:
+
+[source,shell]
+----
+objs/nginx -p . -c js_pilgrim_apps/admin_UI_demo_v2/nginx.conf
+open http://localhost:8080/
+----
+
+The demo config runs 4 workers and defines three upstream groups
+(`web_backend`, `api_backend`, `cache_backend`).  Two plugins are loaded:
+
+* `banner` — appends `X-Powered-By` and `X-Request-Id` (global counter via
+  `nginx.shared`) to every response.
+* `metrics` — increments per-location request counters in `nginx.shared`
+  (keys: `metrics:<path>:requests`).
+
+==== Per-worker `?w=N` targeting and cross-worker relay
+
+[source]
+----
+ws://host/admin/ws?w=2   ←  browser connects to any worker, but targets worker 2
+
+Worker 0 (accepted the upgrade)
+    │  relay.postMessage({type:'eval', targetWorker:2, ...})
+    ▼
+repl-relay SharedWorker (master-process pthread)
+    │  port[2].postMessage({type:'eval', ...})
+    ▼
+Worker 2  →  nginx.repl.eval(code) + captureConsole()
+    │  relay.postMessage({type:'result', replyWorker:0, ...})
+    ▼
+repl-relay SharedWorker
+    │  port[0].postMessage({type:'result', ...})
+    ▼
+Worker 0  →  nginx.repl._writeFdRaw(fd, wsFrame)
+    ▼
+Browser  ←  JSON-RPC response
+----
+
+The SharedWorker pthread is started *after* daemonisation (via the
+`ngx_js_sw_threads_start` function pointer called from
+`ngx_master_process_cycle`) to avoid being lost across the daemon double-fork.
+
+==== JSON-RPC methods added by P19
+
+In addition to the base methods (`shared.*`, `plugins.list`, `upstreams.list`),
+the admin-shell backend exposes:
+
+[cols="2,2,3"]
+|===
+| Method | Params | Result
+
+| `nginx.eval`
+| `[code]`
+| `{eval:{status,value?,message?,stack?}, logs:[{lvl,msg}]}`.
+  Cross-worker evals are relayed asynchronously.
+
+| `worker.id`
+| (none)
+| Integer — the `targetWorker` index for this connection.
+
+| `repl.complete`
+| `[code]`
+| `{completions:[...], prefix}` — Tab-completion for the current token.
+
+| `tree.get`
+| `[expr]`
+| `{kind, value?, keys?, length?, name?}` — type metadata for `eval(expr)`.
+
+| `tree.getChildren`
+| `[expr]`
+| `[{key, info}, ...]` — all children in one round-trip (arrays capped at 200).
+|===
 
 === admin_snapshot_rollback
 

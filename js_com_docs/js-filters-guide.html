@@ -460,7 +460,7 @@ code {
 <li><a href="#_location_filter_api">2. Location filter API</a>
 <ul class="sectlevel2">
 <li><a href="#_location_addheaderfilterfn_opts">2.1. <code>location.addHeaderFilter(fn [, opts])</code></a></li>
-<li><a href="#_location_addbodyfiltermode_fn_opts">2.2. <code>location.addBodyFilter(mode, fn [, opts])</code></a></li>
+<li><a href="#_location_addbodyfiltermode_fn_opts">2.2. <code>location.addBodyFilter([mode,] fn [, opts])</code></a></li>
 <li><a href="#_location_removeheaderfilterref">2.3. <code>location.removeHeaderFilter(ref)</code></a></li>
 <li><a href="#_location_removebodyfilterref">2.4. <code>location.removeBodyFilter(ref)</code></a></li>
 <li><a href="#_location_getheaderfilterref">2.5. <code>location.getHeaderFilter(ref)</code></a></li>
@@ -534,9 +534,9 @@ mutate response headers in place.  The filter is always synchronous.</p>
 </li>
 <li>
 <p><strong>Body filters</strong> — called for each piece of the response body (streaming
-modes) or once on the complete body (whole-body modes).  Four execution
-modes cover every combination of sync/async and chunk/whole:
-<code>wholeBodySync</code>, <code>wholeBodyAsync</code>, <code>streamingSync</code>, <code>streamingAsync</code>.</p>
+modes) or once on the complete body (whole-body modes).  Five execution
+modes are available: <code>wholeBodySync</code>, <code>wholeBodyAsync</code>, <code>streamingSync</code>,
+<code>streamingAsync</code>, and <code>generator</code> (async generator function).</p>
 </li>
 </ul>
 </div>
@@ -587,13 +587,17 @@ is ignored.  <code>req</code> is a <code>NginxRequest</code> — header mutation
 </div>
 </div>
 <div class="sect2">
-<h3 id="_location_addbodyfiltermode_fn_opts">2.2. <code>location.addBodyFilter(mode, fn [, opts])</code></h3>
+<h3 id="_location_addbodyfiltermode_fn_opts">2.2. <code>location.addBodyFilter([mode,] fn [, opts])</code></h3>
 <div class="paragraph">
 <p>Appends a body-filter callback to the location&#8217;s body filter list.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">location.addBodyFilter(mode, fn)
+<pre class="highlightjs highlight"><code class="language-js hljs" data-lang="js">// Single-argument form — auto-detects async generator functions:
+location.addBodyFilter(asyncGenFn)
+
+// Two/three-argument form — explicit mode string:
+location.addBodyFilter(mode, fn)
 location.addBodyFilter(mode, fn, opts)</code></pre>
 </div>
 </div>
@@ -601,7 +605,7 @@ location.addBodyFilter(mode, fn, opts)</code></pre>
 <dl>
 <dt class="hdlist1"><code>mode</code></dt>
 <dd>
-<p><strong>Required</strong> string — one of:</p>
+<p><strong>Required</strong> string in the two-argument form — one of:</p>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 33.3333%;">
@@ -647,12 +651,25 @@ Called once per nginx body-filter call.  The chunk is transformed via the
 drops it; <code>undefined</code> (or any non-string) passes the original chunk through.
 If the Promise rejects, the connection is closed with an error.</p></td>
 </tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>'generator'</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Async generator transform. <br>
+Signature: <code>async function*(chunks, req)</code><br>
+<code>chunks</code> is a single-element iterable <code>[wholeBodyString]</code>.  Iterate with
+<code>for await (var chunk of chunks)</code> to receive the complete buffered body.
+<code>yield</code> any number of strings; they are concatenated to form the new body.
+The generator may <code>await</code> between yields.  When omitted, the single-argument
+form <code>addBodyFilter(asyncGenFn)</code> auto-detects this mode from the function
+type (<code>AsyncGeneratorFunction</code>).</p></td>
+</tr>
 </tbody>
 </table>
 </dd>
 <dt class="hdlist1"><code>fn</code></dt>
 <dd>
-<p><strong>Required.</strong>  The filter callback; signature depends on <code>mode</code>.</p>
+<p><strong>Required.</strong>  The filter callback; signature depends on <code>mode</code>.  In the
+single-argument form, <code>fn</code> must be an async generator function
+(<code>async function*</code>).</p>
 </dd>
 <dt class="hdlist1"><code>opts</code></dt>
 <dd>
@@ -661,8 +678,8 @@ If the Promise rejects, the connection is closed with an error.</p></td>
 </dl>
 </div>
 <div class="paragraph">
-<p>Returns <code>undefined</code>.  Throws <code>TypeError</code> if <code>mode</code> is invalid or <code>fn</code> is not
-a function.</p>
+<p>Returns <code>undefined</code>.  Throws <code>TypeError</code> if <code>mode</code> is invalid, <code>fn</code> is not
+a function, or the single-argument form is called with a non-async-generator.</p>
 </div>
 </div>
 <div class="sect2">
@@ -1594,7 +1611,7 @@ name).</p></td>
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-23 08:49:08 -0700
+Last updated 2026-03-30 16:39:35 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

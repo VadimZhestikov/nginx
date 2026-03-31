@@ -598,13 +598,21 @@ code {
 </li>
 <li><a href="#_applications">17. Applications</a>
 <ul class="sectlevel2">
-<li><a href="#_admin_snapshot_rollback">17.1. admin_snapshot_rollback</a>
+<li><a href="#_admin_shell_admin_ui_demo_v2">17.1. admin-shell / admin_UI_demo_v2</a>
 <ul class="sectlevel3">
-<li><a href="#_concept">17.1.1. Concept</a></li>
-<li><a href="#_admin_http_api">17.1.2. Admin HTTP API</a></li>
-<li><a href="#_javascript_api_nginx_admin">17.1.3. JavaScript API (<code>nginx.admin</code>)</a></li>
-<li><a href="#_location_clearhandler">17.1.4. <code>location.clearHandler()</code></a></li>
-<li><a href="#_running_the_demo">17.1.5. Running the Demo</a></li>
+<li><a href="#_admin_shell">17.1.1. admin-shell</a></li>
+<li><a href="#_admin_ui_demo_v2">17.1.2. admin_UI_demo_v2</a></li>
+<li><a href="#_per_worker_wn_targeting_and_cross_worker_relay">17.1.3. Per-worker <code>?w=N</code> targeting and cross-worker relay</a></li>
+<li><a href="#_json_rpc_methods_added_by_p19">17.1.4. JSON-RPC methods added by P19</a></li>
+</ul>
+</li>
+<li><a href="#_admin_snapshot_rollback">17.2. admin_snapshot_rollback</a>
+<ul class="sectlevel3">
+<li><a href="#_concept">17.2.1. Concept</a></li>
+<li><a href="#_admin_http_api">17.2.2. Admin HTTP API</a></li>
+<li><a href="#_javascript_api_nginx_admin">17.2.3. JavaScript API (<code>nginx.admin</code>)</a></li>
+<li><a href="#_location_clearhandler">17.2.4. <code>location.clearHandler()</code></a></li>
+<li><a href="#_running_the_demo">17.2.5. Running the Demo</a></li>
 </ul>
 </li>
 </ul>
@@ -3590,8 +3598,21 @@ a line-by-line read loop.  Each line received is evaluated by
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl._writeFd(fd, str)</code></p></td>
-<td class="tableblock halign-left valign-top"><p class="tableblock">Write raw bytes to a file descriptor.  Used internally to send
+<td class="tableblock halign-left valign-top"><p class="tableblock">Write a UTF-8 string to a file descriptor.  Used internally to send
   prompt and result lines.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl.listenRaw(fd, onData)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Install a raw-data read handler on <code>fd</code>.  For each TCP segment received,
+  <code>onData(chunk)</code> is called with a <code>Uint8Array</code> of the received bytes.
+  Unlike <code>listen()</code>, data is <em>not</em> split on newlines — suitable for binary
+  protocols (e.g. WebSocket) where frame boundaries are in the header.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.repl._writeFdRaw(fd, data)</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Write the raw bytes of <code>data</code> (<code>Uint8Array</code> or <code>ArrayBuffer</code>) to <code>fd</code>
+  without UTF-8 encoding.  Required for writing binary frame headers that
+  contain bytes in the range 0x80–0xFF.</p></td>
 </tr>
 <tr>
 <td class="tableblock halign-left valign-top"><p class="tableblock"><code>req.hijack()</code></p></td>
@@ -3739,14 +3760,190 @@ protect it with a firewall or <code>ngx_http_access_module</code> <code>allow</c
 <h2 id="_applications">17. Applications</h2>
 <div class="sectionbody">
 <div class="sect2">
-<h3 id="_admin_snapshot_rollback">17.1. admin_snapshot_rollback</h3>
+<h3 id="_admin_shell_admin_ui_demo_v2">17.1. admin-shell / admin_UI_demo_v2</h3>
+<div class="paragraph">
+<p><code>js_pilgrim_apps/admin-shell/</code> and <code>js_pilgrim_apps/admin_UI_demo_v2/</code> together
+form the browser-based admin UI for the nginx JS runtime (JS-Pilgrim P19).</p>
+</div>
+<div class="sect3">
+<h4 id="_admin_shell">17.1.1. admin-shell</h4>
+<div class="paragraph">
+<p>The core backend.  <code>admin-shell.js</code> performs the HTTP→WebSocket upgrade, serves
+JSON-RPC 2.0 over text frames, and relays cross-worker evals through the
+<code>repl-relay.js</code> SharedWorker.  The classic SPA (<code>static/index.html</code>) exposes
+four panels: Plugins, Shared State, Eval, and Upstreams.</p>
+</div>
+<div class="paragraph">
+<p>Load it from your <code>init.js</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">nginx.use('./js_pilgrim_apps/admin-shell');</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Add two locations to your server block:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-nginx hljs" data-lang="nginx">location /admin/ {
+    alias js_pilgrim_apps/admin-shell/static/;
+    try_files $uri $uri/ /admin/index.html;
+}
+location /admin/ws { }</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Open <code><a href="http://localhost:8080/admin/" class="bare">http://localhost:8080/admin/</a></code>.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_admin_ui_demo_v2">17.1.2. admin_UI_demo_v2</h4>
+<div class="paragraph">
+<p>A full-featured demo app built on the admin-shell backend.</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 75%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Panel</th>
+<th class="tableblock halign-left valign-top">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">nginx.* Tree Browser (left)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Evaluates any JS expression and renders the result as an expandable tree.
+  Uses <code>tree.get</code> (root metadata) and <code>tree.getChildren</code> (children in one
+  round-trip) JSON-RPC methods.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Per-Worker REPL (right)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">One tab per worker, each pinned to its worker via <code>?w=N</code> on the WebSocket
+  URL.  Cross-worker evals are relayed transparently through <code>repl-relay.js</code>.
+  Tab supports Tab-completion (columns for ambiguous matches) and command
+  history (↑/↓).  <code>console.log/warn/error</code> output captured during eval is
+  shown before the result.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p>Quick start:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell">objs/nginx -p . -c js_pilgrim_apps/admin_UI_demo_v2/nginx.conf
+open http://localhost:8080/</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The demo config runs 4 workers and defines three upstream groups
+(<code>web_backend</code>, <code>api_backend</code>, <code>cache_backend</code>).  Two plugins are loaded:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p><code>banner</code> — appends <code>X-Powered-By</code> and <code>X-Request-Id</code> (global counter via
+<code>nginx.shared</code>) to every response.</p>
+</li>
+<li>
+<p><code>metrics</code> — increments per-location request counters in <code>nginx.shared</code>
+(keys: <code>metrics:&lt;path&gt;:requests</code>).</p>
+</li>
+</ul>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_per_worker_wn_targeting_and_cross_worker_relay">17.1.3. Per-worker <code>?w=N</code> targeting and cross-worker relay</h4>
+<div class="listingblock">
+<div class="content">
+<pre class="highlightjs highlight"><code class="language-none hljs">ws://host/admin/ws?w=2   ←  browser connects to any worker, but targets worker 2
+
+Worker 0 (accepted the upgrade)
+    │  relay.postMessage({type:'eval', targetWorker:2, ...})
+    ▼
+repl-relay SharedWorker (master-process pthread)
+    │  port[2].postMessage({type:'eval', ...})
+    ▼
+Worker 2  →  nginx.repl.eval(code) + captureConsole()
+    │  relay.postMessage({type:'result', replyWorker:0, ...})
+    ▼
+repl-relay SharedWorker
+    │  port[0].postMessage({type:'result', ...})
+    ▼
+Worker 0  →  nginx.repl._writeFdRaw(fd, wsFrame)
+    ▼
+Browser  ←  JSON-RPC response</code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The SharedWorker pthread is started <strong>after</strong> daemonisation (via the
+<code>ngx_js_sw_threads_start</code> function pointer called from
+<code>ngx_master_process_cycle</code>) to avoid being lost across the daemon double-fork.</p>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_json_rpc_methods_added_by_p19">17.1.4. JSON-RPC methods added by P19</h4>
+<div class="paragraph">
+<p>In addition to the base methods (<code>shared.*</code>, <code>plugins.list</code>, <code>upstreams.list</code>),
+the admin-shell backend exposes:</p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 28.5714%;">
+<col style="width: 28.5714%;">
+<col style="width: 42.8572%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Method</th>
+<th class="tableblock halign-left valign-top">Params</th>
+<th class="tableblock halign-left valign-top">Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>nginx.eval</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>[code]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>{eval:{status,value?,message?,stack?}, logs:[{lvl,msg}]}</code>.
+  Cross-worker evals are relayed asynchronously.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>worker.id</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">(none)</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Integer — the <code>targetWorker</code> index for this connection.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>repl.complete</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>[code]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>{completions:[&#8230;&#8203;], prefix}</code> — Tab-completion for the current token.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>tree.get</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>[expr]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>{kind, value?, keys?, length?, name?}</code> — type metadata for <code>eval(expr)</code>.</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>tree.getChildren</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>[expr]</code></p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock"><code>[{key, info}, &#8230;&#8203;]</code> — all children in one round-trip (arrays capped at 200).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_admin_snapshot_rollback">17.2. admin_snapshot_rollback</h3>
 <div class="paragraph">
 <p><code>js_com_apps/admin_snapshot_rollback/</code> is a self-contained reference
 application that demonstrates live configuration management without an nginx
 restart.</p>
 </div>
 <div class="sect3">
-<h4 id="_concept">17.1.1. Concept</h4>
+<h4 id="_concept">17.2.1. Concept</h4>
 <div class="paragraph">
 <p>Operators mutate the live nginx config through the JS COM API (upstream peer
 weights, location handlers, added/removed servers).  After a successful
@@ -3756,7 +3953,7 @@ applied, rolled back, pinned, and compacted.</p>
 </div>
 </div>
 <div class="sect3">
-<h4 id="_admin_http_api">17.1.2. Admin HTTP API</h4>
+<h4 id="_admin_http_api">17.2.2. Admin HTTP API</h4>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 33.3333%;">
@@ -3805,7 +4002,7 @@ applied, rolled back, pinned, and compacted.</p>
 </table>
 </div>
 <div class="sect3">
-<h4 id="_javascript_api_nginx_admin">17.1.3. JavaScript API (<code>nginx.admin</code>)</h4>
+<h4 id="_javascript_api_nginx_admin">17.2.3. JavaScript API (<code>nginx.admin</code>)</h4>
 <table class="tableblock frame-all grid-all stretch">
 <colgroup>
 <col style="width: 40%;">
@@ -3858,7 +4055,7 @@ applied, rolled back, pinned, and compacted.</p>
 </table>
 </div>
 <div class="sect3">
-<h4 id="_location_clearhandler">17.1.4. <code>location.clearHandler()</code></h4>
+<h4 id="_location_clearhandler">17.2.4. <code>location.clearHandler()</code></h4>
 <div class="paragraph">
 <p><code>location.clearHandler()</code> is a low-level primitive used internally by the
 admin application to undo handler installations during rollback.</p>
@@ -3878,7 +4075,7 @@ no-op.  After <code>clearHandler()</code>, <code>location.hasHandler</code> retu
 </div>
 </div>
 <div class="sect3">
-<h4 id="_running_the_demo">17.1.5. Running the Demo</h4>
+<h4 id="_running_the_demo">17.2.5. Running the Demo</h4>
 <div class="listingblock">
 <div class="content">
 <pre class="highlightjs highlight"><code class="language-shell hljs" data-lang="shell">cd js_com_apps/admin_snapshot_rollback
@@ -6501,7 +6698,7 @@ NginxStreamSSL  (streamServer.ssl  in stream context) — same properties plus:
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-03-27 12:31:44 -0700
+Last updated 2026-03-31 07:14:39 -0700
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.18.3/highlight.min.js"></script>

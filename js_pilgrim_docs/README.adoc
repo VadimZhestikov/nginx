@@ -217,11 +217,13 @@ a browser DevTools tab).
 | P19 ✓
 | <<p19-admin-shell.adoc#,Admin shell>>
 | Browser-based admin UI using `nginx.repl` and WebSocket (JSON-RPC 2.0).
-  Four panels: Plugins (`nginx.plugins`), Shared State (`nginx.shared`),
-  Eval (`nginx.repl.eval`), Upstreams.  Built on two new primitives:
-  `nginx.repl.listenRaw(fd, onData)` (binary chunk delivery) and
-  `nginx.repl._writeFdRaw(fd, Uint8Array)` (raw byte write).
-  `nginx.plugins` array tracks all `nginx.use()` loads.
+  Classic shell: four panels (Plugins, Shared State, Eval, Upstreams).
+  Admin UI v2: live `nginx.*` object tree browser + per-worker REPL with
+  cross-worker eval relay via `repl-relay.js` SharedWorker (`?w=N`
+  targeting).  Built on two new primitives: `nginx.repl.listenRaw(fd,
+  onData)` (binary chunk delivery) and `nginx.repl._writeFdRaw(fd,
+  Uint8Array)` (raw byte write).  `nginx.plugins` array tracks all
+  `nginx.use()` loads.
 |===
 
 == Hook Cancellation Model
@@ -340,8 +342,17 @@ Hooks that do not call `next()` auto-advance (backward-compatible).
   `t/js_admin_compact.t`, `t/js_admin_struct.t`, `t/js_admin_edge.t`.
 
 | `js_pilgrim_apps/admin-shell/`
-| Browser-based admin UI (P19).  WebSocket JSON-RPC server in JS; static
-  SPA (`static/index.html`) with Plugins, Shared State, Eval, and Upstreams
-  panels.  Reference config: `nginx.conf`.
+| WebSocket JSON-RPC backend (P19).  `admin-shell.js` handles the HTTP
+  upgrade, dispatches JSON-RPC 2.0 methods, and relays cross-worker evals
+  through `repl-relay.js`.  Classic SPA (`static/index.html`) with
+  Plugins, Shared State, Eval, and Upstreams panels.
   Test: `t/js_pilgrim_p19_admin_shell.t`.
+
+| `js_pilgrim_apps/admin_UI_demo_v2/`
+| Full-featured demo app built on the admin-shell backend.  Left panel:
+  live `nginx.*` object tree browser — expandable view of any JS
+  expression.  Right panel: per-worker REPL — one tab per worker, each
+  pinned to its worker via `?w=N`.  Includes two plugins (`banner`,
+  `metrics`) and three upstream groups.
+  Run: `objs/nginx -p . -c js_pilgrim_apps/admin_UI_demo_v2/nginx.conf`
 |===
