@@ -244,36 +244,25 @@ function treeContainerId(expr) {
 
 function treeLoadChildren(expr, info, depth) {
     var cid = treeContainerId(expr);
-    var keys = (info.kind === 'array')
-        ? Array.from({length: Math.min(info.length, 200)}, function(_,i){ return String(i); })
-        : (info.keys || []);
-
-    if (keys.length === 0) {
+    /* One round-trip fetches all children — no N-RPC fan-out, no counting */
+    sharedRpc('tree.getChildren', [expr], function(err, children) {
         var el = document.getElementById(cid);
-        if (el) el.innerHTML = '<span class="tree-loading dim">empty</span>';
-        return;
-    }
-
-    var loaded = 0;
-    var childInfos = {};
-
-    keys.forEach(function(k) {
-        var childExpr = expr + '[' + JSON.stringify(k) + ']';
-        sharedRpc('tree.get', [childExpr], function(err, result) {
-            childInfos[k] = err ? null : result;
-            if (result) { treeCache[childExpr] = result; }
-            loaded++;
-            if (loaded === keys.length) {
-                var el = document.getElementById(cid);
-                if (!el) return;
-                var html = '';
-                keys.forEach(function(k2) {
-                    var ce = expr + '[' + JSON.stringify(k2) + ']';
-                    html += treeNodeHtml(ce, k2, childInfos[k2], depth);
-                });
-                el.innerHTML = html;
-            }
+        if (!el) return;
+        if (err) {
+            el.innerHTML = '<span class="tree-err">' + esc(err.message || 'error') + '</span>';
+            return;
+        }
+        if (!children || children.length === 0) {
+            el.innerHTML = '<span class="tree-loading dim">empty</span>';
+            return;
+        }
+        var html = '';
+        children.forEach(function(child) {
+            var ce = expr + '[' + JSON.stringify(child.key) + ']';
+            treeCache[ce] = child.info;
+            html += treeNodeHtml(ce, child.key, child.info, depth);
         });
+        el.innerHTML = html;
     });
 }
 

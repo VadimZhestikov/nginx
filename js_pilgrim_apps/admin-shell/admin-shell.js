@@ -353,6 +353,36 @@ function dispatch(msg, fd) {
             return rpcOk(id, treeNodeInfo(val));
         }
 
+        case 'tree.getChildren': {
+            /* Returns [{key, info}] for all children of expr in one round-trip.
+             * Avoids the N-RPC fan-out that could stall if any response is lost. */
+            var expr = String(params[0] || 'nginx');
+            var val;
+            try {
+                val = (new Function('return (' + expr + ')'))();
+            } catch (e) {
+                return rpcError(id, -32000, 'Eval error: ' + String(e));
+            }
+            var info     = treeNodeInfo(val);
+            var children = [];
+            if (info.kind === 'array') {
+                var len = Math.min(info.length, 200);
+                for (var ci = 0; ci < len; ci++) {
+                    var cv;
+                    try { cv = val[ci]; } catch (e) { cv = undefined; }
+                    children.push({ key: String(ci), info: treeNodeInfo(cv) });
+                }
+            } else if (info.kind === 'object' && info.keys) {
+                for (var ci = 0; ci < info.keys.length; ci++) {
+                    var ck = info.keys[ci];
+                    var cv;
+                    try { cv = val[ck]; } catch (e) { cv = undefined; }
+                    children.push({ key: ck, info: treeNodeInfo(cv) });
+                }
+            }
+            return rpcOk(id, children);
+        }
+
         case 'upstreams.list': {
             var upstreams = nginx.http.upstreams;
             var list = [];
