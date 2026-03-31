@@ -392,6 +392,11 @@ function replMakePane(wid) {
     /* Enter submits; ArrowUp/Down navigate history */
     var inp = document.getElementById('repl-in-' + wid);
     inp.addEventListener('keydown', function(e) {
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            replComplete(wid);
+            return;
+        }
         if (e.key === 'Enter') {
             replRun(wid);
             return;
@@ -454,6 +459,36 @@ function replRpc(wid, method, params, cb) {
     var id = ++w.seq;
     w.pending[id] = cb || function(){};
     w.ws.send(JSON.stringify({jsonrpc:'2.0',id:id,method:method,params:params||[]}));
+}
+
+function replComplete(wid) {
+    var inp = document.getElementById('repl-in-' + wid);
+    if (!inp) return;
+    var code = inp.value;
+    replRpc(wid, 'repl.complete', [code], function(err, res) {
+        if (err || !res || res.completions.length === 0) return;
+        var completions = res.completions;
+        var prefix      = res.prefix;
+        var base        = code.slice(0, code.length - prefix.length);
+
+        if (completions.length === 1) {
+            /* Unique — complete inline */
+            inp.value = base + completions[0];
+        } else {
+            /* Multiple — fill common prefix, print suggestion list */
+            var common = completions[0];
+            for (var i = 1; i < completions.length; i++) {
+                while (completions[i].slice(0, common.length) !== common) {
+                    common = common.slice(0, -1);
+                }
+            }
+            if (common.length > prefix.length) {
+                inp.value = base + common;
+            }
+            replLog(wid, completions.join('   '), 'info');
+        }
+        inp.selectionStart = inp.selectionEnd = inp.value.length;
+    });
 }
 
 function replRun(wid) {

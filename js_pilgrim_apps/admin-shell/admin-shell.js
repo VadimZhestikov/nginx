@@ -342,6 +342,63 @@ function dispatch(msg, fd) {
         case 'worker.id':
             return rpcOk(id, targetWorker);
 
+        case 'repl.complete': {
+            /* Walk backwards to find the last unbracketed '.' */
+            var code   = String(params[0] || '');
+            var dotIdx = -1;
+            var depth  = 0;
+            for (var ci = code.length - 1; ci >= 0; ci--) {
+                var ch = code[ci];
+                if      (ch === ']' || ch === ')') { depth++; }
+                else if (ch === '[' || ch === '(') { depth--; }
+                else if (ch === '.' && depth === 0) { dotIdx = ci; break; }
+            }
+
+            var objExpr = (dotIdx >= 0) ? code.slice(0, dotIdx) : null;
+            var prefix  = (dotIdx >= 0) ? code.slice(dotIdx + 1) : code;
+            var names   = [];
+
+            if (objExpr !== null) {
+                var cobj;
+                try { cobj = (new Function('return (' + objExpr + ')'))(); }
+                catch (e) { cobj = null; }
+
+                if (cobj !== null && cobj !== undefined) {
+                    var seen = Object.create(null);
+                    /* Own properties first */
+                    Object.getOwnPropertyNames(cobj).forEach(function(k) {
+                        if (!(k in seen) && k.slice(0, prefix.length) === prefix) {
+                            seen[k] = true; names.push(k);
+                        }
+                    });
+                    /* Prototype chain (stop before Object.prototype) */
+                    var cur = Object.getPrototypeOf(cobj);
+                    while (cur && cur !== Object.prototype) {
+                        Object.getOwnPropertyNames(cur).forEach(function(k) {
+                            if (!(k in seen) && k !== '__proto__' &&
+                                k !== 'constructor' &&
+                                k.slice(0, prefix.length) === prefix) {
+                                seen[k] = true; names.push(k);
+                            }
+                        });
+                        cur = Object.getPrototypeOf(cur);
+                    }
+                    names.sort();
+                }
+            } else {
+                /* Top-level: nginx.* plus common globals */
+                var globals = [
+                    'nginx', 'JSON', 'Math', 'Object', 'Array', 'String',
+                    'Number', 'Boolean', 'Promise', 'undefined', 'null',
+                    'true', 'false'
+                ];
+                globals.forEach(function(g) {
+                    if (g.slice(0, prefix.length) === prefix) names.push(g);
+                });
+            }
+            return rpcOk(id, { completions: names, prefix: prefix });
+        }
+
         case 'tree.get': {
             var expr = String(params[0] || 'nginx');
             var val;
