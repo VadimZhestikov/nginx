@@ -92,6 +92,8 @@ typedef struct {
 typedef struct ngx_js_wt_sw_s  ngx_js_wt_sw_t;
 struct ngx_js_wt_sw_s {
     int               worker_fd;  /* channel fd to SW thread (or -1 if dead) */
+    int               wake_fd;    /* write end of SW wake pipe (or -1) */
+    ngx_uint_t        wi;         /* channel index = ngx_worker at connect time */
     JSValue           on_message;
     JSValue           js_obj;     /* strong ref — prevents premature GC */
     ngx_js_wt_sw_t  **list;       /* &tctx->sw_list; for unlink in finalizer */
@@ -142,6 +144,10 @@ ngx_js_wt_sw_finalizer(JSRuntime *rt, JSValue val)
 
     if (sw->worker_fd >= 0) {
         close(sw->worker_fd);
+    }
+
+    if (sw->wake_fd >= 0) {
+        close(sw->wake_fd);
     }
 
     ngx_free(sw);
@@ -204,7 +210,8 @@ ngx_js_wt_sw_post_message(JSContext *ctx, JSValueConst this_val,
     }
     js_free(ctx, qjs_sab);
 
-    ngx_js_sw_wt_send(sw->worker_fd, buf, (uint32_t) qjs_len,
+    ngx_js_sw_wt_send(sw->worker_fd, sw->wake_fd, sw->wi,
+                      buf, (uint32_t) qjs_len,
                       sab_tab, (uint32_t) sab_tab_len);
 
     return JS_UNDEFINED;
@@ -268,7 +275,7 @@ ngx_js_wt_sw_ctor(JSContext *ctx, JSValueConst new_target,
     JSValue                obj;
     const char            *url_cstr;
     size_t                 url_len;
-    int                    worker_fd;
+    int                    worker_fd, wake_fd;
 
     tctx = JS_GetContextOpaque(ctx);
     if (tctx == NULL) {
@@ -287,7 +294,9 @@ ngx_js_wt_sw_ctor(JSContext *ctx, JSValueConst new_target,
     }
 
     /* Blocking acquire: sends cmd to master manager, waits for reply */
-    worker_fd = ngx_js_sw_acquire_channel(url_cstr, url_len, ngx_worker);
+    wake_fd   = -1;
+    worker_fd = ngx_js_sw_acquire_channel(url_cstr, url_len, ngx_worker,
+                                          &wake_fd);
     JS_FreeCString(ctx, url_cstr);
 
     if (worker_fd < 0) {
@@ -298,10 +307,15 @@ ngx_js_wt_sw_ctor(JSContext *ctx, JSValueConst new_target,
     sw = ngx_alloc(sizeof(ngx_js_wt_sw_t), ngx_cycle->log);
     if (sw == NULL) {
         close(worker_fd);
+        if (wake_fd >= 0) {
+            close(wake_fd);
+        }
         return JS_ThrowInternalError(ctx, "SharedWorker: alloc failed");
     }
 
     sw->worker_fd  = worker_fd;
+    sw->wake_fd    = wake_fd;
+    sw->wi         = ngx_worker;
     sw->on_message = JS_UNDEFINED;
     sw->js_obj     = JS_UNDEFINED;  /* filled in after obj is created */
     sw->list       = &tctx->sw_list;
@@ -312,6 +326,9 @@ ngx_js_wt_sw_ctor(JSContext *ctx, JSValueConst new_target,
     if (JS_IsException(obj)) {
         tctx->sw_list = sw->next;
         close(worker_fd);
+        if (wake_fd >= 0) {
+            close(wake_fd);
+        }
         ngx_free(sw);
         return obj;
     }

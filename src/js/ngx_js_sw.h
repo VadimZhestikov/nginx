@@ -59,15 +59,17 @@ ngx_int_t  ngx_js_sw_install(JSContext *ctx);
  * Returns the worker_fd on success, -1 on failure.
  */
 int  ngx_js_sw_acquire_channel(const char *url, size_t url_len,
-    ngx_uint_t worker_idx);
+    ngx_uint_t worker_idx, int *wake_fd_out);
 
 /*
  * Send a DATA message on a SharedWorker channel fd.
  * Used by JS Worker threads to call sw.postMessage().
  * Takes ownership of buf and sab_tab (freed by channel_send internals).
+ * wake_fd is the write end of the SW's wake pipe (from acquire_channel);
+ * wi is the channel index (= ngx_worker) to encode in the wake byte.
  */
-void  ngx_js_sw_wt_send(int worker_fd, uint8_t *buf, uint32_t len,
-    uint8_t **sab_tab, uint32_t n_sabs);
+void  ngx_js_sw_wt_send(int worker_fd, int wake_fd, ngx_uint_t wi,
+    uint8_t *buf, uint32_t len, uint8_t **sab_tab, uint32_t n_sabs);
 
 /*
  * Receive the next message from a SharedWorker channel fd (non-blocking).

@@ -1837,7 +1837,7 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
     ngx_js_sw_channel_t       *ch;
     ngx_js_sw_worker_slot_t   *ws_slot;
     int                        reply_fds[2];
-    int                        recv_fd;
+    int                        recv_fd, recv_wake_fd;
     uint32_t                   url_len32, worker_idx32;
     uint8_t                   *cmdbuf;
     uint8_t                    status;
@@ -1848,7 +1848,7 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
         struct cmsghdr  hdr;
     } cmsg_snd;
     union {
-        char            buf[CMSG_SPACE(sizeof(int))];
+        char            buf[CMSG_SPACE(2 * sizeof(int))];
         struct cmsghdr  hdr;
     } cmsg_rcv;
     struct cmsghdr            *cmh;
@@ -1923,15 +1923,24 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
     n = recvmsg(reply_fds[0], &msg, 0);
     close(reply_fds[0]);
 
-    recv_fd = -1;
+    recv_fd      = -1;
+    recv_wake_fd = -1;
     if (n >= 1 && status == 0) {
         cmh = CMSG_FIRSTHDR(&msg);
         if (cmh != NULL
             && cmh->cmsg_level == SOL_SOCKET
             && cmh->cmsg_type  == SCM_RIGHTS
-            && cmh->cmsg_len   == CMSG_LEN(sizeof(int)))
+            && cmh->cmsg_len   >= CMSG_LEN(sizeof(int)))
         {
+            uint32_t  n_fds;
+
+            n_fds = (uint32_t) ((cmh->cmsg_len - CMSG_LEN(0)) / sizeof(int));
             ngx_memcpy(&recv_fd, CMSG_DATA(cmh), sizeof(int));
+            if (n_fds >= 2) {
+                ngx_memcpy(&recv_wake_fd,
+                           (char *) CMSG_DATA(cmh) + sizeof(int),
+                           sizeof(int));
+            }
         }
     }
 
@@ -1963,6 +1972,9 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
         ngx_free(ch);
         ngx_free(stub);
         close(recv_fd);
+        if (recv_wake_fd >= 0) {
+            close(recv_wake_fd);
+        }
         JS_FreeCString(ctx, url_cstr);
         return JS_ThrowInternalError(ctx, "SharedWorker: alloc failed");
     }
@@ -1973,6 +1985,12 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
     /* recv_fd is the worker_fd end of the channel socketpair */
     ch->worker_fd = recv_fd;
     ch->sw_fd     = -1;   /* SW end lives in master; not used by this worker */
+
+    /* recv_wake_fd is the write end of the SW's wake pipe.
+     * Workers must write the channel index after each channel_send so the
+     * SW thread's poll(wake_pipe[0]) wakes up reliably. */
+    stub->wake_pipe[0] = -1;             /* read end lives in master */
+    stub->wake_pipe[1] = recv_wake_fd;
 
     ws_slot->conn       = NULL;
     ws_slot->on_message = JS_UNDEFINED;
@@ -2007,10 +2025,10 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
  */
 int
 ngx_js_sw_acquire_channel(const char *url, size_t url_len,
-    ngx_uint_t worker_idx)
+    ngx_uint_t worker_idx, int *wake_fd_out)
 {
     int                reply_fds[2];
-    int                recv_fd;
+    int                recv_fd, recv_wake_fd;
     uint32_t           url_len32, worker_idx32;
     uint8_t           *cmdbuf;
     uint8_t            status;
@@ -2021,7 +2039,7 @@ ngx_js_sw_acquire_channel(const char *url, size_t url_len,
         struct cmsghdr  hdr;
     } cmsg_snd;
     union {
-        char            buf[CMSG_SPACE(sizeof(int))];
+        char            buf[CMSG_SPACE(2 * sizeof(int))];
         struct cmsghdr  hdr;
     } cmsg_rcv;
     struct cmsghdr    *cmh;
@@ -2086,20 +2104,34 @@ ngx_js_sw_acquire_channel(const char *url, size_t url_len,
     n = recvmsg(reply_fds[0], &msg, 0);
     close(reply_fds[0]);
 
-    recv_fd = -1;
+    recv_fd      = -1;
+    recv_wake_fd = -1;
     if (n >= 1 && status == 0) {
         cmh = CMSG_FIRSTHDR(&msg);
         if (cmh != NULL
             && cmh->cmsg_level == SOL_SOCKET
             && cmh->cmsg_type  == SCM_RIGHTS
-            && cmh->cmsg_len   == CMSG_LEN(sizeof(int)))
+            && cmh->cmsg_len   >= CMSG_LEN(sizeof(int)))
         {
+            uint32_t  n_fds;
+
+            n_fds = (uint32_t) ((cmh->cmsg_len - CMSG_LEN(0)) / sizeof(int));
             ngx_memcpy(&recv_fd, CMSG_DATA(cmh), sizeof(int));
+            if (n_fds >= 2) {
+                ngx_memcpy(&recv_wake_fd,
+                           (char *) CMSG_DATA(cmh) + sizeof(int),
+                           sizeof(int));
+            }
         }
     }
 
     if (recv_fd >= 0) {
-        channel_send(recv_fd, NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
+        channel_send_wake(recv_fd, recv_wake_fd, worker_idx,
+                          NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
+    }
+
+    if (wake_fd_out != NULL) {
+        *wake_fd_out = recv_wake_fd;
     }
 
     return recv_fd;
@@ -2107,10 +2139,11 @@ ngx_js_sw_acquire_channel(const char *url, size_t url_len,
 
 
 void
-ngx_js_sw_wt_send(int worker_fd, uint8_t *buf, uint32_t len,
-    uint8_t **sab_tab, uint32_t n_sabs)
+ngx_js_sw_wt_send(int worker_fd, int wake_fd, ngx_uint_t wi,
+    uint8_t *buf, uint32_t len, uint8_t **sab_tab, uint32_t n_sabs)
 {
-    channel_send(worker_fd, NGX_JS_SW_MSG_DATA, buf, len, sab_tab, n_sabs);
+    channel_send_wake(worker_fd, wake_fd, wi,
+                      NGX_JS_SW_MSG_DATA, buf, len, sab_tab, n_sabs);
 }
 
 
@@ -2253,6 +2286,12 @@ ngx_js_sw_exit_process(ngx_cycle_t *cycle, ngx_js_conf_t *jcf)
             sw->channels[0].worker_fd = -1;
         }
 
+        /* Close wake pipe write end (read end lives in master) */
+        if (sw->wake_pipe[1] >= 0) {
+            close(sw->wake_pipe[1]);
+            sw->wake_pipe[1] = -1;
+        }
+
         ngx_free(sw->channels);
         ngx_free(sw->worker_slots);
         ngx_free(sw->url);
@@ -2353,14 +2392,19 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
         next = sw->next;
 
         if (sw->thread_started && sw->tid) {
-            /* Signal all channels to terminate, then wake the SW thread */
+            /*
+             * Signal each channel to terminate and write a wake byte for
+             * that channel index so the SW thread actually processes it.
+             * The SW thread reads one channel per wake byte; using a fixed
+             * byte of 1 would skip channel 0 in single-worker configs.
+             */
             for (i = 0; i < sw->nchannels; i++) {
                 channel_send(sw->channels[i].worker_fd, NGX_JS_SW_MSG_TERM,
                              NULL, 0, NULL, 0);
-            }
-            if (sw->wake_pipe[1] >= 0) {
-                char  c = 1;
-                if (write(sw->wake_pipe[1], &c, 1) < 0) { /* ignore */ }
+                if (sw->wake_pipe[1] >= 0) {
+                    char  c = (char)(i & 0xff);
+                    if (write(sw->wake_pipe[1], &c, 1) < 0) { /* ignore */ }
+                }
             }
 
             pthread_join(sw->tid, NULL);
@@ -2649,7 +2693,7 @@ ngx_js_sw_manager_thread(void *arg)
     int                        reply_fd, ok;
     int                        recv_fds[2];
     uint32_t                   n_recv_fds;
-    int                        fds[1];
+    int                        fds[2];
     uint8_t                    status;
     struct msghdr              msg;
     struct iovec               iov;
@@ -2658,7 +2702,7 @@ ngx_js_sw_manager_thread(void *arg)
         struct cmsghdr  hdr;
     } cmsg_rcv;
     union {
-        char            buf[CMSG_SPACE(sizeof(int))];
+        char            buf[CMSG_SPACE(2 * sizeof(int))];
         struct cmsghdr  hdr;
     } cmsg_snd;
     struct cmsghdr            *cmh;
@@ -2789,7 +2833,7 @@ ngx_js_sw_manager_thread(void *arg)
 
                 if (new_fd >= 0) {
                     msg.msg_control    = cmsg_snd.buf;
-                    msg.msg_controllen = sizeof(cmsg_snd.buf);
+                    msg.msg_controllen = CMSG_SPACE(sizeof(int));
 
                     cmh             = CMSG_FIRSTHDR(&msg);
                     cmh->cmsg_level = SOL_SOCKET;
@@ -3100,8 +3144,9 @@ ngx_js_sw_manager_thread(void *arg)
             continue;
         }
 
-        /* Reply: status=0 + worker_fd via SCM_RIGHTS */
+        /* Reply: status=0 + [worker_fd, wake_pipe[1]] via SCM_RIGHTS */
         fds[0] = sw->channels[worker_idx].worker_fd;
+        fds[1] = sw->wake_pipe[1];
         status = 0;
 
         iov.iov_base = &status;
@@ -3111,13 +3156,13 @@ ngx_js_sw_manager_thread(void *arg)
         msg.msg_iov        = &iov;
         msg.msg_iovlen     = 1;
         msg.msg_control    = cmsg_snd.buf;
-        msg.msg_controllen = CMSG_SPACE(sizeof(int));
+        msg.msg_controllen = CMSG_SPACE(2 * sizeof(int));
 
         cmh             = CMSG_FIRSTHDR(&msg);
         cmh->cmsg_level = SOL_SOCKET;
         cmh->cmsg_type  = SCM_RIGHTS;
-        cmh->cmsg_len   = CMSG_LEN(sizeof(int));
-        ngx_memcpy(CMSG_DATA(cmh), fds, sizeof(int));
+        cmh->cmsg_len   = CMSG_LEN(2 * sizeof(int));
+        ngx_memcpy(CMSG_DATA(cmh), fds, 2 * sizeof(int));
 
         (void) sendmsg(reply_fd, &msg, 0);
         close(reply_fd);
@@ -3178,6 +3223,18 @@ ngx_js_sw_manager_start(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 
     bcast_nworkers = nworkers;
 
+    /*
+     * On reload (SIGHUP) nginx calls init_conf again, so this function is
+     * invoked a second time while the manager thread is already running.
+     * Re-creating sw_cmd_fds / sw_term_fds would overwrite the static
+     * variables, causing exit_master to signal the NEW pipe while the OLD
+     * manager polls the OLD pipe → pthread_join blocks forever.
+     * Skip the cmd/term setup if the manager is already live or deferred.
+     */
+    if (sw_mgr_deferred || sw_mgr_started) {
+        return NGX_OK;
+    }
+
     if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sw_cmd_fds) != 0) {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                       "js: SharedWorker manager socketpair failed");
@@ -3193,15 +3250,13 @@ ngx_js_sw_manager_start(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
-    {
-        /*
-         * Do NOT start the manager pthread here.  nginx has not yet
-         * daemonized (ngx_js_sw_manager_start runs during init_conf, before
-         * fork()).  Store jcf for use by ngx_js_sw_threads_start_deferred.
-         */
-        sw_mgr_jcf      = jcf;
-        sw_mgr_deferred = 1;
-    }
+    /*
+     * Do NOT start the manager pthread here.  nginx has not yet
+     * daemonized (ngx_js_sw_manager_start runs during init_conf, before
+     * fork()).  Store jcf for use by ngx_js_sw_threads_start_deferred.
+     */
+    sw_mgr_jcf      = jcf;
+    sw_mgr_deferred = 1;
 
     return NGX_OK;
 }
