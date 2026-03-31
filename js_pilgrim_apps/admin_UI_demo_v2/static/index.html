@@ -468,11 +468,16 @@ function replRun(wid) {
 /* ── Per-worker targeted connect ────────────────────────────────────── */
 
 function replConnectWorker(targetWid) {
-    if (workers[targetWid] && workers[targetWid].ws &&
-        workers[targetWid].ws.readyState === 1) {
-        workers[targetWid].ws.close();
-        delete workers[targetWid];
+    /* Invalidate the old connection's onclose before opening a new one.
+     * Without this the old onclose fires after the new onopen and hides
+     * the input row that the new connection just made visible.          */
+    var existing = workers[targetWid];
+    if (existing && existing.ws) {
+        existing.ws.onclose = null;   /* prevent stale handler */
+        existing.ws.onerror = null;
+        existing.ws.close();
     }
+    delete workers[targetWid];
 
     var btn = document.getElementById('repl-btn-' + targetWid);
     var st  = document.getElementById('repl-conn-st-' + targetWid);

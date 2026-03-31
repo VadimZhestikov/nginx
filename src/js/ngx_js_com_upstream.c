@@ -32,6 +32,14 @@
 #include "ngx_js.h"
 #include "ngx_js_com.h"
 
+/* Like JS_CGETSET_MAGIC_DEF but with JS_PROP_ENUMERABLE so that
+ * for...in and Object.keys() can discover these prototype getters. */
+#define NGX_JS_CGETSET_MAGIC_ENUM(name, fgetter, fsetter, magic)           \
+    { name, JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE,                     \
+      JS_DEF_CGETSET_MAGIC, magic,                                         \
+      .u = { .getset = { .get = { .getter_magic = fgetter },               \
+                         .set = { .setter_magic = fsetter } } } }
+
 
 /* ------------------------------------------------------------------ */
 /* NginxPeer — Phase 1/2 config-phase peer wrapper                     */
@@ -174,13 +182,13 @@ ngx_js_peer_fn_snapshot(JSContext *ctx, JSValueConst this_val,
 
 
 static const JSCFunctionListEntry ngx_js_peer_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("address",     ngx_js_peer_get, NULL,            0),
-    JS_CGETSET_MAGIC_DEF("weight",      ngx_js_peer_get, ngx_js_peer_set, 1),
-    JS_CGETSET_MAGIC_DEF("maxFails",    ngx_js_peer_get, ngx_js_peer_set, 2),
-    JS_CGETSET_MAGIC_DEF("down",        ngx_js_peer_get, ngx_js_peer_set, 3),
-    JS_CGETSET_MAGIC_DEF("backup",      ngx_js_peer_get, NULL,            4),
-    JS_CGETSET_MAGIC_DEF("failTimeout", ngx_js_peer_get, ngx_js_peer_set, 5),
-    JS_CGETSET_MAGIC_DEF("maxConns",    ngx_js_peer_get, ngx_js_peer_set, 6),
+    NGX_JS_CGETSET_MAGIC_ENUM("address",     ngx_js_peer_get, NULL,            0),
+    NGX_JS_CGETSET_MAGIC_ENUM("weight",      ngx_js_peer_get, ngx_js_peer_set, 1),
+    NGX_JS_CGETSET_MAGIC_ENUM("maxFails",    ngx_js_peer_get, ngx_js_peer_set, 2),
+    NGX_JS_CGETSET_MAGIC_ENUM("down",        ngx_js_peer_get, ngx_js_peer_set, 3),
+    NGX_JS_CGETSET_MAGIC_ENUM("backup",      ngx_js_peer_get, NULL,            4),
+    NGX_JS_CGETSET_MAGIC_ENUM("failTimeout", ngx_js_peer_get, ngx_js_peer_set, 5),
+    NGX_JS_CGETSET_MAGIC_ENUM("maxConns",    ngx_js_peer_get, ngx_js_peer_set, 6),
     JS_CFUNC_DEF("snapshot", 0, ngx_js_peer_fn_snapshot),
 };
 
@@ -452,16 +460,16 @@ ngx_js_upstream_fn_snapshot(JSContext *ctx, JSValueConst this_val,
 
 
 static const JSCFunctionListEntry ngx_js_rr_peer_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("address",     ngx_js_rr_peer_get, NULL,               0),
-    JS_CGETSET_MAGIC_DEF("weight",      ngx_js_rr_peer_get, ngx_js_rr_peer_set, 1),
-    JS_CGETSET_MAGIC_DEF("maxFails",    ngx_js_rr_peer_get, ngx_js_rr_peer_set, 2),
-    JS_CGETSET_MAGIC_DEF("down",        ngx_js_rr_peer_get, ngx_js_rr_peer_set, 3),
-    JS_CGETSET_MAGIC_DEF("backup",      ngx_js_rr_peer_get, NULL,               4),
-    JS_CGETSET_MAGIC_DEF("conns",       ngx_js_rr_peer_get, NULL,               5),
-    JS_CGETSET_MAGIC_DEF("failTimeout", ngx_js_rr_peer_get, ngx_js_rr_peer_set, 6),
-    JS_CGETSET_MAGIC_DEF("maxConns",    ngx_js_rr_peer_get, ngx_js_rr_peer_set, 7),
-    JS_CGETSET_MAGIC_DEF("server",      ngx_js_rr_peer_get, NULL,               8),
-    JS_CGETSET_MAGIC_DEF("fails",       ngx_js_rr_peer_get, NULL,               9),
+    NGX_JS_CGETSET_MAGIC_ENUM("address",     ngx_js_rr_peer_get, NULL,               0),
+    NGX_JS_CGETSET_MAGIC_ENUM("weight",      ngx_js_rr_peer_get, ngx_js_rr_peer_set, 1),
+    NGX_JS_CGETSET_MAGIC_ENUM("maxFails",    ngx_js_rr_peer_get, ngx_js_rr_peer_set, 2),
+    NGX_JS_CGETSET_MAGIC_ENUM("down",        ngx_js_rr_peer_get, ngx_js_rr_peer_set, 3),
+    NGX_JS_CGETSET_MAGIC_ENUM("backup",      ngx_js_rr_peer_get, NULL,               4),
+    NGX_JS_CGETSET_MAGIC_ENUM("conns",       ngx_js_rr_peer_get, NULL,               5),
+    NGX_JS_CGETSET_MAGIC_ENUM("failTimeout", ngx_js_rr_peer_get, ngx_js_rr_peer_set, 6),
+    NGX_JS_CGETSET_MAGIC_ENUM("maxConns",    ngx_js_rr_peer_get, ngx_js_rr_peer_set, 7),
+    NGX_JS_CGETSET_MAGIC_ENUM("server",      ngx_js_rr_peer_get, NULL,               8),
+    NGX_JS_CGETSET_MAGIC_ENUM("fails",       ngx_js_rr_peer_get, NULL,               9),
     JS_CFUNC_DEF("snapshot", 0, ngx_js_rr_peer_fn_snapshot),
 };
 
@@ -946,9 +954,9 @@ ngx_js_upstream_remove_peer(JSContext *ctx, JSValueConst this_val,
 
 
 static const JSCFunctionListEntry ngx_js_upstream_proto_funcs[] = {
-    JS_CGETSET_MAGIC_DEF("name",  ngx_js_upstream_get,       NULL, 0),
-    JS_CGETSET_MAGIC_DEF("zone",  ngx_js_upstream_get,       NULL, 1),
-    JS_CGETSET_MAGIC_DEF("peers", ngx_js_upstream_get_peers, NULL, 0),
+    NGX_JS_CGETSET_MAGIC_ENUM("name",  ngx_js_upstream_get,       NULL, 0),
+    NGX_JS_CGETSET_MAGIC_ENUM("zone",  ngx_js_upstream_get,       NULL, 1),
+    NGX_JS_CGETSET_MAGIC_ENUM("peers", ngx_js_upstream_get_peers, NULL, 0),
     JS_CFUNC_DEF("addPeer",    1, ngx_js_upstream_add_peer),
     JS_CFUNC_DEF("removePeer", 1, ngx_js_upstream_remove_peer),
     JS_CFUNC_DEF("snapshot",   0, ngx_js_upstream_fn_snapshot),

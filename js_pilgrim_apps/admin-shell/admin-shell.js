@@ -259,7 +259,7 @@ function treeNodeInfo(val) {
     }
     if (t === 'object') {
         var keys = [];
-        try { keys = Object.keys(val); } catch (e) { /* opaque C object */ }
+        try { for (var k in val) { keys.push(k); } } catch (e) {}
         return { kind: 'object', keys: keys };
     }
     return { kind: t };
