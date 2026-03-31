@@ -1,0 +1,368 @@
+#!/bin/sh
+#
+# ngxjs — CLI tool for the nginx JS package registry (P18)
+#
+# Commands:
+#   ngxjs install <pkg[@version]>   Download + cache a package
+#   ngxjs list                      List installed packages
+#   ngxjs versions <pkg>            Show available versions from registry
+#   ngxjs remove <pkg[@version]>    Remove a cached package
+#   ngxjs cache-dir                 Print cache directory path
+#
+# Environment variables:
+#   NGXJS_CACHE     Override cache directory (default: ~/.cache/ngxjs)
+#   NGXJS_REGISTRY  Override registry base URL
+#
+# Registry JSON format (GET {registry}/v1/{vendor}/{plugin}.json):
+#   {
+#     "name": "vendor/plugin",
+#     "latest": "1.2.3",
+#     "versions": {
+#       "1.2.3": {
+#         "url":    "https://.../vendor/plugin/1.2.3.tar.gz",
+#         "sha256": "abc123...",
+#         "size":   12345
+#       }
+#     }
+#   }
+
+set -e
+
+NGXJS_DEFAULT_REGISTRY="https://registry.ngxjs.io"
+
+# -----------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------
+
+die() { printf 'ngxjs: error: %s\n' "$*" >&2; exit 1; }
+info() { printf 'ngxjs: %s\n' "$*"; }
+
+# Determine cache directory:  $NGXJS_CACHE > $HOME/.cache/ngxjs > ./ngxjs_cache
+cache_dir() {
+    if [ -n "${NGXJS_CACHE:-}" ]; then
+        printf '%s' "$NGXJS_CACHE"
+    elif [ -n "${HOME:-}" ]; then
+        printf '%s/.cache/ngxjs' "$HOME"
+    else
+        printf '%s/ngxjs_cache' "${NGINX_PREFIX:-$(pwd)}"
+    fi
+}
+
+registry_url() {
+    printf '%s' "${NGXJS_REGISTRY:-$NGXJS_DEFAULT_REGISTRY}"
+}
+
+# Fetch URL to stdout; tries curl then wget
+fetch_url() {
+    url="$1"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$url"
+    else
+        die "curl or wget required for network operations"
+    fi
+}
+
+# Fetch URL to a file
+fetch_file() {
+    url="$1"
+    dest="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "$dest" "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$dest" "$url"
+    else
+        die "curl or wget required for network operations"
+    fi
+}
+
+# SHA256 of a file → hex string
+sha256_file() {
+    f="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$f" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$f" | cut -d' ' -f1
+    else
+        die "sha256sum or shasum required for checksum verification"
+    fi
+}
+
+# Extract a JSON string value: json_get KEY < json
+# Minimal parser: handles simple {"key":"value"} responses.
+json_get() {
+    key="$1"
+    sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+# Parse "vendor/plugin[@version]" into VENDOR, PLUGIN, VERSION
+parse_ref() {
+    ref="$1"
+    # strip leading/trailing whitespace
+    ref=$(printf '%s' "$ref" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    # split off @version
+    case "$ref" in
+        *@*)
+            VERSION="${ref##*@}"
+            ref="${ref%@*}"
+            ;;
+        *)
+            VERSION=""
+            ;;
+    esac
+
+    # split vendor/plugin
+    case "$ref" in
+        */*)
+            VENDOR="${ref%%/*}"
+            PLUGIN="${ref#*/}"
+            ;;
+        *)
+            die "invalid package reference '$1' (expected vendor/plugin[@version])"
+            ;;
+    esac
+
+    [ -n "$VENDOR" ] || die "empty vendor in '$1'"
+    [ -n "$PLUGIN" ] || die "empty plugin name in '$1'"
+}
+
+# -----------------------------------------------------------------------
+# Commands
+# -----------------------------------------------------------------------
+
+cmd_install() {
+    [ $# -ge 1 ] || die "usage: ngxjs install vendor/plugin[@version]"
+    ref="$1"
+
+    parse_ref "$ref"
+    vendor="$VENDOR"; plugin="$PLUGIN"; version="$VERSION"
+
+    cdir=$(cache_dir)
+    reg=$(registry_url)
+
+    # Fetch package manifest
+    manifest_url="${reg}/v1/${vendor}/${plugin}.json"
+    info "fetching manifest: $manifest_url"
+
+    manifest=$(fetch_url "$manifest_url") \
+        || die "could not fetch manifest for ${vendor}/${plugin}"
+
+    # Resolve version
+    if [ -z "$version" ] || [ "$version" = "latest" ]; then
+        version=$(printf '%s' "$manifest" | json_get "latest")
+        [ -n "$version" ] || die "could not determine latest version for ${vendor}/${plugin}"
+        info "resolved latest: $version"
+    fi
+
+    pkg_dir="${cdir}/packages/${vendor}/${plugin}/${version}"
+
+    if [ -d "$pkg_dir" ]; then
+        info "already installed: ${vendor}/${plugin}@${version} (${pkg_dir})"
+        return 0
+    fi
+
+    # Extract download URL and checksum for requested version
+    # The manifest contains nested version objects; use awk to extract
+    # the section for the specific version.
+    ver_block=$(printf '%s' "$manifest" | awk -v ver="\"${version}\"" '
+        /^[[:space:]]*"versions"/ { in_vers=1; depth=0 }
+        in_vers && /{/ { depth++ }
+        in_vers && depth==1 && $0 ~ ver { in_ver=1 }
+        in_ver { print }
+        in_vers && depth==1 && /}/ && in_ver { in_ver=0 }
+        in_vers && /}/ { depth-- }
+    ')
+
+    dl_url=$(printf '%s' "$ver_block" | json_get "url")
+    expected_sha=$(printf '%s' "$ver_block" | json_get "sha256")
+
+    [ -n "$dl_url" ] || die "version '$version' not found in manifest for ${vendor}/${plugin}"
+
+    # Download tarball
+    tmpfile=$(mktemp "${TMPDIR:-/tmp}/ngxjs_pkg.XXXXXX.tar.gz")
+    trap 'rm -f "$tmpfile"' EXIT
+
+    info "downloading: $dl_url"
+    fetch_file "$dl_url" "$tmpfile" \
+        || die "download failed: $dl_url"
+
+    # Verify checksum
+    if [ -n "$expected_sha" ]; then
+        actual_sha=$(sha256_file "$tmpfile")
+        if [ "$actual_sha" != "$expected_sha" ]; then
+            die "checksum mismatch for ${vendor}/${plugin}@${version}
+  expected: $expected_sha
+  actual:   $actual_sha"
+        fi
+        info "checksum OK: $actual_sha"
+    else
+        info "warning: no sha256 in manifest — skipping checksum verification"
+    fi
+
+    # Extract to cache
+    mkdir -p "$pkg_dir"
+    tar -xzf "$tmpfile" -C "$pkg_dir" --strip-components=1 \
+        || { rm -rf "$pkg_dir"; die "extraction failed"; }
+
+    # Update .latest pointer
+    latest_dir="${cdir}/packages/${vendor}/${plugin}"
+    printf '%s\n' "$version" > "${latest_dir}/.latest"
+
+    info "installed: ${vendor}/${plugin}@${version} → ${pkg_dir}"
+}
+
+cmd_list() {
+    cdir=$(cache_dir)
+    pkg_root="${cdir}/packages"
+
+    if [ ! -d "$pkg_root" ]; then
+        info "no packages installed (cache: ${cdir})"
+        return 0
+    fi
+
+    found=0
+    for vendor_dir in "${pkg_root}"/*/; do
+        [ -d "$vendor_dir" ] || continue
+        vendor=$(basename "$vendor_dir")
+        for plugin_dir in "${vendor_dir}"*/; do
+            [ -d "$plugin_dir" ] || continue
+            plugin=$(basename "$plugin_dir")
+            for ver_dir in "${plugin_dir}"*/; do
+                [ -d "$ver_dir" ] || continue
+                ver=$(basename "$ver_dir")
+                printf '%s/%s@%s\n' "$vendor" "$plugin" "$ver"
+                found=1
+            done
+        done
+    done
+
+    if [ "$found" -eq 0 ]; then
+        info "no packages installed (cache: ${cdir})"
+    fi
+}
+
+cmd_versions() {
+    [ $# -ge 1 ] || die "usage: ngxjs versions vendor/plugin"
+    ref="$1"
+
+    parse_ref "$ref"
+    vendor="$VENDOR"; plugin="$PLUGIN"
+
+    reg=$(registry_url)
+    manifest_url="${reg}/v1/${vendor}/${plugin}.json"
+
+    info "fetching versions from: $manifest_url"
+    manifest=$(fetch_url "$manifest_url") \
+        || die "could not fetch manifest for ${vendor}/${plugin}"
+
+    latest=$(printf '%s' "$manifest" | json_get "latest")
+    printf '%s' "$manifest" | awk -v latest="$latest" '
+        /^[[:space:]]*"versions"/ { in_vers=1 }
+        in_vers && /"[0-9]/ {
+            match($0, /"([0-9][^"]*)"/, arr)
+            if (arr[1] != "") {
+                mark = (arr[1] == latest) ? " (latest)" : ""
+                printf "  %s%s\n", arr[1], mark
+            }
+        }
+        in_vers && /^\s*}/ { exit }
+    '
+}
+
+cmd_remove() {
+    [ $# -ge 1 ] || die "usage: ngxjs remove vendor/plugin[@version]"
+    ref="$1"
+
+    parse_ref "$ref"
+    vendor="$VENDOR"; plugin="$PLUGIN"; version="$VERSION"
+
+    cdir=$(cache_dir)
+
+    if [ -z "$version" ]; then
+        # remove all versions
+        target="${cdir}/packages/${vendor}/${plugin}"
+        [ -d "$target" ] || die "package '${vendor}/${plugin}' not installed"
+        rm -rf "$target"
+        info "removed: ${vendor}/${plugin} (all versions)"
+    else
+        target="${cdir}/packages/${vendor}/${plugin}/${version}"
+        [ -d "$target" ] || die "package '${vendor}/${plugin}@${version}' not installed"
+        rm -rf "$target"
+        info "removed: ${vendor}/${plugin}@${version}"
+
+        # update .latest if needed
+        latest_file="${cdir}/packages/${vendor}/${plugin}/.latest"
+        if [ -f "$latest_file" ]; then
+            cur=$(cat "$latest_file" 2>/dev/null || true)
+            if [ "$cur" = "$version" ]; then
+                rm -f "$latest_file"
+                info "note: .latest cleared (was pointing to removed version)"
+            fi
+        fi
+    fi
+}
+
+cmd_cache_dir() {
+    cache_dir
+    printf '\n'
+}
+
+# -----------------------------------------------------------------------
+# Argument parsing
+# -----------------------------------------------------------------------
+
+# Parse global options before the subcommand
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --registry)
+            [ $# -ge 2 ] || die "--registry requires an argument"
+            NGXJS_REGISTRY="$2"; export NGXJS_REGISTRY; shift 2 ;;
+        --cache-dir)
+            [ $# -ge 2 ] || die "--cache-dir requires an argument"
+            NGXJS_CACHE="$2"; export NGXJS_CACHE; shift 2 ;;
+        --no-verify)
+            NGXJS_NO_VERIFY=1; export NGXJS_NO_VERIFY; shift ;;
+        -*)
+            die "unknown option: $1" ;;
+        *)
+            break ;;
+    esac
+done
+
+[ $# -ge 1 ] || {
+    cat >&2 <<'USAGE'
+Usage: ngxjs <command> [options]
+
+Commands:
+  install <pkg[@ver]>    Download and cache a package from the registry
+  list                   List installed packages
+  versions <pkg>         Show available versions from registry
+  remove <pkg[@ver]>     Remove a cached package (omit @ver to remove all)
+  cache-dir              Print the cache directory path
+
+Options:
+  --registry URL         Override registry base URL ($NGXJS_REGISTRY)
+  --cache-dir PATH       Override cache directory ($NGXJS_CACHE)
+
+Examples:
+  ngxjs install acme/rate-limiter@2.1.0
+  ngxjs install acme/auth-guard            # installs latest
+  ngxjs versions acme/rate-limiter
+  ngxjs list
+  ngxjs remove acme/rate-limiter@2.0.0
+USAGE
+    exit 1
+}
+
+cmd="$1"; shift
+
+case "$cmd" in
+    install)    cmd_install "$@" ;;
+    list)       cmd_list "$@" ;;
+    versions)   cmd_versions "$@" ;;
+    remove)     cmd_remove "$@" ;;
+    cache-dir)  cmd_cache_dir "$@" ;;
+    *)          die "unknown command: $cmd" ;;
+esac

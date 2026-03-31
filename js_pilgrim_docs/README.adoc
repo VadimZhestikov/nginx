@@ -206,11 +206,13 @@ a browser DevTools tab).
   so accept hooks and L4 filters work on sockets declared with the `listen`
   directive — not only JS-created listeners.
 
-| P18
-| Online package registry for nginx.use
+| P18 ✓
+| <<p18-registry.adoc#,Online package registry for nginx.use>>
 | `nginx.use('vendor/plugin@1.2.3', config)` — resolve from a central
-  registry.  Implemented as a CLI tool (`ngxjs install`) that downloads
-  to a local cache; the JS runtime stays network-free.
+  registry.  `ngxjs_is_registry_ref` detects `vendor/plugin[@version]`
+  references; `ngx_js_resolve_registry_pkg` maps them to
+  `$NGXJS_CACHE/packages/vendor/plugin/version/`.  CLI tool `tools/ngxjs`
+  handles download, checksum, extraction; JS runtime stays network-free.
 
 | P19
 | Admin shell

@@ -1,0 +1,379 @@
+= JS-Pilgrim P18 — Online Package Registry for nginx.use
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-30
+
+P18 extends `nginx.use()` to resolve versioned package references of the form
+`vendor/plugin@version` from a local on-disk cache, and ships a CLI tool
+(`ngxjs`) that populates that cache from a central registry.
+
+The NGINX JS runtime itself never touches the network.  All downloading is done
+by `ngxjs install`, which runs offline before nginx starts.
+
+== Concept
+
+Before P18, `nginx.use(path)` required a filesystem path:
+
+[source,javascript]
+----
+nginx.use('/opt/plugins/auth-guard');          // absolute
+nginx.use('plugins/rate-limiter', { rps: 100 }); // relative to prefix
+----
+
+P18 adds a second form — the _registry reference_:
+
+[source,javascript]
+----
+nginx.use('acme/rate-limiter@2.1.0');          // exact version
+nginx.use('acme/auth-guard');                  // installed latest
+nginx
+  .use('acme/rate-limiter@2.1.0', { rps: 200 })
+  .use('acme/auth-guard@1.0.0',   { secret: 'tok' }); // chain
+----
+
+A registry reference is any `nginx.use()` path that:
+
+* does NOT start with `/`, `./`, or `../`
+* contains exactly one `/` (the `vendor/plugin` separator)
+* has no embedded spaces
+
+Everything else is treated as a filesystem path and resolved exactly as
+before (absolute or relative to `nginx.cycle.prefix`).
+
+== Local cache
+
+Registry references are resolved from a local cache directory.  The runtime
+never makes network calls — it only reads from the cache.
+
+=== Cache directory resolution
+
+The runtime looks for the cache directory in this order:
+
+[cols="1,3"]
+|===
+| Source | Value
+
+| `$NGXJS_CACHE` env var
+| The exact value of the `NGXJS_CACHE` environment variable, if set.
+
+| `$HOME/.cache/ngxjs`
+| XDG-style user cache under the home directory.
+
+| `{prefix}ngxjs_cache`
+| Fallback: `ngxjs_cache/` under the nginx cycle prefix (e.g.,
+  `/usr/local/nginx/ngxjs_cache/`).
+|===
+
+The environment is read at `init_conf` time (in the master process), so
+`NGXJS_CACHE` must be set before nginx starts.
+
+=== Cache directory layout
+
+[source]
+----
+{cache_dir}/
+  packages/
+    {vendor}/
+      {plugin}/
+        {version}/         ← extracted plugin directory
+          package.json
+          index.js
+          ...
+        .latest            ← plain text: the installed "latest" version
+----
+
+Example:
+
+[source]
+----
+~/.cache/ngxjs/
+  packages/
+    acme/
+      auth-guard/
+        1.2.3/
+          package.json
+          index.js
+        .latest            ← "1.2.3"
+      rate-limiter/
+        2.0.0/
+          package.json
+          rate-limiter.js
+        2.1.0/
+          package.json
+          rate-limiter.js
+        .latest            ← "2.1.0"
+----
+
+=== Version resolution
+
+`nginx.use('acme/plugin@1.2.3')` looks for:
+
+    {cache_dir}/packages/acme/plugin/1.2.3/
+
+`nginx.use('acme/plugin')` (no version) reads:
+
+    {cache_dir}/packages/acme/plugin/.latest
+
+and then resolves the version named in that file.
+
+If the directory does not exist (or `.latest` is absent), the runtime logs an
+error with a helpful hint and throws a JavaScript `ReferenceError`:
+
+[source]
+----
+[error] js: nginx.use: package 'acme/plugin@1.2.3' not installed;
+        run: ngxjs install acme/plugin@1.2.3
+----
+
+== `ngxjs` CLI
+
+`tools/ngxjs` is a POSIX shell script that manages the local cache.
+
+=== Installation
+
+Copy (or symlink) `tools/ngxjs` to a directory on your `$PATH`:
+
+[source,bash]
+----
+sudo cp tools/ngxjs /usr/local/bin/ngxjs
+sudo chmod +x /usr/local/bin/ngxjs
+----
+
+=== Commands
+
+==== `ngxjs install`
+
+[source]
+----
+ngxjs install <vendor/plugin[@version]>
+----
+
+Fetches the package manifest from the registry, downloads the tarball,
+verifies the SHA256 checksum, and extracts the package to the local cache.
+Also updates `{plugin}/.latest`.
+
+If the package is already installed at the exact version, the download is
+skipped.
+
+[source,bash]
+----
+ngxjs install acme/rate-limiter@2.1.0   # specific version
+ngxjs install acme/auth-guard           # latest
+----
+
+==== `ngxjs list`
+
+[source]
+----
+ngxjs list
+----
+
+Lists all packages installed in the local cache.
+
+[source]
+----
+$ ngxjs list
+acme/auth-guard@1.2.3
+acme/rate-limiter@2.0.0
+acme/rate-limiter@2.1.0
+----
+
+==== `ngxjs versions`
+
+[source]
+----
+ngxjs versions <vendor/plugin>
+----
+
+Fetches the package manifest and lists available versions from the registry.
+
+[source]
+----
+$ ngxjs versions acme/rate-limiter
+  2.0.0
+  2.1.0 (latest)
+----
+
+==== `ngxjs remove`
+
+[source]
+----
+ngxjs remove <vendor/plugin[@version]>
+----
+
+Removes a specific version from the cache.  Omit `@version` to remove all
+installed versions of the package.  Also clears the `.latest` pointer if the
+removed version was current.
+
+==== `ngxjs cache-dir`
+
+[source]
+----
+ngxjs cache-dir
+----
+
+Prints the resolved cache directory path.
+
+=== Options
+
+[cols="1,3"]
+|===
+| Option | Description
+
+| `--registry URL`
+| Override the registry base URL.  Equivalent to setting `$NGXJS_REGISTRY`.
+
+| `--cache-dir PATH`
+| Override the cache directory.  Equivalent to setting `$NGXJS_CACHE`.
+
+| `--no-verify`
+| Skip SHA256 checksum verification (not recommended for production).
+|===
+
+=== Environment variables
+
+[cols="1,3"]
+|===
+| Variable | Description
+
+| `NGXJS_CACHE`
+| Cache directory (see <<_cache_directory_resolution>>).
+
+| `NGXJS_REGISTRY`
+| Registry base URL.  Default: `https://registry.ngxjs.io`.
+|===
+
+== Registry protocol
+
+Any HTTP server that serves the following two endpoints is a valid registry.
+
+=== Package manifest
+
+`GET {registry}/v1/{vendor}/{plugin}.json`
+
+Response (200):
+
+[source,json]
+----
+{
+  "name": "acme/rate-limiter",
+  "latest": "2.1.0",
+  "versions": {
+    "2.0.0": {
+      "url":    "https://registry.ngxjs.io/dl/acme/rate-limiter/2.0.0.tar.gz",
+      "sha256": "abc123...",
+      "size":   8192
+    },
+    "2.1.0": {
+      "url":    "https://registry.ngxjs.io/dl/acme/rate-limiter/2.1.0.tar.gz",
+      "sha256": "def456...",
+      "size":   9216
+    }
+  }
+}
+----
+
+=== Package tarball
+
+`GET {url}` — any HTTPS URL from the manifest.
+
+The tarball must be a `.tar.gz` archive.  `ngxjs install` runs:
+
+[source,bash]
+----
+tar -xzf package.tar.gz -C {cache_dir}/packages/{vendor}/{plugin}/{version}/ \
+    --strip-components=1
+----
+
+so the archive should contain a single top-level directory whose contents
+become the plugin directory.
+
+=== Self-hosted registry
+
+You can host your own registry with a static file server (nginx, S3,
+GitHub Releases, etc.) by placing `{plugin}.json` manifest files and
+tarballs at the correct paths.  Point `ngxjs` at it with:
+
+[source,bash]
+----
+ngxjs install acme/plugin@1.0.0 --registry https://my-registry.example.com
+----
+
+or permanently via `$NGXJS_REGISTRY`.
+
+== Workflow example
+
+[source,bash]
+----
+# 1. Install a plugin into the local cache (run once, offline after)
+ngxjs install acme/rate-limiter@2.1.0
+
+# 2. Reference it in your nginx JS config
+cat > /etc/nginx/js/init.js <<'JS'
+nginx.use('acme/rate-limiter@2.1.0', { rps: 500 });
+JS
+
+# 3. Start nginx as normal
+nginx -c /etc/nginx/nginx.conf
+----
+
+== Implementation notes
+
+=== Runtime detection (C)
+
+`ngx_js_use()` in `src/js/ngx_js_com.c` calls `ngx_js_is_registry_ref(path)`
+before the existing path-resolution block.  If the path matches the
+`vendor/plugin[@version]` pattern:
+
+1. `ngx_js_resolve_cache_dir()` finds the cache root.
+2. `ngx_js_resolve_registry_pkg()` maps the ref to an absolute directory path.
+3. The absolute path is stored in `dir_buf` and execution falls through to the
+   existing `ngx_js_load_plugin()` call unchanged.
+
+This means P16 broadcast compatibility is preserved: `dir_buf` is always an
+absolute filesystem path by the time it reaches the broadcast payload.
+
+=== Detection heuristic
+
+A path is a registry reference iff it satisfies all of:
+
+* does not start with `/`, `./`, or `../`
+* contains exactly one `/`
+* has no embedded spaces
+
+This is minimal and forward-compatible.  Filesystem paths with exactly one
+slash would be misclassified, but in practice they are never relative paths
+starting with `vendor/`-style tokens.
+
+=== `.latest` file
+
+A plain-text file containing a single version string (with optional trailing
+newline).  Written by `ngxjs install` to record which version was most recently
+installed.  Read by `nginx.use('vendor/plugin')` when no explicit version is
+given.
+
+=== `ngxjs` script language
+
+`tools/ngxjs` is a POSIX shell script with no external dependencies beyond
+`curl` or `wget` (for network operations) and `tar` / `sha256sum` (for
+extraction and verification).  This maximises portability across Linux, macOS,
+and BSD-based systems.
+
+== Tests
+
+`t/js_pilgrim_p18_registry.t` (12 tests):
+
+[cols="1,3"]
+|===
+| Tests | Scenario
+
+| 1-2  | `nginx.use('acme/hello@1.0.0')` loads from cache correctly
+| 3-4  | `nginx.use('acme/greet')` resolves via `.latest`
+| 5-6  | `package.json` `ngxjs.main` entry point honoured
+| 7    | Nginx starts cleanly with registry refs in init.js
+| 8-9  | No file-read errors for successfully loaded packages
+| 10-11 | Missing package → helpful "ngxjs install" hint in error log
+| 12   | Chained `nginx.use()` calls — both plugins accessible
+|===

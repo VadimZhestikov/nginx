@@ -1475,6 +1475,203 @@ ngx_js_send_to_master(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * ------------------------------------------------------------------ *
+ * P18: Online package registry helpers                                *
+ * ------------------------------------------------------------------ *
+ *
+ * ngx_js_is_registry_ref(path)
+ *   Returns 1 if path looks like a registry reference of the form
+ *   "vendor/plugin[@version]" rather than a filesystem path.
+ *
+ *   A registry reference:
+ *     - does NOT start with '/', './', or '../'
+ *     - contains exactly ONE '/' (the vendor/plugin separator)
+ *     - has no embedded spaces
+ *
+ * ngx_js_resolve_cache_dir(cycle, out, len)
+ *   Fills out[0..len-1] with the absolute path of the ngxjs package
+ *   cache directory.  Resolution order:
+ *     1. $NGXJS_CACHE              — explicit override
+ *     2. $HOME/.cache/ngxjs        — XDG-style user cache
+ *     3. {cycle->prefix}ngxjs_cache — nginx prefix fallback
+ *   Returns NGX_OK on success, NGX_ERROR if out is too small.
+ *
+ * ngx_js_resolve_registry_pkg(cycle, ref, out, out_len)
+ *   Resolves a registry reference "vendor/plugin[@version]" to the
+ *   on-disk cache directory:
+ *     {cache_dir}/packages/vendor/plugin/{version}/
+ *   If @version is omitted, reads {cache}/packages/vendor/plugin/.latest
+ *   for the installed-latest version string.
+ *   Returns NGX_OK with out filled, NGX_ERROR (with log message) on
+ *   failure (package not installed, .latest missing, dir absent).
+ */
+
+static ngx_int_t
+ngx_js_is_registry_ref(const char *path)
+{
+    const char  *p, *slash;
+    int          slashes;
+
+    if (path == NULL || path[0] == '\0') {
+        return 0;
+    }
+
+    /* filesystem absolute or relative paths */
+    if (path[0] == '/') { return 0; }
+    if (path[0] == '.' && (path[1] == '/' ||
+        (path[1] == '.' && path[2] == '/'))) { return 0; }
+
+    /* must contain exactly one '/' and no spaces */
+    slashes = 0;
+    slash   = NULL;
+    for (p = path; *p; p++) {
+        if (*p == ' ') { return 0; }
+        if (*p == '/') { slashes++; slash = p; }
+        if (slashes > 1) { return 0; }
+    }
+
+    /* vendor/plugin — slash must not be first or last char */
+    return (slashes == 1 && slash != path && *(slash + 1) != '\0');
+}
+
+
+static ngx_int_t
+ngx_js_resolve_cache_dir(ngx_cycle_t *cycle, char *out, size_t len)
+{
+    const char  *env;
+    u_char      *p;
+
+    env = getenv("NGXJS_CACHE");
+    if (env && env[0] != '\0') {
+        p = ngx_snprintf((u_char *) out, len - 1, "%s", env);
+        *p = '\0';
+        return NGX_OK;
+    }
+
+    env = getenv("HOME");
+    if (env && env[0] != '\0') {
+        p = ngx_snprintf((u_char *) out, len - 1, "%s/.cache/ngxjs", env);
+        *p = '\0';
+        return NGX_OK;
+    }
+
+    /* fallback: nginx prefix */
+    p = ngx_snprintf((u_char *) out, len - 1,
+                     "%Vngxjs_cache", &cycle->prefix);
+    *p = '\0';
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_js_resolve_registry_pkg(ngx_cycle_t *cycle, const char *ref,
+    char *out, size_t out_len)
+{
+    char         cache_dir[NGX_MAX_PATH];
+    char         name_buf[256];   /* vendor/plugin (without @version) */
+    const char  *at, *version;
+    char         ver_buf[64];
+    char         latest_path[NGX_MAX_PATH];
+    char         pkg_dir[NGX_MAX_PATH];
+    u_char      *p;
+    ngx_fd_t     fd;
+    ssize_t      n;
+    size_t       name_len;
+
+    if (ngx_js_resolve_cache_dir(cycle, cache_dir, sizeof(cache_dir))
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    /* Split "vendor/plugin@version" into name + version */
+    at = strchr(ref, '@');
+    if (at != NULL) {
+        name_len = (size_t) (at - ref);
+        if (name_len == 0 || name_len >= sizeof(name_buf)) {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "js: nginx.use: invalid package name in '%s'", ref);
+            return NGX_ERROR;
+        }
+        ngx_memcpy(name_buf, ref, name_len);
+        name_buf[name_len] = '\0';
+
+        version = at + 1;
+        if (version[0] == '\0') {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "js: nginx.use: empty version in '%s'; "
+                          "use 'vendor/plugin' or 'vendor/plugin@X.Y.Z'",
+                          ref);
+            return NGX_ERROR;
+        }
+
+    } else {
+        /* No @version — read .latest */
+        ngx_memcpy(name_buf, ref, ngx_strlen(ref) + 1);
+
+        p = ngx_snprintf((u_char *) latest_path, sizeof(latest_path) - 1,
+                         "%s/packages/%s/.latest", cache_dir, name_buf);
+        *p = '\0';
+
+        fd = ngx_open_file((u_char *) latest_path, NGX_FILE_RDONLY,
+                           NGX_FILE_OPEN, 0);
+        if (fd == NGX_INVALID_FILE) {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "js: nginx.use: package '%s' has no installed "
+                          "version; run: ngxjs install %s",
+                          name_buf, name_buf);
+            return NGX_ERROR;
+        }
+
+        n = read(fd, ver_buf, sizeof(ver_buf) - 1);
+        ngx_close_file(fd);
+
+        if (n <= 0) {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "js: nginx.use: could not read .latest for '%s'",
+                          name_buf);
+            return NGX_ERROR;
+        }
+
+        /* strip trailing newline/whitespace */
+        while (n > 0 && (ver_buf[n - 1] == '\n' || ver_buf[n - 1] == '\r'
+                          || ver_buf[n - 1] == ' '))
+        {
+            n--;
+        }
+        ver_buf[n] = '\0';
+        version = ver_buf;
+    }
+
+    /* Build the expected cache path */
+    p = ngx_snprintf((u_char *) pkg_dir, sizeof(pkg_dir) - 1,
+                     "%s/packages/%s/%s", cache_dir, name_buf, version);
+    *p = '\0';
+
+    /* Verify the directory exists */
+    fd = ngx_open_file((u_char *) pkg_dir, NGX_FILE_RDONLY,
+                       NGX_FILE_OPEN, NGX_FILE_DEFAULT_ACCESS);
+    if (fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "js: nginx.use: package '%s@%s' not installed; "
+                      "run: ngxjs install %s@%s",
+                      name_buf, version, name_buf, version);
+        return NGX_ERROR;
+    }
+    ngx_close_file(fd);
+
+    if (ngx_strlen(pkg_dir) >= out_len) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "js: nginx.use: resolved package path too long");
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(out, pkg_dir, ngx_strlen(pkg_dir) + 1);
+    return NGX_OK;
+}
+
+
+/*
  * ngx_js_load_plugin — P16 shared helper.
  *
  * Load a JS plugin from absolute directory path `dir` into ctx/rt.
@@ -1665,8 +1862,24 @@ ngx_js_use(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    /* resolve path relative to cycle->prefix if not absolute */
-    {
+    /*
+     * P18: detect registry references ("vendor/plugin[@version]") and
+     * resolve them to the local cache directory before falling through
+     * to the normal filesystem load path.
+     *
+     * Filesystem paths (absolute, ./, ../) are resolved as before.
+     */
+    if (ngx_js_is_registry_ref(path_str)) {
+        if (ngx_js_resolve_registry_pkg(cycle, path_str,
+                                        dir_buf, sizeof(dir_buf))
+            != NGX_OK)
+        {
+            JS_FreeCString(ctx, path_str);
+            return JS_EXCEPTION;
+        }
+
+    } else {
+        /* resolve path relative to cycle->prefix if not absolute */
         u_char *p;
         if (path_str[0] == '/') {
             p = ngx_snprintf((u_char *) dir_buf, sizeof(dir_buf) - 1,
