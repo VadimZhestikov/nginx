@@ -543,13 +543,20 @@ function replRun(wid) {
     }
     if (h) { h.pos = -1; h.draft = ''; }
     replLog(wid, '› ' + code, 'prompt');
+    var _evalTid = setTimeout(function() {
+        replLog(wid, '✗ (no response — eval timed out after 3 s)', 'err');
+    }, 3000);
     replRpc(wid, 'nginx.eval', [code], function(err, result) {
+        clearTimeout(_evalTid);
         if (err) {
             replLog(wid, '✗ ' + (err.message || String(err)), 'err');
         } else if (result && typeof result === 'object') {
             /* nginx.repl.eval returns {status, value, message, stack} */
             if (result.status === 'ok') {
-                replLog(wid, '← ' + (result.value != null && result.value !== '' ? String(result.value) : 'undefined'), 'result');
+                var val = result.value;
+                replLog(wid, '← ' + (val != null && val !== '' ? String(val) : 'undefined'), 'result');
+            } else if (result.status === 'incomplete') {
+                replLog(wid, '… (incomplete input)', 'err');
             } else {
                 replLog(wid, '✗ ' + (result.message || 'error'), 'err');
                 if (result.stack) replLog(wid, result.stack, 'err');
