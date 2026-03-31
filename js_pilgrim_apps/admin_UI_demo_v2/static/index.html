@@ -69,6 +69,7 @@ input[type=text]:focus { border-color: #5a7aae; }
 .repl-line.result { color: #cde; }
 .repl-line.err    { color: #c77; }
 .repl-line.info   { color: #778; font-style: italic; }
+.repl-line.cols   { color: #778; white-space: pre; }
 .repl-connect-bar { padding: 24px 16px; display: flex; align-items: center; gap: 10px; }
 .repl-conn-status { font-size: 11px; color: #778; }
 .tab.idle       { color: #556; border-color: #2a3a4e; }
@@ -468,6 +469,34 @@ function replRpc(wid, method, params, cb) {
     w.ws.send(JSON.stringify({jsonrpc:'2.0',id:id,method:method,params:params||[]}));
 }
 
+/* Format completions into left-to-right columns sized to fit the output area */
+function replFormatColumns(items, outEl) {
+    if (items.length === 0) return [];
+    var maxLen = 0;
+    items.forEach(function(s) { if (s.length > maxLen) maxLen = s.length; });
+    var colWidth  = maxLen + 2;
+    /* 12 px monospace ≈ 7.2 px/char; subtract container padding */
+    var availPx   = outEl ? Math.max(80, outEl.clientWidth - 20) : 480;
+    var numCols   = Math.max(1, Math.floor(availPx / (colWidth * 7.2)));
+    var numRows   = Math.ceil(items.length / numCols);
+    var lines     = [];
+    for (var r = 0; r < numRows; r++) {
+        var line = '';
+        for (var c = 0; c < numCols; c++) {
+            var idx = r * numCols + c;
+            if (idx >= items.length) break;
+            var item = items[idx];
+            /* pad all but the last column on a row */
+            if (c < numCols - 1 && idx + 1 < items.length) {
+                while (item.length < colWidth) { item += ' '; }
+            }
+            line += item;
+        }
+        lines.push(line);
+    }
+    return lines;
+}
+
 function replComplete(wid) {
     var inp = document.getElementById('repl-in-' + wid);
     if (!inp) return;
@@ -482,7 +511,7 @@ function replComplete(wid) {
             /* Unique — complete inline */
             inp.value = base + completions[0];
         } else {
-            /* Multiple — fill common prefix, print suggestion list */
+            /* Multiple — fill common prefix, print in columns */
             var common = completions[0];
             for (var i = 1; i < completions.length; i++) {
                 while (completions[i].slice(0, common.length) !== common) {
@@ -492,7 +521,10 @@ function replComplete(wid) {
             if (common.length > prefix.length) {
                 inp.value = base + common;
             }
-            replLog(wid, completions.join('   '), 'info');
+            var outEl = document.getElementById('repl-out-' + wid);
+            replFormatColumns(completions, outEl).forEach(function(line) {
+                replLog(wid, line, 'cols');
+            });
         }
         inp.selectionStart = inp.selectionEnd = inp.value.length;
     });
