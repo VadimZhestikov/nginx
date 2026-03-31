@@ -521,6 +521,7 @@ function replComplete(wid) {
             if (common.length > prefix.length) {
                 inp.value = base + common;
             }
+            replLog(wid, '› ' + code, 'prompt');
             var outEl = document.getElementById('repl-out-' + wid);
             replFormatColumns(completions, outEl).forEach(function(line) {
                 replLog(wid, line, 'cols');
