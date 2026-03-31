@@ -63,7 +63,7 @@ input[type=text]:focus { border-color: #5a7aae; }
 .repl-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .repl-pane { display: none; flex-direction: column; flex: 1; min-height: 0; }
 .repl-pane.active { display: flex; }
-.repl-output { flex: 1; overflow-y: auto; padding: 6px 10px; font-family: monospace; font-size: 12px; }
+.repl-output { flex: 1; overflow-y: auto; padding: 6px 10px 2px; font-family: monospace; font-size: 12px; }
 .repl-line { margin: 1px 0; }
 .repl-line.prompt { color: #8bc; }
 .repl-line.result { color: #cde; }
@@ -77,9 +77,13 @@ input[type=text]:focus { border-color: #5a7aae; }
 .tab.error      { color: #c88; border-color: #5a3a3a; }
 .tab.active.connected { background: #1a3a2a; color: #aec; border-color: #4a7a5a; }
 @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
-.repl-input-row { display: flex; gap: 6px; padding: 6px 10px; border-top: 1px solid #2a2a3e; flex-shrink: 0; align-items: center; }
-.repl-input-row input { flex: 1; }
-.repl-prompt-sym { color: #5a8; font-family: monospace; font-size: 13px; }
+.repl-inline-input { display: flex; align-items: center; padding: 1px 10px 6px;
+    font-family: monospace; font-size: 12px; flex-shrink: 0; }
+.repl-inline-input input { flex: 1; background: transparent; border: none; outline: none;
+    color: #8bc; font-family: monospace; font-size: 12px; padding: 0; margin: 0; }
+.repl-inline-input .repl-reconnect { background: none; border: none; color: #445;
+    font-size: 12px; padding: 0 0 0 6px; cursor: pointer; }
+.repl-inline-input .repl-reconnect:hover { color: #7a9; }
 </style>
 </head>
 <body>
@@ -379,11 +383,10 @@ function replMakePane(wid) {
           '<button id="repl-btn-' + wid + '" onclick="replConnectWorker(' + wid + ')">Connect Worker ' + wid + '</button>' +
           '<span class="repl-conn-status" id="repl-conn-st-' + wid + '"></span>' +
         '</div>' +
-        '<div class="repl-input-row" id="repl-input-' + wid + '" style="display:none">' +
-          '<span class="repl-prompt-sym">›</span>' +
+        '<div class="repl-inline-input" id="repl-input-' + wid + '" style="display:none">' +
+          '<span style="color:#5a8;font-family:monospace;font-size:13px;margin-right:4px">›</span>' +
           '<input type="text" id="repl-in-' + wid + '" placeholder="nginx.workerIdx">' +
-          '<button onclick="replRun(' + wid + ')">Run</button>' +
-          '<button onclick="replConnectWorker(' + wid + ')">↺</button>' +
+          '<button class="repl-reconnect" title="Reconnect" onclick="replConnectWorker(' + wid + ')">↺</button>' +
         '</div>';
     document.getElementById('repl-body').appendChild(pane);
 
