@@ -3,7 +3,7 @@
 :toc-title: Contents
 :toclevels: 2
 :sectnums:
-:revdate: 2026-03-27
+:revdate: 2026-03-30
 
 JS-Pilgrim is the codename for the full-proxy programmable layer built on top of
 the JS COM foundation.  The goal is to give JavaScript complete control over every
@@ -209,7 +209,7 @@ a browser DevTools tab).
 | P18 ✓
 | <<p18-registry.adoc#,Online package registry for nginx.use>>
 | `nginx.use('vendor/plugin@1.2.3', config)` — resolve from a central
-  registry.  `ngxjs_is_registry_ref` detects `vendor/plugin[@version]`
+  registry.  `ngx_js_is_registry_ref` detects `vendor/plugin[@version]`
   references; `ngx_js_resolve_registry_pkg` maps them to
   `$NGXJS_CACHE/packages/vendor/plugin/version/`.  CLI tool `tools/ngxjs`
   handles download, checksum, extraction; JS runtime stays network-free.
@@ -239,9 +239,22 @@ location.addHook(async function(req) {
 });
 ----
 
-There is no explicit `next()` call required.  The chain advances automatically
-unless `req.respond()` is called.  (A `next()` API for middleware-style wrapping
-is planned as a later extension.)
+The chain advances automatically unless `req.respond()` is called.  P9 also
+adds a `next()` argument for Koa-style middleware wrapping — code after
+`await next()` executes as a post-handler epilogue:
+
+[source,javascript]
+----
+nginx.http.addHook(async function(req, next) {
+    const start = Date.now();
+    await next();                      // run remaining hooks + content handler
+    const ms = Date.now() - start;
+    // headers not yet sent — safe to add
+    req.setHeader('x-duration-ms', String(ms));
+});
+----
+
+Hooks that do not call `next()` auto-advance (backward-compatible).
 
 == Source Layout
 
@@ -249,10 +262,72 @@ is planned as a later extension.)
 |===
 | File | Contents
 
-| `src/js/ngx_js.h` | Shared structs; hook fields on `ngx_js_loc_conf_t`,
-  `ngx_js_req_ctx_t`, `ngx_js_async_ctx_t`
-| `src/js/ngx_js_http_module.c` | Hook runner (`ngx_js_run_hook_fn`),
-  modified content handler, modified `ngx_js_async_check`
-| `src/js/ngx_js_com_http.c` | `addHook` JS method, `__ngx_hooks__` registry
-| `t/js_pilgrim_p1_hooks.t` | P1 test suite
+| `src/js/ngx_js.h`
+| Shared structs: `ngx_js_conf_t`, `ngx_js_loc_conf_t`, `ngx_js_req_ctx_t`,
+  `ngx_js_async_ctx_t`, `ngx_js_worker_t`.  Hook-chain, filter, and
+  upstream-filter field declarations.
+
+| `src/js/ngx_js_module.c`
+| NGINX module lifecycle: `init_conf` (runtime + COM setup, JS eval),
+  `init_process` (worker inheritance), `exit_process`, `exit_master`.
+  `js_source` directive.  `ngx_js_read_file`, `ngx_js_eval_module`.
+
+| `src/js/ngx_js_com.c`
+| Root `nginx` COM object: `version`, `cpu_count`, `log`, `cycle`,
+  `setTimeout`, `broadcast`, `shared`, `set`/`get`/`settable`,
+  `nginx.use` (P7/P16/P18), `nginx.install` (P7).
+  P18: `ngx_js_is_registry_ref`, `ngx_js_resolve_cache_dir`,
+  `ngx_js_resolve_registry_pkg`.
+
+| `src/js/ngx_js_com_http.c`
+| `nginx.http`: servers, locations, upstreams.  `addHook` (P1/P2),
+  `addResponseHook` (P3), `addBodyFilter` (P5/P15),
+  `addUpstreamFilter` / `addUpstreamRequestFilter` (P14),
+  `req.pass` (P16), `req.bodyPreread` / `req.bodyChunks()` (streaming).
+  Hook chain runner `ngx_js_run_chain` (P9).
+
+| `src/js/ngx_js_http_module.c`
+| HTTP content handler, async resume (`ngx_js_async_check`), body
+  buffering, `req.ctx` pool-cleanup slot (P10), `req.responded` (P9).
+
+| `src/js/ngx_js_listener.c`
+| `NginxListener`: `on('accept', fn)` (P4), `addL4Filter` (P6/P12),
+  `addL4SendFilter` (P13).  Async L4 generator drive loop.
+
+| `src/js/ngx_js_com_upstream.c`
+| `nginx.http.upstreams[]`: peer weight/down/maxFails etc., RR reload.
+
+| `src/js/ngx_js_sw.c` / `ngx_js_sw.h`
+| `SharedWorker`: master pthread, per-worker AF_UNIX channels, memfd SAB
+  transfer, dynamic creation, Atomics.wait/notify bridge.
+
+| `src/js/ngx_js_worker.h`
+| `ngx_js_worker_t` struct definition (rt, ctx, channel, pending, etc.).
+
+| `t/js_pilgrim_p*.t`
+| Per-step test suites (P1–P18).  Run with
+  `TEST_NGINX_BINARY=objs/nginx prove -v t/js_pilgrim_p*.t`.
+|===
+
+== Reference Applications
+
+[cols="2,4"]
+|===
+| Directory | Description
+
+| `js_pilgrim_apps/zero-trust-gateway/`
+| JWT authentication gateway with response-header scrubbing, HTML body
+  injection, and health-check bypass.  Tests: `t/gateway.t`,
+  `t/gateway_edge.t`.
+
+| `js_pilgrim_apps/body-json-based-routing/`
+| Streaming JSON body scanner that routes requests to different backends
+  based on fields in the request body — without buffering the full body.
+  Tests: `t/router.t`, `t/router_edge.t`.
+
+| `js_com_apps/admin_snapshot_rollback/`
+| Dynamic upstream weight management with ops-list snapshots, rollback,
+  pinning, and a REST admin API.  Tests: `t/js_admin_base.t`,
+  `t/js_admin_api.t`, `t/js_admin_snapshot.t`, `t/js_admin_rollback.t`,
+  `t/js_admin_compact.t`, `t/js_admin_struct.t`, `t/js_admin_edge.t`.
 |===
