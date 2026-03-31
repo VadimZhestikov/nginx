@@ -346,6 +346,7 @@ function treeRefresh() {
 /* ================================================================== */
 
 var workers   = {};   /* workerIdx → { ws, seq, pending } */
+var replHist  = {};   /* workerIdx → { cmds: [], pos: -1 } */
 var activeTab = null;
 var workerCount = 0;
 
@@ -386,10 +387,35 @@ function replMakePane(wid) {
         '</div>';
     document.getElementById('repl-body').appendChild(pane);
 
-    /* Enter key submits */
+    replHist[wid] = { cmds: [], pos: -1 };
+
+    /* Enter submits; ArrowUp/Down navigate history */
     var inp = document.getElementById('repl-in-' + wid);
     inp.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') replRun(wid);
+        if (e.key === 'Enter') {
+            replRun(wid);
+            return;
+        }
+        var h = replHist[wid];
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (h.pos === -1) { h.draft = inp.value; }
+            if (h.pos < h.cmds.length - 1) {
+                h.pos++;
+                inp.value = h.cmds[h.cmds.length - 1 - h.pos];
+                inp.selectionStart = inp.selectionEnd = inp.value.length;
+            }
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (h.pos > 0) {
+                h.pos--;
+                inp.value = h.cmds[h.cmds.length - 1 - h.pos];
+            } else if (h.pos === 0) {
+                h.pos = -1;
+                inp.value = h.draft || '';
+            }
+            inp.selectionStart = inp.selectionEnd = inp.value.length;
+        }
     });
 }
 
@@ -436,6 +462,11 @@ function replRun(wid) {
     var code = inp.value.trim();
     if (!code) return;
     inp.value = '';
+    var h = replHist[wid];
+    if (h && (h.cmds.length === 0 || h.cmds[h.cmds.length - 1] !== code)) {
+        h.cmds.push(code);
+    }
+    if (h) { h.pos = -1; h.draft = ''; }
     replLog(wid, '› ' + code, 'prompt');
     replRpc(wid, 'nginx.eval', [code], function(err, result) {
         if (err) {
@@ -542,6 +573,7 @@ function replInit(count) {
     document.getElementById('tabs').innerHTML = '';
     document.getElementById('repl-body').innerHTML = '';
     workers   = {};
+    replHist  = {};
     activeTab = null;
     for (var i = 0; i < count; i++) {
         replMakeTab(i);
