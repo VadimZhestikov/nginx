@@ -549,13 +549,13 @@ function replRun(wid) {
         } else if (result && typeof result === 'object') {
             /* nginx.repl.eval returns {status, value, message, stack} */
             if (result.status === 'ok') {
-                replLog(wid, '← ' + String(result.value), 'result');
+                replLog(wid, String(result.value), 'result');
             } else {
                 replLog(wid, '✗ ' + (result.message || 'error'), 'err');
                 if (result.stack) replLog(wid, result.stack, 'err');
             }
         } else {
-            replLog(wid, '← ' + String(result), 'result');
+            replLog(wid, String(result), 'result');
         }
     });
 }
