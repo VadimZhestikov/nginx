@@ -1,0 +1,120 @@
+2026/03/30 18:57:06 [notice] 241985#0: using the "epoll" event method
+2026/03/30 18:57:06 [notice] 241985#0: nginx/1.29.7
+2026/03/30 18:57:06 [notice] 241985#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 18:57:06 [notice] 241985#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 18:57:06 [notice] 241985#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 18:57:06 [notice] 241987#0: start worker processes
+2026/03/30 18:57:06 [notice] 241987#0: start worker process 241988
+2026/03/30 18:57:06 [notice] 241987#0: start worker process 241989
+2026/03/30 18:57:06 [notice] 241987#0: start worker process 241990
+2026/03/30 18:57:06 [notice] 241987#0: start worker process 241991
+2026/03/30 19:00:06 [notice] 242149#0: using the "epoll" event method
+2026/03/30 19:00:06 [notice] 242149#0: nginx/1.29.7
+2026/03/30 19:00:06 [notice] 242149#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 19:00:06 [notice] 242149#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 19:00:06 [notice] 242149#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 19:00:06 [notice] 242152#0: start worker processes
+2026/03/30 19:00:06 [notice] 242152#0: start worker process 242153
+2026/03/30 19:00:06 [notice] 242152#0: start worker process 242154
+2026/03/30 19:00:06 [notice] 242152#0: start worker process 242155
+2026/03/30 19:00:06 [notice] 242152#0: start worker process 242156
+2026/03/30 19:02:49 [notice] 242263#0: using the "epoll" event method
+2026/03/30 19:02:49 [notice] 242263#0: nginx/1.29.7
+2026/03/30 19:02:49 [notice] 242263#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 19:02:49 [notice] 242263#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 19:02:49 [notice] 242263#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 19:02:49 [notice] 242266#0: start worker processes
+2026/03/30 19:02:49 [notice] 242266#0: start worker process 242267
+2026/03/30 19:02:49 [notice] 242266#0: start worker process 242268
+2026/03/30 19:02:49 [notice] 242266#0: start worker process 242269
+2026/03/30 19:02:49 [notice] 242266#0: start worker process 242270
+2026/03/30 19:05:50 [notice] 242385#0: using the "epoll" event method
+2026/03/30 19:05:50 [notice] 242385#0: nginx/1.29.7
+2026/03/30 19:05:50 [notice] 242385#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 19:05:50 [notice] 242385#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 19:05:50 [notice] 242385#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 19:05:50 [notice] 242388#0: start worker processes
+2026/03/30 19:05:50 [notice] 242388#0: start worker process 242389
+2026/03/30 19:05:50 [notice] 242388#0: start worker process 242390
+2026/03/30 19:05:50 [notice] 242388#0: start worker process 242391
+2026/03/30 19:05:50 [notice] 242388#0: start worker process 242392
+2026/03/30 19:07:57 [notice] 242485#0: using the "epoll" event method
+2026/03/30 19:07:57 [notice] 242485#0: nginx/1.29.7
+2026/03/30 19:07:57 [notice] 242485#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 19:07:57 [notice] 242485#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 19:07:57 [notice] 242485#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 19:07:57 [notice] 242488#0: start worker processes
+2026/03/30 19:07:57 [notice] 242488#0: start worker process 242489
+2026/03/30 19:07:57 [notice] 242488#0: start worker process 242490
+2026/03/30 19:07:57 [notice] 242488#0: start worker process 242491
+2026/03/30 19:07:57 [notice] 242488#0: start worker process 242492
+2026/03/30 19:14:39 [notice] 242737#0: using the "epoll" event method
+2026/03/30 19:14:39 [notice] 242737#0: nginx/1.29.7
+2026/03/30 19:14:39 [notice] 242737#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 19:14:39 [notice] 242737#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 19:14:39 [notice] 242737#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 19:14:39 [notice] 242740#0: start worker processes
+2026/03/30 19:14:39 [notice] 242740#0: start worker process 242741
+2026/03/30 19:14:39 [notice] 242740#0: start worker process 242742
+2026/03/30 19:14:39 [notice] 242740#0: start worker process 242744
+2026/03/30 19:14:39 [notice] 242740#0: start worker process 242745
+2026/03/30 19:18:17 [notice] 242962#0: using the "epoll" event method
+2026/03/30 19:18:17 [notice] 242962#0: nginx/1.29.7
+2026/03/30 19:18:17 [notice] 242962#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 19:18:17 [notice] 242962#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 19:18:17 [notice] 242962#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 19:18:17 [notice] 242965#0: start worker processes
+2026/03/30 19:18:17 [notice] 242965#0: start worker process 242966
+2026/03/30 19:18:17 [notice] 242965#0: start worker process 242967
+2026/03/30 19:18:17 [notice] 242965#0: start worker process 242968
+2026/03/30 19:18:17 [notice] 242965#0: start worker process 242969
+2026/03/30 19:20:46 [notice] 243073#0: using the "epoll" event method
+2026/03/30 19:20:46 [notice] 243073#0: nginx/1.29.7
+2026/03/30 19:20:46 [notice] 243073#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 19:20:46 [notice] 243073#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 19:20:46 [notice] 243073#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 19:20:46 [notice] 243076#0: start worker processes
+2026/03/30 19:20:46 [notice] 243076#0: start worker process 243077
+2026/03/30 19:20:46 [notice] 243076#0: start worker process 243078
+2026/03/30 19:20:46 [notice] 243076#0: start worker process 243079
+2026/03/30 19:20:46 [notice] 243076#0: start worker process 243080
+2026/03/30 19:27:20 [notice] 243500#0: using the "epoll" event method
+2026/03/30 19:27:20 [notice] 243500#0: nginx/1.29.7
+2026/03/30 19:27:20 [notice] 243500#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 19:27:20 [notice] 243500#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 19:27:20 [notice] 243500#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 19:27:20 [notice] 243504#0: start worker processes
+2026/03/30 19:27:20 [notice] 243504#0: start worker process 243505
+2026/03/30 19:27:20 [notice] 243504#0: start worker process 243506
+2026/03/30 19:27:20 [notice] 243504#0: start worker process 243507
+2026/03/30 19:27:20 [notice] 243504#0: start worker process 243508
+2026/03/30 19:28:03 [notice] 243585#0: using the "epoll" event method
+2026/03/30 19:28:03 [notice] 243585#0: nginx/1.29.7
+2026/03/30 19:28:03 [notice] 243585#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 19:28:03 [notice] 243585#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 19:28:03 [notice] 243585#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 19:28:03 [notice] 243589#0: start worker processes
+2026/03/30 19:28:03 [notice] 243589#0: start worker process 243590
+2026/03/30 19:28:03 [notice] 243589#0: start worker process 243591
+2026/03/30 19:28:03 [notice] 243589#0: start worker process 243592
+2026/03/30 19:28:03 [notice] 243589#0: start worker process 243593
+2026/03/30 19:53:40 [notice] 243589#0: signal 15 (SIGTERM) received from 244513, exiting
+2026/03/30 19:53:40 [notice] 243590#0: exiting
+2026/03/30 19:53:40 [notice] 243591#0: exiting
+2026/03/30 19:53:40 [notice] 243592#0: exiting
+2026/03/30 19:53:40 [notice] 243593#0: exiting
+: worker process: quickjs.c:2047: JS_FreeRuntime: Assertion `list_empty(&rt->gc_obj_list)' failed.
+2026/03/30 19:53:40 [notice] 243590#0: exit
+2026/03/30 19:53:40 [notice] 243593#0: exit
+2026/03/30 19:53:40 [notice] 243592#0: exit
+2026/03/30 19:53:40 [notice] 243589#0: signal 17 (SIGCHLD) received from 243593
+2026/03/30 19:53:40 [notice] 243589#0: worker process 243592 exited with code 0
+2026/03/30 19:53:40 [notice] 243589#0: worker process 243590 exited with code 0
+2026/03/30 19:53:40 [notice] 243589#0: worker process 243593 exited with code 0
+2026/03/30 19:53:40 [notice] 243589#0: signal 29 (SIGIO) received
+2026/03/30 19:53:40 [notice] 243589#0: signal 17 (SIGCHLD) received from 243590
+2026/03/30 19:53:40 [notice] 243589#0: signal 14 (SIGALRM) received
+2026/03/30 19:53:40 [notice] 243589#0: signal 14 (SIGALRM) received
+2026/03/30 19:53:41 [notice] 243589#0: signal 17 (SIGCHLD) received from 243591
+2026/03/30 19:53:41 [alert] 243589#0: worker process 243591 exited on signal 6 (core dumped)
+2026/03/30 19:53:41 [notice] 243589#0: exit

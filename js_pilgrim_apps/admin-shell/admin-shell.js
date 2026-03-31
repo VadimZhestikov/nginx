@@ -22,6 +22,43 @@
 (function() {
 
 /* ================================================================== */
+/* Relay SharedWorker — routes nginx.eval to target worker             */
+/* ================================================================== */
+
+var relay         = new SharedWorker(nginx.cycle.installPrefix +
+                        'js_pilgrim_apps/admin-shell/repl-relay.js');
+var relayPending  = {};   /* token → function(resultObj) */
+
+/*
+ * nginx.broadcast() runs once per worker after fork so each worker
+ * registers itself and receives eval requests for its workerIdx.
+ */
+nginx.broadcast(function() {
+    relay.onmessage = function(e) {
+        var msg = e.data;
+        if (!msg) { return; }
+
+        if (msg.type === 'eval') {
+            /* We are the target — evaluate and send result back */
+            relay.postMessage({
+                type:        'result',
+                token:       msg.token,
+                result:      nginx.repl.eval(msg.line),
+                replyWorker: msg.replyWorker,
+            });
+        } else if (msg.type === 'result') {
+            /* We are the gateway — deliver result to waiting RPC cb */
+            var cb = relayPending[msg.token];
+            if (cb) { delete relayPending[msg.token]; cb(msg.result); }
+        }
+    };
+
+    nginx.setTimeout(0).then(function() {
+        relay.postMessage({ type: 'register', workerId: nginx.workerIdx });
+    });
+});
+
+/* ================================================================== */
 /* SHA-1 (RFC 3174) — pure JS, needed for WebSocket handshake          */
 /* ================================================================== */
 
@@ -149,8 +186,10 @@ function wsCloseFrame(code) {
 
 var wsConns = {};          /* fd → {buf: number[], pending: string} */
 
-function wsConnInit(fd) {
-    wsConns[fd] = { buf: [], pending: '' };
+function wsConnInit(fd, targetWorker) {
+    wsConns[fd] = { buf: [], pending: '',
+                    targetWorker: targetWorker !== undefined
+                                  ? targetWorker : nginx.workerIdx };
 }
 
 function wsConnFree(fd) {
@@ -204,6 +243,29 @@ function parseWsFrame(buf, offset) {
 }
 
 /* ================================================================== */
+/* tree.get helper — returns a type-annotated description of a value   */
+/* ================================================================== */
+
+function treeNodeInfo(val) {
+    var t = typeof val;
+    if (val === null)      { return { kind: 'null' }; }
+    if (t === 'undefined') { return { kind: 'undefined' }; }
+    if (t === 'boolean')   { return { kind: 'boolean', value: val }; }
+    if (t === 'number')    { return { kind: 'number',  value: val }; }
+    if (t === 'string')    { return { kind: 'string',  value: val }; }
+    if (t === 'function')  { return { kind: 'function', name: val.name || '' }; }
+    if (Array.isArray(val)) {
+        return { kind: 'array', length: val.length };
+    }
+    if (t === 'object') {
+        var keys = [];
+        try { keys = Object.keys(val); } catch (e) { /* opaque C object */ }
+        return { kind: 'object', keys: keys };
+    }
+    return { kind: t };
+}
+
+/* ================================================================== */
 /* JSON-RPC dispatcher                                                  */
 /* ================================================================== */
 
@@ -216,7 +278,7 @@ function rpcOk(id, result) {
     return JSON.stringify({ jsonrpc: '2.0', id: id, result: result });
 }
 
-function dispatch(msg) {
+function dispatch(msg, fd) {
     var req;
     try {
         req = JSON.parse(msg);
@@ -231,6 +293,9 @@ function dispatch(msg) {
     if (!method) {
         return rpcError(id, -32600, 'Invalid Request: method required');
     }
+
+    var conn         = wsConns[fd];
+    var targetWorker = conn ? conn.targetWorker : nginx.workerIdx;
 
     try {
         switch (method) {
@@ -253,7 +318,40 @@ function dispatch(msg) {
             return rpcOk(id, nginx.shared.keys());
 
         case 'nginx.eval':
-            return rpcOk(id, nginx.repl.eval(params[0]));
+            if (targetWorker === nginx.workerIdx) {
+                /* Local eval */
+                return rpcOk(id, nginx.repl.eval(params[0]));
+            }
+            /* Cross-worker eval via relay — async, no immediate return */
+            (function() {
+                var token = 'ws-' + fd + '-' + id;
+                relayPending[token] = function(result) {
+                    var frame = wsTextFrame(rpcOk(id, result));
+                    nginx.repl._writeFdRaw(fd, frame);
+                };
+                relay.postMessage({
+                    type:         'eval',
+                    token:        token,
+                    line:         params[0],
+                    targetWorker: targetWorker,
+                    replyWorker:  nginx.workerIdx,
+                });
+            }());
+            return null;  /* response sent asynchronously */
+
+        case 'worker.id':
+            return rpcOk(id, targetWorker);
+
+        case 'tree.get': {
+            var expr = String(params[0] || 'nginx');
+            var val;
+            try {
+                val = (new Function('return (' + expr + ')'))();
+            } catch (e) {
+                return rpcError(id, -32000, 'Eval error: ' + String(e));
+            }
+            return rpcOk(id, treeNodeInfo(val));
+        }
 
         case 'upstreams.list': {
             var upstreams = nginx.http.upstreams;
@@ -288,9 +386,10 @@ function dispatch(msg) {
 /* ================================================================== */
 
 function onWsMessage(fd, text) {
-    var response = dispatch(text);
-    var frame    = wsTextFrame(response);
-    nginx.repl._writeFdRaw(fd, frame);
+    var response = dispatch(text, fd);
+    if (response !== null) {
+        nginx.repl._writeFdRaw(fd, wsTextFrame(response));
+    }
 }
 
 /* ================================================================== */
@@ -374,8 +473,12 @@ function wsUpgradeHandler(req) {
                'Connection: Upgrade\r\n' +
                'Sec-WebSocket-Accept: ' + accept + '\r\n\r\n';
 
+    var qw = req.queryParams && req.queryParams.w;
+    var targetWorker = (qw !== undefined && qw !== '')
+                       ? parseInt(qw, 10) : nginx.workerIdx;
+
     nginx.repl._writeFd(fd, resp);
-    wsConnInit(fd);
+    wsConnInit(fd, targetWorker);
 
     nginx.repl.listenRaw(fd, function(chunk) {
         onWsData(fd, chunk);

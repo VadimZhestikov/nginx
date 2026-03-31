@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nginx JS Pilgrim — Admin v2</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #cdd; line-height: 1.5; height: 100vh; display: flex; flex-direction: column; }
+header { background: #0f0f1e; color: #eef; padding: 12px 20px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid #333; flex-shrink: 0; }
+header h1 { font-size: 16px; font-weight: 600; }
+header .sub { color: #778; font-size: 12px; }
+.layout { display: grid; grid-template-columns: 1fr 1fr; gap: 0; flex: 1; min-height: 0; }
+.panel { display: flex; flex-direction: column; border-right: 1px solid #2a2a3e; min-height: 0; }
+.panel:last-child { border-right: none; }
+.panel-header { background: #0f0f1e; padding: 8px 14px; font-size: 12px; font-weight: 600; color: #aac; border-bottom: 1px solid #2a2a3e; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.panel-header span { flex: 1; }
+button { background: #2a3a5e; color: #acd; border: 1px solid #3a4a6e; border-radius: 4px; padding: 3px 10px; font-size: 11px; cursor: pointer; }
+button:hover { background: #3a4a7e; }
+button:disabled { opacity: 0.4; cursor: default; }
+input[type=text] { background: #0f1525; color: #cde; border: 1px solid #3a4a6e; border-radius: 4px; padding: 3px 8px; font-family: monospace; font-size: 12px; outline: none; }
+input[type=text]:focus { border-color: #5a7aae; }
+
+/* ── Tree Browser ── */
+.tree-toolbar { padding: 8px 10px; display: flex; gap: 6px; align-items: center; border-bottom: 1px solid #2a2a3e; flex-shrink: 0; }
+.tree-toolbar input { flex: 1; }
+.tree-scroll { flex: 1; overflow-y: auto; padding: 6px 0; }
+.tree-node { display: flex; align-items: baseline; gap: 0; cursor: default; }
+.tree-node:hover { background: #1f2f4f; }
+.tree-expander { width: 16px; text-align: center; cursor: pointer; color: #556; font-size: 10px; flex-shrink: 0; user-select: none; }
+.tree-expander.expandable { color: #7a9; cursor: pointer; }
+.tree-expander.expandable:hover { color: #adf; }
+.tree-key { font-family: monospace; font-size: 12px; color: #8bc; padding: 1px 2px; }
+.tree-colon { color: #556; font-size: 12px; margin: 0 2px; }
+.tree-val { font-family: monospace; font-size: 12px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-val.str  { color: #c9a; }
+.tree-val.num  { color: #9ca; }
+.tree-val.bool { color: #a9c; }
+.tree-val.nil  { color: #778; }
+.tree-val.fn   { color: #778; font-style: italic; }
+.tree-val.obj  { color: #778; }
+.tree-badge { font-size: 9px; padding: 0 4px; border-radius: 8px; margin-left: 4px; flex-shrink: 0; }
+.badge-str  { background: #3a2a1a; color: #c9a; }
+.badge-num  { background: #1a3a2a; color: #9ca; }
+.badge-bool { background: #2a1a3a; color: #a9c; }
+.badge-fn   { background: #2a2a1a; color: #ba8; }
+.badge-obj  { background: #1a2a3a; color: #8bc; }
+.badge-arr  { background: #1a2a3a; color: #89c; }
+.badge-nil  { background: #2a2a2a; color: #778; }
+.tree-children { padding-left: 16px; }
+.tree-err { color: #c77; font-family: monospace; font-size: 11px; padding: 2px 8px; }
+.tree-loading { color: #556; font-family: monospace; font-size: 11px; padding: 2px 8px; }
+
+/* ── Per-Worker REPL ── */
+.repl-toolbar { padding: 8px 10px; display: flex; gap: 6px; align-items: center; border-bottom: 1px solid #2a2a3e; flex-shrink: 0; }
+.repl-status { font-size: 11px; color: #778; flex: 1; }
+.tabs { display: flex; gap: 2px; padding: 4px 8px; border-bottom: 1px solid #2a2a3e; flex-shrink: 0; flex-wrap: wrap; }
+.tab { font-size: 11px; padding: 2px 10px; border-radius: 3px; cursor: pointer; background: #1f2f3f; color: #778; border: 1px solid #2a3a4e; }
+.tab.active { background: #2a4a6e; color: #adf; border-color: #4a6a9e; }
+.tab.connected { color: #8c8; border-color: #3a5a3a; background: #1a2a1a; }
+.tab.active.connected { background: #1a3a2a; color: #aec; border-color: #4a7a5a; }
+.tab.error { color: #c88; }
+.repl-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.repl-pane { display: none; flex-direction: column; flex: 1; min-height: 0; }
+.repl-pane.active { display: flex; }
+.repl-output { flex: 1; overflow-y: auto; padding: 6px 10px; font-family: monospace; font-size: 12px; }
+.repl-line { margin: 1px 0; }
+.repl-line.prompt { color: #8bc; }
+.repl-line.result { color: #cde; }
+.repl-line.err    { color: #c77; }
+.repl-line.info   { color: #778; font-style: italic; }
+.repl-connect-bar { padding: 24px 16px; display: flex; align-items: center; gap: 10px; }
+.repl-conn-status { font-size: 11px; color: #778; }
+.tab.idle       { color: #556; border-color: #2a3a4e; }
+.tab.connecting { color: #aa8; border-color: #5a4a2e; animation: pulse 1s infinite; }
+.tab.connected  { color: #8c8; border-color: #3a5a3a; background: #1a2a1a; }
+.tab.error      { color: #c88; border-color: #5a3a3a; }
+.tab.active.connected { background: #1a3a2a; color: #aec; border-color: #4a7a5a; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
+.repl-input-row { display: flex; gap: 6px; padding: 6px 10px; border-top: 1px solid #2a2a3e; flex-shrink: 0; align-items: center; }
+.repl-input-row input { flex: 1; }
+.repl-prompt-sym { color: #5a8; font-family: monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>nginx JS Pilgrim &mdash; Admin UI v2</h1>
+  <span class="sub" id="hdr-info">connecting…</span>
+  <a href="/admin/" style="color:#7a9;font-size:11px;text-decoration:none">classic admin &rarr;</a>
+</header>
+
+<div class="layout">
+
+  <!-- LEFT: nginx.* Tree Browser -->
+  <div class="panel" id="panel-tree">
+    <div class="panel-header">
+      <span>nginx.* Tree Browser</span>
+      <button id="tree-refresh-btn" onclick="treeRefresh()">Refresh</button>
+    </div>
+    <div class="tree-toolbar">
+      <input type="text" id="tree-expr" value="nginx" placeholder="JS expression…">
+      <button onclick="treeBrowse()">Browse</button>
+    </div>
+    <div class="tree-scroll" id="tree-root"></div>
+  </div>
+
+  <!-- RIGHT: Per-Worker REPL -->
+  <div class="panel" id="panel-repl">
+    <div class="panel-header">
+      <span>Per-Worker REPL</span>
+      <button onclick="replConnectAll()">Connect All</button>
+      <button onclick="replDisconnectAll()">Disconnect All</button>
+    </div>
+    <div class="tabs" id="tabs"></div>
+    <div class="repl-body" id="repl-body"></div>
+  </div>
+
+</div>
+
+<script>
+/* ================================================================== */
+/* Shared WebSocket (tree browser uses worker 0's connection)          */
+/* ================================================================== */
+
+var sharedWs = null;
+var sharedPending = {};
+var sharedSeq = 0;
+
+function sharedConnect(cb) {
+    sharedWs = new WebSocket('ws://' + location.host + '/admin/ws');
+    sharedWs.onopen = function() {
+        if (cb) cb();
+        document.getElementById('hdr-info').textContent =
+            'connected · ' + location.host;
+    };
+    sharedWs.onerror = function() {
+        document.getElementById('hdr-info').textContent = 'connection error';
+    };
+    sharedWs.onclose = function() {
+        document.getElementById('hdr-info').textContent = 'disconnected';
+        sharedWs = null;
+    };
+    sharedWs.onmessage = function(ev) {
+        var msg;
+        try { msg = JSON.parse(ev.data); } catch(e) { return; }
+        var fn = sharedPending[msg.id];
+        if (fn) { delete sharedPending[msg.id]; fn(msg.error, msg.result); }
+    };
+}
+
+function sharedRpc(method, params, cb) {
+    if (!sharedWs || sharedWs.readyState !== 1) {
+        if (cb) cb({ message: 'not connected' });
+        return;
+    }
+    var id = ++sharedSeq;
+    sharedPending[id] = cb || function(){};
+    sharedWs.send(JSON.stringify({jsonrpc:'2.0',id:id,method:method,params:params||[]}));
+}
+
+/* ================================================================== */
+/* Tree Browser                                                         */
+/* ================================================================== */
+
+var treeExpanded = {};   /* expr → true if expanded */
+var treeCache = {};      /* expr → node info */
+
+function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function kindBadge(kind) {
+    var labels = { string:'str', number:'num', boolean:'bool',
+                   function:'fn()', object:'{}', array:'[]',
+                   null:'null', undefined:'undef' };
+    return '<span class="tree-badge badge-' + (kind==='array'?'arr':kind) + '">' +
+           (labels[kind]||kind) + '</span>';
+}
+
+function renderValue(info) {
+    if (!info) return '<span class="tree-val nil">…</span>';
+    switch (info.kind) {
+    case 'string':
+        var s = info.value;
+        var disp = s.length > 60 ? s.slice(0,60)+'…' : s;
+        return '<span class="tree-val str">"' + esc(disp) + '"</span>';
+    case 'number':
+        return '<span class="tree-val num">' + info.value + '</span>';
+    case 'boolean':
+        return '<span class="tree-val bool">' + info.value + '</span>';
+    case 'null':
+    case 'undefined':
+        return '<span class="tree-val nil">' + info.kind + '</span>';
+    case 'function':
+        return '<span class="tree-val fn">ƒ ' + esc(info.name) + '()</span>';
+    case 'array':
+        return '<span class="tree-val obj">[' + info.length + ']</span>';
+    case 'object':
+        return '<span class="tree-val obj">{' + (info.keys ? info.keys.length : '?') + '}</span>';
+    default:
+        return '<span class="tree-val nil">(' + esc(info.kind) + ')</span>';
+    }
+}
+
+function isExpandable(info) {
+    if (!info) return false;
+    return (info.kind === 'object' && info.keys && info.keys.length > 0) ||
+           (info.kind === 'array'  && info.length > 0);
+}
+
+function treeNodeHtml(expr, key, info, depth) {
+    var indent = depth * 16;
+    var expandable = isExpandable(info);
+    var expanded   = treeExpanded[expr];
+    var expSym = expandable ? (expanded ? '▾' : '▸') : '&nbsp;';
+    var expClass = expandable ? 'expandable' : '';
+
+    var keyHtml = (key !== null)
+        ? '<span class="tree-key">' + esc(String(key)) + '</span><span class="tree-colon">:</span>'
+        : '';
+
+    /* NOTE: no inline onclick — clicks handled by delegated listener below */
+    var html = '<div class="tree-node" style="padding-left:' + indent + 'px" data-expr="' + esc(expr) + '">' +
+               '<span class="tree-expander ' + expClass + '">' + expSym + '</span>' +
+               keyHtml +
+               renderValue(info) +
+               kindBadge(info ? info.kind : '?') +
+               '</div>';
+
+    if (expandable && expanded) {
+        html += '<div class="tree-children" id="' + treeContainerId(expr) + '">' +
+                '<span class="tree-loading">loading…</span></div>';
+        treeLoadChildren(expr, info, depth + 1);
+    }
+
+    return html;
+}
+
+function treeContainerId(expr) {
+    /* safe id from expr */
+    return 'tc-' + btoa(unescape(encodeURIComponent(expr))).replace(/[^a-zA-Z0-9]/g,'');
+}
+
+function treeLoadChildren(expr, info, depth) {
+    var cid = treeContainerId(expr);
+    var keys = (info.kind === 'array')
+        ? Array.from({length: Math.min(info.length, 200)}, function(_,i){ return String(i); })
+        : (info.keys || []);
+
+    if (keys.length === 0) {
+        var el = document.getElementById(cid);
+        if (el) el.innerHTML = '<span class="tree-loading dim">empty</span>';
+        return;
+    }
+
+    var loaded = 0;
+    var childInfos = {};
+
+    keys.forEach(function(k) {
+        var childExpr = expr + '[' + JSON.stringify(k) + ']';
+        sharedRpc('tree.get', [childExpr], function(err, result) {
+            childInfos[k] = err ? null : result;
+            if (result) { treeCache[childExpr] = result; }
+            loaded++;
+            if (loaded === keys.length) {
+                var el = document.getElementById(cid);
+                if (!el) return;
+                var html = '';
+                keys.forEach(function(k2) {
+                    var ce = expr + '[' + JSON.stringify(k2) + ']';
+                    html += treeNodeHtml(ce, k2, childInfos[k2], depth);
+                });
+                el.innerHTML = html;
+            }
+        });
+    });
+}
+
+/* Delegated click handler — installed after DOM ready (see Boot section) */
+function treeHandleClick(e) {
+    var el = e.target;
+    if (!el.classList.contains('expandable')) { return; }
+    var nodeEl = el.parentElement;    /* .tree-node div */
+    var expr   = nodeEl.getAttribute('data-expr');
+    if (!expr) { return; }
+
+    var cid   = treeContainerId(expr);
+    var arrow = el;
+
+    if (treeExpanded[expr]) {
+        /* Collapse */
+        delete treeExpanded[expr];
+        arrow.textContent = '▸';
+        var container = document.getElementById(cid);
+        if (container) { container.remove(); }
+        return;
+    }
+
+    /* Expand */
+    treeExpanded[expr] = true;
+    arrow.textContent = '▾';
+
+    var div = document.createElement('div');
+    div.className = 'tree-children';
+    div.id = cid;
+    div.innerHTML = '<span class="tree-loading">loading…</span>';
+    nodeEl.insertAdjacentElement('afterend', div);
+
+    var depth = (parseInt(nodeEl.style.paddingLeft, 10) || 0) / 16 + 1;
+    var info  = treeCache[expr];
+    if (info) {
+        treeLoadChildren(expr, info, depth);
+    } else {
+        sharedRpc('tree.get', [expr], function(err, result) {
+            if (err) {
+                div.innerHTML = '<span class="tree-err">' + esc(err.message || 'error') + '</span>';
+                return;
+            }
+            treeCache[expr] = result;
+            treeLoadChildren(expr, result, depth);
+        });
+    }
+}
+
+function treeBrowseExpr(rootExpr) {
+    var el = document.getElementById('tree-root');
+    el.innerHTML = '<span class="tree-loading">loading…</span>';
+    sharedRpc('tree.get', [rootExpr], function(err, info) {
+        if (err) {
+            el.innerHTML = '<span class="tree-err">' + esc(err.message || String(err)) + '</span>';
+            return;
+        }
+        treeCache[rootExpr] = info;
+        /* Auto-expand the root on first browse */
+        if (isExpandable(info) && !treeExpanded[rootExpr]) {
+            treeExpanded[rootExpr] = true;
+        }
+        el.innerHTML = treeNodeHtml(rootExpr, null, info, 0);
+    });
+}
+
+function treeBrowse() {
+    var expr = document.getElementById('tree-expr').value.trim() || 'nginx';
+    treeExpanded = {};
+    treeBrowseExpr(expr);
+}
+
+function treeRefresh() {
+    treeExpanded = {};
+    treeCache = {};
+    treeBrowseExpr(document.getElementById('tree-expr').value.trim() || 'nginx');
+}
+
+/* ================================================================== */
+/* Per-Worker REPL                                                      */
+/* ================================================================== */
+
+var workers   = {};   /* workerIdx → { ws, seq, pending } */
+var activeTab = null;
+var workerCount = 0;
+
+/* ── Tab + Pane creation ───────────────────────────────────────────── */
+
+function replSetState(wid, state) {
+    /* state: 'idle' | 'connecting' | 'connected' | 'error' */
+    var tab = document.getElementById('tab-' + wid);
+    if (!tab) return;
+    tab.className = 'tab' + (activeTab === wid ? ' active' : '') + ' ' + state;
+    var dot = { idle: '○', connecting: '◌', connected: '●', error: '✕' }[state] || '○';
+    tab.innerHTML = dot + ' Worker ' + wid;
+}
+
+function replMakeTab(wid) {
+    var tab = document.createElement('div');
+    tab.id = 'tab-' + wid;
+    tab.onclick = function() { replSelectTab(wid); };
+    document.getElementById('tabs').appendChild(tab);
+    replSetState(wid, 'idle');
+}
+
+function replMakePane(wid) {
+    var pane = document.createElement('div');
+    pane.className = 'repl-pane';
+    pane.id = 'repl-pane-' + wid;
+    pane.innerHTML =
+        '<div class="repl-output" id="repl-out-' + wid + '"></div>' +
+        '<div class="repl-connect-bar" id="repl-bar-' + wid + '">' +
+          '<button id="repl-btn-' + wid + '" onclick="replConnectWorker(' + wid + ')">Connect Worker ' + wid + '</button>' +
+          '<span class="repl-conn-status" id="repl-conn-st-' + wid + '"></span>' +
+        '</div>' +
+        '<div class="repl-input-row" id="repl-input-' + wid + '" style="display:none">' +
+          '<span class="repl-prompt-sym">›</span>' +
+          '<input type="text" id="repl-in-' + wid + '" placeholder="nginx.workerIdx">' +
+          '<button onclick="replRun(' + wid + ')">Run</button>' +
+          '<button onclick="replConnectWorker(' + wid + ')">↺</button>' +
+        '</div>';
+    document.getElementById('repl-body').appendChild(pane);
+
+    /* Enter key submits */
+    var inp = document.getElementById('repl-in-' + wid);
+    inp.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') replRun(wid);
+    });
+}
+
+function replSelectTab(wid) {
+    document.querySelectorAll('.repl-pane').forEach(function(p) { p.classList.remove('active'); });
+    activeTab = wid;
+    var pane = document.getElementById('repl-pane-' + wid);
+    if (pane) pane.classList.add('active');
+    /* Update all tab classes to reflect new activeTab */
+    for (var i = 0; i < workerCount; i++) {
+        var tab = document.getElementById('tab-' + i);
+        if (tab) tab.classList.toggle('active', i === wid);
+    }
+    var inp = document.getElementById('repl-in-' + wid);
+    if (inp && workers[wid]) inp.focus();
+}
+
+function replLog(wid, text, cls) {
+    var out = document.getElementById('repl-out-' + wid);
+    if (!out) return;
+    var line = document.createElement('div');
+    line.className = 'repl-line ' + (cls || '');
+    line.textContent = text;
+    out.appendChild(line);
+    out.scrollTop = out.scrollHeight;
+}
+
+/* ── RPC helpers ────────────────────────────────────────────────────── */
+
+function replRpc(wid, method, params, cb) {
+    var w = workers[wid];
+    if (!w || !w.ws || w.ws.readyState !== 1) {
+        if (cb) cb({ message: 'not connected' });
+        return;
+    }
+    var id = ++w.seq;
+    w.pending[id] = cb || function(){};
+    w.ws.send(JSON.stringify({jsonrpc:'2.0',id:id,method:method,params:params||[]}));
+}
+
+function replRun(wid) {
+    var inp = document.getElementById('repl-in-' + wid);
+    if (!inp) return;
+    var code = inp.value.trim();
+    if (!code) return;
+    inp.value = '';
+    replLog(wid, '› ' + code, 'prompt');
+    replRpc(wid, 'nginx.eval', [code], function(err, result) {
+        if (err) {
+            replLog(wid, '✗ ' + (err.message || String(err)), 'err');
+        } else if (result && typeof result === 'object') {
+            /* nginx.repl.eval returns {status, value, message, stack} */
+            if (result.status === 'ok') {
+                replLog(wid, '← ' + String(result.value), 'result');
+            } else {
+                replLog(wid, '✗ ' + (result.message || 'error'), 'err');
+                if (result.stack) replLog(wid, result.stack, 'err');
+            }
+        } else {
+            replLog(wid, '← ' + String(result), 'result');
+        }
+    });
+}
+
+/* ── Per-worker targeted connect ────────────────────────────────────── */
+
+function replConnectWorker(targetWid) {
+    if (workers[targetWid] && workers[targetWid].ws &&
+        workers[targetWid].ws.readyState === 1) {
+        workers[targetWid].ws.close();
+        delete workers[targetWid];
+    }
+
+    var btn = document.getElementById('repl-btn-' + targetWid);
+    var st  = document.getElementById('repl-conn-st-' + targetWid);
+
+    replSetState(targetWid, 'connecting');
+    if (btn) btn.disabled = true;
+    if (st)  st.textContent = 'connecting…';
+
+    /* ?w=N tells the server which worker to target — no retry needed */
+    var ws      = new WebSocket('ws://' + location.host + '/admin/ws?w=' + targetWid);
+    var seq     = 0;
+    var pending = {};
+
+    ws.onmessage = function(ev) {
+        var msg; try { msg = JSON.parse(ev.data); } catch(e) { return; }
+        var fn = pending[msg.id];
+        if (fn) { delete pending[msg.id]; fn(msg.error, msg.result); }
+    };
+
+    ws.onerror = function() {
+        replSetState(targetWid, 'error');
+        if (st)  st.textContent = 'connection error';
+        if (btn) btn.disabled = false;
+    };
+
+    ws.onopen = function() {
+        workers[targetWid] = { ws: ws, seq: seq, pending: pending };
+
+        ws.onclose = function() {
+            delete workers[targetWid];
+            replSetState(targetWid, 'error');
+            var inputRow = document.getElementById('repl-input-' + targetWid);
+            var bar      = document.getElementById('repl-bar-' + targetWid);
+            if (inputRow) inputRow.style.display = 'none';
+            if (bar)      bar.style.display = '';
+            if (btn)      btn.disabled = false;
+            if (st)       st.textContent = 'disconnected';
+            replLog(targetWid, '— disconnected', 'info');
+        };
+
+        replSetState(targetWid, 'connected');
+        if (st)  st.textContent = '';
+        if (btn) btn.disabled = false;
+
+        var inputRow = document.getElementById('repl-input-' + targetWid);
+        var bar      = document.getElementById('repl-bar-' + targetWid);
+        if (bar)      bar.style.display = 'none';
+        if (inputRow) inputRow.style.display = '';
+
+        replLog(targetWid, '— connected to worker ' + targetWid, 'info');
+
+        var inp = document.getElementById('repl-in-' + targetWid);
+        if (inp && activeTab === targetWid) inp.focus();
+    };
+}
+
+/* ── Connect / Disconnect All ───────────────────────────────────────── */
+
+function replConnectAll() {
+    for (var i = 0; i < workerCount; i++) { replConnectWorker(i); }
+}
+
+function replDisconnectAll() {
+    for (var wid in workers) {
+        if (workers[wid] && workers[wid].ws) workers[wid].ws.close();
+    }
+}
+
+/* ── Initialise tabs once worker count is known ─────────────────────── */
+
+function replInit(count) {
+    workerCount = count;
+    document.getElementById('tabs').innerHTML = '';
+    document.getElementById('repl-body').innerHTML = '';
+    workers   = {};
+    activeTab = null;
+    for (var i = 0; i < count; i++) {
+        replMakeTab(i);
+        replMakePane(i);
+    }
+    replSelectTab(0);
+}
+
+/* ================================================================== */
+/* Boot                                                                 */
+/* ================================================================== */
+
+document.getElementById('tree-root').addEventListener('click', treeHandleClick);
+
+sharedConnect(function() {
+    treeBrowseExpr('nginx');
+    sharedRpc('nginx.eval', ['nginx.cpu_count'], function(err, n) {
+        replInit(parseInt(n, 10) || 2);
+    });
+});
+</script>
+</body>
+</html>

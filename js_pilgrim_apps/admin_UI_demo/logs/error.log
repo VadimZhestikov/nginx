@@ -1,0 +1,70 @@
+2026/03/30 18:29:38 [emerg] 240309#0: bind() to 127.0.0.1:8080 failed (98: Address already in use)
+2026/03/30 18:29:38 [notice] 240309#0: try again to bind() after 500ms
+2026/03/30 18:29:38 [emerg] 240309#0: bind() to 127.0.0.1:8080 failed (98: Address already in use)
+2026/03/30 18:29:38 [notice] 240309#0: try again to bind() after 500ms
+2026/03/30 18:29:38 [emerg] 240309#0: bind() to 127.0.0.1:8080 failed (98: Address already in use)
+2026/03/30 18:29:38 [notice] 240309#0: try again to bind() after 500ms
+2026/03/30 18:29:38 [emerg] 240309#0: bind() to 127.0.0.1:8080 failed (98: Address already in use)
+2026/03/30 18:29:38 [notice] 240309#0: try again to bind() after 500ms
+2026/03/30 18:29:38 [emerg] 240309#0: bind() to 127.0.0.1:8080 failed (98: Address already in use)
+2026/03/30 18:29:38 [notice] 240309#0: try again to bind() after 500ms
+2026/03/30 18:29:38 [emerg] 240309#0: still could not bind()
+2026/03/30 18:29:46 [notice] 240343#0: using the "epoll" event method
+2026/03/30 18:29:46 [notice] 240343#0: nginx/1.29.7
+2026/03/30 18:29:46 [notice] 240343#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 18:29:46 [notice] 240343#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 18:29:46 [notice] 240343#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 18:29:46 [notice] 240345#0: start worker processes
+2026/03/30 18:29:46 [notice] 240345#0: start worker process 240346
+2026/03/30 18:29:46 [notice] 240345#0: start worker process 240347
+2026/03/30 18:29:46 [notice] 240345#0: signal 15 (SIGTERM) received from 240351, exiting
+2026/03/30 18:29:46 [notice] 240346#0: exiting
+2026/03/30 18:29:46 [notice] 240347#0: exiting
+2026/03/30 18:29:46 [notice] 240347#0: exit
+2026/03/30 18:29:46 [notice] 240346#0: exit
+2026/03/30 18:29:46 [notice] 240345#0: signal 17 (SIGCHLD) received from 240347
+2026/03/30 18:29:46 [notice] 240345#0: worker process 240347 exited with code 0
+2026/03/30 18:29:46 [notice] 240345#0: signal 17 (SIGCHLD) received from 240346
+2026/03/30 18:29:46 [notice] 240345#0: worker process 240346 exited with code 0
+2026/03/30 18:29:46 [notice] 240345#0: exit
+2026/03/30 18:31:58 [notice] 240491#0: using the "epoll" event method
+2026/03/30 18:31:58 [notice] 240491#0: nginx/1.29.7
+2026/03/30 18:31:58 [notice] 240491#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/03/30 18:31:58 [notice] 240491#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/03/30 18:31:58 [notice] 240491#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/03/30 18:31:58 [notice] 240493#0: start worker processes
+2026/03/30 18:31:58 [notice] 240493#0: start worker process 240494
+2026/03/30 18:31:58 [notice] 240493#0: start worker process 240495
+2026/03/30 18:35:41 [notice] 240494#0: js: 0
+2026/03/30 18:35:41 [notice] 240494#0: js: 1
+2026/03/30 18:35:41 [notice] 240494#0: js: 2
+2026/03/30 18:35:41 [notice] 240494#0: js: 3
+2026/03/30 18:35:41 [notice] 240494#0: js: 4
+2026/03/30 18:35:41 [notice] 240494#0: js: 5
+2026/03/30 18:35:41 [notice] 240494#0: js: 6
+2026/03/30 18:35:41 [notice] 240494#0: js: 7
+2026/03/30 18:35:41 [notice] 240494#0: js: 8
+2026/03/30 18:35:41 [notice] 240494#0: js: 9
+2026/03/30 18:37:59 [error] 240494#0: *12 connect() failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /web/ HTTP/1.1", upstream: "http://127.0.0.1:8091/", host: "localhost:8080"
+2026/03/30 18:37:59 [warn] 240494#0: *12 upstream server temporarily disabled while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /web/ HTTP/1.1", upstream: "http://127.0.0.1:8091/", host: "localhost:8080"
+2026/03/30 18:37:59 [error] 240494#0: *12 connect() failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /web/ HTTP/1.1", upstream: "http://127.0.0.1:8092/", host: "localhost:8080"
+2026/03/30 18:37:59 [warn] 240494#0: *12 upstream server temporarily disabled while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /web/ HTTP/1.1", upstream: "http://127.0.0.1:8092/", host: "localhost:8080"
+2026/03/30 18:37:59 [error] 240494#0: *12 connect() failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /web/ HTTP/1.1", upstream: "http://127.0.0.1:8093/", host: "localhost:8080"
+2026/03/30 18:37:59 [warn] 240494#0: *12 upstream server temporarily disabled while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /web/ HTTP/1.1", upstream: "http://127.0.0.1:8093/", host: "localhost:8080"
+2026/03/30 18:38:27 [error] 240494#0: *12 connect() failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /cache/ HTTP/1.1", upstream: "http://127.0.0.1:8096/", host: "localhost:8080"
+2026/03/30 18:38:37 [error] 240494#0: *12 connect() failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /api/ HTTP/1.1", upstream: "http://127.0.0.1:8094/", host: "localhost:8080"
+2026/03/30 18:38:37 [warn] 240494#0: *12 upstream server temporarily disabled while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /api/ HTTP/1.1", upstream: "http://127.0.0.1:8094/", host: "localhost:8080"
+2026/03/30 18:38:37 [error] 240494#0: *12 connect() failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: localhost, request: "GET /api/ HTTP/1.1", upstream: "http://127.0.0.1:8095/", host: "localhost:8080"
+2026/03/30 18:48:07 [notice] 240493#0: signal 15 (SIGTERM) received from 241320, exiting
+2026/03/30 18:48:07 [notice] 240494#0: exiting
+2026/03/30 18:48:07 [notice] 240495#0: exiting
+: worker process: quickjs.c:2047: JS_FreeRuntime: Assertion `list_empty(&rt->gc_obj_list)' failed.
+2026/03/30 18:48:07 [notice] 240495#0: exit
+2026/03/30 18:48:07 [notice] 240493#0: signal 17 (SIGCHLD) received from 240495
+2026/03/30 18:48:07 [notice] 240493#0: worker process 240495 exited with code 0
+2026/03/30 18:48:07 [notice] 240493#0: signal 29 (SIGIO) received
+2026/03/30 18:48:07 [notice] 240493#0: signal 14 (SIGALRM) received
+2026/03/30 18:48:07 [notice] 240493#0: signal 14 (SIGALRM) received
+2026/03/30 18:48:07 [notice] 240493#0: signal 17 (SIGCHLD) received from 240494
+2026/03/30 18:48:07 [alert] 240493#0: worker process 240494 exited on signal 6 (core dumped)
+2026/03/30 18:48:07 [notice] 240493#0: exit

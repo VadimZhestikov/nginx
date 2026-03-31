@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nginx JS Pilgrim — Admin UI Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f5f5f5;
+         color: #333; line-height: 1.6; }
+  header { background: #1a1a2e; color: #fff; padding: 24px 32px; }
+  header h1 { font-size: 22px; font-weight: 600; }
+  header p  { color: #aab; font-size: 14px; margin-top: 4px; }
+  main { max-width: 900px; margin: 32px auto; padding: 0 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr));
+           gap: 16px; margin-bottom: 32px; }
+  .card { background: #fff; border-radius: 8px; padding: 20px 24px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: #222; }
+  .card p  { font-size: 13px; color: #666; }
+  .card a  { display: inline-block; margin-top: 12px; font-size: 13px;
+             color: #0e639c; text-decoration: none; font-weight: 500; }
+  .card a:hover { text-decoration: underline; }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 8px;
+           border-radius: 12px; font-weight: 600; margin-left: 6px; }
+  .badge-ok  { background: #e6f4ea; color: #1e7e34; }
+  .badge-num { background: #e8f0fe; color: #1a73e8; }
+  section { margin-bottom: 28px; }
+  section h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px;
+               border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; background: #fff;
+          border-radius: 8px; overflow: hidden;
+          box-shadow: 0 1px 4px rgba(0,0,0,.08); font-size: 13px; }
+  th { background: #f9f9f9; text-align: left; padding: 10px 14px;
+       color: #555; font-weight: 600; }
+  td { padding: 8px 14px; border-top: 1px solid #f0f0f0; }
+  tr:hover td { background: #fafafa; }
+  .mono { font-family: monospace; font-size: 12px; }
+  .dim  { color: #999; }
+  footer { text-align: center; color: #aaa; font-size: 12px;
+           padding: 24px; margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>nginx JS Pilgrim &mdash; Admin UI Demo</h1>
+  <p>admin_UI_demo · showcasing the admin-shell package with live metrics,
+     shared state, and upstream management</p>
+</header>
+
+<main>
+
+  <div class="cards">
+    <div class="card">
+      <h2>Admin Shell UI</h2>
+      <p>Browse loaded plugins, inspect and edit shared state, evaluate
+         JS in the worker context, and view upstream pool health.</p>
+      <a href="/admin/">Open admin shell &rarr;</a>
+    </div>
+    <div class="card">
+      <h2>Runtime Info</h2>
+      <p>JSON endpoint exposing nginx version, loaded plugins, worker
+         count, and upstream topology.</p>
+      <a href="/info">GET /info &rarr;</a>
+    </div>
+    <div class="card">
+      <h2>Health Check</h2>
+      <p>Simple <code>{"status":"ok"}</code> endpoint suitable for
+         load-balancer probes.</p>
+      <a href="/health">GET /health &rarr;</a>
+    </div>
+  </div>
+
+  <section>
+    <h2>Loaded plugins <span id="plugin-count" class="badge badge-num">…</span></h2>
+    <table>
+      <thead><tr><th>#</th><th>Path</th></tr></thead>
+      <tbody id="plugin-table"><tr><td colspan="2" class="dim">loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Request counters</h2>
+    <table>
+      <thead><tr><th>Location</th><th>Requests</th></tr></thead>
+      <tbody id="metrics-table"><tr><td colspan="2" class="dim">loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Upstream pools</h2>
+    <table>
+      <thead><tr><th>Pool</th><th>Peer</th><th>Weight</th><th>Status</th></tr></thead>
+      <tbody id="upstream-table"><tr><td colspan="4" class="dim">loading…</td></tr></tbody>
+    </table>
+  </section>
+
+</main>
+
+<footer>
+  nginx JS Pilgrim P19 &mdash; admin_UI_demo
+</footer>
+
+<script>
+var WS_KEY   = btoa(String.fromCharCode.apply(null,
+    Array.from({length:16}, function(){return Math.random()*256|0;})));
+var ws;
+var pending = {};
+var seq     = 0;
+
+function connect(cb) {
+    ws = new WebSocket('ws://' + location.host + '/admin/ws');
+    ws.onopen  = function() { if (cb) cb(); };
+    ws.onerror = function() {};
+    ws.onmessage = function(ev) {
+        var msg;
+        try { msg = JSON.parse(ev.data); } catch(e) { return; }
+        var fn = pending[msg.id];
+        if (fn) { delete pending[msg.id]; fn(msg.error, msg.result); }
+    };
+}
+
+function rpc(method, params, cb) {
+    if (!ws || ws.readyState !== 1) { return; }
+    var id = ++seq;
+    pending[id] = cb || function(){};
+    ws.send(JSON.stringify({jsonrpc:'2.0',id:id,method:method,params:params||[]}));
+}
+
+function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+}
+
+function loadPlugins() {
+    rpc('plugins.list', [], function(err, result) {
+        if (err || !result) return;
+        document.getElementById('plugin-count').textContent = result.length;
+        var rows = result.map(function(p, i) {
+            return '<tr><td class="dim">' + (i+1) + '</td>' +
+                   '<td class="mono">' + esc(p) + '</td></tr>';
+        }).join('');
+        document.getElementById('plugin-table').innerHTML =
+            rows || '<tr><td colspan="2" class="dim">none</td></tr>';
+    });
+}
+
+function loadMetrics() {
+    rpc('shared.keys', [], function(err, keys) {
+        if (err || !keys) return;
+        var mkeys = keys.filter(function(k) {
+            return k.indexOf('metrics:') === 0 && k.indexOf(':requests') !== -1;
+        }).sort();
+        if (mkeys.length === 0) {
+            document.getElementById('metrics-table').innerHTML =
+                '<tr><td colspan="2" class="dim">no counters yet</td></tr>';
+            return;
+        }
+        var rows = '';
+        var done = 0;
+        var results = {};
+        mkeys.forEach(function(k) {
+            rpc('shared.get', [k], function(e, v) {
+                results[k] = v;
+                done++;
+                if (done === mkeys.length) {
+                    rows = mkeys.map(function(k) {
+                        var loc = k.replace('metrics:', '').replace(':requests', '');
+                        return '<tr><td class="mono">' + esc(loc) +
+                               '</td><td>' + esc(results[k] || '0') + '</td></tr>';
+                    }).join('');
+                    document.getElementById('metrics-table').innerHTML = rows;
+                }
+            });
+        });
+    });
+}
+
+function loadUpstreams() {
+    rpc('upstreams.list', [], function(err, result) {
+        if (err || !result) return;
+        var rows = '';
+        result.forEach(function(us) {
+            us.peers.forEach(function(p, i) {
+                rows += '<tr>' +
+                    (i === 0 ? '<td rowspan="' + us.peers.length + '"><strong>' +
+                               esc(us.name) + '</strong></td>' : '') +
+                    '<td class="mono">' + esc(p.address) + '</td>' +
+                    '<td>' + p.weight + '</td>' +
+                    '<td>' + (p.down
+                        ? '<span style="color:#c00">down</span>'
+                        : '<span style="color:#1e7e34">up</span>') + '</td>' +
+                    '</tr>';
+            });
+        });
+        document.getElementById('upstream-table').innerHTML =
+            rows || '<tr><td colspan="4" class="dim">no upstreams</td></tr>';
+    });
+}
+
+connect(function() {
+    loadPlugins();
+    loadMetrics();
+    loadUpstreams();
+    setInterval(loadMetrics, 5000);
+});
+</script>
+</body>
+</html>
