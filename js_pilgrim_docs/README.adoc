@@ -260,6 +260,67 @@ nginx.http.addHook(async function(req, next) {
 
 Hooks that do not call `next()` auto-advance (backward-compatible).
 
+== Technical Implementation Reference
+
+Detailed internal documentation lives in `js_dom_doc_tech/`.  Each document
+covers one subsystem, ordered from high-level design decisions down to
+data-structure layouts and wire formats.
+
+[cols="3,4"]
+|===
+| Document | Contents
+
+| link:../js_dom_doc_tech/01_architecture.md[01_architecture.md]
+| Full-proxy seven-layer stack; the P-series feature map.
+
+| link:../js_dom_doc_tech/02_design_decisions.md[02_design_decisions.md]
+| The five major architectural decisions — COW fork, async-generator streams,
+  Koa middleware, `req.ctx`, memfd SABs — with rejected alternatives and
+  consequences.
+
+| link:../js_dom_doc_tech/03_request_lifecycle.md[03_request_lifecycle.md]
+| P1/P2/P3/P9 phase hooks, async suspension and resume, hook-chain synthesis,
+  `ngx_js_async_ctx_t` internals.
+
+| link:../js_dom_doc_tech/04_filter_pipeline.md[04_filter_pipeline.md]
+| The five body-filter execution modes (WB_SYNC, WB_ASYNC, STREAM_SYNC,
+  STREAM_ASYNC, GENERATOR), multi-filter composition (P5/P15).
+
+| link:../js_dom_doc_tech/05_com_layer.md[05_com_layer.md]
+| `nginx` COM object tree — class ID system, `NginxServer`, `NginxLocation`,
+  `NginxUpstream`, `nginx.shared`, `nginx.broadcast`, module COM wrappers.
+
+| link:../js_dom_doc_tech/06_workers_concurrency.md[06_workers_concurrency.md]
+| COW fork model, `ngx_js_worker_t`, JS Worker threads, SharedWorker pthread
+  architecture, manager thread, Atomics.wait/notify bridge.
+
+| link:../js_dom_doc_tech/07_sab_shared_memory.md[07_sab_shared_memory.md]
+| Pre-fork vs post-fork `SharedArrayBuffer`, `memfd_create`, `ngx_js_sab_fd_table`,
+  full lifecycle walkthrough, `channel_patch_va`.
+
+| link:../js_dom_doc_tech/08_l4_pipeline.md[08_l4_pipeline.md]
+| P4 accept hooks, P6 inbound and P13 outbound async-generator TCP filters,
+  `NginxSocket`, `NginxHttpListener`, `NginxConnection`.
+
+| link:../js_dom_doc_tech/09_plugin_system.md[09_plugin_system.md]
+| `nginx.use` / `nginx.install` / registry resolution — P7 init-time, P16
+  post-fork hot-reload, P18 `vendor/pkg@semver` packages.
+
+| link:../js_dom_doc_tech/10_admin_shell.md[10_admin_shell.md]
+| P19 admin shell: `nginx.repl`, per-worker REPL relay via SharedWorker,
+  WebSocket handshake in JS, JSON-RPC 2.0 dispatch, `admin_UI_demo_v2`.
+
+| link:../js_dom_doc_tech/11_data_structures.md[11_data_structures.md]
+| Key C struct layouts with field-level ownership and lifetime annotations:
+  `ngx_js_conf_t`, `ngx_js_worker_t`, `ngx_js_req_ctx_t`, `ngx_js_sw_state_t`,
+  `ngx_js_sab_hdr_t`, and more.
+
+| link:../js_dom_doc_tech/12_protocols.md[12_protocols.md]
+| Wire formats: SharedWorker channel (16-byte header + SCM_RIGHTS), manager
+  thread protocol, broadcast protocol, WebSocket framing, JSON-RPC 2.0,
+  SAB header memory layout.
+|===
+
 == Source Layout
 
 [cols="2,4"]
