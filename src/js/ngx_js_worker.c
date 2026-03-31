@@ -1022,13 +1022,22 @@ ngx_js_worker_thread(void *arg)
 done:
     JS_FreeValue(ctx, tctx->on_message);
     /*
-     * Release the strong js_obj references held by each SW entry.
-     * This triggers the finalizer for each entry (refcount → 0), which:
-     *   - unlinks the entry from tctx->sw_list,
-     *   - frees sw->on_message,
-     *   - closes sw->worker_fd (after we set it to -1 here),
-     *   - frees the ngx_js_wt_sw_t struct itself.
-     * We save sw->next before each JS_FreeValue call because the finalizer
+     * Release SW entries.  Two steps are needed to handle cycles:
+     *
+     * 1. Pre-free on_message and set to UNDEFINED.  This removes the C
+     *    struct's external ref to the callback, which may hold an upvalue
+     *    closure over the sw JS object (e.g. sw.onmessage = fn(){ sw... }).
+     *    Without this, JS_RunGC cannot see the {sw, callback} pair as
+     *    unreachable and the cycle survives into JS_FreeRuntime.
+     *
+     * 2. Free js_obj.  If there is no cycle (callback does not capture sw),
+     *    refcount reaches 0 here and the finalizer runs immediately (unlinks,
+     *    closes fds, ngx_free).  If there IS a cycle, refcount stays ≥ 1;
+     *    the finalizer runs later via JS_RunGC.  Either way the finalizer
+     *    sees on_message == UNDEFINED, so it calls JS_FreeValueRT(UNDEFINED)
+     *    which is a no-op — no double-free.
+     *
+     * We save sw->next before any JS_FreeValue call because the finalizer
      * frees the struct.  ngx_free(tctx) comes last so the finalizer can
      * safely dereference sw->list (= &tctx->sw_list).
      */
@@ -1041,9 +1050,17 @@ done:
                 close(sw_iter->worker_fd);
                 sw_iter->worker_fd = -1;
             }
-            JS_FreeValue(ctx, sw_iter->js_obj);  /* → finalizer → ngx_free */
+            JS_FreeValue(ctx, sw_iter->on_message);
+            sw_iter->on_message = JS_UNDEFINED;
+            JS_FreeValue(ctx, sw_iter->js_obj);  /* → finalizer if no cycle */
         }
     }
+    /*
+     * Collect any {sw, onmessage-callback} reference cycles that survived
+     * the loop above.  Without this, JS_FreeRuntime would fire its
+     * list_empty(&rt->gc_obj_list) assertion.
+     */
+    JS_RunGC(rt);
     JS_FreeContext(ctx);
     js_std_free_handlers(rt);
     JS_FreeRuntime(rt);
