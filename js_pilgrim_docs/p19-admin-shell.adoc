@@ -1,0 +1,265 @@
+= JS-Pilgrim P19 — Admin Shell
+:toc: left
+:toc-title: Contents
+:toclevels: 3
+:sectnums:
+:revdate: 2026-03-30
+
+P19 ships a browser-based admin UI for the nginx JS runtime.  It is built
+on two new low-level primitives added to `nginx.repl`:
+
+* `nginx.repl.listenRaw(fd, onData)` — delivers TCP data as `Uint8Array`
+  chunks instead of newline-split strings; required for binary protocols.
+* `nginx.repl._writeFdRaw(fd, data)` — writes a `Uint8Array` or
+  `ArrayBuffer` to an fd without UTF-8 re-encoding; required for WebSocket
+  frame headers which contain bytes > 0x7F.
+
+A new `nginx.plugins` array (populated by every successful `nginx.use()`
+call) makes the list of loaded plugins introspectable at runtime.
+
+== Overview
+
+[source]
+----
+Browser
+  ↕ HTTP/WebSocket
+nginx location /admin/ws
+  ↕ req.hijack() + nginx.repl.listenRaw()
+admin-shell.js (JS)
+  ↕ nginx.* COM API
+nginx runtime state
+----
+
+The admin UI provides four panels:
+
+[cols="1,3"]
+|===
+| Panel | Contents
+
+| Plugins
+| List of loaded plugin paths (`nginx.plugins`).
+
+| Shared State
+| Read/write/delete entries in `nginx.shared` key-value store.
+
+| Eval
+| Run arbitrary JS in the nginx worker context.
+
+| Upstreams
+| Live view of upstream pool peers and weights.
+|===
+
+Communication is WebSocket (RFC 6455) with JSON-RPC 2.0 text frames.
+
+== Installation
+
+=== Step 1 — Add the plugin to your nginx config
+
+[source,nginx]
+----
+js_source /path/to/init.js;
+----
+
+[source,javascript]
+----
+// init.js
+nginx.use('/path/to/js_pilgrim_apps/admin-shell');
+
+// Or if installed via registry:
+nginx.use('ngxjs/admin-shell@1.0.0');
+----
+
+=== Step 2 — Add the locations to your server block
+
+[source,nginx]
+----
+server {
+    listen 127.0.0.1:8080;
+
+    location /admin/ {
+        root /path/to/js_pilgrim_apps/admin-shell/static;
+    }
+
+    location /admin/ws {
+        # JS handler installed by admin-shell.js
+    }
+}
+----
+
+=== Step 3 — Open the browser
+
+Navigate to `http://localhost:8080/admin/`.
+
+The admin shell only binds to `127.0.0.1` in the reference config.  If you
+expose it on a public interface, add authentication (e.g. `auth_basic` or
+a JWT hook from the zero-trust-gateway app).
+
+== JSON-RPC Protocol
+
+=== Transport
+
+A standard WebSocket upgrade to `/admin/ws`.  All messages are UTF-8
+encoded JSON text frames (opcode 1).  The server never masks frames
+(per RFC 6455 §5.6).
+
+=== Request format
+
+[source,json]
+----
+{"jsonrpc": "2.0", "id": 1, "method": "shared.set", "params": ["key", "val"]}
+----
+
+=== Response format
+
+[source,json]
+----
+{"jsonrpc": "2.0", "id": 1, "result": "ok"}
+{"jsonrpc": "2.0", "id": 2, "error": {"code": -32601, "message": "Method not found"}}
+----
+
+=== Methods
+
+[cols="2,2,3"]
+|===
+| Method | Params | Result
+
+| `plugins.list`
+| (none)
+| Array of absolute plugin paths loaded by `nginx.use()`.
+
+| `shared.get`
+| `[key]`
+| Value stored for key (string or undefined).
+
+| `shared.set`
+| `[key, value]`
+| `"ok"`.
+
+| `shared.delete`
+| `[key]`
+| `"ok"`.
+
+| `shared.keys`
+| (none)
+| Array of all keys in `nginx.shared`.
+
+| `nginx.eval`
+| `[code]`
+| `{status, value, message?, stack?}` — same shape as `nginx.repl.eval()`.
+
+| `upstreams.list`
+| (none)
+| Array of `{name, peers: [{address, weight, down, maxFails}]}` objects.
+|===
+
+=== Error codes
+
+[cols="1,3"]
+|===
+| Code | Meaning
+| -32700 | Parse error (malformed JSON)
+| -32600 | Invalid Request (missing `method` field)
+| -32601 | Method not found
+| -32603 | Internal error (JS exception during dispatch)
+|===
+
+== New C primitives
+
+=== `nginx.repl.listenRaw(fd, onData)`
+
+Installs a raw-data read handler on `fd` (a connection fd returned by
+`req.hijack()`).  For each TCP segment received, `onData(chunk)` is called
+with a `Uint8Array` containing the received bytes.
+
+Unlike `nginx.repl.listen()`, data is _not_ split on newlines.  This makes
+it suitable for binary protocols like WebSocket, where frame boundaries are
+encoded in the frame header, not in the byte stream.
+
+[source,javascript]
+----
+var fd = req.hijack();
+nginx.repl.listenRaw(fd, function(chunk) {
+    // chunk is a Uint8Array
+    for (var i = 0; i < chunk.length; i++) {
+        process(chunk[i]);
+    }
+});
+----
+
+=== `nginx.repl._writeFdRaw(fd, data)`
+
+Writes the raw bytes of `data` (a `Uint8Array` or `ArrayBuffer`) to `fd`
+without UTF-8 encoding.  Required for writing WebSocket frame headers that
+contain bytes in the range 0x80–0xFF.
+
+[source,javascript]
+----
+var frame = new Uint8Array([0x81, 5, 72, 101, 108, 108, 111]); // "Hello"
+nginx.repl._writeFdRaw(fd, frame);
+----
+
+=== `nginx.plugins`
+
+A plain JS array populated by every successful `nginx.use()` call.  Each
+entry is the _resolved absolute path_ of the plugin directory.
+
+[source,javascript]
+----
+nginx.use('/opt/plugins/rate-limiter');
+nginx.use('acme/auth-guard@1.2.3');   // P18 registry ref
+
+console.log(nginx.plugins);
+// ['/opt/plugins/rate-limiter',
+//  '/home/user/.cache/ngxjs/packages/acme/auth-guard/1.2.3']
+----
+
+`nginx.plugins` is an ordinary writable array.  It can be cleared or
+filtered from JS without affecting the already-loaded plugins.
+
+== Implementation notes
+
+=== WebSocket handshake (SHA-1 in pure JS)
+
+QuickJS has no built-in crypto.  `admin-shell.js` contains a compact (~40
+line) pure-JS SHA-1 implementation used only for the `Sec-WebSocket-Accept`
+computation.
+
+=== Binary frame I/O
+
+The two new C functions are implemented in `src/js/ngx_js_repl.c`:
+
+`ngx_js_repl_write_fd_raw` — calls `JS_GetTypedArrayBuffer` to get the
+underlying `ArrayBuffer` pointer, then writes the bytes with a `write(2)`
+loop identical to `_writeFd`.
+
+`ngx_js_repl_listen_raw` — delegates to the shared
+`ngx_js_repl_listen_impl(ctx, argc, argv, 1)` with `raw=1`.  In the read
+handler, when `rc->raw` is set, the received bytes are wrapped in a new
+`Uint8Array` (via `JS_NewArrayBufferCopy` + Uint8Array constructor) and
+passed directly to the callback, skipping the newline-split loop.
+
+=== `nginx.plugins` C implementation
+
+`nginx.plugins` is a plain JS array created in `ngx_js_com_init` after
+`nginx.shared`.  `ngx_js_use()` appends the resolved `dir_buf` path using
+`Array.prototype.push` (called via `JS_Call` from C) after every successful
+`ngx_js_load_plugin`.
+
+== Tests
+
+`t/js_pilgrim_p19_admin_shell.t` (12 tests):
+
+[cols="1,3"]
+|===
+| Tests | Scenario
+
+| 1     | HTTP GET /admin/ → 200 (static HTML served)
+| 2-4   | WebSocket upgrade → 101, Sec-WebSocket-Accept present and correct
+| 5     | Text frame echo round-trip (`listenRaw` + `_writeFdRaw` exercise)
+| 6     | `plugins.list` JSON-RPC → result is array
+| 7     | `nginx.plugins` non-empty after `nginx.use()`
+| 8-9   | `shared.set` + `shared.get` round-trip
+| 10    | `nginx.eval` → ok status for valid JS
+| 11    | Unknown method → JSON-RPC error -32601
+| 12    | Ping frame → pong frame (opcode 0x8A)
+|===

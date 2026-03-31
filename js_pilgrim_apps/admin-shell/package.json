@@ -1,0 +1,8 @@
+{
+  "name": "admin-shell",
+  "version": "1.0.0",
+  "description": "JS-Pilgrim P19 browser-based admin UI with WebSocket JSON-RPC",
+  "ngxjs": {
+    "main": "admin-shell.js"
+  }
+}

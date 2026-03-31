@@ -214,12 +214,14 @@ a browser DevTools tab).
   `$NGXJS_CACHE/packages/vendor/plugin/version/`.  CLI tool `tools/ngxjs`
   handles download, checksum, extraction; JS runtime stays network-free.
 
-| P19
-| Admin shell
-| Browser-based admin UI using `nginx.repl` and WebSocket.  Each
-  installed package contributes a panel (analogous to a DevTools tab).
-  Provides runtime visibility into loaded plugins, hook chains, shared
-  state, and live log streaming.
+| P19 ✓
+| <<p19-admin-shell.adoc#,Admin shell>>
+| Browser-based admin UI using `nginx.repl` and WebSocket (JSON-RPC 2.0).
+  Four panels: Plugins (`nginx.plugins`), Shared State (`nginx.shared`),
+  Eval (`nginx.repl.eval`), Upstreams.  Built on two new primitives:
+  `nginx.repl.listenRaw(fd, onData)` (binary chunk delivery) and
+  `nginx.repl._writeFdRaw(fd, Uint8Array)` (raw byte write).
+  `nginx.plugins` array tracks all `nginx.use()` loads.
 |===
 
 == Hook Cancellation Model
@@ -274,10 +276,11 @@ Hooks that do not call `next()` auto-advance (backward-compatible).
 
 | `src/js/ngx_js_com.c`
 | Root `nginx` COM object: `version`, `cpu_count`, `log`, `cycle`,
-  `setTimeout`, `broadcast`, `shared`, `set`/`get`/`settable`,
-  `nginx.use` (P7/P16/P18), `nginx.install` (P7).
+  `setTimeout`, `broadcast`, `shared`, `plugins`, `set`/`get`/`settable`,
+  `nginx.use` (P7/P16/P18/P19), `nginx.install` (P7).
   P18: `ngx_js_is_registry_ref`, `ngx_js_resolve_cache_dir`,
   `ngx_js_resolve_registry_pkg`.
+  P19: `nginx.plugins` array (appended by `ngx_js_use` after each load).
 
 | `src/js/ngx_js_com_http.c`
 | `nginx.http`: servers, locations, upstreams.  `addHook` (P1/P2),
@@ -304,8 +307,13 @@ Hooks that do not call `next()` auto-advance (backward-compatible).
 | `src/js/ngx_js_worker.h`
 | `ngx_js_worker_t` struct definition (rt, ctx, channel, pending, etc.).
 
+| `src/js/ngx_js_repl.c`
+| `nginx.repl` object: `_writeFd`, `_writeFdRaw` (P19), `eval`, `attach`,
+  `detach`, `listen`, `listenRaw` (P19).  `ngx_js_repl_conn_t` tracks
+  per-connection state with a `raw:1` flag for binary delivery mode.
+
 | `t/js_pilgrim_p*.t`
-| Per-step test suites (P1–P18).  Run with
+| Per-step test suites (P1–P19).  Run with
   `TEST_NGINX_BINARY=objs/nginx prove -v t/js_pilgrim_p*.t`.
 |===
 
@@ -330,4 +338,10 @@ Hooks that do not call `next()` auto-advance (backward-compatible).
   pinning, and a REST admin API.  Tests: `t/js_admin_base.t`,
   `t/js_admin_api.t`, `t/js_admin_snapshot.t`, `t/js_admin_rollback.t`,
   `t/js_admin_compact.t`, `t/js_admin_struct.t`, `t/js_admin_edge.t`.
+
+| `js_pilgrim_apps/admin-shell/`
+| Browser-based admin UI (P19).  WebSocket JSON-RPC server in JS; static
+  SPA (`static/index.html`) with Plugins, Shared State, Eval, and Upstreams
+  panels.  Reference config: `nginx.conf`.
+  Test: `t/js_pilgrim_p19_admin_shell.t`.
 |===

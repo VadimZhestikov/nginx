@@ -1915,6 +1915,29 @@ ngx_js_use(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
+    /* P19: record resolved plugin path in nginx.plugins */
+    {
+        JSValue  global_p, nginx_p, plugins_arr, push_fn, path_val, res;
+
+        global_p    = JS_GetGlobalObject(ctx);
+        nginx_p     = JS_GetPropertyStr(ctx, global_p, "nginx");
+        plugins_arr = JS_GetPropertyStr(ctx, nginx_p, "plugins");
+        push_fn     = JS_GetPropertyStr(ctx, plugins_arr, "push");
+        path_val    = JS_NewString(ctx, dir_buf);
+
+        if (JS_IsFunction(ctx, push_fn)) {
+            res = JS_Call(ctx, push_fn, plugins_arr, 1,
+                          (JSValueConst *) &path_val);
+            JS_FreeValue(ctx, res);
+        }
+
+        JS_FreeValue(ctx, path_val);
+        JS_FreeValue(ctx, push_fn);
+        JS_FreeValue(ctx, plugins_arr);
+        JS_FreeValue(ctx, nginx_p);
+        JS_FreeValue(ctx, global_p);
+    }
+
     /*
      * P16: if we are a worker, broadcast the plugin load to all other
      * workers via the master.
@@ -2577,6 +2600,9 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                           JS_NewCFunction(ctx, ngx_js_shared_fn_incr, "incr", 1));
         JS_SetPropertyStr(ctx, nginx_obj, "shared", shared_obj);
     }
+
+    /* nginx.plugins — JS-Pilgrim P19: array of loaded plugin paths */
+    JS_SetPropertyStr(ctx, nginx_obj, "plugins", JS_NewArray(ctx));
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
 

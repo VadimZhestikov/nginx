@@ -31,6 +31,15 @@
  *     active nginx connection fd from req.hijack()).  Calls onLine(line)
  *     for each \n-terminated line received.  When the connection is closed
  *     by the peer, finalises the hijacked request automatically.
+ *
+ *   nginx.repl.listenRaw(fd, onData)
+ *     Like listen() but delivers each received chunk as a Uint8Array instead
+ *     of splitting on newlines.  Suitable for binary protocols (WebSocket).
+ *
+ *   nginx.repl._writeFdRaw(fd, data)
+ *     Like _writeFd() but accepts a Uint8Array or ArrayBuffer and writes the
+ *     raw bytes to fd without UTF-8 re-encoding.  Required for WebSocket
+ *     frames whose headers contain bytes > 0x7F.
  */
 
 #include <ngx_config.h>
@@ -83,6 +92,66 @@ ngx_js_repl_write_fd(JSContext *ctx, JSValueConst this_val,
     }
 
     JS_FreeCString(ctx, cstr);
+    return JS_UNDEFINED;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* nginx.repl._writeFdRaw(fd, data)                                     */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_repl_write_fd_raw(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    int32_t   fd;
+    JSValue   ab;
+    uint8_t  *ptr;
+    size_t    byte_off, byte_len, total, pos;
+    ssize_t   n;
+
+    if (argc < 2) {
+        return JS_UNDEFINED;
+    }
+
+    if (JS_ToInt32(ctx, &fd, argv[0])) {
+        return JS_EXCEPTION;
+    }
+
+    /* Accept Uint8Array (or any typed array) */
+    ab = JS_GetTypedArrayBuffer(ctx, argv[1], &byte_off, &byte_len, NULL);
+    if (JS_IsException(ab)) {
+        /* Not a typed array — try treating as ArrayBuffer directly */
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        ab       = JS_DupValue(ctx, argv[1]);
+        byte_off = 0;
+        ptr      = JS_GetArrayBuffer(ctx, &byte_len, ab);
+    } else {
+        ptr = JS_GetArrayBuffer(ctx, &total, ab);
+        if (ptr) {
+            ptr += byte_off;
+        }
+    }
+
+    if (ptr == NULL) {
+        JS_FreeValue(ctx, ab);
+        return JS_ThrowTypeError(ctx,
+            "_writeFdRaw: argument must be a Uint8Array or ArrayBuffer");
+    }
+
+    pos = 0;
+    while (pos < byte_len) {
+        n = write((int) fd, ptr + pos, byte_len - pos);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        pos += (size_t) n;
+    }
+
+    JS_FreeValue(ctx, ab);
     return JS_UNDEFINED;
 }
 
@@ -398,11 +467,38 @@ typedef struct {
     JSContext           *ctx;
     JSRuntime           *rt;
     ngx_js_worker_t     *w;
-    JSValue              on_line;
+    JSValue              on_line;   /* onLine callback (listen) or onData (listenRaw) */
     ngx_http_request_t  *r;
     u_char               buf[NGX_JS_REPL_BUF_SIZE];
     size_t               buf_len;
+    unsigned             raw:1;     /* 1 = listenRaw: deliver Uint8Array, no line split */
 } ngx_js_repl_conn_t;
+
+
+/* ------------------------------------------------------------------ */
+/* Helper: create a Uint8Array view over a copy of the given bytes     */
+/* ------------------------------------------------------------------ */
+
+static JSValue
+ngx_js_make_uint8array(JSContext *ctx, const u_char *data, size_t len)
+{
+    JSValue  ab, global, ctor, arr;
+
+    ab = JS_NewArrayBufferCopy(ctx, data, len);
+    if (JS_IsException(ab)) {
+        return ab;
+    }
+
+    global = JS_GetGlobalObject(ctx);
+    ctor   = JS_GetPropertyStr(ctx, global, "Uint8Array");
+    JS_FreeValue(ctx, global);
+
+    arr = JS_CallConstructor(ctx, ctor, 1, (JSValueConst *) &ab);
+    JS_FreeValue(ctx, ctor);
+    JS_FreeValue(ctx, ab);
+
+    return arr;
+}
 
 
 static void
@@ -447,6 +543,46 @@ ngx_js_repl_read_handler(ngx_event_t *ev)
     }
 
     rc->buf_len += (size_t) n;
+
+    /* Raw mode: deliver the received bytes directly as a Uint8Array */
+    if (rc->raw) {
+        JSValue  data_val, result;
+
+        data_val = ngx_js_make_uint8array(rc->ctx, rc->buf, (size_t) n);
+        rc->buf_len = 0;  /* buffer consumed immediately */
+
+        if (!JS_IsException(data_val)) {
+            result = JS_Call(rc->ctx, rc->on_line, JS_UNDEFINED, 1,
+                             (JSValueConst *) &data_val);
+            JS_FreeValue(rc->ctx, data_val);
+
+            if (JS_IsException(result)) {
+                JSValue  exc = JS_GetException(rc->ctx);
+                JSValue  str = JS_ToString(rc->ctx, exc);
+                const char *cstr = JS_ToCString(rc->ctx, str);
+                if (cstr) {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                                  "js: repl onData exception: %s", cstr);
+                    JS_FreeCString(rc->ctx, cstr);
+                }
+                JS_FreeValue(rc->ctx, str);
+                JS_FreeValue(rc->ctx, exc);
+            }
+            JS_FreeValue(rc->ctx, result);
+        } else {
+            JS_FreeValue(rc->ctx, data_val);
+        }
+
+        while (JS_ExecutePendingJob(rc->rt, &job_ctx) > 0) { }
+        ngx_js_async_check(rc->w);
+        ngx_js_bf_async_check(rc->w);
+        ngx_js_sf_async_check(rc->w);
+
+        if (ngx_handle_read_event(ev, 0) != NGX_OK) {
+            goto cleanup;
+        }
+        return;
+    }
 
     /* Dispatch complete lines (\n terminated) */
     line_start = rc->buf;
@@ -527,8 +663,7 @@ cleanup:
 
 
 static JSValue
-ngx_js_repl_listen(JSContext *ctx, JSValueConst this_val,
-    int argc, JSValueConst *argv)
+ngx_js_repl_listen_impl(JSContext *ctx, int argc, JSValueConst *argv, int raw)
 {
     int32_t              fd;
     JSValue              on_line;
@@ -537,10 +672,12 @@ ngx_js_repl_listen(JSContext *ctx, JSValueConst this_val,
     ngx_js_req_ctx_t    *rctx;
     ngx_js_worker_t     *w;
     ngx_js_repl_conn_t  *rc;
+    const char          *name;
+
+    name = raw ? "nginx.repl.listenRaw" : "nginx.repl.listen";
 
     if (argc < 2) {
-        return JS_ThrowTypeError(ctx,
-            "nginx.repl.listen(fd, onLine): 2 args required");
+        return JS_ThrowTypeError(ctx, "%s(fd, cb): 2 args required", name);
     }
 
     if (JS_ToInt32(ctx, &fd, argv[0])) {
@@ -549,8 +686,7 @@ ngx_js_repl_listen(JSContext *ctx, JSValueConst this_val,
 
     on_line = argv[1];
     if (!JS_IsFunction(ctx, on_line)) {
-        return JS_ThrowTypeError(ctx,
-            "nginx.repl.listen: onLine must be a function");
+        return JS_ThrowTypeError(ctx, "%s: callback must be a function", name);
     }
 
     /* Find the active nginx connection whose fd matches the hijacked fd.
@@ -571,21 +707,18 @@ ngx_js_repl_listen(JSContext *ctx, JSValueConst this_val,
     }
 
     if (c == NULL) {
-        return JS_ThrowRangeError(ctx,
-            "nginx.repl.listen: no connection for fd");
+        return JS_ThrowRangeError(ctx, "%s: no connection for fd", name);
     }
 
     r = (ngx_http_request_t *) c->data;
 
     if (r == NULL) {
-        return JS_ThrowTypeError(ctx,
-            "nginx.repl.listen: no request on fd");
+        return JS_ThrowTypeError(ctx, "%s: no request on fd", name);
     }
 
     rctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
     if (rctx == NULL) {
-        return JS_ThrowTypeError(ctx,
-            "nginx.repl.listen: no request context on fd");
+        return JS_ThrowTypeError(ctx, "%s: no request context on fd", name);
     }
 
     w = JS_GetContextOpaque(ctx);
@@ -601,6 +734,7 @@ ngx_js_repl_listen(JSContext *ctx, JSValueConst this_val,
     rc->on_line = JS_DupValue(ctx, on_line);
     rc->r       = r;
     rc->buf_len = 0;
+    rc->raw     = raw ? 1 : 0;
 
     rctx->repl = rc;
 
@@ -612,10 +746,26 @@ ngx_js_repl_listen(JSContext *ctx, JSValueConst this_val,
         rc->on_line = JS_UNDEFINED;
         rctx->repl  = NULL;
         return JS_ThrowInternalError(ctx,
-            "nginx.repl.listen: failed to register read event");
+            "%s: failed to register read event", name);
     }
 
     return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_repl_listen(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    return ngx_js_repl_listen_impl(ctx, argc, argv, 0);
+}
+
+
+static JSValue
+ngx_js_repl_listen_raw(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    return ngx_js_repl_listen_impl(ctx, argc, argv, 1);
 }
 
 
@@ -637,6 +787,10 @@ ngx_js_repl_install(JSContext *ctx, JSValue nginx_obj)
                       JS_NewCFunction(ctx, ngx_js_repl_write_fd,
                                       "_writeFd", 2));
 
+    JS_SetPropertyStr(ctx, repl_obj, "_writeFdRaw",
+                      JS_NewCFunction(ctx, ngx_js_repl_write_fd_raw,
+                                      "_writeFdRaw", 2));
+
     JS_SetPropertyStr(ctx, repl_obj, "eval",
                       JS_NewCFunction(ctx, ngx_js_repl_eval,
                                       "eval", 1));
@@ -652,6 +806,10 @@ ngx_js_repl_install(JSContext *ctx, JSValue nginx_obj)
     JS_SetPropertyStr(ctx, repl_obj, "listen",
                       JS_NewCFunction(ctx, ngx_js_repl_listen,
                                       "listen", 2));
+
+    JS_SetPropertyStr(ctx, repl_obj, "listenRaw",
+                      JS_NewCFunction(ctx, ngx_js_repl_listen_raw,
+                                      "listenRaw", 2));
 
     JS_SetPropertyStr(ctx, nginx_obj, "repl", repl_obj);
 

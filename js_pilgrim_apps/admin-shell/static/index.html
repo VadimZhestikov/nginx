@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nginx JS Admin Shell</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: monospace; background: #1e1e1e; color: #d4d4d4;
+         display: flex; flex-direction: column; height: 100vh; }
+  header { background: #2d2d2d; padding: 8px 16px; border-bottom: 1px solid #444;
+            display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 14px; color: #9cdcfe; }
+  #status { font-size: 12px; padding: 2px 8px; border-radius: 3px;
+             background: #333; color: #888; }
+  #status.connected { background: #1a3a1a; color: #4ec94e; }
+  #status.error     { background: #3a1a1a; color: #f44; }
+  nav { background: #252526; border-bottom: 1px solid #333;
+        display: flex; gap: 0; }
+  nav button { background: none; border: none; color: #888; padding: 8px 16px;
+                font: inherit; cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.active { color: #d4d4d4; border-bottom-color: #007acc; }
+  nav button:hover  { color: #d4d4d4; }
+  .panel { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+  .panel.active { display: flex; }
+  /* Plugins panel */
+  #plugins-list { padding: 12px; overflow: auto; flex: 1; }
+  #plugins-list .item { padding: 4px 0; color: #ce9178; }
+  #plugins-list .empty { color: #555; font-style: italic; }
+  /* Shared state panel */
+  #shared-controls { padding: 8px 12px; display: flex; gap: 8px; flex-wrap: wrap;
+                      border-bottom: 1px solid #333; }
+  #shared-controls input { background: #3c3c3c; border: 1px solid #555; color: #d4d4d4;
+                             padding: 4px 8px; font: inherit; flex: 1; min-width: 100px; }
+  #shared-controls button { background: #0e639c; border: none; color: #fff;
+                              padding: 4px 12px; font: inherit; cursor: pointer; }
+  #shared-table { flex: 1; overflow: auto; padding: 12px; }
+  #shared-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  #shared-table th { text-align: left; padding: 4px 8px; color: #9cdcfe;
+                      border-bottom: 1px solid #333; }
+  #shared-table td { padding: 4px 8px; vertical-align: top; }
+  #shared-table tr:hover td { background: #2a2a2a; }
+  /* Eval panel */
+  #eval-input { width: 100%; background: #1e1e1e; border: none;
+                 border-bottom: 1px solid #333; color: #d4d4d4;
+                 padding: 12px; font: 13px/1.5 monospace; resize: none;
+                 height: 80px; outline: none; }
+  #eval-run { align-self: flex-start; margin: 8px 12px; background: #0e639c;
+               border: none; color: #fff; padding: 6px 16px; font: inherit;
+               cursor: pointer; }
+  #eval-output { flex: 1; overflow: auto; padding: 12px; white-space: pre-wrap;
+                  font-size: 13px; }
+  .out-ok    { color: #9cdcfe; }
+  .out-error { color: #f44747; }
+  /* Upstreams panel */
+  #upstreams-list { flex: 1; overflow: auto; padding: 12px; }
+  .upstream-block { margin-bottom: 16px; }
+  .upstream-name { color: #9cdcfe; margin-bottom: 4px; }
+  .upstream-peer { padding: 2px 12px; font-size: 13px; }
+  .peer-down { color: #555; text-decoration: line-through; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>nginx JS Admin Shell</h1>
+  <span id="status">connecting…</span>
+  <button onclick="refresh()" style="margin-left:auto; background:#333; border:1px solid #555;
+          color:#d4d4d4; padding:4px 12px; font:inherit; cursor:pointer;">
+    Refresh
+  </button>
+</header>
+
+<nav>
+  <button class="active" onclick="showPanel('plugins')">Plugins</button>
+  <button onclick="showPanel('shared')">Shared State</button>
+  <button onclick="showPanel('eval')">Eval</button>
+  <button onclick="showPanel('upstreams')">Upstreams</button>
+</nav>
+
+<!-- Plugins panel -->
+<div id="panel-plugins" class="panel active">
+  <div id="plugins-list"><div class="empty">loading…</div></div>
+</div>
+
+<!-- Shared state panel -->
+<div id="panel-shared" class="panel">
+  <div id="shared-controls">
+    <input id="sk" placeholder="key">
+    <input id="sv" placeholder="value">
+    <button onclick="sharedSet()">Set</button>
+    <button onclick="sharedDel()">Delete</button>
+    <button onclick="loadShared()">Refresh</button>
+  </div>
+  <div id="shared-table">
+    <table><thead><tr><th>Key</th><th>Value</th></tr></thead>
+    <tbody id="shared-body"></tbody></table>
+  </div>
+</div>
+
+<!-- Eval panel -->
+<div id="panel-eval" class="panel">
+  <textarea id="eval-input" placeholder="nginx.plugins.length"></textarea>
+  <button id="eval-run" onclick="runEval()">Run ▶</button>
+  <div id="eval-output"></div>
+</div>
+
+<!-- Upstreams panel -->
+<div id="panel-upstreams" class="panel">
+  <div id="upstreams-list"><div class="empty">loading…</div></div>
+</div>
+
+<script>
+var ws, pending = {}, seq = 0;
+
+function connect() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/admin/ws');
+
+  ws.onopen = function() {
+    document.getElementById('status').textContent = 'connected';
+    document.getElementById('status').className   = 'connected';
+    refresh();
+  };
+
+  ws.onclose = function() {
+    document.getElementById('status').textContent = 'disconnected';
+    document.getElementById('status').className   = 'error';
+    setTimeout(connect, 3000);
+  };
+
+  ws.onerror = function() {
+    document.getElementById('status').textContent = 'error';
+    document.getElementById('status').className   = 'error';
+  };
+
+  ws.onmessage = function(ev) {
+    var msg;
+    try { msg = JSON.parse(ev.data); } catch(e) { return; }
+    var cb = pending[msg.id];
+    if (cb) { delete pending[msg.id]; cb(msg.error, msg.result); }
+  };
+}
+
+function rpc(method, params, cb) {
+  if (!ws || ws.readyState !== 1) { return; }
+  var id = ++seq;
+  pending[id] = cb || function(){};
+  ws.send(JSON.stringify({ jsonrpc: '2.0', id: id, method: method,
+                           params: params || [] }));
+}
+
+/* Panel switching */
+function showPanel(name) {
+  document.querySelectorAll('.panel').forEach(function(p) {
+    p.classList.remove('active');
+  });
+  document.querySelectorAll('nav button').forEach(function(b, i) {
+    b.classList.remove('active');
+  });
+  document.getElementById('panel-' + name).classList.add('active');
+  var btns = document.querySelectorAll('nav button');
+  var map  = ['plugins','shared','eval','upstreams'];
+  btns[map.indexOf(name)].classList.add('active');
+  if (name === 'shared')     { loadShared(); }
+  if (name === 'upstreams')  { loadUpstreams(); }
+  if (name === 'plugins')    { loadPlugins(); }
+}
+
+/* Plugins */
+function loadPlugins() {
+  rpc('plugins.list', [], function(err, result) {
+    var el = document.getElementById('plugins-list');
+    if (err) { el.innerHTML = '<div class="out-error">' + err.message + '</div>'; return; }
+    if (!result || result.length === 0) {
+      el.innerHTML = '<div class="empty">No plugins loaded</div>';
+    } else {
+      el.innerHTML = result.map(function(p) {
+        return '<div class="item">' + escHtml(p) + '</div>';
+      }).join('');
+    }
+  });
+}
+
+/* Shared state */
+function loadShared() {
+  rpc('shared.keys', [], function(err, keys) {
+    if (err) { return; }
+    var tbody = document.getElementById('shared-body');
+    tbody.innerHTML = '';
+    (keys || []).forEach(function(k) {
+      rpc('shared.get', [k], function(e, v) {
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + escHtml(String(k)) + '</td>' +
+                       '<td>' + escHtml(String(v)) + '</td>';
+        tbody.appendChild(tr);
+      });
+    });
+  });
+}
+
+function sharedSet() {
+  var k = document.getElementById('sk').value;
+  var v = document.getElementById('sv').value;
+  if (!k) { return; }
+  rpc('shared.set', [k, v], function() { loadShared(); });
+}
+
+function sharedDel() {
+  var k = document.getElementById('sk').value;
+  if (!k) { return; }
+  rpc('shared.delete', [k], function() { loadShared(); });
+}
+
+/* Eval */
+document.addEventListener('DOMContentLoaded', function() {
+  document.getElementById('eval-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { runEval(); }
+  });
+});
+
+function runEval() {
+  var code = document.getElementById('eval-input').value;
+  var out  = document.getElementById('eval-output');
+  rpc('nginx.eval', [code], function(err, result) {
+    if (err) {
+      out.innerHTML = '<span class="out-error">RPC error: ' +
+                      escHtml(err.message) + '</span>\n' + out.innerHTML;
+      return;
+    }
+    var cls  = result.status === 'ok' ? 'out-ok' : 'out-error';
+    var text = result.status === 'ok'
+               ? (result.value !== undefined ? result.value : 'undefined')
+               : (result.message || 'error');
+    out.innerHTML = '<span class="' + cls + '">' + escHtml(String(text)) +
+                    '</span>\n' + out.innerHTML;
+  });
+}
+
+/* Upstreams */
+function loadUpstreams() {
+  rpc('upstreams.list', [], function(err, result) {
+    var el = document.getElementById('upstreams-list');
+    if (err) { el.innerHTML = '<div class="out-error">' + err.message + '</div>'; return; }
+    if (!result || result.length === 0) {
+      el.innerHTML = '<div class="empty">No upstreams configured</div>';
+      return;
+    }
+    el.innerHTML = result.map(function(us) {
+      var peers = us.peers.map(function(p) {
+        var cls = p.down ? 'upstream-peer peer-down' : 'upstream-peer';
+        return '<div class="' + cls + '">' + escHtml(p.address) +
+               ' w=' + p.weight + (p.down ? ' (down)' : '') + '</div>';
+      }).join('');
+      return '<div class="upstream-block">' +
+             '<div class="upstream-name">' + escHtml(us.name) + '</div>' +
+             peers + '</div>';
+    }).join('');
+  });
+}
+
+function refresh() {
+  var active = document.querySelector('.panel.active');
+  if (!active) { return; }
+  var name = active.id.replace('panel-', '');
+  if (name === 'plugins')   { loadPlugins(); }
+  if (name === 'shared')    { loadShared(); }
+  if (name === 'upstreams') { loadUpstreams(); }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+connect();
+</script>
+</body>
+</html>
