@@ -687,8 +687,16 @@ document.getElementById('tree-root').addEventListener('click', treeHandleClick);
 
 sharedConnect(function() {
     treeBrowseExpr('nginx');
-    sharedRpc('nginx.eval', ['nginx.cpu_count'], function(err, n) {
-        replInit(parseInt(n, 10) || 2);
+    sharedRpc('nginx.eval', ['nginx.cycle.workers'], function(err, n) {
+        var raw = (n && n.eval) ? n.eval.value : n;
+        var count = parseInt(raw, 10) || 2;
+        replInit(count);
+        /* Auto-connect all workers, staggered to avoid thundering-herd */
+        for (var i = 0; i < count; i++) {
+            (function(wid) {
+                setTimeout(function() { replConnectWorker(wid); }, 200 + wid * 150);
+            }(i));
+        }
     });
 });
 </script>

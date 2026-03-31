@@ -248,6 +248,32 @@ channel_send(int fd, uint32_t type,
 
 
 /*
+ * channel_send_wake — send a message on channel_fd, then write wi (the
+ * sender's channel index, clamped to uint8_t) to wake_fd.
+ *
+ * The SW thread polls wake_pipe[0] (a normal pipe, which works correctly
+ * across forked processes on WSL2).  Each byte in the pipe encodes the
+ * channel index wi that has one new message waiting, so the SW thread can
+ * issue exactly one blocking recvmsg per byte — avoiding MSG_DONTWAIT which
+ * is also unreliable for AF_UNIX SEQPACKET on WSL2.
+ */
+static void
+channel_send_wake(int channel_fd, int wake_fd, ngx_uint_t wi, uint32_t type,
+                  uint8_t *buf, uint32_t data_len,
+                  uint8_t **sab_tab, uint32_t n_sabs)
+{
+    char  c;
+
+    channel_send(channel_fd, type, buf, data_len, sab_tab, n_sabs);
+
+    if (wake_fd >= 0) {
+        c = (char)(wi & 0xff);
+        if (write(wake_fd, &c, 1) < 0) { /* ignore EAGAIN */ }
+    }
+}
+
+
+/*
  * Scan serialized buffer and replace all occurrences of old_va with new_va.
  * QuickJS writes SAB pointers as raw uint64 little-endian in the buffer.
  */
@@ -280,7 +306,7 @@ channel_patch_va(uint8_t *buf, uint32_t len,
  * JS_ReadObject to release the transit/mmap ref.
  */
 static int
-channel_recv(int fd, uint32_t *type_out,
+channel_recv(int fd, int recv_flags, uint32_t *type_out,
              uint8_t **buf_out, uint32_t *len_out,
              uint8_t ***sab_tab_out, uint32_t *n_sabs_out)
 {
@@ -314,7 +340,7 @@ channel_recv(int fd, uint32_t *type_out,
     msg.msg_control    = cmsg_buf;
     msg.msg_controllen = sizeof(cmsg_buf);
 
-    n = recvmsg(fd, &msg, MSG_DONTWAIT);
+    n = recvmsg(fd, &msg, recv_flags);
     if (n <= 0) {
         return -1;   /* EAGAIN or EOF */
     }
@@ -460,6 +486,21 @@ struct ngx_js_sw_state_s {
     ngx_js_sw_channel_t      *channels;
     ngx_js_sw_worker_slot_t  *worker_slots;
     ngx_js_sw_state_t        *next;
+    /*
+     * Wake pipe: workers write a byte here after sending on a channel.
+     * The SW thread polls wake_pipe[0] instead of the channel sw_fds,
+     * working around a WSL2 kernel limitation where poll() on AF_UNIX
+     * SEQPACKET sockets does not wake up from data written in a forked
+     * child process.
+     */
+    int                       wake_pipe[2];   /* [0]=read, [1]=write */
+    /*
+     * thread_started: 0 until ngx_js_sw_threads_start() creates the pthread.
+     * The pthread must not be created during init_conf because nginx has not
+     * yet daemonized (fork()) — pthreads are not inherited across fork() and
+     * the thread would die with the pre-daemon process.
+     */
+    ngx_uint_t                thread_started;
 };
 
 
@@ -522,6 +563,9 @@ static int        sw_cmd_fds[2]  = {-1, -1};
 static int        sw_term_fds[2] = {-1, -1};
 static pthread_t  sw_mgr_tid;
 static int        sw_mgr_started;
+/* fds set up, thread deferred until post-daemon */
+static int        sw_mgr_deferred;
+static ngx_js_conf_t  *sw_mgr_jcf;
 
 /*
  * Set to 1 inside ngx_js_sw_thread so that ngx_js_sab_alloc uses
@@ -855,10 +899,6 @@ ngx_js_sw_thread(void *arg)
     sigfillset(&sigmask);
     pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
 
-    { FILE *_dbgsw = fopen("/tmp/ngx_js_dbg.log", "a");
-      if (_dbgsw) { fprintf(_dbgsw, "sw_thread: tid=%lu\n",
-          (unsigned long)pthread_self()); fclose(_dbgsw); } }
-
     ngx_js_sw_thread_active = 1;
 
     rt = JS_NewRuntime();
@@ -955,42 +995,66 @@ ngx_js_sw_thread(void *arg)
     JS_FreeValue(ctx, result);
 
     /* Set up poll fds for all inbox pipes */
-    pfds = ngx_alloc(state->nchannels * sizeof(struct pollfd),
-                     ngx_cycle->log);
+    /* Single-entry pollfd for the wake pipe read end */
+    pfds = ngx_alloc(sizeof(struct pollfd), ngx_cycle->log);
     if (pfds == NULL) {
         goto done;
     }
 
-    for (i = 0; i < state->nchannels; i++) {
-        pfds[i].fd      = state->channels[i].sw_fd;
-        pfds[i].events  = POLLIN;
-        pfds[i].revents = 0;
-    }
+    pfds[0].fd      = state->wake_pipe[0];
+    pfds[0].events  = POLLIN;
+    pfds[0].revents = 0;
 
     /* Message loop */
     terminate = 0;
 
     for ( ;; ) {
-        for (i = 0; i < state->nchannels; i++) {
-            pfds[i].revents = 0;
-        }
+        pfds[0].revents = 0;
 
-        if (poll(pfds, (nfds_t) state->nchannels, -1) < 0) {
+        /*
+         * Block on the wake pipe.  Workers call channel_send_wake()
+         * which writes a byte here after every channel_send(), so
+         * poll reliably wakes up even on WSL2 where cross-process
+         * POLLIN on AF_UNIX SEQPACKET is unreliable.
+         */
+        if (poll(pfds, 1, -1) < 0) {
             if (errno == EINTR) {
                 continue;
             }
             break;
         }
 
-        for (wi = 0; wi < state->nchannels; wi++) {
-            if (!(pfds[wi].revents & POLLIN)) {
+        /*
+         * Each byte in the wake pipe encodes the channel index (wi) of the
+         * worker that sent one message.  We do exactly one blocking recvmsg
+         * per byte, so we never block waiting for a message that is not
+         * there.  Blocking recvmsg (flags=0) is used because MSG_DONTWAIT
+         * is also unreliable for AF_UNIX SEQPACKET across forked processes
+         * on WSL2.
+         */
+        {
+            char        wake_bytes[256];
+            ssize_t     nwake;
+            ngx_uint_t  bi;
+
+            nwake = read(state->wake_pipe[0], wake_bytes, sizeof(wake_bytes));
+            if (nwake <= 0) {
                 continue;
             }
 
-            /* Drain all messages from this channel */
-            while (channel_recv(state->channels[wi].sw_fd,
-                                &type, &buf, &len, &sab_tab, &n_sabs) == 0)
-            {
+            for (bi = 0; bi < (ngx_uint_t) nwake; bi++) {
+                wi = (ngx_uint_t)(uint8_t) wake_bytes[bi];
+                if (wi >= state->nchannels) {
+                    continue;
+                }
+
+                /* Blocking recv — channel wi has exactly one message */
+                if (channel_recv(state->channels[wi].sw_fd, 0,
+                                 &type, &buf, &len, &sab_tab, &n_sabs) != 0)
+                {
+                    continue;
+                }
+
                 if (type == NGX_JS_SW_MSG_TERM) {
                     if (buf) {
                         ngx_free(buf);
@@ -1151,10 +1215,6 @@ ngx_js_sw_thread(void *arg)
 
                 while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
             }
-
-            if (terminate) {
-                break;
-            }
         }
 
         if (terminate) {
@@ -1233,8 +1293,8 @@ ngx_js_sw_activate(JSContext *ctx, ngx_js_sw_state_t *state, ngx_uint_t wi)
     ws->w    = w;
 
     /* Send CONNECT sentinel to SW thread */
-    channel_send(state->channels[wi].worker_fd, NGX_JS_SW_MSG_CONNECT,
-                 NULL, 0, NULL, 0);
+    channel_send_wake(state->channels[wi].worker_fd, state->wake_pipe[1],
+                      wi, NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
 
     return NGX_OK;
 }
@@ -1299,9 +1359,10 @@ ngx_js_sw_recv_handler(ngx_event_t *ev)
     w        = ws->w;
     ctx      = w->ctx;
 
-    while (channel_recv(state->channels[wi].worker_fd,
+    while (channel_recv(state->channels[wi].worker_fd, MSG_DONTWAIT,
                         &type, &buf, &len, &sab_tab, &n_sabs) == 0)
     {
+
         if (type != NGX_JS_SW_MSG_DATA) {
             if (buf) {
                 ngx_free(buf);
@@ -1390,7 +1451,8 @@ ngx_js_sw_post_message(JSContext *ctx, JSValueConst this_val,
     }
 
     if (ngx_js_sw_activate(ctx, op->state, wi) != NGX_OK) {
-        return JS_ThrowInternalError(ctx, "postMessage: activate failed");
+        return JS_ThrowInternalError(ctx,
+                                     "postMessage: activate failed");
     }
 
     qjs_buf = JS_WriteObject2(ctx, &qjs_len, argv[0],
@@ -1422,9 +1484,10 @@ ngx_js_sw_post_message(JSContext *ctx, JSValueConst this_val,
     }
     js_free(ctx, qjs_sab);
 
-    channel_send(op->state->channels[wi].worker_fd,
-                 NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
-                 sab_tab, (uint32_t) n_sabs);
+    channel_send_wake(op->state->channels[wi].worker_fd,
+                      op->state->wake_pipe[1],
+                      wi, NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
+                      sab_tab, (uint32_t) n_sabs);
 
     return JS_UNDEFINED;
 }
@@ -1658,6 +1721,9 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
                                          "new SharedWorker: alloc failed");
         }
 
+        sw->wake_pipe[0] = -1;
+        sw->wake_pipe[1] = -1;
+
         for (i = 0; i < nchannels; i++) {
             if (channel_init(&sw->channels[i]) != NGX_OK) {
                 while (i-- > 0) {
@@ -1677,28 +1743,41 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
             sw->worker_slots[i].w          = NULL;
         }
 
-        {
-            sigset_t  full, prev;
-            int       rc;
-
-            sigfillset(&full);
-            pthread_sigmask(SIG_BLOCK, &full, &prev);
-            rc = pthread_create(&sw->tid, NULL, ngx_js_sw_thread, sw);
-            pthread_sigmask(SIG_SETMASK, &prev, NULL);
-
-            if (rc != 0) {
-                for (i = 0; i < nchannels; i++) {
-                    channel_destroy(&sw->channels[i]);
-                }
-                ngx_free(sw->worker_slots);
-                ngx_free(sw->channels);
-                ngx_free(sw->script);
-                ngx_free(sw->url);
-                ngx_free(sw);
-                return JS_ThrowInternalError(ctx,
-                    "new SharedWorker: pthread_create failed");
+        if (pipe(sw->wake_pipe) != 0) {
+            for (i = 0; i < nchannels; i++) {
+                channel_destroy(&sw->channels[i]);
             }
+            ngx_free(sw->worker_slots);
+            ngx_free(sw->channels);
+            ngx_free(sw->script);
+            ngx_free(sw->url);
+            ngx_free(sw);
+            return JS_ThrowInternalError(ctx,
+                "new SharedWorker: pipe() failed");
         }
+        /* Read end non-blocking so SW thread can drain without blocking */
+        if (fcntl(sw->wake_pipe[0], F_SETFL, O_NONBLOCK) != 0) {
+            close(sw->wake_pipe[0]);
+            close(sw->wake_pipe[1]);
+            for (i = 0; i < nchannels; i++) {
+                channel_destroy(&sw->channels[i]);
+            }
+            ngx_free(sw->worker_slots);
+            ngx_free(sw->channels);
+            ngx_free(sw->script);
+            ngx_free(sw->url);
+            ngx_free(sw);
+            return JS_ThrowInternalError(ctx,
+                "new SharedWorker: fcntl() failed");
+        }
+
+        /*
+         * Do NOT start the pthread here.  nginx has not yet daemonized
+         * (init_conf runs before fork()), so a thread created now would die
+         * with the pre-daemon process.  ngx_js_sw_threads_start() will
+         * start all deferred SW threads once the daemon master is live.
+         */
+        sw->thread_started = 0;
 
         /* Prepend to registry */
         sw->next     = jcf->sw_list;
@@ -2040,7 +2119,7 @@ ngx_js_sw_wt_recv(int worker_fd, uint32_t *type_out,
     uint8_t **buf_out, uint32_t *len_out,
     uint8_t ***sab_tab_out, uint32_t *n_sabs_out)
 {
-    return channel_recv(worker_fd, type_out, buf_out, len_out,
+    return channel_recv(worker_fd, MSG_DONTWAIT, type_out, buf_out, len_out,
                         sab_tab_out, n_sabs_out);
 }
 
@@ -2184,6 +2263,72 @@ ngx_js_sw_exit_process(ngx_cycle_t *cycle, ngx_js_conf_t *jcf)
 }
 
 
+/*
+ * Start a single SW pthread.  Called from ngx_js_sw_threads_start_deferred.
+ */
+static ngx_int_t
+ngx_js_sw_start_thread(ngx_js_sw_state_t *sw, ngx_log_t *log)
+{
+    sigset_t  full, prev;
+    int       rc;
+
+    sigfillset(&full);
+    pthread_sigmask(SIG_BLOCK, &full, &prev);
+    rc = pthread_create(&sw->tid, NULL, ngx_js_sw_thread, sw);
+    pthread_sigmask(SIG_SETMASK, &prev, NULL);
+
+    if (rc != 0) {
+        ngx_log_error(NGX_LOG_ALERT, log, rc,
+                      "js SharedWorker \"%s\": pthread_create failed",
+                      sw->url ? sw->url : "(unknown)");
+        return NGX_ERROR;
+    }
+
+    sw->thread_started = 1;
+    return NGX_OK;
+}
+
+
+void
+ngx_js_sw_threads_start_deferred(ngx_cycle_t *cycle)
+{
+    ngx_js_conf_t      *jcf;
+    ngx_js_sw_state_t  *sw;
+    sigset_t            full, prev;
+    int                 rc;
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL || jcf->rt == NULL) {
+        return;
+    }
+
+    /* Start the manager thread if it was deferred */
+    if (sw_mgr_deferred && !sw_mgr_started) {
+        sw_mgr_deferred = 0;
+
+        sigfillset(&full);
+        pthread_sigmask(SIG_BLOCK, &full, &prev);
+        rc = pthread_create(&sw_mgr_tid, NULL, ngx_js_sw_manager_thread,
+                            sw_mgr_jcf);
+        pthread_sigmask(SIG_SETMASK, &prev, NULL);
+
+        if (rc != 0) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, rc,
+                          "js: SharedWorker manager pthread_create failed");
+        } else {
+            sw_mgr_started = 1;
+        }
+    }
+
+    /* Start all deferred static SW threads */
+    for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
+        if (!sw->thread_started) {
+            (void) ngx_js_sw_start_thread(sw, cycle->log);
+        }
+    }
+}
+
+
 void
 ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
 {
@@ -2197,24 +2342,32 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
         if (write(sw_term_fds[1], &c, 1) < 0) { /* ignore */ }
         pthread_join(sw_mgr_tid, NULL);
         sw_mgr_started = 0;
-        close(sw_cmd_fds[0]);  sw_cmd_fds[0]  = -1;
-        close(sw_cmd_fds[1]);  sw_cmd_fds[1]  = -1;
-        close(sw_term_fds[0]); sw_term_fds[0] = -1;
-        close(sw_term_fds[1]); sw_term_fds[1] = -1;
     }
+    /* Close manager fds regardless of whether the thread was started */
+    if (sw_cmd_fds[0] >= 0)  { close(sw_cmd_fds[0]);  sw_cmd_fds[0]  = -1; }
+    if (sw_cmd_fds[1] >= 0)  { close(sw_cmd_fds[1]);  sw_cmd_fds[1]  = -1; }
+    if (sw_term_fds[0] >= 0) { close(sw_term_fds[0]); sw_term_fds[0] = -1; }
+    if (sw_term_fds[1] >= 0) { close(sw_term_fds[1]); sw_term_fds[1] = -1; }
 
     for (sw = jcf->sw_list; sw != NULL; sw = next) {
         next = sw->next;
 
-        /* Signal all channels to terminate */
-        for (i = 0; i < sw->nchannels; i++) {
-            channel_send(sw->channels[i].worker_fd, NGX_JS_SW_MSG_TERM,
-                         NULL, 0, NULL, 0);
-        }
+        if (sw->thread_started && sw->tid) {
+            /* Signal all channels to terminate, then wake the SW thread */
+            for (i = 0; i < sw->nchannels; i++) {
+                channel_send(sw->channels[i].worker_fd, NGX_JS_SW_MSG_TERM,
+                             NULL, 0, NULL, 0);
+            }
+            if (sw->wake_pipe[1] >= 0) {
+                char  c = 1;
+                if (write(sw->wake_pipe[1], &c, 1) < 0) { /* ignore */ }
+            }
 
-        if (sw->tid) {
             pthread_join(sw->tid, NULL);
         }
+
+        if (sw->wake_pipe[0] >= 0) { close(sw->wake_pipe[0]); }
+        if (sw->wake_pipe[1] >= 0) { close(sw->wake_pipe[1]); }
 
         for (i = 0; i < sw->nchannels; i++) {
             channel_destroy(&sw->channels[i]);
@@ -2489,10 +2642,6 @@ ngx_js_sw_manager_thread(void *arg)
      * sigsuspend from ever returning in the main thread. */
     sigfillset(&sigmask);
     pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
-
-    { FILE *_dbgmgr = fopen("/tmp/ngx_js_dbg.log", "a");
-      if (_dbgmgr) { fprintf(_dbgmgr, "mgr_thread started: tid=%lu\n",
-          (unsigned long)pthread_self()); fclose(_dbgmgr); } }
 
     uint32_t                   url_len, worker_idx;
     char                      *url;
@@ -2885,6 +3034,9 @@ ngx_js_sw_manager_thread(void *arg)
                 continue;
             }
 
+            sw->wake_pipe[0] = -1;
+            sw->wake_pipe[1] = -1;
+
             ok = 1;
             for (i = 0; i < nchannels; i++) {
                 if (channel_init(&sw->channels[i]) != NGX_OK) {
@@ -2896,10 +3048,25 @@ ngx_js_sw_manager_thread(void *arg)
                 sw->worker_slots[i].w          = NULL;
             }
 
+            if (ok && pipe(sw->wake_pipe) != 0) {
+                ok = 0;
+                i  = nchannels;  /* channel_destroy loop below */
+            }
+
+            if (ok && fcntl(sw->wake_pipe[0], F_SETFL, O_NONBLOCK) != 0) {
+                close(sw->wake_pipe[0]);
+                close(sw->wake_pipe[1]);
+                sw->wake_pipe[0] = sw->wake_pipe[1] = -1;
+                ok = 0;
+                i  = nchannels;
+            }
+
             if (!ok) {
                 while (i-- > 0) {
                     channel_destroy(&sw->channels[i]);
                 }
+                if (sw->wake_pipe[0] >= 0) { close(sw->wake_pipe[0]); }
+                if (sw->wake_pipe[1] >= 0) { close(sw->wake_pipe[1]); }
                 ngx_free(sw->worker_slots);
                 ngx_free(sw->channels);
                 ngx_free(sw->script);
@@ -2910,6 +3077,8 @@ ngx_js_sw_manager_thread(void *arg)
             }
 
             if (pthread_create(&sw->tid, NULL, ngx_js_sw_thread, sw) != 0) {
+                close(sw->wake_pipe[0]);
+                close(sw->wake_pipe[1]);
                 for (i = 0; i < nchannels; i++) {
                     channel_destroy(&sw->channels[i]);
                 }
@@ -3024,34 +3193,16 @@ ngx_js_sw_manager_start(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
-    /* Block all signals before pthread_create so the manager thread
-     * inherits a fully-blocked signal mask.  Process-directed signals
-     * (especially SIGCHLD from dying workers) must be delivered to the
-     * main thread's sigsuspend, not stolen by helper threads.
-     * Restore the main thread's mask immediately after create. */
     {
-        sigset_t  full, prev;
-        int       rc;
-
-        sigfillset(&full);
-        pthread_sigmask(SIG_BLOCK, &full, &prev);
-        rc = pthread_create(&sw_mgr_tid, NULL, ngx_js_sw_manager_thread, jcf);
-        pthread_sigmask(SIG_SETMASK, &prev, NULL);
-
-        if (rc != 0) {
-            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
-                          "js: SharedWorker manager pthread_create failed");
-            close(sw_cmd_fds[0]);
-            close(sw_cmd_fds[1]);
-            close(sw_term_fds[0]);
-            close(sw_term_fds[1]);
-            sw_cmd_fds[0]  = sw_cmd_fds[1]  = -1;
-            sw_term_fds[0] = sw_term_fds[1] = -1;
-            return NGX_ERROR;
-        }
+        /*
+         * Do NOT start the manager pthread here.  nginx has not yet
+         * daemonized (ngx_js_sw_manager_start runs during init_conf, before
+         * fork()).  Store jcf for use by ngx_js_sw_threads_start_deferred.
+         */
+        sw_mgr_jcf      = jcf;
+        sw_mgr_deferred = 1;
     }
 
-    sw_mgr_started = 1;
     return NGX_OK;
 }
 

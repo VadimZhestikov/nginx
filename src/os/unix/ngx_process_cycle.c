@@ -79,6 +79,13 @@ void  (*ngx_js_worker_load_plugin)(ngx_socket_t fd, ngx_int_t payload_len);
  */
 void  (*ngx_js_master_channel_msg)(ngx_cycle_t *cycle);
 
+/*
+ * Called once in the final master/single process, after daemonisation,
+ * to start SharedWorker pthreads (which cannot be created pre-fork because
+ * pthreads are not inherited across fork()).
+ */
+void  (*ngx_js_sw_threads_start)(ngx_cycle_t *cycle);
+
 #define ngx_js_emit(ev, p, s, st) \
     if (ngx_js_master_event) { ngx_js_master_event(cycle, ev, p, s, st); }
 
@@ -157,6 +164,10 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+
+    if (ngx_js_sw_threads_start) {
+        ngx_js_sw_threads_start(cycle);
+    }
 
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_RESPAWN);
@@ -341,6 +352,10 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
                 exit(2);
             }
         }
+    }
+
+    if (ngx_js_sw_threads_start) {
+        ngx_js_sw_threads_start(cycle);
     }
 
     for ( ;; ) {

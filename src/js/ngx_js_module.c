@@ -1422,6 +1422,7 @@ extern void  (*ngx_js_worker_channel_msg)(ngx_socket_t fd,
 extern void  (*ngx_js_master_channel_msg)(ngx_cycle_t *cycle);
 extern void  (*ngx_js_worker_load_plugin)(ngx_socket_t fd,    /* P16 */
     ngx_int_t payload_len);
+extern void  (*ngx_js_sw_threads_start)(ngx_cycle_t *cycle);
 
 static ngx_int_t
 ngx_js_init_module(ngx_cycle_t *cycle)
@@ -1432,6 +1433,8 @@ ngx_js_init_module(ngx_cycle_t *cycle)
     ngx_js_master_channel_msg = ngx_js_handle_master_channel_msgs;
     /* P16: broadcast plugin-load from worker to this worker */
     ngx_js_worker_load_plugin = ngx_js_handle_worker_load_plugin;
+    /* Start SW pthreads after daemonisation (not during init_conf) */
+    ngx_js_sw_threads_start   = ngx_js_sw_threads_start_deferred;
 
     return NGX_OK;
 }

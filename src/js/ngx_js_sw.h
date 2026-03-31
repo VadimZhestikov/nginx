@@ -100,6 +100,14 @@ ngx_int_t  ngx_js_sw_manager_start(ngx_js_conf_t *jcf,
     ngx_cycle_t *cycle);
 
 /*
+ * Start all deferred SW pthreads (those created via new SharedWorker(url)
+ * during init_conf, which must not start threads before daemonisation).
+ * Called via the ngx_js_sw_threads_start function pointer from
+ * ngx_master_process_cycle / ngx_single_process_cycle, after daemonisation.
+ */
+void  ngx_js_sw_threads_start_deferred(ngx_cycle_t *cycle);
+
+/*
  * Ask the manager thread (running in the master process) to create a
  * bound + listening TCP socket for the given "host:port" address string.
  * Blocks until the manager replies.
