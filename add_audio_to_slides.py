@@ -138,10 +138,14 @@ async def generate_all_audio(notes: dict[int, str], voice: str) -> dict[int, str
 
 AUDIO_JS = """\
 <script>
-/* ── Slide narration ──────────────────────────────────────────────────────── *
- * Base64 audio → Blob → blob: URL → Audio element.                           *
- * blob: URLs bypass Chrome/Edge restrictions on large data: URIs for media.  *
- * Audio unlocked by ONE explicit user click on the Start button.             *
+/* ── Slide narration — Web Audio API edition ─────────────────────────────── *
+ *  base64 MP3  →  ArrayBuffer  →  AudioContext.decodeAudioData()             *
+ *                              →  AudioBufferSourceNode  →  speakers          *
+ *                                                                              *
+ *  Web Audio API is more reliable than <audio> + blob: URLs when opening     *
+ *  local files, because it routes directly through AudioContext.destination   *
+ *  (the default speaker output) and doesn't touch the browser media element  *
+ *  pipeline that can be affected by per-site mute settings.                  *
  * ─────────────────────────────────────────────────────────────────────────── */
 (function () {
   'use strict';
@@ -151,74 +155,110 @@ AUDIO_JS = """\
 __AUDIO_DATA__
   };
 
-  /* ── helpers ── */
-  function b64ToBlob(b64) {
-    try {
-      const bin  = atob(b64);
-      const buf  = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-      return new Blob([buf], { type: 'audio/mpeg' });
-    } catch (e) {
-      console.error('[narration] b64ToBlob failed', e);
-      return null;
-    }
+  /* ── Web Audio context (created once on first user click) ── */
+  let actx = null;
+
+  function getCtx() {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    return actx;
   }
 
-  /* Pre-convert all slides to blob: URLs on session start */
-  const URLS  = {};   /* slide_id → blob: URL string */
-  const CACHE = {};   /* slide_id → Audio object      */
+  /* ── base64 → ArrayBuffer ── */
+  function b64ToArrayBuffer(b64) {
+    const bin = atob(b64);
+    const buf = new ArrayBuffer(bin.length);
+    const view = new Uint8Array(buf);
+    for (let i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
+    return buf;
+  }
 
-  function preload() {
-    console.log('[narration] preloading', Object.keys(B64).length, 'slides …');
+  /* Pre-decoded AudioBuffers, keyed by slide number */
+  const BUFFERS = {};   /* id → AudioBuffer (after decode) or Promise<AudioBuffer> */
+
+  /* Start decoding all slides in background (non-blocking) */
+  function preloadAll() {
+    const ctx = getCtx();
+    console.log('[narration] decoding', Object.keys(B64).length, 'slides via Web Audio …');
     for (const [id, b64] of Object.entries(B64)) {
-      const blob = b64ToBlob(b64);
-      if (!blob) { console.warn('[narration] skip slide', id); continue; }
-      URLS[id] = URL.createObjectURL(blob);
+      const ab = b64ToArrayBuffer(b64);
+      /* decodeAudioData is async — store the Promise, resolve later */
+      BUFFERS[id] = ctx.decodeAudioData(ab).then(
+        buf => { BUFFERS[id] = buf; console.log('[narration] decoded slide', id); return buf; },
+        err => { console.error('[narration] decode failed slide', id, err); return null; }
+      );
     }
-    console.log('[narration] blob URLs ready:', Object.keys(URLS).length);
-  }
-
-  function getAudio(id) {
-    if (CACHE[id]) return CACHE[id];
-    const url = URLS[id];
-    if (!url) { console.warn('[narration] no url for slide', id); return null; }
-    const a = new Audio(url);
-    a.addEventListener('error', e => console.error('[narration] audio error slide', id, a.error?.code, e));
-    CACHE[id] = a;
-    return a;
   }
 
   /* ── playback ── */
-  let current = null;
+  let currentSource = null;
 
   function stopCurrent() {
-    if (current) { current.pause(); current.currentTime = 0; }
+    if (currentSource) {
+      try { currentSource.stop(); } catch (_) {}
+      currentSource = null;
+    }
   }
 
-  function playSlide(id) {
+  async function playSlide(id) {
     stopCurrent();
-    const a = getAudio(id);
-    if (!a) return;
-    current = a;
-    console.log('[narration] playing slide', id);
-    a.play().then(
-      ()  => console.log('[narration] playing slide', id, '✓'),
-      err => console.warn('[narration] play rejected slide', id, err.name, err.message)
-    );
+    const ctx = getCtx();
+    await ctx.resume();    /* re-resume in case browser suspended it */
+
+    let buf = BUFFERS[id];
+    if (!buf) { console.warn('[narration] no buffer for slide', id); return; }
+    /* If still a Promise (not yet decoded), await it */
+    if (buf instanceof Promise) buf = await buf;
+    if (!buf) return;
+
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
+    currentSource = src;
+    console.log('[narration] playing slide', id,
+      '— duration', buf.duration.toFixed(1), 's');
   }
 
-  /* ── UI ── */
-  let narrationOn   = true;
-  let sessionActive = false;
-  let currentSlide  = null;
+  /* ── beep test: 440 Hz for 0.4 s ── */
+  function playTestBeep() {
+    const ctx = getCtx();
+    ctx.resume().then(() => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 440;
+      gain.gain.value     = 0.3;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.4);
+      console.log('[narration] test beep played, sampleRate:', ctx.sampleRate,
+                  'state:', ctx.state);
+    });
+  }
 
-  /* Toggle button */
+  /* ── UI helpers ── */
+  function mkBtn(text, bg, fg, border, fontSize, padding) {
+    const b = document.createElement('button');
+    b.textContent = text;
+    Object.assign(b.style, {
+      padding, fontSize, fontFamily: 'inherit',
+      background: bg, color: fg, border: '2px solid ' + border,
+      borderRadius: '8px', cursor: 'pointer', letterSpacing: '0.03em',
+    });
+    return b;
+  }
+
+  /* ── state ── */
+  let narrationOn  = true;
+  let currentSlide = null;
+
+  /* Toggle button (bottom-right, shown after session starts) */
   const toggleBtn = document.createElement('button');
   toggleBtn.id    = 'narration-toggle';
   toggleBtn.title = 'Toggle narration';
   Object.assign(toggleBtn.style, {
     display: 'none', position: 'fixed', bottom: '16px', right: '20px',
-    zIndex: '2147483646', background: 'rgba(10,20,30,0.82)',
+    zIndex: '2147483646', background: 'rgba(10,20,30,0.85)',
     color: '#fff', border: '1.5px solid rgba(255,255,255,0.4)',
     borderRadius: '50%', width: '46px', height: '46px',
     fontSize: '20px', cursor: 'pointer', lineHeight: '46px',
@@ -237,45 +277,46 @@ __AUDIO_DATA__
   Object.assign(overlay.style, {
     position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
     zIndex: '2147483647', display: 'flex', flexDirection: 'column',
-    alignItems: 'center', justifyContent: 'center', gap: '20px',
-    background: 'rgba(5,10,20,0.82)',
+    alignItems: 'center', justifyContent: 'center', gap: '18px',
+    background: 'rgba(5,10,20,0.85)',
   });
 
-  function mkBtn(text, bg, fg, border) {
-    const b = document.createElement('button');
-    b.textContent = text;
-    Object.assign(b.style, {
-      padding: '16px 38px', fontSize: '1.25rem', fontFamily: 'inherit',
-      background: bg, color: fg, border: '2px solid ' + border,
-      borderRadius: '8px', cursor: 'pointer', letterSpacing: '0.03em',
-    });
-    return b;
-  }
+  const startBtn = mkBtn('▶  Start with Narration', '#0d2b45', '#7ec8e3', '#7ec8e3', '1.25rem', '16px 38px');
+  const beepBtn  = mkBtn('🎵  Test sound first',    '#1a2a1a', '#a5d6a7', '#4caf50', '0.95rem', '10px 24px');
+  const skipBtn  = mkBtn('Continue without audio',  'transparent', '#78909c', '#455a64', '0.85rem', '8px 20px');
 
-  const startBtn = mkBtn('▶  Start with Narration', '#0d2b45', '#7ec8e3', '#7ec8e3');
-  const skipBtn  = mkBtn('Continue without audio',  'transparent', '#78909c', '#455a64');
-  skipBtn.style.fontSize = '0.9rem';
-  skipBtn.style.padding  = '10px 22px';
+  const hint = document.createElement('p');
+  hint.textContent = 'Click "Test sound" — if you hear a beep, narration will work.';
+  Object.assign(hint.style, { color: '#546e7a', fontSize: '0.8rem',
+    fontFamily: 'inherit', margin: '0' });
 
-  overlay.append(startBtn, skipBtn);
+  overlay.append(startBtn, beepBtn, hint, skipBtn);
   document.body.appendChild(overlay);
+
+  beepBtn.addEventListener('click', () => {
+    playTestBeep();
+    hint.textContent = 'Did you hear a beep? If yes — click "Start with Narration".';
+    hint.style.color = '#80cbc4';
+  });
 
   function startSession(withAudio) {
     overlay.remove();
-    sessionActive = true;
-    narrationOn   = withAudio;
+    narrationOn  = withAudio;
     toggleBtn.style.display = 'flex';
     toggleBtn.textContent   = withAudio ? '🔊' : '🔇';
 
-    if (withAudio) preload();   /* convert base64 → blob URLs now, inside click handler */
+    if (withAudio) {
+      preloadAll();   /* kick off async decoding of all slides */
+    }
 
     const active = document.querySelector('section.bespoke-marp-active');
-    currentSlide  = active ? parseInt(active.id, 10) : 1;
-    console.log('[narration] session started, current slide:', currentSlide);
+    currentSlide = active ? parseInt(active.id, 10) : 1;
+    console.log('[narration] session started, slide:', currentSlide,
+                'audio:', withAudio);
 
     if (withAudio) playSlide(currentSlide);
 
-    /* Poll for slide changes — setInterval runs in activated context */
+    /* Poll for slide changes every 120 ms */
     setInterval(() => {
       const el = document.querySelector('section.bespoke-marp-active');
       if (!el) return;
