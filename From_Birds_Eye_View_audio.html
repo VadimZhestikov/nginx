@@ -1939,18 +1939,37 @@ td { background: #12161e; }
 
     if (withAudio) playSlide(currentSlide);
 
-    /* Poll every 120 ms for slide changes.
-       Keep ctx alive by calling resume() here too — Chrome suspends idle contexts. */
-    setInterval(() => {
-      /* Prevent Chrome from suspending the context between slides */
-      if (narrationOn && ctx.state === 'suspended') {
-        ctx.resume().catch(() => {});
-      }
+    /* Read the current slide number from multiple sources, most reliable first */
+    function activeSlide() {
+      /* 1. URL hash — Marp bespoke always sets #N on navigation */
+      const m = window.location.hash.match(/^#(\d+)/);
+      if (m) return parseInt(m[1], 10);
+      /* 2. CSS class fallback */
       const el = document.querySelector('section.bespoke-marp-active');
-      if (!el) return;
-      const id = parseInt(el.id, 10);
+      if (el && el.id) return parseInt(el.id, 10);
+      return currentSlide || 1;
+    }
+
+    /* Log initial hash so we can verify detection works */
+    console.log('[narration] initial hash:', window.location.hash || '(empty)',
+                '→ slide', activeSlide());
+
+    /* hashchange fires synchronously when bespoke updates the URL */
+    window.addEventListener('hashchange', () => {
+      const id = activeSlide();
       if (id !== currentSlide) {
-        console.log('[narration] slide change: ' + currentSlide + ' → ' + id);
+        console.log('[narration] hashchange: ' + currentSlide + ' → ' + id);
+        currentSlide = id;
+        if (narrationOn) playSlide(id);
+      }
+    });
+
+    /* setInterval as belt-and-suspenders backup (also keeps ctx alive) */
+    setInterval(() => {
+      if (narrationOn && ctx.state === 'suspended') ctx.resume().catch(() => {});
+      const id = activeSlide();
+      if (id !== currentSlide) {
+        console.log('[narration] poll: ' + currentSlide + ' → ' + id);
         currentSlide = id;
         if (narrationOn) playSlide(id);
       }
