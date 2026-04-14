@@ -128,7 +128,7 @@ Just one new idea: *expose the internals as objects*.
 
 <!-- Slide 6 ─────────────────────────────────────────────── -->
 
-# nginx in 2024 is 1995 HTML
+# nginx in 2026 is pre-DOM HTML with limited scripting
 
 ```nginx
 # nginx.conf
@@ -150,7 +150,7 @@ Beautiful. Fast. Reliable.
 
 Change a weight? **Restart nginx.**
 Add a server? **Reload config.**
-Respond to runtime events? **Not possible.**
+Respond to runtime events? **Limited.**
 
 ---
 
@@ -717,8 +717,8 @@ Beautiful. ... Fast. ... Reliable. ...
 But completely frozen. ...
 Change a weight? ... Restart nginx. ...
 Add a server? ... Reload the config file. ...
-Respond to a runtime event? ... Not possible. ...
-nginx dot conf ... is our 1995 HTML.
+Respond to a runtime event? ... Limited. ...
+nginx dot conf ... is our pre-DOM HTML.
 
 ### Slide 9 (The Question — bullets)
 The Question. ...
