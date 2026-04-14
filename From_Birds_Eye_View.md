@@ -7,7 +7,7 @@ color: '#e8eaf6'
 style: |
   section {
     font-family: 'Segoe UI', system-ui, sans-serif;
-    font-size: 28px;
+    font-size: 19px;
   }
   h1 { color: #7ec8e3; font-size: 2.2em; border-bottom: 2px solid #7ec8e3; padding-bottom: 0.2em; }
   h2 { color: #a5d6a7; font-size: 1.6em; }
