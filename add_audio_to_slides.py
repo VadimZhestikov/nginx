@@ -139,105 +139,158 @@ async def generate_all_audio(notes: dict[int, str], voice: str) -> dict[int, str
 AUDIO_JS = """\
 <script>
 (function () {
-  /* ── Audio narration for each Marp slide ─────────────────────────── */
+  /* ── Slide narration — works around Chrome/Edge autoplay policy ───── *
+   *                                                                      *
+   *  Strategy: require ONE explicit user click ("Start Narration")       *
+   *  to unlock audio for the session, then poll every 120 ms for the    *
+   *  active slide. setInterval callbacks always run in a context where   *
+   *  audio.play() is permitted after the initial click gesture.          *
+   * ──────────────────────────────────────────────────────────────────── */
 
-  /* Build Audio objects lazily so the browser doesn't decode everything at load */
+  /* Lazy Audio cache — objects created only when first needed */
   const AUDIO_DATA = {
 __AUDIO_DATA__
   };
 
-  let currentSlide = null;
-  let currentAudio = null;
-  let narrationOn   = true;          // toggle with the button
+  let currentSlide  = null;
+  let currentAudio  = null;
+  let narrationOn   = true;
+  let sessionActive = false;   // flips to true after the Start button click
 
-  /* Resolve a slide's Audio object on first use */
   function getAudio(id) {
     const entry = AUDIO_DATA[id];
     if (!entry) return null;
     if (entry instanceof Audio) return entry;
-    const audio = new Audio('data:audio/mp3;base64,' + entry);
-    AUDIO_DATA[id] = audio;          // cache the object
-    return audio;
+    const a = new Audio('data:audio/mp3;base64,' + entry);
+    AUDIO_DATA[id] = a;
+    return a;
   }
 
-  function playSlide(id) {
+  function stopCurrent() {
     if (currentAudio) {
       currentAudio.pause();
       currentAudio.currentTime = 0;
     }
-    if (!narrationOn) return;
-    const audio = getAudio(id);
-    if (!audio) return;
-    currentAudio = audio;
-    audio.play().catch(() => {});    // ignore autoplay policy blocks
   }
 
-  /* ── Toggle button ───────────────────────────────────────────────── */
-  const btn = document.createElement('button');
-  btn.id    = 'narration-toggle';
-  btn.title = 'Toggle slide narration';
-  btn.textContent = '🔊';
-  Object.assign(btn.style, {
-    position:   'fixed',
-    bottom:     '18px',
-    right:      '22px',
-    zIndex:     '9999',
-    background: 'rgba(0,0,0,0.55)',
-    color:      '#fff',
-    border:     '1px solid rgba(255,255,255,0.3)',
+  function playSlide(id) {
+    stopCurrent();
+    if (!narrationOn) return;
+    const a = getAudio(id);
+    if (!a) return;
+    currentAudio = a;
+    const p = a.play();
+    if (p && p.catch) p.catch(err => console.warn('Narration play failed:', err));
+  }
+
+  /* ── 🔊 / 🔇 toggle (shown after session starts) ─────────────────── */
+  const toggleBtn = document.createElement('button');
+  toggleBtn.id    = 'narration-toggle';
+  toggleBtn.title = 'Toggle narration';
+  toggleBtn.textContent = '🔊';
+  Object.assign(toggleBtn.style, {
+    display:      'none',          // hidden until session starts
+    position:     'fixed',
+    bottom:       '18px',
+    right:        '22px',
+    zIndex:       '99999',
+    background:   'rgba(10,20,30,0.75)',
+    color:        '#fff',
+    border:       '1px solid rgba(255,255,255,0.35)',
     borderRadius: '50%',
-    width:      '42px',
-    height:     '42px',
-    fontSize:   '20px',
-    cursor:     'pointer',
-    lineHeight: '1',
+    width:        '44px',
+    height:       '44px',
+    fontSize:     '20px',
+    cursor:       'pointer',
+    lineHeight:   '44px',
+    textAlign:    'center',
+    padding:      '0',
   });
-  btn.addEventListener('click', () => {
+  toggleBtn.addEventListener('click', () => {
     narrationOn = !narrationOn;
-    btn.textContent = narrationOn ? '🔊' : '🔇';
-    if (!narrationOn && currentAudio) {
-      currentAudio.pause();
-      currentAudio.currentTime = 0;
-    } else if (narrationOn && currentSlide !== null) {
-      playSlide(currentSlide);
-    }
+    toggleBtn.textContent = narrationOn ? '🔊' : '🔇';
+    if (!narrationOn) stopCurrent();
+    else if (currentSlide !== null) playSlide(currentSlide);
   });
-  document.body.appendChild(btn);
+  document.body.appendChild(toggleBtn);
 
-  /* ── Watch for slide activation ──────────────────────────────────── */
-  const observer = new MutationObserver(mutations => {
-    for (const mut of mutations) {
-      const el = mut.target;
-      if (
-        mut.type === 'attributes' &&
-        mut.attributeName === 'class' &&
-        el.tagName === 'SECTION' &&
-        el.classList.contains('bespoke-marp-active')
-      ) {
-        const id = parseInt(el.id, 10);
-        if (id !== currentSlide) {
-          currentSlide = id;
-          playSlide(id);
-        }
-      }
-    }
+  /* ── Start overlay ────────────────────────────────────────────────── */
+  const overlay = document.createElement('div');
+  Object.assign(overlay.style, {
+    position:       'fixed',
+    inset:          '0',
+    zIndex:         '99998',
+    display:        'flex',
+    flexDirection:  'column',
+    alignItems:     'center',
+    justifyContent: 'center',
+    gap:            '18px',
+    background:     'rgba(5,10,20,0.78)',
+    backdropFilter: 'blur(4px)',
   });
 
-  /* Observe every <section> for class changes */
-  document.querySelectorAll('section[id]').forEach(section => {
-    observer.observe(section, { attributes: true, attributeFilter: ['class'] });
+  const startBtn = document.createElement('button');
+  startBtn.textContent = '▶  Start with Narration';
+  Object.assign(startBtn.style, {
+    padding:      '18px 40px',
+    fontSize:     '1.3rem',
+    fontFamily:   'inherit',
+    background:   '#1a3a5c',
+    color:        '#7ec8e3',
+    border:       '2px solid #7ec8e3',
+    borderRadius: '8px',
+    cursor:       'pointer',
+    letterSpacing: '0.04em',
   });
 
-  /* Play the first (already active) slide on page load */
-  window.addEventListener('load', () => {
+  const skipBtn = document.createElement('button');
+  skipBtn.textContent = 'Continue without audio';
+  Object.assign(skipBtn.style, {
+    padding:      '8px 20px',
+    fontSize:     '0.85rem',
+    fontFamily:   'inherit',
+    background:   'transparent',
+    color:        '#78909c',
+    border:       '1px solid #37474f',
+    borderRadius: '6px',
+    cursor:       'pointer',
+  });
+
+  overlay.appendChild(startBtn);
+  overlay.appendChild(skipBtn);
+  document.body.appendChild(overlay);
+
+  function startSession(withAudio) {
+    overlay.remove();
+    sessionActive = true;
+    narrationOn   = withAudio;
+    toggleBtn.style.display = 'flex';
+    toggleBtn.textContent   = withAudio ? '🔊' : '🔇';
+
+    /* Determine which slide is currently active and play it */
     const active = document.querySelector('section.bespoke-marp-active');
     if (active) {
       currentSlide = parseInt(active.id, 10);
-      /* Small delay so the browser autoplay policy is satisfied after user gesture
-         (if the page was opened directly; no gesture needed in presentation mode) */
-      setTimeout(() => playSlide(currentSlide), 400);
+      if (withAudio) playSlide(currentSlide);
     }
-  });
+
+    /* Poll for slide changes every 120 ms.
+       setInterval callbacks run after the click gesture has unlocked audio,
+       so audio.play() succeeds without any further user interaction. */
+    setInterval(() => {
+      if (!sessionActive) return;
+      const el = document.querySelector('section.bespoke-marp-active');
+      if (!el) return;
+      const id = parseInt(el.id, 10);
+      if (id !== currentSlide) {
+        currentSlide = id;
+        playSlide(id);
+      }
+    }, 120);
+  }
+
+  startBtn.addEventListener('click', () => startSession(true));
+  skipBtn.addEventListener('click',  () => startSession(false));
 })();
 </script>
 """
