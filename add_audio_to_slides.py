@@ -27,7 +27,7 @@ HTML_PATH = "From_Birds_Eye_View.html"
 OUT_PATH  = "From_Birds_Eye_View_audio.html"
 VOICE     = "en-US-AriaNeural"    # neural voice — clear, natural, presentation-grade
 
-NUM_PRESENTATION_SLIDES = 26   # sections beyond this are the appendix / notes
+NUM_PRESENTATION_SLIDES = 30   # sections beyond this are the appendix / notes
 
 # ── Parse slide bodies (for fallback narration) ──────────────────────────────
 
