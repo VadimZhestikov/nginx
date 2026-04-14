@@ -275,6 +275,86 @@ All COM mutations go through one of three scopes:
 This section goes from "hello world" to "live upstream rebalancing" in four
 steps, each building on the previous one.
 
+=== Configure nginx with JS COM
+
+Before any JS example can run, nginx must be built with the JS COM module and
+told where to find your scripts.
+
+==== Prerequisites
+
+* GCC (or Clang), GNU make, PCRE, zlib, OpenSSL development headers
+* https://github.com/bellard/quickjs[QuickJS] source tree checked out alongside the nginx tree
+
+[source,bash]
+----
+# Debian / Ubuntu
+sudo apt install gcc make libpcre3-dev zlib1g-dev libssl-dev
+----
+
+==== 1. Build the QuickJS static library
+
+The JS COM module links against QuickJS as a static archive.
+Build it once from the QuickJS source directory:
+
+[source,bash]
+----
+# Run from the repository root (where both nginx/ and quickjs/ live)
+make -C quickjs libquickjs.a
+----
+
+==== 2. Configure nginx with the JS module
+
+Run `auto/configure` from inside the `nginx/` directory.
+The two critical flags are `--add-module` (points at the JS COM source) and
+`--with-cc-opt` / `--with-ld-opt` (link against the QuickJS library just built):
+
+[source,bash]
+----
+cd nginx
+
+auto/configure \
+  --add-module=../nginx/src/js \
+  --with-cc-opt="-I../quickjs -Wno-cast-function-type" \
+  --with-ld-opt="-L../quickjs -lquickjs -lm" \
+  --with-http_ssl_module
+----
+
+TIP: `-Wno-cast-function-type` suppresses a GCC warning triggered by QuickJS's
+`JS_CFUNC_DEF` macro. nginx builds with `-Werror`, so this flag is required.
+
+For a production build you will typically add more `--with-*` module flags
+(stream, gzip, sub-filter, etc.).  The flags above are the minimal set needed
+for all examples in this guide.
+
+==== 3. Build the binary
+
+[source,bash]
+----
+make -j$(nproc)
+# Produced at: nginx/objs/nginx
+----
+
+==== 4. Write a minimal nginx.conf
+
+Every JS COM setup needs exactly one thing in `nginx.conf`: a `js_source`
+directive that points at your JavaScript file.  nginx evaluates all `js_source`
+scripts in the master process after config parsing, before any worker is forked.
+The global `nginx` object is available inside every script.
+
+[source,nginx]
+----
+# /etc/nginx/nginx.conf — absolute minimum for JS COM
+js_source /etc/nginx/js/init.js;   # <1>
+
+events { }
+----
+<1> Path may be absolute or relative to the `--prefix` directory
+    (default `/usr/local/nginx`).
+
+Everything else — HTTP module, virtual servers, location handlers, upstreams —
+can be created from `init.js` using `nginx.*` APIs, or left in `nginx.conf` and
+then customised from JS.  The following subsections show both styles.
+
 === Hello World — Minimal (No http{} block)
 
 The most compact nginx JS DOM server needs only a `js_source` directive and an
