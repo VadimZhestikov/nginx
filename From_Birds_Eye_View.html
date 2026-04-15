@@ -1551,7 +1551,7 @@ td { background: #12161e; }
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code>1995   Static HTML
          └─ DOM → JavaScript → The modern web
 
-2024   Static nginx.conf
+2026   Static nginx.conf
          └─ COM → JavaScript → The programmable infrastructure layer?
 </code></pre>
 <p>The browser path took ~10 years to mature.<br />
@@ -1712,10 +1712,10 @@ td { background: #12161e; }
 <h2 id="speaker-notes">Speaker Notes</h2>
 <h3 id="slide-1-title">Slide 1 (Title)</h3>
 <p>From a bird's eye view. ...<br />
-The title on screen: nginx, arrow, fully programmable system. ...<br />
+The title on screen: engine X, arrow, fully programmable system. ...<br />
 Two project names: JS COM, ... and JS Pilgrim. ...<br />
 And the tagline: ...<br />
-The same reliable path browsers walked — ... now for nginx. ...<br />
+The same reliable path browsers walked — ... now for engine X. ...<br />
 That path was proven over twenty-five years. ...<br />
 We are about to walk it again — in weeks, not years.</p>
 <h3 id="slide-2-opening-quote">Slide 2 (Opening Quote)</h3>
@@ -1768,18 +1768,18 @@ Just one new idea: ... expose the internals as objects. ...<br />
 The quote at the bottom: ...<br />
 Gmail, Google Maps, Netflix — ... all running in the same HTML ...<br />
 that showed company phone numbers ... in 1995.</p>
-<h3 id="slide-8-nginxconf--frozen">Slide 8 (nginx.conf — frozen)</h3>
+<h3 id="slide-8-engine-xconf--frozen">Slide 8 (engine X.conf — frozen)</h3>
 <p>And here we are. ...<br />
-On screen: nginx dot conf. ...<br />
+On screen: engine X dot conf. ...<br />
 An upstream block with two backend servers, weights five and three. ...<br />
 A server listening on port 80. ...<br />
 A location proxying to the backend. ...<br />
 Beautiful. ... Fast. ... Reliable. ...<br />
 But completely frozen. ...<br />
-Change a weight? ... Restart nginx. ...<br />
+Change a weight? ... Restart engine X. ...<br />
 Add a server? ... Reload the config file. ...<br />
 Respond to a runtime event? ... Limited. ...<br />
-nginx dot conf ... is our pre-DOM HTML.</p>
+engine X dot conf ... is our pre-DOM HTML.</p>
 <h3 id="slide-9-the-question--bullets">Slide 9 (The Question — bullets)</h3>
 <p>The Question. ...<br />
 Browsers did not start with JavaScript. ...<br />
@@ -1790,8 +1790,8 @@ The bullets on screen: ...<br />
 Async by design — its event loop matches exactly how servers work. ...<br />
 The largest developer ecosystem on Earth. ...<br />
 Standardized. ... Open. ... Embeddable. ...<br />
-So: what if we did to nginx ... what the DOM did to browsers? ...<br />
-Expose the entire nginx configuration as a JavaScript object tree. ...<br />
+So: what if we did to engine X ... what the DOM did to browsers? ...<br />
+Expose the entire engine X configuration as a JavaScript object tree. ...<br />
 Let scripts read it. ... Write it. ... React to it. ...</p>
 <h3 id="slide-10-com-reveal">Slide 10 (COM reveal)</h3>
 <p>We called it ... the Configuration Object Model. ...<br />
@@ -1801,11 +1801,11 @@ Yes. ... Deliberately echoing ... DOM.</p>
 <p>Layer one. ...<br />
 The COM Tree. ...<br />
 On screen: four lines of JavaScript. ...<br />
-nginx dot version — the running version string. ...<br />
-nginx dot http dot servers, index zero, dot name — the first server's hostname. ...<br />
-nginx dot http dot servers, index zero, dot locations, index zero, dot handler — ...<br />
+engine X dot version — the running version string. ...<br />
+engine X dot http dot servers, index zero, dot name — the first server's hostname. ...<br />
+engine X dot http dot servers, index zero, dot locations, index zero, dot handler — ...<br />
 assign a function, ... and it becomes the live content handler. ...<br />
-Below: change upstream peer weights ... while nginx actively serves traffic. ...<br />
+Below: change upstream peer weights ... while engine X actively serves traffic. ...<br />
 Every server. ... Every location. ... Every upstream peer. ...<br />
 Readable. ... And writable. ... Right now.</p>
 <h3 id="slide-12-layer-2--request-handler-code">Slide 12 (Layer 2 — Request Handler code)</h3>
@@ -1823,27 +1823,27 @@ And req dot ctx — a persistent JavaScript object across the entire request lif
 <p>Layer three. ... Live reconfiguration. ...<br />
 The slide heading: change upstream weights while actively serving traffic. ...<br />
 On screen: a health-check timer loop. ...<br />
-nginx dot setTimeout, five thousand milliseconds. ...<br />
+engine X dot setTimeout, five thousand milliseconds. ...<br />
 Fetch health scores from your own logic. ...<br />
-nginx dot suspendAllWorkers — ... every worker process pauses. ... Atomically. ...<br />
+engine X dot suspendAllWorkers — ... every worker process pauses. ... Atomically. ...<br />
 Loop through scores: set each peer weight. ...<br />
-nginx dot resumeAllWorkers. ...<br />
+engine X dot resumeAllWorkers. ...<br />
 Schedule the next check. ...<br />
 Read the bold line at the bottom: ...<br />
 All workers. ... Atomically. ...<br />
 Zero downtime. ... Zero restart. ...<br />
-nginx dot conf ... never changes. ... The running system ... does.</p>
+engine X dot conf ... never changes. ... The running system ... does.</p>
 <h3 id="slide-14-layer-4--sharedworker-code">Slide 14 (Layer 4 — SharedWorker code)</h3>
 <p>Layer four. ... Workers and shared state. ...<br />
-nginx workers are separate OS processes. ... How do they share state? ...<br />
+engine X workers are separate OS processes. ... How do they share state? ...<br />
 On screen: two parts. ...<br />
 The SharedWorker script — hits dot js — one thread, one variable: hits. ...<br />
 On every message: increment and reply with the new total. ...<br />
-Below: any nginx worker request handler. ...<br />
+Below: any engine X worker request handler. ...<br />
 Connect to the same SharedWorker, send an empty message, get the global count back. ...<br />
 Respond with: Total hits, the number. ...<br />
-That number is the same ... across every nginx worker process. ...<br />
-Also available: SharedArrayBuffer with Atomics — lock-free shared memory between all nginx processes. ...<br />
+That number is the same ... across every engine X worker process. ...<br />
+Also available: SharedArrayBuffer with Atomics — lock-free shared memory between all engine X processes. ...<br />
 The quote at the bottom: ...<br />
 Think of SharedWorker as your in-process Redis — ... without the network hop.</p>
 <h3 id="slide-15-layer-5--full-stack-pipeline">Slide 15 (Layer 5 — Full Stack pipeline)</h3>
@@ -1853,14 +1853,14 @@ At the top: Client TCP. ...<br />
 L4 inbound filters — raw bytes, protocol detection, tunneling. ...<br />
 Access-phase hooks — auth, rate limiting, header injection. ...<br />
 Pre-content hooks — Koa-style middleware, composable. ...<br />
-Content handler — your JavaScript, or any classic nginx module. ...<br />
+Content handler — your JavaScript, or any classic engine X module. ...<br />
 Response-header hooks — add or rewrite headers. ...<br />
 Body and stream filters — gzip expansion, HTML injection, JSON transform. ...<br />
 Upstream filters — modify traffic to and from the backend. ...<br />
 L4 outbound filters — shape raw output bytes. ...<br />
 At the bottom: Backend TCP. ...<br />
 Each layer is optional. ... Each layer is pure JavaScript. ...<br />
-Classic nginx modules still work — now as one layer among many.</p>
+Classic engine X modules still work — now as one layer among many.</p>
 <h3 id="slide-16-async-body-filter-code">Slide 16 (Async body filter code)</h3>
 <p>Async ... all the way down. ...<br />
 On screen: a body filter — five lines. ...<br />
@@ -1870,7 +1870,7 @@ One replace call on the live HTML string — injects a tracking pixel. ...<br />
 Re-compress. ... Yield the patched bytes downstream. ...<br />
 The three bullets: ...<br />
 Async generator — real suspension with await. ...<br />
-The nginx event loop keeps running during any I/O wait. ...<br />
+The engine X event loop keeps running during any I/O wait. ...<br />
 No threads blocked. ... No extra processes. ...<br />
 Zero overhead on other requests.</p>
 <h3 id="slide-17-growing-world-table">Slide 17 (Growing World table)</h3>
@@ -1879,13 +1879,13 @@ The table on screen: four rows. ...<br />
 Node JS: write your server logic in JavaScript. ...<br />
 Deno and Bun: modern runtimes with HTTP built in. ...<br />
 Express and Fastify: middleware composition in code, ... not config. ...<br />
-nginx: fast, reliable — ... but you cannot program it. ...<br />
+engine X: fast, reliable — ... but you cannot program it. ...<br />
 The statistic below: ...<br />
 Node JS web server adoption is four point six percent and climbing — ...<br />
 up from three point one percent the prior year. ... W3Techs, 2025. ...<br />
 Developers do not just want a fast proxy. ...<br />
 They want to own ... the logic layer. ...<br />
-We can give that to nginx users.</p>
+We can give that to engine X users.</p>
 <h3 id="slide-18-what-js-com-gives--table">Slide 18 (What JS COM gives — table)</h3>
 <p>What this unlocks, in concrete terms. ...<br />
 A seven-row table on screen. ...<br />
@@ -1896,14 +1896,14 @@ Custom auth and WAF: pre-content hooks with await. ...<br />
 Stateful rate limiting: SharedWorker plus SharedArrayBuffer. ...<br />
 Protocol bridging — WebSocket to gRPC: L4 generator filters. ...<br />
 A/B traffic splitting: dynamic upstream weight adjustment. ...<br />
-nginx performance. ... JavaScript flexibility. ...<br />
+engine X performance. ... JavaScript flexibility. ...<br />
 We do not compete with Node JS. ...<br />
-We give nginx users ... Node JS superpowers.</p>
+We give engine X users ... Node JS superpowers.</p>
 <h3 id="slide-19-backward-compatible--code--js_source">Slide 19 (Backward Compatible — code + js_source)</h3>
 <p>This is the DOM lesson ... applied correctly. ...<br />
 Modern browsers still render HTML from 1995. ...<br />
 DOM extended the model. ... It did not replace it. ...<br />
-On screen: an existing nginx dot conf — unchanged. ...<br />
+On screen: an existing engine X dot conf — unchanged. ...<br />
 SSL server. ... Static files at slash static. ... Proxy at slash API. ...<br />
 Everything already working. ...<br />
 One new line: js underscore source, path to your init dot js. ...<br />
@@ -1913,21 +1913,21 @@ JavaScript layers are additive — opt in per location, per server. ... Or not a
 <h3 id="slide-20-plugin-system-code">Slide 20 (Plugin system code)</h3>
 <p>The plugin system. ...<br />
 On screen: two lines of JavaScript. ...<br />
-nginx dot use, slash plugins slash rate-limiter — with configuration. ...<br />
+engine X dot use, slash plugins slash rate-limiter — with configuration. ...<br />
 Window: sixty seconds. ... Limit: one thousand requests. ... Key: the API key header. ...<br />
-Second line: nginx dot use, a vendor package, pinned to version 2.1.3. ...<br />
+Second line: engine X dot use, a vendor package, pinned to version 2.1.3. ...<br />
 The bullets below: ...<br />
 Plugins loaded and unloaded ... without restart. ...<br />
 Sandboxed in their own JavaScript scope. ...<br />
 Import and export — JavaScript module system. ...<br />
 Version-pinned, registry-resolvable packages. ...<br />
-This is the npm ecosystem model — ... for nginx internals.</p>
+This is the npm ecosystem model — ... for engine X internals.</p>
 <h3 id="slide-21-admin-shell--repl-terminal">Slide 21 (Admin Shell — REPL terminal)</h3>
 <p>Something remarkable. ...<br />
-A live REPL for nginx. ...<br />
+A live REPL for engine X. ...<br />
 On screen: a terminal session. ...<br />
 wscat, connecting to WebSocket at localhost 9999 slash repl. ...<br />
-First query: nginx dot http dot upstreams, backend, peers zero, dot weight. ...<br />
+First query: engine X dot http dot upstreams, backend, peers zero, dot weight. ...<br />
 Answer: 5. ...<br />
 Set it to zero: answer: 0. ...<br />
 Third query: map all locations to their paths. ...<br />
@@ -1936,7 +1936,7 @@ The bullets: WebSocket plus JSON-RPC 2.0. ...<br />
 Evaluate JavaScript in any running worker process. ...<br />
 Cross-worker relay: run on worker zero, one, two — or broadcast to all. ...<br />
 Read config, inspect state, mutate live — in production, ... without restarting. ...<br />
-Like kubectl exec — ... but for nginx internals.</p>
+Like kubectl exec — ... but for engine X internals.</p>
 <h3 id="slide-22-numbers-table--ai-quote">Slide 22 (Numbers table + AI quote)</h3>
 <p>Built by one engineer. ... With AI tools. ...<br />
 The metrics table on screen: ...<br />
@@ -1957,15 +1957,15 @@ The four bullets: up to twenty times faster than interpreted JavaScript. ...<br 
 Ship binary modules instead of source scripts. ...<br />
 Started as an April Fool's joke — ... now has real benchmarks. ...<br />
 And Ludens — AI integration. ...<br />
-On screen: nginx dot ai dot route, the request, the model, the context, and the action. ...<br />
+On screen: engine X dot ai dot route, the request, the model, the context, and the action. ...<br />
 Upstream health. ... User tier. ... Geographic location. ...<br />
-The AI makes a routing decision — ... directly inside the live nginx worker. ...<br />
+The AI makes a routing decision — ... directly inside the live engine X worker. ...<br />
 The sharpest tool to operate on an open heart. ...<br />
 Direct. ... Privileged. ... Real-time.</p>
 <h3 id="slide-24-roadmap--evolution-chain">Slide 24 (Roadmap — evolution chain)</h3>
 <p>The roadmap. ...<br />
 On screen: a vertical evolution chain. ...<br />
-Starting point: static nginx dot conf. ...<br />
+Starting point: static engine X dot conf. ...<br />
 COM tree — read and write. ...<br />
 Live reconfiguration, without restart. ...<br />
 Workers, SharedWorkers, SharedArrayBuffer. ...<br />
@@ -1980,7 +1980,7 @@ This is the browser story — ... for infrastructure.</p>
 <h3 id="slide-25-path-to-production--status-table">Slide 25 (Path to Production — status table)</h3>
 <p>A proof of concept ... with production DNA. ...<br />
 Six rows on screen, all green checkmarks. ...<br />
-Existing nginx dot conf: backward compatible — verified. ...<br />
+Existing engine X dot conf: backward compatible — verified. ...<br />
 Event loop: non-blocking, zero impact on latency — architectural guarantee. ...<br />
 Memory footprint: QuickJS at two hundred ten kilobytes — embedded. ...<br />
 Test coverage: two hundred twenty test suites, all green. ...<br />
@@ -1995,7 +1995,7 @@ Four: security-review the JavaScript sandbox boundaries and plugin isolation.</p
 <p>Three lessons. ...<br />
 First: the metaphor is the architecture. ...<br />
 A good metaphor drives decisions faster than any design committee. ...<br />
-DOM for nginx meant every question had an obvious answer. ...<br />
+DOM for engine X meant every question had an obvious answer. ...<br />
 Second: AI changes the economics of exploration. ...<br />
 What took a ten-engineer team two years ...<br />
 now takes one engineer four weeks. ...<br />
@@ -2009,9 +2009,9 @@ Amplify where you are strong. ... Do not fight the transition.</p>
 <p>One more thing — the deeper insight. ...<br />
 A quote on screen: ...<br />
 Optimization makes code more complex. ...<br />
-nginx dot conf was optimized — that is why it is frozen. ...<br />
+engine X dot conf was optimized — that is why it is frozen. ...<br />
 The COM layer is above that optimization. ...<br />
-JavaScript does not replace nginx's C internals. ...<br />
+JavaScript does not replace engine X's C internals. ...<br />
 It orchestrates them — the same way JavaScript does not replace the browser's rendering engine. ...<br />
 The internals stay fast. ...<br />
 The surface becomes programmable. ...<br />
@@ -2022,12 +2022,12 @@ This is what the DOM lesson taught us.</p>
 Two rows in an ASCII diagram on screen. ...<br />
 Nineteen ninety-five: static HTML. ...<br />
 Arrow: DOM arrives. ... JavaScript arrives. ... The modern web arrives. ...<br />
-Twenty twenty-four: static nginx dot conf. ...<br />
+Twenty twenty-six: static engine X dot conf. ...<br />
 Arrow: COM arrives. ... JavaScript arrives. ... The programmable infrastructure layer — question mark. ...<br />
 The browser path took about ten years. ...<br />
 The infrastructure version has the advantage of hindsight — and AI-assisted construction. ...<br />
 The bold text at the bottom: ...<br />
-The question is not whether nginx can be fully programmable. ...<br />
+The question is not whether engine X can be fully programmable. ...<br />
 It already is. ...<br />
 The question is — ... what do we build on top of it?</p>
 <h3 id="slide-29-thank-you--resources-table">Slide 29 (Thank You — resources table)</h3>
@@ -2038,7 +2038,7 @@ Full-proxy guide: js pilgrim docs. ...<br />
 Technical internals: js dom doc tech. ...<br />
 Demo applications: js com apps and js pilgrim apps. ...<br />
 And the metaphor, one final time: ...<br />
-nginx dot conf ... is nineteen ninety-five HTML. ...<br />
+engine X dot conf ... is nineteen ninety-five HTML. ...<br />
 JS COM ... is the script tag. ...<br />
 What you build next ... is up to you.</p>
 <h3 id="slide-30-questions">Slide 30 (Questions)</h3>
@@ -2097,7 +2097,7 @@ td { background: #12161e; }
 <td>~5 min</td>
 </tr>
 <tr>
-<td>nginx problem + COM reveal</td>
+<td>engine X problem + COM reveal</td>
 <td>8–10</td>
 <td>~3 min</td>
 </tr>
