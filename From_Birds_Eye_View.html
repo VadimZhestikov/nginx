@@ -582,8 +582,8 @@ th { background: #1e2d3d; color: #7ec8e3; }
 td { background: #12161e; }
 .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 2em; }
 ;color:#e8eaf6;background-color:#0f1117;background-image:none;" data-marpit-pagination-total="32">
-<h1 id="layer-2--request-handlers">Layer 2 — Request Handlers</h1>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-javascript"><span class="hljs-comment">// Install a content handler for /api/hello — no restart needed:</span>
+<h1 id="layer-2--request-handlers-for-new-location">Layer 2 — Request Handlers for NEW location</h1>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-javascript"><span class="hljs-comment">// Install a content handler for dynamically created location /api/hello — no restart needed:</span>
 
 nginx.<span class="hljs-property">http</span>.<span class="hljs-property">servers</span>[<span class="hljs-number">0</span>]
   .<span class="hljs-title function_">addLocation</span>(<span class="hljs-string">&#x27;/api/hello&#x27;</span>).<span class="hljs-property">handler</span> = <span class="hljs-keyword">function</span>(<span class="hljs-params">req</span>) {
@@ -1809,8 +1809,8 @@ Below: change upstream peer weights ... while nginx actively serves traffic. ...
 Every server. ... Every location. ... Every upstream peer. ...<br />
 Readable. ... And writable. ... Right now.</p>
 <h3 id="slide-12-layer-2--request-handler-code">Slide 12 (Layer 2 — Request Handler code)</h3>
-<p>Layer two. ... Request handlers. ...<br />
-On screen: install a content handler for slash api slash hello. ...<br />
+<p>Layer two. ... Request handlers for a new location. ...<br />
+On screen: install a content handler for a dynamically created location, slash api slash hello. ...<br />
 No restart. ... No config file change. ...<br />
 The function receives req. ...<br />
 req dot respond — status 200, content-type application/json, body. ...<br />
