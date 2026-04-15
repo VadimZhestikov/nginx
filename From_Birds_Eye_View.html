@@ -695,14 +695,15 @@ td { background: #12161e; }
 ;color:#e8eaf6;background-color:#0f1117;background-image:none;" data-marpit-pagination-total="32">
 <h1 id="layer-4--workers--shared-state">Layer 4 — Workers &amp; Shared State</h1>
 <p>nginx workers are separate processes — how do they share state?</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-javascript"><span class="hljs-comment">// SharedWorker: one long-lived JS thread visible to ALL nginx workers</span>
-<span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedWorker</span>(<span class="hljs-string">&#x27;/js/rate-limiter.js&#x27;</span>);
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-javascript"><span class="hljs-comment">// /js/hits.js — one thread, outlives all worker restarts</span>
+<span class="hljs-keyword">var</span> hits = <span class="hljs-number">0</span>;
+onmessage = <span class="hljs-keyword">function</span>(<span class="hljs-params"></span>) { <span class="hljs-title function_">postMessage</span>({ <span class="hljs-attr">hits</span>: ++hits }); };
 
-<span class="hljs-comment">// Inside any nginx worker request handler:</span>
-<span class="hljs-keyword">var</span> limiter = <span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedWorker</span>(<span class="hljs-string">&#x27;/js/rate-limiter.js&#x27;</span>);
-limiter.<span class="hljs-property">port</span>.<span class="hljs-title function_">postMessage</span>({ <span class="hljs-attr">check</span>: req.<span class="hljs-property">headers</span>[<span class="hljs-string">&#x27;x-api-key&#x27;</span>] });
-limiter.<span class="hljs-property">port</span>.<span class="hljs-property">onmessage</span> = <span class="hljs-keyword">function</span>(<span class="hljs-params">e</span>) {
-  <span class="hljs-keyword">if</span> (e.<span class="hljs-property">data</span>.<span class="hljs-property">allow</span>) { <span class="hljs-title function_">next</span>(); } <span class="hljs-keyword">else</span> { req.<span class="hljs-title function_">respond</span>(<span class="hljs-number">429</span>); }
+<span class="hljs-comment">// Any nginx worker — request handler:</span>
+<span class="hljs-keyword">var</span> sw = <span class="hljs-keyword">new</span> <span class="hljs-title class_">SharedWorker</span>(<span class="hljs-string">&#x27;/js/hits.js&#x27;</span>);
+sw.<span class="hljs-property">port</span>.<span class="hljs-title function_">postMessage</span>({});
+sw.<span class="hljs-property">port</span>.<span class="hljs-property">onmessage</span> = <span class="hljs-keyword">function</span>(<span class="hljs-params">e</span>) {
+  req.<span class="hljs-title function_">respond</span>(<span class="hljs-number">200</span>, {}, <span class="hljs-string">&#x27;Total hits: &#x27;</span> + e.<span class="hljs-property">data</span>.<span class="hljs-property">hits</span> + <span class="hljs-string">&#x27;\n&#x27;</span>);
 };
 </code></pre>
 <p>Also available: <strong>SharedArrayBuffer</strong> with Atomics —<br />
@@ -1836,12 +1837,14 @@ nginx dot conf ... never changes. ... The running system ... does.</p>
 <h3 id="slide-14-layer-4--sharedworker-code">Slide 14 (Layer 4 — SharedWorker code)</h3>
 <p>Layer four. ... Workers and shared state. ...<br />
 nginx workers are separate OS processes. ... How do they share state? ...<br />
-On screen: new SharedWorker — slash js slash rate-limiter dot js. ...<br />
-One long-lived JavaScript thread ... visible to all nginx workers simultaneously. ...<br />
-From any worker request handler: post a message — check the API key. ...<br />
-If allow: call next. ... Otherwise: respond with 429. ...<br />
-Also on screen: SharedArrayBuffer with Atomics. ...<br />
-Lock-free shared memory ... between all nginx processes. ...<br />
+On screen: two parts. ...<br />
+The SharedWorker script — hits dot js — one thread, one variable: hits. ...<br />
+On every message: increment and reply with the new total. ...<br />
+Below: any nginx worker request handler. ...<br />
+Connect to the same SharedWorker, send an empty message, get the global count back. ...<br />
+Respond with: Total hits, the number. ...<br />
+That number is the same ... across every nginx worker process. ...<br />
+Also available: SharedArrayBuffer with Atomics — lock-free shared memory between all nginx processes. ...<br />
 The quote at the bottom: ...<br />
 Think of SharedWorker as your in-process Redis — ... without the network hop.</p>
 <h3 id="slide-15-layer-5--full-stack-pipeline">Slide 15 (Layer 5 — Full Stack pipeline)</h3>
