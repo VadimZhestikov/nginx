@@ -3,7 +3,7 @@
 add_audio_to_slides.py
 
 Reads From_Birds_Eye_View.md, extracts per-slide speaker notes,
-generates MP3 audio with edge-tts (Microsoft Edge Neural TTS),
+generates MP3 audio with OpenAI TTS,
 and embeds it into From_Birds_Eye_View.html so that each slide
 auto-plays its narration when the slide becomes active.
 
@@ -18,14 +18,13 @@ import base64
 import os
 import re
 import sys
-import tempfile
 
-import edge_tts
+from openai import OpenAI
 
 MD_PATH   = "From_Birds_Eye_View.md"
 HTML_PATH = "From_Birds_Eye_View.html"
 OUT_PATH  = "From_Birds_Eye_View_audio.html"
-VOICE     = "en-US-AriaNeural"    # neural voice — clear, natural, presentation-grade
+VOICE     = "onyx"    # OpenAI TTS voice — deep, authoritative, classic narrator
 
 NUM_PRESENTATION_SLIDES = 30   # sections beyond this are the appendix / notes
 
@@ -105,33 +104,45 @@ def parse_speaker_notes(md_path: str) -> dict[int, str]:
 
 # ── Generate TTS audio ───────────────────────────────────────────────────────
 
-async def tts_to_bytes(text: str, voice: str) -> bytes:
-    """Return MP3 bytes for *text* using edge-tts."""
-    communicate = edge_tts.Communicate(text, voice)
-    # Collect all audio chunks
-    chunks = []
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            chunks.append(chunk["data"])
-    return b"".join(chunks)
+_openai_client = OpenAI()
+
+def tts_to_bytes(text: str, voice: str) -> bytes:
+    """Return MP3 bytes for *text* using OpenAI TTS."""
+    response = _openai_client.audio.speech.create(
+        model="tts-1",
+        voice=voice,
+        input=text,
+        response_format="mp3",
+    )
+    return response.content
 
 
 async def generate_all_audio(notes: dict[int, str], voice: str) -> dict[int, str]:
     """
     Returns {slide_num: base64_mp3_string} for every slide that has a note.
-    Slides are processed concurrently.
+    Slides are processed sequentially with automatic retry on rate-limit errors.
     """
     print(f"Generating audio for {len(notes)} slides using voice '{voice}' …")
 
-    async def one(num: int, text: str) -> tuple[int, str]:
+    results = {}
+    for num, text in sorted(notes.items()):
         print(f"  slide {num:2d} … ", end="", flush=True)
-        mp3 = await tts_to_bytes(text, voice)
+        while True:
+            try:
+                mp3 = await asyncio.to_thread(tts_to_bytes, text, voice)
+                break
+            except Exception as e:
+                if 'rate_limit' in str(e).lower() or '429' in str(e):
+                    m = re.search(r'try again in (\d+)s', str(e))
+                    wait = int(m.group(1)) + 2 if m else 25
+                    print(f"rate limited, waiting {wait}s… ", end="", flush=True)
+                    await asyncio.sleep(wait)
+                else:
+                    raise
         b64 = base64.b64encode(mp3).decode("ascii")
         print(f"{len(mp3) // 1024} KB")
-        return num, b64
-
-    results = await asyncio.gather(*[one(n, t) for n, t in sorted(notes.items())])
-    return dict(results)
+        results[num] = b64
+    return results
 
 
 # ── HTML post-processing ─────────────────────────────────────────────────────
