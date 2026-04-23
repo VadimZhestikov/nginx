@@ -770,20 +770,22 @@ ngx_js_http_postconfiguration(ngx_conf_t *cf)
     ngx_js_next_body_filter = ngx_http_top_body_filter;
     ngx_http_top_body_filter = ngx_js_body_filter;
 
-    /* P11: allocate nginx.shared zone */
+    /* P11: allocate nginx.shared zone only when JS is active */
     jcf = (ngx_js_conf_t *) ngx_get_conf(cf->cycle->conf_ctx, ngx_js_module);
 
-    ngx_str_set(&zone_name, "ngx_js_shared");
+    if (jcf->sources.nelts > 0) {
+        ngx_str_set(&zone_name, "ngx_js_shared");
 
-    jcf->shared_zone = ngx_shared_memory_add(cf, &zone_name,
-                                              NGX_JS_SHARED_SIZE,
-                                              &ngx_js_http_module);
-    if (jcf->shared_zone == NULL) {
-        return NGX_ERROR;
+        jcf->shared_zone = ngx_shared_memory_add(cf, &zone_name,
+                                                  NGX_JS_SHARED_SIZE,
+                                                  &ngx_js_http_module);
+        if (jcf->shared_zone == NULL) {
+            return NGX_ERROR;
+        }
+
+        jcf->shared_zone->init = ngx_js_shared_zone_init;
+        jcf->shared_zone->data = NULL;
     }
-
-    jcf->shared_zone->init = ngx_js_shared_zone_init;
-    jcf->shared_zone->data = NULL;
 
     return NGX_OK;
 }
