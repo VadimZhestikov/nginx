@@ -491,6 +491,9 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     }
 
     js_std_init_handlers(jcf->rt);
+    JS_SetModuleLoaderFunc2(jcf->rt, NULL,
+                            js_module_loader, js_module_check_attributes,
+                            NULL);
     JS_SetSharedArrayBufferFunctions(jcf->rt, &ngx_js_sab_funcs);
 
     /* Limit memory to 64 MB for the config-phase runtime */
@@ -1676,6 +1679,9 @@ ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     js_std_init_handlers(rt);
+    JS_SetModuleLoaderFunc2(rt, NULL,
+                            js_module_loader, js_module_check_attributes,
+                            NULL);
     JS_SetSharedArrayBufferFunctions(rt, &ngx_js_sab_funcs);
 
     ctx = JS_NewContext(rt);

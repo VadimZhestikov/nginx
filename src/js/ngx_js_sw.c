@@ -907,6 +907,9 @@ ngx_js_sw_thread(void *arg)
     }
 
     js_std_init_handlers(rt);
+    JS_SetModuleLoaderFunc2(rt, NULL,
+                            js_module_loader, js_module_check_attributes,
+                            NULL);
 
     /*
      * The SW thread runs a blocking poll() loop, so it may use
@@ -974,7 +977,7 @@ ngx_js_sw_thread(void *arg)
     }
 
     result = JS_Eval(ctx, (const char *) src, src_len,
-                     state->script, JS_EVAL_TYPE_GLOBAL);
+                     state->script, JS_EVAL_TYPE_MODULE);
     ngx_free(src);
 
     if (JS_IsException(result)) {
