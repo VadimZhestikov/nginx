@@ -153,10 +153,11 @@ a browser DevTools tab).
 | P11 ✓
 | <<p11-shared.adoc#,nginx.shared — cross-worker key/value store>>
 | `nginx.shared.get/set/delete/keys/incr` — flat fixed-size shared-memory
-  zone (256 entries, 163 kB) protected by `ngx_spinlock`.  Available in
-  all request-phase handlers and timer callbacks.  Zone registered via
-  `ngx_shared_memory_add` in HTTP postconfiguration; init callback zeroes
-  on first start, preserves entries across hot-reload.
+  zone (256 entries, ~160 kB) protected by `ngx_spinlock`.  Available in
+  all request-phase handlers and timer callbacks.  Zone is only mapped when
+  at least one `js_source` directive is present; omitted otherwise.
+  For configurable capacity or SharedWorker interop see
+  `js_pilgrim_modules/shared_string_map.js`.
 
 | P12 ✓
 | <<p12-l4-stream.adoc#,L4 full-stream + async>>
@@ -416,4 +417,27 @@ data-structure layouts and wire formats.
   pinned to its worker via `?w=N`.  Includes two plugins (`banner`,
   `metrics`) and three upstream groups.
   Run: `objs/nginx -p . -c js_pilgrim_apps/admin_UI_demo_v2/nginx.conf`
+|===
+
+== Pilgrim Modules
+
+`js_pilgrim_modules/` contains reusable JS-only building blocks that can be
+imported from any `js_source` script.  All modules are pure JavaScript with
+no C dependencies — they rely only on SAB, Atomics, and standard QuickJS
+globals.
+
+[cols="2,4"]
+|===
+| Module | Description
+
+| `shared_string_map.js`
+| `SharedStringMap(capacity, maxKeyBytes, maxValBytes[, sab])` — synchronous
+  cross-worker string key-value store backed by a pre-fork
+  `SharedArrayBuffer`.  Open-addressing hash table with FNV-1a hash, linear
+  probing, tombstone deletion, and an `Atomics.compareExchange` spinlock.
+  API mirrors `nginx.shared` (`get`, `set`, `delete`, `has`, `size`, `clear`)
+  with configurable capacity and slot sizes.  Pass `.sab` to a `SharedWorker`
+  via `postMessage` to share the same map across worker-process and
+  SharedWorker contexts.
+  See also: <<p11-shared.adoc#,P11 — nginx.shared>>.
 |===

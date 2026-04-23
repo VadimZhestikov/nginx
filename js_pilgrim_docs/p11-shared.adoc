@@ -3,7 +3,7 @@
 :toc-title: Contents
 :toclevels: 3
 :sectnums:
-:revdate: 2026-03-28
+:revdate: 2026-04-23
 
 P11 adds `nginx.shared`, a plain object with five methods backed by a
 fixed-size shared-memory zone.  Every nginx worker process reads and writes
@@ -138,11 +138,12 @@ typedef struct {
 
 === Zone registration
 
-`ngx_js_http_postconfiguration` calls `ngx_shared_memory_add(cf, "ngx_js_shared",
-NGX_JS_SHARED_SIZE, &ngx_js_http_module)` and stores the result in
-`ngx_js_conf_t.shared_zone`.  The `init` callback (`ngx_js_shared_zone_init`)
-zeroes the zone on first startup; on hot-reload it preserves existing entries
-(`data != NULL` path).
+`ngx_js_http_postconfiguration` calls `ngx_shared_memory_add` only when at
+least one `js_source` directive is present (`jcf->sources.nelts > 0`).  With
+no JS in the configuration the ~160 kB zone is never mapped.  The result is
+stored in `ngx_js_conf_t.shared_zone`.  The `init` callback
+(`ngx_js_shared_zone_init`) zeroes the zone on first startup; on hot-reload it
+preserves existing entries (`data != NULL` path).
 
 === JS binding
 
@@ -150,6 +151,49 @@ Five C functions (`ngx_js_shared_fn_get/set/delete/keys/incr`) are attached to
 a plain `nginx.shared` object in `ngx_js_com_init`.  Each function calls
 `ngx_js_shared_get_hdr` which validates that the zone is mapped before
 acquiring the spinlock.
+
+== Alternative: SharedStringMap (pilgrim module)
+
+`nginx.shared` is a C-level convenience wrapper.  For use cases that need
+configurable capacity, larger values, or SharedWorker interop, the pure-JS
+`SharedStringMap` module in `js_pilgrim_modules/` provides the same API on top
+of a pre-fork `SharedArrayBuffer`:
+
+[source,javascript]
+----
+import { SharedStringMap } from '../js_pilgrim_modules/shared_string_map.js';
+
+// allocate once at init_conf time (pre-fork, shared across all workers)
+const store = new SharedStringMap(256, 128, 512);  // capacity, maxKeyBytes, maxValBytes
+
+// identical call sites to nginx.shared:
+store.set('session:abc', JSON.stringify({ uid: 42 }));
+store.get('session:abc');
+store.delete('session:abc');
+store.has('session:abc');
+store.size;
+store.clear();
+
+// bonus: pass to a SharedWorker
+sw.postMessage({ sab: store.sab });
+----
+
+Trade-offs vs `nginx.shared`:
+
+[cols="1,1,1"]
+|===
+| Property | nginx.shared | SharedStringMap
+
+| Synchronous access        | yes | yes
+| Cross-worker              | yes | yes (pre-fork SAB)
+| Spinlock implementation   | C `ngx_spinlock` | JS `Atomics.compareExchange`
+| Per-access latency        | ~50 ns | ~100–200 ns
+| Capacity tunable          | no (compile-time) | yes (constructor arg)
+| SharedWorker interop      | no | yes (`.sab` property)
+| C code required           | yes | no
+|===
+
+See `js_pilgrim_modules/shared_string_map.js` for the full implementation.
 
 == Test Coverage
 
