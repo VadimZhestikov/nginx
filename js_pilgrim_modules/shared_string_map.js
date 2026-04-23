@@ -34,7 +34,7 @@ const EMPTY     = 0;
 const OCCUPIED  = 1;
 const TOMBSTONE = 2;
 
-const HDR_BYTES = 8;   // Int32 lock + Int32 count
+const HDR_BYTES  = 8;  // Int32 lock + Int32 count
 const META_BYTES = 5;  // u8 used + u32 hash
 
 function fnv32a(bytes) {
@@ -43,6 +43,67 @@ function fnv32a(bytes) {
         h = Math.imul(h ^ bytes[i], 0x01000193) >>> 0;
     }
     return h;
+}
+
+// Pure-JS UTF-8 encoder — avoids TextEncoder which is not available in
+// QuickJS embedded contexts (nginx, SharedWorker).
+// Returns a Uint8Array of at most maxLen bytes; multi-byte sequences that
+// would overflow are silently dropped so the result is always valid UTF-8.
+function _encode(str, maxLen) {
+    const out = new Uint8Array(maxLen);
+    let pos = 0;
+    for (let i = 0; i < str.length; i++) {
+        let c = str.charCodeAt(i);
+        if (c < 0x80) {
+            if (pos + 1 > maxLen) break;
+            out[pos++] = c;
+        } else if (c < 0x800) {
+            if (pos + 2 > maxLen) break;
+            out[pos++] = 0xC0 | (c >> 6);
+            out[pos++] = 0x80 | (c & 0x3F);
+        } else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < str.length) {
+            const c2 = str.charCodeAt(i + 1);
+            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
+                const cp = 0x10000 + ((c & 0x3FF) << 10) + (c2 & 0x3FF);
+                if (pos + 4 > maxLen) break;
+                out[pos++] = 0xF0 | (cp >> 18);
+                out[pos++] = 0x80 | ((cp >> 12) & 0x3F);
+                out[pos++] = 0x80 | ((cp >>  6) & 0x3F);
+                out[pos++] = 0x80 |  (cp        & 0x3F);
+                i++;
+            }
+        } else {
+            if (pos + 3 > maxLen) break;
+            out[pos++] = 0xE0 |  (c >> 12);
+            out[pos++] = 0x80 | ((c >>  6) & 0x3F);
+            out[pos++] = 0x80 |  (c        & 0x3F);
+        }
+    }
+    return pos < maxLen ? out.subarray(0, pos) : out;
+}
+
+// Pure-JS UTF-8 decoder — reads buf[offset..offset+maxLen) until NUL.
+function _decode(buf, offset, maxLen) {
+    let str = '';
+    let i = offset;
+    const end = offset + maxLen;
+    while (i < end && buf[i] !== 0) {
+        const b = buf[i++];
+        if (b < 0x80) {
+            str += String.fromCharCode(b);
+        } else if ((b & 0xE0) === 0xC0) {
+            str += String.fromCharCode(((b & 0x1F) << 6) | (buf[i++] & 0x3F));
+        } else if ((b & 0xF0) === 0xE0) {
+            const b2 = buf[i++], b3 = buf[i++];
+            str += String.fromCharCode(((b & 0x0F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F));
+        } else {
+            const b2 = buf[i++], b3 = buf[i++], b4 = buf[i++];
+            const cp = ((b & 0x07) << 18) | ((b2 & 0x3F) << 12) | ((b3 & 0x3F) << 6) | (b4 & 0x3F);
+            const c  = cp - 0x10000;
+            str += String.fromCharCode(0xD800 + (c >> 10), 0xDC00 + (c & 0x3FF));
+        }
+    }
+    return str;
 }
 
 export class SharedStringMap {
@@ -66,8 +127,6 @@ export class SharedStringMap {
         this._sab   = sab || new SharedArrayBuffer(totalBytes);
         this._hdr32 = new Int32Array(this._sab, 0, 2);         // [lock, count]
         this._data  = new Uint8Array(this._sab, HDR_BYTES);    // slot area
-        this._enc   = new TextEncoder();
-        this._dec   = new TextDecoder();
     }
 
     /** The underlying SharedArrayBuffer — pass to postMessage for SharedWorker access. */
@@ -124,10 +183,7 @@ export class SharedStringMap {
     }
 
     _readVal(off) {
-        const vbase = off + META_BYTES + this._klen;
-        let end = 0;
-        while (end < this._vlen && this._data[vbase + end] !== 0) end++;
-        return this._dec.decode(this._data.subarray(vbase, vbase + end));
+        return _decode(this._data, off + META_BYTES + this._klen, this._vlen);
     }
 
     // ── Linear probe ─────────────────────────────────────────────────────────
@@ -158,7 +214,7 @@ export class SharedStringMap {
     // ── Public API ────────────────────────────────────────────────────────────
 
     get(key) {
-        const kb   = this._enc.encode(key).subarray(0, this._klen);
+        const kb   = _encode(key, this._klen);
         const hash = fnv32a(kb);
         this._acquire();
         try {
@@ -170,8 +226,8 @@ export class SharedStringMap {
     }
 
     set(key, value) {
-        const kb   = this._enc.encode(key).subarray(0, this._klen);
-        const vb   = this._enc.encode(String(value)).subarray(0, this._vlen);
+        const kb   = _encode(key, this._klen);
+        const vb   = _encode(String(value), this._vlen);
         const hash = fnv32a(kb);
         this._acquire();
         try {
@@ -198,7 +254,7 @@ export class SharedStringMap {
     }
 
     delete(key) {
-        const kb   = this._enc.encode(key).subarray(0, this._klen);
+        const kb   = _encode(key, this._klen);
         const hash = fnv32a(kb);
         this._acquire();
         try {
