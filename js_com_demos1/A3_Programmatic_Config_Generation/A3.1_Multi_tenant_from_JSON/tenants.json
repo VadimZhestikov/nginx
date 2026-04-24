@@ -1,0 +1,5 @@
+[
+  {"name": "acme",  "port": 8115, "greeting": "Welcome to ACME Corp"},
+  {"name": "beta",  "port": 8116, "greeting": "Welcome to Beta Inc"},
+  {"name": "gamma", "port": 8117, "greeting": "Welcome to Gamma Labs"}
+]

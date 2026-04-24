@@ -1,0 +1,7 @@
+{
+  "/api/v1/":  "backend_v1",
+  "/api/v2/":  "backend_v2",
+  "/admin/":   "backend_admin",
+  "/static/":  "backend_cdn",
+  "/health/":  "backend_health"
+}

@@ -1,0 +1,55 @@
+// A2.3 — Persistent Background Thread
+//
+// A SharedWorker runs in a dedicated pthread in the nginx master process.
+// It uses setInterval to tick a counter every 500ms, simulating background
+// tasks like metric aggregation, cache refresh, or external health checks.
+//
+// Workers communicate with the SharedWorker via postMessage / onmessage.
+// Each request creates a new SharedWorker connection — this reuses the
+// same underlying SW thread (SharedWorker connections share the same thread)
+// but gives each request a clean message channel.
+
+(function () {
+    var swPath = nginx.cycle.prefix + 'sw.js';
+    var locs   = nginx.http.servers[0].locations;
+
+    function findLoc(path) {
+        return locs.find(function (l) { return l.path === path; });
+    }
+
+    // Helper: send a command to the SW and return a Promise for the reply.
+    // Pattern mirrors existing tests: set onmessage before posting.
+    function askSW(cmd) {
+        return new Promise(function (resolve) {
+            var sw = new SharedWorker(swPath);
+            sw.onmessage = function (e) {
+                try {
+                    resolve(JSON.parse(e.data));
+                } catch (_) {
+                    resolve({ raw: e.data });
+                }
+            };
+            sw.postMessage(cmd);
+        });
+    }
+
+    // GET /value/ — ask the SW for its current tick count and computed value
+    findLoc('/value/').handler = async function (r) {
+        var data = await askSW('get');
+        r.respond(200, {}, JSON.stringify(data) + '\n');
+    };
+
+    // POST /tick/ — manually trigger a tick in the SW
+    findLoc('/tick/').handler = async function (r) {
+        if (r.method !== 'POST') { r.respond(405, {}, 'Method Not Allowed\n'); return; }
+        var data = await askSW('tick');
+        r.respond(200, {}, JSON.stringify(data) + '\n');
+    };
+
+    // POST /reset/ — reset SW state to zero
+    findLoc('/reset/').handler = async function (r) {
+        if (r.method !== 'POST') { r.respond(405, {}, 'Method Not Allowed\n'); return; }
+        var data = await askSW('reset');
+        r.respond(200, {}, JSON.stringify(data) + '\n');
+    };
+})();

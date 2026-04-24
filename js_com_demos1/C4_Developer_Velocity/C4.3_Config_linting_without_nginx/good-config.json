@@ -1,0 +1,8 @@
+{
+  "port": 8080,
+  "maxConnections": 100,
+  "debug": true,
+  "name": "my-plugin",
+  "timeout": 5000,
+  "logLevel": "info"
+}

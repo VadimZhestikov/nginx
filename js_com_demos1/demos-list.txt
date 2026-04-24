@@ -1,0 +1,382 @@
+● A — Only Possible With This Project
+
+  A1 · Live Infrastructure Surgery
+
+  A1.1  Live SSL cert rotation
+        Swap cert/key via admin WebSocket; nginx serves it on next TLS
+        handshake. No reload, no connection drop.
+        Classic: ssl_certificate read once at startup; requires nginx -s reload.
+
+  A1.2  Add a virtual host at runtime
+        nginx.addServer(…) creates a fully functional server{} block
+        immediately. No restart.
+        Classic: no API; full config reload only.
+
+  A1.3  Remove a virtual host on zero traffic
+        nginx.removeServer() drains connections, removes the vhost, frees
+        memory — one JS call.
+        Classic: no API.
+
+  A1.4  Config snapshot + one-click rollback
+        Take a named snapshot before a risky change, watch error rate in
+        admin UI, hit Rollback if it spikes.
+        Classic: no concept of rollback.
+
+  A1.5  Feature-flag a location
+        Toggle location /beta on/off by flipping a JS boolean.
+        No reload, no dropped connections.
+        Classic: impossible without reload.
+
+  A2 · Cross-Worker Coordination
+
+  A2.1  Global in-memory rate counter
+        SharedArrayBuffer + Atomics.add() shared across all workers.
+        No Redis, no shared-memory zone declaration in config.
+        Classic: limit_req_zone needs pre-declared size and fixed syntax;
+                 no programmatic access.
+
+  A2.2  Cross-worker broadcast
+        One request calls nginx.broadcast({type:'flushCache'});
+        every worker clears its local cache simultaneously.
+        Classic: workers are isolated processes with no IPC.
+
+  A2.3  Persistent background thread
+        SharedWorker pre-computes a routing table or calls an external API
+        every 30 s; workers read results from SAB without a network hop.
+        Classic: no background threads in nginx.
+
+  A2.4  Self-adjusting canary
+        SharedWorker counts 5xx rates per upstream, automatically shifts
+        weight from bad to good upstream, logs the decision.
+        Classic: no feedback loop in nginx upstream.
+
+  A2.5  Atomics.wait/notify barrier
+        JS Worker does slow work (compress, encrypt, ML inference);
+        request handler parks on Atomics.wait, wakes when result is ready.
+        Classic: no synchronization primitives.
+
+  A3 · Programmatic Config Generation
+
+  A3.1  Multi-tenant from a JSON file
+        js_preprocess reads tenants.json (200 rows), emits 200 server{}
+        blocks with individual SSL, rate limits, upstream names.
+        Classic: templating (Jinja2/ERB) requires external build step
+                 and a reload.
+
+  A3.2  Environment-driven config
+        Same nginx.conf behaves differently in dev/staging/prod by reading
+        $APP_ENV in js_preprocess.
+        Classic: no conditional block emission at parse time.
+
+  A3.3  Config dry-run
+        nginx.http.match('/api/v2/orders?foo=bar') returns which location
+        would match and with what variables, before deploying.
+        Classic: no simulation API.
+
+  A4 · Interactive Operations
+
+  A4.1  Browser REPL into a live worker
+        Open admin UI, pick worker #2 in the tab strip, type JS,
+        see results instantly.
+        Classic: no interactive console in nginx.
+
+  A4.2  Per-worker REPL relay
+        Evaluate nginx.http.upstreams[0].peers[0].weight in worker 0 vs
+        worker 3 and compare; reveals COW divergence.
+        Classic: no per-worker introspection.
+
+  A4.3  COM object tree browser
+        Collapsible tree of every nginx internal config struct,
+        clickable to copy the JS path.
+        Classic: no introspection API.
+
+  ---
+  B — More Convenient With JS
+
+  B1 · Request Routing
+
+  B1.1  Complex conditional routing
+
+    Classic — 3 maps + rewrite, "if is evil" pitfalls:
+      map $uri $is_api        { ~^/api/ 1; }
+      map $http_x_tenant $up  { "acme" backend_acme; default backend_default; }
+      map $http_accept $json  { ~json 1; }
+      location / {
+          if ($is_api)  { ... }  # race conditions with rewrite
+          if ($json)    { ... }
+      }
+
+    JS — readable, testable:
+      loc.handler = async (req) => {
+          const tenant = TENANTS[req.headers['x-tenant']];
+          if (req.uri.startsWith('/api/') &&
+              req.headers.accept?.includes('json'))
+              return req.pass(tenant?.jsonUpstream ?? 'backend_default');
+          req.pass('static');
+      };
+
+  B1.2  Route on request body content
+        e.g. GraphQL operation name in POST body decides upstream.
+        Classic: body not available at routing phase — impossible.
+        JS: req.readBody() then req.pass(upstreamName).
+
+  B1.3  A/B test with user-segment logic
+        Classic split_clients: random hash on one variable only.
+        JS: any logic — cookie, user tier, time-of-day, geo + user-agent.
+
+  B2 · Authentication & Security
+
+  B2.1  Inline JWT validation
+
+    Classic — separate auth_request sub-hop (5–20 ms per request):
+      location /api/ {
+          auth_request /auth-proxy;
+          auth_request_set $user $upstream_http_x_user;
+      }
+      location /auth-proxy {
+          proxy_pass http://auth-service;
+      }
+
+    JS — verify RS256 in-process, zero network hop:
+      loc.addHook(async (req, next) => {
+          const tok = req.headers.authorization?.slice(7);
+          if (!verifyJWT(tok, PUBLIC_KEY))
+              return req.respond(401, {}, 'Unauthorized');
+          req.setVariable('x_user', parseJWT(tok).sub);
+          return next(req);
+      });
+
+  B2.2  Dynamic API-key blocklist
+        SharedWorker downloads revoked-keys list every 5 min, stores in
+        SAB hash table; hook checks in < 1 µs.
+        Classic: map rebuilt + reload required.
+
+  B2.3  HMAC request signing for upstream
+        Add Authorization: HMAC-SHA256 … to outbound proxied requests.
+        Classic: impossible without Lua.
+
+  B3 · Response Transformation
+
+  B3.1  JSON field masking / enrichment
+
+    Classic sub_filter — dumb string replace, no JSON awareness,
+    buffers entire body, breaks on whitespace variations:
+      sub_filter '"ssn":"[^"]*"' '"ssn":"***"';
+      sub_filter_once off;
+
+    JS body filter — parse → transform → re-serialize:
+      nginx.addBodyFilter(async (body, req) => {
+          const data = JSON.parse(body);
+          data.user.ssn = '***';
+          delete data.internal;
+          return JSON.stringify(data);
+      });
+
+  B3.2  Conditional HTML injection
+        Inject <script> only for logged-in users based on session cookie,
+        after a specific </head> tag.
+        Classic: sub_filter ignores request context.
+
+  B3.3  Response fan-out / fan-in
+        Merge r.subrequest('/api/user') + r.subrequest('/api/prefs') into
+        one response object.
+        Classic: SSI can fan-out but cannot merge JSON.
+
+  B4 · Upstream Management
+
+  B4.1  Custom health check protocol
+
+    Classic (open-source) — no custom health check probe:
+      upstream backend {
+          server 10.0.0.1:8080;
+          # no way to probe with a custom query
+      }
+
+    JS SharedWorker — ping each peer with a Redis PING:
+      setInterval(async () => {
+          for (const peer of nginx.http.upstreams[0].peers)
+              peer.down = !(await redisping(peer.server));
+      }, 5000);
+
+  B4.2  Sticky sessions with arbitrary key
+        Hash by X-Session-Token header, falling back to JWT sub.
+        Classic: only ip_hash or commercial sticky directive.
+
+  B4.3  DNS-refreshed upstream
+        SharedWorker re-resolves hostnames every 60 s, updates peer.server.
+        Classic: nginx resolves once at startup unless resolver +
+                 $upstream variable trick is used.
+
+  B5 · Logging & Observability
+
+  B5.1  Request tracing with correlation ID
+        Generate UUID if absent, propagate to upstream, include in response.
+        Classic: $request_id exists but enriching it requires Lua.
+
+  B5.2  Structured JSON access log
+        Emit {"ts":…,"method":…,"upstream_time":…,"user":…}.
+        Classic: log_format is a static string with no computation.
+
+  B5.3  Per-request metrics with percentiles
+        Accumulate in a SharedArrayBuffer histogram, expose at /metrics
+        as Prometheus text.
+        Classic: needs an external metrics module.
+
+  ---
+  C — More Efficient Than Classic nginx
+
+  C1 · Latency
+
+  C1.1  In-process JWT cache
+        Cache validated token payloads in SAB LRU; skip all crypto on hit.
+        Classic: auth_request = 1 TCP roundtrip ≈ 0.5–20 ms
+        JS:      < 1 µs hash lookup
+
+  C1.2  Parallel subrequests
+        await Promise.all([r.subrequest(A), r.subrequest(B), r.subrequest(C)])
+        completes in max(tA, tB, tC).
+        Classic SSI: sequential → tA + tB + tC  (up to 3× slower)
+
+  C1.3  Pre-computed routing table
+        SharedWorker builds a trie from 10k URL prefixes once; request
+        handlers do O(log n) lookup with no lock and no reload.
+        Classic: map directive recompiles on every nginx reload.
+
+  C2 · Memory
+
+  C2.1  Shared routing state
+        One SAB holds the routing table for all workers (one mmap copy).
+        Classic: each worker duplicates map data — N copies for N workers.
+
+  C2.2  Streaming body transform
+        GENERATOR filter yields chunks; never holds the full body in RAM.
+        Classic: sub_filter accumulates the entire response body.
+
+  C2.3  Connection-level session state
+        Per-connection JS object freed when handler returns (GC-managed).
+        Classic: lua_shared_dict or ngx.ctx tied to a persistent pool.
+
+  C3 · Operational Efficiency
+
+  C3.1  Hot-load a new feature
+        nginx.use('/opt/plugins/rate-limit-v2', cfg) in a running worker.
+        Zero downtime, rollback available.
+        Classic: edit nginx.conf → test → reload (drops long-poll
+                 connections) → verify.
+
+  C3.2  Canary with automatic rollback
+        JS monitors 5xx rate, reverts upstream weight if threshold exceeded.
+        Classic: operator watches dashboard, edits config, reloads manually.
+
+  C3.3  Config change audit trail
+        Every structural change logged with who/when/what via r.log().
+        Classic: no audit trail for runtime config changes.
+
+  C3.4  Plugin version pinning
+        nginx.use('acmecorp/auth@1.2.x', cfg) resolves via local semver
+        registry; hot-swappable.
+        Classic: modules are compiled-in or .so; version management manual.
+
+  C4 · Developer Velocity
+
+  C4.1  Unit test routing rules
+        Run: qjs route-test.js  — no nginx process needed.
+        Classic: requires running nginx + curl + log inspection.
+
+  C4.2  Shared logic with frontend
+        Same URL-normalization or JWT-parse function used in both browser
+        and nginx handler — one .js file imported by both.
+        Classic: logic duplicated in nginx.conf directives and JS.
+
+  C4.3  Config linting without nginx
+        Parse and type-check plugin configs with JSON schema validator
+        before loading: qjs validate-config.js
+        Classic: nginx -t requires a full nginx binary and valid file paths.
+
+  ---
+  D — Audience-Specific Highlights
+
+  D1 · For SaaS / Platform Teams
+
+  D1.1  Tenant onboarding in < 100 ms
+        POST to /admin/tenants; JS handler creates server{} + SSL cert +
+        upstream entry, all live, no reload.
+
+  D1.2  Blue/green atomic switchover
+        nginx.broadcast({type:'switchBlue'}) moves all workers from blue
+        to green upstream in a single event-loop tick.
+
+  D1.3  Cross-worker quota enforcement
+        SAB token-bucket shared by all workers — request is rejected the
+        moment the global counter hits zero (not eventually consistent).
+
+  D2 · For Security / Compliance Teams
+
+  D2.1  Zero-trust gateway
+        Every request validated against SPIFFE/OIDC in-process; no sidecar.
+
+  D2.2  Dynamic IP blocklist
+        SharedWorker fetches threat-intel feed every minute, stores CIDRs
+        in SAB; hook rejects matching IPs in < 2 µs.
+
+  D2.3  WAF-lite streaming scanner
+        GENERATOR body filter scans request body chunk-by-chunk for SQLi /
+        XSS patterns; short-circuits with 400 on first match without
+        buffering the whole body.
+
+  D3 · For Architects / Engineering Managers
+
+  D3.1  Plugin marketplace model
+        Certified plugins installed from a local registry with one line;
+        version-pinned, auditable, hot-swappable.
+
+  D3.2  Single-pane admin UI
+        admin_UI_demo_v2 shows all vhosts, upstreams, peers, loaded plugins,
+        live request rate — over one persistent WebSocket, no agent needed.
+
+  D3.3  Dev/prod parity
+        Same nginx.conf + same JS plugin runs in Docker on a laptop and in
+        production; only the plugin config object differs.
+
+  D4 · For L4 / Network Engineers
+
+  D4.1  Protocol-aware stream routing
+        Inspect first bytes of a TCP connection in a JS stream handler,
+        route SSH vs HTTPS vs custom protocol to different backends.
+
+  D4.2  Dynamic port listener
+        nginx.createSocket() opens a new listen port at runtime;
+        nginx.stream.attach() binds a JS handler — no reload.
+
+  D4.3  TLS fingerprinting
+        Read ClientHello in stream handler, route bots vs browsers to
+        different upstreams.
+
+  ---
+  Top 5 Showstopper Demos (for a talk or live session)
+
+  1.  Live SSL cert rotation
+      Audience watches HTTPS traffic continue uninterrupted while the cert
+      is swapped via the browser admin UI.
+      Groups: A1.1
+
+  2.  Real-time traffic slider + auto-rollback
+      Drag to 5% canary; SharedWorker rolls back automatically when the
+      error rate crosses a threshold.
+      Groups: A2.4 + C3.2
+
+  3.  JSON fan-out / fan-in benchmark
+      One request → 3 parallel subrequests → merged response.
+      Side-by-side wrk output: SSI serial vs JS parallel.
+      Groups: C1.2 + B3.3
+
+  4.  js_preprocess: 200 virtual hosts from one JSON file
+      nginx -T shows all 200 server{} blocks, generated in ~80 ms,
+      with no templating tool and no external build step.
+      Groups: A3.1
+
+  5.  Inline JWT vs auth_request benchmark
+      wrk side-by-side: auth_request ~20 ms vs in-process ~0.04 ms.
+      500× latency reduction, measured live in front of the audience.
+      Groups: B2.1 + C1.1
+

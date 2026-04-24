@@ -1,0 +1,6 @@
+{
+  "port": 99999,
+  "debug": "yes",
+  "logLevel": "verbose",
+  "timeout": 50
+}
