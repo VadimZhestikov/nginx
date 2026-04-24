@@ -18,11 +18,12 @@ import * as os from 'os';
 
 // Pre-fork SAB — same VA in master and all workers (allocated before fork).
 // Futex shared mode works cross-process because the physical page is the same.
-var sab = new SharedArrayBuffer(12);   // 3 x Int32
+var sab = new SharedArrayBuffer(16);   // 4 x Int32
 var arr = new Int32Array(sab);
 // arr[0] = 0  (state: 0=idle, 1=work-requested, 2=result-ready)
 // arr[1] = 0  (input)
 // arr[2] = 0  (result)
+// arr[3] = 0  (stop flag: 1 = SW should exit its loop)
 
 (function () {
     // Resolve absolute path for the SW script
@@ -115,5 +116,14 @@ var arr = new Int32Array(sab);
             return;
         }
         r.respond(200, {}, 'last: fib(' + lastInput + ')=' + lastResult + '\n');
+    };
+
+    // GET /stop-sw/ — signal the SharedWorker to exit its compute loop.
+    // Must be called before nginx -s stop; otherwise the pthread blocks in
+    // Atomics.wait and the master process hangs until the OS kills it.
+    findLoc('/stop-sw/').handler = function (r) {
+        Atomics.store(arr, 3, 1);   // set stop flag
+        Atomics.notify(arr, 0, 1);  // wake SW so it sees the flag immediately
+        r.respond(200, {}, 'SW stop signal sent\n');
     };
 })();

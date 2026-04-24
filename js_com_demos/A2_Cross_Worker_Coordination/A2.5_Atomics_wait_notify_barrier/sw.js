@@ -1,50 +1,45 @@
 // A2.5 SharedWorker — Atomics barrier participant
 //
-// Runs a continuous compute loop: waits for signal, computes, stores result.
-//
-// SAB layout (Int32):
+// SAB layout (Int32, 16 bytes = 4 slots):
 //   [0] state: 0=idle, 1=work-requested, 2=result-ready
-//   [1] input:  value to compute
+//   [1] input:  fibonacci argument
 //   [2] result: fibonacci result
+//   [3] stop:   0=running, 1=terminate (set by /stop-sw/ before nginx -s stop)
 //
-// The SW thread loops: wait for state==1, compute fib(arr[1]), store result
-// in arr[2], set state=2, notify. Then reset to idle and wait again.
+// Without arr[3]: the infinite Atomics.wait loop blocks the pthread forever,
+// preventing the master process from joining it on shutdown (visible as a
+// hung process in futex_wait even after nginx -s stop).
 
 onconnect = function (e) {
     var port = e.ports[0];
     var arr  = null;
 
-    // Once we receive the SAB, start the compute loop
     port.onmessage = function (msg) {
         if (msg.data instanceof SharedArrayBuffer) {
             arr = new Int32Array(msg.data);
-            port.postMessage('ready');   // acknowledge to worker
+            port.postMessage('ready');
             computeLoop();
         }
     };
 
     function computeLoop() {
-        if (!arr) { return; }
-
-        // Iterative loop — avoids stack overflow from tail-recursive calls
         for (;;) {
-            // Wait for state to become 1 (work-requested); timeout 1s so we
-            // don't spin-burn when idle
-            Atomics.wait(arr, 0, 0, 1000);
+            // Short timeout (500 ms) so we can check the stop flag promptly.
+            Atomics.wait(arr, 0, 0, 500);
 
-            // Check if work was actually requested
+            // Termination signal: worker set arr[3]=1 before nginx -s stop.
+            if (Atomics.load(arr, 3) === 1) { break; }
+
             if (Atomics.load(arr, 0) === 1) {
-                var n      = Atomics.load(arr, 1);
-                var result = fib(n);
-
-                Atomics.store(arr, 2, result);  // write result
+                var result = fib(Atomics.load(arr, 1));
+                Atomics.store(arr, 2, result);
                 Atomics.store(arr, 0, 2);       // signal result-ready
                 Atomics.notify(arr, 0, 1);      // wake waiting worker
 
-                // Wait for worker to reset state to 0 before next iteration
-                Atomics.wait(arr, 0, 2, 2000);
+                // Wait for worker to acknowledge (reset state to 0).
+                Atomics.wait(arr, 0, 2, 500);
+                if (Atomics.load(arr, 3) === 1) { break; }
             }
-            // Loop back: wait for next work-request
         }
     }
 };
@@ -52,10 +47,6 @@ onconnect = function (e) {
 function fib(n) {
     if (n <= 1) { return n; }
     var a = 0, b = 1;
-    for (var i = 2; i <= n; i++) {
-        var c = a + b;
-        a = b;
-        b = c;
-    }
+    for (var i = 2; i <= n; i++) { var c = a + b; a = b; b = c; }
     return b;
 }
