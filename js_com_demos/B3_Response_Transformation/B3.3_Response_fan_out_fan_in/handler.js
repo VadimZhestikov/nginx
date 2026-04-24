@@ -9,8 +9,18 @@
 // event loop, the results are merged in JavaScript, and the client receives a
 // single JSON response.
 //
-// Note: subrequests are currently sequential (await one, then the next).
-// A future Promise.all-style API would allow parallel fan-out.
+// Note: subrequests must be sequential (await one, then the next).
+// Promise.all([r.subrequest(A), r.subrequest(B), r.subrequest(C)]) crashes the
+// worker with SIGABRT / heap corruption.  Root cause: each subrequest's
+// completion calls ngx_http_finalize_request → ngx_http_run_posted_requests,
+// which recursively processes the next posted event.  With three subrequests
+// in-flight simultaneously, the recursive chain eventually runs the parent's
+// write_event_handler (ngx_js_subreq_resume) while earlier subrequests' C
+// frames are still live on the stack.  ngx_js_subreq_resume → r.respond() →
+// ngx_http_finalize_connection frees the parent request pool, leaving those
+// stacked frames with dangling pointers — hence the heap corruption.
+// Sequential awaits are safe because the subrequest call stack fully unwinds
+// before the next event-loop tick runs the parent's resume handler.
 
 (function () {
     function parseArgs(qs) {
