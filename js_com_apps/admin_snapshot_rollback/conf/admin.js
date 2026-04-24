@@ -46,6 +46,33 @@ var _handlers        = {};     /* name → function(req) */
 var _pinnedId        = null;   /* id of snapshot to apply on next restart */
 
 /* ------------------------------------------------------------------ *
+ * Config-authority SharedWorker                                       *
+ * ------------------------------------------------------------------ *
+ * cfgworker.js stores the desired config state and fans out every
+ * apply/rollback command to all connected workers.  Replaces the old
+ * nginx.broadcast(fn) pattern, which in worker context only ran fn
+ * locally and never reached other workers.
+ *
+ * SW creation happens in master (init_conf) so all workers inherit the
+ * cfgWorker handle via COW fork.  onmessage is registered inside
+ * nginx.broadcast() so it runs in each worker's event loop after fork.
+ */
+var cfgWorker = new SharedWorker(nginx.cycle.prefix + 'conf/cfgworker.js');
+
+nginx.broadcast(function () {
+    cfgWorker.onmessage = function (msg) {
+        var type = msg.data.type;
+        /* Fan-out from SW (apply/rollback) or sync reply to 'get'. */
+        if (type === 'apply' || type === 'rollback' || type === 'sync') {
+            _applySnapshot(msg.data.snap || null);
+        }
+    };
+    /* On startup ask the SW for the current desired state so that a
+     * worker restarted by the master automatically catches up. */
+    cfgWorker.postMessage({ type: 'get' });
+});
+
+/* ------------------------------------------------------------------ *
  * Helpers                                                             *
  * ------------------------------------------------------------------ */
 
@@ -533,9 +560,11 @@ admin.applySnapshot = function (id) {
         throw new Error('snapshot parse error: ' + e.message);
     }
 
-    nginx.broadcast(function () {
-        _applySnapshot(snap);
-    });
+    /* Apply locally (immediate for this worker). */
+    _applySnapshot(snap);
+
+    /* Fan out to all other workers via SharedWorker. */
+    cfgWorker.postMessage({ type: 'apply', snap: snap });
 
     _pinnedId = id;
     return id;
@@ -551,7 +580,9 @@ admin.rollback = function () {
     if (prev) {
         admin.applySnapshot(prev);
     } else {
-        nginx.broadcast(function () { _applySnapshot(null); });
+        /* Reset to base: apply locally, then fan out. */
+        _applySnapshot(null);
+        cfgWorker.postMessage({ type: 'rollback', snap: null });
         _pinnedId = null;
     }
 

@@ -11,6 +11,10 @@ mkdir -p logs snapshots
 # Remove any leftover snapshots from a previous run
 rm -f snapshots/*.json
 
+# Stop any previous instance sharing this port or prefix before starting fresh
+"$NGINX" -p . -c nginx.conf -s stop 2>/dev/null || true
+sleep 0.2
+
 cleanup() { "$NGINX" -p . -c nginx.conf -s stop 2>/dev/null || true; }
 trap cleanup EXIT
 
@@ -167,6 +171,71 @@ check "snapshot content: has shared key" '"shared"' "$SNAP_CONTENT"
 OUT=$(curl -sf "http://127.0.0.1:$PORT/api/")
 check "canary: has version field" '"version"' "$OUT"
 check "canary: has canary field"  '"canary"'  "$OUT"
+
+# ── 14. Structural op: addLocation fan-out via raw snapshot ──────────────────
+#
+# Creates a raw snapshot that adds /dynamic/ to each worker's routing tree
+# using a named handler registered at init-conf time.  The SharedWorker fans
+# the op to all 4 workers; after a brief yield every worker must return 200.
+RAW=$(post /admin/raw-snapshot \
+    '{"name":"add-dynamic","ops":[{"op":"addLocation","serverName":"localhost","pattern":"/dynamic/","handler":"dynamicHandler"}]}')
+check "raw snapshot (add-dynamic) created" '"id"' "$RAW"
+ID_DYN=$(echo "$RAW" | grep -o '"id":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+check "raw snapshot id format" '-add-dynamic' "$ID_DYN"
+
+APP_DYN=$(post "/admin/apply/$ID_DYN" '')
+check "apply add-dynamic snapshot" '"applied"' "$APP_DYN"
+
+# Structural ops propagate via SharedWorker fan-out (async); allow event-loop
+# round-trips to complete before sampling all workers.
+sleep 0.2
+
+declare -A dyn_pids
+for i in $(seq 1 80); do
+    OUT=$(curl -sf "http://127.0.0.1:$PORT/dynamic/") || {
+        FAIL=$((FAIL+1)); echo "FAIL: /dynamic/ request $i → non-200"; continue
+    }
+    check "/dynamic/ after addLocation: has resource field (req $i)" '"resource"' "$OUT"
+    PID=$(echo "$OUT" | grep -o '"worker":"[0-9]*"' | grep -o '[0-9]*')
+    [ -n "$PID" ] && dyn_pids["$PID"]=1
+done
+
+if [ "${#dyn_pids[@]}" -ge 4 ]; then
+    echo "PASS: addLocation fan-out reached all 4 workers (PIDs: ${!dyn_pids[*]})"
+    PASS=$((PASS+1))
+else
+    echo "FAIL: addLocation fan-out reached only ${#dyn_pids[@]} of 4 workers"
+    FAIL=$((FAIL+1))
+fi
+
+# ── 15. Structural op: removeLocation fan-out via raw snapshot ────────────────
+RAW2=$(post /admin/raw-snapshot \
+    '{"name":"remove-dynamic","ops":[{"op":"removeLocation","serverName":"localhost","pattern":"/dynamic/"}]}')
+check "raw snapshot (remove-dynamic) created" '"id"' "$RAW2"
+ID_RM=$(echo "$RAW2" | grep -o '"id":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+
+APP_RM=$(post "/admin/apply/$ID_RM" '')
+check "apply remove-dynamic snapshot" '"applied"' "$APP_RM"
+
+sleep 0.2
+
+# Verify the requesting worker returns 404 first.
+check "removeLocation on requesting worker: 404" "404" "$(code /dynamic/)"
+
+# Verify all workers return 404 — send 40 requests and count any non-404.
+rm_fail=0
+for i in $(seq 1 40); do
+    RC=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/dynamic/")
+    if [ "$RC" != "404" ]; then
+        echo "FAIL: /dynamic/ after removeLocation: request $i → $RC (expected 404)"
+        FAIL=$((FAIL+1))
+        rm_fail=$((rm_fail+1))
+    fi
+done
+if [ "$rm_fail" -eq 0 ]; then
+    echo "PASS: removeLocation fan-out — all 40 requests return 404"
+    PASS=$((PASS+1))
+fi
 
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"

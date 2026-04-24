@@ -26,8 +26,9 @@
 //   GET  /admin/state             — current shared-key values
 //   GET  /admin/snapshots         — list saved snapshot ids
 //   POST /admin/snapshots         — create snapshot (body: {"name":"..."})
+//   POST /admin/raw-snapshot      — explicit ops array (body: {"name":"...","ops":[...]})
 //   GET  /admin/snapshots/:id     — snapshot JSON content
-//   POST /admin/apply/:id         — apply a snapshot
+//   POST /admin/apply/:id         — apply a snapshot (fan-out to all workers via SW)
 //   POST /admin/rollback          — rollback one step
 //   POST /admin/set               — set one key (body: {"key":"...","value":"..."})
 //   GET  /admin/worker            — responding worker PID
@@ -37,6 +38,7 @@
 //   GET  /api/premium/            — live while routes.premium == "1"
 //   GET  /api/                    — routes to v1 or v2 handler per canary.weight
 //   GET  /status/                 — worker PID + current flag snapshot
+//   GET  /dynamic/                — added dynamically via addLocation snapshot
 
 // ── 1. Load the admin plugin ─────────────────────────────────────────────────
 //
@@ -52,7 +54,18 @@ nginx.use('./admin-plugin', {
     }
 });
 
-// ── 2. Install per-worker app route handlers ─────────────────────────────────
+// ── 2. Register named handlers for structural-op snapshots ───────────────────
+//
+// nginx.admin.registerHandler() runs here at init-conf time (master, before
+// fork) so all workers inherit _handlers via COW.  The SharedWorker fan-out
+// carries only the handler name string; each receiving worker resolves it
+// locally — no closure serialisation required.
+nginx.admin.registerHandler('dynamicHandler', function (r) {
+    r.respond(200, {'Content-Type': 'application/json'},
+        JSON.stringify({ resource: 'dynamic', worker: r.variable('pid') }) + '\n');
+});
+
+// ── 3. Install per-worker app route handlers ─────────────────────────────────
 //
 // nginx.broadcast(fn) here queues fn to run in every worker during init_process
 // (after the plugin's own broadcast has seeded the shared keys).

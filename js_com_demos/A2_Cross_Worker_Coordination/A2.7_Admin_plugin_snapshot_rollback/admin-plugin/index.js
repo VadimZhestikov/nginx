@@ -2,48 +2,49 @@
 //
 // Adapted from js_com_apps/admin_snapshot_rollback/conf/admin.js + admin-api.js.
 //
-// Exposes nginx.admin with snapshot / rollback API and mounts REST handlers
-// on the /admin/ location.
+// Cross-worker propagation uses a SharedWorker as config authority (Strategy 1
+// from js-reconfig-guide-all-workers):
 //
-// Snapshot ops come in two tiers that reflect how the JS COM propagates changes
-// across nginx workers:
+//   1. The requesting worker applies the snapshot locally (immediate).
+//   2. It posts {type:'apply', snap} to cfgWorker.
+//   3. cfgWorker fans the message out to ALL connected workers via postMessage().
+//   4. Each worker's cfgWorker.onmessage handler applies the same snapshot.
+//
+// This correctly propagates BOTH kinds of ops:
 //
 //   {shared: "key", value: "v"}
-//       Writes nginx.shared.set(key, v).  nginx.shared is a lock-free
-//       shared-memory segment visible to ALL workers instantly — no IPC,
-//       no reload.  Route-toggle decisions read back from nginx.shared on
-//       every request, so the change takes effect the moment the write lands.
+//       nginx.shared.set() — lock-free shared memory, readable by all workers
+//       without any further IPC.  The fan-out is redundant but harmless.
 //
-//   {path: "http.upstreams[i].peers[j].weight", value: N}
-//       Calls nginx.set(path, N) — upstream peer scalars live in each
-//       worker's own COW copy.  Applying this op from a request handler
-//       changes only the worker that receives the POST.  Included because
-//       it is part of the original ops-list format; production use would
-//       add a coordinated reload step for peer-property snapshots.
+//   {op: "addLocation"|"removeLocation", serverName, pattern [, handler]}
+//       Per-worker nginx routing-tree mutation.  REQUIRES the SW fan-out —
+//       nginx.shared cannot carry structural changes.
+//       Handler names are resolved from _handlers (populated at init-conf time
+//       via nginx.admin.registerHandler(), inherited by all workers via COW).
 //
-// nginx.pluginConfig (passed from the caller's nginx.use() second argument):
-//   {
-//     keys: { "flag.name": "default_value", ... }   — shared keys to manage
-//   }
+// nginx.pluginConfig (second arg to nginx.use()):
+//   { keys: { "flag.name": "default_value", ... } }
 //
 // nginx.admin API:
-//   state()                    — current values of all managed shared keys
-//   createSnapshot(name)       — persist current state as a numbered snapshot
-//   createRawSnapshot(name, ops) — persist an explicit ops array
-//   listSnapshots()            — sorted list of snapshot ids
-//   applySnapshot(id)          — apply a saved snapshot (nginx.shared ops: instant)
-//   rollback()                 — apply the previous snapshot (or base defaults)
-//   compactOps(ops[, base])    — deduplicate an ops list (last-write-wins)
+//   state()                        — current nginx.shared key values
+//   registerHandler(name, fn)      — register a named handler for op resolution
+//   createSnapshot(name)           — save current nginx.shared state
+//   createRawSnapshot(name, ops)   — save an explicit ops array
+//   listSnapshots()                — sorted snapshot list
+//   applySnapshot(id)              — apply + fan out via SharedWorker
+//   rollback()                     — apply previous snapshot + fan out
+//   compactOps(ops [, base])       — deduplicate an ops list
 //
-// REST endpoints (mounted on /admin/):
-//   GET  /admin/state             — current key-value state (JSON)
-//   GET  /admin/snapshots         — list snapshot ids (JSON array)
+// REST (mounted on /admin/):
+//   GET  /admin/state             — current key-value state
+//   GET  /admin/snapshots         — list snapshot ids
 //   POST /admin/snapshots         — create snapshot; body: {"name":"..."}
+//   POST /admin/raw-snapshot      — create explicit; body: {"name":"...","ops":[...]}
 //   GET  /admin/snapshots/:id     — snapshot JSON content
 //   POST /admin/apply/:id         — apply snapshot
 //   POST /admin/rollback          — rollback one step
-//   POST /admin/set               — set a shared key; body: {"key":"...","value":"..."}
-//   GET  /admin/worker            — responding worker PID (for multi-worker tests)
+//   POST /admin/set               — set one shared key; body: {"key":"...","value":"..."}
+//   GET  /admin/worker            — responding worker PID
 
 import * as std from 'std';
 import * as os  from 'os';
@@ -55,17 +56,55 @@ import * as os  from 'os';
  * ------------------------------------------------------------------ */
 
 var cfg      = nginx.pluginConfig || {};
-var _managed = cfg.keys || {};   /* { key: defaultValue } */
-
-/* _pinnedId is stored in nginx.shared so ALL workers share the same pointer. */
-function _getPinned()  { return nginx.shared.get('admin.__pinned') || null; }
-function _setPinned(id) {
-    if (id === null) { nginx.shared.delete('admin.__pinned'); }
-    else             { nginx.shared.set('admin.__pinned', id); }
-}
+var _managed = cfg.keys || {};
 
 /* ------------------------------------------------------------------ *
- * Filesystem helpers (same pattern as admin.js)                       *
+ * Named handler registry                                              *
+ * ------------------------------------------------------------------ *
+ * Handlers are registered at init-conf time via
+ * nginx.admin.registerHandler(name, fn).  Because init-conf runs in
+ * master before fork, all workers inherit _handlers via COW — so when
+ * the SW fan-out triggers _applyOps in another worker, the name can be
+ * resolved locally without any extra IPC.
+ */
+var _handlers = {};
+
+/* ------------------------------------------------------------------ *
+ * Config-authority SharedWorker                                       *
+ * ------------------------------------------------------------------ */
+
+var cfgWorker = new SharedWorker(nginx.cycle.prefix + 'admin-plugin/cfgworker.js');
+
+/*
+ * Register the per-worker fan-out receiver inside nginx.broadcast() so it
+ * runs in each worker's event loop after fork (same pattern as A2.5).
+ * Also send 'get' to catch up if this worker was restarted by the master.
+ */
+nginx.broadcast(function () {
+    cfgWorker.onmessage = function (msg) {
+        var type = msg.data.type;
+        if (type === 'apply' || type === 'rollback' || type === 'sync') {
+            _applyOps(msg.data.snap ? msg.data.snap.ops : _baseOps());
+        }
+    };
+    cfgWorker.postMessage({ type: 'get' });
+});
+
+/* ------------------------------------------------------------------ *
+ * Startup: seed managed keys with defaults (first worker wins)        *
+ * ------------------------------------------------------------------ */
+
+nginx.broadcast(function () {
+    var keys = cfg.keys || {};
+    Object.keys(keys).forEach(function (k) {
+        if (nginx.shared.get(k) === undefined) {
+            nginx.shared.set(k, keys[k]);
+        }
+    });
+});
+
+/* ------------------------------------------------------------------ *
+ * Filesystem helpers                                                  *
  * ------------------------------------------------------------------ */
 
 var _snapshotsDir = nginx.cycle.prefix + 'snapshots/';
@@ -95,54 +134,67 @@ function _seqId(name) {
 }
 
 /* ------------------------------------------------------------------ *
- * Startup: seed managed keys with defaults (first worker wins)        *
+ * Pinned-id helpers (stored in nginx.shared for cross-worker cursor)  *
  * ------------------------------------------------------------------ */
 
-/*
- * nginx.broadcast(fn) in master/init-conf context queues fn to run in every
- * worker during init_process — before the first request is accepted.
- * This seeds each worker's nginx.shared view with the caller-supplied defaults
- * and also re-applies the pinned snapshot (cross-restart persistence).
- */
-nginx.broadcast(function () {
-    var keys = cfg.keys || {};
-    Object.keys(keys).forEach(function (k) {
-        if (nginx.shared.get(k) === undefined) {
-            nginx.shared.set(k, keys[k]);
-        }
-    });
-});
+function _getPinned()   { return nginx.shared.get('admin.__pinned') || null; }
+function _setPinned(id) {
+    if (id === null) { nginx.shared.delete('admin.__pinned'); }
+    else             { nginx.shared.set('admin.__pinned', id); }
+}
 
 /* ------------------------------------------------------------------ *
- * Ops helpers                                                         *
- * ------------------------------------------------------------------ */
-
-/*
- * _applyOps(ops) — apply an ops array to the live configuration.
+ * Ops application                                                     *
+ * ------------------------------------------------------------------ *
+ * Supports two op families:
  *
- * {shared, value} — nginx.shared.set(): immediately visible to ALL workers.
- * {path, value}   — nginx.set(): peer scalar, applies to THIS worker only.
- *                   In a multi-worker setup these require coordinated reload
- *                   for full propagation; included for format completeness.
+ *   {shared, value}
+ *       nginx.shared.set(key, value) — instantly cross-worker.
+ *
+ *   {op, ...}
+ *       Structural mutations on this worker's nginx routing tree.
+ *       Propagation to other workers is the SharedWorker's job.
+ *       Supported: addLocation (with optional handler name),
+ *                  removeLocation.
  */
 function _applyOps(ops) {
     if (!ops || !ops.length) { return; }
     ops.forEach(function (op) {
+
         if ('shared' in op) {
-            nginx.shared.set(op.shared, op.value);
-        } else if ('path' in op) {
-            try { nginx.set(op.path, op.value); } catch (e) {
-                nginx.log(4, 'admin: set ' + op.path + ' failed: ' + e.message);
+            nginx.shared.set(op.shared, String(op.value));
+
+        } else if (op.op === 'addLocation') {
+            var srvAdd = nginx.http.servers.find(function (s) {
+                return s.name === op.serverName;
+            });
+            if (!srvAdd) {
+                nginx.log(4, 'admin: addLocation: server not found: ' + op.serverName);
+                return;
             }
+            var loc = srvAdd.addLocation(op.pattern);
+            if (op.handler) {
+                var fn = _handlers[op.handler];
+                if (fn) { loc.handler = fn; }
+            }
+
+        } else if (op.op === 'removeLocation') {
+            var srvRm = nginx.http.servers.find(function (s) {
+                return s.name === op.serverName;
+            });
+            if (srvRm) { srvRm.removeLocation(op.pattern); }
         }
     });
 }
 
+function _baseOps() {
+    return Object.keys(_managed).map(function (k) {
+        return { shared: k, value: _managed[k] };
+    });
+}
+
 /*
- * compactOps(ops [, baseOps]) — deduplicate an ops list (from admin.js).
- *
- *   1. Last-write-wins per key/path.
- *   2. Identity removal vs baseOps (skip ops that restore to base).
+ * compactOps(ops [, baseOps]) — last-write-wins deduplication (from admin.js).
  */
 function compactOps(ops, baseOps) {
     if (!ops || !ops.length) { return []; }
@@ -150,8 +202,7 @@ function compactOps(ops, baseOps) {
     var baseVal = {};
     if (baseOps) {
         baseOps.forEach(function (b) {
-            var k = 'shared' in b ? b.shared : b.path;
-            if (k !== undefined) { baseVal[k] = b.value; }
+            if ('shared' in b) { baseVal['S:' + b.shared] = b.value; }
         });
     }
 
@@ -160,12 +211,19 @@ function compactOps(ops, baseOps) {
 
     for (var i = ops.length - 1; i >= 0; i--) {
         var op  = ops[i];
-        var key = 'shared' in op ? 'S:' + op.shared : 'P:' + op.path;
+        var key;
+        if ('shared' in op) {
+            key = 'S:' + op.shared;
+        } else if (op.op) {
+            key = 'OP:' + op.op + ':' + (op.serverName || '') + ':' + (op.pattern || '');
+        } else {
+            key = 'P:' + (op.path || '');
+        }
+
         if (seen[key]) { continue; }
         seen[key] = true;
 
-        var rawKey = 'shared' in op ? op.shared : op.path;
-        if (rawKey !== undefined && (rawKey in baseVal) && op.value === baseVal[rawKey]) {
+        if ('shared' in op && (key in baseVal) && op.value === baseVal[key]) {
             continue;
         }
 
@@ -175,27 +233,15 @@ function compactOps(ops, baseOps) {
 }
 
 /* ------------------------------------------------------------------ *
- * Base state                                                          *
- * ------------------------------------------------------------------ */
-
-/* Base = caller-supplied defaults (before any snapshot has been applied). */
-function _baseOps() {
-    return Object.keys(_managed).map(function (k) {
-        return { shared: k, value: _managed[k] };
-    });
-}
-
-/* ------------------------------------------------------------------ *
  * Public API                                                          *
  * ------------------------------------------------------------------ */
 
 var admin = {};
 
-/*
- * state() — current values of all managed shared keys.
- * Since nginx.shared is lock-free shared memory, this reflects the live
- * values written by any worker, regardless of which worker handles this call.
- */
+admin.registerHandler = function (name, fn) {
+    _handlers[name] = fn;
+};
+
 admin.state = function () {
     var out = {};
     Object.keys(_managed).forEach(function (k) {
@@ -208,10 +254,6 @@ admin.listSnapshots = function () {
     return _listFiles(_snapshotsDir).map(function (n) { return n.slice(0, -5); });
 };
 
-/*
- * createSnapshot(name) — save current nginx.shared values as a snapshot.
- * The ops array captures each managed key's current value.
- */
 admin.createSnapshot = function (name) {
     if (!name) { throw new Error('snapshot name required'); }
     var id  = _seqId(name);
@@ -224,10 +266,6 @@ admin.createSnapshot = function (name) {
     return id;
 };
 
-/*
- * createRawSnapshot(name, ops) — persist an explicit ops array (from admin.js).
- * Useful for building snapshots programmatically.
- */
 admin.createRawSnapshot = function (name, ops) {
     if (!name) { throw new Error('snapshot name required'); }
     if (!Array.isArray(ops)) { throw new Error('ops array required'); }
@@ -239,11 +277,11 @@ admin.createRawSnapshot = function (name, ops) {
 };
 
 /*
- * applySnapshot(id) — apply a saved snapshot.
+ * applySnapshot — apply locally then fan out via SharedWorker.
  *
- * {shared} ops write nginx.shared — the write is immediately visible to every
- * other worker without any nginx.broadcast() call.  This is the key difference
- * from peer-scalar ops: shared memory IS the broadcast.
+ * nginx.shared ops are immediately visible to all workers regardless of
+ * the fan-out, but structural ops (addLocation, removeLocation) REQUIRE
+ * the fan-out to reach workers other than the one that received the POST.
  */
 admin.applySnapshot = function (id) {
     var text = _readFile(_snapshotPath(id));
@@ -252,26 +290,31 @@ admin.applySnapshot = function (id) {
     try { snap = JSON.parse(text); } catch (e) {
         throw new Error('snapshot parse error: ' + e.message);
     }
+
+    /* Apply locally (immediate). */
     _applyOps(snap.ops);
     _setPinned(id);
+
+    /* Fan out to all other workers via SharedWorker. */
+    cfgWorker.postMessage({ type: 'apply', snap: snap });
+
     return id;
 };
 
-/*
- * rollback() — apply the snapshot before the current one, or base defaults.
- */
 admin.rollback = function () {
     var list   = admin.listSnapshots();
     if (!list.length) { throw new Error('no snapshots available'); }
     var pinned = _getPinned();
     var idx    = pinned ? list.indexOf(pinned) : list.length;
     var prev   = idx > 0 ? list[idx - 1] : null;
+
     if (prev) {
         admin.applySnapshot(prev);
     } else {
-        /* Roll back to the caller-supplied defaults. */
+        /* Reset to caller-supplied defaults. */
         _applyOps(_baseOps());
         _setPinned(null);
+        cfgWorker.postMessage({ type: 'rollback', snap: null });
     }
     return prev;
 };
@@ -316,31 +359,34 @@ if (!adminLoc) {
 
         try {
 
-            /* GET /admin/worker — worker identity (for multi-worker tests) */
             if (m === 'GET' && uri === '/admin/worker') {
                 return ok({ worker: r.variable('pid') });
             }
 
-            /* GET /admin/state */
             if (m === 'GET' && uri === '/admin/state') {
                 return ok(admin.state());
             }
 
-            /* GET /admin/snapshots */
             if (m === 'GET' && uri === '/admin/snapshots') {
                 return ok(admin.listSnapshots());
             }
 
-            /* POST /admin/snapshots — create */
             if (m === 'POST' && uri === '/admin/snapshots') {
                 var body = parseBody(await r.readBody());
                 if (!body) { return err(400, 'invalid JSON body'); }
-                var name = body.name;
-                if (!name) { return err(400, 'name required'); }
-                return ok({ id: admin.createSnapshot(name) });
+                if (!body.name) { return err(400, 'name required'); }
+                return ok({ id: admin.createSnapshot(body.name) });
             }
 
-            /* GET /admin/snapshots/:id */
+            /* POST /admin/raw-snapshot — explicit ops array */
+            if (m === 'POST' && uri === '/admin/raw-snapshot') {
+                var rawBody = parseBody(await r.readBody());
+                if (!rawBody) { return err(400, 'invalid JSON body'); }
+                if (!rawBody.name) { return err(400, 'name required'); }
+                if (!Array.isArray(rawBody.ops)) { return err(400, 'ops array required'); }
+                return ok({ id: admin.createRawSnapshot(rawBody.name, rawBody.ops) });
+            }
+
             var snapGet = uri.match(/^\/admin\/snapshots\/([^\/]+)$/);
             if (m === 'GET' && snapGet) {
                 var text = _readFile(_snapshotPath(snapGet[1]));
@@ -349,18 +395,15 @@ if (!adminLoc) {
                 return;
             }
 
-            /* POST /admin/apply/:id */
             var applyMatch = uri.match(/^\/admin\/apply\/([^\/]+)$/);
             if (m === 'POST' && applyMatch) {
                 return ok({ applied: admin.applySnapshot(applyMatch[1]) });
             }
 
-            /* POST /admin/rollback */
             if (m === 'POST' && uri === '/admin/rollback') {
                 return ok({ rolledBackTo: admin.rollback() || 'base' });
             }
 
-            /* POST /admin/set — set a single shared key directly */
             if (m === 'POST' && uri === '/admin/set') {
                 var setBody = parseBody(await r.readBody());
                 if (!setBody || !setBody.key) { return err(400, 'key required'); }
