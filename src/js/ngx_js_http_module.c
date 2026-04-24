@@ -795,13 +795,17 @@ ngx_js_http_postconfiguration(ngx_conf_t *cf)
 /* NginxRequest class                                                   */
 /* ------------------------------------------------------------------ */
 
+/* Forward declaration needed by ngx_js_request_opaque_t */
+typedef struct ngx_js_subreq_list_s  ngx_js_subreq_list_t;
+
 typedef struct {
-    ngx_http_request_t  *r;
-    ngx_int_t            respond_rc;  /* rc from ngx_http_output_filter */
-    unsigned             responded:1;    /* set when req.respond()/finish() called */
-    unsigned             headers_sent:1; /* set after writeHead()/first write() */
-    unsigned             hijacked:1;     /* set by req.hijack() */
-    unsigned             passed:1;       /* set by req.pass() — internal redirect */
+    ngx_http_request_t    *r;
+    ngx_js_subreq_list_t  *subreq_list;  /* current in-flight subrequest group */
+    ngx_int_t              respond_rc;   /* rc from ngx_http_output_filter */
+    unsigned               responded:1;    /* set when req.respond()/finish() called */
+    unsigned               headers_sent:1; /* set after writeHead()/first write() */
+    unsigned               hijacked:1;     /* set by req.hijack() */
+    unsigned               passed:1;       /* set by req.pass() — internal redirect */
 } ngx_js_request_opaque_t;
 
 
@@ -2316,61 +2320,84 @@ static JSClassDef ngx_js_req_vars_class = {
 
 
 /*
- * Subrequest context — allocated from the parent request's pool.
- * Holds everything the post-subrequest callback and resume handler need.
+ * Per-subrequest context — one allocation per r.subrequest() call.
+ * Allocated from the parent pool; holds the resolve/reject JSValues.
  */
 typedef struct {
-    JSContext        *ctx;
-    JSRuntime        *rt;
-    ngx_js_worker_t  *w;
-    JSValue           resolve;
-    JSValue           reject;
+    ngx_js_subreq_list_t  *list;    /* back-pointer to parent tracking struct */
+    JSContext             *ctx;
+    JSRuntime             *rt;
+    ngx_js_worker_t       *w;
+    JSValue                resolve;
+    JSValue                reject;
 } ngx_js_subreq_ctx_t;
+
+/*
+ * Parent-level subrequest tracking — one per request, stored in the
+ * ngx_js_http_module ctx slot once the last in-flight subrequest completes.
+ * Counts in-flight subrequests.
+ *
+ * Why count: with Promise.all([A, B, C]) all three subrequests are in flight
+ * simultaneously.  Each individual completion decrements the counter.  Only
+ * when the counter reaches zero do we install the resume write_event_handler
+ * and wake the parent, guaranteeing that:
+ *   (a) every Promise is resolved before any microtask drain runs, and
+ *   (b) the parent's write_event_handler fires exactly once, after the last
+ *       subrequest's C finalization stack has fully unwound.
+ */
+struct ngx_js_subreq_list_s {
+    ngx_uint_t        pending;   /* subrequests still in flight         */
+    ngx_js_worker_t  *w;         /* worker (lives for process lifetime) */
+};
 
 
 /*
- * write_event_handler installed on the parent request by ngx_js_subreq_done.
- * nginx calls this (via ngx_http_run_posted_requests) once the subrequest
- * finalization machinery has fully unwound.  Safe to drain JS microtasks
- * and finalize the parent here.
+ * write_event_handler installed on the parent request by ngx_js_subreq_done
+ * when the last in-flight subrequest completes.
+ * nginx calls this (via ngx_http_run_posted_requests) after the subrequest
+ * finalization machinery has fully unwound — safe to drain JS microtasks here.
  */
 static void
 ngx_js_subreq_resume(ngx_http_request_t *r)
 {
-    ngx_js_subreq_ctx_t  *sctx;
-    JSContext            *job_ctx;
+    ngx_js_subreq_list_t  *list;
+    JSContext             *job_ctx;
 
-    sctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
-    if (sctx == NULL) {
+    list = ngx_http_get_module_ctx(r, ngx_js_http_module);
+    if (list == NULL) {
         return;
     }
 
-    /* Restore the slot so a future subrequest on this request can reuse it */
+    /* Clear slot so a future subrequest group on this request starts fresh */
     ngx_http_set_ctx(r, NULL, ngx_js_http_module);
 
-    /* Restore a safe default write handler before we run user JS code */
+    /* Restore a safe default write handler before running user JS */
     r->write_event_handler = ngx_http_request_empty_handler;
 
-    /* Run continuations (r.respond() fires here) */
-    while (JS_ExecutePendingJob(sctx->rt, &job_ctx) > 0) { }
+    /* Run Promise continuations (r.respond() fires here for the parent) */
+    while (JS_ExecutePendingJob(list->w->rt, &job_ctx) > 0) { }
 
     /* Finalize parent request once the top-level handler Promise settles */
-    ngx_js_async_check(sctx->w);
-    ngx_js_bf_async_check(sctx->w);
-    ngx_js_sf_async_check(sctx->w);
-    ngx_js_l4_async_check(sctx->w);
+    ngx_js_async_check(list->w);
+    ngx_js_bf_async_check(list->w);
+    ngx_js_sf_async_check(list->w);
+    ngx_js_l4_async_check(list->w);
 }
 
 
 /*
- * Post-subrequest callback: resolves the JS Promise with {status, body},
- * then defers microtask drain + parent resumption to the next event loop
- * iteration by hooking write_event_handler on the parent.
+ * Post-subrequest callback: resolves this subrequest's JS Promise with
+ * {status, headers, body, upstream}.
  *
- * After we return, nginx decrements r->main->count and posts the parent
- * request (ngx_http_post_request at ngx_http_request.c:2768).
- * ngx_http_run_posted_requests then calls write_event_handler — safely
- * outside the subrequest finalization stack.
+ * When the last in-flight subrequest for this parent completes (pending
+ * reaches zero), installs ngx_js_subreq_resume as write_event_handler and
+ * stores the list in the module ctx slot.  nginx then posts the parent and
+ * ngx_http_run_posted_requests calls write_event_handler — safely outside
+ * every subrequest finalization stack.
+ *
+ * Earlier completions (pending > 0) simply return: nginx posts the parent,
+ * the empty write_event_handler fires and does nothing, and the loop
+ * continues with the next pending subrequest.
  */
 static ngx_int_t
 ngx_js_subreq_done(ngx_http_request_t *sr, void *data, ngx_int_t rc)
@@ -2471,10 +2498,34 @@ ngx_js_subreq_done(ngx_http_request_t *sr, void *data, ngx_int_t rc)
     JS_FreeValue(ctx, sctx->reject);
 
     /*
-     * Stash sctx and redirect write_event_handler so ngx_js_subreq_resume
-     * is called from ngx_http_run_posted_requests after we return.
+     * Force this subrequest to be "active" (c->data == sr) so that
+     * ngx_http_finalize_request takes the count-decrementing active branch.
+     *
+     * With Promise.all([A, B, C]) all three subrequests are in flight
+     * simultaneously.  Only the first becomes c->data during
+     * ngx_http_subrequest(); when it finalizes its active branch restores
+     * c->data to the parent.  Subsequent subrequests then find c->data !=
+     * themselves, hit the non-active branch, and skip count--.  The request
+     * count stays permanently elevated ("open socket left in connection").
+     *
+     * Our post_subrequest callback fires before the active/non-active check
+     * inside ngx_http_finalize_request, so setting c->data = sr here steers
+     * every subrequest through the active branch.  For sequential subrequests
+     * (already c->data == sr) this is a no-op.
      */
-    ngx_http_set_ctx(sr->main, sctx, ngx_js_http_module);
+    if (sr->connection->data != sr && !sr->background) {
+        sr->connection->data = sr;
+    }
+
+    if (--sctx->list->pending > 0) {
+        return NGX_OK;
+    }
+
+    /* Last subrequest done — hand the list to the resume handler via the
+     * module ctx slot and install the resume write_event_handler.
+     * nginx posts the parent after we return; ngx_http_run_posted_requests
+     * calls the handler safely outside every subrequest C stack. */
+    ngx_http_set_ctx(sr->main, sctx->list, ngx_js_http_module);
     sr->main->write_event_handler = ngx_js_subreq_resume;
 
     return NGX_OK;
@@ -2502,6 +2553,7 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
     ngx_js_request_opaque_t     *op;
     ngx_http_request_t          *r, *sr;
     ngx_js_worker_t             *w;
+    ngx_js_subreq_list_t        *list;
     ngx_js_subreq_ctx_t         *sctx;
     ngx_http_post_subrequest_t  *psr;
     JSValue                      resolving[2], promise;
@@ -2580,9 +2632,26 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
         }
     }
 
+    /* Get or create the in-flight subrequest list from the request opaque.
+     * pending == 0 means the previous group finished; start a fresh list. */
+    list = op->subreq_list;
+    if (list == NULL || list->pending == 0) {
+        list = ngx_pcalloc(r->pool, sizeof(ngx_js_subreq_list_t));
+        if (list == NULL) {
+            JS_FreeValue(ctx, method_val);
+            JS_FreeValue(ctx, args_val);
+            JS_FreeValue(ctx, headers_val);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+        list->w = w;
+        op->subreq_list = list;
+    }
+    list->pending++;
+
     /* Create Promise */
     promise = JS_NewPromiseCapability(ctx, resolving);
     if (JS_IsException(promise)) {
+        list->pending--;
         JS_FreeValue(ctx, method_val);
         JS_FreeValue(ctx, args_val);
         JS_FreeValue(ctx, headers_val);
@@ -2592,6 +2661,7 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
     /* Subrequest context in parent pool */
     sctx = ngx_palloc(r->pool, sizeof(ngx_js_subreq_ctx_t));
     if (!sctx) {
+        list->pending--;
         JS_FreeValue(ctx, resolving[0]);
         JS_FreeValue(ctx, resolving[1]);
         JS_FreeValue(ctx, promise);
@@ -2601,6 +2671,7 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowOutOfMemory(ctx);
     }
 
+    sctx->list    = list;
     sctx->ctx     = ctx;
     sctx->rt      = w->rt;
     sctx->w       = w;
@@ -2610,6 +2681,7 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
     /* Post-subrequest callback in parent pool */
     psr = ngx_palloc(r->pool, sizeof(ngx_http_post_subrequest_t));
     if (!psr) {
+        list->pending--;
         JS_FreeValue(ctx, resolving[0]);
         JS_FreeValue(ctx, resolving[1]);
         JS_FreeValue(ctx, promise);
@@ -2625,6 +2697,7 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
     rc = ngx_http_subrequest(r, &uri, args_ptr, &sr, psr,
                              NGX_HTTP_SUBREQUEST_IN_MEMORY);
     if (rc != NGX_OK) {
+        list->pending--;
         JS_FreeValue(ctx, resolving[0]);
         JS_FreeValue(ctx, resolving[1]);
         JS_FreeValue(ctx, promise);

@@ -1,26 +1,14 @@
 // B3.3 — Response Fan-out / Fan-in
 //
-// Makes sequential subrequests to three internal micro-endpoints and merges
-// their JSON responses into a single aggregated product object.
+// Issues three parallel subrequests to internal micro-endpoints with
+// Promise.all and merges their JSON responses into a single aggregated
+// product object.
 //
 // In production a GraphQL gateway or BFF (Backend-for-Frontend) service does
 // this job — a separate process with its own network stack.  Here nginx acts
-// as the aggregator: all three subrequests are handled by the same worker
-// event loop, the results are merged in JavaScript, and the client receives a
-// single JSON response.
-//
-// Note: subrequests must be sequential (await one, then the next).
-// Promise.all([r.subrequest(A), r.subrequest(B), r.subrequest(C)]) crashes the
-// worker with SIGABRT / heap corruption.  Root cause: each subrequest's
-// completion calls ngx_http_finalize_request → ngx_http_run_posted_requests,
-// which recursively processes the next posted event.  With three subrequests
-// in-flight simultaneously, the recursive chain eventually runs the parent's
-// write_event_handler (ngx_js_subreq_resume) while earlier subrequests' C
-// frames are still live on the stack.  ngx_js_subreq_resume → r.respond() →
-// ngx_http_finalize_connection frees the parent request pool, leaving those
-// stacked frames with dangling pointers — hence the heap corruption.
-// Sequential awaits are safe because the subrequest call stack fully unwinds
-// before the next event-loop tick runs the parent's resume handler.
+// as the aggregator: all three subrequests run in the same worker event loop,
+// the results are merged in JavaScript, and the client receives a single JSON
+// response.
 
 (function () {
     function parseArgs(qs) {
@@ -70,10 +58,15 @@
         .handler = async function (r) {
             var id = parseArgs(r.args)['id'] || '1';
 
-            // Sequential subrequests — fan-out to three internal services
-            var priceRes  = await r.subrequest('/internal/price/?id='  + id);
-            var stockRes  = await r.subrequest('/internal/stock/?id='  + id);
-            var ratingRes = await r.subrequest('/internal/rating/?id=' + id);
+            // Parallel fan-out to three internal services
+            var results = await Promise.all([
+                r.subrequest('/internal/price/?id='  + id),
+                r.subrequest('/internal/stock/?id='  + id),
+                r.subrequest('/internal/rating/?id=' + id)
+            ]);
+            var priceRes  = results[0];
+            var stockRes  = results[1];
+            var ratingRes = results[2];
 
             // Parse each partial response
             function parse(res) {
