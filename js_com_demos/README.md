@@ -1,6 +1,6 @@
 # js_com_demos1
 
-56 self-contained, runnable demos organised by value category. Each demo has
+57 self-contained, runnable demos organised by value category. Each demo has
 its own `nginx.conf`, `handler.js` (or `gen.js`), `test.sh`, and `README.md`.
 
 ## Quick start
@@ -36,6 +36,15 @@ directory, resolving to `objs/nginx` in the repo root).
 ## Demo index
 
 ### A — Only Possible With This Project
+
+#### A0 — COM API Extension (port 8099)
+
+| Demo | Port | What it shows |
+|------|------|---------------|
+| [A0.1 Custom nginx property](A0_COM_API_Extension/A0.1_Custom_nginx_property/) | 8099 | `nginx.use()` adds `nginx.featureFlags` to the COM object — the pattern every other demo uses |
+
+> **Start here.** Every demo in this collection extends the nginx COM object with
+> a user-defined JS API.  A0.1 isolates that pattern in its simplest form.
 
 #### A1 — Live Infrastructure Surgery (ports 8100–8107)
 

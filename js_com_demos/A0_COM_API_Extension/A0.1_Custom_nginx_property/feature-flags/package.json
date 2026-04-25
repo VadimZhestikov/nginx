@@ -1,0 +1,8 @@
+{
+  "name": "feature-flags",
+  "version": "1.0.0",
+  "description": "Minimal nginx COM extension — adds nginx.featureFlags",
+  "ngxjs": {
+    "main": "index.js"
+  }
+}

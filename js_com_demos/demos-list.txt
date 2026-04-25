@@ -1,5 +1,15 @@
 ● A — Only Possible With This Project
 
+  A0 · COM API Extension  [start here]
+
+  A0.1  Custom nginx property via nginx.use()
+        nginx.use('./feature-flags', config) adds nginx.featureFlags to the
+        nginx COM object in master; all workers inherit it via COW fork.
+        Every other demo is an instance of this two-step pattern:
+          Step 1 — nginx.use() extends the nginx object
+          Step 2 — nginx.broadcast() installs handlers that use the extension
+        Classic: no user-extensible API surface on nginx.
+
   A1 · Live Infrastructure Surgery
 
   A1.1  Live SSL cert rotation
