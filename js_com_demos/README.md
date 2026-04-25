@@ -47,7 +47,7 @@ directory, resolving to `objs/nginx` in the repo root).
 | [A1.4 Config snapshot + rollback](A1_Live_Infrastructure_Surgery/A1.4_Config_snapshot_rollback/) | 8106 | `loc.snapshot()` / `snapshot.restore()` — one-click rollback |
 | [A1.5 Feature-flag a location](A1_Live_Infrastructure_Surgery/A1.5_Feature_flag_a_location/) | 8107 | Toggle `/beta/` on/off by flipping a JS boolean; no reload |
 
-#### A2 — Cross-Worker Coordination (ports 8108–8114)
+#### A2 — Cross-Worker Coordination (ports 8108–8116)
 
 | Demo | Port | What it shows |
 |------|------|---------------|
@@ -56,8 +56,10 @@ directory, resolving to `objs/nginx` in the repo root).
 | [A2.3 Persistent background thread](A2_Cross_Worker_Coordination/A2.3_Persistent_background_thread/) | 8110 | `SharedWorker` with `setInterval` pre-computes data; workers read via postMessage |
 | [A2.4 Self-adjusting canary](A2_Cross_Worker_Coordination/A2.4_Self_adjusting_canary/) | 8111 | SharedWorker counts 5xx, shifts weight from bad → good upstream automatically |
 | [A2.5 Atomics.wait/notify barrier](A2_Cross_Worker_Coordination/A2.5_Atomics_wait_notify_barrier/) | 8114 | SW does slow work, notifies via `Atomics.notify`; handler polls with `nginx.setTimeout` |
+| [A2.6 Runtime route enable/disable](A2_Cross_Worker_Coordination/A2.6_Runtime_route_broadcast/) | 8115 | `nginx.broadcast` + `nginx.shared` flag — route live/dead on all workers instantly, no reload |
+| [A2.7 Admin plugin: snapshot/rollback](A2_Cross_Worker_Coordination/A2.7_Admin_plugin_snapshot_rollback/) | 8116 | `nginx.use()` plugin with REST API, snapshots, rollback, and SharedWorker fan-out for structural ops |
 
-#### A3 — Programmatic Config Generation (ports 8115–8120)
+#### A3 — Programmatic Config Generation (ports 8118–8120)
 
 | Demo | Port | What it shows |
 |------|------|---------------|

@@ -55,6 +55,18 @@
         request handler parks on Atomics.wait, wakes when result is ready.
         Classic: no synchronization primitives.
 
+  A2.6  Runtime route enable/disable
+        nginx.broadcast installs flag-gated handlers; nginx.shared write
+        by any worker enables or disables /api/v2/ on all workers instantly.
+        Classic: nginx -s reload required to activate a new location block.
+
+  A2.7  Admin plugin: snapshot / rollback
+        nginx.use() packages a complete REST admin API as a reusable plugin.
+        Snapshots capture shared-key state or explicit ops (addLocation,
+        removeLocation); SharedWorker fans ops out to all workers so
+        structural routing changes propagate without a reload.
+        Classic: no runtime location mutation; no snapshot/rollback API.
+
   A3 · Programmatic Config Generation
 
   A3.1  Multi-tenant from a JSON file
