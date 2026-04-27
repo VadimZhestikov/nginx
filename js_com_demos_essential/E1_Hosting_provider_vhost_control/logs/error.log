@@ -1,0 +1,99 @@
+2026/04/27 15:57:16 [notice] 45830#0: using the "epoll" event method
+2026/04/27 15:57:16 [notice] 45830#0: nginx/1.29.7
+2026/04/27 15:57:16 [notice] 45830#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/04/27 15:57:16 [notice] 45830#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/04/27 15:57:16 [notice] 45830#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/04/27 15:57:16 [notice] 45831#0: start worker processes
+2026/04/27 15:57:16 [notice] 45831#0: start worker process 45833
+2026/04/27 15:57:16 [info] 45833#0: *1 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:16 [error] 45833#0: *2 "./html/index.html" is not found (2: No such file or directory), client: 127.0.0.1, server: admin.internal, request: "GET / HTTP/1.1", host: "alice.example.com"
+2026/04/27 15:57:16 [info] 45833#0: *2 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:16 [error] 45833#0: js: tenant enabled: alice.example.com
+2026/04/27 15:57:16 [info] 45833#0: *3 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:16 [info] 45833#0: *4 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:16 [info] 45833#0: *5 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:16 [error] 45833#0: js: tenant enabled: bob.example.com
+2026/04/27 15:57:16 [info] 45833#0: *6 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:17 [info] 45833#0: *7 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:17 [info] 45833#0: *8 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:17 [info] 45833#0: *9 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:17 [error] 45833#0: js: tenant disabled: alice.example.com
+2026/04/27 15:57:17 [info] 45833#0: *10 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:17 [error] 45833#0: *11 "./html/index.html" is not found (2: No such file or directory), client: 127.0.0.1, server: admin.internal, request: "GET / HTTP/1.1", host: "alice.example.com"
+2026/04/27 15:57:17 [info] 45833#0: *11 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:17 [info] 45833#0: *12 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:17 [info] 45833#0: *13 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:17 [info] 45833#0: *14 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:57:17 [notice] 45881#0: signal process started
+2026/04/27 15:57:17 [notice] 45831#0: signal 15 (SIGTERM) received from 45881, exiting
+2026/04/27 15:57:17 [notice] 45833#0: exiting
+2026/04/27 15:57:17 [notice] 45833#0: exit
+2026/04/27 15:57:17 [notice] 45831#0: signal 17 (SIGCHLD) received from 45833
+2026/04/27 15:57:17 [notice] 45831#0: worker process 45833 exited with code 0
+2026/04/27 15:57:17 [notice] 45831#0: exit
+2026/04/27 15:58:58 [notice] 46081#0: using the "epoll" event method
+2026/04/27 15:58:58 [notice] 46081#0: nginx/1.29.7
+2026/04/27 15:58:58 [notice] 46081#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/04/27 15:58:58 [notice] 46081#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/04/27 15:58:58 [notice] 46081#0: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/04/27 15:58:58 [notice] 46082#0: start worker processes
+2026/04/27 15:58:58 [notice] 46082#0: start worker process 46084
+2026/04/27 15:58:58 [info] 46084#0: *1 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [error] 46084#0: *2 "./html/index.html" is not found (2: No such file or directory), client: 127.0.0.1, server: admin.internal, request: "GET / HTTP/1.1", host: "alice.example.com"
+2026/04/27 15:58:58 [info] 46084#0: *2 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [error] 46084#0: js: tenant enabled: alice.example.com
+2026/04/27 15:58:58 [info] 46084#0: *3 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [info] 46084#0: *4 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [info] 46084#0: *5 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [error] 46084#0: js: tenant enabled: bob.example.com
+2026/04/27 15:58:58 [info] 46084#0: *6 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [info] 46084#0: *7 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [info] 46084#0: *8 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [info] 46084#0: *9 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [error] 46084#0: js: tenant disabled: alice.example.com
+2026/04/27 15:58:58 [info] 46084#0: *10 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [error] 46084#0: *11 "./html/index.html" is not found (2: No such file or directory), client: 127.0.0.1, server: admin.internal, request: "GET / HTTP/1.1", host: "alice.example.com"
+2026/04/27 15:58:58 [info] 46084#0: *11 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [info] 46084#0: *12 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [info] 46084#0: *13 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [info] 46084#0: *14 client 127.0.0.1 closed keepalive connection
+2026/04/27 15:58:58 [notice] 46132#0: signal process started
+2026/04/27 15:58:59 [notice] 46082#0: signal 15 (SIGTERM) received from 46132, exiting
+2026/04/27 15:58:59 [notice] 46084#0: exiting
+2026/04/27 15:58:59 [notice] 46084#0: exit
+2026/04/27 15:58:59 [notice] 46082#0: signal 17 (SIGCHLD) received from 46084
+2026/04/27 15:58:59 [notice] 46082#0: worker process 46084 exited with code 0
+2026/04/27 15:58:59 [notice] 46082#0: exit
+2026/04/27 16:12:30 [notice] 48135#0: using the "epoll" event method
+2026/04/27 16:12:30 [notice] 48135#0: nginx/1.29.7
+2026/04/27 16:12:30 [notice] 48135#0: built by gcc 11.4.0 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 
+2026/04/27 16:12:30 [notice] 48135#0: OS: Linux 6.6.87.2-microsoft-standard-WSL2
+2026/04/27 16:12:30 [notice] 48135#0: getrlimit(RLIMIT_NOFILE): 10240:1048576
+2026/04/27 16:12:30 [notice] 48136#0: start worker processes
+2026/04/27 16:12:30 [notice] 48136#0: start worker process 48138
+2026/04/27 16:12:31 [info] 48138#0: *1 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [error] 48138#0: *2 "./html/index.html" is not found (2: No such file or directory), client: 127.0.0.1, server: admin.internal, request: "GET / HTTP/1.1", host: "alice.example.com"
+2026/04/27 16:12:31 [info] 48138#0: *2 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [error] 48138#0: js: tenant enabled: alice.example.com
+2026/04/27 16:12:31 [info] 48138#0: *3 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [info] 48138#0: *4 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [info] 48138#0: *5 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [error] 48138#0: js: tenant enabled: bob.example.com
+2026/04/27 16:12:31 [info] 48138#0: *6 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [info] 48138#0: *7 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [info] 48138#0: *8 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [info] 48138#0: *9 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [error] 48138#0: js: tenant disabled: alice.example.com
+2026/04/27 16:12:31 [info] 48138#0: *10 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [error] 48138#0: *11 "./html/index.html" is not found (2: No such file or directory), client: 127.0.0.1, server: admin.internal, request: "GET / HTTP/1.1", host: "alice.example.com"
+2026/04/27 16:12:31 [info] 48138#0: *11 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [info] 48138#0: *12 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [info] 48138#0: *13 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [info] 48138#0: *14 client 127.0.0.1 closed keepalive connection
+2026/04/27 16:12:31 [notice] 48193#0: signal process started
+2026/04/27 16:12:31 [notice] 48136#0: signal 15 (SIGTERM) received from 48193, exiting
+2026/04/27 16:12:31 [notice] 48138#0: exiting
+2026/04/27 16:12:31 [notice] 48138#0: exit
+2026/04/27 16:12:31 [notice] 48136#0: signal 17 (SIGCHLD) received from 48138
+2026/04/27 16:12:31 [notice] 48136#0: worker process 48138 exited with code 0
+2026/04/27 16:12:31 [notice] 48136#0: exit
