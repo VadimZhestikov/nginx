@@ -523,6 +523,7 @@ typedef struct {
 typedef struct {
     ngx_js_sw_state_t  *state;
     JSValue             on_connect;
+    JSValue             on_message;  /* global onmessage handler */
     JSValue            *ports;      /* ports[nchannels], each JS MessagePort */
 } ngx_js_sw_thread_ctx_t;
 
@@ -788,10 +789,45 @@ ngx_js_sw_set_onconnect(JSContext *ctx, JSValueConst this_val,
 }
 
 
+static JSValue
+ngx_js_sw_get_onmessage_global(JSContext *ctx, JSValueConst this_val, int magic)
+{
+    ngx_js_sw_thread_ctx_t  *tctx;
+
+    tctx = JS_GetContextOpaque(ctx);
+    if (tctx == NULL) {
+        return JS_UNDEFINED;
+    }
+
+    return JS_DupValue(ctx, tctx->on_message);
+}
+
+
+static JSValue
+ngx_js_sw_set_onmessage_global(JSContext *ctx, JSValueConst this_val,
+    JSValue val, int magic)
+{
+    ngx_js_sw_thread_ctx_t  *tctx;
+
+    tctx = JS_GetContextOpaque(ctx);
+    if (tctx == NULL) {
+        return JS_UNDEFINED;
+    }
+
+    JS_FreeValue(ctx, tctx->on_message);
+    tctx->on_message = JS_DupValue(ctx, val);
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry  ngx_js_sw_global_props[] = {
     JS_CGETSET_MAGIC_DEF("onconnect",
                          ngx_js_sw_get_onconnect,
                          ngx_js_sw_set_onconnect, 0),
+    JS_CGETSET_MAGIC_DEF("onmessage",
+                         ngx_js_sw_get_onmessage_global,
+                         ngx_js_sw_set_onmessage_global, 0),
 };
 
 
@@ -945,6 +981,7 @@ ngx_js_sw_thread(void *arg)
 
     tctx->state      = state;
     tctx->on_connect = JS_UNDEFINED;
+    tctx->on_message = JS_UNDEFINED;
     tctx->ports      = ngx_alloc(state->nchannels * sizeof(JSValue),
                                  ngx_cycle->log);
     if (tctx->ports == NULL) {
@@ -996,6 +1033,27 @@ ngx_js_sw_thread(void *arg)
     }
 
     JS_FreeValue(ctx, result);
+
+    /* Drain pending jobs so the module body executes synchronously */
+    {
+        JSContext  *job_ctx;
+        int         rc;
+
+        while ((rc = JS_ExecutePendingJob(rt, &job_ctx)) > 0) { }
+        if (rc < 0) {
+            JSValue exc = JS_GetException(job_ctx);
+            JSValue str = JS_ToString(job_ctx, exc);
+            const char *cstr = JS_ToCString(job_ctx, str);
+            if (cstr) {
+                ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                              "js SharedWorker eval exception: %s", cstr);
+                JS_FreeCString(job_ctx, cstr);
+            }
+            JS_FreeValue(job_ctx, str);
+            JS_FreeValue(job_ctx, exc);
+            goto done;
+        }
+    }
 
     /* Set up poll fds for all inbox pipes */
     /* Single-entry pollfd for the wake pipe read end */
@@ -1185,11 +1243,9 @@ ngx_js_sw_thread(void *arg)
                 } else {
                 global_onmessage:
                     {
-                        JSValue  global_fn, g;
+                        JSValue  global_fn;
 
-                        g         = JS_GetGlobalObject(ctx);
-                        global_fn = JS_GetPropertyStr(ctx, g, "onmessage");
-                        JS_FreeValue(ctx, g);
+                        global_fn = JS_DupValue(ctx, tctx->on_message);
 
                         if (JS_IsFunction(ctx, global_fn)) {
                             ngx_js_sw_refresh_clients(ctx, tctx);
@@ -1229,6 +1285,7 @@ ngx_js_sw_thread(void *arg)
 
 done:
     JS_FreeValue(ctx, tctx->on_connect);
+    JS_FreeValue(ctx, tctx->on_message);
     for (i = 0; i < state->nchannels; i++) {
         JS_FreeValue(ctx, tctx->ports[i]);
     }
