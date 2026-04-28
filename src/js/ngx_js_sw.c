@@ -1397,6 +1397,18 @@ done:
     JS_FreeValue(ctx, tctx->on_connect);
     JS_FreeValue(ctx, tctx->on_message);
     for (i = 0; i < state->nchannels; i++) {
+        /* Break the port↔on_message cycle: on_message closure captures port;
+         * GC cannot collect either while the C opaque holds the closure ref.
+         * Clearing on_message first lets the closure (and its port capture)
+         * reach refcount 0 before JS_FreeValue fires the port finalizer. */
+        if (!JS_IsUndefined(tctx->ports[i])) {
+            ngx_js_sw_port_opaque_t *pop =
+                JS_GetOpaque(tctx->ports[i], ngx_js_sw_port_class_id);
+            if (pop) {
+                JS_FreeValue(ctx, pop->on_message);
+                pop->on_message = JS_UNDEFINED;
+            }
+        }
         JS_FreeValue(ctx, tctx->ports[i]);
     }
     ngx_free(tctx->ports);
@@ -2929,7 +2941,7 @@ ngx_js_socket_mgr_create(const char *addr_str, size_t addr_len)
 static void *
 ngx_js_sw_manager_thread(void *arg)
 {
-    ngx_js_conf_t             *jcf = arg;
+    ngx_js_conf_t             *jcf;
     ngx_core_conf_t           *ccf;
     ngx_js_sw_state_t         *sw;
     struct pollfd             *pfds;
@@ -2978,6 +2990,8 @@ ngx_js_sw_manager_thread(void *arg)
      */
 
     for ( ;; ) {
+        jcf = sw_mgr_jcf; /* re-read: ngx_js_sw_update_mgr_jcf() updates this on reload */
+
         /* Count live SWs */
         nsw = 0;
         for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
