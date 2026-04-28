@@ -1168,8 +1168,15 @@ ngx_js_sw_thread(void *arg)
             ngx_uint_t  bi;
 
             nwake = read(state->wake_pipe[0], wake_bytes, sizeof(wake_bytes));
-            if (nwake <= 0) {
-                continue;
+            if (nwake == 0) {
+                terminate = 1;  /* EOF: all writers closed, exit thread */
+                break;
+            }
+            if (nwake < 0) {
+                if (errno == EAGAIN || errno == EINTR) {
+                    continue;
+                }
+                break;  /* unexpected read error */
             }
 
             for (bi = 0; bi < (ngx_uint_t) nwake; bi++) {
