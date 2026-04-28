@@ -33,10 +33,6 @@ select STDOUT; $| = 1;
 
 my $t = Test::Nginx->new()->has(qw/http/)->plan(5);
 
-# The /slow/ handler never resolves — its connection is left open until
-# shutdown, producing the expected "open socket left in connection" alert.
-$t->todo_alerts();
-
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
 daemon off;
