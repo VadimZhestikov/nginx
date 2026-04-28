@@ -70,6 +70,29 @@ static ngx_js_sab_fd_entry_t  ngx_js_sab_fd_table[NGX_JS_SAB_FD_TABLE_MAX];
 static pthread_mutex_t         ngx_js_sab_fd_lock = PTHREAD_MUTEX_INITIALIZER;
 static int                     ngx_js_sab_fd_initialized;
 
+
+static void
+ngx_js_atfork_prepare(void)
+{
+    pthread_mutex_lock(&ngx_js_sab_fd_lock);
+}
+
+
+static void
+ngx_js_atfork_parent(void)
+{
+    pthread_mutex_unlock(&ngx_js_sab_fd_lock);
+}
+
+
+static void
+ngx_js_atfork_child(void)
+{
+    /* Re-init: child inherited a locked mutex but no thread holds it */
+    pthread_mutex_init(&ngx_js_sab_fd_lock, NULL);
+}
+
+
 static void
 ngx_js_sab_fd_table_init(void)
 {
@@ -1430,7 +1453,15 @@ extern void  (*ngx_js_sw_threads_start)(ngx_cycle_t *cycle);
 static ngx_int_t
 ngx_js_init_module(ngx_cycle_t *cycle)
 {
-    ngx_js_conf_t  *old_jcf, *new_jcf;
+    ngx_js_conf_t      *old_jcf, *new_jcf;
+    static ngx_uint_t   atfork_registered;
+
+    if (!atfork_registered) {
+        pthread_atfork(ngx_js_atfork_prepare,
+                       ngx_js_atfork_parent,
+                       ngx_js_atfork_child);
+        atfork_registered = 1;
+    }
 
     /*
      * On reload: ngx_cycle still points to the OLD cycle here (nginx updates
