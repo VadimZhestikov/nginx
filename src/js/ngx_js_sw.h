@@ -93,6 +93,21 @@ void  ngx_js_sw_exit_process(ngx_cycle_t *cycle, ngx_js_conf_t *jcf);
 void  ngx_js_sw_exit_master(ngx_js_conf_t *jcf);
 
 /*
+ * Stop and join all SW pthreads in jcf->sw_list, free their state.
+ * Does NOT touch the manager thread (singleton shared across reloads).
+ * Called on reload from ngx_js_init_module() to clean up the old config's
+ * threads and channel fds before the old JS runtime is freed.
+ */
+void  ngx_js_sw_retire_threads(ngx_js_conf_t *jcf);
+
+/*
+ * Redirect the manager thread's dynamic-SW creation list to a new jcf.
+ * Called on reload so that new SharedWorker(url) requests from workers
+ * attach to the current config's list, not the old (retired) one.
+ */
+void  ngx_js_sw_update_mgr_jcf(ngx_js_conf_t *jcf);
+
+/*
  * Create the command socketpair and term pipe, then start the SW manager
  * thread.  The manager handles new SharedWorker(url) requests from worker
  * processes, creating SW threads in the master on demand.

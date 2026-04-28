@@ -2429,24 +2429,10 @@ ngx_js_sw_threads_start_deferred(ngx_cycle_t *cycle)
 
 
 void
-ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
+ngx_js_sw_retire_threads(ngx_js_conf_t *jcf)
 {
     ngx_js_sw_state_t  *sw, *next;
     ngx_uint_t          i;
-    char                c;
-
-    /* Stop the manager thread first so it can't add to sw_list anymore */
-    if (sw_mgr_started) {
-        c = 0;
-        if (write(sw_term_fds[1], &c, 1) < 0) { /* ignore */ }
-        pthread_join(sw_mgr_tid, NULL);
-        sw_mgr_started = 0;
-    }
-    /* Close manager fds regardless of whether the thread was started */
-    if (sw_cmd_fds[0] >= 0)  { close(sw_cmd_fds[0]);  sw_cmd_fds[0]  = -1; }
-    if (sw_cmd_fds[1] >= 0)  { close(sw_cmd_fds[1]);  sw_cmd_fds[1]  = -1; }
-    if (sw_term_fds[0] >= 0) { close(sw_term_fds[0]); sw_term_fds[0] = -1; }
-    if (sw_term_fds[1] >= 0) { close(sw_term_fds[1]); sw_term_fds[1] = -1; }
 
     for (sw = jcf->sw_list; sw != NULL; sw = next) {
         next = sw->next;
@@ -2485,6 +2471,35 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
     }
 
     jcf->sw_list = NULL;
+}
+
+
+void
+ngx_js_sw_update_mgr_jcf(ngx_js_conf_t *jcf)
+{
+    sw_mgr_jcf = jcf;
+}
+
+
+void
+ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
+{
+    char  c;
+
+    /* Stop the manager thread first so it can't add to sw_list anymore */
+    if (sw_mgr_started) {
+        c = 0;
+        if (write(sw_term_fds[1], &c, 1) < 0) { /* ignore */ }
+        pthread_join(sw_mgr_tid, NULL);
+        sw_mgr_started = 0;
+    }
+    /* Close manager fds regardless of whether the thread was started */
+    if (sw_cmd_fds[0] >= 0)  { close(sw_cmd_fds[0]);  sw_cmd_fds[0]  = -1; }
+    if (sw_cmd_fds[1] >= 0)  { close(sw_cmd_fds[1]);  sw_cmd_fds[1]  = -1; }
+    if (sw_term_fds[0] >= 0) { close(sw_term_fds[0]); sw_term_fds[0] = -1; }
+    if (sw_term_fds[1] >= 0) { close(sw_term_fds[1]); sw_term_fds[1] = -1; }
+
+    ngx_js_sw_retire_threads(jcf);
 }
 
 

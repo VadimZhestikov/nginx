@@ -1430,6 +1430,49 @@ extern void  (*ngx_js_sw_threads_start)(ngx_cycle_t *cycle);
 static ngx_int_t
 ngx_js_init_module(ngx_cycle_t *cycle)
 {
+    ngx_js_conf_t  *old_jcf, *new_jcf;
+
+    /*
+     * On reload: ngx_cycle still points to the OLD cycle here (nginx updates
+     * ngx_cycle after init_module returns).  If the old cycle had JS scripts,
+     * stop its SW threads and free its runtime now — before new workers fork.
+     */
+    if (ngx_cycle != NULL
+        && ngx_cycle->conf_ctx != NULL
+        && ngx_cycle != cycle)
+    {
+        old_jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx,
+                                                  ngx_js_module);
+        if (old_jcf != NULL) {
+
+            /* Stop old SW threads; manager is a singleton, leave it running */
+            ngx_js_sw_retire_threads(old_jcf);
+
+            /* Redirect manager's dynamic-create list to the new config */
+            new_jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx,
+                                                      ngx_js_module);
+            if (new_jcf != NULL) {
+                ngx_js_sw_update_mgr_jcf(new_jcf);
+            }
+
+            /* Free old master JS runtime (SW threads are joined — safe) */
+            if (old_jcf->ctx != NULL) {
+                if (!JS_IsUninitialized(old_jcf->master_handlers)) {
+                    JS_FreeValue(old_jcf->ctx, old_jcf->master_handlers);
+                    old_jcf->master_handlers = JS_UNINITIALIZED;
+                }
+                JS_FreeContext(old_jcf->ctx);
+                old_jcf->ctx = NULL;
+            }
+
+            if (old_jcf->rt != NULL) {
+                js_std_free_handlers(old_jcf->rt);
+                JS_FreeRuntime(old_jcf->rt);
+                old_jcf->rt = NULL;
+            }
+        }
+    }
+
     /* Wire up master supervisory-loop hooks. */
     ngx_js_master_event       = ngx_js_dispatch_master_event;
     ngx_js_worker_channel_msg = ngx_js_handle_worker_channel_msg;
