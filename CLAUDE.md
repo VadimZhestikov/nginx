@@ -141,27 +141,37 @@ GC-eligible garbage is collected before asserting.
 
 ### `./t_sighup_tests` — Reload lifecycle leak tests
 
-> **Planned — not yet implemented.**
-
 Detects leaks in the nginx reload path: JS runtime teardown,
 SharedWorker thread retirement, fd cleanup in `exit_master`/`exit_process`.
-The suite sends N SIGHUP signals to a single nginx instance and checks
-RSS and open fd count after each cycle.  Catches the class of bugs fixed
-in *"JS: fix SharedWorker hang on nginx reload"*.
+The suite sends N SIGHUP signals to a single nginx instance and asserts
+that the master process RSS and open fd count stay flat across cycles.
 
-Planned shared helper: `t_sighup_tests/lib/ReloadHarness.pm`
-— `reload_nginx($pid_file)`, `rss_kb($pid)`, `fd_count($pid)`,
-`assert_stable($baseline, $current, $threshold_kb)`.
+**Run:**
 
-Planned test files (30–50 reload cycles each):
+```bash
+TEST_NGINX_BINARY=$(pwd)/objs/nginx prove -v t_sighup_tests/
+```
 
-| File | Config | What it catches |
-|---|---|---|
-| `sighup_baseline.t` | Plain nginx, no JS | Harness noise floor |
-| `sighup_js_source.t` | `js_source` with COM reads | JS runtime init/destroy leak |
-| `sighup_sw.t` | `js_source` + `new SharedWorker` | SW pthread + socketpair fd leak |
-| `sighup_sw_memfd.t` | SW + worker-created SABs | memfd fd leak on SW retire |
-| `sighup_handlers.t` | Dynamic location handlers | JSValue handler not freed on reload |
+**Shared helper:** `t_sighup_tests/lib/ReloadHarness.pm`
+— `reload_nginx($t)` (SIGHUP + polls until old workers exit),
+`rss_kb($pid)`, `fd_count($pid)`, `assert_rss_stable()`,
+`assert_fd_stable()`.
+
+Thresholds: RSS < 4 MB total growth; fd delta ≤ 3 (socket fds are exact
+— any leaked socketpair end shows up immediately).
+
+| File | Config | Reloads | What it catches |
+|---|---|---|---|
+| `sighup_baseline.t` | Plain nginx, no JS | 20 | Harness noise floor |
+| `sighup_js_source.t` | `js_source` + COM reads | 20 | JS runtime init/destroy leak |
+| `sighup_sw.t` | `js_source` + `new SharedWorker` | 15 | SW pthread + socketpair fd leak |
+| `sighup_sw_memfd.t` | SW + worker-created SABs | 10 | memfd fd (SCM_RIGHTS cleanup) |
+| `sighup_handlers.t` | `js_source` with `location.handler` | 20 | JSValue handler lifecycle |
+
+Found and fixed a real leak: `bcast_fds[i][1]` (master's copy of the
+worker-read broadcast socketpair end) was not closed on reload, leaking
+1 fd per worker per SIGHUP cycle (detected by `sighup_js_source.t` and
+`sighup_handlers.t`, 40 fd delta over 20 reloads with 2 workers).
 
 ## NGINX Architecture
 
