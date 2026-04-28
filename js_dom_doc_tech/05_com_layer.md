@@ -444,3 +444,30 @@ SW thread's `JSContext` by `js_std_add_timer_globals()` (also added to
 Without this step the JS runtime records timer callbacks via
 `js_std_init_handlers`, but the functions are only accessible via
 `import { setTimeout } from 'os'`; the bare global names are undefined.
+
+### bf_pending / sf_pending / l4_pending drained on worker exit
+
+When a worker exits (SIGQUIT graceful or SIGTERM fast) while
+`w->bf_pending`, `w->sf_pending`, or `w->l4_pending` is non-empty:
+
+**Before the fix** only `bf_p->promise` / `sf_p->promise` were freed
+(preventing the QuickJS `list_empty(&rt->gc_obj_list)` assertion) but:
+- `bf_p->gen` (the async-generator JSValue) was **leaked** → the
+  assertion fired if a generator body filter was active.
+- `r->main->count` was never decremented → `ngx_worker_process_exit()`
+  logged `[alert] open socket ... left in connection`.
+
+**After the fix** `ngx_js_exit_process()` performs a full drain for each
+pending list before calling `JS_FreeContext`:
+
+| List | JSValues freed | nginx cleanup |
+|---|---|---|
+| `bf_pending` | `promise` + `gen` (if set) | `c->error=1; finalize(NGX_DONE)` |
+| `sf_pending` | `promise` | `c->error=1; finalize(NGX_DONE)` |
+| `l4_pending` | all 5 JSValues via `ngx_js_l4_drain_exit` | `ngx_close_connection(c)` |
+
+`NGX_DONE` is used (not `NGX_ERROR`) because the 200 OK response
+headers were already sent by the time the body-filter suspended; the
+`c->error = 1` flag prevents the keepalive path from recycling the
+connection.  `ngx_http_finalize_request(r, NGX_DONE)` with count = 1
+decrements to 0 and calls `ngx_http_close_connection` synchronously.

@@ -1393,17 +1393,36 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
     ngx_js_sw_exit_process(cycle, jcf);
 
     /*
-     * If the worker shuts down while body-filter or streaming-filter requests
-     * are still pending, the DupValue'd promise for each must be explicitly
-     * freed before JS_FreeContext / JS_FreeRuntime, otherwise QuickJS asserts
-     * "list_empty(&rt->gc_obj_list)".
+     * Drain body-filter, streaming-filter, and L4 pending entries.
+     *
+     * Like the async_pending drain above, this frees all DupValue'd
+     * JSValues (satisfying the QuickJS "list_empty(&rt->gc_obj_list)"
+     * invariant) and finalises the associated nginx connections so that
+     * the "open socket left in connection" ALERT from
+     * ngx_worker_process_exit() is not triggered on graceful shutdown.
      */
     if (w->ctx != NULL) {
         ngx_js_bf_pending_t  *bf_p, *bfnext;
 
         for (bf_p = w->bf_pending; bf_p != NULL; bf_p = bfnext) {
             bfnext = bf_p->next;
+
+            ngx_log_error(NGX_LOG_WARN, bf_p->r->connection->log, 0,
+                          "js: drain body-filter request with error on worker exit");
+
+            if (!JS_IsUndefined(bf_p->gen)) {
+                JS_FreeValue(w->ctx, bf_p->gen);
+            }
             JS_FreeValue(w->ctx, bf_p->promise);
+
+            /*
+             * Response headers were already sent (the 200 OK went out before
+             * the body-filter suspended).  We cannot send a new status line, so
+             * just close the connection via NGX_DONE (count-- → 0 → close).
+             * Setting c->error prevents the keepalive path from recycling it.
+             */
+            bf_p->r->connection->error = 1;
+            ngx_http_finalize_request(bf_p->r, NGX_DONE);
         }
         w->bf_pending = NULL;
 
@@ -1412,10 +1431,20 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
 
             for (sf_p = w->sf_pending; sf_p != NULL; sf_p = sfnext) {
                 sfnext = sf_p->next;
+
+                ngx_log_error(NGX_LOG_WARN, sf_p->r->connection->log, 0,
+                              "js: drain streaming-filter request with error"
+                              " on worker exit");
+
                 JS_FreeValue(w->ctx, sf_p->promise);
+
+                sf_p->r->connection->error = 1;
+                ngx_http_finalize_request(sf_p->r, NGX_DONE);
             }
             w->sf_pending = NULL;
         }
+
+        ngx_js_l4_drain_exit(w);
     }
 
     if (w->ctx) {

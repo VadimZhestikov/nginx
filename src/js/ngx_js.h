@@ -528,6 +528,13 @@ void ngx_js_sf_async_check(ngx_js_worker_t *w);
 void ngx_js_l4_async_check(ngx_js_worker_t *w);
 
 /*
+ * Close all pending L4 connections on worker exit, freeing JSValues and
+ * calling ngx_close_connection() to prevent the "open socket" ALERT from
+ * ngx_worker_process_exit().  Must be called before JS_FreeContext().
+ */
+void ngx_js_l4_drain_exit(ngx_js_worker_t *w);
+
+/*
  * P14: Run upstream response/request filters on body in-place.
  * Both are GENERATOR-mode only, synchronous (no await).
  * body is updated in-place with the filtered result.

@@ -1500,6 +1500,40 @@ ngx_js_l4_async_check(ngx_js_worker_t *w)
 }
 
 
+/*
+ * ngx_js_l4_drain_exit — close all pending L4 connections on worker exit.
+ *
+ * Frees the DupValue'd JSValues in each l4_pending entry (preventing the
+ * QuickJS "list_empty(&rt->gc_obj_list)" assertion) and closes the raw
+ * connection so that ngx_worker_process_exit() does not log an alert for
+ * open sockets left behind during graceful shutdown.
+ */
+void
+ngx_js_l4_drain_exit(ngx_js_worker_t *w)
+{
+    ngx_js_l4_pending_t  *p, *pnext;
+    JSContext            *ctx;
+
+    if (w->l4_pending == NULL) {
+        return;
+    }
+
+    ctx = w->ctx;
+
+    for (p = w->l4_pending; p != NULL; p = pnext) {
+        pnext = p->next;
+
+        ngx_log_error(NGX_LOG_WARN, p->c->log, 0,
+                      "js: drain L4 pending connection on worker exit");
+
+        ngx_js_l4_pending_free_jsvals(ctx, p);
+        ngx_close_connection(p->c);
+    }
+
+    w->l4_pending = NULL;
+}
+
+
 ngx_int_t
 ngx_js_l4_install_source_factory(JSContext *ctx)
 {
