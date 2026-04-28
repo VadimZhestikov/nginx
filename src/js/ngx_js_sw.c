@@ -242,6 +242,22 @@ channel_send(int fd, uint32_t type,
 
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            /*
+             * Release transit dup refs created above for pre-fork SABs.
+             * sendmsg didn't take ownership, so the extra ref would leak
+             * without this loop.  Memfd SABs have no transit dup — skip.
+             */
+            if (sab_tab != NULL) {
+                for (i = 0; i < n_sabs; i++) {
+                    if (sab_tab[i] == NULL) {
+                        continue;
+                    }
+                    sab_hdr = (ngx_js_sab_hdr_t *) sab_tab[i] - 1;
+                    if (sab_hdr->flags & NGX_JS_SAB_SHARED) {
+                        ngx_js_sab_free(NULL, sab_tab[i]);
+                    }
+                }
+            }
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, errno,
                            "js SharedWorker channel full, message dropped"
                            " (fd %d)", fd);
