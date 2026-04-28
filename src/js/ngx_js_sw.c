@@ -529,6 +529,13 @@ struct ngx_js_sw_state_s {
      */
     int                       wake_pipe[2];   /* [0]=read, [1]=write */
     /*
+     * Health pipe: the SW thread writes a heartbeat byte after each
+     * successful poll() iteration.  When the thread exits, health_pipe[1]
+     * is closed, so the manager sees EOF (POLLHUP) on health_pipe[0] and
+     * can restart the thread.
+     */
+    int                       health_pipe[2]; /* [0]=read (mgr), [1]=write (SW) */
+    /*
      * thread_started: 0 until ngx_js_sw_threads_start() creates the pthread.
      * The pthread must not be created during init_conf because nginx has not
      * yet daemonized (fork()) — pthreads are not inherited across fork() and
@@ -1124,6 +1131,13 @@ ngx_js_sw_thread(void *arg)
             break;
         }
 
+        /* Heartbeat: signal the manager that this thread is still alive. */
+        if (state->health_pipe[1] >= 0) {
+            if (write(state->health_pipe[1], "\0", 1) < 0 && errno != EAGAIN) {
+                /* ignore — manager may have gone away */
+            }
+        }
+
         /*
          * Each byte in the wake pipe encodes the channel index (wi) of the
          * worker that sent one message.  We do exactly one blocking recvmsg
@@ -1323,6 +1337,12 @@ ngx_js_sw_thread(void *arg)
     ngx_free(pfds);
 
 done:
+    /* Signal health: close write end so the manager sees EOF on POLLHUP */
+    if (state->health_pipe[1] >= 0) {
+        close(state->health_pipe[1]);
+        state->health_pipe[1] = -1;
+    }
+
     JS_FreeValue(ctx, tctx->on_connect);
     JS_FreeValue(ctx, tctx->on_message);
     for (i = 0; i < state->nchannels; i++) {
@@ -1825,8 +1845,10 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
                                          "new SharedWorker: alloc failed");
         }
 
-        sw->wake_pipe[0] = -1;
-        sw->wake_pipe[1] = -1;
+        sw->wake_pipe[0]   = -1;
+        sw->wake_pipe[1]   = -1;
+        sw->health_pipe[0] = -1;
+        sw->health_pipe[1] = -1;
 
         for (i = 0; i < nchannels; i++) {
             if (channel_init(&sw->channels[i]) != NGX_OK) {
@@ -1873,6 +1895,27 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
             ngx_free(sw);
             return JS_ThrowInternalError(ctx,
                 "new SharedWorker: fcntl() failed");
+        }
+
+        if (pipe(sw->health_pipe) != 0
+            || fcntl(sw->health_pipe[0], F_SETFL, O_NONBLOCK) != 0)
+        {
+            if (sw->health_pipe[0] >= 0) {
+                close(sw->health_pipe[0]);
+                close(sw->health_pipe[1]);
+            }
+            close(sw->wake_pipe[0]);
+            close(sw->wake_pipe[1]);
+            for (i = 0; i < nchannels; i++) {
+                channel_destroy(&sw->channels[i]);
+            }
+            ngx_free(sw->worker_slots);
+            ngx_free(sw->channels);
+            ngx_free(sw->script);
+            ngx_free(sw->url);
+            ngx_free(sw);
+            return JS_ThrowInternalError(ctx,
+                "new SharedWorker: health pipe() failed");
         }
 
         /*
@@ -2093,8 +2136,11 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
     /* recv_wake_fd is the write end of the SW's wake pipe.
      * Workers must write the channel index after each channel_send so the
      * SW thread's poll(wake_pipe[0]) wakes up reliably. */
-    stub->wake_pipe[0] = -1;             /* read end lives in master */
-    stub->wake_pipe[1] = recv_wake_fd;
+    stub->wake_pipe[0]   = -1;           /* read end lives in master */
+    stub->wake_pipe[1]   = recv_wake_fd;
+    /* health pipe lives in the master SW state; stub has no health pipe */
+    stub->health_pipe[0] = -1;
+    stub->health_pipe[1] = -1;
 
     ws_slot->conn       = NULL;
     ws_slot->on_message = JS_UNDEFINED;
@@ -2500,8 +2546,10 @@ ngx_js_sw_retire_threads(ngx_js_conf_t *jcf)
             pthread_join(sw->tid, NULL);
         }
 
-        if (sw->wake_pipe[0] >= 0) { close(sw->wake_pipe[0]); }
-        if (sw->wake_pipe[1] >= 0) { close(sw->wake_pipe[1]); }
+        if (sw->wake_pipe[0] >= 0)   { close(sw->wake_pipe[0]); }
+        if (sw->wake_pipe[1] >= 0)   { close(sw->wake_pipe[1]); }
+        if (sw->health_pipe[0] >= 0) { close(sw->health_pipe[0]); }
+        if (sw->health_pipe[1] >= 0) { close(sw->health_pipe[1]); }
 
         for (i = 0; i < sw->nchannels; i++) {
             channel_destroy(&sw->channels[i]);
@@ -2794,7 +2842,8 @@ ngx_js_sw_manager_thread(void *arg)
     ngx_js_conf_t             *jcf = arg;
     ngx_core_conf_t           *ccf;
     ngx_js_sw_state_t         *sw;
-    struct pollfd              pfds[2];
+    struct pollfd             *pfds;
+    nfds_t                     npfds, nsw;
     char                       cmdbuf[NGX_JS_SW_CMD_MAX];
     sigset_t                   sigmask;
 
@@ -2827,16 +2876,51 @@ ngx_js_sw_manager_thread(void *arg)
     struct cmsghdr            *cmh;
     ssize_t                    n;
 
-    pfds[0].fd     = sw_cmd_fds[0];
-    pfds[0].events = POLLIN;
-    pfds[1].fd     = sw_term_fds[0];
-    pfds[1].events = POLLIN;
+    /*
+     * pfds layout each iteration:
+     *   [0]  sw_cmd_fds[0]   — POLLIN: new SW creation request
+     *   [1]  sw_term_fds[0]  — POLLIN: shutdown signal
+     *   [2+] health_pipe[0] for each live SW in jcf->sw_list — POLLIN|POLLHUP
+     *
+     * We rebuild the array at the top of every iteration so newly added
+     * SWs are picked up automatically.  The count is bounded by the number
+     * of SharedWorker calls, which is small (< 64 in practice).
+     */
 
     for ( ;; ) {
+        /* Count live SWs */
+        nsw = 0;
+        for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
+            if (sw->health_pipe[0] >= 0) {
+                nsw++;
+            }
+        }
+
+        npfds = 2 + nsw;
+        pfds  = ngx_alloc(npfds * sizeof(struct pollfd), ngx_cycle->log);
+        if (pfds == NULL) {
+            break;
+        }
+
+        pfds[0].fd      = sw_cmd_fds[0];
+        pfds[0].events  = POLLIN;
         pfds[0].revents = 0;
+        pfds[1].fd      = sw_term_fds[0];
+        pfds[1].events  = POLLIN;
         pfds[1].revents = 0;
 
-        if (poll(pfds, 2, -1) < 0) {
+        i = 2;
+        for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
+            if (sw->health_pipe[0] >= 0) {
+                pfds[i].fd      = sw->health_pipe[0];
+                pfds[i].events  = POLLIN | POLLHUP;
+                pfds[i].revents = 0;
+                i++;
+            }
+        }
+
+        if (poll(pfds, npfds, -1) < 0) {
+            ngx_free(pfds);
             if (errno == EINTR) {
                 continue;
             }
@@ -2844,12 +2928,79 @@ ngx_js_sw_manager_thread(void *arg)
         }
 
         if (pfds[1].revents & POLLIN) {
+            ngx_free(pfds);
             break;   /* terminate signal */
         }
 
+        /* Check health pipes (pfds[2+]) for dead SW threads */
+        i = 2;
+        for (sw = jcf->sw_list; sw != NULL; sw = sw->next) {
+            if (sw->health_pipe[0] < 0) {
+                continue;
+            }
+
+            if (pfds[i].revents & POLLIN) {
+                /* Drain heartbeat bytes — just discard them */
+                char hb[256];
+                while (read(sw->health_pipe[0], hb, sizeof(hb)) > 0) { }
+            }
+
+            if (pfds[i].revents & POLLHUP) {
+                /* SW thread has exited — close old read end and restart */
+                ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                              "js SharedWorker \"%s\" died, restarting",
+                              sw->url ? sw->url : "(unknown)");
+
+                close(sw->health_pipe[0]);
+                sw->health_pipe[0] = -1;
+                /* health_pipe[1] was closed by the dying thread */
+                sw->health_pipe[1] = -1;
+
+                /* Create a fresh health pipe for the restarted thread */
+                if (pipe(sw->health_pipe) != 0
+                    || fcntl(sw->health_pipe[0], F_SETFL, O_NONBLOCK) != 0)
+                {
+                    if (sw->health_pipe[0] >= 0) {
+                        close(sw->health_pipe[0]);
+                        close(sw->health_pipe[1]);
+                    }
+                    ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_errno,
+                                  "js SharedWorker \"%s\": health pipe() "
+                                  "failed, not restarting",
+                                  sw->url ? sw->url : "(unknown)");
+                    sw->health_pipe[0] = -1;
+                    sw->health_pipe[1] = -1;
+                } else {
+                    /* Join the dead thread before creating a new one */
+                    if (sw->thread_started && sw->tid) {
+                        pthread_join(sw->tid, NULL);
+                        sw->tid = 0;
+                    }
+                    sw->thread_started = 0;
+
+                    if (ngx_js_sw_start_thread(sw, ngx_cycle->log) != NGX_OK) {
+                        ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0,
+                                      "js SharedWorker \"%s\": restart "
+                                      "failed",
+                                      sw->url ? sw->url : "(unknown)");
+                        close(sw->health_pipe[0]);
+                        close(sw->health_pipe[1]);
+                        sw->health_pipe[0] = -1;
+                        sw->health_pipe[1] = -1;
+                    }
+                }
+            }
+
+            i++;
+        }
+
         if (!(pfds[0].revents & POLLIN)) {
+            ngx_free(pfds);
             continue;
         }
+
+        ngx_free(pfds);
+        pfds = NULL;
 
         /* Receive command + reply_fd via SCM_RIGHTS */
         iov.iov_base = cmdbuf;
@@ -3197,8 +3348,10 @@ ngx_js_sw_manager_thread(void *arg)
                 continue;
             }
 
-            sw->wake_pipe[0] = -1;
-            sw->wake_pipe[1] = -1;
+            sw->wake_pipe[0]   = -1;
+            sw->wake_pipe[1]   = -1;
+            sw->health_pipe[0] = -1;
+            sw->health_pipe[1] = -1;
 
             ok = 1;
             for (i = 0; i < nchannels; i++) {
@@ -3224,12 +3377,26 @@ ngx_js_sw_manager_thread(void *arg)
                 i  = nchannels;
             }
 
+            if (ok && (pipe(sw->health_pipe) != 0
+                       || fcntl(sw->health_pipe[0], F_SETFL, O_NONBLOCK) != 0))
+            {
+                if (sw->health_pipe[0] >= 0) {
+                    close(sw->health_pipe[0]);
+                    close(sw->health_pipe[1]);
+                    sw->health_pipe[0] = sw->health_pipe[1] = -1;
+                }
+                ok = 0;
+                i  = nchannels;
+            }
+
             if (!ok) {
                 while (i-- > 0) {
                     channel_destroy(&sw->channels[i]);
                 }
-                if (sw->wake_pipe[0] >= 0) { close(sw->wake_pipe[0]); }
-                if (sw->wake_pipe[1] >= 0) { close(sw->wake_pipe[1]); }
+                if (sw->wake_pipe[0] >= 0)   { close(sw->wake_pipe[0]); }
+                if (sw->wake_pipe[1] >= 0)   { close(sw->wake_pipe[1]); }
+                if (sw->health_pipe[0] >= 0) { close(sw->health_pipe[0]); }
+                if (sw->health_pipe[1] >= 0) { close(sw->health_pipe[1]); }
                 ngx_free(sw->worker_slots);
                 ngx_free(sw->channels);
                 ngx_free(sw->script);
@@ -3242,6 +3409,8 @@ ngx_js_sw_manager_thread(void *arg)
             if (pthread_create(&sw->tid, NULL, ngx_js_sw_thread, sw) != 0) {
                 close(sw->wake_pipe[0]);
                 close(sw->wake_pipe[1]);
+                close(sw->health_pipe[0]);
+                close(sw->health_pipe[1]);
                 for (i = 0; i < nchannels; i++) {
                     channel_destroy(&sw->channels[i]);
                 }
