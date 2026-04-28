@@ -400,3 +400,47 @@ next request).  Under normal load the pipe never fills because the SW
 thread drains it continuously.  Under extreme overload or while the thread
 is being restarted by the health-pipe watchdog, the delay is bounded by
 the arrival of the next request to the same SharedWorker.
+
+### Blocking manager recvmsg has SO_RCVTIMEO (5 s)
+
+Every synchronous `recvmsg()` call that waits for the master manager's
+reply — e.g., during dynamic SharedWorker creation
+(`ngx_js_sw_request_dynamic`) — sets `SO_RCVTIMEO` to
+`NGX_JS_MGR_RECV_TIMEOUT_S` (5 seconds) before blocking.  Under normal
+conditions the manager replies in microseconds, so the timeout is never
+triggered.  If the manager hangs (e.g., because of a stalled SAB transfer
+or a bug in the management loop), the worker is unblocked after 5 s and
+logs a warning rather than freezing the nginx event loop indefinitely.
+
+### setTimeout / clearTimeout in SharedWorker scripts
+
+SharedWorker scripts run in a dedicated pthread.  The thread's poll loop
+uses `js_std_tick_timers()` (added to `quickjs-libc.c`) as the timeout
+for `poll()` so that expired timers fire even when no worker message
+arrives:
+
+```
+for (;;) {
+    do {
+        drain JS pending jobs
+        timer_ms = js_std_tick_timers(ctx);   // fire expired; returns next deadline
+    } while (timer_ms == 0);                   // re-drain until settled
+
+    poll(wake_pipe[0], POLLIN, timer_ms);      // -1 → block; >0 → wake for timer
+
+    if (no wake byte) continue;               // timer woke us, loop again
+    recv messages …
+}
+```
+
+`js_std_tick_timers` fires all expired timers without calling `select`
+internally, so it is safe to use inside a thread that owns its own poll
+loop.  It returns the millisecond delay to the next deadline (or -1 if
+no timers are pending).
+
+`setTimeout` and `clearTimeout` are installed as global functions on the
+SW thread's `JSContext` by `js_std_add_timer_globals()` (also added to
+`quickjs-libc.c`), providing browser-compatible Web Worker semantics.
+Without this step the JS runtime records timer callbacks via
+`js_std_init_handlers`, but the functions are only accessible via
+`import { setTimeout } from 'os'`; the bare global names are undefined.

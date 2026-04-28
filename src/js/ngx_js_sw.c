@@ -770,11 +770,9 @@ ngx_js_sw_port_post_message(JSContext *ctx, JSValueConst this_val,
 
     if (channel_send(op->state->channels[op->wi].sw_fd,
                      NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
-                     sab_tab, (uint32_t) n_sabs)
-        == NGX_ERROR)
+                     sab_tab, (uint32_t) n_sabs) == NGX_ERROR)
     {
-        return JS_ThrowInternalError(ctx,
-                                     "port.postMessage: channel broken");
+        return JS_ThrowInternalError(ctx, "port.postMessage: channel broken");
     }
 
     return JS_UNDEFINED;
@@ -1033,6 +1031,9 @@ ngx_js_sw_thread(void *arg)
         return NULL;
     }
 
+    /* Install setTimeout/clearTimeout as globals (Web Worker compatibility) */
+    js_std_add_timer_globals(ctx);
+
     /* Register port class in this runtime */
     if (JS_NewClass(rt, ngx_js_sw_port_class_id,
                     &ngx_js_sw_port_class) < 0)
@@ -1140,19 +1141,38 @@ ngx_js_sw_thread(void *arg)
     terminate = 0;
 
     for ( ;; ) {
+        int  timer_ms;
+
+        /* Fire any expired JS timers (setTimeout/setInterval) and compute
+         * the delay to the next scheduled timer.  Use that as the poll()
+         * timeout so the thread wakes up in time for the next timer, while
+         * still waking immediately when a message arrives via the wake pipe.
+         * Drain pending jobs before polling so Promises settle promptly. */
+        do {
+            while (JS_ExecutePendingJob(rt, &job_ctx) > 0) { }
+            timer_ms = js_std_tick_timers(ctx);
+        } while (timer_ms == 0);  /* fired at least one — drain and re-tick */
+
         pfds[0].revents = 0;
 
         /*
-         * Block on the wake pipe.  Workers call channel_send_wake()
-         * which writes a byte here after every channel_send(), so
-         * poll reliably wakes up even on WSL2 where cross-process
-         * POLLIN on AF_UNIX SEQPACKET is unreliable.
+         * Block on the wake pipe with a timer-aware timeout.
+         * timer_ms == -1  → no timers, block forever (-1 means infinite).
+         * timer_ms > 0    → wake before next timer fires.
+         * Workers call channel_send_wake() which writes a byte here after
+         * every channel_send(), so poll reliably wakes up even on WSL2
+         * where cross-process POLLIN on AF_UNIX SEQPACKET is unreliable.
          */
-        if (poll(pfds, 1, -1) < 0) {
+        if (poll(pfds, 1, timer_ms) < 0) {
             if (errno == EINTR) {
                 continue;
             }
             break;
+        }
+
+        /* Poll returned due to timeout — no wake byte, just fire timers. */
+        if (!(pfds[0].revents & POLLIN) && !(pfds[0].revents & POLLHUP)) {
+            continue;
         }
 
         /* Heartbeat: signal the manager that this thread is still alive. */
