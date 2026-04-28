@@ -500,6 +500,14 @@ int  ngx_js_is_own_conf(struct ngx_http_request_s *r,
 void ngx_js_async_check(ngx_js_worker_t *w);
 
 /*
+ * Drain all pending async HTTP requests with a 503 response.
+ * Called from ngx_js_exit_process() before SharedWorker sockets are torn
+ * down, so that a graceful shutdown does not deadlock when a SW thread
+ * dies without replying.
+ */
+void ngx_js_async_drain_503(ngx_js_worker_t *w);
+
+/*
  * Inspect pending wholeBodyAsync filter promises and resume or finalize
  * each settled entry.  Called alongside ngx_js_async_check from every
  * event-loop post-drain site.

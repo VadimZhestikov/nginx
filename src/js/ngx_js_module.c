@@ -1371,25 +1371,35 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
         }
     }
 
+    /*
+     * Drain async-pending HTTP requests with 503 BEFORE closing SW sockets.
+     *
+     * On graceful shutdown (SIGQUIT) a suspended request waits for a SW reply.
+     * If the SW thread dies before replying, the request hangs forever and the
+     * worker never exits, deadlocking the whole shutdown sequence.
+     *
+     * Sending 503 here unblocks the request.  The drain must run while SW
+     * channels are still open (before ngx_js_sw_exit_process) so that any
+     * read event registered on a channel fd does not fire on a closed fd.
+     *
+     * ngx_js_async_drain_503 also frees the DupValue'd req_obj and promise,
+     * satisfying the QuickJS "list_empty(&rt->gc_obj_list)" invariant.
+     */
+    if (w->ctx != NULL && w->async_pending != NULL) {
+        ngx_js_async_drain_503(w);
+        /* w->async_pending is now NULL */
+    }
+
     ngx_js_sw_exit_process(cycle, jcf);
 
     /*
-     * If the worker shuts down while async requests are still pending
-     * (e.g. handlers that never resolve), the DupValue'd req_obj and
-     * promise for each must be explicitly freed before JS_FreeContext /
-     * JS_FreeRuntime, otherwise QuickJS asserts
+     * If the worker shuts down while body-filter or streaming-filter requests
+     * are still pending, the DupValue'd promise for each must be explicitly
+     * freed before JS_FreeContext / JS_FreeRuntime, otherwise QuickJS asserts
      * "list_empty(&rt->gc_obj_list)".
      */
     if (w->ctx != NULL) {
-        ngx_js_async_ctx_t   *actx, *anext;
         ngx_js_bf_pending_t  *bf_p, *bfnext;
-
-        for (actx = w->async_pending; actx != NULL; actx = anext) {
-            anext = actx->next;
-            JS_FreeValue(w->ctx, actx->req_obj);
-            JS_FreeValue(w->ctx, actx->promise);
-        }
-        w->async_pending = NULL;
 
         for (bf_p = w->bf_pending; bf_p != NULL; bf_p = bfnext) {
             bfnext = bf_p->next;

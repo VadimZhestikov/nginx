@@ -5919,6 +5919,57 @@ ngx_js_async_check(ngx_js_worker_t *w)
 
 
 /* ------------------------------------------------------------------ */
+/* Graceful-shutdown drain: cancel all pending async requests with 503 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ngx_js_async_drain_503 — send 503 to every suspended async HTTP request
+ * and clear w->async_pending.
+ *
+ * Called from ngx_js_exit_process() before SharedWorker sockets are closed,
+ * so that a graceful shutdown (SIGQUIT) does not deadlock when a SW thread
+ * dies without replying to a pending postMessage.
+ *
+ * Count invariants at the time this runs:
+ *   - Normal content-handler async (neither is_hook nor is_p2_hook):
+ *       count = 1  (suspension did count++; content phase did finalize(NGX_DONE)
+ *                   which brought 2→1).  One finalize(503) closes the request.
+ *   - P1 hook (is_hook == 1): same as above — count = 1.
+ *   - P2 access-phase hook (is_p2_hook == 1):
+ *       count = 2  (access phase engine returned NGX_OK for our NGX_DONE without
+ *                   calling finalize).  Need finalize(NGX_DONE) to go 2→1, then
+ *                   finalize(503) to close.
+ */
+void
+ngx_js_async_drain_503(ngx_js_worker_t *w)
+{
+    ngx_js_async_ctx_t  *actx, *anext;
+    JSContext           *ctx;
+
+    ctx = w->ctx;
+
+    for (actx = w->async_pending; actx != NULL; actx = anext) {
+        anext = actx->next;
+
+        ngx_log_error(NGX_LOG_WARN, actx->r->connection->log, 0,
+                      "js: drain async request with 503 on worker exit");
+
+        JS_FreeValue(ctx, actx->req_obj);
+        JS_FreeValue(ctx, actx->promise);
+
+        if (actx->is_p2_hook) {
+            /* count = 2: balance 2→1, then send 503 (1→close) */
+            ngx_http_finalize_request(actx->r, NGX_DONE);
+        }
+
+        ngx_http_finalize_request(actx->r, NGX_HTTP_SERVICE_UNAVAILABLE);
+    }
+
+    w->async_pending = NULL;
+}
+
+
+/* ------------------------------------------------------------------ */
 /* P2 async hook resume (called from ngx_js_async_check)              */
 /* ------------------------------------------------------------------ */
 
