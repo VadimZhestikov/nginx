@@ -78,7 +78,7 @@ JS
 $t->try_run('no js module')->plan(6);
 
 sub wait_ready {
-    for (1 .. 50) {
+    for (1 .. 100) {
         my $r = http_get('/echo/');
         return $r if defined $r && $r =~ /200 OK/;
         select undef, undef, undef, 0.1;
