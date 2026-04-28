@@ -26,6 +26,21 @@ typedef struct {
     ngx_flag_t       dry_run;
 } ngx_http_limit_req_conf_t;
 
+/*
+ * Zone context — lives in cf->pool, one per limit_req_zone directive.
+ * COM needs shpool (for the mutex) and rate (settable).
+ * The remaining fields (sh, key, node) are opaque to the COM layer.
+ */
+typedef struct ngx_http_limit_req_shctx_s  ngx_http_limit_req_shctx_t;
+
+typedef struct {
+    ngx_http_limit_req_shctx_t  *sh;
+    ngx_slab_pool_t             *shpool;
+    /* integer value, 1 corresponds to 0.001 r/s */
+    ngx_uint_t                   rate;
+    /* remaining fields (key, node) are not used by the COM layer */
+} ngx_http_limit_req_ctx_t;
+
 extern ngx_module_t  ngx_http_limit_req_module;
 
 

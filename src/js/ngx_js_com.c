@@ -48,6 +48,7 @@ JSClassID  ngx_js_stream_ssl_class_id;
 JSClassID  ngx_js_stream_session_class_id;
 JSClassID  ngx_js_auth_class_id;
 JSClassID  ngx_js_limit_req_class_id;
+JSClassID  ngx_js_limit_req_limit_class_id;
 JSClassID  ngx_js_limit_conn_class_id;
 JSClassID  ngx_js_fastcgi_class_id;
 JSClassID  ngx_js_log_class_id;
@@ -518,6 +519,7 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_access_class_id);
         JS_NewClassID(&ngx_js_auth_class_id);
         JS_NewClassID(&ngx_js_limit_req_class_id);
+        JS_NewClassID(&ngx_js_limit_req_limit_class_id);
         JS_NewClassID(&ngx_js_limit_conn_class_id);
         JS_NewClassID(&ngx_js_fastcgi_class_id);
         JS_NewClassID(&ngx_js_log_class_id);
@@ -2706,6 +2708,7 @@ ngx_js_com_install_protos(JSContext *ctx)
     if (ngx_js_access_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_auth_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_limit_req_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_limit_req_limit_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_limit_conn_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_fastcgi_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_log_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }

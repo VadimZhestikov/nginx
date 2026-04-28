@@ -9547,6 +9547,10 @@ ngx_js_http_register_classes(JSRuntime *rt)
         return NGX_ERROR;
     }
 
+    if (ngx_js_limit_req_limit_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     if (ngx_js_limit_conn_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
