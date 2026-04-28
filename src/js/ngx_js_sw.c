@@ -72,6 +72,14 @@
 
 /* NGX_JS_SW_MSG_* are defined in ngx_js_sw.h */
 
+/*
+ * Timeout applied to all blocking recvmsg() calls that wait for the
+ * master manager to reply (dynamic-SW creation, socket broadcast, accept
+ * control).  Prevents a hung/slow manager from blocking the nginx event
+ * loop indefinitely.  5 s is generous; manager operations are µs–ms range.
+ */
+#define NGX_JS_MGR_RECV_TIMEOUT_S  5
+
 /* Maximum memfd SABs and total message body per sendmsg */
 #define NGX_JS_SW_MAX_SABS    8u
 #define NGX_JS_SW_MAX_MEMFDS  8u
@@ -2093,6 +2101,11 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
     msg.msg_control    = cmsg_rcv.buf;
     msg.msg_controllen = sizeof(cmsg_rcv.buf);
 
+    {
+        struct timeval  tv = { NGX_JS_MGR_RECV_TIMEOUT_S, 0 };
+        (void) setsockopt(reply_fds[0], SOL_SOCKET, SO_RCVTIMEO,
+                          &tv, sizeof(tv));
+    }
     n = recvmsg(reply_fds[0], &msg, 0);
     close(reply_fds[0]);
 
@@ -2277,6 +2290,11 @@ ngx_js_sw_acquire_channel(const char *url, size_t url_len,
     msg.msg_control    = cmsg_rcv.buf;
     msg.msg_controllen = sizeof(cmsg_rcv.buf);
 
+    {
+        struct timeval  tv = { NGX_JS_MGR_RECV_TIMEOUT_S, 0 };
+        (void) setsockopt(reply_fds[0], SOL_SOCKET, SO_RCVTIMEO,
+                          &tv, sizeof(tv));
+    }
     n = recvmsg(reply_fds[0], &msg, 0);
     close(reply_fds[0]);
 
@@ -2833,6 +2851,11 @@ ngx_js_socket_mgr_create(const char *addr_str, size_t addr_len)
     msg.msg_control    = cmsg_rcv.buf;
     msg.msg_controllen = sizeof(cmsg_rcv.buf);
 
+    {
+        struct timeval  tv = { NGX_JS_MGR_RECV_TIMEOUT_S, 0 };
+        (void) setsockopt(reply_fds[0], SOL_SOCKET, SO_RCVTIMEO,
+                          &tv, sizeof(tv));
+    }
     n = recvmsg(reply_fds[0], &msg, 0);
     close(reply_fds[0]);
 
@@ -3705,6 +3728,11 @@ ngx_js_socket_mgr_broadcast(uint32_t handle, const char *addr_str,
     msg.msg_iov    = &iov;
     msg.msg_iovlen = 1;
 
+    {
+        struct timeval  tv = { NGX_JS_MGR_RECV_TIMEOUT_S, 0 };
+        (void) setsockopt(reply_fds[0], SOL_SOCKET, SO_RCVTIMEO,
+                          &tv, sizeof(tv));
+    }
     n = recvmsg(reply_fds[0], &msg, 0);
     close(reply_fds[0]);
 
