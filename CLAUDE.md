@@ -60,14 +60,108 @@ sudo make -C quickjs install
 
 QuickJS sanitizer builds: uncomment `CONFIG_ASAN`, `CONFIG_MSAN`, or `CONFIG_UBSAN` in `quickjs/Makefile`.
 
-## Testing NGINX Changes
+## Tests
 
-The NGINX test suite lives in a separate repository:
+Three complementary test suites live at the repo root.  Each targets a
+different failure class; none replaces the others.
+
+---
+
+### `./t` — Functional correctness tests
+
+Perl tests built on [Test::Nginx](https://github.com/nginx/nginx-tests).
+Each file starts its own nginx instance, runs focused behavioral assertions,
+then stops nginx.  Catches regressions in request handling, COM semantics,
+SharedWorker behaviour, directive parsing, etc.
+
+**One-time setup** (provides `Test::Nginx` to all three suites):
 
 ```bash
-git clone https://github.com/nginx/nginx-tests.git
-# Follow the nginx-tests README to run individual tests
+git clone --depth=1 https://github.com/nginx/nginx-tests.git /tmp/nginx-tests
+cp -r /tmp/nginx-tests/lib t/lib
 ```
+
+**Run:**
+
+```bash
+# Absolute path to the binary is required
+TEST_NGINX_BINARY=$(pwd)/objs/nginx prove -v t/
+
+# Single file
+TEST_NGINX_BINARY=$(pwd)/objs/nginx prove -v t/js_shared_worker.t
+```
+
+> **Never** use `-j` parallel execution — port contention causes flaky
+> failures when multiple nginx instances race for the same ports.
+
+---
+
+### `./t_js_com_tests` — COM steady-state leak tests
+
+Single nginx instance per file.  A JS request handler runs **N iterations**
+of COM accessor calls in one HTTP request and reports the JS heap delta via
+`nginx.jsMemUsage()` (before) → `nginx.gc()` → `nginx.jsMemUsage()` (after).
+After an explicit GC pass, only truly leaked objects (refcount > 0 with no
+JS reference) remain in the delta.  Assertion threshold: **< 32 KB over
+10 000 iterations**.
+
+Catches per-call JS value leaks: wrapper objects not freed, registry arrays
+that grow without bound, array getters that accumulate temporary objects.
+Found and fixed a real leak: `location.handler = fn` was appending to
+`__ngx_handlers__[]` on every replacement without releasing the old closure.
+
+**Run:**
+
+```bash
+TEST_NGINX_BINARY=$(pwd)/objs/nginx prove -v t_js_com_tests/
+```
+
+**Shared helper:** `t_js_com_tests/lib/ComStress.pm`
+— `run_stress($t, $path, $n)` and `assert_flat($d, $n, $label)`.
+
+**Adding a test:** follow the pattern in any existing file.  The stress
+handler must call `nginx.gc()` before the second `nginx.jsMemUsage()` so
+GC-eligible garbage is collected before asserting.
+
+| File | What it stresses | Iters |
+|---|---|---|
+| `com_upstream_weight.t` | `peers[0].weight` setter full chain | 10 000 |
+| `com_handler_replace.t` | `location.handler` replacement | 5 000 |
+| `com_limit_req.t` | `limitReq.limits[0].burst` full chain | 10 000 |
+| `com_enumerate_servers.t` | `nginx.http.servers[]` read | 10 000 |
+| `com_enumerate_locations.t` | `server.locations[]` read | 10 000 |
+| `com_upstream_peer_list.t` | `upstream.peers[]` + getters | 10 000 |
+| `com_proxy_access.t` | `location.proxy` wrapper + getters | 10 000 |
+| `com_proxy_set_header.t` | `proxy.setHeader[]` array getter | 10 000 |
+| `com_ssl_access.t` | `server.ssl` wrapper + `protocols[]` | 10 000 |
+| `com_limit_conn.t` | `location.limitConn` wrapper | 10 000 |
+| `com_upstreams_array.t` | `nginx.http.upstreams[]` enumeration | 10 000 |
+
+---
+
+### `./t_sighup_tests` — Reload lifecycle leak tests
+
+> **Planned — not yet implemented.**
+
+Detects leaks in the nginx reload path: JS runtime teardown,
+SharedWorker thread retirement, fd cleanup in `exit_master`/`exit_process`.
+The suite sends N SIGHUP signals to a single nginx instance and checks
+RSS and open fd count after each cycle.  Catches the class of bugs fixed
+in *"JS: fix SharedWorker hang on nginx reload"*.
+
+Planned shared helper: `t_sighup_tests/lib/ReloadHarness.pm`
+— `reload_nginx($pid_file)`, `rss_kb($pid)`, `fd_count($pid)`,
+`assert_stable($baseline, $current, $threshold_kb)`.
+
+Planned test files (30–50 reload cycles each):
+
+| File | Config | What it catches |
+|---|---|---|
+| `sighup_baseline.t` | Plain nginx, no JS | Harness noise floor |
+| `sighup_js_source.t` | `js_source` with COM reads | JS runtime init/destroy leak |
+| `sighup_sw.t` | `js_source` + `new SharedWorker` | SW pthread + socketpair fd leak |
+| `sighup_sw_memfd.t` | SW + worker-created SABs | memfd fd leak on SW retire |
+| `sighup_handlers.t` | Dynamic location handlers | JSValue handler not freed on reload |
 
 ## NGINX Architecture
 
