@@ -188,7 +188,7 @@ Examples:
 | `ngx_js_com_ssl.c` | `srv.ssl.cert`, `srv.ssl.key`, … |
 | `ngx_js_com_headers.c` | `loc.headers.set()`, `loc.headers.add()`, … |
 | `ngx_js_com_gzip.c` | `loc.gzip.enabled`, `loc.gzip.minLength`, … |
-| `ngx_js_com_limit_req.c` | `loc.limitReq.zone`, `loc.limitReq.burst`, … |
+| `ngx_js_com_limit_req.c` | `loc.limitReq.limits[i].{zone,burst,delay,nodelay,rate}`, `loc.limitReq.{logLevel,statusCode,dryRun}` |
 
 The pattern is uniform:
 1. Define a `JSClassDef` with a finalizer that does nothing (the C struct is pool-owned).
@@ -198,6 +198,57 @@ The pattern is uniform:
 Because nginx linker guards (`NGX_HTTP_PROXY_MODULE_GUARD`, etc.) surround
 every reference to non-universal symbols, the wrappers compile cleanly regardless
 of which nginx modules are enabled.
+
+---
+
+## NginxLimitReq / NginxLimitReqLimit — Dynamic Rate Limiting
+
+`location.limitReq` wraps the per-location `ngx_http_limit_req_conf_t`.
+`location.limitReq.limits[i]` returns a `NginxLimitReqLimit` — a **live proxy**
+to the underlying `ngx_http_limit_req_limit_t` + zone `ngx_http_limit_req_ctx_t`.
+
+### NginxLimitReq properties
+
+| Property | Type | Access | Description |
+|---|---|---|---|
+| `limits` | `NginxLimitReqLimit[]` | r | Live proxy array, one entry per `limit_req` directive |
+| `logLevel` | string | r/w | `"error"` / `"warn"` / `"notice"` / `"info"` |
+| `delayLogLevel` | string | r/w | Log level for delayed (throttled) requests |
+| `statusCode` | number | r/w | HTTP status returned when limit is exceeded (default 503) |
+| `dryRun` | boolean | r/w | When true, count but do not reject requests |
+
+### NginxLimitReqLimit properties
+
+| Property | Type | Access | Description |
+|---|---|---|---|
+| `zone` | string | r | Shared memory zone name (read-only) |
+| `burst` | number | r/w | Maximum burst queue depth (stored internally as `value * 1000`) |
+| `delay` | number | r/w | Number of requests before delay kicks in (ignored when `nodelay` is true) |
+| `nodelay` | boolean | r/w | When true, excess requests are rejected immediately instead of delayed |
+| `rate` | number | r/w | Zone rate in r/s (stored as `value * 1000`; write acquires shmtx in request phase) |
+
+### Cross-worker propagation
+
+All writable fields live in `cf->pool` — per-worker copies after `fork()`.
+A write in one worker does not affect other workers.
+Use `nginx.broadcast()` to propagate changes to every worker:
+
+```javascript
+nginx.broadcast(function () {
+    var lr = nginx.http.servers[0].locations[1].limitReq;
+    lr.limits[0].rate  = 50;   // r/s
+    lr.limits[0].burst = 20;
+    lr.dryRun = false;
+});
+```
+
+### Rate setter thread safety
+
+`ctx->rate` is read under `ctx->shpool->mutex` in the nginx hot path.
+The `rate` setter acquires the same mutex when `shpool != NULL` (request phase).
+During `init_conf` (script evaluation, before shared memory is initialized),
+`shpool` is NULL and the write is performed directly — this is safe because
+no workers are running yet.
 
 ---
 
@@ -237,3 +288,60 @@ Implementation:
 - Each worker's epoll watches its read fd.  On data-ready, it calls
   `ngx_js_bcast_handler`, deserialises, and fires all `nginx.on('message', …)`
   callbacks.
+
+---
+
+### Atomic config updates (batch pattern)
+
+**Problem:** sending multiple `sw.postMessage()` calls to update related
+fields (e.g., `rate` + `burst` + `nodelay`) creates windows in which another
+nginx worker can observe a half-applied state.
+
+**Solution:** Bundle all mutations into a single message and apply them
+inside the SharedWorker's `onmessage` handler.  Because the C channel
+delivers each `postMessage` as one atomic `sendmsg`/`recvmsg`, the SW thread
+applies every op before any other message can arrive.
+
+**SW thread script pattern:**
+
+```javascript
+var state = { rate: 20, burst: 10 };
+
+onconnect = function(e) {
+    var port = e.ports[0];
+    port.onmessage = function(ev) {
+        var msg = ev.data;
+        if (msg && msg.type === 'batch') {
+            // All ops applied atomically — no intermediate state visible.
+            msg.ops.forEach(function(op) { state[op.key] = op.value; });
+            port.postMessage({ rate: state.rate, burst: state.burst });
+        } else if (msg && msg.type === 'read') {
+            port.postMessage({ rate: state.rate, burst: state.burst });
+        }
+    };
+};
+```
+
+**Caller (nginx request handler):**
+
+```javascript
+var result = await new Promise(function(resolve) {
+    sw.onmessage = function(e) { resolve(e.data); };
+    sw.postMessage({
+        type: 'batch',
+        ops: [
+            { key: 'rate',  value: 2  },
+            { key: 'burst', value: 2  },
+        ]
+    });
+});
+// result.rate === 2 && result.burst === 2 — both changed together.
+```
+
+**Why no new C code is needed:** the existing `SOCK_SEQPACKET` channel
+already provides message-level atomicity.  The batch pattern is a pure JS
+convention: any message payload that bundles multiple mutations into one
+`postMessage` call is applied atomically.
+
+**Testing:** `t/js_sw_batch.t` — 8 assertions verifying initial state,
+atomic double-field update, persistence across requests, and atomic reset.
