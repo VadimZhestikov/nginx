@@ -12,6 +12,16 @@
 #
 # Verifies that SharedWorker delivery still works correctly after three
 # consecutive nginx reloads.
+#
+# Stability note: we use reload_nginx() (from ReloadHarness) rather than the
+# bare $t->reload().  $t->reload() just sends SIGHUP and returns immediately;
+# old workers keep accepting connections while the master is still inside
+# ngx_init_cycle() / retire_threads().  If wait_ready() lands a request on an
+# old worker at the same moment retire_threads() sends TERM to the SharedWorker
+# channel, TERM can win the race, the SW exits without echoing, and the
+# worker's Promise never resolves — causing http_get() to hang forever.
+# reload_nginx() polls until all old workers have exited, guaranteeing that
+# retire_threads() has already completed and only fresh workers serve requests.
 
 use warnings;
 use strict;
@@ -19,7 +29,9 @@ use Test::More;
 
 BEGIN { use FindBin; chdir($FindBin::Bin); }
 use lib 'lib';
+use lib '../t_sighup_tests/lib';
 use Test::Nginx;
+use ReloadHarness;
 
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
@@ -88,13 +100,13 @@ sub wait_ready {
 
 like(http_get('/echo/'), qr/hello/, 'pre-reload: delivery works');
 
-$t->reload();
+reload_nginx($t);
 like(wait_ready(), qr/hello/, 'post-reload 1: delivery works');
 
-$t->reload();
+reload_nginx($t);
 like(wait_ready(), qr/hello/, 'post-reload 2: delivery works');
 
-$t->reload();
+reload_nginx($t);
 like(wait_ready(), qr/hello/, 'post-reload 3: delivery works');
 
 $t->stop();

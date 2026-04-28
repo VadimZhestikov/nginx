@@ -996,6 +996,9 @@ ngx_js_sw_thread(void *arg)
     int                      terminate;
     ngx_uint_t               wi;
     sigset_t                 sigmask;
+    char                     wake_bytes[256];
+    ssize_t                  nwake;
+    ngx_uint_t               bi;
 
     /* Block all signals so process-directed signals (especially SIGCHLD
      * from dying worker children) are delivered to the main thread's
@@ -1191,10 +1194,6 @@ ngx_js_sw_thread(void *arg)
          * on WSL2.
          */
         {
-            char        wake_bytes[256];
-            ssize_t     nwake;
-            ngx_uint_t  bi;
-
             nwake = read(state->wake_pipe[0], wake_bytes, sizeof(wake_bytes));
             if (nwake == 0) {
                 terminate = 1;  /* EOF: all writers closed, exit thread */
@@ -1207,6 +1206,7 @@ ngx_js_sw_thread(void *arg)
                 break;  /* unexpected read error */
             }
 
+        process_wake_bytes:
             for (bi = 0; bi < (ngx_uint_t) nwake; bi++) {
                 wi = (ngx_uint_t)(uint8_t) wake_bytes[bi];
                 if (wi >= state->nchannels) {
@@ -1226,7 +1226,7 @@ ngx_js_sw_thread(void *arg)
                     }
                     ngx_free(sab_tab);
                     terminate = 1;
-                    break;
+                    continue;  /* finish this batch before exiting */
                 }
 
                 if (type == NGX_JS_SW_MSG_CONNECT) {
@@ -1381,6 +1381,19 @@ ngx_js_sw_thread(void *arg)
         }
 
         if (terminate) {
+            /*
+             * A worker may have sent DATA just before retire_threads sent
+             * TERM on the same channel.  If TERM arrived first in the
+             * socket buffer the DATA wake byte is still in the pipe.
+             * wake_pipe[0] is O_NONBLOCK — drain it and process any
+             * remaining DATA messages so waiting workers receive their
+             * replies before the SW thread exits.
+             */
+            nwake = read(state->wake_pipe[0], wake_bytes, sizeof(wake_bytes));
+            if (nwake > 0) {
+                terminate = 0;
+                goto process_wake_bytes;
+            }
             break;
         }
     }
