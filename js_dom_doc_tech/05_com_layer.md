@@ -345,3 +345,42 @@ convention: any message payload that bundles multiple mutations into one
 
 **Testing:** `t/js_sw_batch.t` — 8 assertions verifying initial state,
 atomic double-field update, persistence across requests, and atomic reset.
+
+---
+
+### Binary upgrade (USR2) and state loss
+
+When `nginx -s upgrade` (SIGUSR2) is used to perform a hot binary upgrade,
+the OS launches a new master process that exec's the new nginx binary.
+**All SharedWorker thread state is lost** at this point:
+
+- The new master's `init_conf` evaluates JS source files from scratch.
+  Any runtime mutations accumulated since the last `nginx -s reload` are
+  discarded.
+- Dynamic SharedWorkers (created from worker request handlers) are not
+  re-created automatically; they are started again on the first request
+  after the new workers come up.
+- Counters, tuned limit_req values, and any in-memory SW state start from
+  the values written in the JS source files.
+
+**In-place reload (SIGHUP)** does not lose SharedWorker state because the
+master process stays alive and worker processes are replaced gradually.
+The JS runtime is re-initialised during `init_conf`, but the config-phase
+scripts re-run and restore static SharedWorkers exactly as before.
+
+**Workaround for critical state:** persist values to `nginx.shared` (the
+cross-worker key/value zone backed by a shared-memory region) or to an
+external store (file, Redis, etc.) and restore them in the SW script's
+startup code:
+
+```javascript
+// In the SW script — restore persisted rate on (re)start:
+onconnect = function(e) {
+    var port = e.ports[0];
+    // … restore from nginx.shared or env before handling messages
+};
+```
+
+For state that must survive a binary upgrade, treat the SharedWorker as
+a stateless proxy and store the authoritative values outside the JS
+runtime.
