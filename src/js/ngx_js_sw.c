@@ -1881,8 +1881,11 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
             return JS_ThrowInternalError(ctx,
                 "new SharedWorker: pipe() failed");
         }
-        /* Read end non-blocking so SW thread can drain without blocking */
-        if (fcntl(sw->wake_pipe[0], F_SETFL, O_NONBLOCK) != 0) {
+        /* Both ends non-blocking: read so SW drains without blocking;
+         * write so a full pipe never stalls the nginx event loop. */
+        if (fcntl(sw->wake_pipe[0], F_SETFL, O_NONBLOCK) != 0
+            || fcntl(sw->wake_pipe[1], F_SETFL, O_NONBLOCK) != 0)
+        {
             close(sw->wake_pipe[0]);
             close(sw->wake_pipe[1]);
             for (i = 0; i < nchannels; i++) {
@@ -3369,7 +3372,9 @@ ngx_js_sw_manager_thread(void *arg)
                 i  = nchannels;  /* channel_destroy loop below */
             }
 
-            if (ok && fcntl(sw->wake_pipe[0], F_SETFL, O_NONBLOCK) != 0) {
+            if (ok && (fcntl(sw->wake_pipe[0], F_SETFL, O_NONBLOCK) != 0
+                       || fcntl(sw->wake_pipe[1], F_SETFL, O_NONBLOCK) != 0))
+            {
                 close(sw->wake_pipe[0]);
                 close(sw->wake_pipe[1]);
                 sw->wake_pipe[0] = sw->wake_pipe[1] = -1;

@@ -384,3 +384,19 @@ onconnect = function(e) {
 For state that must survive a binary upgrade, treat the SharedWorker as
 a stateless proxy and store the authoritative values outside the JS
 runtime.
+
+### Wake-pipe write-end is non-blocking (O_NONBLOCK)
+
+Every worker process signals the SharedWorker thread by writing one byte
+to `wake_pipe[1]` after every `postMessage()`.  Both ends of this pipe are
+set to `O_NONBLOCK` at creation time so that a slow or dead SW thread can
+never stall the nginx event loop with a blocking pipe write.
+
+If the pipe is full (≥ 64 KB of queued wake bytes — approximately 65 536
+in-flight messages), the `write()` returns `EAGAIN`.  The message data is
+already on the SOCK_SEQPACKET channel socketpair, so delivery is only
+delayed until the next wake byte for that channel arrives (e.g., from the
+next request).  Under normal load the pipe never fills because the SW
+thread drains it continuously.  Under extreme overload or while the thread
+is being restarted by the health-pipe watchdog, the delay is bounded by
+the arrival of the next request to the same SharedWorker.
