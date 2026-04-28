@@ -1428,10 +1428,13 @@ ngx_js_location_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
                                      "location.handler: expected a function");
         }
 
+        jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
+
         /*
-         * Append the function to the __ngx_handlers__ array on the global
-         * object.  This keeps the function GC-reachable even when it is an
-         * anonymous or arrow function with no other JS-side reference.
+         * Keep functions GC-reachable via __ngx_handlers__[idx].
+         * On replacement reuse the existing slot so the old closure is
+         * released (JS_SetPropertyUint32 decrefs the previous value).
+         * On first assignment append to the array and wire nginx dispatch.
          */
         global   = JS_GetGlobalObject(ctx);
         registry = JS_GetPropertyStr(ctx, global, "__ngx_handlers__");
@@ -1445,25 +1448,22 @@ ngx_js_location_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
 
         JS_FreeValue(ctx, global);
 
-        len_val = JS_GetPropertyStr(ctx, registry, "length");
-        JS_ToUint32(ctx, &idx, len_val);
-        JS_FreeValue(ctx, len_val);
+        if (jlcf->handler_idx >= 0) {
+            idx = (uint32_t) jlcf->handler_idx;
+        } else {
+            len_val = JS_GetPropertyStr(ctx, registry, "length");
+            JS_ToUint32(ctx, &idx, len_val);
+            JS_FreeValue(ctx, len_val);
+
+            /* Save the original handler so clearHandler() can restore it. */
+            jlcf->original_handler = (ngx_js_http_handler_pt) clcf->handler;
+            jlcf->handler_idx      = (ngx_int_t) idx;
+            clcf->handler          = ngx_js_content_handler;
+        }
 
         JS_SetPropertyUint32(ctx, registry, idx, JS_DupValue(ctx, val));
         JS_FreeValue(ctx, registry);
 
-        jlcf = clcf->loc_conf[ngx_js_http_module.ctx_index];
-
-        /* Save original clcf->handler on the very first JS assignment so
-         * that clearHandler() can restore it later.                        */
-        if (jlcf->handler_idx < 0) {
-            jlcf->original_handler = (ngx_js_http_handler_pt) clcf->handler;
-        }
-
-        jlcf->handler_idx = (ngx_int_t) idx;
-
-        /* Wire up the content handler pointer */
-        clcf->handler = ngx_js_content_handler;
         return JS_UNDEFINED;
     }
 

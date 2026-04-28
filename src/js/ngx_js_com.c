@@ -438,6 +438,32 @@ ngx_js_timer_handler(ngx_event_t *ev)
 
 
 static JSValue
+ngx_js_nginx_gc(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JS_RunGC(JS_GetRuntime(ctx));
+    return JS_UNDEFINED;
+}
+
+
+static JSValue
+ngx_js_nginx_js_mem_usage(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSMemoryUsage  s;
+    JSValue        obj;
+
+    JS_ComputeMemoryUsage(JS_GetRuntime(ctx), &s);
+
+    obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, obj, "mallocSize",  JS_NewInt64(ctx, s.malloc_size));
+    JS_SetPropertyStr(ctx, obj, "mallocCount", JS_NewInt64(ctx, s.malloc_count));
+    JS_SetPropertyStr(ctx, obj, "objectCount", JS_NewInt64(ctx, s.obj_count));
+    return obj;
+}
+
+
+static JSValue
 ngx_js_nginx_set_timeout(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
@@ -2436,6 +2462,15 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     /* nginx.log(level, msg) */
     JS_SetPropertyStr(ctx, nginx_obj, "log",
                       JS_NewCFunction(ctx, ngx_js_log, "log", 2));
+
+    /* nginx.gc() — force a QuickJS GC pass */
+    JS_SetPropertyStr(ctx, nginx_obj, "gc",
+                      JS_NewCFunction(ctx, ngx_js_nginx_gc, "gc", 0));
+
+    /* nginx.jsMemUsage() — {mallocSize, mallocCount, objectCount} */
+    JS_SetPropertyStr(ctx, nginx_obj, "jsMemUsage",
+                      JS_NewCFunction(ctx, ngx_js_nginx_js_mem_usage,
+                                      "jsMemUsage", 0));
 
     /* nginx.broadcast(fn) — per-worker startup callbacks */
     JS_SetPropertyStr(ctx, nginx_obj, "broadcast",
