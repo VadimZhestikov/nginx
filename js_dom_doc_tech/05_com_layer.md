@@ -471,3 +471,34 @@ headers were already sent by the time the body-filter suspended; the
 `c->error = 1` flag prevents the keepalive path from recycling the
 connection.  `ngx_http_finalize_request(r, NGX_DONE)` with count = 1
 decrements to 0 and calls `ngx_http_close_connection` synchronously.
+
+### Channel EOF deactivation in recv_handler (Step 8)
+
+Each worker registers its `worker_fd` socketpair end with nginx's epoll
+layer so that `ngx_js_sw_recv_handler` fires when the SW thread sends a
+message.  On reload (SIGHUP) the master calls `retire_threads()`, which
+closes `sw_fd` — the other end of the socketpair.  The kernel responds
+by setting `EPOLLRDHUP` on `worker_fd`.
+
+**Before the fix**: `recv_handler` returned after draining pending
+messages without removing the event.  Because epoll in nginx runs in
+**level-triggered** mode, `EPOLLRDHUP` re-fires on every event-loop
+iteration, spinning at 100 % CPU and starving real requests.
+
+**After the fix** (in `ngx_js_sw_recv_handler`):
+
+```c
+if (ev->eof) {
+    ngx_del_event(conn->read, NGX_READ_EVENT, 0);
+    ngx_free_connection(conn);
+    conn->fd = (ngx_socket_t) -1;
+    ws->conn = NULL;
+    ngx_free(recv_ctx);
+    return;
+}
+```
+
+`ngx_del_event` removes the fd from epoll; `ngx_free_connection`
+returns the connection slot to the free-list without closing the fd
+(which the channel still owns).  Setting `conn->fd = -1` prevents any
+later code from accidentally closing it again.

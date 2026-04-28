@@ -1584,6 +1584,27 @@ ngx_js_sw_recv_handler(ngx_event_t *ev)
         JS_FreeValue(ctx, event_obj);
     }
 
+    /*
+     * Detect peer-close (EPOLLRDHUP / EPOLLHUP): the SW thread closed its
+     * end of the socketpair (e.g., after retire_threads).  The epoll layer
+     * sets ev->eof in this case.  Remove the read event and free the
+     * connection slot so epoll stops re-firing the handler in a tight loop.
+     *
+     * We do NOT close worker_fd here — the channel still owns it and it is
+     * closed when the channel is destroyed (or the process exits).
+     */
+    if (ev->eof) {
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
+                       "js SharedWorker: channel EOF, deactivating wi=%ui",
+                       wi);
+        ngx_del_event(conn->read, NGX_READ_EVENT, 0);
+        ngx_free_connection(conn);
+        conn->fd  = (ngx_socket_t) -1;
+        ws->conn  = NULL;
+        ngx_free(recv_ctx);
+        return;
+    }
+
     while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { }
 
     ngx_js_async_check(w);
