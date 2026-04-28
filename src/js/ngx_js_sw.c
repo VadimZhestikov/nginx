@@ -144,7 +144,7 @@ typedef struct {
  * Pre-fork SABs: transit sab_dup here, receiver releases after JS_ReadObject.
  * Memfd SABs: fd sent via SCM_RIGHTS; receiver mmap+releases the mmap ref.
  */
-static void
+static ngx_int_t
 channel_send(int fd, uint32_t type,
              uint8_t *buf, uint32_t data_len,
              uint8_t **sab_tab, uint32_t n_sabs)
@@ -162,6 +162,8 @@ channel_send(int fd, uint32_t type,
     char                    cmsg_buf[CMSG_SPACE(NGX_JS_SW_MAX_MEMFDS
                                                 * sizeof(int))];
     struct cmsghdr         *cmh;
+    ssize_t                 n;
+    ngx_int_t               rc;
 
     n_shared = 0;
     n_memfds = 0;
@@ -236,7 +238,30 @@ channel_send(int fd, uint32_t type,
         ngx_memcpy(CMSG_DATA(cmh), memfd_fds, n_memfds * sizeof(int));
     }
 
-    (void) sendmsg(fd, &msg, 0);
+    n = sendmsg(fd, &msg, 0);
+
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, errno,
+                           "js SharedWorker channel full, message dropped"
+                           " (fd %d)", fd);
+            rc = NGX_AGAIN;
+
+        } else if (errno == EPIPE || errno == ECONNRESET) {
+            ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, errno,
+                          "js SharedWorker channel broken (fd %d)", fd);
+            rc = NGX_ERROR;
+
+        } else {
+            ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, errno,
+                          "js SharedWorker channel sendmsg failed (fd %d)",
+                          fd);
+            rc = NGX_ERROR;
+        }
+
+    } else {
+        rc = NGX_OK;
+    }
 
     if (sab_tab) {
         ngx_free(sab_tab);
@@ -244,6 +269,8 @@ channel_send(int fd, uint32_t type,
     if (buf) {
         ngx_free(buf);
     }
+
+    return rc;
 }
 
 
@@ -257,19 +284,26 @@ channel_send(int fd, uint32_t type,
  * issue exactly one blocking recvmsg per byte — avoiding MSG_DONTWAIT which
  * is also unreliable for AF_UNIX SEQPACKET on WSL2.
  */
-static void
+static ngx_int_t
 channel_send_wake(int channel_fd, int wake_fd, ngx_uint_t wi, uint32_t type,
                   uint8_t *buf, uint32_t data_len,
                   uint8_t **sab_tab, uint32_t n_sabs)
 {
-    char  c;
+    char       c;
+    ngx_int_t  rc;
 
-    channel_send(channel_fd, type, buf, data_len, sab_tab, n_sabs);
+    rc = channel_send(channel_fd, type, buf, data_len, sab_tab, n_sabs);
+
+    if (rc != NGX_OK) {
+        return rc;
+    }
 
     if (wake_fd >= 0) {
         c = (char)(wi & 0xff);
         if (write(wake_fd, &c, 1) < 0) { /* ignore EAGAIN */ }
     }
+
+    return NGX_OK;
 }
 
 
@@ -703,9 +737,14 @@ ngx_js_sw_port_post_message(JSContext *ctx, JSValueConst this_val,
     }
     js_free(ctx, qjs_sab);
 
-    channel_send(op->state->channels[op->wi].sw_fd,
-                 NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
-                 sab_tab, (uint32_t) n_sabs);
+    if (channel_send(op->state->channels[op->wi].sw_fd,
+                     NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
+                     sab_tab, (uint32_t) n_sabs)
+        == NGX_ERROR)
+    {
+        return JS_ThrowInternalError(ctx,
+                                     "port.postMessage: channel broken");
+    }
 
     return JS_UNDEFINED;
 }
@@ -1353,8 +1392,9 @@ ngx_js_sw_activate(JSContext *ctx, ngx_js_sw_state_t *state, ngx_uint_t wi)
     ws->w    = w;
 
     /* Send CONNECT sentinel to SW thread */
-    channel_send_wake(state->channels[wi].worker_fd, state->wake_pipe[1],
-                      wi, NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
+    (void) channel_send_wake(state->channels[wi].worker_fd,
+                             state->wake_pipe[1],
+                             wi, NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
 
     return NGX_OK;
 }
@@ -1544,10 +1584,14 @@ ngx_js_sw_post_message(JSContext *ctx, JSValueConst this_val,
     }
     js_free(ctx, qjs_sab);
 
-    channel_send_wake(op->state->channels[wi].worker_fd,
-                      op->state->wake_pipe[1],
-                      wi, NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
-                      sab_tab, (uint32_t) n_sabs);
+    if (channel_send_wake(op->state->channels[wi].worker_fd,
+                          op->state->wake_pipe[1],
+                          wi, NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
+                          sab_tab, (uint32_t) n_sabs)
+        == NGX_ERROR)
+    {
+        return JS_ThrowInternalError(ctx, "postMessage: channel broken");
+    }
 
     return JS_UNDEFINED;
 }
@@ -2186,8 +2230,8 @@ ngx_js_sw_acquire_channel(const char *url, size_t url_len,
     }
 
     if (recv_fd >= 0) {
-        channel_send_wake(recv_fd, recv_wake_fd, worker_idx,
-                          NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
+        (void) channel_send_wake(recv_fd, recv_wake_fd, worker_idx,
+                                 NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
     }
 
     if (wake_fd_out != NULL) {
@@ -2202,8 +2246,8 @@ void
 ngx_js_sw_wt_send(int worker_fd, int wake_fd, ngx_uint_t wi,
     uint8_t *buf, uint32_t len, uint8_t **sab_tab, uint32_t n_sabs)
 {
-    channel_send_wake(worker_fd, wake_fd, wi,
-                      NGX_JS_SW_MSG_DATA, buf, len, sab_tab, n_sabs);
+    (void) channel_send_wake(worker_fd, wake_fd, wi,
+                             NGX_JS_SW_MSG_DATA, buf, len, sab_tab, n_sabs);
 }
 
 
@@ -2445,8 +2489,8 @@ ngx_js_sw_retire_threads(ngx_js_conf_t *jcf)
              * byte of 1 would skip channel 0 in single-worker configs.
              */
             for (i = 0; i < sw->nchannels; i++) {
-                channel_send(sw->channels[i].worker_fd, NGX_JS_SW_MSG_TERM,
-                             NULL, 0, NULL, 0);
+                (void) channel_send(sw->channels[i].worker_fd,
+                                    NGX_JS_SW_MSG_TERM, NULL, 0, NULL, 0);
                 if (sw->wake_pipe[1] >= 0) {
                     char  c = (char)(i & 0xff);
                     if (write(sw->wake_pipe[1], &c, 1) < 0) { /* ignore */ }
