@@ -3505,7 +3505,15 @@ ngx_js_sw_manager_start(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
         nworkers = NGX_MAX_PROCESSES;
     }
 
+    /*
+     * Close any master-side (write) ends left over from a previous reload.
+     * Worker-side (read) ends live in old worker fd tables — closing them
+     * here (in the master) does not affect running workers.
+     */
     for (i = 0; i < NGX_MAX_PROCESSES; i++) {
+        if (bcast_fds[i][0] >= 0) {
+            close(bcast_fds[i][0]);
+        }
         bcast_fds[i][0] = bcast_fds[i][1] = -1;
     }
 
