@@ -29,7 +29,7 @@ use Test::More;
 
 BEGIN { use FindBin; chdir($FindBin::Bin); }
 use lib 'lib';
-use lib '../t_sighup_tests/lib';
+use lib '../t_stress/lib';
 use Test::Nginx;
 use ReloadHarness;
 

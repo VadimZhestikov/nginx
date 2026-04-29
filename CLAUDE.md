@@ -96,7 +96,19 @@ TEST_NGINX_BINARY=$(pwd)/objs/nginx prove -v t/js_shared_worker.t
 
 ---
 
-### `./t_js_com_tests` — COM steady-state leak tests
+### `./t_stress` — Stress and leak tests
+
+Two families of tests that apply sustained repeated load to detect leaks.
+All helpers live in `t_stress/lib/`; every test does `chdir($FindBin::Bin)`
+so `use lib 'lib'` resolves to `t_stress/lib/` automatically.
+
+**Run:**
+
+```bash
+TEST_NGINX_BINARY=$(pwd)/objs/nginx prove -v t_stress/
+```
+
+#### COM steady-state leak tests (`com_*.t`)
 
 Single nginx instance per file.  A JS request handler runs **N iterations**
 of COM accessor calls in one HTTP request and reports the JS heap delta via
@@ -110,13 +122,7 @@ that grow without bound, array getters that accumulate temporary objects.
 Found and fixed a real leak: `location.handler = fn` was appending to
 `__ngx_handlers__[]` on every replacement without releasing the old closure.
 
-**Run:**
-
-```bash
-TEST_NGINX_BINARY=$(pwd)/objs/nginx prove -v t_js_com_tests/
-```
-
-**Shared helper:** `t_js_com_tests/lib/ComStress.pm`
+**Shared helper:** `t_stress/lib/ComStress.pm`
 — `run_stress($t, $path, $n)` and `assert_flat($d, $n, $label)`.
 
 **Adding a test:** follow the pattern in any existing file.  The stress
@@ -137,22 +143,14 @@ GC-eligible garbage is collected before asserting.
 | `com_limit_conn.t` | `location.limitConn` wrapper | 10 000 |
 | `com_upstreams_array.t` | `nginx.http.upstreams[]` enumeration | 10 000 |
 
----
-
-### `./t_sighup_tests` — Reload lifecycle leak tests
+#### Reload lifecycle leak tests (`sighup_*.t`)
 
 Detects leaks in the nginx reload path: JS runtime teardown,
 SharedWorker thread retirement, fd cleanup in `exit_master`/`exit_process`.
-The suite sends N SIGHUP signals to a single nginx instance and asserts
+The suite sends N=20 SIGHUP signals to a single nginx instance and asserts
 that the master process RSS and open fd count stay flat across cycles.
 
-**Run:**
-
-```bash
-TEST_NGINX_BINARY=$(pwd)/objs/nginx prove -v t_sighup_tests/
-```
-
-**Shared helper:** `t_sighup_tests/lib/ReloadHarness.pm`
+**Shared helper:** `t_stress/lib/ReloadHarness.pm`
 — `reload_nginx($t)` (SIGHUP + polls until old workers exit),
 `rss_kb($pid)`, `fd_count($pid)`, `assert_rss_stable()`,
 `assert_fd_stable()`.
