@@ -1206,7 +1206,6 @@ ngx_js_sw_thread(void *arg)
                 break;  /* unexpected read error */
             }
 
-        process_wake_bytes:
             for (bi = 0; bi < (ngx_uint_t) nwake; bi++) {
                 wi = (ngx_uint_t)(uint8_t) wake_bytes[bi];
                 if (wi >= state->nchannels) {
@@ -1381,19 +1380,6 @@ ngx_js_sw_thread(void *arg)
         }
 
         if (terminate) {
-            /*
-             * A worker may have sent DATA just before retire_threads sent
-             * TERM on the same channel.  If TERM arrived first in the
-             * socket buffer the DATA wake byte is still in the pipe.
-             * wake_pipe[0] is O_NONBLOCK — drain it and process any
-             * remaining DATA messages so waiting workers receive their
-             * replies before the SW thread exits.
-             */
-            nwake = read(state->wake_pipe[0], wake_bytes, sizeof(wake_bytes));
-            if (nwake > 0) {
-                terminate = 0;
-                goto process_wake_bytes;
-            }
             break;
         }
     }
