@@ -105,9 +105,9 @@ channel_init(ngx_js_sw_channel_t *ch)
         return NGX_ERROR;
     }
 
-    if (fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0
-        || fcntl(fds[1], F_SETFL, O_NONBLOCK) != 0)
-    {
+    /* Only worker_fd needs O_NONBLOCK; sw_fd is used with blocking recvmsg
+     * in the SW thread and must stay blocking to avoid EAGAIN on recv. */
+    if (fcntl(fds[1], F_SETFL, O_NONBLOCK) != 0) {
         close(fds[0]);
         close(fds[1]);
         return NGX_ERROR;
@@ -3577,6 +3577,8 @@ ngx_js_sw_manager_thread(void *arg)
                 close(reply_fd);
                 continue;
             }
+
+            sw->thread_started = 1;
 
             sw->next     = jcf->sw_list;
             jcf->sw_list = sw;
