@@ -566,6 +566,7 @@ struct ngx_js_sw_state_s {
      * the thread would die with the pre-daemon process.
      */
     ngx_uint_t                thread_started;
+    ngx_uint_t                retiring;   /* 1 while retire_threads is retiring this SW */
 };
 
 
@@ -1462,6 +1463,7 @@ ngx_js_sw_activate(JSContext *ctx, ngx_js_sw_state_t *state, ngx_uint_t wi)
     conn->data          = recv_ctx;
     conn->read->handler = ngx_js_sw_recv_handler;
     conn->read->log     = ngx_cycle->log;
+    conn->idle          = 1;
 
     if (ngx_add_event(conn->read, NGX_READ_EVENT, 0) != NGX_OK) {
         ngx_free_connection(conn);
@@ -1538,8 +1540,18 @@ ngx_js_sw_recv_handler(ngx_event_t *ev)
     state    = recv_ctx->state;
     wi       = recv_ctx->wi;
     ws       = &state->worker_slots[wi];
-    w        = ws->w;
-    ctx      = w->ctx;
+
+    if (conn->close) {
+        ngx_del_event(ev, NGX_READ_EVENT, 0);
+        ngx_free_connection(conn);
+        conn->fd = (ngx_socket_t) -1;
+        ws->conn = NULL;
+        ngx_free(recv_ctx);
+        return;
+    }
+
+    w   = ws->w;
+    ctx = w->ctx;
 
     while (channel_recv(state->channels[wi].worker_fd, MSG_DONTWAIT,
                         &type, &buf, &len, &sab_tab, &n_sabs) == 0)
@@ -1831,18 +1843,23 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
     }
 
     /*
-     * During init_conf, the global ngx_cycle still points to the zero-
-     * initialised init_cycle (conf_ctx == NULL) because ngx_cycle is only
-     * assigned to the new cycle after ngx_init_cycle() returns.
-     * In this case the JS context opaque is the new cycle (set by
-     * ngx_js_com_init) and we must use it to reach conf_ctx.
+     * Config-phase detection — two scenarios use context opaque (new cycle):
      *
-     * In worker / single-process mode (request handlers), ngx_cycle has
-     * been updated to the live cycle and the context opaque holds
-     * ngx_js_worker_t* — use ngx_cycle directly.
+     * (a) Initial startup: ngx_cycle is still init_cycle (conf_ctx == NULL).
+     *     Context opaque (set by ngx_js_com_init) is the new cycle.
+     *
+     * (b) Master init_conf during reload: ngx_cycle is the OLD cycle
+     *     (updated only after ngx_init_cycle returns).  jcf->worker is NULL
+     *     because only worker init_process sets it — a reliable indicator
+     *     that we are in the master building a new config.  Context opaque
+     *     is the new cycle being built.
+     *
+     * Worker / single-process request handlers (neither scenario): ngx_cycle
+     * is the live cycle and context opaque is ngx_js_worker_t* — use
+     * ngx_cycle directly.
      */
     if (((volatile ngx_cycle_t *) ngx_cycle)->conf_ctx == NULL) {
-        /* Config phase: opaque is the new ngx_cycle_t* */
+        /* (a) Initial startup: opaque is the new ngx_cycle_t* */
         c = (volatile ngx_cycle_t *) JS_GetContextOpaque(ctx);
     } else {
         c = ngx_cycle;
@@ -1850,7 +1867,21 @@ ngx_js_sw_ctor(JSContext *ctx, JSValueConst new_target,
 
     jcf = (ngx_js_conf_t *) ngx_get_conf(c->conf_ctx, ngx_js_module);
 
-    if (((volatile ngx_cycle_t *) ngx_cycle)->conf_ctx == NULL) {
+    if (((volatile ngx_cycle_t *) ngx_cycle)->conf_ctx == NULL
+        || jcf->worker == NULL)
+    {
+        /*
+         * (b) Reload: master is building new config.  Redirect c/jcf to
+         * the new cycle (context opaque) so the SW is registered in the
+         * new jcf->sw_list, not the old one (which retire_threads clears).
+         */
+        if (jcf->worker == NULL
+            && ((volatile ngx_cycle_t *) ngx_cycle)->conf_ctx != NULL)
+        {
+            c   = (volatile ngx_cycle_t *) JS_GetContextOpaque(ctx);
+            jcf = (ngx_js_conf_t *) ngx_get_conf(c->conf_ctx, ngx_js_module);
+        }
+
         /* Config phase: create or look up SW */
 
         /* Look for existing SW with this URL */
@@ -2624,12 +2655,23 @@ ngx_js_sw_retire_threads(ngx_js_conf_t *jcf)
         next = sw->next;
 
         if (sw->thread_started && sw->tid) {
+            pthread_t  old_tid;
+
             /*
-             * Signal each channel to terminate and write a wake byte for
-             * that channel index so the SW thread actually processes it.
-             * The SW thread reads one channel per wake byte; using a fixed
-             * byte of 1 would skip channel 0 in single-worker configs.
+             * Mark as retiring BEFORE sending TERM so the manager thread,
+             * which can concurrently see POLLHUP on health_pipe[0] when the
+             * SW thread closes health_pipe[1] on exit, will skip the
+             * automatic restart.  Without this flag the manager can update
+             * sw->tid to a freshly-created thread between the TERM send and
+             * our pthread_join, causing pthread_join to wait on a thread
+             * that never exits.
+             *
+             * Capture old_tid now — the manager may zero sw->tid after
+             * joining the thread itself, and we must join the original.
              */
+            sw->retiring = 1;
+            old_tid = sw->tid;
+
             for (i = 0; i < sw->nchannels; i++) {
                 (void) channel_send(sw->channels[i].worker_fd,
                                     NGX_JS_SW_MSG_TERM, NULL, 0, NULL, 0);
@@ -2639,7 +2681,7 @@ ngx_js_sw_retire_threads(ngx_js_conf_t *jcf)
                 }
             }
 
-            pthread_join(sw->tid, NULL);
+            pthread_join(old_tid, NULL);
         }
 
         if (sw->wake_pipe[0] >= 0)   { close(sw->wake_pipe[0]); }
@@ -3049,47 +3091,55 @@ ngx_js_sw_manager_thread(void *arg)
             }
 
             if (pfds[i].revents & POLLHUP) {
-                /* SW thread has exited — close old read end and restart */
-                ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
-                              "js SharedWorker \"%s\" died, restarting",
-                              sw->url ? sw->url : "(unknown)");
-
                 close(sw->health_pipe[0]);
                 sw->health_pipe[0] = -1;
                 /* health_pipe[1] was closed by the dying thread */
                 sw->health_pipe[1] = -1;
 
-                /* Create a fresh health pipe for the restarted thread */
-                if (pipe(sw->health_pipe) != 0
-                    || fcntl(sw->health_pipe[0], F_SETFL, O_NONBLOCK) != 0)
-                {
-                    if (sw->health_pipe[0] >= 0) {
-                        close(sw->health_pipe[0]);
-                        close(sw->health_pipe[1]);
-                    }
-                    ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_errno,
-                                  "js SharedWorker \"%s\": health pipe() "
-                                  "failed, not restarting",
-                                  sw->url ? sw->url : "(unknown)");
-                    sw->health_pipe[0] = -1;
-                    sw->health_pipe[1] = -1;
+                if (sw->retiring) {
+                    /*
+                     * retire_threads() is shutting this SW down intentionally
+                     * (reload/exit).  Do not restart — retire_threads will
+                     * pthread_join the original thread itself.
+                     */
                 } else {
-                    /* Join the dead thread before creating a new one */
-                    if (sw->thread_started && sw->tid) {
-                        pthread_join(sw->tid, NULL);
-                        sw->tid = 0;
-                    }
-                    sw->thread_started = 0;
+                    /* SW thread crashed — restart it */
+                    ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                                  "js SharedWorker \"%s\" died, restarting",
+                                  sw->url ? sw->url : "(unknown)");
 
-                    if (ngx_js_sw_start_thread(sw, ngx_cycle->log) != NGX_OK) {
-                        ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0,
-                                      "js SharedWorker \"%s\": restart "
-                                      "failed",
+                    /* Create a fresh health pipe for the restarted thread */
+                    if (pipe(sw->health_pipe) != 0
+                        || fcntl(sw->health_pipe[0], F_SETFL, O_NONBLOCK) != 0)
+                    {
+                        if (sw->health_pipe[0] >= 0) {
+                            close(sw->health_pipe[0]);
+                            close(sw->health_pipe[1]);
+                        }
+                        ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_errno,
+                                      "js SharedWorker \"%s\": health pipe() "
+                                      "failed, not restarting",
                                       sw->url ? sw->url : "(unknown)");
-                        close(sw->health_pipe[0]);
-                        close(sw->health_pipe[1]);
                         sw->health_pipe[0] = -1;
                         sw->health_pipe[1] = -1;
+                    } else {
+                        /* Join the dead thread before creating a new one */
+                        if (sw->thread_started && sw->tid) {
+                            pthread_join(sw->tid, NULL);
+                            sw->tid = 0;
+                        }
+                        sw->thread_started = 0;
+
+                        if (ngx_js_sw_start_thread(sw, ngx_cycle->log) != NGX_OK) {
+                            ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0,
+                                          "js SharedWorker \"%s\": restart "
+                                          "failed",
+                                          sw->url ? sw->url : "(unknown)");
+                            close(sw->health_pipe[0]);
+                            close(sw->health_pipe[1]);
+                            sw->health_pipe[0] = -1;
+                            sw->health_pipe[1] = -1;
+                        }
                     }
                 }
             }
