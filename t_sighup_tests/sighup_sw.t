@@ -5,8 +5,8 @@
 # Each SIGHUP should retire the old SW pthread and its per-worker
 # SOCK_SEQPACKET socketpairs, then start fresh ones.  If retire does
 # not close both ends of every channel, the master fd count grows by
-# 2×worker_processes per reload.  With N=15 reloads and 2 workers,
-# an undetected leak of 1 socketpair end = 30 extra fds.
+# 2×worker_processes per reload.  With N=20 reloads and 2 workers,
+# an undetected leak of 1 socketpair end = 40 extra fds.
 
 use warnings;
 use strict;
@@ -90,7 +90,7 @@ my $pid  = master_pid($t);
 my $rss0 = rss_kb($pid);
 my $fds0 = fd_count($pid);
 
-my $N = 15;
+my $N = 20;
 for my $i (1 .. $N) {
     reload_nginx($t);
 }

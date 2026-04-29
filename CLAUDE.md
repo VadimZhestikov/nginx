@@ -164,8 +164,8 @@ Thresholds: RSS < 4 MB total growth; fd delta ≤ 3 (socket fds are exact
 |---|---|---|---|
 | `sighup_baseline.t` | Plain nginx, no JS | 20 | Harness noise floor |
 | `sighup_js_source.t` | `js_source` + COM reads | 20 | JS runtime init/destroy leak |
-| `sighup_sw.t` | `js_source` + `new SharedWorker` | 15 | SW pthread + socketpair fd leak |
-| `sighup_sw_memfd.t` | SW + worker-created SABs | 10 | memfd fd (SCM_RIGHTS cleanup) |
+| `sighup_sw.t` | `js_source` + `new SharedWorker` | 20 | SW pthread + socketpair fd leak |
+| `sighup_sw_memfd.t` | SW + worker-created SABs | 20 | memfd fd (SCM_RIGHTS cleanup) |
 | `sighup_handlers.t` | `js_source` with `location.handler` | 20 | JSValue handler lifecycle |
 
 Found and fixed a real leak: `bcast_fds[i][1]` (master's copy of the

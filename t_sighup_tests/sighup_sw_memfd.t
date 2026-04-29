@@ -6,7 +6,7 @@
 # sends it to the SharedWorker via postMessage.  The master (SW thread)
 # receives the fd via SCM_RIGHTS, mmaps it, then must close the fd.
 # If the fd is not closed after each transfer, the master fd count grows
-# by 1 per request.  10 reloads × 3 requests each = 30 potential leaks.
+# by 1 per request.  20 reloads × 3 requests each = 60 potential leaks.
 
 use warnings;
 use strict;
@@ -102,7 +102,7 @@ my $pid  = master_pid($t);
 my $rss0 = rss_kb($pid);
 my $fds0 = fd_count($pid);
 
-my $N = 10;
+my $N = 20;
 for my $i (1 .. $N) {
     reload_nginx($t, settle => 0.3);
     # Make 3 requests per reload cycle to accumulate any fd leak.
