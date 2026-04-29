@@ -626,8 +626,9 @@ static JSClassID  ngx_js_sw_port_class_id;
 #define NGX_JS_SW_URL_MAX  512
 #define NGX_JS_SW_CMD_MAX  (NGX_JS_SW_CMD_HDR + NGX_JS_SW_URL_MAX + 1)
 
-static int        sw_cmd_fds[2]  = {-1, -1};
-static int        sw_term_fds[2] = {-1, -1};
+static int        sw_cmd_fds[2]      = {-1, -1};
+static int        sw_cmd_wake_fds[2] = {-1, -1};  /* wake pipe alongside sw_cmd_fds */
+static int        sw_term_fds[2]     = {-1, -1};
 static pthread_t  sw_mgr_tid;
 static int        sw_mgr_started;
 /* fds set up, thread deferred until post-daemon */
@@ -1475,10 +1476,14 @@ ngx_js_sw_activate(JSContext *ctx, ngx_js_sw_state_t *state, ngx_uint_t wi)
     ws->conn = conn;
     ws->w    = w;
 
-    /* Send CONNECT sentinel to SW thread */
+    /* Send CONNECT sentinel to SW thread.
+     * Wake byte must be ngx_worker (SW thread's channel index), not wi.
+     * For dynamic stubs, wi=0 (local slot) but SW thread indexes channels by
+     * ngx_worker; using wi would route the message to the wrong channel. */
     (void) channel_send_wake(state->channels[wi].worker_fd,
                              state->wake_pipe[1],
-                             wi, NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
+                             (ngx_uint_t) ngx_worker,
+                             NGX_JS_SW_MSG_CONNECT, NULL, 0, NULL, 0);
 
     return NGX_OK;
 }
@@ -1701,7 +1706,8 @@ ngx_js_sw_post_message(JSContext *ctx, JSValueConst this_val,
 
     if (channel_send_wake(op->state->channels[wi].worker_fd,
                           op->state->wake_pipe[1],
-                          wi, NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
+                          (ngx_uint_t) ngx_worker,
+                          NGX_JS_SW_MSG_DATA, buf, (uint32_t) qjs_len,
                           sab_tab, (uint32_t) n_sabs)
         == NGX_ERROR)
     {
@@ -2174,6 +2180,12 @@ ngx_js_sw_request_dynamic(JSContext *ctx, ngx_js_conf_t *jcf,
             "SharedWorker: sendmsg to manager failed");
     }
 
+    /* Wake the manager's poll — SEQPACKET POLLIN is unreliable on WSL2. */
+    if (sw_cmd_wake_fds[1] >= 0) {
+        uint8_t  wb = 0;
+        if (write(sw_cmd_wake_fds[1], &wb, 1) < 0) { /* ignore */ }
+    }
+
     /* Blocking receive: status byte + {inbox_wfd, outbox_rfd} */
     iov.iov_base = &status;
     iov.iov_len  = 1;
@@ -2361,6 +2373,11 @@ ngx_js_sw_acquire_channel(const char *url, size_t url_len,
     if (n < 0) {
         close(reply_fds[0]);
         return -1;
+    }
+
+    if (sw_cmd_wake_fds[1] >= 0) {
+        uint8_t  wb = 0;
+        if (write(sw_cmd_wake_fds[1], &wb, 1) < 0) { /* ignore */ }
     }
 
     /* Blocking receive: status byte + worker_fd via SCM_RIGHTS */
@@ -2724,10 +2741,12 @@ ngx_js_sw_exit_master(ngx_js_conf_t *jcf)
         sw_mgr_started = 0;
     }
     /* Close manager fds regardless of whether the thread was started */
-    if (sw_cmd_fds[0] >= 0)  { close(sw_cmd_fds[0]);  sw_cmd_fds[0]  = -1; }
-    if (sw_cmd_fds[1] >= 0)  { close(sw_cmd_fds[1]);  sw_cmd_fds[1]  = -1; }
-    if (sw_term_fds[0] >= 0) { close(sw_term_fds[0]); sw_term_fds[0] = -1; }
-    if (sw_term_fds[1] >= 0) { close(sw_term_fds[1]); sw_term_fds[1] = -1; }
+    if (sw_cmd_fds[0] >= 0)      { close(sw_cmd_fds[0]);      sw_cmd_fds[0]      = -1; }
+    if (sw_cmd_fds[1] >= 0)      { close(sw_cmd_fds[1]);      sw_cmd_fds[1]      = -1; }
+    if (sw_cmd_wake_fds[0] >= 0) { close(sw_cmd_wake_fds[0]); sw_cmd_wake_fds[0] = -1; }
+    if (sw_cmd_wake_fds[1] >= 0) { close(sw_cmd_wake_fds[1]); sw_cmd_wake_fds[1] = -1; }
+    if (sw_term_fds[0] >= 0)     { close(sw_term_fds[0]);     sw_term_fds[0]     = -1; }
+    if (sw_term_fds[1] >= 0)     { close(sw_term_fds[1]);     sw_term_fds[1]     = -1; }
 
     ngx_js_sw_retire_threads(jcf);
 }
@@ -2935,6 +2954,11 @@ ngx_js_socket_mgr_create(const char *addr_str, size_t addr_len)
         return -1;
     }
 
+    if (sw_cmd_wake_fds[1] >= 0) {
+        uint8_t  wb = 0;
+        if (write(sw_cmd_wake_fds[1], &wb, 1) < 0) { /* ignore */ }
+    }
+
     /* Block until manager replies with status + fd */
     iov.iov_base = &status;
     iov.iov_len  = 1;
@@ -3047,7 +3071,7 @@ ngx_js_sw_manager_thread(void *arg)
             break;
         }
 
-        pfds[0].fd      = sw_cmd_fds[0];
+        pfds[0].fd      = sw_cmd_wake_fds[0]; /* reliable pipe POLLIN */
         pfds[0].events  = POLLIN;
         pfds[0].revents = 0;
         pfds[1].fd      = sw_term_fds[0];
@@ -3076,6 +3100,12 @@ ngx_js_sw_manager_thread(void *arg)
             ngx_free(pfds);
             break;   /* terminate signal */
         }
+
+        /* Re-read sw_mgr_jcf: update_mgr_jcf() may have been called by the
+         * master while this thread was blocked in poll().  Without re-reading
+         * here, a new-SW request arriving right after a reload would be added
+         * to the old (retiring) jcf->sw_list and leak its fds. */
+        jcf = sw_mgr_jcf;
 
         /* Check health pipes (pfds[2+]) for dead SW threads */
         i = 2;
@@ -3155,7 +3185,12 @@ ngx_js_sw_manager_thread(void *arg)
         ngx_free(pfds);
         pfds = NULL;
 
-        /* Receive command + reply_fd via SCM_RIGHTS */
+        /* Drain one wake byte (written by the worker after sendmsg). */
+        { uint8_t  wb; if (read(sw_cmd_wake_fds[0], &wb, 1) < 0) { /* ignore */ } }
+
+        /* Receive command + reply_fd via SCM_RIGHTS.
+         * MSG_DONTWAIT: the SEQPACKET message was written before the wake
+         * byte, so it is already in the socket buffer. */
         iov.iov_base = cmdbuf;
         iov.iov_len  = sizeof(cmdbuf) - 1;  /* leave room for NUL */
 
@@ -3165,7 +3200,7 @@ ngx_js_sw_manager_thread(void *arg)
         msg.msg_control    = cmsg_rcv.buf;
         msg.msg_controllen = sizeof(cmsg_rcv.buf);
 
-        n = recvmsg(sw_cmd_fds[0], &msg, 0);
+        n = recvmsg(sw_cmd_fds[0], &msg, MSG_DONTWAIT);
         if (n < (ssize_t) NGX_JS_SW_CMD_HDR) {
             continue;
         }
@@ -3697,12 +3732,38 @@ ngx_js_sw_manager_start(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
+    /*
+     * Wake pipe: workers write one byte here after each sendmsg to
+     * sw_cmd_fds[1].  The manager polls this pipe (reliable POLLIN) instead
+     * of sw_cmd_fds[0] directly.  Workaround for WSL2 where POLLIN on
+     * cross-process AF_UNIX SEQPACKET is unreliable (same issue as the SW
+     * thread's wake_pipe for channel messages).
+     */
+    if (pipe(sw_cmd_wake_fds) != 0
+        || fcntl(sw_cmd_wake_fds[1], F_SETFL, O_NONBLOCK) != 0)
+    {
+        if (sw_cmd_wake_fds[0] >= 0) {
+            close(sw_cmd_wake_fds[0]);
+            close(sw_cmd_wake_fds[1]);
+            sw_cmd_wake_fds[0] = sw_cmd_wake_fds[1] = -1;
+        }
+        close(sw_cmd_fds[0]);
+        close(sw_cmd_fds[1]);
+        sw_cmd_fds[0] = sw_cmd_fds[1] = -1;
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "js: SharedWorker manager wake pipe failed");
+        return NGX_ERROR;
+    }
+
     if (pipe(sw_term_fds) != 0) {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                       "js: SharedWorker manager term pipe failed");
         close(sw_cmd_fds[0]);
         close(sw_cmd_fds[1]);
         sw_cmd_fds[0] = sw_cmd_fds[1] = -1;
+        close(sw_cmd_wake_fds[0]);
+        close(sw_cmd_wake_fds[1]);
+        sw_cmd_wake_fds[0] = sw_cmd_wake_fds[1] = -1;
         return NGX_ERROR;
     }
 
@@ -3827,6 +3888,11 @@ ngx_js_socket_mgr_broadcast(uint32_t handle, const char *addr_str,
     if (n < 0) {
         close(reply_fds[0]);
         return -1;
+    }
+
+    if (sw_cmd_wake_fds[1] >= 0) {
+        uint8_t  wb = 0;
+        if (write(sw_cmd_wake_fds[1], &wb, 1) < 0) { /* ignore */ }
     }
 
     /* Block until manager replies */
@@ -4013,6 +4079,11 @@ ngx_js_mgr_accept_control(uint32_t cmd_type)
     if (n < 0) {
         close(reply_fds[0]);
         return -1;
+    }
+
+    if (sw_cmd_wake_fds[1] >= 0) {
+        uint8_t  wb = 0;
+        if (write(sw_cmd_wake_fds[1], &wb, 1) < 0) { /* ignore */ }
     }
 
     return reply_fds[0];
