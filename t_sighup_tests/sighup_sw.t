@@ -92,7 +92,7 @@ my $fds0 = fd_count($pid);
 
 my $N = 15;
 for my $i (1 .. $N) {
-    reload_nginx($t, settle => 0.3);
+    reload_nginx($t);
 }
 
 my $rss1 = rss_kb($pid);
