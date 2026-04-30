@@ -1,0 +1,7 @@
+njs-nginx/
+results.txt
+results_s*.txt
+pilgrim/logs/
+pilgrim/*_temp/
+njs/logs/
+njs/*_temp/

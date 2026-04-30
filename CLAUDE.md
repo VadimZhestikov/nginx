@@ -171,6 +171,43 @@ worker-read broadcast socketpair end) was not closed on reload, leaking
 1 fd per worker per SIGHUP cycle (detected by `sighup_js_source.t` and
 `sighup_handlers.t`, 40 fd delta over 20 reloads with 2 workers).
 
+## Performance Benchmarks
+
+The `t_performance/` directory benchmarks Pilgrim vs an njs-enabled nginx
+across three HTTP handler scenarios.
+
+**Run:**
+
+```bash
+# One session (Pilgrim only)
+bash t_performance/run.sh
+
+# With njs comparison, 4 sessions × 10 runs for stable averages
+bash t_performance/run.sh \
+    --njs=t_performance/njs-nginx/objs/nginx \
+    --sessions=4 --runs=10 --duration=15
+```
+
+`run.sh` builds wrk automatically if not in PATH (clones into `/tmp/wrk-src/`).
+
+**Representative results** (WSL2, 8 vCPU / 6 schedulable, 4 workers, 50 conn,
+4-session grand average, outlier-filtered):
+
+| Scenario | Pilgrim | njs | Pilgrim lead |
+|---|---|---|---|
+| baseline (return 200, no JS) | 158K | 160K | tied |
+| empty (minimal JS handler) | 135K | 124K | +9% |
+| headers (JS + object access) | 119K | 109K | +9% |
+
+Pilgrim JS overhead vs baseline: **~15%** (njs: ~23%).
+
+**WSL2 pitfall**: `networkingMode=mirrored` + `firewall=true` in `.wslconfig`
+routes loopback through Windows Defender Firewall → adds ~2ms/request → ~7×
+throughput drop. Keep `.wslconfig` in NAT mode for benchmarking.
+
+See `t_performance/README.md` for full options, CPU pinning notes, and
+interpretation guidance.
+
 ## NGINX Architecture
 
 NGINX runs as a master process (reads config, manages workers) + N worker processes (handle requests). All I/O is non-blocking and event-driven (epoll on Linux).
