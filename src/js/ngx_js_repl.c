@@ -463,7 +463,7 @@ ngx_js_repl_detach(JSContext *ctx, JSValueConst this_val,
 
 #define NGX_JS_REPL_BUF_SIZE  4096
 
-typedef struct {
+struct ngx_js_repl_conn_s {
     JSContext           *ctx;
     JSRuntime           *rt;
     ngx_js_worker_t     *w;
@@ -472,7 +472,8 @@ typedef struct {
     u_char               buf[NGX_JS_REPL_BUF_SIZE];
     size_t               buf_len;
     unsigned             raw:1;     /* 1 = listenRaw: deliver Uint8Array, no line split */
-} ngx_js_repl_conn_t;
+    ngx_js_repl_conn_t  *next;      /* w->repl_pending linked list */
+};
 
 
 /* ------------------------------------------------------------------ */
@@ -653,6 +654,12 @@ ngx_js_repl_read_handler(ngx_event_t *ev)
     return;
 
 cleanup:
+    if (rc->w != NULL) {
+        ngx_js_repl_conn_t  **pp;
+        for (pp = &rc->w->repl_pending; *pp != NULL; pp = &(*pp)->next) {
+            if (*pp == rc) { *pp = rc->next; break; }
+        }
+    }
     JS_FreeValue(rc->ctx, rc->on_line);
     rc->on_line = JS_UNDEFINED;
     rctx->repl  = NULL;
@@ -735,6 +742,12 @@ ngx_js_repl_listen_impl(JSContext *ctx, int argc, JSValueConst *argv, int raw)
     rc->r       = r;
     rc->buf_len = 0;
     rc->raw     = raw ? 1 : 0;
+    rc->next    = NULL;
+
+    if (w != NULL) {
+        rc->next        = w->repl_pending;
+        w->repl_pending = rc;
+    }
 
     rctx->repl = rc;
 
@@ -766,6 +779,40 @@ ngx_js_repl_listen_raw(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     return ngx_js_repl_listen_impl(ctx, argc, argv, 1);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* ngx_js_repl_drain_exit — free JSValues on worker exit                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Called from exit_process before JS_FreeContext.  If SIGTERM arrives
+ * while a listenRaw/listen callback is registered, rc->on_line is still
+ * a live DupValue that was never freed by the normal cleanup path.
+ * Freeing it here prevents the QuickJS "list_empty(&rt->gc_obj_list)"
+ * assertion in JS_FreeRuntime.
+ */
+void
+ngx_js_repl_drain_exit(ngx_js_worker_t *w)
+{
+    ngx_js_repl_conn_t  *rc, *rcnext;
+    ngx_js_req_ctx_t    *rctx;
+
+    for (rc = w->repl_pending; rc != NULL; rc = rcnext) {
+        rcnext = rc->next;
+        ngx_log_error(NGX_LOG_WARN, rc->r->connection->log, 0,
+                      "js: drain listenRaw/listen connection on worker exit");
+        rctx = ngx_http_get_module_ctx(rc->r, ngx_js_http_module);
+        if (rctx != NULL) {
+            rctx->repl = NULL;
+        }
+        JS_FreeValue(rc->ctx, rc->on_line);
+        rc->on_line = JS_UNDEFINED;
+        ngx_http_finalize_request(rc->r, NGX_DONE);
+    }
+
+    w->repl_pending = NULL;
 }
 
 

@@ -1445,6 +1445,7 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
         }
 
         ngx_js_l4_drain_exit(w);
+        ngx_js_repl_drain_exit(w);
     }
 
     if (w->ctx) {
