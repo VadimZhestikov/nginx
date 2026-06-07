@@ -406,7 +406,7 @@ function cfgRefreshTable(){
         '<td style="color:#e6edf3">'+esc(h.key)+'</td>'+
         '<td style="color:#3fb950">'+esc(h.value||'(complex)')+'</td>'+
         '<td>'+(h.always?'<span class="pill-always">always</span>':'<span class="pill-skip">skip on error</span>')+'</td>'+
-        '<td><button class="rm-btn" onclick="cfgRemove(\''+esc(h.key)+'\')">remove</button></td>'+
+        '<td><button class="rm-btn" onclick="cfgRemove(this.dataset.key)" data-key="'+esc(h.key)+'">remove</button></td>'+
         '</tr>';
     }).join('');
   }).catch(function(){
