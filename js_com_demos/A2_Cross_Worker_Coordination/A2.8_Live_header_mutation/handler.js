@@ -222,12 +222,12 @@ var _UI = `<!DOCTYPE html>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:Menlo,Monaco,Consolas,monospace;background:#0d1117;color:#e6edf3;padding:2rem}
-h1{font-size:.9rem;color:#7d8590;font-weight:normal;margin-bottom:1.5rem;letter-spacing:.05em;text-transform:uppercase}
-.part-label{font-size:.7rem;color:#484f58;text-transform:uppercase;letter-spacing:.12em;margin-bottom:.75rem;
+h1{font-size:.9rem;color:#9da5af;font-weight:normal;margin-bottom:1.5rem;letter-spacing:.05em;text-transform:uppercase}
+.part-label{font-size:.7rem;color:#6e7681;text-transform:uppercase;letter-spacing:.12em;margin-bottom:.75rem;
             padding:.3rem .6rem;border:1px solid #21262d;border-radius:4px;display:inline-block}
 .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1.25rem 1.75rem;margin-bottom:1.25rem}
-.section-title{font-size:.75rem;color:#7d8590;text-transform:uppercase;letter-spacing:.1em;margin-bottom:.75rem}
-.label{font-size:.65rem;color:#7d8590;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem}
+.section-title{font-size:.75rem;color:#9da5af;text-transform:uppercase;letter-spacing:.1em;margin-bottom:.75rem}
+.label{font-size:.65rem;color:#9da5af;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem}
 #hdr-val{font-size:2.4rem;font-weight:bold;color:#3fb950;transition:color .2s}
 #hdr-val.flash{color:#ffa657}
 .controls{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:1rem}
@@ -242,14 +242,14 @@ button:hover{background:#30363d}
 .btn-danger{background:#6e1a1a;border-color:#8b2222;color:#ffa0a0}
 .btn-danger:hover{background:#8b2222}
 .log-hdr{background:#21262d;padding:.45rem 1rem;border-bottom:1px solid #30363d;
-         font-size:.65rem;color:#7d8590;text-transform:uppercase;letter-spacing:.1em}
+         font-size:.65rem;color:#9da5af;text-transform:uppercase;letter-spacing:.1em}
 #log{padding:.65rem 1rem;font-size:.78rem;line-height:1.8;max-height:180px;overflow-y:auto}
-.ts{color:#484f58} .val{color:#3fb950;font-weight:bold} .wk{color:#58a6ff}
-.bar{font-size:.7rem;color:#484f58;margin-bottom:.75rem;display:flex;gap:1rem}
+.ts{color:#6e7681} .val{color:#3fb950;font-weight:bold} .wk{color:#58a6ff}
+.bar{font-size:.7rem;color:#6e7681;margin-bottom:.75rem;display:flex;gap:1rem}
 #ws-dot.on{color:#3fb950} #ws-dot.off{color:#f85149}
 hr.sep{border:none;border-top:1px solid #21262d;margin:1.5rem 0}
 .hdr-table{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:.5rem}
-.hdr-table th{text-align:left;color:#7d8590;font-weight:normal;padding:.3rem .5rem;border-bottom:1px solid #21262d}
+.hdr-table th{text-align:left;color:#9da5af;font-weight:normal;padding:.3rem .5rem;border-bottom:1px solid #21262d}
 .hdr-table td{padding:.35rem .5rem;border-bottom:1px solid #161b22;vertical-align:middle}
 .hdr-table tr:last-child td{border-bottom:none}
 .pill-always{background:#1a3a1a;color:#3fb950;border-radius:3px;padding:.1rem .35rem;font-size:.7rem}
@@ -260,10 +260,10 @@ hr.sep{border:none;border-top:1px solid #21262d;margin:1.5rem 0}
               font-size:.78rem;line-height:1.7;max-height:180px;overflow-y:auto;margin-top:.5rem}
 .response-box .rh-key{color:#58a6ff} .response-box .rh-val{color:#e6edf3}
 .response-box .rh-injected{color:#3fb950;font-weight:bold}
-.response-box .rh-status{color:#7d8590}
-.empty-note{color:#484f58;font-style:italic;padding:.4rem 0}
+.response-box .rh-status{color:#9da5af}
+.empty-note{color:#6e7681;font-style:italic;padding:.4rem 0}
 .code-hint{background:#0d1117;border:1px solid #21262d;border-radius:4px;padding:.3rem .6rem;
-           font-size:.75rem;color:#7d8590;margin-top:.4rem;display:inline-block}
+           font-size:.75rem;color:#9da5af;margin-top:.4rem;display:inline-block}
 </style>
 </head>
 <body>
@@ -294,7 +294,7 @@ hr.sep{border:none;border-top:1px solid #21262d;margin:1.5rem 0}
 
 <div class="card" style="padding:0;overflow:hidden">
   <div class="log-hdr">Change log (Part 1)</div>
-  <div id="log"><div style="color:#484f58;padding:.5rem .75rem">No changes yet.</div></div>
+  <div id="log"><div style="color:#6e7681;padding:.5rem .75rem">No changes yet.</div></div>
 </div>
 
 <div class="code-hint">curl -X POST "http://127.0.0.1:8117/admin/set-header/?value=v2-premium"</div>
@@ -310,9 +310,9 @@ hr.sep{border:none;border-top:1px solid #21262d;margin:1.5rem 0}
 <div class="card">
   <div class="section-title">
     Location: <span style="color:#e6edf3">/plain/</span>
-    &nbsp;&nbsp;<span style="color:#484f58">|</span>&nbsp;&nbsp;
+    &nbsp;&nbsp;<span style="color:#6e7681">|</span>&nbsp;&nbsp;
     Config: <span style="color:#ffa657">return 200 "nginx plain response";</span>
-    &nbsp;&nbsp;<span style="color:#484f58">|</span>&nbsp;&nbsp;
+    &nbsp;&nbsp;<span style="color:#6e7681">|</span>&nbsp;&nbsp;
     <span style="color:#f85149">No JS handler</span>
   </div>
 
@@ -326,7 +326,7 @@ hr.sep{border:none;border-top:1px solid #21262d;margin:1.5rem 0}
     <div class="controls" style="margin-bottom:.5rem">
       <input id="cfg-key"   type="text" placeholder="Header key" style="width:140px">
       <input id="cfg-val"   type="text" placeholder="Header value" style="width:140px">
-      <label style="font-size:.8rem;color:#7d8590">
+      <label style="font-size:.8rem;color:#9da5af">
         <input id="cfg-always" type="checkbox"> always
       </label>
       <button class="btn-primary" onclick="cfgInject()">Inject Header</button>
