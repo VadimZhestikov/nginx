@@ -199,6 +199,50 @@ nginx.http.servers.forEach(srv => {
 });
 ----
 
+=== Example: runtime add_header injection (no JS handler on target location)
+
+`location.headers.addHeader()` / `removeHeader()` mutate the nginx `add_header`
+config list for a location at runtime.  The change is visible to the header
+filter on the **current worker**; use a SharedWorker broadcast bus to propagate
+to all workers (see `js-reconfig-guide-all-workers.adoc`).
+
+Unlike setting `loc.handler`, this approach requires *no JS content handler* on
+the target location — it works equally on `proxy_pass`, `return`, static file
+locations, or any other nginx-native location.
+
+[source,javascript]
+----
+// Install once via nginx.broadcast — runs in every worker
+nginx.broadcast(() => {
+    const locs = nginx.http.servers[0].locations;
+    const appLoc = locs.find(l => l.path === '/app/');
+
+    // Admin endpoint that mutates appLoc's add_header list
+    const adminLoc = locs.find(l => l.path === '/admin/headers/');
+    adminLoc.handler = (req) => {
+        const action = req.queryParams?.action;
+        const key    = req.queryParams?.key   || '';
+        const value  = req.queryParams?.value || '';
+
+        if (action === 'add' && key && value) {
+            appLoc.headers.addHeader(key, value);
+        } else if (action === 'remove' && key) {
+            appLoc.headers.removeHeader(key);
+        } else if (action === 'clear') {
+            appLoc.headers.addHeaders = [];
+        }
+
+        req.respond(200, {'Content-Type': 'application/json'},
+            JSON.stringify({headers: appLoc.headers.addHeaders}) + '\n');
+    };
+});
+----
+
+*NOTE*: A call from a request handler writes to the *current worker's* global
+config copy.  Other workers are not automatically notified.  For multi-worker
+propagation, post the mutation to a SharedWorker broadcast bus (see
+`cfgbus.js` pattern in `js_com_demos/A2.8`).
+
 == suspendAcceptance() and resumeAcceptance()
 
 === Purpose
@@ -343,7 +387,7 @@ the settable fields of sub-objects (`proxy`, `gzip`, `headers`, `rewrite`).
 | `enable`, `level`, `minLength`, `vary`
 
 | `NginxLocation` (sub: headers)
-| `headersInherit`, `trailersInherit`
+| `headersInherit`, `trailersInherit`, `addHeaders` (r/w — replaces full list), `addHeader(key,val[,always])`, `removeHeader(key)`
 
 | `NginxLocation` (sub: rewrite)
 | `log`, `uninitializedVariableWarn`, `stackSize`

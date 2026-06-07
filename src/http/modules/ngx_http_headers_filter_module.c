@@ -916,3 +916,48 @@ ngx_http_headers_add(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     return NGX_CONF_OK;
 }
+
+
+/*
+ * Public helper: initialise one ngx_http_header_val_t with a literal key/value
+ * pair, allocating strings from pool.  Used by the JS COM addHeader() API.
+ *
+ * Looks up the key in ngx_http_set_headers[] to assign the correct handler
+ * (e.g. Cache-Control gets ngx_http_add_multi_header_lines); unknown keys
+ * fall back to ngx_http_add_header.
+ *
+ * value.lengths is left NULL so ngx_http_complex_value() returns value.value
+ * directly (the literal fast path) without any script evaluation.
+ */
+ngx_int_t
+ngx_http_headers_add_literal(ngx_pool_t *pool, ngx_str_t *key,
+    ngx_str_t *value, ngx_uint_t always, ngx_http_header_val_t *hv)
+{
+    ngx_uint_t             i;
+    ngx_http_set_header_t *set;
+
+    hv->key.data = ngx_pnalloc(pool, key->len + 1);
+    if (hv->key.data == NULL) { return NGX_ERROR; }
+    ngx_cpystrn(hv->key.data, key->data, key->len + 1);
+    hv->key.len = key->len;
+
+    ngx_memzero(&hv->value, sizeof(ngx_http_complex_value_t));
+    hv->value.value.data = ngx_pnalloc(pool, value->len + 1);
+    if (hv->value.value.data == NULL) { return NGX_ERROR; }
+    ngx_cpystrn(hv->value.value.data, value->data, value->len + 1);
+    hv->value.value.len = value->len;
+
+    hv->handler = ngx_http_add_header;
+    hv->offset  = 0;
+    set = ngx_http_set_headers;
+    for (i = 0; set[i].name.len; i++) {
+        if (ngx_strcasecmp(key->data, set[i].name.data) == 0) {
+            hv->handler = set[i].handler;
+            hv->offset  = set[i].offset;
+            break;
+        }
+    }
+
+    hv->always = always;
+    return NGX_OK;
+}

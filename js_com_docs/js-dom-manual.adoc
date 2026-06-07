@@ -3917,7 +3917,7 @@ NginxStreamSSL  (streamServer.ssl  in stream context) — same properties plus:
 | `NginxStreamSSL`      | `streamServer.ssl`                     | Stream SSL/TLS settings
 | `NginxProxy`          | `location.proxy`                       | `proxy_pass` and proxy settings
 | `NginxGzip`           | `location.gzip`                        | `gzip` module settings
-| `NginxHeaders`        | `location.headers`                     | `add_header` / `expires` settings
+| `NginxHeaders`        | `location.headers`                     | `add_header` / `expires` settings; `addHeader()` / `removeHeader()` mutate the list at runtime without reload
 | `NginxRewrite`        | `location.rewrite`                     | `rewrite` module settings
 | `NginxAccess`         | `location.access`                      | `allow`/`deny` access rules
 | `NginxAuth`           | `location.auth`                        | `auth_basic` settings
@@ -3976,8 +3976,12 @@ NginxStreamSSL  (streamServer.ssl  in stream context) — same properties plus:
 
 | `NginxHeaders`        | `expires`                   | r/o | seconds; -1 = epoch; -2 = max; 0 = off
 | `NginxHeaders`        | `expiresTime`               | r/o | absolute Unix timestamp
-| `NginxHeaders`        | `headersInherit`            | r/w | bool
-| `NginxHeaders`        | `trailersInherit`           | r/w | bool
+| `NginxHeaders`        | `headersInherit`            | r/w | `"off"` \| `"on"` \| `"merge"`
+| `NginxHeaders`        | `trailersInherit`           | r/w | `"off"` \| `"on"` \| `"merge"`
+| `NginxHeaders`        | `addHeaders`                | r/w | `[{key, value, always}]` — full `add_header` list; value is `null` for entries with nginx variable expressions; setter replaces the entire list (literal values only)
+| `NginxHeaders`        | `addTrailers`               | r/o | `[{key, value, always}]` — `add_trailer` list (read-only)
+| `NginxHeaders`        | `addHeader(key, val[, always])` | fn | Append one literal `add_header` entry; `always` defaults to `false`
+| `NginxHeaders`        | `removeHeader(key)`         | fn | Remove all entries matching `key` (case-insensitive)
 
 | `NginxRewrite`        | `log`                       | r/w | bool — log rewrite rule execution
 | `NginxRewrite`        | `uninitializedVariableWarn` | r/w | bool

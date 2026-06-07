@@ -51,5 +51,8 @@ typedef struct {
 
 extern ngx_module_t  ngx_http_headers_filter_module;
 
+ngx_int_t ngx_http_headers_add_literal(ngx_pool_t *pool, ngx_str_t *key,
+    ngx_str_t *value, ngx_uint_t always, ngx_http_header_val_t *hv);
+
 
 #endif /* _NGX_HTTP_HEADERS_FILTER_MODULE_H_INCLUDED_ */

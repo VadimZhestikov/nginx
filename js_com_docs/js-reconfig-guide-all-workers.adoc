@@ -606,3 +606,76 @@ is set) run in the master before fork.  They are inherited by all workers at
 fork time and require no broadcast.  Only _request-phase_ mutations need
 the strategies described in this guide.
 
+=== Example: add_header injection with Strategy 1 broadcast
+
+`location.headers.addHeader()` / `removeHeader()` / `addHeaders=[]` mutate
+a location's `add_header` config list on the *current worker* only.  This is a
+concrete case for Strategy 1: an admin endpoint applies the change locally then
+fans it out via a lightweight SharedWorker bus.
+
+[source,javascript]
+----
+// cfgbus.js  — broadcast bus SharedWorker
+var _ports   = [];
+var _current = [];  // canonical current state
+
+function apply(msg) {
+    if (msg.type === 'addHeader')
+        _current.push({key:msg.key, value:msg.value, always:!!msg.always});
+    else if (msg.type === 'removeHeader')
+        _current = _current.filter(h => h.key.toLowerCase() !== msg.key.toLowerCase());
+    else if (msg.type === 'clearHeaders')
+        _current = [];
+}
+
+onconnect = e => {
+    var port = e.ports[0];
+    _ports.push(port);
+    port.postMessage({type:'setState', headers:_current.slice()});  // catch-up
+    port.onmessage = ev => {
+        apply(ev.data);
+        _ports.forEach(p => { if (p !== port) p.postMessage(ev.data); });
+    };
+};
+----
+
+[source,javascript]
+----
+// handler.js  (nginx.broadcast runs in every worker)
+nginx.broadcast(() => {
+    const locs    = nginx.http.servers[0].locations;
+    const appLoc  = locs.find(l => l.path === '/app/');
+    const cfgBus  = new SharedWorker(nginx.cycle.prefix + 'cfgbus.js');
+
+    // Receive fan-out mutations from other workers
+    cfgBus.onmessage = e => {
+        const m = e.data;
+        if (m.type === 'setState')
+            m.headers.forEach(h => appLoc.headers.addHeader(h.key,h.value,h.always));
+        else if (m.type === 'addHeader')
+            appLoc.headers.addHeader(m.key, m.value, m.always);
+        else if (m.type === 'removeHeader')
+            appLoc.headers.removeHeader(m.key);
+        else if (m.type === 'clearHeaders')
+            appLoc.headers.addHeaders = [];
+    };
+
+    // Admin endpoint
+    locs.find(l => l.path === '/admin/header/').handler = req => {
+        const key = (req.queryParams?.key   || '').trim();
+        const val = (req.queryParams?.value || '').trim();
+        appLoc.headers.addHeader(key, val);        // local, immediate
+        cfgBus.postMessage({type:'addHeader', key, value:val, always:false});
+        req.respond(200, {}, JSON.stringify({ok:true}));
+    };
+});
+----
+
+Key points:
+
+* The sender applies locally first (immediate) then fans to others (skip-self pattern in the SW).
+* The SW maintains the canonical state so a restarted worker receives `setState` on connect and catches up.
+* `/app/` needs *no JS content handler* — it can be `proxy_pass`, `return`, or a static location.
+
+Full working demo: `js_com_demos/A2_Cross_Worker_Coordination/A2.8_Live_header_mutation/`.
+

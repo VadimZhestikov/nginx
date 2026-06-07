@@ -77,6 +77,20 @@
         structural routing changes propagate without a reload.
         Classic: no runtime location mutation; no snapshot/rollback API.
 
+  A2.8  Live header mutation — two approaches side by side (demo + manager UI)
+        Part 1: nginx.shared + WebSocket — a persistent browser connection
+        polls every 300 ms; POST /admin/set-header/ changes the value for all
+        workers instantly (shared memory write, no IPC).
+        Part 2: loc.headers.addHeader() / removeHeader() / addHeaders = []
+        mutates nginx's add_header config on /plain/ — a location with NO JS
+        content handler (pure nginx `return 200`).  A cfgbus.js SharedWorker
+        fans each mutation to all 4 workers so /plain/ responses carry the
+        injected header from every worker within ~1 ms.
+        Classic (Part 2): add_header in nginx.conf + reload required;
+        no runtime API to add/remove headers on an arbitrary location.
+        Browser UI shows both panels; test.sh verifies cross-worker
+        propagation by collecting all 4 worker PIDs per check.
+
   A3 · Programmatic Config Generation
 
   A3.1  Multi-tenant from a JSON file
