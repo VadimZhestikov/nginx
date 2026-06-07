@@ -392,6 +392,21 @@ function logEntry(hdr, wk){
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 conn();
 
+// Pre-populate via plain HTTP so the value shows immediately, even before the
+// WebSocket handshake completes.  Useful on WSL2 where the first WS round-trip
+// can take a visible moment.  If the WebSocket delivers a value first, this
+// fetch result is discarded (the "last !== null" guard).
+fetch('/status/')
+  .then(function(r){return r.json();})
+  .then(function(d){
+    if(last !== null) return;   // WebSocket already won
+    document.getElementById('hdr-val').textContent = d.header;
+    document.getElementById('wk-lbl').textContent  = 'worker '+d.worker+' · v'+d.version;
+    last = d.header;
+    logEntry(d.header, d.worker);
+  })
+  .catch(function(){});
+
 // ── Part 2: config-phase header mutation ──────────────────────────────────
 function cfgRefreshTable(){
   fetch('/admin/get-config-headers/').then(function(r){return r.json();}).then(function(d){
