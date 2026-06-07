@@ -1,6 +1,6 @@
 # js_com_demos1
 
-57 self-contained, runnable demos organised by value category. Each demo has
+58 self-contained, runnable demos organised by value category. Each demo has
 its own `nginx.conf`, `handler.js` (or `gen.js`), `test.sh`, and `README.md`.
 
 ## Quick start
@@ -56,7 +56,7 @@ directory, resolving to `objs/nginx` in the repo root).
 | [A1.4 Config snapshot + rollback](A1_Live_Infrastructure_Surgery/A1.4_Config_snapshot_rollback/) | 8106 | `loc.snapshot()` / `snapshot.restore()` — one-click rollback |
 | [A1.5 Feature-flag a location](A1_Live_Infrastructure_Surgery/A1.5_Feature_flag_a_location/) | 8107 | Toggle `/beta/` on/off by flipping a JS boolean; no reload |
 
-#### A2 — Cross-Worker Coordination (ports 8108–8116)
+#### A2 — Cross-Worker Coordination (ports 8108–8117)
 
 | Demo | Port | What it shows |
 |------|------|---------------|
@@ -67,6 +67,7 @@ directory, resolving to `objs/nginx` in the repo root).
 | [A2.5 Atomics.wait/notify barrier](A2_Cross_Worker_Coordination/A2.5_Atomics_wait_notify_barrier/) | 8114 | SW does slow work, notifies via `Atomics.notify`; handler polls with `nginx.setTimeout` |
 | [A2.6 Runtime route enable/disable](A2_Cross_Worker_Coordination/A2.6_Runtime_route_broadcast/) | 8115 | `nginx.broadcast` + `nginx.shared` flag — route live/dead on all workers instantly, no reload |
 | [A2.7 Admin plugin: snapshot/rollback](A2_Cross_Worker_Coordination/A2.7_Admin_plugin_snapshot_rollback/) | 8116 | `nginx.use()` plugin with REST API, snapshots, rollback, and SharedWorker fan-out for structural ops |
+| [A2.8 Live header mutation](A2_Cross_Worker_Coordination/A2.8_Live_header_mutation/) | 8117 | Two approaches side by side: `nginx.shared` + WebSocket for request-phase headers; `loc.headers.addHeader()` + cfgbus SharedWorker for config-phase `add_header` on a JS-handler-free location — both propagate to all 4 workers instantly, no reload |
 
 #### A3 — Programmatic Config Generation (ports 8118–8120)
 
