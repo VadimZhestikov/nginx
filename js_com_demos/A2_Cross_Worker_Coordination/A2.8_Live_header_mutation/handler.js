@@ -556,17 +556,45 @@ nginx.broadcast(function () {
     // module (`return 200`).  The header filter applies loc.headers.addHeaders[]
     // to every response with no JS involvement in request handling.
     //
-    // Admin endpoints mutate the add_header list on the current worker.
-    // With reuseport each request may land on a different worker, so the
-    // header appears on /plain/ responses served by that worker.  For
-    // full multi-worker propagation (production use) wire admin calls
-    // through a SharedWorker broadcast bus (see A2.7); that pattern is
-    // omitted here because combining a SharedWorker channel fd in the
-    // nginx event loop with rapid pool alloc/free (from addHeader) triggers
-    // a busy-loop on the worker_fd — a known limitation in this nginx
-    // build that we do not work around in a demo.
+    // Cross-worker propagation uses cfgbus.js — a SharedWorker broadcast bus:
+    //
+    //   admin endpoint           cfgbus.js (SW thread)       other workers
+    //   ─────────────────        ─────────────────────        ──────────────
+    //   addHeader locally   →   update canonical state   →   addHeader locally
+    //   postMessage(msg)    →   fan-out to other ports   →   onmessage fires
+    //
+    // The sender applies the change locally (immediate); cfgbus fans the same
+    // message to every other worker so they apply it in their next event-loop
+    // iteration — typically well before the next HTTP request arrives.
 
     var plainLoc = locs.find(function(l){ return l.path === '/plain/'; });
+
+    // One SharedWorker per nginx instance (thread in the master process).
+    // Each worker gets its own port connection.
+    var cfgBus = new SharedWorker(nginx.cycle.prefix + 'cfgbus.js');
+
+    // Receive fan-out messages from other workers via the SW.
+    cfgBus.onmessage = function(e) {
+        var msg = e.data;
+
+        if (msg.type === 'setState') {
+            // Catch-up on (re)connect: apply the SW's canonical state.
+            plainLoc.headers.addHeaders = [];
+            for (var i = 0; i < msg.headers.length; i++) {
+                var h = msg.headers[i];
+                plainLoc.headers.addHeader(h.key, h.value, h.always);
+            }
+
+        } else if (msg.type === 'addHeader') {
+            plainLoc.headers.addHeader(msg.key, msg.value, msg.always);
+
+        } else if (msg.type === 'removeHeader') {
+            plainLoc.headers.removeHeader(msg.key);
+
+        } else if (msg.type === 'clearHeaders') {
+            plainLoc.headers.addHeaders = [];
+        }
+    };
 
     // POST /admin/add-config-header/?key=K&value=V[&always=1]
     set('/admin/add-config-header/', function(req) {
@@ -577,7 +605,10 @@ nginx.broadcast(function () {
             req.respond(400, {}, 'usage: ?key=K&value=V[&always=1]\n');
             return;
         }
+        // Apply locally first — immediate for /plain/ on THIS worker.
         plainLoc.headers.addHeader(key, val, always);
+        // Fan out to all other workers via the broadcast bus.
+        cfgBus.postMessage({type: 'addHeader', key: key, value: val, always: always});
         req.respond(200, {'Content-Type': 'application/json'},
             JSON.stringify({ok: true, action: 'addHeader',
                             key: key, value: val, always: always}) + '\n');
@@ -591,6 +622,7 @@ nginx.broadcast(function () {
             return;
         }
         plainLoc.headers.removeHeader(key);
+        cfgBus.postMessage({type: 'removeHeader', key: key});
         req.respond(200, {'Content-Type': 'application/json'},
             JSON.stringify({ok: true, action: 'removeHeader', key: key}) + '\n');
     });
@@ -598,6 +630,7 @@ nginx.broadcast(function () {
     // POST /admin/clear-config-headers/
     set('/admin/clear-config-headers/', function(req) {
         plainLoc.headers.addHeaders = [];
+        cfgBus.postMessage({type: 'clearHeaders'});
         req.respond(200, {'Content-Type': 'application/json'},
             JSON.stringify({ok: true, action: 'clearHeaders'}) + '\n');
     });

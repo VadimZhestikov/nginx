@@ -695,6 +695,23 @@ ngx_js_bcast_recv_handler(ngx_event_t *ev)
     w    = bctx->w;
     ctx  = w->ctx;
 
+    /*
+     * Peer-close (write end of the socketpair closed, e.g. during shutdown):
+     * ev->eof is set by the epoll layer.  Remove the read event and free the
+     * connection slot so epoll stops re-firing the handler in a tight loop.
+     * We do NOT close the fd here — bcast_fd ownership stays with the worker.
+     */
+    if (ev->eof) {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
+                       "js bcast: channel EOF, deactivating");
+        ngx_del_event(ev, NGX_READ_EVENT, 0);
+        ngx_free_connection(conn);
+        conn->fd    = (ngx_socket_t) -1;
+        w->bcast_conn = NULL;
+        ngx_free(bctx);
+        return;
+    }
+
     for ( ;; ) {
         iov.iov_base = recv_body;
         iov.iov_len  = sizeof(recv_body) - 1;  /* leave room for NUL */
@@ -707,6 +724,14 @@ ngx_js_bcast_recv_handler(ngx_event_t *ev)
 
         n = recvmsg(conn->fd, &mh, MSG_DONTWAIT);
         if (n <= 0) {
+            if (n == 0) {
+                /* EOF without ev->eof flag: same cleanup */
+                ngx_del_event(ev, NGX_READ_EVENT, 0);
+                ngx_free_connection(conn);
+                conn->fd    = (ngx_socket_t) -1;
+                w->bcast_conn = NULL;
+                ngx_free(bctx);
+            }
             break;
         }
 

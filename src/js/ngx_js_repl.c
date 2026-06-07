@@ -654,6 +654,17 @@ ngx_js_repl_read_handler(ngx_event_t *ev)
     return;
 
 cleanup:
+    /*
+     * Deregister the hijacked fd from epoll before finalizing.  Without this,
+     * a peer-close (EOF on the raw TCP connection) leaves the fd permanently
+     * readable in level-triggered epoll, spinning the worker event loop at
+     * ~100% CPU.  The connection object itself is finalized by nginx through
+     * ngx_http_finalize_request; we must not call ngx_free_connection here.
+     */
+    if (c->fd != (ngx_socket_t) -1) {
+        ngx_del_event(c->read, NGX_READ_EVENT, 0);
+    }
+
     if (rc->w != NULL) {
         ngx_js_repl_conn_t  **pp;
         for (pp = &rc->w->repl_pending; *pp != NULL; pp = &(*pp)->next) {
