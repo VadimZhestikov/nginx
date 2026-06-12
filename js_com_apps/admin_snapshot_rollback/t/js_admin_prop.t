@@ -62,11 +62,15 @@ var _u = nginx.http.upstreams.find(function(u){ return u.name==='prop_backend'; 
 var _addr0 = _u.peers[0].address;
 var _addr1 = _u.peers[1].address;
 
-// Declare managed props using live peer addresses (resolved at init-conf time)
+// Declare managed props — peer weights (scalar) and addHeaders (array-valued)
 nginx.admin.init({
     props: [
         { upstream: 'prop_backend', peer: _addr0, property: 'weight', default: 5 },
-        { upstream: 'prop_backend', peer: _addr1, property: 'weight', default: 3 }
+        { upstream: 'prop_backend', peer: _addr1, property: 'weight', default: 3 },
+        // addHeaders is array-valued; _valEqual (JSON.stringify) is needed for
+        // compactOps identity removal to work correctly.
+        { server: 'localhost', location: '/weight/', subobject: 'headers',
+          property: 'addHeaders', default: [] }
     ]
 });
 
@@ -120,7 +124,7 @@ loc('/squash/').handler = function(req) {
 };
 JS
 
-$t->try_run('no js module')->plan(23);
+$t->try_run('no js module')->plan(28);
 
 sub j { my $r = shift; $r =~ s/.*?\r\n\r\n//s; $r }
 
@@ -211,3 +215,45 @@ unlike($merged, qr/"value": *1/, 'squash: earlier value (1) removed');
 like(j(http_get('/admin/worker')), qr/"worker"/, 'GET /admin/worker works');
 my $cr2 = j http("POST /admin/compact/$id_noisy HTTP/1.0\r\nHost: localhost\r\n\r\n");
 like($cr2, qr/"removed"/, 'POST /admin/compact/:id via REST works');
+
+# ── 10. addHeaders {prop} — array-valued prop with _valEqual identity removal ──
+# addHeaders has default=[] declared in _managedProps.  Two things are tested:
+#   a) apply a snapshot setting addHeaders; auto-snapshot captures it; state() shows it
+#   b) compactOps correctly elides addHeaders=[] (identity with default []) via
+#      _valEqual (JSON.stringify), whereas === would return false for two distinct []
+my $p_ah = '{"server":"localhost","location":"/weight/","subobject":"headers",'
+         . '"property":"addHeaders"}';
+my $ah_val = '[{"key":"X-Ref","value":"test"}]';
+
+my $rh = j http_get('/raw/?name=add-hdr&ops=' . uri_escape(
+    '[{"prop":' . $p_ah . ',"value":' . $ah_val . '}]'));
+like($rh, qr/"id"/, 'createRawSnapshot with addHeaders {prop} op succeeds');
+my ($id_ah) = $rh =~ /"id":"([^"]+)"/;
+
+j http_get("/apply/?id=$id_ah");
+sleep 0.2;
+
+my $st_ah = j http_get('/state/');
+like($st_ah, qr/addHeaders/,    'state() shows addHeaders prop key after apply');
+like($st_ah, qr/X-Ref/,         'state() shows current addHeaders value (X-Ref)');
+
+# auto-snapshot should capture the live addHeaders value
+my $auto_ah = j http("POST /admin/snapshots?name=auto-hdrs HTTP/1.0\r\nHost: localhost\r\n\r\n");
+my ($id_auto_ah) = $auto_ah =~ /"id":"([^"]+)"/;
+my $sc_ah = j http_get("/admin/snapshots/$id_auto_ah");
+like($sc_ah, qr/addHeaders/, 'auto-snapshot contains addHeaders prop op');
+
+# Rollback to base must reset addHeaders back to [] (the default)
+http("POST /admin/rollback HTTP/1.0\r\nHost: localhost\r\n\r\n") for 1..3;
+sleep 0.2;
+
+# compactOps identity removal: a snapshot with addHeaders=[] equals the default []
+# so the op must be elided.  _valEqual uses JSON.stringify; plain === always
+# returns false for two distinct empty-array objects.
+my $id_ops_ah = '[{"prop":' . $p_ah . ',"value":[]}]';
+my $rid_ah = j http_get('/raw/?name=ah-identity&ops=' . uri_escape($id_ops_ah));
+my ($id_identity_ah) = $rid_ah =~ /"id":"([^"]+)"/;
+
+my $cr_ah = j http_get("/compact/?id=$id_identity_ah");
+like($cr_ah, qr/"removed":1/,
+    'compactOps elides addHeaders=[] (identity with default []) via _valEqual');

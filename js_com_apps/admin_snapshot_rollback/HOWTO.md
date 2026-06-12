@@ -167,6 +167,7 @@ curl -s -X POST -H "Host: static1.local" \
 
 Rollback to base (`null`) resets:
 - All tracked peer scalar properties to their init-time values
+- All declared managed props to their `"default"` values (incl. array-valued ones like `addHeaders`)
 - Any servers added after init (removed via `removeServer`)
 - Any locations added to base servers after init (removed via `removeLocation`)
 
@@ -260,10 +261,29 @@ nginx.admin.init({
 After `init()`:
 - `createSnapshot()` appends `{prop, value}` ops for each declared property,
   capturing the current live value automatically.
+- `applySnapshot()` resets ALL managed state (peer scalars + declared props) to
+  their defaults before applying the snapshot's ops.  This makes snapshots
+  represent a *desired state*: rolling back to an older snapshot clears any prop
+  set by a newer one that the older snapshot does not mention.
 - `rollback()` resets declared props to their `"default"` values when rolling
   back to the base state (past the first snapshot).
 - `admin.state()` includes a `"props"` sub-object with live values alongside
   the existing `"ops"` and `"peers"` fields.
+- `compactSnapshot()` and `squash()` include managed prop defaults in the
+  baseline for identity removal, so `addHeaders=[]` (equal to its default) is
+  correctly elided.
+
+Props may be **array-valued** — use `subobject:` to navigate one COM level
+deeper before the property, and include a matching `default:` (e.g. `[]`):
+
+```js
+nginx.admin.init({
+    props: [
+        { server: 'api.local', location: '/api/', subobject: 'headers',
+          property: 'addHeaders', default: [] }
+    ]
+});
+```
 
 ## 10. Creating snapshots programmatically
 

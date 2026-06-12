@@ -444,6 +444,71 @@ ID_PRE=$(echo "$SN_RAW" | grep -o '"id":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"
 COMPACT2=$(post "/admin/compact/$ID_PRE" '')
 check "options.compact path: removed 1 duplicate" '"removed":1' "$COMPACT2"
 
+# ── 21. addHeaders prop: snapshot captures and restores response headers ─────
+#
+# addHeaders is an array-valued {prop} — the first test to exercise _valEqual
+# (JSON.stringify comparison) in compactOps identity removal.
+
+# Build raw snapshot that enables /api/products/ AND sets addHeaders.
+# Include routes.products so the snapshot is self-contained — applying it
+# resets to base first (clearing any prior nginx.shared state) and then
+# re-enables the route alongside the header change.
+HEADERS_SNAP=$(post /admin/raw-snapshot \
+    '{"name":"products-header","ops":[
+        {"shared":"routes.products","value":"1"},
+        {"prop":{"server":"localhost","location":"/api/products/",
+                 "subobject":"headers","property":"addHeaders"},
+         "value":[{"key":"X-Demo","value":"snapshot-header","always":false}]}
+    ]}')
+check "addHeaders raw snapshot created" '"id"' "$HEADERS_SNAP"
+ID_HDR=$(echo "$HEADERS_SNAP" | grep -o '"id":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+
+post "/admin/apply/$ID_HDR" '' > /dev/null
+sleep 0.2
+
+# X-Demo: snapshot-header should appear in the HTTP response
+HDRS=$(curl -sI "http://127.0.0.1:$PORT/api/products/" | tr -d '\r')
+check "addHeaders applied: X-Demo header present"       "X-Demo: snapshot-header" "$HDRS"
+check "addHeaders applied: normal response header present" "200 OK"               "$HDRS"
+
+# createSnapshot should capture the live addHeaders value
+AUTO_HDR=$(post /admin/snapshots '{"name":"auto-headers"}')
+check "auto-snapshot with addHeaders created" '"id"' "$AUTO_HDR"
+AUTO_HDR_ID=$(echo "$AUTO_HDR" | grep -o '"id":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+
+SNAP_HDR_JSON=$(admin "/admin/snapshots/$AUTO_HDR_ID")
+check "auto-snapshot contains addHeaders prop"   '"subobject": "headers"' "$SNAP_HDR_JSON"
+check "auto-snapshot captures header key"        '"key": "X-Demo"'        "$SNAP_HDR_JSON"
+check "auto-snapshot captures header value"      '"value": "snapshot-header"' "$SNAP_HDR_JSON"
+
+# Rollback to base must clear addHeaders back to [] (the default)
+post /admin/rollback '' > /dev/null
+post /admin/rollback '' > /dev/null
+post /admin/rollback '' > /dev/null
+sleep 0.2
+
+HDRS=$(curl -sI "http://127.0.0.1:$PORT/api/products/" | tr -d '\r')
+if echo "$HDRS" | grep -qi "^X-Demo:"; then
+    echo "FAIL: X-Demo still present after rollback-to-base"
+    FAIL=$((FAIL+1))
+else
+    echo "PASS: X-Demo absent after rollback-to-base (addHeaders cleared)"
+    PASS=$((PASS+1))
+fi
+
+# compactOps identity removal: snapshot setting addHeaders=[] (the default)
+# must be elided.  _valEqual uses JSON.stringify so [] === [] works.
+ELIDE_SNAP=$(post /admin/raw-snapshot \
+    '{"name":"elide-test","ops":[
+        {"prop":{"server":"localhost","location":"/api/products/",
+                 "subobject":"headers","property":"addHeaders"},
+         "value":[]}
+    ]}')
+ID_ELIDE=$(echo "$ELIDE_SNAP" | grep -o '"id":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+
+COMPACT_ELIDE=$(post "/admin/compact/$ID_ELIDE" '')
+check "compactOps elides addHeaders=[] (equals default [])" '"removed":1' "$COMPACT_ELIDE"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

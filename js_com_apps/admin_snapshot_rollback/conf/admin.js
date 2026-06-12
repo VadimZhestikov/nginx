@@ -404,8 +404,8 @@ function _applyOps(ops) {
  * the legacy format ({id, ts, peers: [...], handlers: [...]}).
  */
 function _applySnapshot(snap) {
-    /* 1. Reset all tracked peer prop paths to base */
-    _applyOps(_base);
+    /* 1. Reset all tracked peer prop paths + managed props to base */
+    _applyOps(_baseOps());
 
     /* 2. Reset structural state to base:
      *    - remove servers that were added after init
@@ -504,6 +504,31 @@ function _applySnapshot(snap) {
  * ------------------------------------------------------------------ */
 
 /*
+ * _baseOps() — combined baseline used for rollback-to-base and compactOps
+ * identity removal.  Merges upstream peer values captured at init time with
+ * the default values declared in _managedProps.
+ */
+function _baseOps() {
+    return (_base || []).concat(_managedProps
+        .filter(function (d) { return 'default' in d; })
+        .map(function (d) { return { prop: d, value: d.default }; }));
+}
+
+/*
+ * _valEqual(a, b) — equality for identity removal in compactOps.
+ *
+ * Uses === for scalars and JSON.stringify for objects/arrays so that
+ * array-valued props (e.g. addHeaders: [{key,value,always},...]) are
+ * correctly elided when they match the base default.
+ */
+function _valEqual(a, b) {
+    if (a === b) { return true; }
+    if (typeof a !== 'object' || a === null ||
+        typeof b !== 'object' || b === null) { return false; }
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/*
  * compactOps(ops [, baseOps]) — reduce an ops-list by applying these rules:
  *
  *   1. Last-write-wins: if the same key appears multiple times, keep only
@@ -557,7 +582,7 @@ function compactOps(ops, baseOps) {
         seen[key] = true;
 
         /* Identity removal for value ops */
-        if (('value' in op) && (key in baseVal) && op.value === baseVal[key]) {
+        if (('value' in op) && (key in baseVal) && _valEqual(op.value, baseVal[key])) {
             continue;   /* restores to base — no-op */
         }
 
@@ -674,10 +699,7 @@ admin.createSnapshot = function (name) {
     });
 
     if (admin.options.compact) {
-        var baseOps = _base.concat(_managedProps
-            .filter(function (d) { return 'default' in d; })
-            .map(function (d) { return { prop: d, value: d.default }; }));
-        ops = compactOps(ops, baseOps);
+        ops = compactOps(ops, _baseOps());
     }
 
     var snap = {
@@ -778,7 +800,7 @@ admin.compactSnapshot = function (id) {
     }
 
     var before  = snap.ops ? snap.ops.length : 0;
-    snap.ops    = compactOps(snap.ops || [], _base);
+    snap.ops    = compactOps(snap.ops || [], _baseOps());
     var removed = before - snap.ops.length;
 
     _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
@@ -811,7 +833,7 @@ admin.squash = function (ids, name) {
     });
 
     /* Compact: last-write-wins + identity removal */
-    var compacted = compactOps(allOps, _base);
+    var compacted = compactOps(allOps, _baseOps());
 
     var existing = admin.listSnapshots();
     var seq = existing.length + 1;

@@ -25,9 +25,13 @@ At init_conf time `admin.js` calls `_captureBaseState()` which:
 2. Snapshots `_baseServerNames` (all current server names) and
    `_baseLocations` (per-server location patterns).
 
-These baselines are frozen — they do not change on reload.  `_applySnapshot`
-uses them to determine which servers and locations were added dynamically and
-must be torn down during a reset.
+These baselines are frozen — they do not change on reload.
+
+`_baseOps()` is the combined baseline used for rollback and compaction: it
+concatenates `_base` (peer scalars) with the default values from `_managedProps`
+(declared via `admin.init`).  This ensures that `compactSnapshot`, `squash`,
+and rollback-to-base all correctly handle managed props — including array-valued
+ones like `addHeaders` — without requiring those defaults to be in `_base`.
 
 ---
 
@@ -67,9 +71,16 @@ live values of declared managed props.
 ### Managed props (`admin.init`)
 
 `admin.init({props: [...]})` populates `_managedProps`.  Each descriptor may
-include an optional `"default"` value used by `_applyOps` when rolling back
-past the first snapshot.  `createSnapshot` appends `{prop, value}` ops for
-each managed prop.  `admin.state()` includes a `"props"` sub-object.
+include an optional `"default"` value used by rollback-to-base.
+`createSnapshot` appends `{prop, value}` ops for each managed prop.
+`admin.state()` includes a `"props"` sub-object.
+
+Props support both scalar and **array-valued** properties (e.g.
+`{subobject:'headers', property:'addHeaders', default:[]}`).  The `subobject`
+field navigates one COM level deeper before reading or writing the property.
+`compactOps` uses `_valEqual` (===  for scalars, JSON.stringify for
+objects/arrays) for identity removal so that `addHeaders=[]` is correctly
+elided when the default is also `[]`.
 
 ---
 
@@ -77,17 +88,22 @@ each managed prop.  `admin.state()` includes a `"props"` sub-object.
 
 ```
 applySnapshot(id)
-  └─ nginx.broadcast(fn)     ← runs fn in EVERY worker
-       └─ _applySnapshot(snap)
-            1. _applyOps(_base)           reset peer scalars
-            2. structural reset:
-               a. collect extra servers → removedRefs (keeps JS wrappers alive)
-               b. nginx.http.removeServer(name)  for each extra server
-               c. nginx.http.rebuildVhostDispatch()
-               d. removedRefs = null   → finalizers run AFTER vhost rebuild
-               e. removeLocation(pat)  for each extra location on base servers
-            3. _applyOps(snap.ops)     apply the snapshot's mutations
+  └─ _applySnapshot(snap)     ← called locally + in every other worker via cfgWorker fan-out
+       1. _applyOps(_baseOps())      reset peer scalars + managed prop defaults
+       2. structural reset:
+          a. collect extra servers → removedRefs (keeps JS wrappers alive)
+          b. nginx.http.removeServer(name)  for each extra server
+          c. nginx.http.rebuildVhostDispatch()
+          d. removedRefs = null   → finalizers run AFTER vhost rebuild
+          e. removeLocation(pat)  for each extra location on base servers
+       3. _applyOps(snap.ops)        apply the snapshot's mutations
 ```
+
+Step 1 uses `_baseOps()` (not the raw `_base`) so that managed props declared
+via `admin.init` — including array-valued ones like `addHeaders` — are reset to
+their configured defaults before the snapshot ops are applied.  This makes
+snapshots represent *desired state*: applying snapshot B after A clears any
+prop set by A that is absent from B.
 
 `nginx.broadcast(fn)` in master context (init_conf) queues `fn` for each
 worker's first event-loop tick.  In worker context it calls `fn` immediately
@@ -222,10 +238,17 @@ if any, via `loc.clearHandler()`).
    - `{path, handler}` ops: `'H:<path>'`
    - structural `{op}` ops: `'S:<op>:<name>:<serverName>:<pattern>'`
 3. If `baseOps` is provided, remove any `{path}` or `{prop}` op whose value
-   equals the baseline value (identity removal).
+   equals the baseline value (identity removal).  Equality is checked with
+   `_valEqual`: `===` for scalars, `JSON.stringify` for objects and arrays.
+   This is necessary for array-valued props (`addHeaders = []`) where `===`
+   would always be false for two distinct empty arrays.
 
 `squash(ids, name)` concatenates the ops of multiple snapshots and compacts
 the result into a single new snapshot.
+
+Both `squash` and `compactSnapshot` pass `_baseOps()` (not just `_base`) as
+the baseline so identity removal works for managed props, not only for the
+peer scalars that `_captureBaseState` tracks.
 
 ---
 
@@ -240,4 +263,4 @@ the result into a single new snapshot.
 | `js_admin_compact.t` | `compactSnapshot`, `squash`; ops deduplication |
 | `js_admin_edge.t` | Edge cases |
 | `js_admin_struct.t` | `addLocation`, `removeLocation`, `addServer`, `removeServer`, `addListener`; structural rollback |
-| `js_admin_prop.t` | `{prop}` named-descriptor create/apply; `admin.init` auto-capture; `compactOps` dedup for `{prop}`; rollback to defaults; `compact/:id`, `squash`, `worker` REST endpoints |
+| `js_admin_prop.t` | `{prop}` named-descriptor create/apply; `admin.init` auto-capture including array-valued props (`addHeaders`); `_valEqual` identity removal in `compactOps`; rollback-to-base resets managed props; `compact/:id`, `squash`, `worker` REST endpoints |

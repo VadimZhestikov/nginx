@@ -2661,6 +2661,21 @@ Three op shapes are supported.  All three can appear in the same snapshot.
 An optional `"default"` field in a descriptor sets the value used when rolling
 back past the first snapshot (resets to the configured baseline).
 
+Props support both scalar and array-valued properties.  The `{prop}` descriptor
+can navigate to a sub-object via the `subobject` field before reading or writing
+the final property:
+
+[source,javascript]
+----
+// Array-valued prop: loc.headers.addHeaders
+{ server: 'api.local', location: '/api/', subobject: 'headers',
+  property: 'addHeaders', default: [] }
+----
+
+Identity removal in `compactSnapshot` / `squash` uses `_valEqual` (===  for
+scalars, JSON.stringify comparison for objects and arrays) so that two distinct
+empty-array values are correctly treated as equal when eliding no-op ops.
+
 ==== Plugin configuration (`nginx.use`)
 
 [source,javascript]
@@ -2669,12 +2684,16 @@ nginx.use('./admin-plugin', {
     // nginx.shared keys — seeded at startup, captured by createSnapshot()
     keys: { 'feature:beta': '0', 'canary.weight': '0' },
 
-    // COM scalar properties — captured and restored by snapshot/rollback
+    // COM scalar and array-valued properties — captured and restored
+    // by snapshot/rollback.  Use subobject: to navigate one level deeper.
     props: [
         { upstream: 'backend', peer: '10.0.0.1:8080',
           property: 'weight', default: 5 },
         { server: 'api.example.com', location: '/api/', subobject: 'proxy',
-          property: 'connectTimeout', default: 5000 }
+          property: 'connectTimeout', default: 5000 },
+        // Array-valued prop — requires _valEqual for identity removal
+        { server: 'api.example.com', location: '/api/', subobject: 'headers',
+          property: 'addHeaders', default: [] }
     ]
 });
 ----
@@ -2709,8 +2728,8 @@ nginx.use('./admin-plugin', {
 | `nginx.admin.createSnapshot(name)` | Capture current state (keys + props) as a named snapshot; auto-compacts if `options.compact`
 | `nginx.admin.createRawSnapshot(name, ops)` | Save an explicit ops array verbatim
 | `nginx.admin.listSnapshots()`      | Sorted array of snapshot ids
-| `nginx.admin.applySnapshot(id)`    | Apply snapshot locally then fan out via SharedWorker
-| `nginx.admin.rollback()`           | Revert to previous snapshot (or base defaults)
+| `nginx.admin.applySnapshot(id)`    | Reset all managed state to base, apply snapshot ops, fan out via SharedWorker
+| `nginx.admin.rollback()`           | Revert to previous snapshot (or base defaults); always resets to base first
 | `nginx.admin.registerHandler(name, fn)` | Register a named handler for structural op resolution
 | `nginx.admin.compactSnapshot(id)`  | Rewrite snapshot ops in place (last-write-wins + identity removal); returns count removed
 | `nginx.admin.squash(ids, name)`    | Concatenate ops from N snapshots, compact, write as new snapshot
@@ -2759,16 +2778,17 @@ cd js_com_demos/A2_Cross_Worker_Coordination/A2.7_Admin_plugin_snapshot_rollback
 bash test.sh   # 20 sections, 361 checks
 ----
 
-The A2.7 demo test suite covers: plugin load on all 4 workers, shared-key
-CRUD, snapshot create/apply/rollback, structural `addLocation`/`removeLocation`
-fan-out, `{prop}` named-descriptor ops (stable across `addLocation` index
-shifts), auto-capture of COM scalars in `createSnapshot`, `compactSnapshot`,
-and `squash`.
+The A2.7 demo test suite (21 sections, 370 checks) covers: plugin load on all
+4 workers, shared-key CRUD, snapshot create/apply/rollback, structural
+`addLocation`/`removeLocation` fan-out, `{prop}` named-descriptor ops (stable
+across `addLocation` index shifts), auto-capture of COM scalars in
+`createSnapshot`, `compactSnapshot`, `squash`, and `addHeaders` as an
+array-valued prop (including `_valEqual` identity removal in `compactOps`).
 
 The reference application `js_com_apps/admin_snapshot_rollback/t/` (8 files,
-121 checks) covers the same areas plus index-based `{path}` ops, the
-`admin.init({props})` auto-capture flow, edge cases, and the new REST
-endpoints (`compact/:id`, `squash`, `set`, `worker`).
+126 checks) covers the same areas plus index-based `{path}` ops, the
+`admin.init({props})` auto-capture flow including array-valued props, edge
+cases, and the new REST endpoints (`compact/:id`, `squash`, `set`, `worker`).
 
 
 == External Config Sources and Full Reload

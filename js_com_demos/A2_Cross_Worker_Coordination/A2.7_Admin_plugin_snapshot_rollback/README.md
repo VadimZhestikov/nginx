@@ -19,7 +19,7 @@ without a reload.
 Three categories of snapshot ops are supported:
 
 - **`{shared, value}`** — writes `nginx.shared`; instantly visible to all workers, no IPC needed.
-- **`{prop, value}`** — COM scalar mutation using a *stable named descriptor* (upstream name + peer address, not array index); applied via `_resolveTarget` at runtime so snapshots survive peer reordering or `addLocation` calls.
+- **`{prop, value}`** — COM mutation using a *stable named descriptor* (upstream name + peer address, not array index); applied via `_resolveTarget` at runtime so snapshots survive peer reordering or `addLocation` calls.  Supports scalar and **array-valued** properties (e.g. `loc.headers.addHeaders`); `compactOps` uses `_valEqual` (JSON.stringify) for correct identity removal on arrays.
 - **`{op, serverName, pattern [, handler]}`** — structural routing-tree mutations (`addLocation`, `removeLocation`); per-worker state that *requires* the SharedWorker fan-out.
 
 ## File layout
@@ -39,7 +39,7 @@ test.sh                     Self-contained test (starts nginx, runs 20 sections,
 
 ```bash
 cd js_com_demos/A2_Cross_Worker_Coordination/A2.7_Admin_plugin_snapshot_rollback
-bash test.sh
+bash test.sh   # 21 sections, 370 checks
 ```
 
 ## Plugin configuration
@@ -52,12 +52,17 @@ nginx.use('./admin-plugin', {
         'routes.premium':  '0',
         'canary.weight':   '0'
     },
-    // COM scalar properties captured by createSnapshot() and restored by rollback().
-    // Each descriptor uses stable names (not array indices) so snapshots survive
-    // topology changes.
+    // COM scalar and array-valued properties captured by createSnapshot() and
+    // restored by rollback().  Descriptors use stable names (not array indices).
+    // Use subobject: to navigate one level deeper before accessing the property.
     props: [
         { upstream: 'demo_backend', peer: '127.0.0.1:8091', property: 'weight', default: 5 },
-        { upstream: 'demo_backend', peer: '127.0.0.1:8092', property: 'weight', default: 3 }
+        { upstream: 'demo_backend', peer: '127.0.0.1:8092', property: 'weight', default: 3 },
+        // Array-valued props (addHeaders): identity removal uses _valEqual (JSON.stringify)
+        { server: 'localhost', location: '/api/products/', subobject: 'headers',
+          property: 'addHeaders', default: [] },
+        { server: 'localhost', location: '/api/premium/', subobject: 'headers',
+          property: 'addHeaders', default: [] }
     ]
 });
 ```
@@ -137,6 +142,26 @@ name (upstream name, peer address, server name, location path).  An index-based
 raw string path (`"http.upstreams[0].peers[0].weight"`) is also accepted for
 backward compatibility, but breaks if peers are reordered.
 
+**Array-valued `{prop}` op (response headers):**
+```json
+{
+  "id": "0006-add-demo-header",
+  "ts": 1777075300,
+  "ops": [
+    { "shared": "routes.products", "value": "1" },
+    { "prop": { "server":    "localhost",
+                "location":  "/api/products/",
+                "subobject": "headers",
+                "property":  "addHeaders" },
+      "value": [{ "key": "X-Demo", "value": "v1", "always": false }] }
+  ]
+}
+```
+
+A snapshot that sets `addHeaders = []` (the default) is elided by
+`compactSnapshot` because `_valEqual` uses `JSON.stringify` to compare arrays,
+treating any two empty arrays as identical.
+
 **Structural ops (mixed with other op types):**
 ```json
 {
@@ -182,22 +207,28 @@ before writing.  Set via JS: `nginx.admin.options.compact = true`.
 POST /admin/apply/:id
         │
         ▼  (worker that received the request)
-   _applyOps(snap.ops)          ← immediate, local
+   _applyOps(_baseOps())        ← reset to base (clears all managed state)
+   _applyOps(snap.ops)          ← apply desired state
         │
         ▼
    cfgWorker.postMessage({type:'apply', snap})
         │
         ▼  (SharedWorker thread — cfgworker.js)
    _desired = snap
-   _ports.forEach(p.postMessage)  ← fan-out to ALL worker ports
+   _ports.forEach(p.postMessage)  ← fan-out to ALL other worker ports
         │
-        ├─▶ worker 1 onmessage → _applyOps(snap.ops)
-        ├─▶ worker 2 onmessage → _applyOps(snap.ops)
-        └─▶ worker 3 onmessage → _applyOps(snap.ops)
+        ├─▶ worker 1 onmessage → _applyOps(_baseOps()); _applyOps(snap.ops)
+        ├─▶ worker 2 onmessage → _applyOps(_baseOps()); _applyOps(snap.ops)
+        └─▶ worker 3 onmessage → _applyOps(_baseOps()); _applyOps(snap.ops)
 ```
 
+Each apply **resets all managed state to base first**, then applies the
+snapshot ops.  This means a snapshot represents a *desired state*, not a
+diff — applying snapshot B after A clears any props set by A that are absent
+from B (e.g. `addHeaders` goes back to `[]` on rollback to an older snapshot).
+
 `nginx.shared` writes are instantly visible to all workers (shared memory).
-Structural ops (`addLocation`, `removeLocation`) and `{prop}` COM scalar writes
+Structural ops (`addLocation`, `removeLocation`) and `{prop}` COM writes
 require the fan-out to mutate each worker's private routing tree or local conf.
 
 A worker restarted by the master catches up by sending `{type:'get'}` to the

@@ -57,10 +57,17 @@ nginx.use('./admin-plugin', {
     // (upstream name + peer address, not index) so snapshots survive
     // addLocation / peer reordering.
     props: [
+        // Upstream peer weights — identified by name + address, not index
         { upstream: 'demo_backend', peer: '127.0.0.1:8091',
           property: 'weight', default: 5 },
         { upstream: 'demo_backend', peer: '127.0.0.1:8092',
-          property: 'weight', default: 3 }
+          property: 'weight', default: 3 },
+        // Response header lists — array-valued prop; _valEqual handles
+        // identity removal in compactOps (=== would always fail for arrays)
+        { server: 'localhost', location: '/api/products/', subobject: 'headers',
+          property: 'addHeaders', default: [] },
+        { server: 'localhost', location: '/api/premium/', subobject: 'headers',
+          property: 'addHeaders', default: [] }
     ]
 });
 

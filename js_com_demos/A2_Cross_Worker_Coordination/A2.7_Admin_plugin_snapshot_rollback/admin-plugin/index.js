@@ -103,7 +103,13 @@ nginx.broadcast(function () {
     cfgWorker.onmessage = function (msg) {
         var type = msg.data.type;
         if (type === 'apply' || type === 'rollback' || type === 'sync') {
-            _applyOps(msg.data.snap ? msg.data.snap.ops : _baseOps());
+            /* Always reset to base first so props absent from the incoming
+             * snapshot (e.g. addHeaders after rollback to older snap) are
+             * cleared back to their defaults, not left from a prior state. */
+            _applyOps(_baseOps());
+            if (msg.data.snap) {
+                _applyOps(msg.data.snap.ops);
+            }
         }
     };
     cfgWorker.postMessage({ type: 'get' });
@@ -349,6 +355,21 @@ function _baseOps() {
 }
 
 /*
+ * _valEqual(a, b) — value equality for identity removal in compactOps.
+ *
+ * Uses === for scalars (fast path) and JSON.stringify for objects/arrays.
+ * JSON.stringify is correct here because prop values are either scalars
+ * (weights, booleans) or arrays of plain objects ({key,value,always} from
+ * the addHeaders getter), which always serialise deterministically.
+ */
+function _valEqual(a, b) {
+    if (a === b) { return true; }
+    if (typeof a !== 'object' || a === null ||
+        typeof b !== 'object' || b === null) { return false; }
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/*
  * compactOps(ops [, baseOps]) — last-write-wins deduplication.
  *
  * Handles three op families:
@@ -357,6 +378,8 @@ function _baseOps() {
  *   {op,...}  — dedup key 'OP:<op>:<serverName>:<pattern>'
  *
  * Ops that are already equal to the baseOps value are elided.
+ * _valEqual is used so that array-valued props (e.g. addHeaders) are
+ * correctly elided when they match the base default.
  */
 function compactOps(ops, baseOps) {
     if (!ops || !ops.length) { return []; }
@@ -390,7 +413,7 @@ function compactOps(ops, baseOps) {
 
         /* Elide ops that are already at the base value */
         if (('shared' in op || 'prop' in op)
-                && (key in baseVal) && op.value === baseVal[key]) {
+                && (key in baseVal) && _valEqual(op.value, baseVal[key])) {
             continue;
         }
 
@@ -474,7 +497,9 @@ admin.applySnapshot = function (id) {
         throw new Error('snapshot parse error: ' + e.message);
     }
 
-    /* Apply locally (immediate). */
+    /* Reset to base then apply — mirrors what fan-out receivers do so all
+     * workers reach the same state (props absent from snap get cleared). */
+    _applyOps(_baseOps());
     _applyOps(snap.ops);
     _setPinned(id);
 
