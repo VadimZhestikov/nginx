@@ -38,25 +38,30 @@
 //   Any descriptor may include an optional `default` value used by rollback.
 //
 // nginx.admin API:
+//   options                        — tunables (compact: bool)
 //   state()                        — current nginx.shared + managed prop values
 //   registerHandler(name, fn)      — register a named handler for op resolution
-//   createSnapshot(name)           — save current nginx.shared + prop state
+//   createSnapshot(name)           — save current state; auto-compacts if options.compact
 //   createRawSnapshot(name, ops)   — save an explicit ops array
 //   listSnapshots()                — sorted snapshot list
 //   applySnapshot(id)              — apply + fan out via SharedWorker
 //   rollback()                     — apply previous snapshot + fan out
 //   compactOps(ops [, base])       — deduplicate an ops list
+//   compactSnapshot(id)            — rewrite a snapshot's ops in place; returns #removed
+//   squash(ids, name)              — merge N snapshots into one (concat + compact)
 //
 // REST (mounted on /admin/):
-//   GET  /admin/state             — current key-value + prop state
-//   GET  /admin/snapshots         — list snapshot ids
-//   POST /admin/snapshots         — create snapshot; body: {"name":"..."}
-//   POST /admin/raw-snapshot      — create explicit; body: {"name":"...","ops":[...]}
-//   GET  /admin/snapshots/:id     — snapshot JSON content
-//   POST /admin/apply/:id         — apply snapshot
-//   POST /admin/rollback          — rollback one step
-//   POST /admin/set               — set one shared key; body: {"key":"...","value":"..."}
-//   GET  /admin/worker            — responding worker PID
+//   GET  /admin/state                  — current key-value + prop state
+//   GET  /admin/snapshots              — list snapshot ids
+//   POST /admin/snapshots              — create snapshot; body: {"name":"..."}
+//   POST /admin/raw-snapshot           — create explicit; body: {"name":"...","ops":[...]}
+//   GET  /admin/snapshots/:id          — snapshot JSON content
+//   POST /admin/apply/:id              — apply snapshot
+//   POST /admin/rollback               — rollback one step
+//   POST /admin/set                    — set one shared key; body: {"key":"...","value":"..."}
+//   POST /admin/compact/:id            — compact a snapshot in place; returns {removed:N}
+//   POST /admin/squash                 — merge snapshots; body: {"ids":[...],"name":"..."}
+//   GET  /admin/worker                 — responding worker PID
 
 import * as std from 'std';
 import * as os  from 'os';
@@ -435,6 +440,9 @@ admin.createSnapshot = function (name) {
             ops.push({ prop: desc, value: val });
         }
     });
+    if (admin.options.compact) {
+        ops = compactOps(ops, _baseOps());
+    }
     var snap = { id: id, ts: Math.floor(Date.now() / 1000), ops: ops };
     _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
     _setPinned(id);
@@ -495,6 +503,77 @@ admin.rollback = function () {
 };
 
 admin.compactOps = compactOps;
+
+/* ------------------------------------------------------------------ *
+ * admin.options — tunables                                            *
+ * ------------------------------------------------------------------ */
+
+admin.options = {
+    compact: false,   /* auto-compact ops on createSnapshot */
+};
+
+/* ------------------------------------------------------------------ *
+ * admin.compactSnapshot(id)                                           *
+ * ------------------------------------------------------------------ *
+ * Rewrite a snapshot's ops-list in place using compactOps (last-write-
+ * wins + identity removal vs _baseOps()).  Returns the number of ops
+ * removed.  Useful for pruning noise before archiving.
+ */
+admin.compactSnapshot = function (id) {
+    var text = _readFile(_snapshotPath(id));
+    if (!text) { throw new Error('compactSnapshot: snapshot not found: ' + id); }
+
+    var snap;
+    try { snap = JSON.parse(text); } catch (e) {
+        throw new Error('compactSnapshot: parse error: ' + e.message);
+    }
+
+    var before  = snap.ops ? snap.ops.length : 0;
+    snap.ops    = compactOps(snap.ops || [], _baseOps());
+    var removed = before - snap.ops.length;
+
+    _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
+    return removed;
+};
+
+/* ------------------------------------------------------------------ *
+ * admin.squash(ids, name)                                             *
+ * ------------------------------------------------------------------ *
+ * Merge N snapshots into a single new snapshot that encodes the net
+ * effect of applying them in sequence.
+ *
+ * Algorithm:
+ *   1. Concatenate the ops-lists of all named snapshots in order.
+ *   2. Run compactOps (last-write-wins + identity removal).
+ *   3. Write as a new snapshot and pin it.
+ *
+ * Returns the new snapshot id.  The source snapshots are left intact.
+ */
+admin.squash = function (ids, name) {
+    if (!ids || !ids.length) { throw new Error('squash: ids array required'); }
+    if (!name)               { throw new Error('squash: name required'); }
+
+    var allOps = [];
+    ids.forEach(function (id) {
+        var text = _readFile(_snapshotPath(id));
+        if (!text) { throw new Error('squash: snapshot not found: ' + id); }
+        var snap;
+        try { snap = JSON.parse(text); } catch (e) {
+            throw new Error('squash: parse error in ' + id + ': ' + e.message);
+        }
+        if (snap.ops) {
+            snap.ops.forEach(function (op) { allOps.push(op); });
+        }
+    });
+
+    var compacted = compactOps(allOps, _baseOps());
+
+    var id   = _seqId(name);
+    var snap = { id: id, ts: Math.floor(Date.now() / 1000), ops: compacted };
+    _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');
+    _setPinned(id);
+    return id;
+};
 
 nginx.admin = admin;
 
@@ -584,6 +663,24 @@ if (!adminLoc) {
                 if (!setBody || !setBody.key) { return err(400, 'key required'); }
                 nginx.shared.set(setBody.key, String(setBody.value));
                 return ok({ key: setBody.key, value: setBody.value });
+            }
+
+            /* POST /admin/compact/:id — compact a snapshot's ops in place */
+            var compactMatch = uri.match(/^\/admin\/compact\/([^\/]+)$/);
+            if (m === 'POST' && compactMatch) {
+                var removed = admin.compactSnapshot(compactMatch[1]);
+                return ok({ id: compactMatch[1], removed: removed });
+            }
+
+            /* POST /admin/squash — merge snapshots; body: {"ids":[...],"name":"..."} */
+            if (m === 'POST' && uri === '/admin/squash') {
+                var squashBody = parseBody(await r.readBody());
+                if (!squashBody) { return err(400, 'invalid JSON body'); }
+                if (!Array.isArray(squashBody.ids) || !squashBody.ids.length) {
+                    return err(400, 'ids array required');
+                }
+                if (!squashBody.name) { return err(400, 'name required'); }
+                return ok({ id: admin.squash(squashBody.ids, squashBody.name) });
             }
 
             err(404, 'unknown: ' + m + ' ' + uri);
