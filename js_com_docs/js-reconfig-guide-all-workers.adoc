@@ -110,28 +110,32 @@ from config phase or from a Worker/SharedWorker thread.
 
 === Flow diagram
 
+The broadcast to other workers is *asynchronous*.  `cfgWorker.postMessage()`
+returns immediately; fan-out messages are delivered to each worker's event
+loop in a subsequent iteration.  To guarantee all workers have applied before
+any new connection is accepted, the handler must **await an acknowledgement**
+from every fan-out recipient before calling `resumeAllWorkers()`.
+
 [source,text]
 ----
-  Worker 0 (handler):              Master process:          Other workers:
+  Worker 0 (handler):        SharedWorker:        Workers 1…N:
 
   await suspendAllWorkers()
-    │ ── cmd ──────────────────►  broadcast SUSPEND
-    │                                  │ ──────────────► Worker 1: suspend ack
-    │                                  │ ──────────────► Worker 2: suspend ack
-    │                                  │    (500 ms timeout)
-    │ ◄── reply_fd readable ──────  all acked
-    │ (Promise resolves)
-    │
-    ├─ apply batch mutations to this worker
-    ├─ broadcast via SharedWorker ─────────────────────► Worker 1: apply
-    │                                                     Worker 2: apply
-    │
+  ────────────────────────────────────────────►  all suspended
+
+  apply mutations locally
+
+  postMessage('set') ────────► fan-out to 1…N ──►  applyChange()
+                                                    postMessage('set-ack')
+                               count acks ◄──────────────────────────────
+                               all acked →
+                               postMessage('set-complete')
+  await 'set-complete' ◄─────────────────────
+
   await resumeAllWorkers()
-    │ ── cmd ──────────────────►  broadcast RESUME
-    │                                  │ ──────────────► Worker 1: resume ack
-    │                                  │ ──────────────► Worker 2: resume ack
-    │ ◄── reply_fd readable ──────  all acked
-    (Promise resolves — all workers accepting again)
+  ────────────────────────────────────────────►  all resume
+
+  All workers now hold identical config.  No request sees partial state.
 ----
 
 While suspended, new TCP connections queue in the OS socket backlog
@@ -140,12 +144,17 @@ typically synchronous field writes only, not async probes.
 
 === Example: atomic batch update across all workers
 
+The cfgWorker must support an ACK protocol (`set-ack` → `set-complete`) so
+the handler can confirm that every worker applied before resuming.  See the
+updated `cfgworker.js` in <<_strategy_1_sharedworker_based_config_broadcast>>
+below.
+
 [source,javascript]
 ----
 loc.handler = async (req) => {
     const cfg = JSON.parse(await req.readBody());
 
-    // Validate BEFORE suspending — keep the suspension window short
+    // Validate BEFORE suspending — keep the suspension window short.
     const ok = await probeBackend(req);
     if (!ok) {
         req.respond(400, {}, 'validation failed');
@@ -155,23 +164,31 @@ loc.handler = async (req) => {
     await nginx.suspendAllWorkers();
 
     try {
-        // Apply to this worker
+        // Apply to this worker.
         nginx.http.upstreams[0].peers.forEach((p, i) => {
             if (cfg.weights[i] !== undefined) { p.weight = cfg.weights[i]; }
         });
 
-        // Broadcast: other workers apply in their onmessage handler
-        // before their first new request after resumeAllWorkers()
-        cfgWorker.postMessage({ type: 'set', payload: cfg });
+        // Broadcast to all OTHER workers and wait until every worker
+        // acknowledges that it has applied — then resumeAllWorkers() is safe.
+        await new Promise(function (resolve) {
+            cfgWorker.onmessage = function (msg) {
+                if (msg.data.type === 'set-complete') { resolve(); }
+            };
+            cfgWorker.postMessage({ type: 'set', payload: cfg });
+        });
 
         req.json({ applied: true });
     } finally {
-        await nginx.resumeAllWorkers();    // always re-enable
+        await nginx.resumeAllWorkers();    // safe: all workers applied
     }
 };
 ----
 
 === Example: atomic cross-worker rollback
+
+Both the success path (`set`) and the error path (`rollback`) fan out to other
+workers; both must be awaited before `resumeAllWorkers()`.
 
 [source,javascript]
 ----
@@ -179,7 +196,7 @@ loc.handler = async (req) => {
     const snap = req.location.snapshot();      // save rollback state
     const cfg  = JSON.parse(await req.readBody());
 
-    // Validate before suspending
+    // Validate before suspending.
     const ok = await probeBackend(req);
     if (!ok) {
         req.respond(400, {}, 'validation failed');
@@ -192,16 +209,30 @@ loc.handler = async (req) => {
         req.location.root              = cfg.root;
         req.location.proxy.readTimeout = cfg.proxy.readTimeout;
 
-        cfgWorker.postMessage({ type: 'set', payload: cfg });
+        await new Promise(function (resolve) {
+            cfgWorker.onmessage = function (msg) {
+                if (msg.data.type === 'set-complete') { resolve(); }
+            };
+            cfgWorker.postMessage({ type: 'set', payload: cfg });
+        });
+
         req.json({ applied: true });
 
     } catch (e) {
-        snap.restore();                                            // revert this worker
-        cfgWorker.postMessage({ type: 'rollback', payload: cfg }); // revert others
+        snap.restore();    // revert this worker
+
+        // Broadcast rollback and wait for all workers to revert before resume.
+        await new Promise(function (resolve) {
+            cfgWorker.onmessage = function (msg) {
+                if (msg.data.type === 'rollback-complete') { resolve(); }
+            };
+            cfgWorker.postMessage({ type: 'rollback', payload: cfg });
+        });
+
         req.respond(500, {}, e.message);
 
     } finally {
-        await nginx.resumeAllWorkers();
+        await nginx.resumeAllWorkers();    // safe: all workers reverted/applied
     }
 };
 ----
@@ -267,17 +298,35 @@ Define the SharedWorker in `js_source`.  It runs once in the master at
 
 const cfgWorker = new SharedWorker('cfgworker.js');
 
-cfgWorker.onmessage = (msg) => {
-    // Received a fan-out from cfgWorker; apply the change to this worker
-    const change = msg.data;
-    applyChange(change);
-};
+nginx.broadcast(function () {
+    cfgWorker.onmessage = function (msg) {
+        var type = msg.data.type;
+
+        if (type === 'upstream.weight') {
+            // Eventual-consistency fan-out — apply directly.
+            applyChange(msg.data);
+
+        } else if (type === 'set') {
+            // Atomic fan-out from suspendAllWorkers context — apply and ACK.
+            applyChange(msg.data.payload);
+            cfgWorker.postMessage({ type: 'set-ack' });
+
+        } else if (type === 'rollback') {
+            // Atomic rollback fan-out — revert and ACK.
+            applyChange(msg.data.payload);
+            cfgWorker.postMessage({ type: 'rollback-ack' });
+        }
+    };
+    cfgWorker.postMessage({ type: 'get' });   // catch up on restart
+});
 
 function applyChange(change) {
-    if (change.type === 'upstream.weight') {
-        const ups = nginx.http.upstreams.find(u => u.name === change.upstream);
+    if (!change) { return; }
+    var type = change.type || 'upstream.weight';
+    if (type === 'upstream.weight') {
+        var ups  = nginx.http.upstreams.find(function (u) { return u.name === change.upstream; });
         if (!ups) { return; }
-        const peer = ups.peers.find(p => p.address === change.peer);
+        var peer = ups.peers.find(function (p) { return p.address === change.peer; });
         if (!peer) { return; }
         peer.weight = change.weight;   // write_mode='global' → this worker's copy
     }
@@ -286,27 +335,64 @@ function applyChange(change) {
 
 [source,javascript]
 ----
-// cfgworker.js  (runs inside the SharedWorker pthread)
+// cfgworker.js  (SharedWorker pthread — uses nginx onconnect/port pattern)
 
-// Simple in-memory desired state
-const desiredWeights = {};   // { 'upstreamName/peerAddr': weight }
+var desiredWeights = {};   // { 'upstream/peer': weight }
+var _ports  = [];
+var _pending = null;       // {sender, needed, count, completeType}
 
-onmessage = (msg) => {
-    const { type, payload, replyTo } = msg.data;
+onconnect = function (e) {
+    var port = e.ports[0];
+    _ports.push(port);
 
-    if (type === 'set') {
-        // Store desired state
-        const key = payload.upstream + '/' + payload.peer;
-        desiredWeights[key] = payload.weight;
+    port.onmessage = function (ev) {
+        var type    = ev.data.type;
+        var payload = ev.data.payload;
 
-        // Fan out to all workers (broadcast postMessage)
-        postMessage({ type: 'upstream.weight', ...payload });
+        if (type === 'set') {
+            // Store desired state and fan out to all OTHER workers with ACK.
+            if (payload && payload.upstream && payload.peer) {
+                desiredWeights[payload.upstream + '/' + payload.peer] = payload.weight;
+            }
+            _fanOutAndAck(port, { type: 'set', payload: payload }, 'set-ack', 'set-complete');
 
-    } else if (type === 'get') {
-        // Return current desired state to requesting worker
-        postMessage({ replyTo, state: desiredWeights });
-    }
+        } else if (type === 'set-ack') {
+            _collectAck('set-complete');
+
+        } else if (type === 'rollback') {
+            // Restore previous weights and fan out with ACK.
+            var prev = payload && desiredWeights[payload.upstream + '/' + payload.peer];
+            var reverted = { upstream: payload.upstream, peer: payload.peer, weight: prev };
+            _fanOutAndAck(port, { type: 'rollback', payload: reverted }, 'rollback-ack', 'rollback-complete');
+
+        } else if (type === 'rollback-ack') {
+            _collectAck('rollback-complete');
+
+        } else if (type === 'get') {
+            port.postMessage({ type: 'sync', state: desiredWeights });
+        }
+    };
 };
+
+function _fanOutAndAck(senderPort, msg, ackType, completeType) {
+    var fanout = _ports.filter(function (p) { return p !== senderPort; });
+    if (fanout.length === 0) {
+        senderPort.postMessage({ type: completeType });
+        return;
+    }
+    _pending = { sender: senderPort, needed: fanout.length, count: 0,
+                 ackType: ackType, completeType: completeType };
+    fanout.forEach(function (p) { p.postMessage(msg); });
+}
+
+function _collectAck(completeType) {
+    if (!_pending || _pending.completeType !== completeType) { return; }
+    _pending.count++;
+    if (_pending.count >= _pending.needed) {
+        _pending.sender.postMessage({ type: completeType });
+        _pending = null;
+    }
+}
 ----
 
 === Request handler: propagate a weight change
@@ -317,11 +403,11 @@ loc.handler = async (req) => {
     const body   = JSON.parse(await req.readBody());
     const change = { upstream: body.upstream, peer: body.peer, weight: body.weight };
 
-    // 1. Apply locally (this worker is already up-to-date after postMessage fan-out
-    //    returns, but apply immediately so this request sees the new state)
+    // 1. Apply locally so this request sees the new state immediately.
     applyChange(change);
 
-    // 2. Tell SharedWorker to fan out to all other workers
+    // 2. Tell SharedWorker to fan out to all other workers (eventual consistency —
+    //    no suspendAllWorkers() here; other workers converge within one event-loop tick).
     cfgWorker.postMessage({ type: 'set', payload: change });
 
     req.json({ applied: true });
@@ -377,26 +463,17 @@ loc.handler = async (req) => {
 };
 ----
 
-The SharedWorker's rollback handler restores `desiredWeights` and fans the
-original values back to all workers:
-
-[source,javascript]
-----
-// inside cfgworker.js onmessage:
-} else if (type === 'rollback') {
-    const key = payload.upstream + '/' + payload.peer;
-    const prev = desiredWeights[key];   // value before the failed 'set'
-
-    if (prev !== undefined) {
-        postMessage({ type: 'upstream.weight', ...payload, weight: prev });
-    }
-}
-----
+The SharedWorker's `rollback` branch (shown in the full `cfgworker.js` above)
+restores `desiredWeights` to the previous value and fans the original weight
+back to all other workers.  Both the `set` and `rollback` postMessage calls
+here are fire-and-forget (no `suspendAllWorkers`) — this is an
+*eventual-consistency* rollback.
 
 NOTE: Between the `set` fan-out and the `rollback` fan-out there is a brief
 window where some workers may have the new value and others the old one.
 This is inherent to eventual-consistency approaches and is acceptable for
-most configuration use cases.
+most configuration use cases.  For strict atomicity combine with
+`suspendAllWorkers()` as shown in sections 2.4 and 2.5.
 
 == Strategy 2: SharedArrayBuffer (SAB) for numeric parameters
 
