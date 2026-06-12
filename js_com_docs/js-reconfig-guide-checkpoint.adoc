@@ -360,6 +360,11 @@ loc.handler = (req) => {
 Combine `suspendAllWorkers()` with the SharedWorker broadcast so that all
 workers restore consistently before any new request is accepted anywhere.
 
+The handler must **await a completion signal** from the SharedWorker before
+calling `resumeAllWorkers()`.  Without this, workers resume while the fan-out
+messages are still queued in their socket buffers and the new config has not
+yet been applied.
+
 [source,javascript]
 ----
 loc.handler = async (req) => {
@@ -380,40 +385,106 @@ loc.handler = async (req) => {
         // Apply on this worker
         applyFromPlainObject(req, data);
 
-        // Broadcast restore to all other workers
-        cfgWorker.postMessage({ type: 'restore', name, data });
+        // Broadcast to all OTHER workers and wait until every worker
+        // acknowledges that it has applied the checkpoint.
+        // resumeAllWorkers() must NOT be called until this resolves.
+        await new Promise(function (resolve) {
+            cfgWorker.onmessage = function (msg) {
+                if (msg.data.type === 'restore-complete') { resolve(); }
+            };
+            cfgWorker.postMessage({ type: 'restore', name: name, data: data });
+        });
 
         req.json({ restored: name });
 
     } catch (e) {
         req.respond(500, {}, 'restore failed: ' + e.message);
     } finally {
+        // Safe: all workers have already applied the checkpoint.
         await nginx.resumeAllWorkers();
     }
 };
 ----
 
-Add a handler in `cfgworker.js` for the restore message type:
+Add the `restore` / `restore-ack` handlers in `cfgworker.js`.
+The SharedWorker collects one `restore-ack` per fan-out recipient and only
+then sends `restore-complete` back to the initiating worker:
 
 [source,javascript]
 ----
-// inside cfgworker.js onmessage:
-} else if (type === 'restore') {
-    // Fan out the checkpoint data to all workers
-    postMessage({ type: 'apply-checkpoint', data });
-}
+// cfgworker.js  — full onconnect with ACK tracking for atomic ops
+
+var _desired = null;
+var _ports   = [];
+var _pending = null;   // {sender, needed, count, completeType}
+
+onconnect = function (e) {
+    var port = e.ports[0];
+    _ports.push(port);
+
+    port.onmessage = function (ev) {
+        var type = ev.data.type;
+
+        if (type === 'apply' || type === 'rollback') {
+            _desired = (ev.data.snap !== undefined) ? ev.data.snap : null;
+            _ports.forEach(function (p) {
+                if (p !== port) { p.postMessage(ev.data); }
+            });
+
+        } else if (type === 'restore' || type === 'set') {
+            // Fan out to all OTHER workers, track ACKs, notify sender on done.
+            var fanout = _ports.filter(function (p) { return p !== port; });
+            var completeType = type === 'restore' ? 'restore-complete'
+                                                  : 'set-complete';
+            var ackType      = type === 'restore' ? 'restore-ack' : 'set-ack';
+
+            if (fanout.length === 0) {
+                // Single-worker deployment — nothing to fan out.
+                port.postMessage({ type: completeType });
+            } else {
+                _pending = { sender: port, needed: fanout.length,
+                             count: 0, ackType: ackType,
+                             completeType: completeType };
+                fanout.forEach(function (p) { p.postMessage(ev.data); });
+            }
+
+        } else if (type === 'restore-ack' || type === 'set-ack') {
+            // A fan-out recipient finished applying — count towards completion.
+            if (_pending && _pending.ackType === type) {
+                _pending.count++;
+                if (_pending.count >= _pending.needed) {
+                    _pending.sender.postMessage({ type: _pending.completeType });
+                    _pending = null;
+                }
+            }
+
+        } else if (type === 'get') {
+            port.postMessage({ type: 'sync', snap: _desired });
+        }
+    };
+};
 ----
 
-And in the main worker script:
+In the main worker script, apply the fan-out payload and send the ACK:
 
 [source,javascript]
 ----
-cfgWorker.onmessage = (msg) => {
-    if (msg.data.type === 'apply-checkpoint') {
-        // This worker receives the fan-out; no suspension needed here —
-        // the initiating worker holds suspendAllWorkers() until after the
-        // broadcast, so all workers are still suspended when this runs.
-        applyFromPlainObject(null, msg.data.data);   // null req = global write
+cfgWorker.onmessage = function (msg) {
+    var type = msg.data.type;
+
+    if (type === 'apply' || type === 'rollback' || type === 'sync') {
+        _applySnapshot(msg.data.snap || null);
+
+    } else if (type === 'restore') {
+        // Fan-out recipient: apply and acknowledge so the initiating worker
+        // knows it is safe to call resumeAllWorkers().
+        applyFromPlainObject(null, msg.data.data);
+        cfgWorker.postMessage({ type: 'restore-ack' });
+
+    } else if (type === 'set') {
+        // Fan-out recipient for atomic config apply.
+        applyFromPlainObject(null, msg.data.payload);
+        cfgWorker.postMessage({ type: 'set-ack' });
     }
 };
 ----
@@ -422,14 +493,18 @@ cfgWorker.onmessage = (msg) => {
 
 Validate before suspending, then atomically apply + checkpoint inside the
 suspension window so that the "new config" and the "last-known-good
-checkpoint" are always consistent:
+checkpoint" are always consistent.
+
+As with the restore case above, `resumeAllWorkers()` must not be called until
+all workers have acknowledged the fan-out — otherwise workers resume before
+they hold the new config.
 
 [source,javascript]
 ----
 loc.handler = async (req) => {
     const cfg = JSON.parse(await req.readBody());
 
-    // Validate BEFORE suspending — keep the suspension window short
+    // Validate BEFORE suspending — keep the suspension window short.
     const valid = await validateConfig(cfg);
     if (!valid) {
         req.respond(400, {}, 'invalid config');
@@ -441,24 +516,31 @@ loc.handler = async (req) => {
     try {
         const rollback = req.location.snapshot();   // rollback point
 
-        // Apply
+        // Apply on this worker.
         req.location.root = cfg.root;
         // … more fields …
 
-        // Promote to last-known-good checkpoint
+        // Promote to last-known-good checkpoint.
         const lkg = req.location.snapshot();
         saveCheckpoint('last-known-good', lkg);
 
-        // Broadcast
-        cfgWorker.postMessage({ type: 'set', payload: cfg });
+        // Broadcast to all OTHER workers and wait for every worker to
+        // acknowledge before resuming — see cfgworker.js above for the
+        // 'set' / 'set-ack' / 'set-complete' protocol.
+        await new Promise(function (resolve) {
+            cfgWorker.onmessage = function (msg) {
+                if (msg.data.type === 'set-complete') { resolve(); }
+            };
+            cfgWorker.postMessage({ type: 'set', payload: cfg });
+        });
 
         req.json({ applied: true });
 
     } catch (e) {
-        // rollback is defined only if suspension succeeded
         req.respond(500, {}, e.message);
 
     } finally {
+        // Safe: every worker has already applied cfg.
         await nginx.resumeAllWorkers();
     }
 };
@@ -468,22 +550,24 @@ loc.handler = async (req) => {
 
 [source,text]
 ----
-  Worker 0 (handler):              All workers:
+  Worker 0 (handler):              SharedWorker:        Workers 1…N:
 
   await suspendAllWorkers()
-  ─────────────────────────────►   all suspended (no new requests anywhere)
+  ─────────────────────────────────────────────────►  all suspended
 
-  applyFromPlainObject(req, data)  ← writes to this worker's structs
+  applyFromPlainObject(req, data)   ← this worker
 
-  cfgWorker.postMessage(restore) ──► SharedWorker fan-out
-                                       │
-                                       ├──► Worker 1: applyFromPlainObject
-                                       └──► Worker 2: applyFromPlainObject
+  postMessage('restore') ─────────► fan-out to 1…N ──►  applyFromPlainObject
+                                                          postMessage('restore-ack')
+                                    count acks ◄──────────────────────────────
+                                    all acked →
+                                    postMessage('restore-complete')
+  await 'restore-complete' ◄──────────────────────
 
   await resumeAllWorkers()
-  ─────────────────────────────►   all resume (queued connections accepted)
+  ─────────────────────────────────────────────────►  all resume
 
-  All workers now have identical config matching the checkpoint.
+  All workers now have identical config.  No request sees partial state.
 ----
 
 
