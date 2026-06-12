@@ -21,8 +21,8 @@ snapshots/
 
 ### Snapshot format
 
-Snapshots use an **ops-list** format.  Each op is either a property write, a
-named handler install, or a structural change:
+Snapshots use an **ops-list** format.  Four op families coexist in the same
+snapshot:
 
 ```json
 {
@@ -30,7 +30,8 @@ named handler install, or a structural change:
   "ts": 1710000000,
   "ops": [
     { "path": "http.upstreams[0].peers[0].weight", "value": 10 },
-    { "path": "http.upstreams[0].peers[1].weight", "value":  1 },
+    { "prop": { "upstream": "backend", "peer": "10.0.0.1:8080",
+                "property": "weight" }, "value": 10 },
     { "path": "/canary/", "handler": "canaryHandler" },
     { "op": "addServer",   "name": "dynamic.local" },
     { "op": "addLocation", "serverName": "dynamic.local",
@@ -41,29 +42,54 @@ named handler install, or a structural change:
 
 ### Supported op types
 
-| `op` field     | Effect                                                  |
-|----------------|---------------------------------------------------------|
-| *(absent)*     | `nginx.set(path, value)` — set a peer scalar property   |
-| *(absent)*     | `loc.handler = fn` — install/clear a named JS handler   |
-| `addServer`    | Add a virtual server (name required)                    |
-| `removeServer` | Remove a virtual server by name                         |
-| `addLocation`  | Add a location to a server (serverName + pattern)       |
-| `removeLocation` | Remove a location from a server                       |
-| `addListener`  | Create a socket, attach it, and optionally bind a server|
+| Shape | Effect |
+|---|---|
+| `{path, value}` | `nginx.set(path, value)` — index-based path (fragile if topology changes) |
+| `{prop, value}` | Named-descriptor COM scalar — resolved by name at apply time (stable) |
+| `{path, handler}` | Install/clear a named JS handler on a location |
+| `{op: "addServer", name}` | Add a virtual server |
+| `{op: "removeServer", name}` | Remove a virtual server |
+| `{op: "addLocation", serverName, pattern, handler?}` | Add a location |
+| `{op: "removeLocation", serverName, pattern}` | Remove a location |
+| `{op: "addListener", address, serverName?}` | Create socket, attach, bind server |
 
-Structural ops (`addServer`, `addLocation`) require a `handler` name that was
-pre-registered with `nginx.admin.registerHandler(name, fn)` in the init script.
+### Named-descriptor `{prop}` ops
+
+`{prop}` ops identify COM objects by **stable names** instead of array
+indices.  Use them wherever you would otherwise write a fragile index-based
+path like `"http.upstreams[0].peers[0].weight"`.
+
+Descriptor shapes:
+
+| Shape | Resolves to |
+|---|---|
+| `{upstream, property}` | upstream-level scalar |
+| `{upstream, peer, property}` | individual peer (`weight`, `down`, …) |
+| `{server, property}` | server-level scalar |
+| `{server, location, property}` | location scalar |
+| `{server, location, subobject, property}` | sub-object (`proxy`, `gzip`, …) |
+| string | raw `nginx.set()` path (backward compat) |
+
+Optional `"default"` in a descriptor sets the value used on rollback-to-base.
+
+Structural ops (`addServer`, `addLocation`) still require a `handler` name
+pre-registered via `nginx.admin.registerHandler(name, fn)` in the init script.
 
 ## Admin HTTP API
 
-| Method | Path                  | Action                                  |
-|--------|-----------------------|-----------------------------------------|
-| GET    | /admin/state          | Current live config delta (JSON)        |
-| GET    | /admin/snapshots      | List snapshot ids (JSON array)          |
-| POST   | /admin/snapshots      | Create snapshot → `{"id":"0001-…"}`     |
-| GET    | /admin/snapshots/:id  | Show snapshot JSON content              |
-| POST   | /admin/apply/:id      | Apply snapshot → `{"applied":"0001-…"}` |
-| POST   | /admin/rollback       | Roll back to previous snapshot          |
+| Method | Path | Action |
+|---|---|---|
+| GET | `/admin/state` | Current live delta + managed prop values (JSON) |
+| GET | `/admin/snapshots` | List snapshot ids (JSON array) |
+| POST | `/admin/snapshots` | Create snapshot → `{"id":"…"}` |
+| POST | `/admin/raw-snapshot` | Create from explicit ops; body `{"name":"…","ops":[…]}` |
+| GET | `/admin/snapshots/:id` | Show snapshot JSON content |
+| POST | `/admin/apply/:id` | Apply snapshot → `{"applied":"…"}` |
+| POST | `/admin/rollback` | Roll back one step |
+| POST | `/admin/set` | Set one `nginx.shared` key; body `{"key":"…","value":"…"}` |
+| POST | `/admin/compact/:id` | Compact snapshot ops in place → `{"removed":N}` |
+| POST | `/admin/squash` | Merge N snapshots; body `{"ids":[…],"name":"…"}` |
+| GET | `/admin/worker` | Responding worker PID |
 
 ### Query parameters
 
@@ -72,33 +98,57 @@ pre-registered with `nginx.admin.registerHandler(name, fn)` in the init script.
 ## JS API (`nginx.admin`)
 
 ```js
-nginx.admin.state()                      // current delta vs base
-nginx.admin.createSnapshot(name)         // persist delta → returns id
+nginx.admin.init({props: [...]})         // declare managed COM scalar props
+nginx.admin.state()                      // delta vs base + live prop values
+nginx.admin.createSnapshot(name)         // persist delta + props → returns id
 nginx.admin.createRawSnapshot(name, ops) // persist explicit ops-list
 nginx.admin.listSnapshots()              // sorted list of ids
 nginx.admin.applySnapshot(id)            // reset to base + apply
 nginx.admin.rollback()                   // step back one snapshot
 nginx.admin.pin(id)                      // remember for next restart
 nginx.admin.registerHandler(name, fn)    // register a named JS handler
-nginx.admin.compactSnapshot(id)          // deduplicate ops in place
-nginx.admin.squash(ids, name)            // merge snapshots into one
-nginx.admin.options.compact              // auto-compact on createSnapshot
+nginx.admin.compactSnapshot(id)          // deduplicate ops in place → N removed
+nginx.admin.squash(ids, name)            // merge N snapshots into one
+nginx.admin.compactOps(ops [, base])     // pure dedup function (last-write-wins)
+nginx.admin.options.compact              // bool: auto-compact on createSnapshot
 ```
+
+### Declaring managed COM scalar properties
+
+`admin.init({props})` lets you declare COM scalar properties that
+`createSnapshot()` auto-captures and `rollback()` resets to defaults.
+Each descriptor uses **stable names** (not indices):
+
+```js
+nginx.admin.init({
+    props: [
+        { upstream: 'backend', peer: '10.0.0.1:8080',
+          property: 'weight', default: 5 },
+        { server: 'api', location: '/api/', subobject: 'proxy',
+          property: 'connectTimeout', default: 5000 }
+    ]
+});
+```
+
+After `init()`, `admin.state()` returns a `"props"` sub-object with live
+values alongside the existing `"ops"` and `"peers"` fields.
 
 ## Files
 
-| File                  | Purpose                                        |
-|-----------------------|------------------------------------------------|
-| `nginx.conf`          | Base nginx configuration                       |
-| `conf/admin.js`       | Admin core: snapshot/rollback/structural ops   |
-| `conf/admin-api.js`   | HTTP REST dispatcher (mounts on `/admin/`)     |
-| `snapshots/`          | Persisted snapshot JSON files                  |
-| `t/js_admin_base.t`   | Base-state capture and peer sync tests         |
-| `t/js_admin_snapshot.t` | createSnapshot / applySnapshot tests         |
-| `t/js_admin_rollback.t` | rollback and pin tests                       |
-| `t/js_admin_api.t`    | HTTP REST endpoint tests                       |
-| `t/js_admin_compact.t`| compactSnapshot and squash tests               |
-| `t/js_admin_struct.t` | Structural ops: addLocation/Server, listener   |
+| File | Purpose |
+|---|---|
+| `nginx.conf` | Base nginx configuration |
+| `conf/admin.js` | Admin core: snapshot/rollback/structural ops + `{prop}` named descriptors |
+| `conf/admin-api.js` | HTTP REST dispatcher (mounts on `/admin/`) |
+| `snapshots/` | Persisted snapshot JSON files |
+| `t/js_admin_base.t` | Base-state capture and peer sync |
+| `t/js_admin_snapshot.t` | createSnapshot / applySnapshot |
+| `t/js_admin_rollback.t` | rollback and pin |
+| `t/js_admin_api.t` | HTTP REST endpoint coverage |
+| `t/js_admin_compact.t` | compactSnapshot and squash |
+| `t/js_admin_struct.t` | Structural ops: addLocation/Server, listener |
+| `t/js_admin_edge.t` | Edge cases |
+| `t/js_admin_prop.t` | `{prop}` named-descriptor ops; `admin.init`; new REST endpoints |
 
 ## Running
 

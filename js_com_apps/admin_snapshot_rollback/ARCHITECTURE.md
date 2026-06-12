@@ -43,15 +43,33 @@ must be torn down during a reset.
 
 Each op is one of:
 
-| Shape                                           | Effect                            |
-|-------------------------------------------------|-----------------------------------|
-| `{path, value}`                                 | `nginx.set(path, value)`          |
-| `{path, handler}`                               | install / clear a JS handler      |
-| `{op:"addServer", name}`                        | `nginx.http.addServer(name)`      |
-| `{op:"removeServer", name}`                     | `nginx.http.removeServer(name)`   |
-| `{op:"addLocation", serverName, pattern, handler?}` | `srv.addLocation(pat)`        |
-| `{op:"removeLocation", serverName, pattern}`    | `srv.removeLocation(pat)`         |
-| `{op:"addListener", address, serverName?}`      | `nginx.createSocket` + `attach`   |
+| Shape | Effect |
+|---|---|
+| `{path, value}` | `nginx.set(path, value)` — index-based (fragile if topology changes) |
+| `{prop, value}` | Named-descriptor COM scalar — resolved by `_resolveTarget(desc)` at apply time using `upstream.name`, `peer.address`, `server.name`, `location.path` instead of fragile indices |
+| `{path, handler}` | Install / clear a JS handler on a location |
+| `{op:"addServer", name}` | `nginx.http.addServer(name)` |
+| `{op:"removeServer", name}` | `nginx.http.removeServer(name)` |
+| `{op:"addLocation", serverName, pattern, handler?}` | `srv.addLocation(pat)` |
+| `{op:"removeLocation", serverName, pattern}` | `srv.removeLocation(pat)` |
+| `{op:"addListener", address, serverName?}` | `nginx.createSocket` + `attach` |
+
+### `{prop}` named descriptor
+
+`_resolveTarget(desc)` walks the COM tree at apply time:
+- `{upstream, peer?, property}` — finds upstream by name, peer by `p.address`
+- `{server, location?, subobject?, property}` — finds server by `s.name` / `s.names[]`, location by `l.path`
+- string — falls back to `nginx.set(path, value)` (backward compat)
+
+`_readProp(desc)` is the read counterpart used by `createSnapshot` to capture
+live values of declared managed props.
+
+### Managed props (`admin.init`)
+
+`admin.init({props: [...]})` populates `_managedProps`.  Each descriptor may
+include an optional `"default"` value used by `_applyOps` when rolling back
+past the first snapshot.  `createSnapshot` appends `{prop, value}` ops for
+each managed prop.  `admin.state()` includes a `"props"` sub-object.
 
 ---
 
@@ -198,9 +216,13 @@ if any, via `loc.clearHandler()`).
 
 1. Walk the ops list in REVERSE order.
 2. Keep the LAST occurrence of each `(op-type, key)` — earlier duplicates are
-   shadowed (last-write-wins).
-3. If `baseOps` is provided, remove any `{path, value}` op whose value equals
-   the baseline value (identity removal).
+   shadowed (last-write-wins).  Keys:
+   - `{path}` ops: `'V:<path>'`
+   - `{prop}` ops: `'P:<upstream>:<peer>:<server>:<location>:<subobject>:<property>'`
+   - `{path, handler}` ops: `'H:<path>'`
+   - structural `{op}` ops: `'S:<op>:<name>:<serverName>:<pattern>'`
+3. If `baseOps` is provided, remove any `{path}` or `{prop}` op whose value
+   equals the baseline value (identity removal).
 
 `squash(ids, name)` concatenates the ops of multiple snapshots and compacts
 the result into a single new snapshot.
@@ -209,12 +231,13 @@ the result into a single new snapshot.
 
 ## Test coverage
 
-| Test file              | What it covers                                            |
-|------------------------|-----------------------------------------------------------|
-| `js_admin_base.t`      | Baseline capture; peer weight delta detection             |
-| `js_admin_snapshot.t`  | `createSnapshot`, `applySnapshot`, snapshot JSON format   |
-| `js_admin_rollback.t`  | `rollback`, `pin`, multi-step rollback chains             |
-| `js_admin_api.t`       | All HTTP REST endpoints; error responses                  |
-| `js_admin_compact.t`   | `compactSnapshot`, `squash`; ops deduplication            |
-| `js_admin_struct.t`    | `addLocation`, `removeLocation`, `addServer`,             |
-|                        | `removeServer`, `addListener`; rollback of structural ops |
+| Test file | What it covers |
+|---|---|
+| `js_admin_base.t` | Baseline capture; peer weight delta detection |
+| `js_admin_snapshot.t` | `createSnapshot`, `applySnapshot`, snapshot JSON format |
+| `js_admin_rollback.t` | `rollback`, `pin`, multi-step rollback chains |
+| `js_admin_api.t` | HTTP REST endpoints; error responses |
+| `js_admin_compact.t` | `compactSnapshot`, `squash`; ops deduplication |
+| `js_admin_edge.t` | Edge cases |
+| `js_admin_struct.t` | `addLocation`, `removeLocation`, `addServer`, `removeServer`, `addListener`; structural rollback |
+| `js_admin_prop.t` | `{prop}` named-descriptor create/apply; `admin.init` auto-capture; `compactOps` dedup for `{prop}`; rollback to defaults; `compact/:id`, `squash`, `worker` REST endpoints |

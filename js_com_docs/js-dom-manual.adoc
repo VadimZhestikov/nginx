@@ -2759,11 +2759,16 @@ cd js_com_demos/A2_Cross_Worker_Coordination/A2.7_Admin_plugin_snapshot_rollback
 bash test.sh   # 20 sections, 361 checks
 ----
 
-The test suite covers: plugin load on all 4 workers, shared-key CRUD,
-snapshot create/apply/rollback, structural `addLocation`/`removeLocation`
+The A2.7 demo test suite covers: plugin load on all 4 workers, shared-key
+CRUD, snapshot create/apply/rollback, structural `addLocation`/`removeLocation`
 fan-out, `{prop}` named-descriptor ops (stable across `addLocation` index
 shifts), auto-capture of COM scalars in `createSnapshot`, `compactSnapshot`,
 and `squash`.
+
+The reference application `js_com_apps/admin_snapshot_rollback/t/` (8 files,
+121 checks) covers the same areas plus index-based `{path}` ops, the
+`admin.init({props})` auto-capture flow, edge cases, and the new REST
+endpoints (`compact/:id`, `squash`, `set`, `worker`).
 
 
 == External Config Sources and Full Reload

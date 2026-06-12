@@ -31,15 +31,27 @@ An empty ops list means nginx is at its baseline.
 
 ## 3. Peer weight management
 
-### Change a peer weight
+Two op formats are supported.  **Prefer `{prop}`** for new snapshots — it uses
+stable names that survive peer reordering.
 
-```bash
-# Set upstream "backend" peer 0 weight to 10
-curl -s -X POST -H "Host: static1.local" \
-  "http://127.0.0.1:8080/admin/apply/0001-weight-shift"
+### Stable approach: `{prop}` named descriptor (recommended)
+
+```json
+{ "ops": [
+    { "prop": { "upstream": "backend",
+                "peer":     "10.0.0.1:8080",
+                "property": "weight" }, "value": 10 },
+    { "prop": { "upstream": "backend",
+                "peer":     "10.0.0.2:8080",
+                "property": "down" },   "value": true }
+  ]
+}
 ```
 
-The ops-list format accepts any path recognised by `nginx.set()`:
+The `peer` field is matched against `p.address` at apply time — if peers are
+reordered the correct peer is still targeted.
+
+### Legacy: index-based `{path}` (fragile if topology changes)
 
 ```json
 { "ops": [
@@ -48,6 +60,8 @@ The ops-list format accepts any path recognised by `nginx.set()`:
   ]
 }
 ```
+
+Breaks silently if a peer is inserted before index 0.
 
 ### Capture the current state as a snapshot
 
@@ -223,19 +237,76 @@ hook and re-apply it on each `nginx -s reload`.
 
 ---
 
-## 9. Creating snapshots programmatically
+## 9. Declaring managed COM scalar properties (`admin.init`)
+
+Call `nginx.admin.init` once in your init script to declare COM scalar
+properties that `createSnapshot()` should auto-capture and `rollback()` should
+reset to defaults.  Use stable named descriptors (not index-based paths):
+
+```js
+// conf/init.js
+nginx.admin.init({
+    props: [
+        { upstream: 'backend', peer: '10.0.0.1:8080',
+          property: 'weight', default: 5 },
+        { upstream: 'backend', peer: '10.0.0.2:8080',
+          property: 'weight', default: 3 },
+        { server: 'api.example.com', location: '/api/', subobject: 'proxy',
+          property: 'connectTimeout', default: 5000 }
+    ]
+});
+```
+
+After `init()`:
+- `createSnapshot()` appends `{prop, value}` ops for each declared property,
+  capturing the current live value automatically.
+- `rollback()` resets declared props to their `"default"` values when rolling
+  back to the base state (past the first snapshot).
+- `admin.state()` includes a `"props"` sub-object with live values alongside
+  the existing `"ops"` and `"peers"` fields.
+
+## 10. Creating snapshots programmatically
 
 Use `createRawSnapshot` to inject an explicit ops-list without needing to
-first apply and then capture the state:
+first apply and then capture the state.  Prefer `{prop}` descriptors for
+peer and COM scalar ops:
 
 ```js
 nginx.admin.createRawSnapshot('add-canary', [
     { op: 'addServer',   name: 'canary.example.com' },
     { op: 'addLocation', serverName: 'canary.example.com',
       pattern: '/',      handler: 'canaryHandler' },
-    { path: 'http.upstreams[1].peers[0].weight', value: 5 },
+    // stable: by upstream name + peer address
+    { prop: { upstream: 'backend', peer: '10.0.0.1:8080',
+               property: 'weight' }, value: 5 },
 ]);
 ```
 
-This is useful for generating snapshots from configuration files or external
-data sources without temporarily mutating the live config.
+Or via the REST endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:8080/admin/raw-snapshot \
+     -H 'Content-Type: application/json' \
+     -d '{"name":"add-canary","ops":[...]}'
+```
+
+## 11. Additional REST endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/admin/compact/:id` | Compact snapshot in place; returns `{"removed":N}` |
+| `POST` | `/admin/squash` | Merge snapshots; body `{"ids":[...],"name":"..."}` |
+| `POST` | `/admin/set` | Set one `nginx.shared` key; body `{"key":"...","value":"..."}` |
+| `GET` | `/admin/worker` | Responding worker PID |
+
+```bash
+# Compact (deduplicate) a snapshot
+curl -X POST http://127.0.0.1:8080/admin/compact/0001-weight-shift
+# → {"id":"0001-weight-shift","removed":2}
+
+# Squash three snapshots into one
+curl -X POST http://127.0.0.1:8080/admin/squash \
+     -H 'Content-Type: application/json' \
+     -d '{"ids":["0001-mon","0002-tue","0003-wed"],"name":"week-01"}'
+# → {"id":"0004-week-01"}
+```
