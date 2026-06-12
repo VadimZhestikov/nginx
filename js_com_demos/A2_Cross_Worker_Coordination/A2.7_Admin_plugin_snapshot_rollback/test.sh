@@ -237,6 +237,107 @@ if [ "$rm_fail" -eq 0 ]; then
     PASS=$((PASS+1))
 fi
 
+# ── 16. {prop} op: named peer weight — stable across addLocation ─────────────
+#
+# Demonstrates that {prop} ops using named descriptors (upstream + peer address)
+# correctly target the right COM object even after location-list index changes.
+
+apply_raw() {
+    local ops="$1"
+    local snap
+    snap=$(post /admin/raw-snapshot "{\"name\":\"tmp\",\"ops\":$ops}")
+    local id
+    id=$(echo "$snap" | grep -o '"id":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+    post "/admin/apply/$id" '' > /dev/null
+}
+
+# Initial state: peer weights from nginx.conf defaults (5 and 3)
+STATE=$(admin /admin/state)
+check "initial peer 8091 weight=5" '"demo_backend.127.0.0.1:8091.weight":5' "$STATE"
+check "initial peer 8092 weight=3" '"demo_backend.127.0.0.1:8092.weight":3' "$STATE"
+
+# Create a raw snapshot that sets 8091 weight=2, 8092 weight=7
+SNAP_PROP=$(post /admin/raw-snapshot \
+    '{"name":"peer-rebalance","ops":[
+       {"prop":{"upstream":"demo_backend","peer":"127.0.0.1:8091","property":"weight"},"value":2},
+       {"prop":{"upstream":"demo_backend","peer":"127.0.0.1:8092","property":"weight"},"value":7}
+    ]}')
+check "raw {prop} snapshot created" '"id"' "$SNAP_PROP"
+ID_PROP=$(echo "$SNAP_PROP" | grep -o '"id":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+
+post "/admin/apply/$ID_PROP" '' > /dev/null
+sleep 0.2
+
+STATE=$(admin /admin/state)
+check "after apply: peer 8091 weight=2" '"demo_backend.127.0.0.1:8091.weight":2' "$STATE"
+check "after apply: peer 8092 weight=7" '"demo_backend.127.0.0.1:8092.weight":7' "$STATE"
+
+# Add /inserted/ to shift all location indices — named peer refs must survive
+apply_raw '[{"op":"addLocation","serverName":"localhost","pattern":"/inserted/"}]'
+sleep 0.2
+
+# Reset weights to defaults so we can confirm re-apply is effective
+apply_raw '[{"prop":{"upstream":"demo_backend","peer":"127.0.0.1:8091","property":"weight"},"value":5},
+            {"prop":{"upstream":"demo_backend","peer":"127.0.0.1:8092","property":"weight"},"value":3}]'
+sleep 0.2
+
+STATE=$(admin /admin/state)
+check "weights reset before re-apply test: 8091=5" '"demo_backend.127.0.0.1:8091.weight":5' "$STATE"
+
+# Re-apply the peer-rebalance snapshot after location index shift
+post "/admin/apply/$ID_PROP" '' > /dev/null
+sleep 0.2
+
+STATE=$(admin /admin/state)
+check "re-apply after addLocation: peer 8091 weight=2" '"demo_backend.127.0.0.1:8091.weight":2' "$STATE"
+check "re-apply after addLocation: peer 8092 weight=7" '"demo_backend.127.0.0.1:8092.weight":7' "$STATE"
+
+# Clean up: remove /inserted/ and restore weights
+apply_raw '[{"op":"removeLocation","serverName":"localhost","pattern":"/inserted/"}]'
+apply_raw '[{"prop":{"upstream":"demo_backend","peer":"127.0.0.1:8091","property":"weight"},"value":5},
+            {"prop":{"upstream":"demo_backend","peer":"127.0.0.1:8092","property":"weight"},"value":3}]'
+sleep 0.2
+
+# ── 17. createSnapshot auto-captures live prop values ────────────────────────
+#
+# Verifies that POST /admin/snapshots reads current COM scalar values and
+# stores them as {prop} ops alongside {shared} ops.
+
+# Set peer 8091 weight to 9 via a raw snapshot
+apply_raw '[{"prop":{"upstream":"demo_backend","peer":"127.0.0.1:8091","property":"weight"},"value":9}]'
+sleep 0.2
+
+STATE=$(admin /admin/state)
+check "before auto-snapshot: peer 8091 weight=9" '"demo_backend.127.0.0.1:8091.weight":9' "$STATE"
+
+# Auto-snapshot: createSnapshot should capture weight=9 as a {prop} op
+AUTO=$(post /admin/snapshots '{"name":"auto-capture"}')
+check "auto-snapshot created" '"id"' "$AUTO"
+AUTO_ID=$(echo "$AUTO" | grep -o '"id":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+
+SNAP_JSON=$(admin "/admin/snapshots/$AUTO_ID")
+check "auto-snapshot contains prop op"      '"prop"'          "$SNAP_JSON"
+check "auto-snapshot has value 9"           '"value": 9'      "$SNAP_JSON"
+check "auto-snapshot identifies peer addr"  '127.0.0.1:8091'  "$SNAP_JSON"
+check "auto-snapshot has upstream name"     '"demo_backend"'   "$SNAP_JSON"
+
+# Reset weight to 5 so we can verify restore
+apply_raw '[{"prop":{"upstream":"demo_backend","peer":"127.0.0.1:8091","property":"weight"},"value":5}]'
+sleep 0.2
+
+STATE=$(admin /admin/state)
+check "weight reset to 5 before auto-restore" '"demo_backend.127.0.0.1:8091.weight":5' "$STATE"
+
+# Restore from auto-snapshot → weight must come back to 9
+post "/admin/apply/$AUTO_ID" '' > /dev/null
+sleep 0.2
+
+STATE=$(admin /admin/state)
+check "after auto-snapshot restore: peer 8091 weight=9" '"demo_backend.127.0.0.1:8091.weight":9' "$STATE"
+
+# Restore defaults for clean exit
+apply_raw '[{"prop":{"upstream":"demo_backend","peer":"127.0.0.1:8091","property":"weight"},"value":5}]'
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

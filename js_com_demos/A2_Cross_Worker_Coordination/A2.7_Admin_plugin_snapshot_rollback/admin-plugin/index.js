@@ -23,12 +23,24 @@
 //       via nginx.admin.registerHandler(), inherited by all workers via COW).
 //
 // nginx.pluginConfig (second arg to nginx.use()):
-//   { keys: { "flag.name": "default_value", ... } }
+//   {
+//     keys:  { "flag.name": "default_value", ... },
+//     props: [ descriptor, ... ]   // optional COM scalar tracking
+//   }
+//
+// prop descriptor shapes (all fields are stable names, NOT indices):
+//   { upstream, property }                            — upstream scalar
+//   { upstream, peer, property }                      — individual peer
+//   { server, property }                              — server scalar
+//   { server, location, property }                    — location scalar
+//   { server, location, subobject, property }         — sub-object scalar
+//   string                                            — raw nginx.set() path
+//   Any descriptor may include an optional `default` value used by rollback.
 //
 // nginx.admin API:
-//   state()                        — current nginx.shared key values
+//   state()                        — current nginx.shared + managed prop values
 //   registerHandler(name, fn)      — register a named handler for op resolution
-//   createSnapshot(name)           — save current nginx.shared state
+//   createSnapshot(name)           — save current nginx.shared + prop state
 //   createRawSnapshot(name, ops)   — save an explicit ops array
 //   listSnapshots()                — sorted snapshot list
 //   applySnapshot(id)              — apply + fan out via SharedWorker
@@ -36,7 +48,7 @@
 //   compactOps(ops [, base])       — deduplicate an ops list
 //
 // REST (mounted on /admin/):
-//   GET  /admin/state             — current key-value state
+//   GET  /admin/state             — current key-value + prop state
 //   GET  /admin/snapshots         — list snapshot ids
 //   POST /admin/snapshots         — create snapshot; body: {"name":"..."}
 //   POST /admin/raw-snapshot      — create explicit; body: {"name":"...","ops":[...]}
@@ -55,8 +67,10 @@ import * as os  from 'os';
  * Config from nginx.use() caller                                      *
  * ------------------------------------------------------------------ */
 
-var cfg      = nginx.pluginConfig || {};
-var _managed = cfg.keys || {};
+var cfg           = nginx.pluginConfig || {};
+var _managed      = cfg.keys   || {};
+var _managedProps = cfg.props  || [];   /* [{upstream,peer?,server?,location?,
+                                            subobject?,property,default?}] */
 
 /* ------------------------------------------------------------------ *
  * Named handler registry                                              *
@@ -144,12 +158,129 @@ function _setPinned(id) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Named-descriptor helpers (Task 1 + 2)                              *
+ * ------------------------------------------------------------------ *
+ * Prop descriptors identify COM objects by stable names (upstream
+ * name, peer address, server name, location path) rather than array
+ * indices.  This makes snapshots survive addLocation / peer reordering.
+ *
+ * _propKey(desc)  — stable dedup key for compactOps
+ * _propLabel(desc) — human-readable key for admin.state() display
+ * _resolveTarget(desc) — walk the COM tree to the target object
+ * _readProp(desc) — read the current live value of a described property
+ */
+
+function _propKey(desc) {
+    if (typeof desc === 'string') { return desc; }
+    return [
+        desc.upstream  || '',
+        desc.peer      || '',
+        desc.server    || '',
+        desc.location  || '',
+        desc.subobject || '',
+        desc.property  || ''
+    ].join(':');
+}
+
+function _propLabel(desc) {
+    if (typeof desc === 'string') { return desc; }
+    var parts = [];
+    if (desc.upstream)  { parts.push(desc.upstream); }
+    if (desc.peer)      { parts.push(desc.peer); }
+    if (desc.server)    { parts.push(desc.server); }
+    if (desc.location)  { parts.push(desc.location); }
+    if (desc.subobject) { parts.push(desc.subobject); }
+    if (desc.property)  { parts.push(desc.property); }
+    return parts.join('.');
+}
+
+/*
+ * Resolve a descriptor to {target, property} where target is the COM
+ * object that owns the property.  Returns null and logs on failure.
+ */
+function _resolveTarget(desc) {
+    if (typeof desc === 'string') {
+        /* Raw path — caller does nginx.get/set directly, no resolution needed */
+        return { raw: desc };
+    }
+
+    if (desc.upstream !== undefined) {
+        var ups = nginx.http.upstreams.find(function (u) {
+            return u.name === desc.upstream;
+        });
+        if (!ups) {
+            nginx.log(4, 'admin prop: upstream not found: ' + desc.upstream);
+            return null;
+        }
+        var target = ups;
+        if (desc.peer !== undefined) {
+            target = ups.peers.find(function (p) {
+                return p.address === desc.peer;
+            });
+            if (!target) {
+                nginx.log(4, 'admin prop: peer not found: ' + desc.peer
+                           + ' in upstream ' + desc.upstream);
+                return null;
+            }
+        }
+        return { target: target, property: desc.property };
+    }
+
+    if (desc.server !== undefined || desc.location !== undefined) {
+        var srv = nginx.http.servers.find(function (s) {
+            return s.name === desc.server
+                || (s.names && s.names.indexOf(desc.server) >= 0);
+        });
+        if (!srv) {
+            nginx.log(4, 'admin prop: server not found: ' + desc.server);
+            return null;
+        }
+        var propTarget = srv;
+        if (desc.location !== undefined) {
+            propTarget = srv.locations.find(function (l) {
+                return l.path === desc.location;
+            });
+            if (!propTarget) {
+                nginx.log(4, 'admin prop: location not found: ' + desc.location
+                           + ' on server ' + desc.server);
+                return null;
+            }
+        }
+        if (desc.subobject) {
+            propTarget = propTarget[desc.subobject];
+            if (!propTarget) {
+                nginx.log(4, 'admin prop: subobject not found: ' + desc.subobject);
+                return null;
+            }
+        }
+        return { target: propTarget, property: desc.property };
+    }
+
+    nginx.log(4, 'admin prop: unrecognised descriptor: '
+               + JSON.stringify(desc));
+    return null;
+}
+
+/* Read the current live value of a named descriptor. */
+function _readProp(desc) {
+    if (typeof desc === 'string') { return nginx.get(desc); }
+    var resolved = _resolveTarget(desc);
+    if (!resolved) { return undefined; }
+    return resolved.target[resolved.property];
+}
+
+/* ------------------------------------------------------------------ *
  * Ops application                                                     *
  * ------------------------------------------------------------------ *
- * Supports two op families:
+ * Supports three op families:
  *
  *   {shared, value}
  *       nginx.shared.set(key, value) — instantly cross-worker.
+ *
+ *   {prop, value}
+ *       COM scalar mutation via named descriptor (stable across index
+ *       changes) or raw nginx.set() path string (backward compat).
+ *       Propagation to other workers is the SharedWorker's job.
  *
  *   {op, ...}
  *       Structural mutations on this worker's nginx routing tree.
@@ -163,6 +294,18 @@ function _applyOps(ops) {
 
         if ('shared' in op) {
             nginx.shared.set(op.shared, String(op.value));
+
+        } else if ('prop' in op) {
+            var desc = op.prop;
+            if (typeof desc === 'string') {
+                /* Backward-compat: raw path string */
+                nginx.set(desc, op.value);
+            } else {
+                var resolved = _resolveTarget(desc);
+                if (resolved) {
+                    resolved.target[resolved.property] = op.value;
+                }
+            }
 
         } else if (op.op === 'addLocation') {
             var srvAdd = nginx.http.servers.find(function (s) {
@@ -188,13 +331,27 @@ function _applyOps(ops) {
 }
 
 function _baseOps() {
-    return Object.keys(_managed).map(function (k) {
+    var ops = Object.keys(_managed).map(function (k) {
         return { shared: k, value: _managed[k] };
     });
+    /* Include default values for managed props so rollback-to-base resets them */
+    _managedProps.forEach(function (desc) {
+        if ('default' in desc) {
+            ops.push({ prop: desc, value: desc.default });
+        }
+    });
+    return ops;
 }
 
 /*
- * compactOps(ops [, baseOps]) — last-write-wins deduplication (from admin.js).
+ * compactOps(ops [, baseOps]) — last-write-wins deduplication.
+ *
+ * Handles three op families:
+ *   {shared}  — dedup key 'S:<key>'
+ *   {prop}    — dedup key 'P:<stable descriptor key>' (not index-based)
+ *   {op,...}  — dedup key 'OP:<op>:<serverName>:<pattern>'
+ *
+ * Ops that are already equal to the baseOps value are elided.
  */
 function compactOps(ops, baseOps) {
     if (!ops || !ops.length) { return []; }
@@ -202,7 +359,8 @@ function compactOps(ops, baseOps) {
     var baseVal = {};
     if (baseOps) {
         baseOps.forEach(function (b) {
-            if ('shared' in b) { baseVal['S:' + b.shared] = b.value; }
+            if ('shared' in b) { baseVal['S:' + b.shared]           = b.value; }
+            if ('prop'   in b) { baseVal['P:' + _propKey(b.prop)]   = b.value; }
         });
     }
 
@@ -214,16 +372,20 @@ function compactOps(ops, baseOps) {
         var key;
         if ('shared' in op) {
             key = 'S:' + op.shared;
+        } else if ('prop' in op) {
+            key = 'P:' + _propKey(op.prop);
         } else if (op.op) {
             key = 'OP:' + op.op + ':' + (op.serverName || '') + ':' + (op.pattern || '');
         } else {
-            key = 'P:' + (op.path || '');
+            key = 'UNKNOWN:' + JSON.stringify(op);
         }
 
         if (seen[key]) { continue; }
         seen[key] = true;
 
-        if ('shared' in op && (key in baseVal) && op.value === baseVal[key]) {
+        /* Elide ops that are already at the base value */
+        if (('shared' in op || 'prop' in op)
+                && (key in baseVal) && op.value === baseVal[key]) {
             continue;
         }
 
@@ -247,6 +409,12 @@ admin.state = function () {
     Object.keys(_managed).forEach(function (k) {
         out[k] = nginx.shared.get(k);
     });
+    if (_managedProps.length > 0) {
+        out.props = {};
+        _managedProps.forEach(function (desc) {
+            out.props[_propLabel(desc)] = _readProp(desc);
+        });
+    }
     return out;
 };
 
@@ -259,6 +427,13 @@ admin.createSnapshot = function (name) {
     var id  = _seqId(name);
     var ops = Object.keys(_managed).map(function (k) {
         return { shared: k, value: nginx.shared.get(k) };
+    });
+    /* Capture live values of managed COM scalar properties */
+    _managedProps.forEach(function (desc) {
+        var val = _readProp(desc);
+        if (val !== undefined) {
+            ops.push({ prop: desc, value: val });
+        }
     });
     var snap = { id: id, ts: Math.floor(Date.now() / 1000), ops: ops };
     _writeFile(_snapshotPath(id), JSON.stringify(snap, null, 2) + '\n');

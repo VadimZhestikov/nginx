@@ -51,7 +51,17 @@ nginx.use('./admin-plugin', {
         'routes.products': '0',   /* disabled by default */
         'routes.premium':  '0',
         'canary.weight':   '0'    /* 0 = all traffic to v1 */
-    }
+    },
+    // Managed COM scalar properties — captured by createSnapshot() and
+    // restored by rollback().  Each entry is a stable named descriptor
+    // (upstream name + peer address, not index) so snapshots survive
+    // addLocation / peer reordering.
+    props: [
+        { upstream: 'demo_backend', peer: '127.0.0.1:8091',
+          property: 'weight', default: 5 },
+        { upstream: 'demo_backend', peer: '127.0.0.1:8092',
+          property: 'weight', default: 3 }
+    ]
 });
 
 // ── 2. Register named handlers for structural-op snapshots ───────────────────
