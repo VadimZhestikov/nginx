@@ -2599,16 +2599,85 @@ the admin-shell backend exposes:
 === admin_snapshot_rollback
 
 `js_com_apps/admin_snapshot_rollback/` is a self-contained reference
-application that demonstrates live configuration management without an nginx
-restart.
+application.  The packaged version used in demos is
+`js_com_demos/A2_Cross_Worker_Coordination/A2.7_Admin_plugin_snapshot_rollback/`.
 
 ==== Concept
 
 Operators mutate the live nginx config through the JS COM API (upstream peer
-weights, location handlers, added/removed servers).  After a successful
-change, the current state is captured as a *snapshot* — a JSON ops-list that
-records every write made since the last base-state capture.  Snapshots can be
-applied, rolled back, pinned, and compacted.
+weights, location handlers, added/removed servers, COM scalar properties).
+After a successful change, the current state is captured as a *snapshot* — a
+JSON ops-list.  Snapshots can be applied, rolled back, squashed, and compacted.
+
+==== Snapshot op families
+
+Three op shapes are supported.  All three can appear in the same snapshot.
+
+[cols="1,3", options="header"]
+|===
+| Shape | Semantics
+
+| `{"shared": "key", "value": "v"}`
+| Write to `nginx.shared`.  Lock-free shared memory; visible to all workers
+  instantly without any IPC.
+
+| `{"prop": descriptor, "value": v}`
+| COM scalar mutation via a *stable named descriptor* — identifies the target
+  COM object by upstream name, peer address, server name, or location path
+  (not by array index, which breaks when peers are reordered or locations are
+  added/removed).  See _Named descriptor shapes_ below.
+
+| `{"op": "addLocation"\|"removeLocation", "serverName": "…", "pattern": "…", "handler"?: "name"}`
+| Structural routing-tree mutation.  Per-worker state — requires the
+  SharedWorker fan-out to reach all workers.  `handler` is a name registered
+  via `nginx.admin.registerHandler`.
+|===
+
+==== Named descriptor shapes for `{prop}`
+
+[cols="2,3", options="header"]
+|===
+| Shape | Resolves to
+
+| `{"upstream": "u", "property": "p"}`
+| upstream-level property (e.g. `zone`)
+
+| `{"upstream": "u", "peer": "host:port", "property": "p"}`
+| individual peer property (`weight`, `down`, `maxFails`, …)
+
+| `{"server": "name", "property": "p"}`
+| server-level scalar
+
+| `{"server": "name", "location": "/path/", "property": "p"}`
+| location scalar (`sendfile`, `root`, `keepaliveTime`, …)
+
+| `{"server": "name", "location": "/path/", "subobject": "proxy", "property": "p"}`
+| sub-object property (`proxy.connectTimeout`, `gzip.level`, …)
+
+| `"http.upstreams[0].peers[0].weight"` (string)
+| Raw `nginx.set()` path — backward compat; fragile if topology changes.
+|===
+
+An optional `"default"` field in a descriptor sets the value used when rolling
+back past the first snapshot (resets to the configured baseline).
+
+==== Plugin configuration (`nginx.use`)
+
+[source,javascript]
+----
+nginx.use('./admin-plugin', {
+    // nginx.shared keys — seeded at startup, captured by createSnapshot()
+    keys: { 'feature:beta': '0', 'canary.weight': '0' },
+
+    // COM scalar properties — captured and restored by snapshot/rollback
+    props: [
+        { upstream: 'backend', peer: '10.0.0.1:8080',
+          property: 'weight', default: 5 },
+        { server: 'api.example.com', location: '/api/', subobject: 'proxy',
+          property: 'connectTimeout', default: 5000 }
+    ]
+});
+----
 
 ==== Admin HTTP API
 
@@ -2616,73 +2685,85 @@ applied, rolled back, pinned, and compacted.
 |===
 | Endpoint | Method | Description
 
-| `/admin/state`          | GET  | Return the current config delta vs. base state (JSON ops-list)
-| `/admin/snapshots`      | GET  | List all saved snapshots
-| `/admin/snapshots`      | POST | Create a new snapshot from the current state
-| `/admin/snapshots/:id`  | GET  | Retrieve the JSON for snapshot `id`
-| `/admin/apply/:id`      | POST | Apply snapshot `id` to the live config
-| `/admin/rollback`       | POST | Step back one snapshot (undo last apply)
+| `/admin/state`          | GET  | Current managed-key values + live prop values
+| `/admin/snapshots`      | GET  | Sorted list of snapshot ids
+| `/admin/snapshots`      | POST | Create snapshot from live state; body `{"name":"…"}`
+| `/admin/raw-snapshot`   | POST | Create from explicit ops; body `{"name":"…","ops":[…]}`
+| `/admin/snapshots/:id`  | GET  | Read snapshot JSON
+| `/admin/apply/:id`      | POST | Apply snapshot (local + SW fan-out)
+| `/admin/rollback`       | POST | Step back one snapshot (or reset to base defaults)
+| `/admin/set`            | POST | Set one shared key; body `{"key":"…","value":"…"}`
+| `/admin/compact/:id`    | POST | Compact snapshot ops in place; returns `{"removed":N}`
+| `/admin/squash`         | POST | Merge N snapshots; body `{"ids":[…],"name":"…"}`
+| `/admin/worker`         | GET  | Responding worker PID
 |===
 
 ==== JavaScript API (`nginx.admin`)
 
 [cols="2,3", options="header"]
 |===
-| Method | Description
+| Method / property | Description
 
-| `nginx.admin.state()`             | Return ops-list of mutations since base-state capture
-| `nginx.admin.createSnapshot(name)`| Capture current state as a named snapshot
-| `nginx.admin.listSnapshots()`     | Return array of `{id, name, ts}` objects
-| `nginx.admin.applySnapshot(id)`   | Apply the ops-list of snapshot `id`
-| `nginx.admin.rollback()`          | Revert to the state before the last `applySnapshot`
-| `nginx.admin.pin(id)`             | Pin a snapshot as the rollback target
-| `nginx.admin.registerHandler(name, fn)` | Register a named handler function for structural ops
-| `nginx.admin.compactSnapshot(id)` | Reduce a snapshot to minimal ops
-| `nginx.admin.squash(ids, name)`   | Merge multiple snapshots into one
+| `nginx.admin.options`              | Tunables: `{compact: false}` — set `compact: true` to auto-compact on `createSnapshot`
+| `nginx.admin.state()`              | Current key-value map + `props` sub-object with live COM scalar values
+| `nginx.admin.createSnapshot(name)` | Capture current state (keys + props) as a named snapshot; auto-compacts if `options.compact`
+| `nginx.admin.createRawSnapshot(name, ops)` | Save an explicit ops array verbatim
+| `nginx.admin.listSnapshots()`      | Sorted array of snapshot ids
+| `nginx.admin.applySnapshot(id)`    | Apply snapshot locally then fan out via SharedWorker
+| `nginx.admin.rollback()`           | Revert to previous snapshot (or base defaults)
+| `nginx.admin.registerHandler(name, fn)` | Register a named handler for structural op resolution
+| `nginx.admin.compactSnapshot(id)`  | Rewrite snapshot ops in place (last-write-wins + identity removal); returns count removed
+| `nginx.admin.squash(ids, name)`    | Concatenate ops from N snapshots, compact, write as new snapshot
+| `nginx.admin.compactOps(ops [, base])` | Pure dedup function — last-write-wins + identity removal vs base
 |===
 
-==== `location.clearHandler()`
+==== `squash` and `compactSnapshot`
 
-`location.clearHandler()` is a low-level primitive used internally by the
-admin application to undo handler installations during rollback.
-
-[source,javascript]
-----
-// Install a handler
-loc.handler = function(req) { req.respond(200, {}, 'hello'); };
-
-// Later — remove the handler and restore the original C handler
-loc.clearHandler();
-----
-
-If no JS handler was ever assigned to the location, `clearHandler()` is a
-no-op.  After `clearHandler()`, `location.hasHandler` returns `false`.
-
-==== Running the Demo
+`squash` is the standard way to reduce snapshot history after accumulating
+many incremental changes:
 
 [source,shell]
 ----
-cd js_com_apps/admin_snapshot_rollback
-
-# Start nginx (requires the JS module binary in ../../objs/nginx)
-../../objs/nginx -c nginx.conf
-
-# Inspect current state
-curl http://127.0.0.1:8090/admin/state
-
-# Create a snapshot
-curl -X POST http://127.0.0.1:8090/admin/snapshots
-
-# Apply a snapshot
-curl -X POST http://127.0.0.1:8090/admin/apply/0001-initial
-
-# Roll back
-curl -X POST http://127.0.0.1:8090/admin/rollback
+# Merge a week of daily snapshots into one
+curl -X POST http://127.0.0.1:8116/admin/squash \
+     -H 'Content-Type: application/json' \
+     -d '{"ids":["0001-mon","0002-tue","0003-wed"],"name":"week-01"}'
+# → {"id":"0004-week-01"}
 ----
 
-The test suite in `js_com_apps/admin_snapshot_rollback/t/` covers base-state
-capture, delta computation, snapshot create/apply/rollback, compaction, and
-structural operations (addServer / addLocation / rollback).
+`compactSnapshot` prunes a single snapshot (useful before exporting or archiving):
+
+[source,shell]
+----
+curl -X POST http://127.0.0.1:8116/admin/compact/0004-week-01
+# → {"id":"0004-week-01","removed":3}
+----
+
+==== `location.clearHandler()`
+
+`location.clearHandler()` removes a JS handler and restores the original nginx
+C handler.  Used internally by rollback for structural ops.
+
+[source,javascript]
+----
+loc.handler = function(req) { req.respond(200, {}, 'hello'); };
+// ...
+loc.clearHandler();   // location.hasHandler → false
+----
+
+==== Running the A2.7 demo
+
+[source,shell]
+----
+cd js_com_demos/A2_Cross_Worker_Coordination/A2.7_Admin_plugin_snapshot_rollback
+bash test.sh   # 20 sections, 361 checks
+----
+
+The test suite covers: plugin load on all 4 workers, shared-key CRUD,
+snapshot create/apply/rollback, structural `addLocation`/`removeLocation`
+fan-out, `{prop}` named-descriptor ops (stable across `addLocation` index
+shifts), auto-capture of COM scalars in `createSnapshot`, `compactSnapshot`,
+and `squash`.
 
 
 == External Config Sources and Full Reload

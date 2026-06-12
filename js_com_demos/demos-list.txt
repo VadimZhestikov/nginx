@@ -72,9 +72,12 @@
 
   A2.7  Admin plugin: snapshot / rollback
         nginx.use() packages a complete REST admin API as a reusable plugin.
-        Snapshots capture shared-key state or explicit ops (addLocation,
-        removeLocation); SharedWorker fans ops out to all workers so
-        structural routing changes propagate without a reload.
+        Three snapshot op families: {shared} (nginx.shared KV), {prop} (COM
+        scalar via stable named descriptor — upstream name + peer address, not
+        fragile index), and structural {addLocation/removeLocation}.
+        SharedWorker fans ops to all workers; squash() merges N snapshots into
+        one; compactSnapshot() prunes redundant ops; admin.options.compact
+        auto-compacts on save.
         Classic: no runtime location mutation; no snapshot/rollback API.
 
   A2.8  Live header mutation — two approaches side by side (demo + manager UI)

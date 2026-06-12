@@ -1,8 +1,9 @@
 # A2.7 — Admin Plugin: Snapshot / Rollback
 
 Demonstrates a self-contained admin plugin loaded via `nginx.use()` that provides
-runtime feature-flag control, snapshot creation, and one-step rollback — all
-propagated to every worker without a reload.
+runtime feature-flag control, COM scalar property management, snapshot creation,
+one-step rollback, multi-snapshot squash, and cross-worker propagation — all
+without a reload.
 
 ## What it shows
 
@@ -10,26 +11,28 @@ propagated to every worker without a reload.
 |---|---|
 | `nginx.use(path, config)` | Loads the admin plugin once in master; all workers inherit it via COW fork |
 | `nginx.shared` | Lock-free shared memory KV — any worker writes, all workers read instantly |
-| `nginx.broadcast(fn)` | Seeds default flag values in every worker's `init_process` |
+| `nginx.broadcast(fn)` | Seeds default values in every worker's `init_process` |
 | `SharedWorker` (cfgworker.js) | Config-authority broker — fans out `apply`/`rollback` ops to all workers |
 | `nginx.admin.registerHandler` | Registers named JS handlers at init-conf time; workers resolve names locally from COW-inherited registry |
+| `loc.headers.addHeader/removeHeader` | Runtime `add_header` mutation (via `{prop}` snapshot ops) |
 
-Two categories of snapshot ops are supported:
+Three categories of snapshot ops are supported:
 
 - **`{shared, value}`** — writes `nginx.shared`; instantly visible to all workers, no IPC needed.
-- **`{op, serverName, pattern [, handler]}`** — structural routing-tree mutations (`addLocation`, `removeLocation`); per-worker state that *requires* the SharedWorker fan-out to reach every worker.
+- **`{prop, value}`** — COM scalar mutation using a *stable named descriptor* (upstream name + peer address, not array index); applied via `_resolveTarget` at runtime so snapshots survive peer reordering or `addLocation` calls.
+- **`{op, serverName, pattern [, handler]}`** — structural routing-tree mutations (`addLocation`, `removeLocation`); per-worker state that *requires* the SharedWorker fan-out.
 
 ## File layout
 
 ```
-nginx.conf                  4-worker server on :8116 (reuseport)
-handler.js                  Top-level js_source: loads plugin, registers handlers, installs app routes
+nginx.conf                  4-worker server on :8116 (reuseport); demo_backend upstream
+handler.js                  Top-level js_source: loads plugin with keys + props config
 admin-plugin/
   index.js                  Plugin entry point — nginx.admin API + REST handler
   cfgworker.js              SharedWorker config-authority (fan-out broker)
   package.json              Plugin metadata (ngxjs.main)
 snapshots/                  JSON snapshot files written by the plugin at runtime
-test.sh                     Self-contained test (starts nginx, runs all checks, stops nginx)
+test.sh                     Self-contained test (starts nginx, runs 20 sections, stops nginx)
 ```
 
 ## Running
@@ -39,7 +42,25 @@ cd js_com_demos/A2_Cross_Worker_Coordination/A2.7_Admin_plugin_snapshot_rollback
 bash test.sh
 ```
 
-The test script starts nginx, runs all 15 sections, then stops nginx on exit.
+## Plugin configuration
+
+```js
+nginx.use('./admin-plugin', {
+    // nginx.shared keys managed by this plugin (seeded at startup)
+    keys: {
+        'routes.products': '0',
+        'routes.premium':  '0',
+        'canary.weight':   '0'
+    },
+    // COM scalar properties captured by createSnapshot() and restored by rollback().
+    // Each descriptor uses stable names (not array indices) so snapshots survive
+    // topology changes.
+    props: [
+        { upstream: 'demo_backend', peer: '127.0.0.1:8091', property: 'weight', default: 5 },
+        { upstream: 'demo_backend', peer: '127.0.0.1:8092', property: 'weight', default: 3 }
+    ]
+});
+```
 
 ## Managed shared-memory keys
 
@@ -55,7 +76,7 @@ All endpoints are on the `/admin/` prefix.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/admin/state` | Current values of all managed keys |
+| `GET` | `/admin/state` | Current values of all managed keys + live prop values |
 | `GET` | `/admin/worker` | PID of the responding worker |
 | `GET` | `/admin/snapshots` | Sorted list of snapshot ids |
 | `POST` | `/admin/snapshots` | Create snapshot from current state; body: `{"name":"…"}` |
@@ -63,7 +84,9 @@ All endpoints are on the `/admin/` prefix.
 | `GET` | `/admin/snapshots/:id` | Read snapshot JSON |
 | `POST` | `/admin/apply/:id` | Apply snapshot — local apply then SharedWorker fan-out |
 | `POST` | `/admin/rollback` | Roll back one step (or to base if at first snapshot) |
-| `POST` | `/admin/set` | Set one key; body: `{"key":"…","value":"…"}` |
+| `POST` | `/admin/set` | Set one shared key; body: `{"key":"…","value":"…"}` |
+| `POST` | `/admin/compact/:id` | Compact a snapshot's ops in place; returns `{"removed":N}` |
+| `POST` | `/admin/squash` | Merge N snapshots into one; body: `{"ids":[…],"name":"…"}` |
 
 App endpoints:
 
@@ -77,10 +100,10 @@ App endpoints:
 
 ## Snapshot format
 
-Snapshots are JSON files written to `snapshots/<id>.json`.  The `id` is
-auto-generated as a zero-padded sequence number followed by the caller-supplied
-name (`0001-products-only`, `0002-full-features`, …).
+Snapshots are JSON files in `snapshots/<id>.json`.  The `id` is auto-generated
+as a zero-padded sequence number plus the caller-supplied name.
 
+**Shared-key ops:**
 ```json
 {
   "id": "0001-products-only",
@@ -93,8 +116,28 @@ name (`0001-products-only`, `0002-full-features`, …).
 }
 ```
 
-A raw snapshot can carry structural ops alongside shared-key ops:
+**Named-descriptor COM scalar ops (stable across topology changes):**
+```json
+{
+  "id": "0005-rebalance",
+  "ts": 1777075200,
+  "ops": [
+    { "prop": { "upstream": "demo_backend",
+                "peer":     "127.0.0.1:8091",
+                "property": "weight" }, "value": 2 },
+    { "prop": { "upstream": "demo_backend",
+                "peer":     "127.0.0.1:8092",
+                "property": "weight" }, "value": 8 }
+  ]
+}
+```
 
+The `{prop}` descriptor resolves to the target COM object **at apply time** by
+name (upstream name, peer address, server name, location path).  An index-based
+raw string path (`"http.upstreams[0].peers[0].weight"`) is also accepted for
+backward compatibility, but breaks if peers are reordered.
+
+**Structural ops (mixed with other op types):**
 ```json
 {
   "id": "0003-add-dynamic",
@@ -105,6 +148,33 @@ A raw snapshot can carry structural ops alongside shared-key ops:
   ]
 }
 ```
+
+## squash and compactSnapshot
+
+**`squash(ids, name)` / `POST /admin/squash`** — merge N incremental snapshots
+into a single one that encodes their net effect.  Last-write-wins per key;
+values that are already at the base default are elided.
+
+```bash
+# Typical workflow: squash a week of daily snapshots into one
+curl -X POST http://127.0.0.1:8116/admin/squash \
+     -H 'Content-Type: application/json' \
+     -d '{"ids":["0001-mon","0002-tue","0003-wed","0004-thu","0005-fri"],"name":"week-01"}'
+# → {"id":"0006-week-01"}
+```
+
+**`compactSnapshot(id)` / `POST /admin/compact/:id`** — rewrite a single
+snapshot in place, removing:
+- duplicate ops for the same key (last-write-wins)
+- ops that restore the value to the configured default (no-op)
+
+```bash
+curl -X POST http://127.0.0.1:8116/admin/compact/0001-products-only
+# → {"id":"0001-products-only","removed":2}
+```
+
+**`admin.options.compact`** — when set to `true`, `createSnapshot` auto-compacts
+before writing.  Set via JS: `nginx.admin.options.compact = true`.
 
 ## Cross-worker propagation
 
@@ -126,21 +196,19 @@ POST /admin/apply/:id
         └─▶ worker 3 onmessage → _applyOps(snap.ops)
 ```
 
-`nginx.shared` writes in `_applyOps` are instantly visible to every worker
-(lock-free shared memory), so the fan-out is redundant for scalar flag ops but
-required for structural ops (`addLocation`, `removeLocation`) which mutate each
-worker's private routing tree.
+`nginx.shared` writes are instantly visible to all workers (shared memory).
+Structural ops (`addLocation`, `removeLocation`) and `{prop}` COM scalar writes
+require the fan-out to mutate each worker's private routing tree or local conf.
 
 A worker restarted by the master catches up by sending `{type:'get'}` to the
 SharedWorker in its `nginx.broadcast` callback; the SW replies with the last
-`_desired` snapshot.
+`_desired` snapshot so the new worker applies the full current state.
 
 ## Named handler registry
 
 `nginx.admin.registerHandler(name, fn)` is called at init-conf time (master,
 before fork).  All workers inherit `_handlers` via COW.  Structural-op snapshots
-carry only the handler name string; each worker resolves the function locally —
-no closure serialisation across worker boundaries.
+carry only the handler name string; each worker resolves the function locally.
 
 ```js
 nginx.admin.registerHandler('dynamicHandler', function (r) {
@@ -152,8 +220,8 @@ nginx.admin.registerHandler('dynamicHandler', function (r) {
 ## SharedWorker API note
 
 The nginx SharedWorker script must use the `onconnect` / per-port pattern.
-Global `onmessage` in the SW thread receives raw data (not a `MessageEvent`), and
-global `postMessage` does not exist.  The correct pattern:
+Global `onmessage` in the SW thread receives raw data, and global `postMessage`
+does not exist:
 
 ```js
 var _ports = [];
@@ -162,9 +230,9 @@ onconnect = function (e) {
     var port = e.ports[0];
     _ports.push(port);
 
-    port.onmessage = function (ev) {   // ev.data is the raw message
+    port.onmessage = function (ev) {
         // ...
-        _ports.forEach(function (p) { p.postMessage(ev.data); });  // fan-out
+        _ports.forEach(function (p) { p.postMessage(ev.data); });
     };
 };
 ```
