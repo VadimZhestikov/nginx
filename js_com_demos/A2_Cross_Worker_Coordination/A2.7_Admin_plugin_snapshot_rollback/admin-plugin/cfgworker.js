@@ -33,8 +33,10 @@ onconnect = function (e) {
 
         if (type === 'apply' || type === 'rollback') {
             _desired = (ev.data.snap !== undefined) ? ev.data.snap : null;
-            /* Fan out the same message to ALL connected workers. */
-            _ports.forEach(function (p) { p.postMessage(ev.data); });
+            /* Fan out to all OTHER workers — the sender applied locally already. */
+            _ports.forEach(function (p) {
+                if (p !== port) { p.postMessage(ev.data); }
+            });
 
         } else if (type === 'get') {
             /* Reply with the current desired state to the requesting worker. */

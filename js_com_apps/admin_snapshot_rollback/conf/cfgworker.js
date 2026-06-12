@@ -15,7 +15,10 @@ onconnect = function (e) {
 
         if (type === 'apply' || type === 'rollback') {
             _desired = (ev.data.snap !== undefined) ? ev.data.snap : null;
-            _ports.forEach(function (p) { p.postMessage(ev.data); });
+            /* Skip the sender — it already applied the change locally. */
+            _ports.forEach(function (p) {
+                if (p !== port) { p.postMessage(ev.data); }
+            });
 
         } else if (type === 'get') {
             port.postMessage({ type: 'sync', snap: _desired });
