@@ -111,6 +111,26 @@ function dispatch(req) {
         return true;
     }
 
+    /* POST /admin/compact/:id */
+    var compactMatch = uri.match(/^\/admin\/compact\/([^/]+)$/);
+    if (m === 'POST' && compactMatch) {
+        try {
+            var removed = nginx.admin.compactSnapshot(compactMatch[1]);
+            jsonOk(req, { id: compactMatch[1], removed: removed });
+        } catch (e) {
+            jsonErr(req, e.message && e.message.indexOf('not found') >= 0 ? 404 : 500,
+                    e.message || String(e));
+        }
+        return true;
+    }
+
+    /* GET /admin/worker */
+    if (m === 'GET' && uri === '/admin/worker') {
+        jsonOk(req, { worker: req.variable('pid') });
+        return true;
+    }
+
+    /* raw-snapshot, squash, set — handled by dispatchAsync (need readBody) */
     return false;
 }
 
@@ -121,11 +141,71 @@ var adminLoc = nginx.http.servers[0].locations.find(function (l) {
 if (!adminLoc) {
     nginx.log('admin-api: /admin/ location not found; API disabled');
 } else {
-    adminLoc.handler = function (req) {
+    adminLoc.handler = async function (req) {
         if (!dispatch(req)) {
-            jsonErr(req, 404, 'unknown admin route: ' + req.method + ' ' + req.uri);
+            /* Routes that need an async body read */
+            await dispatchAsync(req);
         }
     };
+}
+
+/*
+ * dispatchAsync — handles routes that require await req.readBody().
+ * Called only when the synchronous dispatch() returned false.
+ */
+async function dispatchAsync(req) {
+    var uri = req.uri;
+    var m   = req.method;
+
+    /* POST /admin/raw-snapshot */
+    if (m === 'POST' && uri === '/admin/raw-snapshot') {
+        var rawText = await req.readBody();
+        var rawBody = null;
+        try { rawBody = JSON.parse(rawText || '{}'); } catch(e) {}
+        if (!rawBody) { jsonErr(req, 400, 'invalid JSON body'); return; }
+        var name = (rawBody && rawBody.name) || (req.queryParams && req.queryParams.name);
+        if (!name) { jsonErr(req, 400, 'name required'); return; }
+        if (!Array.isArray(rawBody.ops)) { jsonErr(req, 400, 'ops array required'); return; }
+        try {
+            jsonOk(req, { id: nginx.admin.createRawSnapshot(name, rawBody.ops) });
+        } catch (e) { jsonErr(req, 500, e.message || String(e)); }
+        return;
+    }
+
+    /* POST /admin/squash — merge snapshots; body: {"ids":[...],"name":"..."} */
+    if (m === 'POST' && uri === '/admin/squash') {
+        var sqText = await req.readBody();
+        var sqBody = null;
+        try { sqBody = JSON.parse(sqText || '{}'); } catch(e) {}
+        if (!sqBody) { jsonErr(req, 400, 'invalid JSON body'); return; }
+        if (!Array.isArray(sqBody.ids) || !sqBody.ids.length) {
+            jsonErr(req, 400, 'ids array required'); return;
+        }
+        if (!sqBody.name) { jsonErr(req, 400, 'name required'); return; }
+        try {
+            jsonOk(req, { id: nginx.admin.squash(sqBody.ids, sqBody.name) });
+        } catch (e) { jsonErr(req, 500, e.message || String(e)); }
+        return;
+    }
+
+    /* POST /admin/set — set one nginx.shared key */
+    if (m === 'POST' && uri === '/admin/set') {
+        var setKey = req.queryParams && req.queryParams.key;
+        if (setKey) {
+            var setVal = (req.queryParams && req.queryParams.value) || '';
+            nginx.shared.set(setKey, String(setVal));
+            jsonOk(req, { key: setKey, value: setVal });
+            return;
+        }
+        var setBody = null;
+        try { setBody = JSON.parse((await req.readBody()) || '{}'); } catch(e) {}
+        if (!setBody || !setBody.key) { jsonErr(req, 400, 'key required'); return; }
+        nginx.shared.set(setBody.key, String(setBody.value !== undefined ? setBody.value : ''));
+        jsonOk(req, { key: setBody.key, value: setBody.value });
+        return;
+    }
+
+    jsonErr(req, 404, 'unknown admin route: ' + m + ' ' + uri);
 }
 
 })();

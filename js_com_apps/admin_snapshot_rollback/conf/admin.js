@@ -44,6 +44,8 @@ var _baseServerNames = null;   /* [name, ...] — server names at init */
 var _baseLocations   = null;   /* {name: [pattern, ...]} — per-server location patterns at init */
 var _handlers        = {};     /* name → function(req) */
 var _pinnedId        = null;   /* id of snapshot to apply on next restart */
+var _managedProps    = [];     /* [{upstream?,peer?,server?,location?,subobject?,property,default?}]
+                                  set via nginx.admin.init({props:[...]}) */
 
 /* ------------------------------------------------------------------ *
  * Config-authority SharedWorker                                       *
@@ -109,6 +111,104 @@ function _listFiles(dir) {
     return res[0].filter(function (n) {
         return n.slice(-5) === '.json';
     }).sort();
+}
+
+/* ------------------------------------------------------------------ *
+ * Named-descriptor helpers for {prop} ops                            *
+ * ------------------------------------------------------------------ *
+ * {prop} ops identify COM objects by stable names (upstream.name,
+ * peer.address, server.name, location.path) rather than array indices.
+ * This makes snapshots survive addLocation / peer reordering.
+ *
+ * Descriptor shapes:
+ *   {upstream, property}                          upstream-level scalar
+ *   {upstream, peer, property}                    individual peer scalar
+ *   {server, property}                            server-level scalar
+ *   {server, location, property}                  location scalar
+ *   {server, location, subobject, property}       sub-object scalar
+ *   string                                        raw nginx.set() path (compat)
+ */
+
+function _propKey(desc) {
+    if (typeof desc === 'string') { return desc; }
+    return [
+        desc.upstream  || '',
+        desc.peer      || '',
+        desc.server    || '',
+        desc.location  || '',
+        desc.subobject || '',
+        desc.property  || ''
+    ].join(':');
+}
+
+function _propLabel(desc) {
+    if (typeof desc === 'string') { return desc; }
+    var parts = [];
+    if (desc.upstream)  { parts.push(desc.upstream); }
+    if (desc.peer)      { parts.push(desc.peer); }
+    if (desc.server)    { parts.push(desc.server); }
+    if (desc.location)  { parts.push(desc.location); }
+    if (desc.subobject) { parts.push(desc.subobject); }
+    if (desc.property)  { parts.push(desc.property); }
+    return parts.join('.');
+}
+
+function _resolveTarget(desc) {
+    if (typeof desc === 'string') { return { raw: desc }; }
+
+    if (desc.upstream !== undefined) {
+        var ups = nginx.http.upstreams.find(function (u) {
+            return u.name === desc.upstream;
+        });
+        if (!ups) {
+            nginx.log(4, 'admin prop: upstream not found: ' + desc.upstream);
+            return null;
+        }
+        var target = ups;
+        if (desc.peer !== undefined) {
+            target = ups.peers.find(function (p) {
+                return p.address === desc.peer;
+            });
+            if (!target) {
+                nginx.log(4, 'admin prop: peer not found: ' + desc.peer);
+                return null;
+            }
+        }
+        return { target: target, property: desc.property };
+    }
+
+    if (desc.server !== undefined || desc.location !== undefined) {
+        var srv = nginx.http.servers.find(function (s) {
+            return s.name === desc.server
+                || (s.names && s.names.indexOf(desc.server) >= 0);
+        });
+        if (!srv) {
+            nginx.log(4, 'admin prop: server not found: ' + desc.server);
+            return null;
+        }
+        var t = srv;
+        if (desc.location !== undefined) {
+            t = srv.locations.find(function (l) {
+                return l.path === desc.location;
+            });
+            if (!t) {
+                nginx.log(4, 'admin prop: location not found: ' + desc.location);
+                return null;
+            }
+        }
+        if (desc.subobject) { t = t[desc.subobject]; }
+        return { target: t, property: desc.property };
+    }
+
+    nginx.log(4, 'admin prop: unrecognised descriptor: ' + JSON.stringify(desc));
+    return null;
+}
+
+function _readProp(desc) {
+    if (typeof desc === 'string') { return nginx.get(desc); }
+    var r = _resolveTarget(desc);
+    if (!r) { return undefined; }
+    return r.target[r.property];
 }
 
 /* ------------------------------------------------------------------ *
@@ -255,7 +355,21 @@ function _applyOps(ops) {
             return;
         }
 
-        /* Property / handler ops */
+        /* Named-descriptor COM scalar op (stable — no index fragility) */
+        if ('prop' in op) {
+            var desc = op.prop;
+            if (typeof desc === 'string') {
+                nginx.set(desc, op.value);
+            } else {
+                var resolved = _resolveTarget(desc);
+                if (resolved) {
+                    resolved.target[resolved.property] = op.value;
+                }
+            }
+            return;
+        }
+
+        /* Property / handler ops (index-based legacy format) */
         if ('handler' in op) {
             var loc = _findLocation(op.path);
             if (!loc) {
@@ -392,28 +506,36 @@ function _applySnapshot(snap) {
 /*
  * compactOps(ops [, baseOps]) — reduce an ops-list by applying these rules:
  *
- *   1. Last-write-wins: if the same path appears multiple times, keep only
- *      the last op for that path (earlier ones are shadowed).
+ *   1. Last-write-wins: if the same key appears multiple times, keep only
+ *      the last op (earlier ones are shadowed).
  *
- *   2. Identity removal: if a {path,value} op sets the value to the same
- *      value already recorded in baseOps, the op is a no-op and is removed.
- *      (Only applies when baseOps is supplied.)
+ *   2. Identity removal: if an op sets a value equal to the base default,
+ *      the op is a no-op and is removed.  (Only when baseOps is supplied.)
  *
- * Handler ops {path, handler} are deduplicated by location path (last wins).
+ * Supported op families:
+ *   {path, value}   — index-based scalar; key = 'V:<path>'
+ *   {path, handler} — handler install/clear; key = 'H:<path>'
+ *   {prop, value}   — named descriptor; key = 'P:<stable descriptor key>'
+ *   {op, ...}       — structural; key = 'S:<op>:<name>:<serverName>:<pattern>'
+ *
  * Passing baseOps = _base removes ops that restore to the baseline.
  */
 function compactOps(ops, baseOps) {
     if (!ops || !ops.length) { return []; }
 
-    /* Build a base-value lookup keyed by path */
+    /* Build a base-value lookup */
     var baseVal = {};
     if (baseOps) {
         baseOps.forEach(function (b) {
-            if ('value' in b) { baseVal[b.path] = b.value; }
+            if ('value' in b && b.path !== undefined) {
+                baseVal['V:' + b.path] = b.value;
+            }
+            if ('value' in b && b.prop !== undefined) {
+                baseVal['P:' + _propKey(b.prop)] = b.value;
+            }
         });
     }
 
-    /* Walk in reverse; keep the LAST occurrence of each path */
     var seen    = {};
     var compact = [];
 
@@ -423,6 +545,8 @@ function compactOps(ops, baseOps) {
         if ('op' in op) {
             key = 'S:' + op.op + ':' + (op.name || '') + ':' +
                   (op.serverName || '') + ':' + (op.pattern || '') + ':' + (op.address || '');
+        } else if ('prop' in op) {
+            key = 'P:' + _propKey(op.prop);
         } else if ('handler' in op) {
             key = 'H:' + op.path;
         } else {
@@ -433,9 +557,7 @@ function compactOps(ops, baseOps) {
         seen[key] = true;
 
         /* Identity removal for value ops */
-        if ('value' in op && (op.path in baseVal)
-            && op.value === baseVal[op.path])
-        {
+        if (('value' in op) && (key in baseVal) && op.value === baseVal[key]) {
             continue;   /* restores to base — no-op */
         }
 
@@ -454,6 +576,28 @@ var admin = {};
 /* admin.options — tunables */
 admin.options = {
     compact: false,   /* auto-compact ops on createSnapshot */
+};
+
+/*
+ * admin.init(config) — optional second-phase configuration.
+ *
+ * Call once after the js_source has been evaluated (e.g. in a subsequent
+ * js_source file or from nginx.broadcast) to supply additional settings:
+ *
+ *   nginx.admin.init({
+ *     props: [
+ *       { upstream: 'backend', peer: '10.0.0.1:8080', property: 'weight', default: 5 },
+ *       { server: 'api', location: '/api/', property: 'sendfile', default: false }
+ *     ]
+ *   });
+ *
+ * Declared props are captured by createSnapshot() and their defaults are
+ * used for rollback-to-base and compactOps identity removal.
+ */
+admin.init = function (config) {
+    if (config && Array.isArray(config.props)) {
+        _managedProps = config.props;
+    }
 };
 
 admin.registerHandler = function (name, fn) {
@@ -497,7 +641,17 @@ admin.state = function () {
     var peers = [];
     Object.keys(peersMap).forEach(function (k) { peers.push(peersMap[k]); });
 
-    return { ops: delta, peers: peers };
+    var out = { ops: delta, peers: peers };
+
+    /* Include live values of any declared managed props */
+    if (_managedProps.length > 0) {
+        out.props = {};
+        _managedProps.forEach(function (desc) {
+            out.props[_propLabel(desc)] = _readProp(desc);
+        });
+    }
+
+    return out;
 };
 
 admin.createSnapshot = function (name) {
@@ -510,8 +664,20 @@ admin.createSnapshot = function (name) {
               seq + '-' + name;
 
     var ops = _getDelta();
+
+    /* Capture live values of any declared managed props */
+    _managedProps.forEach(function (desc) {
+        var val = _readProp(desc);
+        if (val !== undefined) {
+            ops.push({ prop: desc, value: val });
+        }
+    });
+
     if (admin.options.compact) {
-        ops = compactOps(ops, _base);
+        var baseOps = _base.concat(_managedProps
+            .filter(function (d) { return 'default' in d; })
+            .map(function (d) { return { prop: d, value: d.default }; }));
+        ops = compactOps(ops, baseOps);
     }
 
     var snap = {
@@ -662,6 +828,8 @@ admin.squash = function (ids, name) {
     _pinnedId = id;
     return id;
 };
+
+admin.compactOps = compactOps;
 
 /* ------------------------------------------------------------------ *
  * Startup                                                             *
