@@ -1,0 +1,8 @@
+{
+  "name": "cross-worker-admin",
+  "version": "1.0.0",
+  "description": "Admin snapshot/rollback plugin — cross-worker state via nginx.shared",
+  "ngxjs": {
+    "main": "index.js"
+  }
+}

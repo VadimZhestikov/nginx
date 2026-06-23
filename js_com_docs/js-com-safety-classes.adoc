@@ -400,6 +400,42 @@ report `fannedOut:false` — fine for single-worker setups.
 Demo: `A0.3_Safe_config_actuator` (REST actuator; 14-check cross-worker test).
 Tests: `t/js_safe_config.t`.
 
+== Layer 3 — the snapshot-centric admin console
+
+*Implemented* — `js_com_demos/A4_Interactive_Operations/A4.1_Admin_console`.
+The operator-facing surface that composes the whole plan on one screen:
+
+* *History + diff* — the A2.7 admin engine (snapshots, apply / rollback /
+  squash, reset-to-base, fan-out) is reused verbatim as the backend.
+* *Safety annotation (L1)* — every op in a snapshot is resolved through
+  `nginx.describe()` and rendered with its class colour (🟢 / 🟡 / 🔴),
+  propagation, and note.
+* *The gate (L2)* — `POST /c/apply` returns *409* (listing the blocking ops)
+  when a snapshot contains `irreversible` ops and `confirm=1` is absent; the UI
+  turns that into a confirm dialog.
+* *Convergence — the COW trap made visible* — each worker stamps the snapshot
+  id it has applied into `nginx.shared` (`sc.cv.<workerIdx>`); the console
+  compares every stamp to `sc.cv.desired` and shows which worker PIDs have
+  caught up and which are still lagging.  This is the only addition to the
+  otherwise-verbatim A2.7 engine (a stamp at the apply seam).
+
+The console proves the thesis of the whole document: operators interact with
+*history, colored diffs, a safety gate, and convergence state* — never with raw
+`nginx.*` paths or the knowledge of which writes need fan-out.
+
+Demo / test: `A4.1_Admin_console/test.sh` (18 checks — annotation, the 409 gate,
+apply + 4-worker convergence, rollback, and the confirm override).
+
+== Operator-reconfiguration plan — status
+
+[cols="1,3,1", options="header"]
+|===
+| Layer | Deliverable | Status
+| 1 | `nginx.describe()` safety metadata + `A0.2` inspector | done
+| 2 | `nginx.safeConfig` policy gateway + `A0.3` actuator   | done
+| 3 | Snapshot-centric admin console (`A4.1`)               | done
+|===
+
 == Open design question
 
 `propagation` is modelled as a single enum rather than two booleans
