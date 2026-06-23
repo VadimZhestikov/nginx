@@ -454,6 +454,21 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
             return JS_ThrowInternalError(ctx,
                 "createSocket: listen() failed: %s", strerror(saved));
         }
+
+        /*
+         * The listening socket MUST be non-blocking.  nginx's event loop calls
+         * accept() on a wakeup expecting EAGAIN when the backlog was already
+         * drained by a peer worker (shared listener); on a blocking socket that
+         * accept() sleeps in the kernel (wchan inet_csk_accept) and freezes the
+         * whole worker.  nginx sets this in ngx_open_listening_sockets(), which
+         * our injected fd bypasses, so we must do it ourselves.
+         */
+        if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0) {
+            saved = errno;
+            close(fd);
+            return JS_ThrowInternalError(ctx,
+                "createSocket: set O_NONBLOCK failed: %s", strerror(saved));
+        }
     }
 
     /* Allocate state.  Pre-fork: ngx_alloc() → COW-shared heap.

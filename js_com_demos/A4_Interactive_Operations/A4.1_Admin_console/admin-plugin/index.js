@@ -423,8 +423,13 @@ function _applyOps(ops) {
             delete _softRemovedServers[op.name];
 
         } else if (op.op === 'removeListener') {
-            /* Soft pause (per-worker); reversible; tracked for reset. */
-            if (nginx.http.removeListener(op.addr)) {
+            if (op.hard) {
+                /* Hard close (Track N): retire the fd in every worker + master
+                 * → connection refused, port freed.  Irreversible: NOT tracked
+                 * for reset, and restoreListener cannot bring it back. */
+                nginx.http.removeListener(op.addr, { hard: true });
+            } else if (nginx.http.removeListener(op.addr)) {
+                /* Soft pause (per-worker); reversible; tracked for reset. */
                 _softRemovedListeners[op.addr] = op;
             }
 

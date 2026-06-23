@@ -460,9 +460,29 @@ worker's accept event so it stops accepting (the fd stays bound; new
 connections queue in the kernel backlog rather than being refused);
 `restoreListener(addr)` re-arms it (`ngx_add_event`).  Per-worker, fanned out by
 the admin console (A4.1 pauses/resumes `:8136` across all workers via snapshot +
-rollback).  `removeListener(addr, {hard:true})` (close → refused) is *reserved*:
-a worker can't truly close the listener (the master keeps the bound fd), so it
-needs master-side coordination — a follow-up; it currently throws.
+rollback).
+
+`removeListener(addr, {hard:true})` *truly closes* the listener (🔴
+irreversible).  Every worker retires its own fd (`ngx_del_event` + a `/dev/null`
+`dup2` that releases the open-file-description while keeping a harmless
+descriptor so nginx's shutdown `close()` stays clean), and the master's fd is
+retired by the SharedWorker *manager thread* — reached **fire-and-forget**: the
+worker sends the close command with `MSG_DONTWAIT` and never waits for a reply,
+so its event loop can't block on the IPC.  Once every process (workers +
+master) retires the fd the open-file-description refcount hits zero, the port is
+freed and new connections are refused (`ECONNREFUSED`).  `restoreListener` after
+a hard close returns `false` — consistent with the `{hard:true}` variants of
+`removeLocation` / `removeServer`.
+
+NOTE: a manager-created listening socket (`createSocket`) **must** be set
+non-blocking.  It bypasses nginx's `ngx_open_listening_sockets()` (which would
+call `ngx_nonblocking`), and a blocking `accept()` in the event loop wedges the
+whole worker (`wchan inet_csk_accept`) the moment a peer drains the shared
+backlog first.  Likewise `restoreListener` must re-arm the accept event with the
+*same* flags nginx used originally (`NGX_EXCLUSIVE_EVENT` / `EPOLLEXCLUSIVE` for
+a non-reuseport listener under epoll with >1 worker) — re-adding level-triggered
+non-exclusive causes spurious wakeups against the shared socket.  Both were real
+bugs in the soft-pause path, exposed only under concurrent connection load.
 
 `addServer` and `addListener` remain 🔴 *irreversible* — their `cscf` / bound
 socket are committed in `cycle->pool` and never reclaimed at runtime (the
@@ -481,7 +501,7 @@ follow-up); they are classified in the console's annotation map.
 | 3 | Snapshot-centric admin console (`A4.1`)               | done
 | L | Reversible `removeLocation` (tombstone + `restoreLocation`) | done
 | S | Reversible `removeServer` (tombstone + `restoreServer`)     | done
-| N | Reversible `removeListener` (soft pause + `restoreListener`); `{hard:true}` close reserved | done
+| N | Reversible `removeListener` (soft pause + `restoreListener`) + irreversible `{hard:true}` close (true `ECONNREFUSED`, port freed) | done
 |===
 
 == Open design question

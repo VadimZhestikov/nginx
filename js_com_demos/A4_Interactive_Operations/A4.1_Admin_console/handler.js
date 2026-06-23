@@ -142,8 +142,11 @@ nginx.broadcast(function () {
         } else if ('op' in op) {
             a.kind = 'struct';
             a.label = op.op + ' ' + (op.serverName || '') + ' '
-                    + (op.pattern || op.name || '');
+                    + (op.pattern || op.name || op.addr || '')
+                    + (op.hard ? ' {hard}' : '');
             a['class'] = STRUCT_CLASS[op.op] || 'guarded';
+            /* A hard removeListener closes the socket → irreversible. */
+            if (op.op === 'removeListener' && op.hard) { a['class'] = 'irreversible'; }
             a.reversible = (a['class'] !== 'irreversible');
 
         } else if ('handler' in op) {

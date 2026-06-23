@@ -2866,6 +2866,19 @@ ngx_js_mgr_do_create_socket(const char *addr_str)
         return -1;
     }
 
+    /*
+     * Listening socket must be non-blocking — see the matching comment in
+     * ngx_js_socket.c.  A blocking accept() in the event loop wedges the
+     * worker (wchan inet_csk_accept) when a peer drains the shared backlog.
+     */
+    if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0) {
+        saved = errno;
+        close(fd);
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, saved,
+                      "JS manager: createSocket set O_NONBLOCK failed");
+        return -1;
+    }
+
     return fd;
 }
 
@@ -3442,6 +3455,29 @@ ngx_js_sw_manager_thread(void *arg)
                              : NGX_JS_BCAST_TYPE_RESUME;
 
                 ngx_js_mgr_bcast_ctrl(bcast_type, reply_fd);
+
+            } else if (cmd_type == NGX_JS_MGR_CMD_CLOSE_LISTENER) {
+                /*
+                 * Track N hard removeListener — retire the master's fd for the
+                 * listener whose socket handle is in the worker_idx slot.
+                 * Fire-and-forget: the worker does not read the reply, so just
+                 * acknowledge (1 byte) and close.  No blocking, no broadcast.
+                 */
+                uint32_t  handle;
+
+                ngx_memcpy(&handle, cmdbuf + 2 * sizeof(uint32_t),
+                           sizeof(uint32_t));
+
+                ngx_js_listener_close_master(handle);
+
+                status = 0;
+                iov.iov_base = &status;
+                iov.iov_len  = 1;
+                ngx_memzero(&msg, sizeof(msg));
+                msg.msg_iov    = &iov;
+                msg.msg_iovlen = 1;
+                (void) sendmsg(reply_fd, &msg, 0);
+                close(reply_fd);
 
             } else {
                 /* Unknown extended command — send error */
@@ -4087,4 +4123,79 @@ ngx_js_mgr_accept_control(uint32_t cmd_type)
     }
 
     return reply_fds[0];
+}
+
+
+/*
+ * ngx_js_listener_mgr_close — worker-side hard removeListener (Track N).
+ *
+ * FIRE-AND-FORGET: tell the manager to retire the master's fd for the
+ * listener whose socket handle is `handle`, but do NOT wait for the reply.
+ * The worker's event loop must never block on this IPC — the previous
+ * blocking design wedged the loop under heavy concurrent load.
+ *
+ * Command layout: [0:u32][CLOSE_LISTENER:u32][handle:u32] (NGX_JS_MGR_EXT_HDR).
+ * The manager requires a reply_fd in SCM_RIGHTS, so we still send one, but we
+ * close BOTH ends immediately; the manager's reply sendmsg lands on a closed
+ * peer (EPIPE, ignored — nginx runs with SIG_IGN on SIGPIPE).
+ *
+ * The sendmsg itself uses MSG_DONTWAIT so it cannot block either.
+ * Returns 0 (best-effort).
+ */
+int
+ngx_js_listener_mgr_close(uint32_t handle)
+{
+    int       reply_fds[2];
+    uint32_t  zero, cmd_type;
+    uint8_t   cmdbuf[NGX_JS_MGR_EXT_HDR];
+    struct msghdr  msg;
+    struct iovec   iov;
+    union {
+        char            buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr  hdr;
+    } cmsg_snd;
+    struct cmsghdr *cmh;
+
+    if (sw_cmd_fds[1] < 0) {
+        return 0;   /* manager not running — local close already done */
+    }
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, reply_fds) != 0) {
+        return 0;
+    }
+
+    zero     = 0;
+    cmd_type = NGX_JS_MGR_CMD_CLOSE_LISTENER;
+
+    ngx_memcpy(cmdbuf,                       &zero,     sizeof(uint32_t));
+    ngx_memcpy(cmdbuf +   sizeof(uint32_t),  &cmd_type, sizeof(uint32_t));
+    ngx_memcpy(cmdbuf + 2*sizeof(uint32_t),  &handle,   sizeof(uint32_t));
+
+    iov.iov_base = cmdbuf;
+    iov.iov_len  = sizeof(cmdbuf);
+
+    ngx_memzero(&msg, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_snd.buf;
+    msg.msg_controllen = sizeof(cmsg_snd.buf);
+
+    cmh             = CMSG_FIRSTHDR(&msg);
+    cmh->cmsg_level = SOL_SOCKET;
+    cmh->cmsg_type  = SCM_RIGHTS;
+    cmh->cmsg_len   = CMSG_LEN(sizeof(int));
+    ngx_memcpy(CMSG_DATA(cmh), &reply_fds[1], sizeof(int));
+
+    (void) sendmsg(sw_cmd_fds[1], &msg, MSG_DONTWAIT);
+
+    /* Fire-and-forget: drop both reply ends; we never read the ack. */
+    close(reply_fds[0]);
+    close(reply_fds[1]);
+
+    if (sw_cmd_wake_fds[1] >= 0) {
+        uint8_t  wb = 0;
+        if (write(sw_cmd_wake_fds[1], &wb, 1) < 0) { /* ignore */ }
+    }
+
+    return 0;
 }

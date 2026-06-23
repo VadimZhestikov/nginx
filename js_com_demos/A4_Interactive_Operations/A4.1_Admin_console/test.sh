@@ -163,7 +163,52 @@ LRE=1; for i in $(seq 1 12); do [ "$(l8136)" = "200" ] || LRE=0; done
 [ "$LRE" = "1" ] && { echo "PASS: :8136 resumed (200) on all workers after rollback"; PASS=$((PASS+1)); } \
                  || { echo "FAIL: :8136 not resumed on all workers"; FAIL=$((FAIL+1)); }
 
-# ── 11. No error-log noise ───────────────────────────────────────────────────
+# ── 11. Irreversible removeListener {hard:true}: close the socket for good ───
+# A hard removeListener retires the fd in every worker AND the master (via the
+# manager thread, fire-and-forget) → the port is freed and connections are
+# refused.  It is irreversible: the console annotates it 🔴 and the Layer-2 gate
+# blocks it without confirm=1; rollback cannot bring :8136 back.
+HARD='[{"op":"removeListener","addr":"127.0.0.1:8136","hard":true}]'
+post "/c/raw?name=kill-lsn&ops=$(Q "$HARD")" > /dev/null
+HANN=$(curl -s "$B/c/snapshot?id=0006-kill-lsn")
+check "hard removeListener annotated irreversible" '"class":"irreversible"' "$HANN"
+# gate blocks it without confirm
+HGC=$(codep "/c/apply?id=0006-kill-lsn")
+[ "$HGC" = "409" ] && { echo "PASS: hard removeListener blocked without confirm (409)"; PASS=$((PASS+1)); } \
+                   || { echo "FAIL: expected 409 for hard close, got $HGC"; FAIL=$((FAIL+1)); }
+# :8136 is up before the hard close
+check ":8136 serves before hard close" "200" "$(l8136)"
+# apply WITH confirm; this must NOT wedge the worker (the whole point of v2)
+T0=$(date +%s.%N)
+HAP=$(post "/c/apply?id=0006-kill-lsn&confirm=1")
+T1=$(date +%s.%N)
+HEL=$(awk "BEGIN{printf \"%.2f\", $T1-$T0}")
+check "confirm=1 applies hard close" '"applied":"0006-kill-lsn"' "$HAP"
+awk "BEGIN{exit !($HEL < 5)}" && { echo "PASS: hard apply returned fast (${HEL}s, no wedge)"; PASS=$((PASS+1)); } \
+                             || { echo "FAIL: hard apply WEDGED (${HEL}s)"; FAIL=$((FAIL+1)); }
+sleep 1
+# every worker now REFUSES :8136 (curl exit 7 == connection refused).
+# capture the exit code via $(...; echo $?) so set -e is not tripped by it.
+ec8136() { curl -s -o /dev/null --max-time 2 "http://127.0.0.1:8136/worker" 2>/dev/null; echo $?; }
+KILLED=1
+for i in $(seq 1 16); do
+    [ "$(ec8136)" = "7" ] || KILLED=0
+done
+[ "$KILLED" = "1" ] && { echo "PASS: :8136 refuses connections on all workers (ECONNREFUSED)"; PASS=$((PASS+1)); } \
+                    || { echo "FAIL: :8136 not refused on all workers"; FAIL=$((FAIL+1)); }
+# the control port is unharmed
+check ":8135 console unaffected by hard close" "200" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/worker")"
+# irreversible: rollback does NOT bring :8136 back
+post "/c/rollback" > /dev/null
+sleep 0.5
+NOBACK=1
+for i in $(seq 1 8); do
+    [ "$(ec8136)" = "7" ] || NOBACK=0
+done
+[ "$NOBACK" = "1" ] && { echo "PASS: rollback cannot resurrect a hard-closed listener"; PASS=$((PASS+1)); } \
+                    || { echo "FAIL: :8136 came back after rollback (should be irreversible)"; FAIL=$((FAIL+1)); }
+
+# ── 12. No error-log noise ───────────────────────────────────────────────────
 # Benign "No such file" lines are expected while /api/ is hidden (the request
 # falls through to the static handler) — they are not failures.
 if grep -iE '\[error|\[emerg|panic' logs/error.log | grep -vq 'No such file or directory'; then

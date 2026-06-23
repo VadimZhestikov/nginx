@@ -38,6 +38,8 @@
 #include "ngx_js.h"
 #include "ngx_js_socket.h"
 #include "ngx_js_listener.h"
+#include "ngx_js_sw.h"   /* ngx_js_listener_mgr_close (hard removeListener) */
+#include <fcntl.h>       /* open(/dev/null) for the fd-retire trick */
 
 
 /* F2: ngx_js_wrap_server is defined in ngx_js_com_http.c */
@@ -2888,13 +2890,36 @@ ngx_js_listener_pause_local(ngx_js_http_listener_state_t *st)
 static ngx_int_t
 ngx_js_listener_resume_local(ngx_js_http_listener_state_t *st)
 {
+    ngx_uint_t  flags;
+
     if (!st->activated || st->ls == NULL || st->ls->connection == NULL) {
         return NGX_OK;
     }
     if (!st->paused) {
         return NGX_OK;
     }
-    if (ngx_add_event(st->ls->connection->read, NGX_READ_EVENT, 0) != NGX_OK) {
+
+    /*
+     * Re-arm the accept event with the SAME flags nginx used when it first
+     * added this listener in ngx_event_process_init().  For a non-reuseport
+     * listener under epoll with >1 worker, that is NGX_EXCLUSIVE_EVENT
+     * (EPOLLEXCLUSIVE) — the global ngx_use_exclusive_accept records this.
+     *
+     * Re-adding with plain flag 0 (level-triggered, non-exclusive) is a bug:
+     * on a shared listening socket every queued connection then wakes this
+     * worker level-triggered, and when an EPOLLEXCLUSIVE peer accepts it
+     * first, accept() here returns EAGAIN while the event stays asserted —
+     * the worker busy-spins at 100% CPU and starves its other sockets
+     * (its reuseport :8135 stops responding → looks like a full wedge).
+     */
+    flags = 0;
+    if (ngx_use_exclusive_accept && !st->ls->reuseport) {
+        flags = NGX_EXCLUSIVE_EVENT;
+    }
+
+    if (ngx_add_event(st->ls->connection->read, NGX_READ_EVENT, flags)
+        != NGX_OK)
+    {
         return NGX_ERROR;
     }
     st->paused = 0;
@@ -2903,11 +2928,116 @@ ngx_js_listener_resume_local(ngx_js_http_listener_state_t *st)
 
 
 /*
+ * Retire a listening fd in this process: release this process's reference to
+ * the listening socket's open file description (so the port frees once all
+ * references go) while keeping the SAME fd number valid by pointing it at
+ * /dev/null.  nginx's ngx_close_listening_sockets() then closes a harmless
+ * descriptor at shutdown — no EBADF emerg, no reused-fd hazard, no fd growth.
+ */
+static int
+ngx_js_listener_retire_fd(ngx_socket_t fd)
+{
+    int  dn;
+
+    if (fd == (ngx_socket_t) -1) {
+        return 0;
+    }
+    dn = open("/dev/null", O_RDONLY);
+    if (dn < 0) {
+        (void) ngx_close_socket(fd);
+        return -1;
+    }
+    if (dn != (int) fd) {
+        if (dup2(dn, (int) fd) < 0) {
+            (void) close(dn);
+            (void) ngx_close_socket(fd);
+            return -1;
+        }
+        (void) close(dn);
+    }
+    return 0;
+}
+
+
+/*
+ * Worker-side hard close: stop accepting on this worker for the listener whose
+ * socket handle == handle, and retire its fd.  Idempotent.  Deliberately does
+ * NOT ngx_free_connection() at runtime (left for nginx to free at shutdown).
+ */
+ngx_int_t
+ngx_js_listener_close_local(uint32_t handle)
+{
+    ngx_uint_t                     i;
+    ngx_js_http_listener_state_t  *st;
+    ngx_js_socket_state_t         *sock;
+    ngx_connection_t              *c;
+
+    for (i = 0; i < NGX_JS_LISTENER_REG_MAX; i++) {
+        st = ngx_js_listener_reg[i];
+        if (st == NULL || st->socket_handle != handle) {
+            continue;
+        }
+        if (st->closed) {
+            return NGX_OK;
+        }
+
+        if (st->ls != NULL) {
+            c = st->ls->connection;
+            if (c != NULL && c->read->active) {
+                /* flag 0: fd is retired (not closed), so force the epoll DEL */
+                (void) ngx_del_event(c->read, NGX_READ_EVENT, 0);
+            }
+            (void) ngx_js_listener_retire_fd(st->ls->fd);
+        }
+
+        st->paused = 0;
+        st->closed = 1;
+
+        sock = ngx_js_socket_reg[handle];
+        if (sock != NULL) {
+            sock->fd = -1;
+            sock->in_listening = 0;
+        }
+
+        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                      "js: removeListener hard close (pid %P): listener "
+                      "retired, connections refused", ngx_pid);
+        return NGX_OK;
+    }
+    return NGX_OK;
+}
+
+
+/*
+ * Master-side hard close: retire the master's fd for this listener so the
+ * listening socket's OFD refcount can reach zero once every worker retires too.
+ * Called from the manager thread (master process).  Idempotent.
+ */
+void
+ngx_js_listener_close_master(uint32_t handle)
+{
+    ngx_js_socket_state_t  *sock;
+
+    sock = ngx_js_socket_reg[handle];
+    if (sock == NULL || sock->fd < 0) {
+        return;
+    }
+    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                  "js: removeListener hard close (master): retiring listening "
+                  "fd %d, port freed", sock->fd);
+    (void) ngx_js_listener_retire_fd((ngx_socket_t) sock->fd);
+    sock->fd = -1;
+    sock->in_listening = 0;
+}
+
+
+/*
  * nginx.http.removeListener(addr [, {hard:true}])
  *   default — soft pause: stop accepting on this worker (reversible).
- *   {hard:true} — close the socket (connection-refused) is NOT yet supported:
- *     a worker cannot truly close the listener because the master keeps the
- *     bound fd; that needs master-side coordination (a follow-up).  Reserved.
+ *   {hard:true} — hard close: this worker retires its fd, and the manager
+ *     retires the master's fd (fire-and-forget, non-blocking).  Once every
+ *     worker + master retires, the listening socket is fully closed →
+ *     connections refused, port freed.  Irreversible (per Track N decision).
  */
 static JSValue
 ngx_js_http_remove_listener(JSContext *ctx, JSValueConst this_val,
@@ -2930,12 +3060,6 @@ ngx_js_http_remove_listener(JSContext *ctx, JSValueConst this_val,
         JS_FreeValue(ctx, h);
     }
 
-    if (hard) {
-        return JS_ThrowInternalError(ctx,
-            "removeListener: {hard:true} (close/refuse) is not yet supported"
-            " — it needs master-side socket close; use the soft pause (default)");
-    }
-
     addr = JS_ToCStringLen(ctx, &len, argv[0]);
     if (addr == NULL) {
         return JS_EXCEPTION;
@@ -2946,6 +3070,14 @@ ngx_js_http_remove_listener(JSContext *ctx, JSValueConst this_val,
 
     if (st == NULL) {
         return JS_FALSE;   /* no such listener */
+    }
+
+    if (hard) {
+        uint32_t  handle = st->socket_handle;
+
+        (void) ngx_js_listener_close_local(handle);   /* this worker's fd */
+        (void) ngx_js_listener_mgr_close(handle);      /* master's fd (async) */
+        return JS_TRUE;
     }
 
     if (ngx_js_listener_pause_local(st) != NGX_OK) {
@@ -2981,6 +3113,10 @@ ngx_js_http_restore_listener(JSContext *ctx, JSValueConst this_val,
 
     if (st == NULL) {
         return JS_FALSE;
+    }
+
+    if (st->closed) {
+        return JS_FALSE;   /* hard close is irreversible — cannot resurrect */
     }
 
     if (ngx_js_listener_resume_local(st) != NGX_OK) {

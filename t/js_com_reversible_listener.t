@@ -5,8 +5,10 @@
 # removeListener(addr) soft-pauses: ngx_del_event removes the worker's accept
 # event so it stops accepting on that listener (the fd stays bound, so new
 # connections complete the TCP handshake but get no HTTP response — they queue).
-# restoreListener(addr) re-arms the accept event. {hard:true} (close/refuse) is
-# reserved (needs master-side close) and must throw.
+# restoreListener(addr) re-arms the accept event. {hard:true} truly closes the
+# listener: the worker retires its fd and the master (SW manager thread) retires
+# its fd, so the OFD refcount hits zero, the port is freed and connections are
+# refused. Hard close is irreversible — restoreListener afterwards returns false.
 #
 # A second listener is created at init_conf via createSocket()+attach(); the
 # control server (8080) stays up so we can drive remove/restore and never lose
@@ -72,7 +74,7 @@ nginx.broadcast(function () {
 });
 EOF
 
-$t->try_run('no js module')->plan(11);
+$t->try_run('no js module')->plan(14);
 
 my $lport = port(8081);   # the second listener's allocated port
 
@@ -116,5 +118,18 @@ is(probe($lport), 'NORESP',                   'double remove still paused');
 ctl('restore');
 is(probe($lport), 'PONG',                     'restore after double remove serves');
 
-# ── {hard:true} is reserved (must throw) ─────────────────────────────────────
-like(ctl('hard'), qr/not yet supported/,      'hard removeListener is reserved (throws)');
+# ── {hard:true} truly closes the listener (irreversible) ─────────────────────
+like(ctl('hard'), qr/"r":true/,               'hard removeListener returns true');
+
+# the port is freed → new connections are refused (CONNFAIL). The master-side
+# fd retire is fire-and-forget, so poll briefly for the refusal to take effect.
+my $refused = 0;
+for (1 .. 15) {
+    if (probe($lport) eq 'CONNFAIL') { $refused = 1; last; }
+    select(undef, undef, undef, 0.2);
+}
+is($refused, 1,                               'hard close: listener refuses connections (port freed)');
+like(http_get('/ping/'), qr/pong/,            'control port unaffected by hard close');
+
+# irreversible: restoreListener after a hard close cannot bring it back.
+like(ctl('restore'), qr/"r":false/,           'restoreListener after hard close returns false');

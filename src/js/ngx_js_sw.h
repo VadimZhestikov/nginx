@@ -25,6 +25,7 @@
 #define NGX_JS_MGR_CMD_BROADCAST_SOCKET  2u
 #define NGX_JS_MGR_CMD_SUSPEND_ACCEPT    3u
 #define NGX_JS_MGR_CMD_RESUME_ACCEPT     4u
+#define NGX_JS_MGR_CMD_CLOSE_LISTENER    5u  /* hard removeListener (Track N) */
 
 /*
  * Bcast message layout (master → worker via per-worker socketpair).
@@ -153,6 +154,20 @@ int  ngx_js_socket_mgr_broadcast(uint32_t handle,
  * Returns the reply fd on success, -1 on failure.
  */
 int  ngx_js_mgr_accept_control(uint32_t cmd_type);
+
+/*
+ * Track N hard removeListener — FIRE-AND-FORGET.  Tells the manager to close
+ * the master's fd for this listener.  Non-blocking: the worker sends the cmd
+ * with MSG_DONTWAIT and does NOT wait for a reply, so the worker's event loop
+ * is never blocked on IPC.  Worker context only.  Returns 0 (best-effort).
+ */
+int  ngx_js_listener_mgr_close(uint32_t handle);
+
+/* Worker-side hard close (this worker's fd).  Defined in ngx_js_listener.c. */
+ngx_int_t  ngx_js_listener_close_local(uint32_t handle);
+
+/* Master-side hard close (manager thread).  Defined in ngx_js_listener.c. */
+void  ngx_js_listener_close_master(uint32_t handle);
 
 /*
  * Activate this worker's channel for every static SharedWorker.
