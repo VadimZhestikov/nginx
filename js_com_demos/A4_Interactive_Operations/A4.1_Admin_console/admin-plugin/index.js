@@ -105,7 +105,10 @@ nginx.broadcast(function () {
         if (type === 'apply' || type === 'rollback' || type === 'sync') {
             /* Always reset to base first so props absent from the incoming
              * snapshot (e.g. addHeaders after rollback to older snap) are
-             * cleared back to their defaults, not left from a prior state. */
+             * cleared back to their defaults, not left from a prior state.
+             * _restoreSoftRemoved() brings back any tombstoned locations so a
+             * snapshot that doesn't remove them leaves them live. */
+            _restoreSoftRemoved();
             _applyOps(_baseOps());
             if (msg.data.snap) {
                 _applyOps(msg.data.snap.ops);
@@ -125,6 +128,29 @@ nginx.broadcast(function () {
  */
 function _stampConverged(id) {
     nginx.shared.set('sc.cv.' + nginx.workerIdx, String(id));
+}
+
+/*
+ * Reversible-removal bookkeeping (Track L).  removeLocation now tombstones
+ * (reversible), so reset-to-base must restore everything a prior snapshot
+ * soft-removed before applying the target snapshot — otherwise rollback would
+ * leave routes hidden.  Keyed per (server, pattern); ' :: ' separator.
+ */
+var _softRemoved = {};
+
+function _srKey(serverName, pattern) {
+    return serverName + ' :: ' + pattern;
+}
+
+function _restoreSoftRemoved() {
+    Object.keys(_softRemoved).forEach(function (key) {
+        var op  = _softRemoved[key];
+        var srv = nginx.http.servers.find(function (s) {
+            return s.name === op.serverName;
+        });
+        if (srv) { srv.restoreLocation(op.pattern); }
+        delete _softRemoved[key];
+    });
 }
 
 /* ------------------------------------------------------------------ *
@@ -348,7 +374,21 @@ function _applyOps(ops) {
             var srvRm = nginx.http.servers.find(function (s) {
                 return s.name === op.serverName;
             });
-            if (srvRm) { srvRm.removeLocation(op.pattern); }
+            if (srvRm) {
+                /* Soft remove (tombstone) — reversible. Track it so reset-to-base
+                 * can restore it, making rollback symmetric. */
+                srvRm.removeLocation(op.pattern);
+                _softRemoved[_srKey(op.serverName, op.pattern)] = op;
+            }
+
+        } else if (op.op === 'restoreLocation') {
+            var srvRe = nginx.http.servers.find(function (s) {
+                return s.name === op.serverName;
+            });
+            if (srvRe) {
+                srvRe.restoreLocation(op.pattern);
+                delete _softRemoved[_srKey(op.serverName, op.pattern)];
+            }
         }
     });
 }
@@ -511,6 +551,7 @@ admin.applySnapshot = function (id) {
 
     /* Reset to base then apply — mirrors what fan-out receivers do so all
      * workers reach the same state (props absent from snap get cleared). */
+    _restoreSoftRemoved();
     _applyOps(_baseOps());
     _applyOps(snap.ops);
     _setPinned(id);
@@ -536,6 +577,7 @@ admin.rollback = function () {
         admin.applySnapshot(prev);
     } else {
         /* Reset to caller-supplied defaults. */
+        _restoreSoftRemoved();
         _applyOps(_baseOps());
         _setPinned(null);
         nginx.shared.set('sc.cv.desired', 'base');

@@ -246,6 +246,8 @@ static JSValue ngx_js_location_fn_add_location(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 static JSValue ngx_js_location_fn_remove_location(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
+static JSValue ngx_js_location_fn_restore_location(JSContext *ctx,
+    JSValueConst this_val, int argc, JSValueConst *argv);
 static JSValue ngx_js_location_fn_clone(JSContext *ctx,
     JSValueConst this_val, int argc, JSValueConst *argv);
 static JSValue ngx_js_location_fn_snapshot(JSContext *ctx,
@@ -4598,8 +4600,9 @@ static const JSCFunctionListEntry ngx_js_location_proto_funcs[] = {
     JS_CFUNC_DEF("clearHandler",   0, ngx_js_location_fn_clear_handler),
 
     /* Nested-location management (requires srv_op; not on r.location) */
-    JS_CFUNC_DEF("addLocation",    1, ngx_js_location_fn_add_location),
-    JS_CFUNC_DEF("removeLocation", 1, ngx_js_location_fn_remove_location),
+    JS_CFUNC_DEF("addLocation",     1, ngx_js_location_fn_add_location),
+    JS_CFUNC_DEF("removeLocation",  1, ngx_js_location_fn_remove_location),
+    JS_CFUNC_DEF("restoreLocation", 1, ngx_js_location_fn_restore_location),
     JS_CFUNC_DEF("clone",          1, ngx_js_location_fn_clone),
 
     /* Filter list management */
@@ -4766,6 +4769,8 @@ typedef struct {
     ngx_http_core_loc_conf_t  *clcf;
     unsigned                   is_exact:1;  /* 1 = exact match (lq->exact) */
     unsigned                   dynamic:1;   /* 1 = added by addLocation */
+    unsigned                   tombstone:1; /* 1 = removed but restorable;
+                                               skipped when rebuilding the tree */
 } ngx_js_loc_entry_t;
 
 
@@ -4778,6 +4783,7 @@ typedef struct {
     ngx_http_core_loc_conf_t  *clcf;
     unsigned                   caseless:1;  /* 1 = ~* (case-insensitive) */
     unsigned                   dynamic:1;   /* 1 = added by addLocation */
+    unsigned                   tombstone:1; /* 1 = removed but restorable */
 } ngx_js_regex_entry_t;
 #endif
 
@@ -5243,6 +5249,10 @@ ngx_js_rebuild_loc_tree(ngx_js_server_opaque_t *op, ngx_log_t *log)
 
     for (i = 0; i < op->prefix_locs.nelts; i++) {
 
+        if (e[i].tombstone) {
+            continue;   /* removed-but-restorable: exclude from the live tree */
+        }
+
         lq = ngx_palloc(pool, sizeof(ngx_http_location_queue_t));
         if (lq == NULL) {
             ngx_destroy_pool(pool);
@@ -5297,26 +5307,32 @@ swap:
     root_clcf->static_locations = new_root;
 
 #if (NGX_PCRE)
-    /* Rebuild regex_locations array from op->regex_locs[] */
-    if (op->regex_locs.nelts > 0) {
-
-        rloc_arr = ngx_palloc(pool,
-            (op->regex_locs.nelts + 1) * sizeof(ngx_http_core_loc_conf_t *));
-        if (rloc_arr == NULL) {
-            ngx_destroy_pool(pool);
-            return NGX_ERROR;
-        }
+    /* Rebuild regex_locations array from op->regex_locs[], skipping tombstones */
+    {
+        ngx_uint_t  nlive = 0, rj = 0;
 
         re = (ngx_js_regex_entry_t *) op->regex_locs.elts;
         for (ri = 0; ri < op->regex_locs.nelts; ri++) {
-            rloc_arr[ri] = re[ri].clcf;
+            if (!re[ri].tombstone) { nlive++; }
         }
-        rloc_arr[op->regex_locs.nelts] = NULL;
 
-        root_clcf->regex_locations = rloc_arr;
+        if (nlive > 0) {
+            rloc_arr = ngx_palloc(pool,
+                (nlive + 1) * sizeof(ngx_http_core_loc_conf_t *));
+            if (rloc_arr == NULL) {
+                ngx_destroy_pool(pool);
+                return NGX_ERROR;
+            }
+            for (ri = 0; ri < op->regex_locs.nelts; ri++) {
+                if (re[ri].tombstone) { continue; }
+                rloc_arr[rj++] = re[ri].clcf;
+            }
+            rloc_arr[rj] = NULL;
+            root_clcf->regex_locations = rloc_arr;
 
-    } else {
-        root_clcf->regex_locations = NULL;
+        } else {
+            root_clcf->regex_locations = NULL;
+        }
     }
 #endif
 
@@ -5326,18 +5342,25 @@ swap:
         ngx_http_core_loc_conf_t **nloc_arr;
         ngx_uint_t                 ni;
 
-        if (op->named_locs.nelts > 0) {
+        ngx_uint_t  nlive = 0, nj = 0;
+
+        ne = (ngx_js_loc_entry_t *) op->named_locs.elts;
+        for (ni = 0; ni < op->named_locs.nelts; ni++) {
+            if (!ne[ni].tombstone) { nlive++; }
+        }
+
+        if (nlive > 0) {
             nloc_arr = ngx_palloc(pool,
-                (op->named_locs.nelts + 1) * sizeof(ngx_http_core_loc_conf_t *));
+                (nlive + 1) * sizeof(ngx_http_core_loc_conf_t *));
             if (nloc_arr == NULL) {
                 ngx_destroy_pool(pool);
                 return NGX_ERROR;
             }
-            ne = (ngx_js_loc_entry_t *) op->named_locs.elts;
             for (ni = 0; ni < op->named_locs.nelts; ni++) {
-                nloc_arr[ni] = ne[ni].clcf;
+                if (ne[ni].tombstone) { continue; }
+                nloc_arr[nj++] = ne[ni].clcf;
             }
-            nloc_arr[op->named_locs.nelts] = NULL;
+            nloc_arr[nj] = NULL;
             op->cscf->named_locations = nloc_arr;
         } else {
             op->cscf->named_locations = NULL;
@@ -5779,6 +5802,7 @@ ngx_js_do_add_location(JSContext *ctx, ngx_js_server_opaque_t *op,
         re_entry->clcf     = new_clcf;
         re_entry->caseless = caseless;
         re_entry->dynamic  = 1;
+        re_entry->tombstone = 0;   /* ngx_array_push does not zero memory */
 
         /* Rebuild (regex_locations only needs pool; BST unchanged but cheap) */
         if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
@@ -5798,6 +5822,7 @@ ngx_js_do_add_location(JSContext *ctx, ngx_js_server_opaque_t *op,
             entry->clcf     = new_clcf;
             entry->is_exact = 0;
             entry->dynamic  = 1;
+            entry->tombstone = 0;   /* ngx_array_push does not zero memory */
 
             if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
                 op->named_locs.nelts--;
@@ -5814,6 +5839,7 @@ ngx_js_do_add_location(JSContext *ctx, ngx_js_server_opaque_t *op,
             entry->clcf     = new_clcf;
             entry->is_exact = exact_match;
             entry->dynamic  = 1;
+            entry->tombstone = 0;   /* ngx_array_push does not zero memory */
 
             /* Rebuild the live location tree */
             if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
@@ -5872,7 +5898,7 @@ ngx_js_do_remove_location(JSContext *ctx, ngx_js_server_opaque_t *op,
     u_char                    *p;
     ngx_str_t                  name;
     ngx_uint_t                 i;
-    int                        exact_match, is_named;
+    int                        exact_match, is_named, hard;
 #if (NGX_PCRE)
     int                        is_regex;
     ngx_js_regex_entry_t      *re;
@@ -5881,6 +5907,20 @@ ngx_js_do_remove_location(JSContext *ctx, ngx_js_server_opaque_t *op,
     if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx,
             "removeLocation: first argument must be a pattern string");
+    }
+
+    /*
+     * By default removeLocation() TOMBSTONES the entry: it is excluded from the
+     * live routing tree but kept in the array (clcf preserved), so the matching
+     * restoreLocation() can bring it back — making the op reversible.  Passing
+     * { hard: true } restores the legacy splice (irreversible; for dynamic
+     * locations whose clcf is reclaimed when the server is freed).
+     */
+    hard = 0;
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+        JSValue h = JS_GetPropertyStr(ctx, argv[1], "hard");
+        hard = JS_ToBool(ctx, h);
+        JS_FreeValue(ctx, h);
     }
 
     pat_str = JS_ToCString(ctx, argv[0]);
@@ -5949,15 +5989,22 @@ ngx_js_do_remove_location(JSContext *ctx, ngx_js_server_opaque_t *op,
             return JS_FALSE;   /* not found */
         }
 
-        if (i < op->named_locs.nelts - 1) {
-            ngx_memmove(&e[i], &e[i + 1],
-                        (op->named_locs.nelts - i - 1) * sizeof(*e));
-        }
-        op->named_locs.nelts--;
-
-        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
-            op->named_locs.nelts++;
-            return JS_EXCEPTION;
+        if (hard) {
+            if (i < op->named_locs.nelts - 1) {
+                ngx_memmove(&e[i], &e[i + 1],
+                            (op->named_locs.nelts - i - 1) * sizeof(*e));
+            }
+            op->named_locs.nelts--;
+            if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+                op->named_locs.nelts++;
+                return JS_EXCEPTION;
+            }
+        } else {
+            e[i].tombstone = 1;
+            if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+                e[i].tombstone = 0;
+                return JS_EXCEPTION;
+            }
         }
 
         return JS_TRUE;
@@ -5983,17 +6030,23 @@ ngx_js_do_remove_location(JSContext *ctx, ngx_js_server_opaque_t *op,
             return JS_FALSE;   /* not found */
         }
 
-        /* Splice out */
-        if (i < op->regex_locs.nelts - 1) {
-            ngx_memmove(&re[i], &re[i + 1],
-                        (op->regex_locs.nelts - i - 1)
-                        * sizeof(ngx_js_regex_entry_t));
-        }
-        op->regex_locs.nelts--;
-
-        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
-            op->regex_locs.nelts++;
-            return JS_EXCEPTION;
+        if (hard) {
+            if (i < op->regex_locs.nelts - 1) {
+                ngx_memmove(&re[i], &re[i + 1],
+                            (op->regex_locs.nelts - i - 1)
+                            * sizeof(ngx_js_regex_entry_t));
+            }
+            op->regex_locs.nelts--;
+            if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+                op->regex_locs.nelts++;
+                return JS_EXCEPTION;
+            }
+        } else {
+            re[i].tombstone = 1;
+            if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+                re[i].tombstone = 0;
+                return JS_EXCEPTION;
+            }
         }
 
         return JS_TRUE;
@@ -6018,19 +6071,154 @@ ngx_js_do_remove_location(JSContext *ctx, ngx_js_server_opaque_t *op,
         return JS_FALSE;   /* not found */
     }
 
-    /* Splice the entry out of prefix_locs[] */
-    if (i < op->prefix_locs.nelts - 1) {
-        ngx_memmove(&e[i], &e[i + 1],
-                    (op->prefix_locs.nelts - i - 1) * sizeof(*e));
+    if (hard) {
+        /* Splice the entry out of prefix_locs[] (irreversible) */
+        if (i < op->prefix_locs.nelts - 1) {
+            ngx_memmove(&e[i], &e[i + 1],
+                        (op->prefix_locs.nelts - i - 1) * sizeof(*e));
+        }
+        op->prefix_locs.nelts--;
+        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+            op->prefix_locs.nelts++;   /* roll back (entry data still intact) */
+            return JS_EXCEPTION;
+        }
+    } else {
+        /* Tombstone: hide from the tree but keep the entry for restoreLocation */
+        e[i].tombstone = 1;
+        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+            e[i].tombstone = 0;
+            return JS_EXCEPTION;
+        }
     }
-    op->prefix_locs.nelts--;
 
-    /* Rebuild the live location tree */
-    if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
-        op->prefix_locs.nelts++;   /* roll back (entry data still intact) */
+    return JS_TRUE;
+}
+
+
+/*
+ * srv.restoreLocation(pattern) — clear a tombstone set by removeLocation(),
+ * bringing the location back into the live routing tree.  The inverse of the
+ * default (soft) removeLocation.  Returns true if a tombstoned entry matching
+ * pattern was found and restored, false otherwise.
+ *
+ * Pattern grammar matches removeLocation: "@name", "= /exact", "^~ /pfx",
+ * "~ /re", "~* /re", or a bare prefix.
+ */
+static JSValue
+ngx_js_do_restore_location(JSContext *ctx, ngx_js_server_opaque_t *op,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_loc_entry_t   *e;
+    const char           *pat_str;
+    u_char               *p;
+    ngx_str_t             name;
+    ngx_uint_t            i;
+    int                   exact_match, is_named;
+#if (NGX_PCRE)
+    int                   is_regex;
+    ngx_js_regex_entry_t *re;
+#endif
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "restoreLocation: first argument must be a pattern string");
+    }
+
+    pat_str = JS_ToCString(ctx, argv[0]);
+    if (!pat_str) {
         return JS_EXCEPTION;
     }
 
+    p = (u_char *) pat_str;
+    while (*p == ' ') { p++; }
+
+    exact_match = 0;
+    is_named    = 0;
+#if (NGX_PCRE)
+    is_regex    = 0;
+#endif
+
+    if (p[0] == '@') {
+        is_named = 1;
+    } else if (p[0] == '=' && p[1] == ' ') {
+        exact_match = 1; p += 2; while (*p == ' ') { p++; }
+    } else if (p[0] == '^' && p[1] == '~' && p[2] == ' ') {
+        p += 3; while (*p == ' ') { p++; }
+#if (NGX_PCRE)
+    } else if (p[0] == '~' && p[1] == '*' && p[2] == ' ') {
+        is_regex = 1; p += 3; while (*p == ' ') { p++; }
+    } else if (p[0] == '~' && p[1] == ' ') {
+        is_regex = 1; p += 2; while (*p == ' ') { p++; }
+#else
+    } else if (p[0] == '~') {
+        JS_FreeCString(ctx, pat_str);
+        return JS_ThrowTypeError(ctx,
+            "restoreLocation: regex locations require PCRE support");
+#endif
+    }
+
+    name.len  = ngx_strlen(p);
+    name.data = (u_char *) p;
+
+    if (is_named) {
+        e = (ngx_js_loc_entry_t *) op->named_locs.elts;
+        for (i = 0; i < op->named_locs.nelts; i++) {
+            if (e[i].tombstone
+                && e[i].clcf->name.len == name.len
+                && ngx_memcmp(e[i].clcf->name.data, name.data, name.len) == 0)
+            {
+                break;
+            }
+        }
+        JS_FreeCString(ctx, pat_str);
+        if (i == op->named_locs.nelts) { return JS_FALSE; }
+        e[i].tombstone = 0;
+        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+            e[i].tombstone = 1;
+            return JS_EXCEPTION;
+        }
+        return JS_TRUE;
+    }
+
+#if (NGX_PCRE)
+    if (is_regex) {
+        re = (ngx_js_regex_entry_t *) op->regex_locs.elts;
+        for (i = 0; i < op->regex_locs.nelts; i++) {
+            if (re[i].tombstone
+                && re[i].clcf->name.len == name.len
+                && ngx_memcmp(re[i].clcf->name.data, name.data, name.len) == 0)
+            {
+                break;
+            }
+        }
+        JS_FreeCString(ctx, pat_str);
+        if (i == op->regex_locs.nelts) { return JS_FALSE; }
+        re[i].tombstone = 0;
+        if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+            re[i].tombstone = 1;
+            return JS_EXCEPTION;
+        }
+        return JS_TRUE;
+    }
+#endif
+
+    e = op->prefix_locs.elts;
+    for (i = 0; i < op->prefix_locs.nelts; i++) {
+        if (e[i].tombstone
+            && e[i].clcf->name.len == name.len
+            && e[i].is_exact == (unsigned) exact_match
+            && ngx_memcmp(e[i].clcf->name.data, name.data, name.len) == 0)
+        {
+            break;
+        }
+    }
+    JS_FreeCString(ctx, pat_str);
+    if (i == op->prefix_locs.nelts) { return JS_FALSE; }
+    e[i].tombstone = 0;
+    if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+        e[i].tombstone = 1;
+        return JS_EXCEPTION;
+    }
     return JS_TRUE;
 }
 
@@ -6050,6 +6238,25 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
     }
 
     return ngx_js_do_remove_location(ctx, op, argc, argv);
+}
+
+
+/*
+ * srv.restoreLocation(pattern) — public JS method on NginxServer.
+ * Inverse of the default (soft) removeLocation.
+ */
+static JSValue
+ngx_js_server_fn_restore_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_server_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_do_restore_location(ctx, op, argc, argv);
 }
 
 
@@ -6143,6 +6350,29 @@ ngx_js_location_fn_remove_location(JSContext *ctx, JSValueConst this_val,
     }
 
     return ngx_js_do_remove_location(ctx, loc_op->srv_op, argc, argv);
+}
+
+
+/*
+ * loc.restoreLocation(pattern) — inverse of loc.removeLocation().
+ */
+static JSValue
+ngx_js_location_fn_restore_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_location_opaque_t  *loc_op;
+
+    loc_op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
+    if (!loc_op) {
+        return JS_EXCEPTION;
+    }
+
+    if (loc_op->srv_op == NULL) {
+        return JS_ThrowTypeError(ctx,
+            "restoreLocation: not available on r.location (read-only context)");
+    }
+
+    return ngx_js_do_restore_location(ctx, loc_op->srv_op, argc, argv);
 }
 
 
@@ -7347,6 +7577,7 @@ static const JSCFunctionListEntry ngx_js_server_proto_funcs[] = {
     JS_CGETSET_DEF       ("ssl",                      ngx_js_server_get_ssl,                   NULL),
     JS_CFUNC_DEF         ("addLocation",              1, ngx_js_server_fn_add_location),
     JS_CFUNC_DEF         ("removeLocation",           1, ngx_js_server_fn_remove_location),
+    JS_CFUNC_DEF         ("restoreLocation",          1, ngx_js_server_fn_restore_location),
     JS_CFUNC_DEF         ("clone",                    1, ngx_js_server_fn_clone),
     JS_CFUNC_DEF         ("findLocation",             1, ngx_js_server_fn_find_location),
     JS_CFUNC_DEF         ("addHook",                  1, ngx_js_server_fn_add_hook),

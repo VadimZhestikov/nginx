@@ -3720,10 +3720,27 @@ NginxServer  (nginx.http.servers[i])
 │
 ├── setNames(names[])                fn
 ├── addLocation(path [, {template}]) fn    → NginxLocation
-├── removeLocation(path)             fn    → bool
+├── removeLocation(path [, {hard}])  fn    → bool   (reversible: tombstone)
+├── restoreLocation(path)            fn    → bool   (inverse of removeLocation)
 ├── findLocation(path)               fn    → NginxLocation | null
 └── clone(name)                      fn    → NginxServer
 ....
+
+[NOTE]
+====
+`removeLocation(path)` is *reversible by default*: it **tombstones** the
+location — excluded from the live routing tree but kept (clcf preserved), so
+`restoreLocation(path)` brings it back with its original handler and config
+intact (identity preserved).  Requests to a tombstoned location fall through as
+if it were absent; in-flight 404s emitted while it was hidden are not undone.
+
+Pass `removeLocation(path, {hard: true})` for the legacy irreversible splice
+(reclaims a dynamic location's memory when the server is freed; cannot be
+restored).  Both forms accept the same pattern grammar as `addLocation`
+(`"@name"`, `"= /exact"`, `"^~ /pfx"`, `"~ /re"`, `"~* /re"`, bare prefix).
+`removeLocation`/`restoreLocation` also exist on `NginxLocation` (same `srv_op`
+constraints as `addLocation`).
+====
 
 ==== NginxLocation properties
 

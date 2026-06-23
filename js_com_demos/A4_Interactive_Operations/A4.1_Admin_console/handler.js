@@ -99,11 +99,12 @@ nginx.broadcast(function () {
 
     /* Structural op → class (these are methods, classified by intent). */
     var STRUCT_CLASS = {
-        addLocation:   'guarded',
-        removeLocation:'irreversible',
-        addServer:     'irreversible',
-        removeServer:  'irreversible',
-        addListener:   'irreversible'
+        addLocation:    'guarded',
+        removeLocation: 'guarded',     /* reversible: tombstone + restoreLocation */
+        restoreLocation:'guarded',
+        addServer:      'irreversible', /* Track S (not yet reversible) */
+        removeServer:   'irreversible',
+        addListener:    'irreversible'  /* Track N (not yet reversible) */
     };
 
     function annotate(op) {

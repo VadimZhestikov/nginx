@@ -96,9 +96,12 @@ static const ngx_js_member_class_t  ngx_js_loc_members[] = {
     { "directioAlignment",        "number",  SAFE, REV|RQS, WL, NULL },
     { "errorPage",                "object[]",SAFE, REV|RQS, WL, NULL },
     { "addLocation",              "function",GRD, REV,     WL,
-      "Rebuilds live location BST; guarded for dynamic, irreversible on static" },
-    { "removeLocation",           "function",IRR, 0,       WL,
-      "Removes from live BST; orphans in-flight requests already routed" },
+      "Rebuilds live location BST; reverse with removeLocation" },
+    { "removeLocation",           "function",GRD, REV,     WL,
+      "Tombstone (reversible via restoreLocation); in-flight 404s not undone; "
+      "{hard:true} for irreversible splice" },
+    { "restoreLocation",          "function",GRD, REV,     WL,
+      "Clears a removeLocation tombstone; brings the route back" },
     { "clearHandler",             "function",SAFE, REV,    WL,
       "Restores the location's original (pre-JS) handler" },
     { NULL, NULL, 0, 0, 0, NULL }
@@ -409,6 +412,12 @@ static const ngx_js_member_class_t  ngx_js_events_members[] = {
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
+/* NOTE: nginx.http / nginx (root) are plain JS objects (not class instances),
+ * so describe() cannot reach them — their genuinely-irreversible topology
+ * methods (addServer/removeServer/createSocket) are an unclassified gap tracked
+ * as follow-up #2 (would require making http a class instance).  After Track L
+ * made removeLocation reversible, no describable member is irreversible. */
+
 /* NginxServer — scalar setters safe; names/dispatch/topology are guarded or
  * irreversible. */
 static const ngx_js_member_class_t  ngx_js_server_members[] = {
@@ -424,9 +433,12 @@ static const ngx_js_member_class_t  ngx_js_server_members[] = {
     { "setNames",               "function",GRD, REV, WL,
       "Takes effect only after rebuildVhostDispatch()" },
     { "addLocation",            "function",GRD, REV, WL,
-      "Rebuilds live BST; irreversible on the static-config tree" },
-    { "removeLocation",         "function",IRR, 0,  WL,
-      "Orphans in-flight requests already routed" },
+      "Rebuilds live BST; reverse with removeLocation" },
+    { "removeLocation",         "function",GRD, REV, WL,
+      "Tombstone (reversible via restoreLocation); in-flight 404s not undone; "
+      "{hard:true} for irreversible splice" },
+    { "restoreLocation",        "function",GRD, REV, WL,
+      "Clears a removeLocation tombstone" },
     { "clone",                  "function",SAFE, REV, WL,
       "Produces a detached config object; no live effect until added" },
     { "addHook",                "function",GRD, REV, WL, NULL },

@@ -423,8 +423,33 @@ The console proves the thesis of the whole document: operators interact with
 *history, colored diffs, a safety gate, and convergence state* — never with raw
 `nginx.*` paths or the knowledge of which writes need fan-out.
 
-Demo / test: `A4.1_Admin_console/test.sh` (18 checks — annotation, the 409 gate,
-apply + 4-worker convergence, rollback, and the confirm override).
+Demo / test: `A4.1_Admin_console/test.sh` (20 checks — annotation, the 409 gate,
+apply + 4-worker convergence, rollback, the confirm override, and a reversible
+removeLocation hide → rollback → restore round trip).
+
+== Making "irreversible" reversible — Track L (locations)
+
+The four-levels-of-symmetry analysis (config-state / resource / identity /
+effect) concluded that *config-state* reversibility is the operator contract and
+is achievable for almost everything.  Track L delivers it for locations:
+
+* `removeLocation(path)` now **tombstones** by default — the entry is excluded
+  from the live tree but kept (clcf preserved), so `restoreLocation(path)` is a
+  true inverse with *identity preserved* (same handler/config object).  This is
+  the same memory profile as the old splice (which also never freed), so it is a
+  strict improvement.  `{hard:true}` keeps the legacy irreversible splice.
+* Reclassified 🔴 → 🟡 *guarded* (`reversible:true`).  The `note` records what
+  rollback does **not** undo: in-flight 404s emitted while hidden (the *effect*
+  asymmetry), and that a `{hard:true}` splice is one-way.
+* The admin engine restores tombstones on reset-to-base, so rollback is
+  symmetric (`A4.1` hides `/api/` via a snapshot, then rollback brings it back
+  across all workers).
+
+After Track L, *no describable member is irreversible*: the genuinely one-way
+ops that remain — `nginx.http.addServer`/`removeServer`, `nginx.createSocket`/
+listeners — live on plain objects `describe()` cannot reach (a classification
+gap tracked as a follow-up).  Servers (Track S) and listeners (Track N) are the
+remaining reversibility work; see the design notes.
 
 == Operator-reconfiguration plan — status
 
@@ -434,6 +459,9 @@ apply + 4-worker convergence, rollback, and the confirm override).
 | 1 | `nginx.describe()` safety metadata + `A0.2` inspector | done
 | 2 | `nginx.safeConfig` policy gateway + `A0.3` actuator   | done
 | 3 | Snapshot-centric admin console (`A4.1`)               | done
+| L | Reversible `removeLocation` (tombstone + `restoreLocation`) | done
+| S | Reversible servers (tombstone `removeServer`)         | follow-up
+| N | Reversible listeners (`removeListener`)               | follow-up
 |===
 
 == Open design question

@@ -92,10 +92,13 @@ var ah = nginx.describe('http.servers[0].locations[0].headers', 'addHeaders');
 check('addHeaders_safe',     ah.class === 'safe', ah.class);
 check('addHeaders_objarray', ah.type === 'object[]', ah.type);
 
-/* --- structural ops: removeLocation is irreversible --- */
+/* --- removeLocation is now guarded + reversible (tombstone, Track L) --- */
 var rl = nginx.describe('http.servers[0]', 'removeLocation');
-check('removeLocation_irreversible', rl.class === 'irreversible', rl.class);
-check('removeLocation_not_reversible', rl.reversible === false, rl.reversible);
+check('removeLocation_guarded', rl.class === 'guarded', rl.class);
+check('removeLocation_reversible', rl.reversible === true, rl.reversible);
+/* restoreLocation is the inverse and also classified */
+var rs = nginx.describe('http.servers[0]', 'restoreLocation');
+check('restoreLocation_present', rs && rs.class === 'guarded', rs && rs.class);
 
 /* --- unknown member → null --- */
 check('unknown_member_null', nginx.describe(locPath, 'nope') === null);
@@ -142,7 +145,7 @@ probe.handler = function (r) {
 };
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(20);
+$t->try_run('no js module or upstream_zone')->plan(21);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -158,8 +161,9 @@ like($log, qr/JSTEST PASS proxy_pass_guarded/,     'proxy.pass → guarded');
 like($log, qr/JSTEST PASS proxy_pass_reqscoped/,   'proxy.pass → requestScoped:true');
 like($log, qr/JSTEST PASS addHeaders_safe/,        'headers.addHeaders → safe');
 like($log, qr/JSTEST PASS addHeaders_objarray/,    'headers.addHeaders → object[]');
-like($log, qr/JSTEST PASS removeLocation_irreversible/, 'removeLocation → irreversible');
-like($log, qr/JSTEST PASS removeLocation_not_reversible/, 'removeLocation → reversible:false');
+like($log, qr/JSTEST PASS removeLocation_guarded/,   'removeLocation → guarded (reversible)');
+like($log, qr/JSTEST PASS removeLocation_reversible/,'removeLocation → reversible:true');
+like($log, qr/JSTEST PASS restoreLocation_present/,  'restoreLocation classified');
 like($log, qr/JSTEST PASS unknown_member_null/,    'unknown member → null');
 like($log, qr/JSTEST PASS unregistered_empty/,     'unregistered/primitive → []');
 like($log, qr/JSTEST PASS array_shape/,            'descriptor array has correct shape');
