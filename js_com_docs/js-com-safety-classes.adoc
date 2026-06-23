@@ -531,10 +531,29 @@ rather than relying on the console's annotation map.
 | S | Reversible `removeServer` (tombstone + `restoreServer`)     | done
 | N | Reversible `removeListener` (soft pause + `restoreListener`) + irreversible `{hard:true}` close (true `ECONNREFUSED`, port freed) | done
 | T | `describe()` topology coverage: `nginx.http` methods (via tag) + `NginxUpstream` / `NginxSocket` / `NginxHttpListener` / `NginxCycle` / stream server/proxy/listener / `NginxSnapshot` (via `JSClassID`) | done
+| T2 | `settable()` covers every class `describe()` classifies (assignable members = non-`METHOD` table rows) | done
+| T3 | Object-or-key args for `remove`/`restore` (location `.pattern` / server `.name` / socket `.address`) | done
 |===
 
-== Open design question
+== Settled design decision — `propagation` is an enum, not two booleans
 
-`propagation` is modelled as a single enum rather than two booleans
-(`crossWorker` + `needsFanOut`) because `zoned-shared` is genuinely a third,
-runtime-conditional state — not a combination of the other two.
+`propagation` is exposed as a single enum (`worker-local` / `zoned-shared` /
+`auto-shared`) rather than two booleans (`crossWorker` + `needsFanOut`).  This
+was considered and **deliberately kept as the enum**:
+
+* `zoned-shared` is a genuine third, *runtime-conditional* state — not a
+  combination of the other two.  Whether a write crosses workers depends on live
+  config: e.g. `peers[0].weight` is cross-worker only when its upstream has a
+  `zone` directive (the slab is shared); without a zone the peer is in each
+  worker's private heap and the write is worker-local.  `describe()` resolves
+  this per object at call time via a propagation *refine hook*
+  (`ngx_js_peer_prop_refine`), returning `zoned-shared` or `worker-local`.
+* A static `crossWorker` boolean therefore cannot describe `peers[].weight`
+  honestly — the truthful answer is "it depends."  Expressing that with booleans
+  needs a tri-state, which is just the enum again.  `worker-local` and
+  `auto-shared` are the two endpoints; `zoned-shared` is the irreducible
+  conditional middle.
+* The choice is representation-only (the shape of the `describe()` Descriptor)
+  with no behavioural impact, and current consumers (`A4.1`, `safeConfig`) read
+  the `propagation` string directly.  Revisit only if a consumer genuinely needs
+  the decomposed `crossWorker` / `needsFanOut` flags.
