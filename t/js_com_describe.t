@@ -169,6 +169,30 @@ check('upstream_addPeer_zoned', ap && ap.propagation === 'zoned-shared',
 var cw = nginx.describe('cycle', 'workers');
 check('cycle_workers_guarded', cw && cw.class === 'guarded', cw && cw.class);
 
+/* --- follow-up #2: settable() now covers every describe() class --- */
+/* server: assignable scalars present, callable methods excluded */
+var sSrv = nginx.settable(nginx.http.servers[0]);
+check('settable_server_has_root', sSrv.indexOf('root') >= 0, JSON.stringify(sSrv));
+check('settable_server_no_method',
+      sSrv.indexOf('addLocation') < 0 && sSrv.indexOf('setNames') < 0,
+      JSON.stringify(sSrv));
+/* cycle: the one assignable scalar */
+var sCyc = nginx.settable(nginx.cycle);
+check('settable_cycle_workers', sCyc.length === 1 && sCyc[0] === 'workers',
+      JSON.stringify(sCyc));
+/* nginx.http exposes only methods → no assignable properties */
+var sHttp = nginx.settable(nginx.http);
+check('settable_http_empty', Array.isArray(sHttp) && sHttp.length === 0,
+      JSON.stringify(sHttp));
+/* the agreement holds on the newly-covered classes too: settable ⊆ describe */
+function driftOk2(obj) {
+    var ns = nginx.settable(obj);
+    return ns.length > 0 && ns.every(function (n) {
+        return nginx.describe(obj, n) !== null; });
+}
+check('drift_server', driftOk2(nginx.http.servers[0]));
+check('drift_cycle',  driftOk2(nginx.cycle));
+
 /* --- request handler: zoned vs non-zoned propagation (post-fork) --- */
 var probe = nginx.http.servers[0].locations.find(
                 function (l) { return l.path === '/probe/'; });
@@ -180,7 +204,7 @@ probe.handler = function (r) {
 };
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(30);
+$t->try_run('no js module or upstream_zone')->plan(36);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -216,6 +240,14 @@ like($log, qr/JSTEST PASS http_tag_hidden/,             'describe() tag is non-e
 like($log, qr/JSTEST PASS upstream_addPeer_guarded/,    'http upstream addPeer → guarded');
 like($log, qr/JSTEST PASS upstream_addPeer_zoned/,      'http upstream addPeer → zoned-shared');
 like($log, qr/JSTEST PASS cycle_workers_guarded/,       'cycle.workers → guarded');
+
+# --- follow-up #2: settable() covers the full describe() class set ---
+like($log, qr/JSTEST PASS settable_server_has_root/,    'settable(server) has scalars');
+like($log, qr/JSTEST PASS settable_server_no_method/,   'settable(server) excludes methods');
+like($log, qr/JSTEST PASS settable_cycle_workers/,      'settable(cycle) = [workers]');
+like($log, qr/JSTEST PASS settable_http_empty/,         'settable(nginx.http) = [] (methods only)');
+like($log, qr/JSTEST PASS drift_server/,                'drift: settable(server) ⊆ describe()');
+like($log, qr/JSTEST PASS drift_cycle/,                 'drift: settable(cycle) ⊆ describe()');
 
 # --- Request-phase assertion: zoned-shared vs worker-local ---
 my $r = http_get('/probe/');

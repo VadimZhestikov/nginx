@@ -30,6 +30,7 @@
 
 #define REV  NGX_JS_MF_REVERSIBLE
 #define RQS  NGX_JS_MF_REQUEST_SCOPED
+#define METH NGX_JS_MF_METHOD   /* callable method; excluded from settable() */
 
 #define WL   NGX_JS_PROP_WORKER_LOCAL
 #define ZS   NGX_JS_PROP_ZONED_SHARED
@@ -95,14 +96,14 @@ static const ngx_js_member_class_t  ngx_js_loc_members[] = {
     { "directio",                 "number",  SAFE, REV|RQS, WL, NULL },
     { "directioAlignment",        "number",  SAFE, REV|RQS, WL, NULL },
     { "errorPage",                "object[]",SAFE, REV|RQS, WL, NULL },
-    { "addLocation",              "function",GRD, REV,     WL,
+    { "addLocation",              "function",GRD, REV|METH,     WL,
       "Rebuilds live location BST; reverse with removeLocation" },
-    { "removeLocation",           "function",GRD, REV,     WL,
+    { "removeLocation",           "function",GRD, REV|METH,     WL,
       "Tombstone (reversible via restoreLocation); in-flight 404s not undone; "
       "{hard:true} for irreversible splice" },
-    { "restoreLocation",          "function",GRD, REV,     WL,
+    { "restoreLocation",          "function",GRD, REV|METH,     WL,
       "Clears a removeLocation tombstone; brings the route back" },
-    { "clearHandler",             "function",SAFE, REV,    WL,
+    { "clearHandler",             "function",SAFE, REV|METH,    WL,
       "Restores the location's original (pre-JS) handler" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
@@ -137,9 +138,9 @@ static const ngx_js_member_class_t  ngx_js_gzip_members[] = {
 static const ngx_js_member_class_t  ngx_js_headers_members[] = {
     { "addHeaders",      "object[]", SAFE, REV|RQS, WL,
       "Pool-backed list; atomic swap via the per-worker sub-pool registry" },
-    { "addHeader",       "function", SAFE, REV|RQS, WL,
+    { "addHeader",       "function", SAFE, REV|RQS|METH, WL,
       "Copy-on-write append into a fresh sub-pool" },
-    { "removeHeader",    "function", SAFE, REV|RQS, WL, NULL },
+    { "removeHeader",    "function", SAFE, REV|RQS|METH, WL, NULL },
     { "headersInherit",  "string",   SAFE, REV|RQS, WL, NULL },
     { "trailersInherit", "string",   SAFE, REV|RQS, WL, NULL },
     { NULL, NULL, 0, 0, 0, NULL }
@@ -175,9 +176,9 @@ static const ngx_js_member_class_t  ngx_js_ssl_members[] = {
     { "preferServerCiphers", "boolean", SAFE, REV, WL, NULL },
     { "verifyDepth",         "number",  SAFE, REV, WL, NULL },
     { "handshakeTimeout",    "number",  SAFE, REV, WL, NULL },
-    { "setCiphers",          "function",GRD, REV, WL, "Mutates live SSL_CTX" },
-    { "setProtocols",        "function",GRD, REV, WL, "Mutates live SSL_CTX" },
-    { "setCertificate",      "function",GRD, REV, WL,
+    { "setCiphers",          "function",GRD, REV|METH, WL, "Mutates live SSL_CTX" },
+    { "setProtocols",        "function",GRD, REV|METH, WL, "Mutates live SSL_CTX" },
+    { "setCertificate",      "function",GRD, REV|METH, WL,
       "Hot-swaps the live certificate + key" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
@@ -254,7 +255,7 @@ static const ngx_js_member_class_t  ngx_js_realip_members[] = {
 
 static const ngx_js_member_class_t  ngx_js_charset_members[] = {
     { "overrideCharset", "boolean", SAFE, REV, WL, NULL },
-    { "setCharset",      "function",SAFE, REV, WL,
+    { "setCharset",      "function",SAFE, REV|METH, WL,
       "Sets source + destination charset" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
@@ -262,7 +263,7 @@ static const ngx_js_member_class_t  ngx_js_charset_members[] = {
 static const ngx_js_member_class_t  ngx_js_sub_filter_members[] = {
     { "once",         "boolean", SAFE, REV, WL, NULL },
     { "lastModified", "boolean", SAFE, REV, WL, NULL },
-    { "setPairs",     "function",SAFE, REV, WL, "Replaces substitution pairs" },
+    { "setPairs",     "function",SAFE, REV|METH, WL, "Replaces substitution pairs" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -417,23 +418,23 @@ static const ngx_js_member_class_t  ngx_js_events_members[] = {
  * registry below) rather than a JSClassID.  These are the topology methods —
  * the safety-honesty gap they used to leave unclassified (follow-up #2). */
 static const ngx_js_member_class_t  ngx_js_http_members[] = {
-    { "addServer",       "function", IRR, 0,   WL,
+    { "addServer",       "function", IRR, METH,   WL,
       "Adds a server; its cscf is committed in cycle->pool and never reclaimed "
       "for the process lifetime (irreversible)" },
-    { "removeServer",    "function", GRD, REV, WL,
+    { "removeServer",    "function", GRD, REV|METH, WL,
       "Tombstone (reversible via restoreServer); {hard:true} for irreversible "
       "splice" },
-    { "restoreServer",   "function", GRD, REV, WL,
+    { "restoreServer",   "function", GRD, REV|METH, WL,
       "Clears a removeServer tombstone; brings the virtual server back" },
-    { "attach",          "function", IRR, 0,   WL,
+    { "attach",          "function", IRR, METH,   WL,
       "Binds a createSocket() fd into cycle->listening; a committed resource, "
       "never reclaimed at runtime (irreversible)" },
-    { "removeListener",  "function", GRD, REV, WL,
+    { "removeListener",  "function", GRD, REV|METH, WL,
       "Soft pause (reversible via restoreListener); {hard:true} closes the "
       "socket — connections refused, port freed (irreversible)" },
-    { "restoreListener", "function", GRD, REV, WL,
+    { "restoreListener", "function", GRD, REV|METH, WL,
       "Re-arms a soft-paused listener; returns false after a {hard:true} close" },
-    { "addHook",         "function", GRD, REV, WL,
+    { "addHook",         "function", GRD, REV|METH, WL,
       "Registers a global access-phase hook; reverse by clearing it" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
@@ -441,17 +442,17 @@ static const ngx_js_member_class_t  ngx_js_http_members[] = {
 /* NginxUpstream (HTTP) — live RR peer topology; zoned-shared like the stream
  * upstream's (cross-worker iff the upstream is zone-backed). */
 static const ngx_js_member_class_t  ngx_js_upstream_members[] = {
-    { "addPeer",    "function", GRD, REV, ZS,
+    { "addPeer",    "function", GRD, REV|METH, ZS,
       "Adds a live RR peer (under rr_peers wlock when zone-backed)" },
-    { "removePeer", "function", GRD, REV, ZS, "Reverse with addPeer()" },
+    { "removePeer", "function", GRD, REV|METH, ZS, "Reverse with addPeer()" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
 /* NginxSocket — createSocket() handle. */
 static const ngx_js_member_class_t  ngx_js_socket_members[] = {
-    { "close",     "function", GRD, REV, WL,
+    { "close",     "function", GRD, REV|METH, WL,
       "Closes the fd and unregisters; recreate with nginx.createSocket()" },
-    { "broadcast", "function", GRD, REV, WL,
+    { "broadcast", "function", GRD, REV|METH, WL,
       "Distributes the fd to all workers via the manager thread" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
@@ -461,15 +462,15 @@ static const ngx_js_member_class_t  ngx_js_socket_members[] = {
  * a committed resource → irreversible; the hook/filter registrations are
  * guarded and reversible. */
 static const ngx_js_member_class_t  ngx_js_http_listener_members[] = {
-    { "addServer",        "function", IRR, 0,   WL,
+    { "addServer",        "function", IRR, METH,   WL,
       "Activates the listener (cycle->listening); committed (irreversible)" },
-    { "addVirtualServer", "function", IRR, 0,   WL,
+    { "addVirtualServer", "function", IRR, METH,   WL,
       "Rebuilds virtual_names host routing; committed (irreversible)" },
-    { "on",               "function", GRD, REV, WL,
+    { "on",               "function", GRD, REV|METH, WL,
       "Registers an accept hook" },
-    { "addL4Filter",      "function", GRD, REV, WL,
+    { "addL4Filter",      "function", GRD, REV|METH, WL,
       "Registers a raw inbound TCP filter" },
-    { "addL4SendFilter",  "function", GRD, REV, WL,
+    { "addL4SendFilter",  "function", GRD, REV|METH, WL,
       "Registers a raw outbound TCP filter" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
@@ -510,16 +511,16 @@ static const ngx_js_member_class_t  ngx_js_stream_proxy_members[] = {
 
 /* NginxStreamListener — stream.attach() handle; activation is irreversible. */
 static const ngx_js_member_class_t  ngx_js_stream_listener_members[] = {
-    { "addServer",        "function", IRR, 0, WL,
+    { "addServer",        "function", IRR, METH, WL,
       "Activates the listener (cycle->listening); committed (irreversible)" },
-    { "addVirtualServer", "function", IRR, 0, WL,
+    { "addVirtualServer", "function", IRR, METH, WL,
       "Rebuilds stream virtual_names routing; committed (irreversible)" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
 /* NginxSnapshot — restore re-applies captured property values. */
 static const ngx_js_member_class_t  ngx_js_snapshot_members[] = {
-    { "restore", "function", GRD, REV, WL,
+    { "restore", "function", GRD, REV|METH, WL,
       "Re-applies captured property values; reversible by re-snapshotting" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
@@ -536,21 +537,21 @@ static const ngx_js_member_class_t  ngx_js_server_members[] = {
     { "serverTokens",           "string",  SAFE, REV, WL, NULL },
     { "connectionPoolSize",     "number",  SAFE, REV, WL, NULL },
     { "requestPoolSize",        "number",  SAFE, REV, WL, NULL },
-    { "setNames",               "function",GRD, REV, WL,
+    { "setNames",               "function",GRD, REV|METH, WL,
       "Takes effect only after rebuildVhostDispatch()" },
-    { "addLocation",            "function",GRD, REV, WL,
+    { "addLocation",            "function",GRD, REV|METH, WL,
       "Rebuilds live BST; reverse with removeLocation" },
-    { "removeLocation",         "function",GRD, REV, WL,
+    { "removeLocation",         "function",GRD, REV|METH, WL,
       "Tombstone (reversible via restoreLocation); in-flight 404s not undone; "
       "{hard:true} for irreversible splice" },
-    { "restoreLocation",        "function",GRD, REV, WL,
+    { "restoreLocation",        "function",GRD, REV|METH, WL,
       "Clears a removeLocation tombstone" },
-    { "clone",                  "function",SAFE, REV, WL,
+    { "clone",                  "function",SAFE, REV|METH, WL,
       "Produces a detached config object; no live effect until added" },
-    { "addHook",                "function",GRD, REV, WL, NULL },
-    { "on",                     "function",GRD, REV, WL, NULL },
-    { "addL4Filter",            "function",GRD, REV, WL, NULL },
-    { "addL4SendFilter",        "function",GRD, REV, WL, NULL },
+    { "addHook",                "function",GRD, REV|METH, WL, NULL },
+    { "on",                     "function",GRD, REV|METH, WL, NULL },
+    { "addL4Filter",            "function",GRD, REV|METH, WL, NULL },
+    { "addL4SendFilter",        "function",GRD, REV|METH, WL, NULL },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -576,8 +577,8 @@ static const ngx_js_member_class_t  ngx_js_stream_rr_peer_members[] = {
 };
 
 static const ngx_js_member_class_t  ngx_js_stream_upstream_members[] = {
-    { "addPeer",    "function", GRD, REV, ZS, "Adds a live RR peer" },
-    { "removePeer", "function", GRD, REV, ZS, "Reverse with addPeer()" },
+    { "addPeer",    "function", GRD, REV|METH, ZS, "Adds a live RR peer" },
+    { "removePeer", "function", GRD, REV|METH, ZS, "Reverse with addPeer()" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -890,4 +891,39 @@ ngx_js_describe_member(JSContext *ctx, JSValueConst obj, const char *name)
     }
 
     return JS_NULL;
+}
+
+
+/*
+ * settable() backed by the describe() tables: the assignable members of obj's
+ * classification table — every member that is NOT a callable method
+ * (NGX_JS_MF_METHOD).  This is the single source of truth that lets settable()
+ * cover every class describe() classifies (follow-up #2).  Returns an empty
+ * array for objects with no classification table.
+ */
+JSValue
+ngx_js_describe_settable_props(JSContext *ctx, JSValueConst obj)
+{
+    const ngx_js_member_class_t  *m, *table;
+    ngx_js_prop_refine_pt         refine;
+    JSValue                       arr;
+    uint32_t                      i;
+
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) {
+        return arr;
+    }
+
+    if (ngx_js_describe_resolve(ctx, obj, &table, &refine) != NGX_OK) {
+        return arr;
+    }
+
+    for (i = 0, m = table; m->name != NULL; m++) {
+        if (m->flags & NGX_JS_MF_METHOD) {
+            continue;   /* callable method — not an assignable property */
+        }
+        JS_SetPropertyUint32(ctx, arr, i++, JS_NewString(ctx, m->name));
+    }
+
+    return arr;
 }

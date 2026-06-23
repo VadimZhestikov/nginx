@@ -321,7 +321,7 @@ listener binding is `irreversible`.
 |===
 | Call | Returns
 
-| `nginx.settable(path)`        | *unchanged* — `string[]` of writable member names (the admin app's `{path}` ops depend on this)
+| `nginx.settable(path)`        | `string[]` of *assignable* member names.  Now covers every class `describe()` classifies (not just the seven snapshot-backed ones) — the assignable members are exactly the describe() members that are not callable methods (`NGX_JS_MF_METHOD`).  So `settable() ⊆ describe()` for every class, with no drift.
 | `nginx.describe(path)`        | *new* — `Descriptor[]` for every member at `path`
 | `nginx.describe(path, name)`  | *new* — single-member `Descriptor`, or `null`
 |===
@@ -344,7 +344,7 @@ describes so a setter and its classification cannot drift:
 typedef struct {
     const char  *name;
     uint8_t      klass;        /* NGX_JS_SAFE | _GUARDED | _IRREVERSIBLE | _READONLY */
-    uint8_t      flags;        /* NGX_JS_REVERSIBLE | NGX_JS_REQUEST_SCOPED */
+    uint8_t      flags;        /* NGX_JS_MF_REVERSIBLE | _REQUEST_SCOPED | _METHOD */
     uint8_t      propagation;  /* static default: AUTO_SHARED | ZONED_SHARED | WORKER_LOCAL */
     const char  *note;
 } ngx_js_member_class_t;

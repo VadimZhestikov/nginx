@@ -347,6 +347,8 @@ typedef enum {
 /* flags */
 #define NGX_JS_MF_REVERSIBLE      0x01u
 #define NGX_JS_MF_REQUEST_SCOPED  0x02u   /* honours setWriteMode('local') */
+#define NGX_JS_MF_METHOD          0x04u   /* callable method, not an assignable
+                                           * property — excluded from settable() */
 
 /* propagation — how a change reaches the other workers */
 typedef enum {
@@ -393,6 +395,16 @@ JSValue  ngx_js_describe_member(JSContext *ctx, JSValueConst obj,
  */
 #define NGX_JS_DTAG_HTTP  1
 void  ngx_js_describe_tag(JSContext *ctx, JSValueConst obj, int tag);
+
+/*
+ * ngx_js_describe_settable_props(ctx, obj) — settable() backed by the describe()
+ * tables: the assignable members (scalars + assignable setters like `handler`)
+ * of obj's classification table, i.e. every member that is NOT a callable
+ * method (NGX_JS_MF_METHOD).  Returns an empty array for unclassified objects.
+ * Used as the fallback in ngx_js_settable_props() so settable() covers every
+ * class describe() classifies.  Defined in ngx_js_com_describe.c.
+ */
+JSValue  ngx_js_describe_settable_props(JSContext *ctx, JSValueConst obj);
 
 /*
  * ngx_js_rr_peer_is_zoned(obj) — 1 if the runtime RR peer wrapped by obj

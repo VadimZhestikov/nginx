@@ -10058,11 +10058,14 @@ ngx_js_http_register_classes(JSRuntime *rt)
 
 /*
  * ngx_js_settable_props(ctx, obj) — return a JS array of settable property
- * name strings for a known COM object.  Returns an empty array for objects
- * whose class is not in the settable table.
+ * name strings for a known COM object.
  *
- * Handles: NginxLocation, NginxProxy, NginxGzip, NginxHeaders, NginxRewrite,
- *          NginxPeer, NginxRrPeer.
+ * The snapshot-backed classes (NginxLocation, NginxProxy, NginxGzip,
+ * NginxHeaders, NginxRewrite, NginxPeer, NginxRrPeer) use their snap_props
+ * arrays directly (those drive snapshot capture too).  Every other class that
+ * describe() classifies is covered by the describe-table fallback
+ * (ngx_js_describe_settable_props), so settable() and describe() agree on the
+ * full class set (follow-up #2).  Objects with no classification yield [].
  */
 JSValue
 ngx_js_settable_props(JSContext *ctx, JSValueConst obj)
@@ -10095,9 +10098,14 @@ ngx_js_settable_props(JSContext *ctx, JSValueConst obj)
         names = ngx_js_peer_settable_props();
     }
 
-    arr = JS_NewArray(ctx);
+    if (names == NULL) {
+        /* Every other describe()-classified class (server, ssl, limit_req,
+         * cycle, http via tag, upstream, socket, listener, stream_*, …). */
+        return ngx_js_describe_settable_props(ctx, obj);
+    }
 
-    if (JS_IsException(arr) || names == NULL) {
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) {
         return arr;
     }
 
