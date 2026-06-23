@@ -134,6 +134,41 @@ check('drift_peer',     driftOk(nginx.http.upstreams[0].peers[0]));
 var ma = nginx.describe('events', 'multiAccept');
 check('events_safe', ma && ma.class === 'safe', ma && ma.class);
 
+/* --- follow-up #2: topology methods now classified (close the gap) --- */
+/* nginx.http is a plain object, reached via the describe() tag. */
+var as = nginx.describe('http', 'addServer');
+check('http_addServer_irreversible',
+      as && as.class === 'irreversible' && as.reversible === false,
+      as && (as.class + '/' + as.reversible));
+var at = nginx.describe('http', 'attach');
+check('http_attach_irreversible', at && at.class === 'irreversible',
+      at && at.class);
+var rms = nginx.describe('http', 'removeServer');
+check('http_removeServer_guarded',
+      rms && rms.class === 'guarded' && rms.reversible === true,
+      rms && rms.class);
+var rml = nginx.describe('http', 'removeListener');
+check('http_removeListener_guarded',
+      rml && rml.class === 'guarded' && rml.reversible === true,
+      rml && rml.class);
+/* the object form (what A4.1 passes) resolves to the same table */
+var asObj = nginx.describe(nginx.http, 'addServer');
+check('http_addServer_objform', asObj && asObj.class === 'irreversible',
+      asObj && asObj.class);
+/* the hidden tag must not leak into enumeration */
+check('http_tag_hidden',
+      Object.keys(nginx.http).indexOf('\xff' + 'ngxDescribeTag') < 0, 'leaked');
+
+/* --- HTTP upstream topology: addPeer guarded + zoned-shared --- */
+var ap = nginx.describe('http.upstreams[0]', 'addPeer');
+check('upstream_addPeer_guarded', ap && ap.class === 'guarded', ap && ap.class);
+check('upstream_addPeer_zoned', ap && ap.propagation === 'zoned-shared',
+      ap && ap.propagation);
+
+/* --- cycle.workers is guarded --- */
+var cw = nginx.describe('cycle', 'workers');
+check('cycle_workers_guarded', cw && cw.class === 'guarded', cw && cw.class);
+
 /* --- request handler: zoned vs non-zoned propagation (post-fork) --- */
 var probe = nginx.http.servers[0].locations.find(
                 function (l) { return l.path === '/probe/'; });
@@ -145,7 +180,7 @@ probe.handler = function (r) {
 };
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(21);
+$t->try_run('no js module or upstream_zone')->plan(30);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -170,6 +205,17 @@ like($log, qr/JSTEST PASS array_shape/,            'descriptor array has correct
 like($log, qr/JSTEST PASS settable_has_root/,      'settable() unchanged');
 like($log, qr/JSTEST PASS drift_location/,         'drift: every settable loc member described');
 like($log, qr/JSTEST PASS drift_peer/,             'drift: every settable peer member described');
+
+# --- follow-up #2: topology-method classification (the closed gap) ---
+like($log, qr/JSTEST PASS http_addServer_irreversible/, 'http.addServer → irreversible');
+like($log, qr/JSTEST PASS http_attach_irreversible/,    'http.attach → irreversible');
+like($log, qr/JSTEST PASS http_removeServer_guarded/,   'http.removeServer → guarded/reversible');
+like($log, qr/JSTEST PASS http_removeListener_guarded/, 'http.removeListener → guarded/reversible');
+like($log, qr/JSTEST PASS http_addServer_objform/,      'describe(nginx.http, ...) object form');
+like($log, qr/JSTEST PASS http_tag_hidden/,             'describe() tag is non-enumerable');
+like($log, qr/JSTEST PASS upstream_addPeer_guarded/,    'http upstream addPeer → guarded');
+like($log, qr/JSTEST PASS upstream_addPeer_zoned/,      'http upstream addPeer → zoned-shared');
+like($log, qr/JSTEST PASS cycle_workers_guarded/,       'cycle.workers → guarded');
 
 # --- Request-phase assertion: zoned-shared vs worker-local ---
 my $r = http_get('/probe/');

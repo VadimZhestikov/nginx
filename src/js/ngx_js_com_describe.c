@@ -412,11 +412,117 @@ static const ngx_js_member_class_t  ngx_js_events_members[] = {
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
-/* NOTE: nginx.http / nginx (root) are plain JS objects (not class instances),
- * so describe() cannot reach them — their genuinely-irreversible topology
- * methods (addServer/removeServer/createSocket) are an unclassified gap tracked
- * as follow-up #2 (would require making http a class instance).  After Track L
- * made removeLocation reversible, no describable member is irreversible. */
+/* NginxHttp — nginx.http is a plain JS object (not a class instance), so
+ * describe() reaches it via the hidden NGX_JS_DTAG_HTTP tag (see the tag
+ * registry below) rather than a JSClassID.  These are the topology methods —
+ * the safety-honesty gap they used to leave unclassified (follow-up #2). */
+static const ngx_js_member_class_t  ngx_js_http_members[] = {
+    { "addServer",       "function", IRR, 0,   WL,
+      "Adds a server; its cscf is committed in cycle->pool and never reclaimed "
+      "for the process lifetime (irreversible)" },
+    { "removeServer",    "function", GRD, REV, WL,
+      "Tombstone (reversible via restoreServer); {hard:true} for irreversible "
+      "splice" },
+    { "restoreServer",   "function", GRD, REV, WL,
+      "Clears a removeServer tombstone; brings the virtual server back" },
+    { "attach",          "function", IRR, 0,   WL,
+      "Binds a createSocket() fd into cycle->listening; a committed resource, "
+      "never reclaimed at runtime (irreversible)" },
+    { "removeListener",  "function", GRD, REV, WL,
+      "Soft pause (reversible via restoreListener); {hard:true} closes the "
+      "socket — connections refused, port freed (irreversible)" },
+    { "restoreListener", "function", GRD, REV, WL,
+      "Re-arms a soft-paused listener; returns false after a {hard:true} close" },
+    { "addHook",         "function", GRD, REV, WL,
+      "Registers a global access-phase hook; reverse by clearing it" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+/* NginxUpstream (HTTP) — live RR peer topology; zoned-shared like the stream
+ * upstream's (cross-worker iff the upstream is zone-backed). */
+static const ngx_js_member_class_t  ngx_js_upstream_members[] = {
+    { "addPeer",    "function", GRD, REV, ZS,
+      "Adds a live RR peer (under rr_peers wlock when zone-backed)" },
+    { "removePeer", "function", GRD, REV, ZS, "Reverse with addPeer()" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+/* NginxSocket — createSocket() handle. */
+static const ngx_js_member_class_t  ngx_js_socket_members[] = {
+    { "close",     "function", GRD, REV, WL,
+      "Closes the fd and unregisters; recreate with nginx.createSocket()" },
+    { "broadcast", "function", GRD, REV, WL,
+      "Distributes the fd to all workers via the manager thread" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+/* NginxHttpListener — nginx.http.attach() handle.  addServer / addVirtualServer
+ * activate the listener (push into cycle->listening / rebuild virtual_names),
+ * a committed resource → irreversible; the hook/filter registrations are
+ * guarded and reversible. */
+static const ngx_js_member_class_t  ngx_js_http_listener_members[] = {
+    { "addServer",        "function", IRR, 0,   WL,
+      "Activates the listener (cycle->listening); committed (irreversible)" },
+    { "addVirtualServer", "function", IRR, 0,   WL,
+      "Rebuilds virtual_names host routing; committed (irreversible)" },
+    { "on",               "function", GRD, REV, WL,
+      "Registers an accept hook" },
+    { "addL4Filter",      "function", GRD, REV, WL,
+      "Registers a raw inbound TCP filter" },
+    { "addL4SendFilter",  "function", GRD, REV, WL,
+      "Registers a raw outbound TCP filter" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+/* NginxCycle — master-level scalars. */
+static const ngx_js_member_class_t  ngx_js_cycle_members[] = {
+    { "workers", "number", GRD, REV, WL,
+      "Sets worker_processes; takes effect only when the master next spawns "
+      "workers (e.g. on reload)" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+/* NginxStreamServer — config-phase scalars + the content handler. */
+static const ngx_js_member_class_t  ngx_js_stream_server_members[] = {
+    { "tcpNodelay",           "boolean",  SAFE, REV, WL, NULL },
+    { "prereadBufferSize",    "number",   SAFE, REV, WL, NULL },
+    { "prereadTimeout",       "number",   SAFE, REV, WL, NULL },
+    { "resolverTimeout",      "number",   SAFE, REV, WL, NULL },
+    { "proxyProtocolTimeout", "number",   SAFE, REV, WL, NULL },
+    { "handler",              "function", GRD,  REV, WL,
+      "Rewires stream dispatch to a JS content handler; always global" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+/* NginxStreamProxy — all scalar setters, reversible. */
+static const ngx_js_member_class_t  ngx_js_stream_proxy_members[] = {
+    { "connectTimeout",      "number",  SAFE, REV, WL, NULL },
+    { "timeout",             "number",  SAFE, REV, WL, NULL },
+    { "nextUpstreamTimeout", "number",  SAFE, REV, WL, NULL },
+    { "bufferSize",          "number",  SAFE, REV, WL, NULL },
+    { "nextUpstreamTries",   "number",  SAFE, REV, WL, NULL },
+    { "nextUpstream",        "boolean", SAFE, REV, WL, NULL },
+    { "proxyProtocol",       "boolean", SAFE, REV, WL, NULL },
+    { "halfClose",           "boolean", SAFE, REV, WL, NULL },
+    { "socketKeepalive",     "boolean", SAFE, REV, WL, NULL },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+/* NginxStreamListener — stream.attach() handle; activation is irreversible. */
+static const ngx_js_member_class_t  ngx_js_stream_listener_members[] = {
+    { "addServer",        "function", IRR, 0, WL,
+      "Activates the listener (cycle->listening); committed (irreversible)" },
+    { "addVirtualServer", "function", IRR, 0, WL,
+      "Rebuilds stream virtual_names routing; committed (irreversible)" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+/* NginxSnapshot — restore re-applies captured property values. */
+static const ngx_js_member_class_t  ngx_js_snapshot_members[] = {
+    { "restore", "function", GRD, REV, WL,
+      "Re-applies captured property values; reversible by re-snapshotting" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
 
 /* NginxServer — scalar setters safe; names/dispatch/topology are guarded or
  * irreversible. */
@@ -570,26 +676,101 @@ static const ngx_js_member_registry_t  ngx_js_member_registry[] = {
       ngx_js_stream_peer_prop_refine },
     { &ngx_js_stream_upstream_class_id, ngx_js_stream_upstream_members, NULL },
 
+    /* Topology classes — follow-up #2 (close the describe() gaps) */
+    { &ngx_js_upstream_class_id,        ngx_js_upstream_members,        NULL },
+    { &ngx_js_socket_class_id,          ngx_js_socket_members,          NULL },
+    { &ngx_js_http_listener_class_id,   ngx_js_http_listener_members,   NULL },
+    { &ngx_js_cycle_class_id,           ngx_js_cycle_members,           NULL },
+    { &ngx_js_stream_server_class_id,   ngx_js_stream_server_members,   NULL },
+    { &ngx_js_stream_proxy_class_id,    ngx_js_stream_proxy_members,    NULL },
+    { &ngx_js_stream_listener_class_id, ngx_js_stream_listener_members, NULL },
+    { &ngx_js_snapshot_class_id,        ngx_js_snapshot_members,        NULL },
+
     { NULL, NULL, NULL }
 };
 
+/* ------------------------------------------------------------------ *
+ * Tag registry — for plain JS objects that are not class instances    *
+ * (nginx.http).  describe() falls back to a hidden NGX_JS_DTAG_* tag   *
+ * stamped by ngx_js_describe_tag() when the JSClassID lookup misses.   *
+ */
+#define NGX_JS_DTAG_PROP  "\xff" "ngxDescribeTag"
 
-/* Look up the table + refine hook for the class of obj; NULL if unregistered. */
-static const ngx_js_member_registry_t *
-ngx_js_describe_lookup(JSValueConst obj)
+typedef struct {
+    int                           tag;
+    const ngx_js_member_class_t  *table;
+    ngx_js_prop_refine_pt         refine;
+} ngx_js_member_tag_registry_t;
+
+static const ngx_js_member_tag_registry_t  ngx_js_member_tag_registry[] = {
+    { NGX_JS_DTAG_HTTP, ngx_js_http_members, NULL },
+    { 0, NULL, NULL }
+};
+
+
+void
+ngx_js_describe_tag(JSContext *ctx, JSValueConst obj, int tag)
 {
-    JSClassID                        cid;
-    const ngx_js_member_registry_t  *r;
+    /* flags 0 → non-enumerable, non-writable, non-configurable (hidden). */
+    JS_DefinePropertyValueStr(ctx, obj, NGX_JS_DTAG_PROP,
+                              JS_NewInt32(ctx, tag), 0);
+}
+
+
+/* Resolve obj's tag (0 if absent / not tagged). */
+static int
+ngx_js_describe_obj_tag(JSContext *ctx, JSValueConst obj)
+{
+    JSValue  v;
+    int32_t  tag = 0;
+
+    v = JS_GetPropertyStr(ctx, obj, NGX_JS_DTAG_PROP);
+    if (JS_IsNumber(v)) {
+        JS_ToInt32(ctx, &tag, v);
+    }
+    JS_FreeValue(ctx, v);
+    return (int) tag;
+}
+
+
+/*
+ * Resolve obj to its classification table + refine hook.  Keys off the
+ * JSClassID for class instances, then falls back to the hidden tag for plain
+ * COM objects (nginx.http).  Returns NGX_OK with *table_out / *refine_out set,
+ * or NGX_DECLINED if obj's class/tag is unregistered.
+ */
+static ngx_int_t
+ngx_js_describe_resolve(JSContext *ctx, JSValueConst obj,
+    const ngx_js_member_class_t **table_out, ngx_js_prop_refine_pt *refine_out)
+{
+    JSClassID                            cid;
+    int                                  tag;
+    const ngx_js_member_registry_t      *r;
+    const ngx_js_member_tag_registry_t  *t;
 
     cid = JS_GetClassID(obj);
 
     for (r = ngx_js_member_registry; r->cid != NULL; r++) {
         if (*r->cid == cid) {
-            return r;
+            *table_out  = r->table;
+            *refine_out = r->refine;
+            return NGX_OK;
         }
     }
 
-    return NULL;
+    /* Plain object fallback: classify by hidden tag (e.g. nginx.http). */
+    tag = ngx_js_describe_obj_tag(ctx, obj);
+    if (tag != 0) {
+        for (t = ngx_js_member_tag_registry; t->table != NULL; t++) {
+            if (t->tag == tag) {
+                *table_out  = t->table;
+                *refine_out = t->refine;
+                return NGX_OK;
+            }
+        }
+    }
+
+    return NGX_DECLINED;
 }
 
 
@@ -664,23 +845,22 @@ ngx_js_describe_one(JSContext *ctx, JSValueConst obj,
 JSValue
 ngx_js_describe_members(JSContext *ctx, JSValueConst obj)
 {
-    const ngx_js_member_registry_t  *r;
-    const ngx_js_member_class_t     *m;
-    JSValue                          arr, d;
-    uint32_t                         i;
+    const ngx_js_member_class_t  *m, *table;
+    ngx_js_prop_refine_pt         refine;
+    JSValue                       arr, d;
+    uint32_t                      i;
 
     arr = JS_NewArray(ctx);
     if (JS_IsException(arr)) {
         return arr;
     }
 
-    r = ngx_js_describe_lookup(obj);
-    if (r == NULL) {
-        return arr;   /* unregistered class — empty, like settable() */
+    if (ngx_js_describe_resolve(ctx, obj, &table, &refine) != NGX_OK) {
+        return arr;   /* unregistered class/tag — empty, like settable() */
     }
 
-    for (i = 0, m = r->table; m->name != NULL; m++, i++) {
-        d = ngx_js_describe_one(ctx, obj, m, r->refine);
+    for (i = 0, m = table; m->name != NULL; m++, i++) {
+        d = ngx_js_describe_one(ctx, obj, m, refine);
         if (JS_IsException(d)) {
             JS_FreeValue(ctx, arr);
             return d;
@@ -696,17 +876,16 @@ ngx_js_describe_members(JSContext *ctx, JSValueConst obj)
 JSValue
 ngx_js_describe_member(JSContext *ctx, JSValueConst obj, const char *name)
 {
-    const ngx_js_member_registry_t  *r;
-    const ngx_js_member_class_t     *m;
+    const ngx_js_member_class_t  *m, *table;
+    ngx_js_prop_refine_pt         refine;
 
-    r = ngx_js_describe_lookup(obj);
-    if (r == NULL) {
+    if (ngx_js_describe_resolve(ctx, obj, &table, &refine) != NGX_OK) {
         return JS_NULL;
     }
 
-    for (m = r->table; m->name != NULL; m++) {
+    for (m = table; m->name != NULL; m++) {
         if (ngx_strcmp(m->name, name) == 0) {
-            return ngx_js_describe_one(ctx, obj, m, r->refine);
+            return ngx_js_describe_one(ctx, obj, m, refine);
         }
     }
 

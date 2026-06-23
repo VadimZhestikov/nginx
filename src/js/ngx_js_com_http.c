@@ -10400,6 +10400,14 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
         }
     }
 
+    /*
+     * nginx.http is a plain object (not a class instance), so stamp it with the
+     * describe() tag — this lets nginx.describe('http', 'addServer') classify
+     * its topology methods (addServer/attach are irreversible; removeServer /
+     * removeListener / restore* are guarded).  See ngx_js_com_describe.c.
+     */
+    ngx_js_describe_tag(ctx, http_obj, NGX_JS_DTAG_HTTP);
+
     JS_SetPropertyStr(ctx, nginx_obj, "http", http_obj);
 
     /*

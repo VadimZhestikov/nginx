@@ -386,6 +386,15 @@ JSValue  ngx_js_describe_member(JSContext *ctx, JSValueConst obj,
     const char *name);
 
 /*
+ * Some COM roots (e.g. nginx.http) are plain JS objects, not class instances,
+ * so describe() cannot key off their JSClassID.  ngx_js_describe_tag() stamps a
+ * hidden, non-enumerable marker on such an object so describe() can still
+ * resolve it to a classification table.  Defined in ngx_js_com_describe.c.
+ */
+#define NGX_JS_DTAG_HTTP  1
+void  ngx_js_describe_tag(JSContext *ctx, JSValueConst obj, int tag);
+
+/*
  * ngx_js_rr_peer_is_zoned(obj) — 1 if the runtime RR peer wrapped by obj
  * belongs to a zone-backed (shared-memory) upstream, else 0.  Used by the
  * peer propagation refine hook.  Defined in ngx_js_com_upstream.c.

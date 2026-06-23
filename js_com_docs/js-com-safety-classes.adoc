@@ -285,13 +285,29 @@ Read-only: `upstream.name`, `peer.address`, `peer.backup`, `peer.conns`,
 
 === nginx.http topology + sockets
 
+`nginx.http` is a plain JS object rather than a class instance, so `describe()`
+reaches it through a hidden tag (`NGX_JS_DTAG_HTTP`, stamped by
+`ngx_js_describe_tag()`) instead of a `JSClassID`.  Its topology methods are now
+classified — closing the honesty gap where an operator could call an
+irreversible method the safety layer didn't flag.
+
 [cols="2,1,1,3", options="header"]
 |===
 | Member | Class | Propagation | Note
-| `addServer()`     | 🔴 irreversible | worker-local | Cannot free cycle pool or unbind a listener
-| `removeServer()`  | 🔴 irreversible | worker-local | Unlinks from vhost dispatch; memory not reclaimed
-| `addListener()` / socket bind / `attach()` | 🔴 irreversible | worker-local | fd enters append-only `cycle->listening`, fork-inherited
+| `addServer()`       | 🔴 irreversible | worker-local | `cscf` committed in `cycle->pool`, never reclaimed
+| `removeServer()`    | 🟡 guarded      | worker-local | Tombstone, reversible via `restoreServer()` (Track S); `{hard:true}` splices irreversibly
+| `restoreServer()`   | 🟡 guarded      | worker-local | Clears a `removeServer` tombstone
+| `attach()`          | 🔴 irreversible | worker-local | fd enters append-only `cycle->listening`, fork-inherited
+| `removeListener()`  | 🟡 guarded      | worker-local | Soft pause, reversible via `restoreListener()` (Track N); `{hard:true}` closes the socket irreversibly
+| `restoreListener()` | 🟡 guarded      | worker-local | Re-arms a soft-paused listener; returns `false` after a hard close
+| `addHook()`         | 🟡 guarded      | worker-local | Global access-phase hook
 |===
+
+The created-socket handle (`NginxSocket`: `close()`/`broadcast()`), the listener
+handle (`NginxHttpListener`: `addServer`/`addVirtualServer` 🔴, hook/filter
+registrations 🟡), the HTTP `NginxUpstream` (`addPeer`/`removePeer` 🟡
+zoned-shared), `nginx.cycle.workers` (🟡), and `NginxSnapshot.restore()` (🟡)
+are all classified too — they are real class instances reached by `JSClassID`.
 
 === NginxStream
 
@@ -484,12 +500,12 @@ a non-reuseport listener under epoll with >1 worker) — re-adding level-trigger
 non-exclusive causes spurious wakeups against the shared socket.  Both were real
 bugs in the soft-pause path, exposed only under concurrent connection load.
 
-`addServer` and `addListener` remain 🔴 *irreversible* — their `cscf` / bound
-socket are committed in `cycle->pool` and never reclaimed at runtime (the
-*resource* asymmetry), even though their routing/accept effect can be undone
-with `removeServer` / `removeListener`.  Note these genuinely one-way ops live
-on plain objects `describe()` cannot reach (a classification gap tracked as a
-follow-up); they are classified in the console's annotation map.
+`addServer` and `attach` remain 🔴 *irreversible* — their `cscf` / bound socket
+are committed in `cycle->pool` and never reclaimed at runtime (the *resource*
+asymmetry), even though the routing/accept *effect* can be undone with
+`removeServer` / `removeListener`.  These one-way ops are now reachable by
+`describe()` (via the `nginx.http` tag), so the safety layer flags them directly
+rather than relying on the console's annotation map.
 
 == Operator-reconfiguration plan — status
 
@@ -502,6 +518,7 @@ follow-up); they are classified in the console's annotation map.
 | L | Reversible `removeLocation` (tombstone + `restoreLocation`) | done
 | S | Reversible `removeServer` (tombstone + `restoreServer`)     | done
 | N | Reversible `removeListener` (soft pause + `restoreListener`) + irreversible `{hard:true}` close (true `ECONNREFUSED`, port freed) | done
+| T | `describe()` topology coverage: `nginx.http` methods (via tag) + `NginxUpstream` / `NginxSocket` / `NginxHttpListener` / `NginxCycle` / stream server/proxy/listener / `NginxSnapshot` (via `JSClassID`) | done
 |===
 
 == Open design question
