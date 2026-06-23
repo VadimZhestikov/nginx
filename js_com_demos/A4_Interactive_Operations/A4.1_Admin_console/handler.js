@@ -100,10 +100,11 @@ nginx.broadcast(function () {
     /* Structural op → class (these are methods, classified by intent). */
     var STRUCT_CLASS = {
         addLocation:    'guarded',
-        removeLocation: 'guarded',     /* reversible: tombstone + restoreLocation */
+        removeLocation: 'guarded',      /* reversible: tombstone + restoreLocation */
         restoreLocation:'guarded',
-        addServer:      'irreversible', /* Track S (not yet reversible) */
-        removeServer:   'irreversible',
+        removeServer:   'guarded',      /* reversible: tombstone + restoreServer (Track S) */
+        restoreServer:  'guarded',
+        addServer:      'irreversible', /* cscf is never reclaimed from cycle->pool */
         addListener:    'irreversible'  /* Track N (not yet reversible) */
     };
 
@@ -255,4 +256,13 @@ nginx.broadcast(function () {
             JSON.stringify({ resource: 'api', worker: pid(r) }) + '\n');
     });
     at('/worker', function (r) { jsonOut(r, 200, { worker: pid(r) }); });
+
+    /* ghost.local virtual server — its /who answers "ghost"; after a
+     * removeServer snapshot, Host: ghost.local falls through to localhost. */
+    var ghost = nginx.http.servers.find(function (s) {
+        return s.name === 'ghost.local'; });
+    if (ghost) {
+        var w = ghost.locations.find(function (l) { return l.path === '/who'; });
+        if (w) { w.handler = function (r) { r.respond(200, {}, 'ghost\n'); }; }
+    }
 });

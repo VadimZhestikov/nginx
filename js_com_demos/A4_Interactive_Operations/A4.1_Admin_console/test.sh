@@ -44,9 +44,9 @@ MIXED='[{"shared":"routes.products","value":"1"},
          "value":[{"key":"X-Console","value":"on","always":false}]},
         {"op":"addLocation","serverName":"localhost","pattern":"/dynamic/","handler":"dynamicHandler"}]'
 post "/c/raw?name=mixed&ops=$(Q "$MIXED")" > /dev/null
-# removeServer is still irreversible (Track S pending) — the gate must block it.
-# The engine no-ops removeServer (no branch), so confirm-applying it is harmless.
-DANGER='[{"op":"removeServer","serverName":"ghost.local"}]'
+# addServer is irreversible (cscf is never reclaimed from cycle->pool) — the gate
+# must block it. The engine no-ops addServer (no branch), so confirm is harmless.
+DANGER='[{"op":"addServer","name":"new.local"}]'
 post "/c/raw?name=danger&ops=$(Q "$DANGER")" > /dev/null
 
 LIST=$(curl -s "$B/c/snapshots")
@@ -61,14 +61,14 @@ check "annotate: addHeaders is safe"        '"label":"localhost/api/.headers.add
 check "annotate: addLocation is guarded"    '"class":"guarded"' "$ANN"
 
 ANN2=$(curl -s "$B/c/snapshot?id=0002-danger")
-check "annotate: removeServer is irreversible" '"class":"irreversible"' "$ANN2"
+check "annotate: addServer is irreversible" '"class":"irreversible"' "$ANN2"
 
 # ── 4. Layer 2 gate: irreversible apply blocked without confirm ──────────────
 GC=$(codep "/c/apply?id=0002-danger")
 [ "$GC" = "409" ] && { echo "PASS: irreversible apply blocked (HTTP 409)"; PASS=$((PASS+1)); } \
                   || { echo "FAIL: expected 409, got $GC"; FAIL=$((FAIL+1)); }
 GBODY=$(post "/c/apply?id=0002-danger")
-check "gate names the blocking op" 'removeServer' "$GBODY"
+check "gate names the blocking op" 'addServer' "$GBODY"
 
 # ── 5. Apply a safe snapshot → fans out → all workers converge ───────────────
 AP=$(post "/c/apply?id=0001-mixed")
@@ -123,7 +123,26 @@ RES=1; for i in $(seq 1 12); do [ "$(code /api/)" = "200" ] || RES=0; done
 [ "$RES" = "1" ] && { echo "PASS: /api/ restored (200) on all workers after rollback"; PASS=$((PASS+1)); } \
                  || { echo "FAIL: /api/ not restored on all workers"; FAIL=$((FAIL+1)); }
 
-# ── 9. No error-log noise ────────────────────────────────────────────────────
+# ── 9. Reversible removeServer: snapshot hides ghost.local, rollback restores ─
+# removeServer is guarded+reversible (tombstone). Host: ghost.local /who answers
+# "ghost"; after the snapshot it falls through to the default server (404);
+# rollback restores it on every worker.
+ghost() { curl -s -H 'Host: ghost.local' "http://127.0.0.1:$PORT/who"; }
+ghostc(){ curl -s -o /dev/null -w '%{http_code}' -H 'Host: ghost.local' "http://127.0.0.1:$PORT/who"; }
+check "ghost.local serves before hide" 'ghost' "$(ghost)"
+post "/c/raw?name=hide-srv&ops=$(Q '[{"op":"removeServer","name":"ghost.local"}]')" > /dev/null
+post "/c/apply?id=0004-hide-srv" > /dev/null
+sleep 0.3
+SHID=1; for i in $(seq 1 12); do [ "$(ghostc)" = "404" ] || SHID=0; done
+[ "$SHID" = "1" ] && { echo "PASS: ghost.local removed (404) on all workers"; PASS=$((PASS+1)); } \
+                  || { echo "FAIL: ghost.local not removed on all workers"; FAIL=$((FAIL+1)); }
+post "/c/rollback" > /dev/null
+sleep 0.3
+SRES=1; for i in $(seq 1 12); do [ "$(ghost)" = "ghost" ] || SRES=0; done
+[ "$SRES" = "1" ] && { echo "PASS: ghost.local restored on all workers after rollback"; PASS=$((PASS+1)); } \
+                  || { echo "FAIL: ghost.local not restored on all workers"; FAIL=$((FAIL+1)); }
+
+# ── 10. No error-log noise ───────────────────────────────────────────────────
 # Benign "No such file" lines are expected while /api/ is hidden (the request
 # falls through to the static handler) — they are not failures.
 if grep -iE '\[error|\[emerg|panic' logs/error.log | grep -vq 'No such file or directory'; then

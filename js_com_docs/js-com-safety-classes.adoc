@@ -445,11 +445,21 @@ is achievable for almost everything.  Track L delivers it for locations:
   symmetric (`A4.1` hides `/api/` via a snapshot, then rollback brings it back
   across all workers).
 
-After Track L, *no describable member is irreversible*: the genuinely one-way
-ops that remain — `nginx.http.addServer`/`removeServer`, `nginx.createSocket`/
-listeners — live on plain objects `describe()` cannot reach (a classification
-gap tracked as a follow-up).  Servers (Track S) and listeners (Track N) are the
-remaining reversibility work; see the design notes.
+**Track S (servers)** applies the same tombstone pattern:
+`nginx.http.removeServer(name)` now drops the server's names from the
+virtual-server hash (a module-side tombstone set that `rebuildVhostDispatch`
+skips) while keeping the `cscf` + wrapper, so `restoreServer(name)` is a true
+inverse.  Both auto-rebuild the dispatch.  `{hard:true}` keeps the legacy
+splice.  The admin console restores soft-removed servers on reset-to-base, so a
+`removeServer` snapshot round-trips under rollback (A4.1 hides `ghost.local`
+then restores it across all workers).
+
+`addServer` remains 🔴 *irreversible* — its `cscf` is allocated in `cycle->pool`
+and can never be reclaimed at runtime (the *resource* asymmetry), even though
+its routing effect can be undone with `removeServer`.  Listeners (Track N) are
+the remaining reversibility work; see the design notes.  Note the genuinely
+one-way ops live on plain objects `describe()` cannot reach (a classification
+gap tracked as a follow-up); they are classified in the console's annotation map.
 
 == Operator-reconfiguration plan — status
 
@@ -460,7 +470,7 @@ remaining reversibility work; see the design notes.
 | 2 | `nginx.safeConfig` policy gateway + `A0.3` actuator   | done
 | 3 | Snapshot-centric admin console (`A4.1`)               | done
 | L | Reversible `removeLocation` (tombstone + `restoreLocation`) | done
-| S | Reversible servers (tombstone `removeServer`)         | follow-up
+| S | Reversible `removeServer` (tombstone + `restoreServer`)     | done
 | N | Reversible listeners (`removeListener`)               | follow-up
 |===
 

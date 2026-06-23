@@ -205,6 +205,50 @@ static ngx_uint_t           ngx_js_vhost_hash_max_size;
 static ngx_uint_t           ngx_js_vhost_hash_bucket_size;
 
 /*
+ * Server tombstones (reversible removeServer, Track S).  ngx_http_core_srv_conf_t
+ * is a core struct with no spare field, so tombstoned servers are tracked in a
+ * per-worker module-side set.  rebuildVhostDispatch() skips any cscf in the set,
+ * dropping its names from the virtual-server hash (requests fall through to the
+ * default server) while keeping the cscf + JS wrapper alive for restoreServer().
+ */
+#define NGX_JS_SRV_TOMBSTONE_MAX  64
+static ngx_http_core_srv_conf_t  *ngx_js_srv_tombstones[NGX_JS_SRV_TOMBSTONE_MAX];
+static ngx_uint_t                 ngx_js_srv_tombstones_n;
+
+static ngx_int_t
+ngx_js_srv_tombstone_contains(ngx_http_core_srv_conf_t *cscf)
+{
+    ngx_uint_t  i;
+    for (i = 0; i < ngx_js_srv_tombstones_n; i++) {
+        if (ngx_js_srv_tombstones[i] == cscf) { return 1; }
+    }
+    return 0;
+}
+
+static ngx_int_t
+ngx_js_srv_tombstone_add(ngx_http_core_srv_conf_t *cscf)
+{
+    if (ngx_js_srv_tombstone_contains(cscf)) { return NGX_OK; }
+    if (ngx_js_srv_tombstones_n >= NGX_JS_SRV_TOMBSTONE_MAX) { return NGX_ERROR; }
+    ngx_js_srv_tombstones[ngx_js_srv_tombstones_n++] = cscf;
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_js_srv_tombstone_remove(ngx_http_core_srv_conf_t *cscf)
+{
+    ngx_uint_t  i;
+    for (i = 0; i < ngx_js_srv_tombstones_n; i++) {
+        if (ngx_js_srv_tombstones[i] == cscf) {
+            ngx_js_srv_tombstones[i] =
+                ngx_js_srv_tombstones[--ngx_js_srv_tombstones_n];
+            return 1;   /* was present */
+        }
+    }
+    return 0;
+}
+
+/*
  * Saved at ngx_js_http_com_install time so that addServer() can obtain
  * the correct cycle pointer even when nginx.http.servers[] is empty.
  * (ngx_cycle is still pointing at the old cycle during init_conf.)
@@ -7940,6 +7984,11 @@ ngx_js_http_rebuild_vhost_dispatch(JSContext *ctx, JSValueConst this_val,
         /* Add all server names from all servers sharing this address */
         for (s = 0; s < entry->nservers; s++) {
             cscf = entry->servers[s];
+
+            if (ngx_js_srv_tombstone_contains(cscf)) {
+                continue;   /* soft-removed: drop its names from the hash */
+            }
+
             sn   = cscf->server_names.elts;
 
             for (n = 0; n < cscf->server_names.nelts; n++) {
@@ -8530,10 +8579,24 @@ ngx_js_http_remove_server(JSContext *ctx, JSValueConst this_val,
     ngx_http_core_srv_conf_t  **new_servers;
     ngx_cycle_t                *cycle;
     ngx_uint_t                  i, j, k;
+    int                         hard;
 
     if (argc < 1) {
         return JS_ThrowTypeError(ctx,
             "removeServer: server name (string) required");
+    }
+
+    /*
+     * Default (soft) removeServer tombstones the server: dropped from the
+     * vhost name hash (requests fall through to the default server) but the
+     * cscf + JS wrapper are kept, so restoreServer() brings it back.
+     * { hard: true } keeps the legacy irreversible splice.
+     */
+    hard = 0;
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+        JSValue h = JS_GetPropertyStr(ctx, argv[1], "hard");
+        hard = JS_ToBool(ctx, h);
+        JS_FreeValue(ctx, h);
     }
 
     name_str = JS_ToCStringLen(ctx, &name_len, argv[0]);
@@ -8586,7 +8649,28 @@ ngx_js_http_remove_server(JSContext *ctx, JSValueConst this_val,
 
     cycle = found_op->cycle;
 
-    /* splice found_cscf from every vhost dispatch entry */
+    /* Soft (default): tombstone + rebuild dispatch; keep cscf + JS wrapper. */
+    if (!hard) {
+        JSValue  rb;
+
+        JS_FreeValue(ctx, servers_arr);
+
+        if (ngx_js_srv_tombstone_add(found_cscf) != NGX_OK) {
+            return JS_ThrowInternalError(ctx,
+                "removeServer: tombstone registry full");
+        }
+
+        rb = ngx_js_http_rebuild_vhost_dispatch(ctx, this_val, 0, NULL);
+        if (JS_IsException(rb)) {
+            ngx_js_srv_tombstone_remove(found_cscf);   /* roll back */
+            return rb;
+        }
+        JS_FreeValue(ctx, rb);
+
+        return JS_TRUE;
+    }
+
+    /* Hard (irreversible): splice found_cscf from every vhost dispatch entry */
     for (i = 0; i < ngx_js_vhost_nentries; i++) {
         entry = &ngx_js_vhost_entries[i];
 
@@ -8631,6 +8715,84 @@ ngx_js_http_remove_server(JSContext *ctx, JSValueConst this_val,
                       JS_NewUint32(ctx, servers_len - 1));
 
     JS_FreeValue(ctx, servers_arr);
+
+    /* Rebuild dispatch so the removal takes effect immediately (same as the
+     * soft path); the spliced cscf is gone from every entry so its names drop
+     * out of the hash. */
+    {
+        JSValue rb = ngx_js_http_rebuild_vhost_dispatch(ctx, this_val, 0, NULL);
+        if (JS_IsException(rb)) { return rb; }
+        JS_FreeValue(ctx, rb);
+    }
+
+    return JS_TRUE;
+}
+
+
+/*
+ * nginx.http.restoreServer(name) — inverse of the default (soft) removeServer.
+ * Clears the server's tombstone and rebuilds the vhost dispatch so its names
+ * route again.  Returns true if a tombstoned server matching name was found.
+ */
+static JSValue
+ngx_js_http_restore_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    const char                *name_str;
+    size_t                     name_len;
+    JSValue                    servers_arr, lv, rb;
+    uint32_t                   servers_len, i;
+    ngx_http_core_srv_conf_t  *found_cscf;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "restoreServer: server name (string) required");
+    }
+
+    name_str = JS_ToCStringLen(ctx, &name_len, argv[0]);
+    if (name_str == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    servers_arr = JS_GetPropertyStr(ctx, this_val, "servers");
+    lv = JS_GetPropertyStr(ctx, servers_arr, "length");
+    JS_ToUint32(ctx, &servers_len, lv);
+    JS_FreeValue(ctx, lv);
+
+    found_cscf = NULL;
+
+    for (i = 0; i < servers_len && found_cscf == NULL; i++) {
+        JSValue                 s  = JS_GetPropertyUint32(ctx, servers_arr, i);
+        ngx_js_server_opaque_t *op = JS_GetOpaque(s, ngx_js_server_class_id);
+        ngx_uint_t              ni;
+
+        if (op) {
+            for (ni = 0; ni < op->nnames; ni++) {
+                if (op->names[ni].len == name_len
+                    && ngx_strncasecmp(op->names[ni].data,
+                                       (u_char *) name_str, name_len) == 0)
+                {
+                    found_cscf = op->cscf;
+                    break;
+                }
+            }
+        }
+        JS_FreeValue(ctx, s);
+    }
+
+    JS_FreeCString(ctx, name_str);
+    JS_FreeValue(ctx, servers_arr);
+
+    if (found_cscf == NULL || !ngx_js_srv_tombstone_remove(found_cscf)) {
+        return JS_FALSE;   /* not found or not tombstoned */
+    }
+
+    rb = ngx_js_http_rebuild_vhost_dispatch(ctx, this_val, 0, NULL);
+    if (JS_IsException(rb)) {
+        ngx_js_srv_tombstone_add(found_cscf);   /* roll back */
+        return rb;
+    }
+    JS_FreeValue(ctx, rb);
 
     return JS_TRUE;
 }
@@ -10199,6 +10361,10 @@ ngx_js_http_com_install(JSContext *ctx, JSValue nginx_obj,
                       JS_NewCFunction(ctx,
                                       ngx_js_http_remove_server,
                                       "removeServer", 1));
+    JS_SetPropertyStr(ctx, http_obj, "restoreServer",
+                      JS_NewCFunction(ctx,
+                                      ngx_js_http_restore_server,
+                                      "restoreServer", 1));
 
     /* nginx.http.match(uri [, serverName]) */
     JS_SetPropertyStr(ctx, http_obj, "match",

@@ -109,6 +109,7 @@ nginx.broadcast(function () {
              * _restoreSoftRemoved() brings back any tombstoned locations so a
              * snapshot that doesn't remove them leaves them live. */
             _restoreSoftRemoved();
+            _restoreSoftRemovedServers();
             _applyOps(_baseOps());
             if (msg.data.snap) {
                 _applyOps(msg.data.snap.ops);
@@ -150,6 +151,16 @@ function _restoreSoftRemoved() {
         });
         if (srv) { srv.restoreLocation(op.pattern); }
         delete _softRemoved[key];
+    });
+}
+
+/* Same for soft-removed servers (Track S), keyed by server name. */
+var _softRemovedServers = {};
+
+function _restoreSoftRemovedServers() {
+    Object.keys(_softRemovedServers).forEach(function (name) {
+        nginx.http.restoreServer(name);
+        delete _softRemovedServers[name];
     });
 }
 
@@ -389,6 +400,16 @@ function _applyOps(ops) {
                 srvRe.restoreLocation(op.pattern);
                 delete _softRemoved[_srKey(op.serverName, op.pattern)];
             }
+
+        } else if (op.op === 'removeServer') {
+            /* Soft remove (tombstone) — reversible; tracked for reset. */
+            if (nginx.http.removeServer(op.name)) {
+                _softRemovedServers[op.name] = op;
+            }
+
+        } else if (op.op === 'restoreServer') {
+            nginx.http.restoreServer(op.name);
+            delete _softRemovedServers[op.name];
         }
     });
 }
@@ -552,6 +573,7 @@ admin.applySnapshot = function (id) {
     /* Reset to base then apply — mirrors what fan-out receivers do so all
      * workers reach the same state (props absent from snap get cleared). */
     _restoreSoftRemoved();
+    _restoreSoftRemovedServers();
     _applyOps(_baseOps());
     _applyOps(snap.ops);
     _setPinned(id);
@@ -578,6 +600,7 @@ admin.rollback = function () {
     } else {
         /* Reset to caller-supplied defaults. */
         _restoreSoftRemoved();
+        _restoreSoftRemovedServers();
         _applyOps(_baseOps());
         _setPinned(null);
         nginx.shared.set('sc.cv.desired', 'base');

@@ -851,7 +851,8 @@ nginx
 │    ├── variablesHashMaxSize      ← r/w
 │    ├── variablesHashBucketSize   ← r/w
 │    ├── addServer(name)   — create a new virtual server at runtime
-│    ├── removeServer(name) — remove a virtual server at runtime
+│    ├── removeServer(name [, {hard}]) — remove a vhost (reversible: tombstone)
+│    ├── restoreServer(name) — bring a soft-removed vhost back (inverse)
 │    ├── rebuildVhostDispatch() — recompile the server_name dispatch hash
 │    ├── match(req, conditions) — evaluate an `if` condition against a request
 │    └── sockets[]         — listening socket objects
@@ -1083,14 +1084,31 @@ nginx.http.servers
 
 [source,javascript]
 ----
-// Remove a tenant server (e.g. account deleted).
+// Soft-remove a tenant server (reversible) — auto-rebuilds the dispatch hash.
 nginx.http.removeServer('ex-tenant.example.com');
-nginx.http.rebuildVhostDispatch();
+// ...later, bring it back exactly as it was:
+nginx.http.restoreServer('ex-tenant.example.com');
 ----
 
-IMPORTANT: `rebuildVhostDispatch()` must be called after any change to server
-names.  Without it the Host-based routing hash is stale and requests will
-be routed to the wrong server.
+[NOTE]
+====
+`removeServer(name)` is *reversible by default*: it **tombstones** the server —
+its names are dropped from the virtual-server hash (requests fall through to the
+default server) but the `cscf` + JS wrapper are kept, so `restoreServer(name)`
+brings it back with identity preserved.  Both `removeServer` and `restoreServer`
+**rebuild the dispatch hash automatically**, so the change takes effect on the
+next request (no manual `rebuildVhostDispatch()` needed).
+
+Pass `removeServer(name, {hard: true})` for the legacy irreversible splice
+(the server is removed from `nginx.http.servers[]` and cannot be restored).
+The underlying `cscf` is never freed in either mode (it lives in `cycle->pool`),
+so the soft tombstone has the same memory profile as the hard splice — a strict
+improvement.  In-flight responses emitted while a server was hidden are not
+undone by restore.
+====
+
+IMPORTANT: `addServer()` still requires a manual `rebuildVhostDispatch()` to
+activate routing; only `removeServer`/`restoreServer` rebuild automatically.
 
 === Scope 4 — Per-Request Config Snapshot
 
