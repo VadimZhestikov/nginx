@@ -3040,7 +3040,7 @@ ngx_js_listener_close_master(uint32_t handle)
  *     connections refused, port freed.  Irreversible (per Track N decision).
  */
 static JSValue
-ngx_js_http_remove_listener(JSContext *ctx, JSValueConst this_val,
+ngx_js_http_remove_listener_impl(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     const char                    *addr;
@@ -3091,7 +3091,7 @@ ngx_js_http_remove_listener(JSContext *ctx, JSValueConst this_val,
  * nginx.http.restoreListener(addr) — re-arm this worker's accept event.
  */
 static JSValue
-ngx_js_http_restore_listener(JSContext *ctx, JSValueConst this_val,
+ngx_js_http_restore_listener_impl(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     const char                    *addr;
@@ -3123,6 +3123,46 @@ ngx_js_http_restore_listener(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowInternalError(ctx, "restoreListener: ngx_add_event failed");
     }
     return JS_TRUE;
+}
+
+
+/*
+ * Object-or-key wrappers: removeListener / restoreListener accept either the
+ * "host:port" address string or the COM object that owns the listener — the
+ * NginxSocket from createSocket() or the NginxHttpListener from attach(); both
+ * expose an .address equal to the registered display string.
+ */
+static JSValue
+ngx_js_http_remove_listener(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue       key, ret;
+    JSValueConst  a[2];
+
+    if (ngx_js_coerce_key_arg(ctx, argc, argv, "address", &key, a)) {
+        ret = ngx_js_http_remove_listener_impl(ctx, this_val, argc, a);
+        JS_FreeValue(ctx, key);
+        return ret;
+    }
+
+    return ngx_js_http_remove_listener_impl(ctx, this_val, argc, argv);
+}
+
+
+static JSValue
+ngx_js_http_restore_listener(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue       key, ret;
+    JSValueConst  a[2];
+
+    if (ngx_js_coerce_key_arg(ctx, argc, argv, "address", &key, a)) {
+        ret = ngx_js_http_restore_listener_impl(ctx, this_val, argc, a);
+        JS_FreeValue(ctx, key);
+        return ret;
+    }
+
+    return ngx_js_http_restore_listener_impl(ctx, this_val, argc, argv);
 }
 
 

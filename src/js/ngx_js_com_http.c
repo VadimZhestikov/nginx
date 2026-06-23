@@ -5918,6 +5918,26 @@ ngx_js_server_fn_add_location(JSContext *ctx, JSValueConst this_val,
 
 
 /*
+ * Object-or-key ergonomics — see the declaration in ngx_js_com.h.  Lets the
+ * remove/restore methods accept either the key string or the COM object the
+ * matching add*() returned.
+ */
+int
+ngx_js_coerce_key_arg(JSContext *ctx, int argc, JSValueConst *argv,
+    const char *prop, JSValue *keyout, JSValueConst *aout)
+{
+    if (argc < 1 || !JS_IsObject(argv[0])) {
+        return 0;   /* not an object (string key, or nothing) — use argv as-is */
+    }
+
+    *keyout = JS_GetPropertyStr(ctx, argv[0], prop);
+    aout[0] = *keyout;
+    aout[1] = (argc >= 2) ? argv[1] : JS_UNDEFINED;
+    return 1;
+}
+
+
+/*
  * srv.removeLocation(pattern)
  *
  * Removes the location matching pattern from the live BST / regex array.
@@ -6276,9 +6296,18 @@ ngx_js_server_fn_remove_location(JSContext *ctx, JSValueConst this_val,
 {
     ngx_js_server_opaque_t  *op;
 
+    JSValue       key, ret;
+    JSValueConst  a[2];
+
     op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
     if (!op) {
         return JS_EXCEPTION;
+    }
+
+    if (ngx_js_coerce_key_arg(ctx, argc, argv, "pattern", &key, a)) {
+        ret = ngx_js_do_remove_location(ctx, op, argc, a);
+        JS_FreeValue(ctx, key);
+        return ret;
     }
 
     return ngx_js_do_remove_location(ctx, op, argc, argv);
@@ -6295,9 +6324,18 @@ ngx_js_server_fn_restore_location(JSContext *ctx, JSValueConst this_val,
 {
     ngx_js_server_opaque_t  *op;
 
+    JSValue       key, ret;
+    JSValueConst  a[2];
+
     op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
     if (!op) {
         return JS_EXCEPTION;
+    }
+
+    if (ngx_js_coerce_key_arg(ctx, argc, argv, "pattern", &key, a)) {
+        ret = ngx_js_do_restore_location(ctx, op, argc, a);
+        JS_FreeValue(ctx, key);
+        return ret;
     }
 
     return ngx_js_do_restore_location(ctx, op, argc, argv);
@@ -6382,6 +6420,8 @@ ngx_js_location_fn_remove_location(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     ngx_js_location_opaque_t  *loc_op;
+    JSValue                    key, ret;
+    JSValueConst               a[2];
 
     loc_op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
     if (!loc_op) {
@@ -6391,6 +6431,12 @@ ngx_js_location_fn_remove_location(JSContext *ctx, JSValueConst this_val,
     if (loc_op->srv_op == NULL) {
         return JS_ThrowTypeError(ctx,
             "removeLocation: not available on r.location (read-only context)");
+    }
+
+    if (ngx_js_coerce_key_arg(ctx, argc, argv, "pattern", &key, a)) {
+        ret = ngx_js_do_remove_location(ctx, loc_op->srv_op, argc, a);
+        JS_FreeValue(ctx, key);
+        return ret;
     }
 
     return ngx_js_do_remove_location(ctx, loc_op->srv_op, argc, argv);
@@ -6405,6 +6451,8 @@ ngx_js_location_fn_restore_location(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     ngx_js_location_opaque_t  *loc_op;
+    JSValue                    key, ret;
+    JSValueConst               a[2];
 
     loc_op = JS_GetOpaque2(ctx, this_val, ngx_js_location_class_id);
     if (!loc_op) {
@@ -6414,6 +6462,12 @@ ngx_js_location_fn_restore_location(JSContext *ctx, JSValueConst this_val,
     if (loc_op->srv_op == NULL) {
         return JS_ThrowTypeError(ctx,
             "restoreLocation: not available on r.location (read-only context)");
+    }
+
+    if (ngx_js_coerce_key_arg(ctx, argc, argv, "pattern", &key, a)) {
+        ret = ngx_js_do_restore_location(ctx, loc_op->srv_op, argc, a);
+        JS_FreeValue(ctx, key);
+        return ret;
     }
 
     return ngx_js_do_restore_location(ctx, loc_op->srv_op, argc, argv);
@@ -8566,7 +8620,7 @@ ngx_js_http_add_server(JSContext *ctx, JSValueConst this_val,
  * Call nginx.http.rebuildVhostDispatch() afterwards to update routing.
  */
 static JSValue
-ngx_js_http_remove_server(JSContext *ctx, JSValueConst this_val,
+ngx_js_http_remove_server_impl(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     const char                 *name_str;
@@ -8735,7 +8789,7 @@ ngx_js_http_remove_server(JSContext *ctx, JSValueConst this_val,
  * route again.  Returns true if a tombstoned server matching name was found.
  */
 static JSValue
-ngx_js_http_restore_server(JSContext *ctx, JSValueConst this_val,
+ngx_js_http_restore_server_impl(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     const char                *name_str;
@@ -8795,6 +8849,45 @@ ngx_js_http_restore_server(JSContext *ctx, JSValueConst this_val,
     JS_FreeValue(ctx, rb);
 
     return JS_TRUE;
+}
+
+
+/*
+ * nginx.http.removeServer(nameOrServer [, opts]) — accepts either the server
+ * name string or the NginxServer object (its .name is used), then delegates.
+ */
+static JSValue
+ngx_js_http_remove_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue       key, ret;
+    JSValueConst  a[2];
+
+    if (ngx_js_coerce_key_arg(ctx, argc, argv, "name", &key, a)) {
+        ret = ngx_js_http_remove_server_impl(ctx, this_val, argc, a);
+        JS_FreeValue(ctx, key);
+        return ret;
+    }
+
+    return ngx_js_http_remove_server_impl(ctx, this_val, argc, argv);
+}
+
+
+/* nginx.http.restoreServer(nameOrServer) — same object-or-key coercion. */
+static JSValue
+ngx_js_http_restore_server(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue       key, ret;
+    JSValueConst  a[2];
+
+    if (ngx_js_coerce_key_arg(ctx, argc, argv, "name", &key, a)) {
+        ret = ngx_js_http_restore_server_impl(ctx, this_val, argc, a);
+        JS_FreeValue(ctx, key);
+        return ret;
+    }
+
+    return ngx_js_http_restore_server_impl(ctx, this_val, argc, argv);
 }
 
 

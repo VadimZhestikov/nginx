@@ -461,6 +461,18 @@ is achievable for almost everything.  Track L delivers it for locations:
   symmetric (`A4.1` hides `/api/` via a snapshot, then rollback brings it back
   across all workers).
 
+[NOTE]
+====
+*Object-or-key ergonomics.*  `removeLocation` / `restoreLocation`,
+`removeServer` / `restoreServer` and `removeListener` / `restoreListener` accept
+*either* the key string they always took *or* the COM object the matching
+`add*()` / `createSocket()` returned, so `x = srv.addLocation('/p/', fn);
+srv.removeLocation(x)` works as well as `srv.removeLocation('/p/')`.  The key is
+read off the object — location `.pattern`, server `.name`, socket `.address`
+(`ngx_js_coerce_key_arg`).  The keyed form stays canonical for snapshot replay
+(ops resolve by stable name, not object identity).
+====
+
 **Track S (servers)** applies the same tombstone pattern:
 `nginx.http.removeServer(name)` now drops the server's names from the
 virtual-server hash (a module-side tombstone set that `rebuildVhostDispatch`

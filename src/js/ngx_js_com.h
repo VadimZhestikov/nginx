@@ -407,6 +407,19 @@ void  ngx_js_describe_tag(JSContext *ctx, JSValueConst obj, int tag);
 JSValue  ngx_js_describe_settable_props(JSContext *ctx, JSValueConst obj);
 
 /*
+ * Object-or-key ergonomics for remove/restore methods: if argv[0] is a COM
+ * object (e.g. the location returned by addLocation), pull its key property
+ * `prop` ("pattern" / "name" / "address") so `x = addX(); removeX(x)` works as
+ * well as removeX("key").  On a hit, fills *keyout (an owned JSValue the caller
+ * must JS_FreeValue after the delegated call) and aout[0..1] (a 2-element
+ * argv where [0] is the key and [1] is the original opts), then returns 1.
+ * Returns 0 when argv[0] is not an object — caller uses the original argv.
+ * Defined in ngx_js_com_http.c.
+ */
+int  ngx_js_coerce_key_arg(JSContext *ctx, int argc, JSValueConst *argv,
+    const char *prop, JSValue *keyout, JSValueConst *aout);
+
+/*
  * ngx_js_rr_peer_is_zoned(obj) — 1 if the runtime RR peer wrapped by obj
  * belongs to a zone-backed (shared-memory) upstream, else 0.  Used by the
  * peer propagation refine hook.  Defined in ngx_js_com_upstream.c.
