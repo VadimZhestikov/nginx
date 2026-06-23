@@ -48,6 +48,14 @@ nginx.admin.registerHandler('dynamicHandler', function (r) {
         JSON.stringify({ resource: 'dynamic', worker: r.variable('pid') }) + '\n');
 });
 
+// Second listener (port 8136), created at init-conf and attached to the same
+// server.  Used to demonstrate reversible removeListener: a snapshot can
+// soft-pause it (Host requests to :8136 stop being answered) and rollback
+// resumes it — fanned out to every worker via the cfgworker.
+var EXTRA_LISTENER = '127.0.0.1:8136';
+nginx.http.attach(nginx.createSocket(EXTRA_LISTENER))
+     .addServer(nginx.http.servers[0]);
+
 // Load the SPA once at init; every worker inherits the string via COW.
 var CONSOLE_HTML = std.loadFile(nginx.cycle.prefix + 'console.html') ||
                    '<!doctype html><h1>console.html not found</h1>';
@@ -104,8 +112,10 @@ nginx.broadcast(function () {
         restoreLocation:'guarded',
         removeServer:   'guarded',      /* reversible: tombstone + restoreServer (Track S) */
         restoreServer:  'guarded',
+        removeListener: 'guarded',      /* reversible: soft pause + restoreListener (Track N) */
+        restoreListener:'guarded',
         addServer:      'irreversible', /* cscf is never reclaimed from cycle->pool */
-        addListener:    'irreversible'  /* Track N (not yet reversible) */
+        addListener:    'irreversible'  /* socket bind; resource commit */
     };
 
     function annotate(op) {

@@ -66,6 +66,10 @@ typedef struct {
     ngx_uint_t                nvservers;
 
     unsigned                  activated:1;     /* 1 after cycle->listening push */
+    unsigned                  paused:1;        /* 1 if accept event removed in
+                                                  this worker (soft removeListener);
+                                                  per-worker via COW */
+    unsigned                  closed:1;        /* 1 after hard removeListener */
 
     /* Accept hooks — JS-Pilgrim P4 */
     uint32_t                  accept_handlers[NGX_JS_ACCEPT_HANDLERS_MAX];

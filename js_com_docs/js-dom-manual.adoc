@@ -2143,6 +2143,34 @@ Full working example (from `t/hello_world.t`):
 })();
 ----
 
+==== Pausing a listener — `removeListener` / `restoreListener`
+
+A live listener can be quiesced and resumed at runtime:
+
+[source,javascript]
+----
+nginx.http.removeListener('0.0.0.0:8080');   // stop accepting (this worker)
+// ...drain / maintenance...
+nginx.http.restoreListener('0.0.0.0:8080');  // resume accepting
+----
+
+[NOTE]
+====
+`removeListener(addr)` *soft-pauses* the listener: it removes this worker's
+accept event from the event loop (`ngx_del_event`), so the worker stops
+accepting on that socket.  The fd stays bound, so in-flight requests finish and
+new connections complete the TCP handshake and **queue in the kernel backlog**
+(they are not refused) until `restoreListener(addr)` re-arms accept
+(`ngx_add_event`).  Fully reversible — ideal for *drain-during-deploy*.
+
+Like the other structural ops it is **per-worker**; fan it out (e.g. via the
+admin console's SharedWorker, as a `{op:"removeListener", addr}` snapshot op) to
+pause every worker.  `removeListener(addr, {hard:true})` — close the socket so
+connections are *refused* — is **reserved**: a worker cannot truly close the
+listener because the master keeps the bound fd, so it needs master-side
+coordination (a planned follow-up) and currently throws.
+====
+
 === `nginx.createStream([directives])`
 
 Creates the stream module as if an empty `stream {}` block were present in

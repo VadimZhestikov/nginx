@@ -454,12 +454,22 @@ splice.  The admin console restores soft-removed servers on reset-to-base, so a
 `removeServer` snapshot round-trips under rollback (A4.1 hides `ghost.local`
 then restores it across all workers).
 
-`addServer` remains 🔴 *irreversible* — its `cscf` is allocated in `cycle->pool`
-and can never be reclaimed at runtime (the *resource* asymmetry), even though
-its routing effect can be undone with `removeServer`.  Listeners (Track N) are
-the remaining reversibility work; see the design notes.  Note the genuinely
-one-way ops live on plain objects `describe()` cannot reach (a classification
-gap tracked as a follow-up); they are classified in the console's annotation map.
+**Track N (listeners)** applies the same pattern with a socket twist:
+`nginx.http.removeListener(addr)` *soft-pauses* — `ngx_del_event` removes the
+worker's accept event so it stops accepting (the fd stays bound; new
+connections queue in the kernel backlog rather than being refused);
+`restoreListener(addr)` re-arms it (`ngx_add_event`).  Per-worker, fanned out by
+the admin console (A4.1 pauses/resumes `:8136` across all workers via snapshot +
+rollback).  `removeListener(addr, {hard:true})` (close → refused) is *reserved*:
+a worker can't truly close the listener (the master keeps the bound fd), so it
+needs master-side coordination — a follow-up; it currently throws.
+
+`addServer` and `addListener` remain 🔴 *irreversible* — their `cscf` / bound
+socket are committed in `cycle->pool` and never reclaimed at runtime (the
+*resource* asymmetry), even though their routing/accept effect can be undone
+with `removeServer` / `removeListener`.  Note these genuinely one-way ops live
+on plain objects `describe()` cannot reach (a classification gap tracked as a
+follow-up); they are classified in the console's annotation map.
 
 == Operator-reconfiguration plan — status
 
@@ -471,7 +481,7 @@ gap tracked as a follow-up); they are classified in the console's annotation map
 | 3 | Snapshot-centric admin console (`A4.1`)               | done
 | L | Reversible `removeLocation` (tombstone + `restoreLocation`) | done
 | S | Reversible `removeServer` (tombstone + `restoreServer`)     | done
-| N | Reversible listeners (`removeListener`)               | follow-up
+| N | Reversible `removeListener` (soft pause + `restoreListener`); `{hard:true}` close reserved | done
 |===
 
 == Open design question

@@ -2827,10 +2827,179 @@ ngx_js_http_attach(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* removeListener / restoreListener — reversible listeners (Track N)    */
+/* ------------------------------------------------------------------ *
+ * Soft pause (default): ngx_del_event removes this worker's accept event
+ * from the event loop, so the worker stops accepting on the listener; the
+ * fd stays bound (new connections queue in the kernel backlog).
+ * restoreListener re-arms the event (ngx_add_event).  Fully reversible.
+ *
+ * These are PER-WORKER operations (like removeLocation/removeServer); the
+ * admin layer fans the {op:removeListener} out via its SharedWorker so every
+ * worker pauses.  The paused flag lives in the COW-shared state struct and
+ * becomes per-worker on first write.
+ */
+
+/* Find a listener state whose socket display address equals addr. */
+static ngx_js_http_listener_state_t *
+ngx_js_listener_find_by_addr(const char *addr, size_t len)
+{
+    ngx_uint_t                     i;
+    ngx_js_http_listener_state_t  *st;
+    ngx_js_socket_state_t         *sock;
+
+    for (i = 0; i < NGX_JS_LISTENER_REG_MAX; i++) {
+        st = ngx_js_listener_reg[i];
+        if (st == NULL) {
+            continue;
+        }
+        sock = ngx_js_socket_reg[st->socket_handle];
+        if (sock != NULL
+            && ngx_strlen(sock->addr) == len
+            && ngx_strncmp(sock->addr, addr, len) == 0)
+        {
+            return st;
+        }
+    }
+    return NULL;
+}
+
+
+/* Remove this worker's accept event from the loop (idempotent). */
+static ngx_int_t
+ngx_js_listener_pause_local(ngx_js_http_listener_state_t *st)
+{
+    if (!st->activated || st->ls == NULL || st->ls->connection == NULL) {
+        return NGX_OK;   /* not accepting in this worker yet — nothing to do */
+    }
+    if (st->paused) {
+        return NGX_OK;
+    }
+    if (ngx_del_event(st->ls->connection->read, NGX_READ_EVENT, 0) != NGX_OK) {
+        return NGX_ERROR;
+    }
+    st->paused = 1;
+    return NGX_OK;
+}
+
+
+/* Re-arm this worker's accept event (idempotent). */
+static ngx_int_t
+ngx_js_listener_resume_local(ngx_js_http_listener_state_t *st)
+{
+    if (!st->activated || st->ls == NULL || st->ls->connection == NULL) {
+        return NGX_OK;
+    }
+    if (!st->paused) {
+        return NGX_OK;
+    }
+    if (ngx_add_event(st->ls->connection->read, NGX_READ_EVENT, 0) != NGX_OK) {
+        return NGX_ERROR;
+    }
+    st->paused = 0;
+    return NGX_OK;
+}
+
+
+/*
+ * nginx.http.removeListener(addr [, {hard:true}])
+ *   default — soft pause: stop accepting on this worker (reversible).
+ *   {hard:true} — close the socket (connection-refused) is NOT yet supported:
+ *     a worker cannot truly close the listener because the master keeps the
+ *     bound fd; that needs master-side coordination (a follow-up).  Reserved.
+ */
+static JSValue
+ngx_js_http_remove_listener(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    const char                    *addr;
+    size_t                         len;
+    int                            hard;
+    ngx_js_http_listener_state_t  *st;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "removeListener: address (string) required");
+    }
+
+    hard = 0;
+    if (argc >= 2 && JS_IsObject(argv[1])) {
+        JSValue h = JS_GetPropertyStr(ctx, argv[1], "hard");
+        hard = JS_ToBool(ctx, h);
+        JS_FreeValue(ctx, h);
+    }
+
+    if (hard) {
+        return JS_ThrowInternalError(ctx,
+            "removeListener: {hard:true} (close/refuse) is not yet supported"
+            " — it needs master-side socket close; use the soft pause (default)");
+    }
+
+    addr = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (addr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    st = ngx_js_listener_find_by_addr(addr, len);
+    JS_FreeCString(ctx, addr);
+
+    if (st == NULL) {
+        return JS_FALSE;   /* no such listener */
+    }
+
+    if (ngx_js_listener_pause_local(st) != NGX_OK) {
+        return JS_ThrowInternalError(ctx, "removeListener: ngx_del_event failed");
+    }
+    return JS_TRUE;
+}
+
+
+/*
+ * nginx.http.restoreListener(addr) — re-arm this worker's accept event.
+ */
+static JSValue
+ngx_js_http_restore_listener(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    const char                    *addr;
+    size_t                         len;
+    ngx_js_http_listener_state_t  *st;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "restoreListener: address (string) required");
+    }
+
+    addr = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (addr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    st = ngx_js_listener_find_by_addr(addr, len);
+    JS_FreeCString(ctx, addr);
+
+    if (st == NULL) {
+        return JS_FALSE;
+    }
+
+    if (ngx_js_listener_resume_local(st) != NGX_OK) {
+        return JS_ThrowInternalError(ctx, "restoreListener: ngx_add_event failed");
+    }
+    return JS_TRUE;
+}
+
+
 ngx_int_t
 ngx_js_listener_install(JSContext *ctx, JSValue http_obj)
 {
     JS_SetPropertyStr(ctx, http_obj, "attach",
                       JS_NewCFunction(ctx, ngx_js_http_attach, "attach", 1));
+    JS_SetPropertyStr(ctx, http_obj, "removeListener",
+                      JS_NewCFunction(ctx, ngx_js_http_remove_listener,
+                                      "removeListener", 1));
+    JS_SetPropertyStr(ctx, http_obj, "restoreListener",
+                      JS_NewCFunction(ctx, ngx_js_http_restore_listener,
+                                      "restoreListener", 1));
     return NGX_OK;
 }

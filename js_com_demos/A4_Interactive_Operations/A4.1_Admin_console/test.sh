@@ -142,7 +142,28 @@ SRES=1; for i in $(seq 1 12); do [ "$(ghost)" = "ghost" ] || SRES=0; done
 [ "$SRES" = "1" ] && { echo "PASS: ghost.local restored on all workers after rollback"; PASS=$((PASS+1)); } \
                   || { echo "FAIL: ghost.local not restored on all workers"; FAIL=$((FAIL+1)); }
 
-# ── 10. No error-log noise ───────────────────────────────────────────────────
+# ── 10. Reversible removeListener: snapshot pauses :8136, rollback resumes ───
+# removeListener is guarded+reversible (soft pause). :8136 serves the console
+# server; after the snapshot, accept is paused on every worker (requests time
+# out / queue); rollback re-arms accept on all workers.
+l8136() { curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:8136/worker"; }
+check "second listener :8136 serves before pause" "200" "$(l8136)"
+post "/c/raw?name=pause-lsn&ops=$(Q '[{"op":"removeListener","addr":"127.0.0.1:8136"}]')" > /dev/null
+post "/c/apply?id=0005-pause-lsn" > /dev/null
+sleep 0.3
+# paused: curl --max-time returns 000 (no response within timeout) on every worker
+LPA=1; for i in $(seq 1 12); do [ "$(l8136)" = "000" ] || LPA=0; done
+[ "$LPA" = "1" ] && { echo "PASS: :8136 paused (no response) on all workers"; PASS=$((PASS+1)); } \
+                 || { echo "FAIL: :8136 still responding on some worker"; FAIL=$((FAIL+1)); }
+# control port unaffected
+check ":8135 console unaffected during pause" "200" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/worker")"
+post "/c/rollback" > /dev/null
+sleep 0.3
+LRE=1; for i in $(seq 1 12); do [ "$(l8136)" = "200" ] || LRE=0; done
+[ "$LRE" = "1" ] && { echo "PASS: :8136 resumed (200) on all workers after rollback"; PASS=$((PASS+1)); } \
+                 || { echo "FAIL: :8136 not resumed on all workers"; FAIL=$((FAIL+1)); }
+
+# ── 11. No error-log noise ───────────────────────────────────────────────────
 # Benign "No such file" lines are expected while /api/ is hidden (the request
 # falls through to the static handler) — they are not failures.
 if grep -iE '\[error|\[emerg|panic' logs/error.log | grep -vq 'No such file or directory'; then
