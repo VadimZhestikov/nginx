@@ -350,6 +350,56 @@ table, n)` builds the descriptor array for any object.
   next to fan-out ACK / convergence state so the COW trap is visible rather
   than silent.
 
+== Layer 2 — the `safe-config` policy plugin
+
+*Implemented* — `js_com_apps/safe_config/` (a reusable `nginx.use()` plugin
+that installs `nginx.safeConfig`).  It is the safety gateway over the Layer 1
+metadata: every mutation consults `describe()`, is gated by tier, and is routed
+by propagation.
+
+[source,javascript]
+----
+nginx.use('./js_com_apps/safe_config',
+          { cfgWorkerPath: '<abs>/js_com_apps/safe_config/cfgworker.js' });
+
+// Gateway: describe() → gate → apply → fan-out (if worker-local)
+nginx.safeConfig.apply(path, value [, opts]);
+nginx.safeConfig.plan(path, value);          // dry-run; returns the plan, no mutation
+
+// Named policies (vetted vocabulary built on apply())
+nginx.safeConfig.canaryWeight(upstream, pct [, opts]);       // weight split
+nginx.safeConfig.setResponseHeader(server, loc, key, val);    // headers.addHeaders
+nginx.safeConfig.toggleLocation(server, loc, on [, opts]);    // 503 ↔ restore
+nginx.safeConfig.drainPeer(upstream, addr [, opts]);          // peer.down = true
+----
+
+*Per-tier opt-in (default):*
+
+[cols="1,2", options="header"]
+|===
+| class | required opt-in
+| `safe`         | none
+| `guarded`      | `{ ack: true }` (else throws, quoting the descriptor note)
+| `irreversible` | `{ confirm: true }`
+|===
+
+*Propagation routing:* the gateway fans a write out to all workers (via the
+plugin's `cfgworker.js` SharedWorker) only when `describe()` reports
+`worker-local`.  `zoned-shared` / `auto-shared` writes apply directly — and
+because `describe()` resolves zoned-vs-not live, the same `peer.weight` write
+auto-fans-out on a non-zoned upstream and applies directly on a zoned one.
+
+*Fan-out payloads are JSON-serialisable* (`{kind:'set', path, value}` or
+`{kind:'toggle', …}`).  `toggleLocation` can't serialise a handler function, so
+it fans out a `toggle` command and each worker saves/restores its own prior
+handler locally (symmetric enable/disable).
+
+Without `cfgWorkerPath`, writes apply to the calling worker only and plans
+report `fannedOut:false` — fine for single-worker setups.
+
+Demo: `A0.3_Safe_config_actuator` (REST actuator; 14-check cross-worker test).
+Tests: `t/js_safe_config.t`.
+
 == Open design question
 
 `propagation` is modelled as a single enum rather than two booleans

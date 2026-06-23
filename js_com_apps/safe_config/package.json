@@ -1,0 +1,8 @@
+{
+  "name": "safe-config",
+  "version": "1.0.0",
+  "description": "Layer 2 policy plugin — a safety gateway over COM mutations. Installs nginx.safeConfig.",
+  "ngxjs": {
+    "main": "index.js"
+  }
+}
