@@ -1212,6 +1212,70 @@ ngx_js_nginx_fn_settable(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * nginx.describe(path [, name]) — return mutation safety metadata for the COM
+ * object at path (string) or passed directly (object).
+ *
+ *   nginx.describe("http.upstreams[0].peers[0]")
+ *   // → [{name:"weight", class:"safe", propagation:"zoned-shared", …}, …]
+ *
+ *   nginx.describe("http.servers[0].locations[0]", "handler")
+ *   // → {name:"handler", class:"guarded", requestScoped:false, …}  (or null)
+ *
+ * See js_com_docs/js-com-safety-classes.adoc.  Unregistered classes yield an
+ * empty array (or null for the single-member form), mirroring settable().
+ */
+static JSValue
+ngx_js_nginx_fn_describe(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue      obj, result;
+    const char  *path, *name;
+    size_t       plen;
+    char         tmp[512];
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.describe: path or object required");
+    }
+
+    if (JS_IsString(argv[0])) {
+        path = JS_ToCStringLen(ctx, &plen, argv[0]);
+        if (!path) { return JS_EXCEPTION; }
+
+        if (plen + 1 > sizeof(tmp)) {
+            JS_FreeCString(ctx, path);
+            return JS_ThrowTypeError(ctx, "nginx.describe: path too long");
+        }
+
+        ngx_js_path_normalise(tmp, path, plen);
+        JS_FreeCString(ctx, path);
+
+        obj = ngx_js_path_traverse(ctx, this_val, tmp, 0, NULL);
+        if (JS_IsException(obj)) { return obj; }
+
+    } else {
+        obj = JS_DupValue(ctx, argv[0]);
+    }
+
+    if (argc >= 2 && JS_IsString(argv[1])) {
+        name = JS_ToCString(ctx, argv[1]);
+        if (!name) {
+            JS_FreeValue(ctx, obj);
+            return JS_EXCEPTION;
+        }
+        result = ngx_js_describe_member(ctx, obj, name);
+        JS_FreeCString(ctx, name);
+
+    } else {
+        result = ngx_js_describe_members(ctx, obj);
+    }
+
+    JS_FreeValue(ctx, obj);
+    return result;
+}
+
+
 /* ------------------------------------------------------------------ */
 /* ngx_js_com_init — main entry point called from ngx_js_module.c      */
 /* ------------------------------------------------------------------ */
@@ -2591,6 +2655,9 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "settable",
                       JS_NewCFunction(ctx, ngx_js_nginx_fn_settable,
                                       "settable", 1));
+    JS_SetPropertyStr(ctx, nginx_obj, "describe",
+                      JS_NewCFunction(ctx, ngx_js_nginx_fn_describe,
+                                      "describe", 2));
 
     /* nginx.on(event, fn) — master lifecycle event handler registration */
     JS_SetPropertyStr(ctx, nginx_obj, "on",

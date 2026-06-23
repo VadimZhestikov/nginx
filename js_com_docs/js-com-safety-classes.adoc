@@ -1,0 +1,357 @@
+= COM Mutation Safety Classes
+:toc: left
+:toclevels: 3
+:source-highlighter: rouge
+
+Layer 1 of the operator-facing dynamic-reconfiguration plan: a per-member
+classification of every settable COM property/method, plus the
+`nginx.describe()` API that exposes it.  Layer 2 (policy plugins) and Layer 3
+(snapshot-centric admin console) build on this metadata.
+
+NOTE: This is a design specification.  The classification tables below are
+authoritative for the implementation; the C-side `ngx_js_member_class_t`
+tables must match them member-for-member.
+
+== Why a taxonomy
+
+The COM lets JavaScript mutate live nginx configuration, but "can I change
+this safely?" has three independent answers that today live only in C comments
+and the authors' heads:
+
+. *Can I undo it?* — a scalar weight change is reversible; binding a socket is not.
+. *Who sees it?* — most writes land in the calling worker's copy-on-write
+  memory only; a few are cross-worker; the rest need explicit fan-out.
+. *Can I scope it to one request?* — some setters honour `setWriteMode('local')`,
+  most don't.
+
+An operator cannot be expected to know that `peer.weight =` on a *zoned*
+upstream is one-and-done, but the identical call on a non-zoned upstream
+silently affects 1 of N workers.  The taxonomy makes all three answers
+machine-readable.
+
+== Design principle
+
+Safety is a property of each *member*, not of the object — `NginxServer` has
+safe scalar setters *and* an irreversible `addServer`-adjacent topology surface.
+So the classification attaches to each settable member, and `settable()` /
+`describe()` (already per-member) are the natural place to expose it.
+
+Three orthogonal axes:
+
+[cols="1,3", options="header"]
+|===
+| Axis | Question it answers
+
+| `class`         | Reversibility + blast radius — the operator traffic light
+| `propagation`   | How a change reaches the *other* workers (the COW-trap axis)
+| `requestScoped` | Can it be confined to a single request via `setWriteMode('local')`?
+|===
+
+`reversible` is carried explicitly too (derived from `class`) so consumers
+don't have to hard-code the mapping.
+
+== Axis 1 — `class` (traffic light)
+
+[cols="1,3,1", options="header"]
+|===
+| Class | Meaning | Reversible
+
+| 🟢 `safe`
+| Value-only mutation.  No effect on request routing, listeners, or process
+  topology.  `snapshot()` / `restore()` replays the setter cleanly.
+| Yes
+
+| 🟡 `guarded`
+| Reversible, but changes request *dispatch* or live protocol state, is
+  timing-sensitive (in-flight requests may not observe it consistently), and is
+  only meaningful once fanned out to all workers.
+| Yes, with care
+
+| 🔴 `irreversible`
+| Cannot be undone for the lifetime of the process.
+| *No*
+
+| `readonly`
+| Getter only — no mutation.  Listed for completeness; carries no other axes.
+| n/a
+|===
+
+Classification rule for any member not in the tables below: a pure
+getter/setter over a C scalar or pool-backed list is `safe`; anything that
+calls `rebuild_loc_tree`, rewires dispatch, or binds/unbinds a socket is
+`guarded` or `irreversible`.
+
+== Axis 2 — `propagation` (the COW trap, made visible)
+
+[cols="1,3", options="header"]
+|===
+| Value | Meaning
+
+| `auto-shared`
+| Written to a shared-memory zone; every worker observes it immediately, no
+  fan-out required.  Only `nginx.shared.*` keys.
+
+| `zoned-shared`
+| Cross-worker *only if* the upstream is zone-backed (`peers->shpool != NULL`,
+  i.e. `upstream.zone != null`).  Otherwise behaves as `worker-local`.
+  `describe()` resolves this live per upstream.
+
+| `worker-local`
+| Copy-on-write write — lands in the *calling worker only*.  Requires explicit
+  SharedWorker fan-out to apply on every worker.  *This is the default for
+  nearly every COM write.*
+|===
+
+== Axis 3 — `requestScoped`
+
+`true` for members whose setter honours `setWriteMode('local')` by deep-copying
+the module conf into `r->pool` via `ngx_js_ensure_module_snapshot` /
+`ngx_js_ensure_core_snapshot`.
+
+Verified set (only these): *core `NginxLocation` scalars, `NginxHeaders`,
+`NginxProxy`, `NginxGzip`, `NginxRewrite`*.  Every other sub-object is
+global-only.  `location.handler` is `false` even on `NginxLocation` because it
+is hard-wired to always-global dispatch (`ngx_js_com_http.c`, magic == 2).
+
+== Descriptor shape
+
+What `nginx.describe(path)` returns, one object per member:
+
+[source,jsonc]
+----
+{
+  "name": "weight",
+  "type": "number",            // number | boolean | string | string[] | object | object[] | function
+  "access": "read-write",      // read-only | read-write
+  "class": "safe",             // safe | guarded | irreversible | readonly
+  "reversible": true,
+  "propagation": "zoned-shared", // auto-shared | zoned-shared | worker-local
+  "requestScoped": false,      // honours setWriteMode('local')
+  "note": "Recomputes total_weight under rr_peers_wlock"
+}
+----
+
+== Full per-member classification
+
+Only *settable* members are listed (read-only members carry no safety class;
+each object's read-only properties are summarised but not enumerated).  Unless
+noted, scalar/list setters are `propagation: worker-local`.
+
+=== nginx (root)
+
+[cols="2,1,1,1,3", options="header"]
+|===
+| Member | Class | Propagation | reqScoped | Note
+
+| `workerMemoryLimit` =   | safe | worker-local | no | Per-worker JS heap cap
+| `workerRequestTimeout` =| safe | worker-local | no | Per-request JS exec cap
+| `shared.set(k,v)`       | safe | auto-shared  | no | The only cross-worker primitive
+| `broadcast(fn)`         | guarded | worker-local | no | Queues fn into each worker init; effect depends on fn
+| `use()` / `install()`   | guarded | worker-local | no | Loads a plugin; reversibility depends on plugin
+| `set(path,val)`         | varies | varies | varies | Delegates to the target member — inherits its class
+| `createSocket()`        | 🔴 irreversible | worker-local | no | Binds an fd into `cycle->listening`
+|===
+
+Read-only: `version`, `cpu_count`, `workerIdx`, `plugins`, and the `cycle`,
+`events`, `http`, `stream` sub-trees (navigable but themselves read-only).
+
+=== nginx.cycle
+
+`workers` =  → 🟡 `guarded`, worker-local, reqScoped no (changes
+`worker_processes`; only meaningful before workers fork).  All other cycle
+properties are `readonly`.
+
+=== nginx.events
+
+[cols="2,1,1,1", options="header"]
+|===
+| Member | Class | Propagation | reqScoped
+| `multiAccept` =       | safe | worker-local | no
+| `acceptMutex` =       | safe | worker-local | no
+| `acceptMutexDelay` =  | safe | worker-local | no
+|===
+
+Read-only: `connections`, `use`.
+
+=== NginxServer (`nginx.http.servers[]`)
+
+[cols="2,1,1,1,3", options="header"]
+|===
+| Member | Class | Propagation | reqScoped | Note
+
+| `names` = / `setNames()` | 🟡 guarded | worker-local | no | Requires `rebuildVhostDispatch()` to take effect
+| scalar setters footnote:[clientHeaderBufferSize, clientHeaderTimeout, ignoreInvalidHeaders, mergeSlashes, underscoresInHeaders, serverTokens, connectionPoolSize, requestPoolSize] | safe | worker-local | no |
+| `addLocation()`          | 🟡/🔴 footnote:cond[`guarded` for JS-created (dynamic) locations; `irreversible` when mutating the static-config routing tree.] | worker-local | no | Rebuilds live location BST
+| `removeLocation()`       | 🟡/🔴 footnote:cond[] | worker-local | no | Orphans in-flight requests already routed
+| `clone()`                | safe | worker-local | no | Produces a new detached config object
+|===
+
+Read-only: `name`, `root`, `locations[]`, `ssl`, `largeClientHeaderBuffers`.
+
+=== NginxLocation (`…servers[].locations[]`)
+
+[cols="2,1,1,1,3", options="header"]
+|===
+| Member | Class | Propagation | reqScoped | Note
+
+| core scalar setters footnote:[root, sendfile, tcpNopush, tcpNodelay, etag, keepalive*, clientMaxBodySize, clientBodyTimeout, clientBodyBufferSize, sendTimeout, defaultType, satisfy, lingering*, and the full set of clcf scalar/boolean fields] | safe | worker-local | *yes* | Honour `setWriteMode('local')` via core snapshot
+| `handler` = / `clearHandler()` | 🟡 guarded | worker-local | *no* | Always global (rewires dispatch); reversible via `clearHandler()`
+| `errorPage` =            | safe | worker-local | no |
+| `addLocation()` / `removeLocation()` | 🟡/🔴 footnote:cond[] | worker-local | no | Nested locations on JS-created containers
+| `clone()`                | safe | worker-local | no |
+| filter installers footnote:[addHeaderFilter, addBodyFilter, addResponseHook, addUpstreamFilter, addUpstreamRequestFilter and their remove* counterparts] | 🟡 guarded | worker-local | no | Reversible via the matching `remove*(id)`
+|===
+
+Read-only: `path`, `pattern`, `matchType`, `internal`, `alias`, `tryFiles`,
+`hasHandler`, and all the sub-object accessors (`proxy`, `gzip`, `headers`, …).
+
+=== NginxProxy (`…locations[].proxy`)
+
+[cols="2,1,1,1", options="header"]
+|===
+| Member | Class | Propagation | reqScoped
+| `pass` =          | 🟡 guarded | worker-local | yes
+| scalar setters footnote:[httpVersion, connectTimeout, sendTimeout, readTimeout, buffering, requestBuffering, interceptErrors, bufferSize, nextUpstreamTries, nextUpstreamTimeout] | safe | worker-local | yes
+|===
+
+Read-only: `buffers`, `nextUpstream`, `setHeader`, `cache`.
+
+=== NginxHeaders (`…locations[].headers`)
+
+[cols="2,1,1,1,3", options="header"]
+|===
+| Member | Class | Propagation | reqScoped | Note
+| `addHeaders` =                | safe | worker-local | yes | Pool-backed list, atomic swap (sub-pool registry)
+| `addHeader()` / `removeHeader()` | safe | worker-local | yes | Copy-on-write into fresh sub-pool
+| `headersInherit` = / `trailersInherit` = | safe | worker-local | yes |
+|===
+
+Read-only: `expires`, `expiresTime`, `addTrailers`.
+
+=== NginxGzip / NginxRewrite
+
+All listed setters are `safe`, `worker-local`, *reqScoped yes*.
+
+* Gzip: `enable`, `level`, `minLength`, `vary`.
+* Rewrite: `log`, `uninitializedVariableWarn`, `stackSize`.
+
+=== Other location sub-objects (global-only)
+
+All setters are `safe`, `worker-local`, *reqScoped no* (no LOCAL write support):
+`NginxAccess` (rules/rules6/rulesUnix), `NginxAuth` (realm, userFile),
+`NginxLimitReq` / `NginxLimitConn` (logLevel, statusCode, dryRun, …),
+`NginxFastcgi`, `NginxRealip`, `NginxCharset`, `NginxAutoindex`,
+`NginxReferer`, `NginxDAV`, and the remaining filter-module bindings
+(`NginxSubFilter`, `NginxUserid`, `NginxAddition`, `NginxGunzip`, `NginxSlice`,
+`NginxImageFilter`, `NginxXSLT`, `NginxSecureLink`, `NginxMP4`,
+`NginxRandomIndex`, `NginxAuthRequest`, `NginxGzipStatic`, `NginxMemcached`,
+`NginxSCGI`, `NginxUWSGI`, `NginxMirror`).
+
+=== NginxSSL (`…servers[].ssl`)
+
+[cols="2,1,1,1,3", options="header"]
+|===
+| Member | Class | Propagation | reqScoped | Note
+| `setCertificate()` | 🟡 guarded | worker-local | no | Hot-swaps live `SSL_CTX`; reversible by swapping back
+| `setProtocols()`   | 🟡 guarded | worker-local | no | Mutates live `SSL_CTX`
+| `setCiphers()`     | 🟡 guarded | worker-local | no | Mutates live `SSL_CTX`
+| `sessionTimeout` = / `sessionTickets` = / `preferServerCiphers` = / `verifyDepth` = | safe | worker-local | no |
+|===
+
+Read-only: `protocols`, `ciphers`, `certificate`, `verify`, and the rest.
+
+=== NginxUpstream + peers
+
+[cols="2,1,1,1,3", options="header"]
+|===
+| Member | Class | Propagation | reqScoped | Note
+
+| `peer.weight` =     | safe | *zoned-shared* | no | Recomputes total_weight under `rr_peers_wlock`
+| `peer.maxFails` =   | safe | *zoned-shared* | no |
+| `peer.failTimeout` =| safe | *zoned-shared* | no |
+| `peer.down` =       | safe | *zoned-shared* | no | Adjusts `peers->tries`
+| `peer.maxConns` =   | safe | *zoned-shared* | no |
+| `addPeer()`         | 🟡 guarded | zoned-shared | no | Adds a live RR peer; reverse with `removePeer()`
+| `removePeer()`      | 🟡 guarded | zoned-shared | no | Reverse with `addPeer()`
+|===
+
+`zoned-shared` collapses to `worker-local` when the upstream has no `zone`.
+Config-phase `NginxPeer` (the `upstream { server … }` form) has the same scalar
+setters but is only writable before fork — classify identically with a
+lifecycle note.
+
+Read-only: `upstream.name`, `peer.address`, `peer.backup`, `peer.conns`,
+`upstream.zone`.
+
+=== nginx.http topology + sockets
+
+[cols="2,1,1,3", options="header"]
+|===
+| Member | Class | Propagation | Note
+| `addServer()`     | 🔴 irreversible | worker-local | Cannot free cycle pool or unbind a listener
+| `removeServer()`  | 🔴 irreversible | worker-local | Unlinks from vhost dispatch; memory not reclaimed
+| `addListener()` / socket bind / `attach()` | 🔴 irreversible | worker-local | fd enters append-only `cycle->listening`, fork-inherited
+|===
+
+=== NginxStream
+
+Mirror the HTTP classifications: stream server/proxy/ssl scalar setters are
+`safe`/`worker-local`; stream peer scalars are `zoned-shared`; `attach()` /
+listener binding is `irreversible`.
+
+== API surface (backward-compatible)
+
+[cols="2,3", options="header"]
+|===
+| Call | Returns
+
+| `nginx.settable(path)`        | *unchanged* — `string[]` of writable member names (the admin app's `{path}` ops depend on this)
+| `nginx.describe(path)`        | *new* — `Descriptor[]` for every member at `path`
+| `nginx.describe(path, name)`  | *new* — single-member `Descriptor`, or `null`
+|===
+
+`path` accepts the same syntax as `nginx.get`/`set`
+(e.g. `"http.upstreams[0].peers[0]"`, `"http.servers[0].locations[2].proxy"`).
+
+`describe()` resolves `propagation` with a *runtime refinement hook* where the
+answer is conditional: upstream peer members check `uscf->shm_zone` live so a
+zoned upstream reports `zoned-shared` and a plain one reports `worker-local`.
+All other members are a static lookup.
+
+== C-side storage (hybrid)
+
+One static table per COM class file, placed next to the proto table it
+describes so a setter and its classification cannot drift:
+
+[source,c]
+----
+typedef struct {
+    const char  *name;
+    uint8_t      klass;        /* NGX_JS_SAFE | _GUARDED | _IRREVERSIBLE | _READONLY */
+    uint8_t      flags;        /* NGX_JS_REVERSIBLE | NGX_JS_REQUEST_SCOPED */
+    uint8_t      propagation;  /* static default: AUTO_SHARED | ZONED_SHARED | WORKER_LOCAL */
+    const char  *note;
+} ngx_js_member_class_t;
+----
+
+`klass`, `reversible`, and `requestScoped` are static facts of the setter and
+never need runtime refinement.  `propagation` carries a static default; an
+optional per-class `refine(op, member)` callback overrides it (only upstream
+peers need one today).  A shared helper `ngx_js_describe_members(ctx, op,
+table, n)` builds the descriptor array for any object.
+
+== How Layers 2 & 3 consume it
+
+* *Policy plugins (Layer 2):* a safe-operation library asserts on `class`
+  before acting — refuse to expose `irreversible` members as casual toggles,
+  and auto-wire SharedWorker fan-out for any `worker-local` write.
+* *Admin console (Layer 3):* render each pending op with its `class` colour;
+  gate `irreversible` behind explicit confirmation; show `worker-local` ops
+  next to fan-out ACK / convergence state so the COW trap is visible rather
+  than silent.
+
+== Open design question
+
+`propagation` is modelled as a single enum rather than two booleans
+(`crossWorker` + `needsFanOut`) because `zoned-shared` is genuinely a third,
+runtime-conditional state — not a combination of the other two.

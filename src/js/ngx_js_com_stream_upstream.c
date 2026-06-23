@@ -167,6 +167,25 @@ typedef struct {
 } ngx_js_stream_rr_peer_opaque_t;
 
 
+/*
+ * ngx_js_stream_rr_peer_is_zoned(obj) — 1 if the runtime stream RR peer
+ * wrapped by obj belongs to a zone-backed upstream (shpool != NULL).  Mirrors
+ * the HTTP helper; used by describe()'s propagation refine hook.
+ */
+ngx_int_t
+ngx_js_stream_rr_peer_is_zoned(JSValueConst obj)
+{
+    ngx_js_stream_rr_peer_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_stream_rr_peer_class_id);
+    if (op == NULL || op->peers == NULL) {
+        return 0;
+    }
+
+    return op->peers->shpool != NULL;
+}
+
+
 static void
 ngx_js_stream_rr_peer_finalizer(JSRuntime *rt, JSValue val)
 {

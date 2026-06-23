@@ -6,6 +6,7 @@ ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
                  $ngx_addon_dir/ngx_js_sw.c \
                  $ngx_addon_dir/ngx_js_com_http.c \
                  $ngx_addon_dir/ngx_js_com_upstream.c \
+                 $ngx_addon_dir/ngx_js_com_describe.c \
                  $ngx_addon_dir/ngx_js_com_proxy.c \
                  $ngx_addon_dir/ngx_js_com_ssl.c \
                  $ngx_addon_dir/ngx_js_com_gzip.c \

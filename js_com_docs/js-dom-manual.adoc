@@ -269,6 +269,34 @@ All COM mutations go through one of three scopes:
 | All workers, once they resume
 |===
 
+==== Inspecting mutation safety — `nginx.describe()`
+
+Every settable COM property/method is classified along three axes so tooling
+(and operators) can tell, at runtime, what a change will do:
+
+* **class** — `safe` (reversible value change) · `guarded` (changes dispatch or
+  live state; needs care + fan-out) · `irreversible` (cannot be undone for the
+  process lifetime).
+* **propagation** — `worker-local` (COW write; needs fan-out — the default) ·
+  `zoned-shared` (cross-worker only when the upstream has a `zone`) ·
+  `auto-shared` (`nginx.shared.*`, visible to all workers immediately).
+* **requestScoped** — whether the member honours `setWriteMode('local')`.
+
+[source,javascript]
+----
+nginx.describe("http.upstreams[0].peers[0]");          // Descriptor[] for every member
+nginx.describe("http.servers[0].locations[0]", "handler");
+// → {name:"handler", type:"function", access:"read-write",
+//    class:"guarded", reversible:true, propagation:"worker-local",
+//    requestScoped:false, note:"Rewires nginx dispatch; always global; …"}
+----
+
+`nginx.settable(path)` is unchanged (still returns `string[]`); `describe()` is
+the superset that adds the safety metadata.  Unregistered classes / primitives
+yield an empty array (or `null` for the single-member form).  The full
+classification spec lives in `js_com_docs/js-com-safety-classes.adoc`; the
+`A0.2_Safety_class_inspector` demo renders it as a traffic-light report.
+
 
 == Quick Start
 
@@ -3398,6 +3426,22 @@ behaviour, or understanding exactly what happens at each nginx phase boundary.
 | `nginx.repl` | object | Interactive JavaScript REPL object. See
   <<nginx-repl-interactive-javascript-repl>>. Properties: `eval(line)`,
   `attach(fd, loglevel, nginxlevel)`, `detach()`, `listen(fd, fn)`, `_writeFd(fd, str)`.
+
+| `nginx.get(path)` | any | Read any COM property by dotted/indexed path
+  (e.g. `"http.upstreams[0].peers[0].weight"`).
+
+| `nginx.set(path, value)` | — | Write any settable COM property by path.
+
+| `nginx.settable(path\|obj)` | string[] | Names of the settable members of the
+  COM object at `path` (or passed directly).
+
+| `nginx.describe(path\|obj [, name])` | object[] \| object \| null |
+  Mutation safety metadata for the COM object: an array of descriptors, or a
+  single descriptor when `name` is given (`null` if absent). Each descriptor
+  carries `class` (safe/guarded/irreversible), `propagation`
+  (worker-local/zoned-shared/auto-shared), `requestScoped`, `reversible`,
+  `type`, and `note`. Superset of `settable()`. See
+  `js_com_docs/js-com-safety-classes.adoc`.
 |===
 
 === `nginx.http` Object

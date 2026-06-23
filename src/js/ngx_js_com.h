@@ -326,6 +326,75 @@ const char * const *ngx_js_peer_settable_props(void);
  */
 JSValue  ngx_js_settable_props(JSContext *ctx, JSValueConst obj);
 
+
+/* ------------------------------------------------------------------ *
+ * COM mutation safety classes (Layer 1 — nginx.describe())            *
+ * ------------------------------------------------------------------ *
+ * Per-member classification of every settable COM property/method,
+ * exposed to JS via nginx.describe(path).  See the design spec in
+ * js_com_docs/js-com-safety-classes.adoc — the tables in
+ * ngx_js_com_describe.c are authoritative and must match it.
+ */
+
+/* class — reversibility + blast radius (the operator traffic light) */
+typedef enum {
+    NGX_JS_CLS_READONLY = 0,    /* getter only */
+    NGX_JS_CLS_SAFE,            /* value-only, fully reversible */
+    NGX_JS_CLS_GUARDED,         /* reversible but changes dispatch/live state */
+    NGX_JS_CLS_IRREVERSIBLE     /* cannot be undone for process lifetime */
+} ngx_js_safety_class_e;
+
+/* flags */
+#define NGX_JS_MF_REVERSIBLE      0x01u
+#define NGX_JS_MF_REQUEST_SCOPED  0x02u   /* honours setWriteMode('local') */
+
+/* propagation — how a change reaches the other workers */
+typedef enum {
+    NGX_JS_PROP_WORKER_LOCAL = 0,  /* COW write; needs fan-out (the default) */
+    NGX_JS_PROP_ZONED_SHARED,      /* cross-worker iff upstream is zone-backed */
+    NGX_JS_PROP_AUTO_SHARED        /* shm-backed; all workers see it (shared.*) */
+} ngx_js_propagation_e;
+
+typedef struct ngx_js_member_class_s  ngx_js_member_class_t;
+
+/*
+ * Optional per-class hook that refines the static propagation default based
+ * on the live object (e.g. upstream peer: zoned-shared vs worker-local).
+ * Returns the resolved propagation value.
+ */
+typedef ngx_js_propagation_e (*ngx_js_prop_refine_pt)(JSContext *ctx,
+    JSValueConst obj, const ngx_js_member_class_t *m);
+
+struct ngx_js_member_class_s {
+    const char  *name;          /* member name; NULL terminates a table */
+    const char  *type;          /* "number"|"boolean"|"string"|"string[]"|
+                                   "object"|"object[]"|"function" */
+    uint8_t      klass;         /* ngx_js_safety_class_e */
+    uint8_t      flags;         /* NGX_JS_MF_* */
+    uint8_t      propagation;   /* ngx_js_propagation_e (static default) */
+    const char  *note;          /* short human note, may be NULL */
+};
+
+/*
+ * nginx.describe(path [, name]) backends — defined in ngx_js_com_describe.c.
+ * describe_members returns a Descriptor[] for every classified member of obj;
+ * describe_member returns one Descriptor object, or JS_NULL if not found.
+ * Both return an empty array / JS_NULL for objects whose class is unregistered.
+ */
+JSValue  ngx_js_describe_members(JSContext *ctx, JSValueConst obj);
+JSValue  ngx_js_describe_member(JSContext *ctx, JSValueConst obj,
+    const char *name);
+
+/*
+ * ngx_js_rr_peer_is_zoned(obj) — 1 if the runtime RR peer wrapped by obj
+ * belongs to a zone-backed (shared-memory) upstream, else 0.  Used by the
+ * peer propagation refine hook.  Defined in ngx_js_com_upstream.c.
+ */
+ngx_int_t  ngx_js_rr_peer_is_zoned(JSValueConst obj);
+
+/* Stream counterpart — defined in ngx_js_com_stream_upstream.c. */
+ngx_int_t  ngx_js_stream_rr_peer_is_zoned(JSValueConst obj);
+
 /*
  * ngx_js_com_events.c — create a NginxEvents wrapper.
  * Include <ngx_event.h> before this header to get the full prototype;

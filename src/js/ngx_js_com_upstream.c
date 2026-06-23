@@ -224,6 +224,27 @@ typedef struct {
 } ngx_js_rr_peer_opaque_t;
 
 
+/*
+ * ngx_js_rr_peer_is_zoned(obj) — 1 if the runtime RR peer wrapped by obj
+ * belongs to a zone-backed (shared-memory) upstream.  Zone-backed peers live
+ * in shared memory and their scalar setters propagate to every worker under
+ * the rr_peers lock; non-zoned peers are worker-local (shpool == NULL, lock is
+ * a no-op).  Lets describe() report propagation: zoned-shared vs worker-local.
+ */
+ngx_int_t
+ngx_js_rr_peer_is_zoned(JSValueConst obj)
+{
+    ngx_js_rr_peer_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_rr_peer_class_id);
+    if (op == NULL || op->peers == NULL) {
+        return 0;
+    }
+
+    return op->peers->shpool != NULL;
+}
+
+
 static void
 ngx_js_rr_peer_finalizer(JSRuntime *rt, JSValue val)
 {
