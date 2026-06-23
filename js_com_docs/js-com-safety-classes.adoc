@@ -322,9 +322,15 @@ listener binding is `irreversible`.
 | Call | Returns
 
 | `nginx.settable(path)`        | `string[]` of *assignable* member names.  Now covers every class `describe()` classifies (not just the seven snapshot-backed ones) — the assignable members are exactly the describe() members that are not callable methods (`NGX_JS_MF_METHOD`).  So `settable() ⊆ describe()` for every class, with no drift.
-| `nginx.describe(path)`        | *new* — `Descriptor[]` for every member at `path`
-| `nginx.describe(path, name)`  | *new* — single-member `Descriptor`, or `null`
+| `nginx.describe()`            | discovery root — `[{ class, members[] }]` for every classifiable COM class (so tooling can enumerate what exists before drilling in)
+| `nginx.describe(path)`        | `Descriptor[]` for every member at `path` — settable/mutating members (from the class table) **and** read-only getters (discovered from the prototype, `class:"readonly"`), so it is a complete per-object reference
+| `nginx.describe(path, name)`  | single-member `Descriptor`, or `null`
 |===
+
+Read-only members are listed but their getter is **not** invoked by
+`describe()` (no side effects, and some getters touch unconfigured module state):
+they report `type:"getter"` with a note.  Static read-only types are a possible
+future refinement.
 
 `path` accepts the same syntax as `nginx.get`/`set`
 (e.g. `"http.upstreams[0].peers[0]"`, `"http.servers[0].locations[2].proxy"`).

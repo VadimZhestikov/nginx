@@ -388,6 +388,13 @@ JSValue  ngx_js_describe_member(JSContext *ctx, JSValueConst obj,
     const char *name);
 
 /*
+ * nginx.describe() with no path — discovery root.  Returns an array of
+ * { class, members[] } for every classifiable COM class.  Defined in
+ * ngx_js_com_describe.c.
+ */
+JSValue  ngx_js_describe_catalog(JSContext *ctx);
+
+/*
  * Some COM roots (e.g. nginx.http) are plain JS objects, not class instances,
  * so describe() cannot key off their JSClassID.  ngx_js_describe_tag() stamps a
  * hidden, non-enumerable marker on such an object so describe() can still

@@ -709,6 +709,73 @@ static const ngx_js_member_tag_registry_t  ngx_js_member_tag_registry[] = {
 };
 
 
+/* ------------------------------------------------------------------ *
+ * Class catalog — the discovery root for nginx.describe() (no args).  *
+ * Maps each classifiable COM class to a human name + its member table *
+ * so tooling can enumerate "what exists" before drilling into a path. *
+ */
+static const struct {
+    const char                   *name;
+    const ngx_js_member_class_t  *table;
+} ngx_js_class_catalog[] = {
+    { "NginxHttp (nginx.http)",  ngx_js_http_members },
+    { "NginxLocation",           ngx_js_loc_members },
+    { "NginxServer",             ngx_js_server_members },
+    { "NginxProxy",              ngx_js_proxy_members },
+    { "NginxGzip",               ngx_js_gzip_members },
+    { "NginxHeaders",            ngx_js_headers_members },
+    { "NginxRewrite",            ngx_js_rewrite_members },
+    { "NginxPeer",               ngx_js_peer_members },
+    { "NginxRrPeer",             ngx_js_peer_members },
+    { "NginxUpstream",           ngx_js_upstream_members },
+    { "NginxSocket",             ngx_js_socket_members },
+    { "NginxHttpListener",       ngx_js_http_listener_members },
+    { "NginxCycle",              ngx_js_cycle_members },
+    { "NginxSSL",                ngx_js_ssl_members },
+    { "NginxProxyCache",         ngx_js_proxy_cache_members },
+    { "NginxAccess",             ngx_js_access_members },
+    { "NginxAuth",               ngx_js_auth_members },
+    { "NginxLimitReq",           ngx_js_limit_req_members },
+    { "NginxLimitReqLimit",      ngx_js_limit_req_limit_members },
+    { "NginxLimitConn",          ngx_js_limit_conn_members },
+    { "NginxFastcgi",            ngx_js_fastcgi_members },
+    { "NginxLog",                ngx_js_log_members },
+    { "NginxRealip",             ngx_js_realip_members },
+    { "NginxCharset",            ngx_js_charset_members },
+    { "NginxSubFilter",          ngx_js_sub_filter_members },
+    { "NginxAutoindex",          ngx_js_autoindex_members },
+    { "NginxReferer",            ngx_js_referer_members },
+    { "NginxDav",                ngx_js_dav_members },
+    { "NginxSsi",                ngx_js_ssi_members },
+    { "NginxUserid",             ngx_js_userid_members },
+    { "NginxAddition",           ngx_js_addition_members },
+    { "NginxGunzip",             ngx_js_gunzip_members },
+    { "NginxSlice",              ngx_js_slice_members },
+    { "NginxImageFilter",        ngx_js_image_filter_members },
+    { "NginxXslt",               ngx_js_xslt_members },
+    { "NginxSecureLink",         ngx_js_secure_link_members },
+    { "NginxMp4",                ngx_js_mp4_members },
+    { "NginxRandomIndex",        ngx_js_random_index_members },
+    { "NginxAuthRequest",        ngx_js_auth_request_members },
+    { "NginxGzipStatic",         ngx_js_gzip_static_members },
+    { "NginxMemcached",          ngx_js_memcached_members },
+    { "NginxScgi",               ngx_js_scgi_members },
+    { "NginxUwsgi",              ngx_js_uwsgi_members },
+    { "NginxMirror",             ngx_js_mirror_members },
+    { "NginxEvents",             ngx_js_events_members },
+    { "NginxSnapshot",           ngx_js_snapshot_members },
+    { "NginxStreamServer",       ngx_js_stream_server_members },
+    { "NginxStreamProxy",        ngx_js_stream_proxy_members },
+    { "NginxStreamListener",     ngx_js_stream_listener_members },
+    { "NginxStreamUpstream",     ngx_js_stream_upstream_members },
+    { "NginxStreamPeer",         ngx_js_stream_peer_members },
+    { "NginxStreamRrPeer",       ngx_js_stream_rr_peer_members },
+    { "NginxStreamSSL",          ngx_js_ssl_members },
+    { "NginxStreamAccess",       ngx_js_access_members },
+    { NULL, NULL }
+};
+
+
 void
 ngx_js_describe_tag(JSContext *ctx, JSValueConst obj, int tag)
 {
@@ -842,6 +909,164 @@ ngx_js_describe_one(JSContext *ctx, JSValueConst obj,
 }
 
 
+/* Is `name` already classified in `table`? */
+static int
+ngx_js_table_has(const ngx_js_member_class_t *table, const char *name)
+{
+    const ngx_js_member_class_t  *m;
+
+    for (m = table; m->name != NULL; m++) {
+        if (ngx_strcmp(m->name, name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
+/*
+ * Build a Descriptor for a read-only getter `name`.
+ *
+ * The getter is deliberately NOT invoked: describe() must have no side effects,
+ * and some COM getters (e.g. loc.proxy when the proxy module is not configured
+ * for that location) dereference unconfigured module state and would crash if
+ * called outside a matching request.  So the type is reported as "getter"
+ * rather than the runtime value's typeof.  (Static read-only types are a
+ * possible future refinement — see follow-up #3.)
+ */
+static JSValue
+ngx_js_describe_readonly_one(JSContext *ctx, JSValueConst obj, const char *name)
+{
+    JSValue  d;
+
+    (void) obj;
+
+    d = JS_NewObject(ctx);
+    if (JS_IsException(d)) {
+        return d;
+    }
+
+    JS_SetPropertyStr(ctx, d, "name",          JS_NewString(ctx, name));
+    JS_SetPropertyStr(ctx, d, "type",          JS_NewString(ctx, "getter"));
+    JS_SetPropertyStr(ctx, d, "access",        JS_NewString(ctx, "read-only"));
+    JS_SetPropertyStr(ctx, d, "class",         JS_NewString(ctx, "readonly"));
+    JS_SetPropertyStr(ctx, d, "reversible",    JS_NewBool(ctx, 0));
+    JS_SetPropertyStr(ctx, d, "propagation",
+                      JS_NewString(ctx, "worker-local"));
+    JS_SetPropertyStr(ctx, d, "requestScoped", JS_NewBool(ctx, 0));
+    JS_SetPropertyStr(ctx, d, "note",
+                      JS_NewString(ctx, "read-only accessor; value not "
+                                        "pre-evaluated by describe()"));
+
+    return d;
+}
+
+
+/*
+ * Is `name` a read-only getter (getter, no setter) on obj's prototype?
+ * Used so describe(obj, "path") works for read-only members too.
+ */
+static int
+ngx_js_proto_is_readonly_getter(JSContext *ctx, JSValueConst obj,
+    const char *name)
+{
+    JSValue               proto;
+    JSAtom                atom;
+    JSPropertyDescriptor  desc;
+    int                   rc, ro;
+
+    proto = JS_GetPrototype(ctx, obj);
+    if (!JS_IsObject(proto)) {
+        JS_FreeValue(ctx, proto);
+        return 0;
+    }
+
+    atom = JS_NewAtom(ctx, name);
+    rc = JS_GetOwnProperty(ctx, &desc, proto, atom);
+    JS_FreeAtom(ctx, atom);
+
+    ro = 0;
+    if (rc > 0) {
+        ro = (desc.flags & JS_PROP_GETSET)
+             && JS_IsFunction(ctx, desc.getter)
+             && !JS_IsFunction(ctx, desc.setter);
+        JS_FreeValue(ctx, desc.value);
+        JS_FreeValue(ctx, desc.getter);
+        JS_FreeValue(ctx, desc.setter);
+    }
+
+    JS_FreeValue(ctx, proto);
+    return ro;
+}
+
+
+/*
+ * Append a read-only Descriptor for every getter-only property on obj's
+ * prototype that the classification table does not already cover.  This makes
+ * describe() a complete per-object reference (settable members from the table,
+ * read-only members discovered here) without duplicating the getter lists.
+ * Returns the next free array index.
+ */
+static uint32_t
+ngx_js_describe_append_readonly(JSContext *ctx, JSValueConst obj,
+    const ngx_js_member_class_t *table, JSValue arr, uint32_t i)
+{
+    JSValue          proto;
+    JSPropertyEnum  *tab;
+    uint32_t         len, k;
+
+    proto = JS_GetPrototype(ctx, obj);
+    if (!JS_IsObject(proto)) {
+        JS_FreeValue(ctx, proto);
+        return i;
+    }
+
+    if (JS_GetOwnPropertyNames(ctx, &tab, &len, proto, JS_GPN_STRING_MASK)
+        != 0)
+    {
+        JS_FreeValue(ctx, proto);
+        return i;
+    }
+
+    for (k = 0; k < len; k++) {
+        JSPropertyDescriptor  desc;
+        const char           *name;
+        int                   ro;
+
+        if (JS_GetOwnProperty(ctx, &desc, proto, tab[k].atom) <= 0) {
+            continue;
+        }
+
+        ro = (desc.flags & JS_PROP_GETSET)
+             && JS_IsFunction(ctx, desc.getter)
+             && !JS_IsFunction(ctx, desc.setter);
+        JS_FreeValue(ctx, desc.value);
+        JS_FreeValue(ctx, desc.getter);
+        JS_FreeValue(ctx, desc.setter);
+
+        if (!ro) {
+            continue;   /* settable (in table) or a method — skip */
+        }
+
+        name = JS_AtomToCString(ctx, tab[k].atom);
+        if (name == NULL) {
+            continue;
+        }
+
+        if (!ngx_js_table_has(table, name)) {
+            JS_SetPropertyUint32(ctx, arr, i++,
+                                 ngx_js_describe_readonly_one(ctx, obj, name));
+        }
+
+        JS_FreeCString(ctx, name);
+    }
+
+    JS_FreePropertyEnum(ctx, tab, len);
+    JS_FreeValue(ctx, proto);
+    return i;
+}
+
+
 /* nginx.describe(path) backend: array of Descriptors for every member. */
 JSValue
 ngx_js_describe_members(JSContext *ctx, JSValueConst obj)
@@ -869,6 +1094,9 @@ ngx_js_describe_members(JSContext *ctx, JSValueConst obj)
         JS_SetPropertyUint32(ctx, arr, i, d);
     }
 
+    /* Complete the reference: append read-only getters not in the table. */
+    (void) ngx_js_describe_append_readonly(ctx, obj, table, arr, i);
+
     return arr;
 }
 
@@ -888,6 +1116,11 @@ ngx_js_describe_member(JSContext *ctx, JSValueConst obj, const char *name)
         if (ngx_strcmp(m->name, name) == 0) {
             return ngx_js_describe_one(ctx, obj, m, refine);
         }
+    }
+
+    /* Not a classified (settable) member — maybe a read-only getter. */
+    if (ngx_js_proto_is_readonly_getter(ctx, obj, name)) {
+        return ngx_js_describe_readonly_one(ctx, obj, name);
     }
 
     return JS_NULL;
@@ -923,6 +1156,41 @@ ngx_js_describe_settable_props(JSContext *ctx, JSValueConst obj)
             continue;   /* callable method — not an assignable property */
         }
         JS_SetPropertyUint32(ctx, arr, i++, JS_NewString(ctx, m->name));
+    }
+
+    return arr;
+}
+
+
+/*
+ * nginx.describe() with no path — the discovery root.  Returns an array of
+ * { class, members[] } for every classifiable COM class, so tooling can list
+ * what exists before drilling into a specific path.
+ */
+JSValue
+ngx_js_describe_catalog(JSContext *ctx)
+{
+    const ngx_js_member_class_t  *m;
+    JSValue                       arr, entry, members;
+    uint32_t                      i, j;
+
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) {
+        return arr;
+    }
+
+    for (i = 0; ngx_js_class_catalog[i].name != NULL; i++) {
+        entry = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, entry, "class",
+                          JS_NewString(ctx, ngx_js_class_catalog[i].name));
+
+        members = JS_NewArray(ctx);
+        for (j = 0, m = ngx_js_class_catalog[i].table; m->name != NULL; m++) {
+            JS_SetPropertyUint32(ctx, members, j++, JS_NewString(ctx, m->name));
+        }
+        JS_SetPropertyStr(ctx, entry, "members", members);
+
+        JS_SetPropertyUint32(ctx, arr, i, entry);
     }
 
     return arr;

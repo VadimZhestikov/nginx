@@ -1234,9 +1234,9 @@ ngx_js_nginx_fn_describe(JSContext *ctx, JSValueConst this_val,
     size_t       plen;
     char         tmp[512];
 
-    if (argc < 1) {
-        return JS_ThrowTypeError(ctx,
-            "nginx.describe: path or object required");
+    if (argc < 1 || JS_IsUndefined(argv[0])) {
+        /* discovery root: list every classifiable COM class + its members */
+        return ngx_js_describe_catalog(ctx);
     }
 
     if (JS_IsString(argv[0])) {

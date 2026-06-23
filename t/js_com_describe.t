@@ -193,6 +193,29 @@ function driftOk2(obj) {
 check('drift_server', driftOk2(nginx.http.servers[0]));
 check('drift_cycle',  driftOk2(nginx.cycle));
 
+/* --- discovery root: nginx.describe() with no path → class catalog --- */
+var cat = nginx.describe();
+check('catalog_is_array', Array.isArray(cat) && cat.length > 30, cat.length);
+var catLoc = cat.find(function (e) { return e.class === 'NginxLocation'; });
+check('catalog_has_location',
+      catLoc && Array.isArray(catLoc.members) && catLoc.members.indexOf('handler') >= 0,
+      catLoc && JSON.stringify(catLoc.members).slice(0, 60));
+
+/* --- read-only getters now appear in describe() (complete reference) --- */
+var allL = nginx.describe(locPath);
+check('describe_includes_readonly_path',
+      allL.some(function (d) { return d.name === 'path' && d.class === 'readonly'
+                                      && d.access === 'read-only'; }),
+      JSON.stringify(allL.map(function (d) { return d.name; })).slice(0, 80));
+var pathD = nginx.describe(locPath, 'path');
+check('readonly_single_form',
+      pathD && pathD.class === 'readonly' && pathD.access === 'read-only'
+            && pathD.reversible === false,
+      pathD && JSON.stringify(pathD));
+/* read-only members must NOT leak into settable() */
+check('settable_excludes_readonly',
+      nginx.settable(loc).indexOf('path') < 0, JSON.stringify(nginx.settable(loc)));
+
 /* --- request handler: zoned vs non-zoned propagation (post-fork) --- */
 var probe = nginx.http.servers[0].locations.find(
                 function (l) { return l.path === '/probe/'; });
@@ -204,7 +227,7 @@ probe.handler = function (r) {
 };
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(36);
+$t->try_run('no js module or upstream_zone')->plan(41);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -248,6 +271,13 @@ like($log, qr/JSTEST PASS settable_cycle_workers/,      'settable(cycle) = [work
 like($log, qr/JSTEST PASS settable_http_empty/,         'settable(nginx.http) = [] (methods only)');
 like($log, qr/JSTEST PASS drift_server/,                'drift: settable(server) ⊆ describe()');
 like($log, qr/JSTEST PASS drift_cycle/,                 'drift: settable(cycle) ⊆ describe()');
+
+# --- discovery root + read-only completeness ---
+like($log, qr/JSTEST PASS catalog_is_array/,            'describe() → class catalog');
+like($log, qr/JSTEST PASS catalog_has_location/,        'catalog lists NginxLocation + members');
+like($log, qr/JSTEST PASS describe_includes_readonly_path/, 'describe() includes read-only path');
+like($log, qr/JSTEST PASS readonly_single_form/,        'describe(path,name) classifies read-only getter');
+like($log, qr/JSTEST PASS settable_excludes_readonly/,  'settable() excludes read-only members');
 
 # --- Request-phase assertion: zoned-shared vs worker-local ---
 my $r = http_get('/probe/');
