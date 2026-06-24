@@ -18,12 +18,20 @@ import * as os from 'os';
 
 // Pre-fork SAB — same VA in master and all workers (allocated before fork).
 // Futex shared mode works cross-process because the physical page is the same.
-var sab = new SharedArrayBuffer(16);   // 4 x Int32
+//
+// Protocol uses MONOTONIC sequence numbers rather than a 0/1/2 state machine
+// with a worker->SW ack.  The old ack handshake coupled consecutive requests:
+// once timing slipped by one phase, every other request waited on a transition
+// that had already happened and timed out (504).  With monotonic counters the
+// worker bumps reqSeq for each job and waits for doneSeq to catch up — a lost
+// or late wakeup self-heals on the SW's next (timed) wait; nothing wedges.
+var sab = new SharedArrayBuffer(24);   // 6 x Int32
 var arr = new Int32Array(sab);
-// arr[0] = 0  (state: 0=idle, 1=work-requested, 2=result-ready)
-// arr[1] = 0  (input)
-// arr[2] = 0  (result)
-// arr[3] = 0  (stop flag: 1 = SW should exit its loop)
+// arr[0] = reqSeq  (worker increments once per request; SW waits for a change)
+// arr[1] = input   (fibonacci argument for the current request)
+// arr[2] = result  (fibonacci result for reqSeq)
+// arr[3] = doneSeq (SW sets to the reqSeq it just finished)
+// arr[4] = stop    (1 = SW should exit its loop)
 
 (function () {
     // Resolve absolute path for the SW script
@@ -38,33 +46,52 @@ var arr = new Int32Array(sab);
     // Create static SharedWorker at config phase (master process)
     var sw = new SharedWorker(swPath);
 
-    // Send SAB to SW and wait for 'ready' confirmation in each worker
+    // Per-worker flag: set once this worker has seen the SW's 'ready' reply
+    // (SW received the SAB and its compute loop is running).
+    var swReady = false;
+
     nginx.broadcast(function () {
         sw.onmessage = function (e) {
             if (e.data === 'ready') {
+                swReady = true;
                 nginx.log(5, 'A2.5: SW compute loop is ready');
             }
         };
         sw.postMessage(sab);
     });
 
+    // Non-blocking wait for the SW 'ready' handshake (startup only).
+    function waitForReady(timeoutMs) {
+        return new Promise(function (resolve, reject) {
+            var elapsed = 0, interval = 5;
+            (function poll() {
+                if (swReady) { resolve(); return; }
+                elapsed += interval;
+                if (elapsed >= timeoutMs) { reject(new Error('SW not ready')); return; }
+                nginx.setTimeout(interval).then(poll);
+            })();
+        });
+    }
+
     var lastResult = null;
     var lastInput  = null;
 
-    // Non-blocking poll: wait until arr[0] becomes targetVal
-    function waitFor(targetVal, timeoutMs) {
+    // Non-blocking poll: wait until the SW's doneSeq reaches our request seq.
+    // (The worker event-loop thread must never Atomics.wait — it would block
+    // every connection — so we poll with nginx.setTimeout instead.)
+    function waitForDone(seq, timeoutMs) {
         return new Promise(function (resolve, reject) {
             var elapsed  = 0;
-            var interval = 10;   // poll every 10ms
+            var interval = 5;   // poll every 5ms
 
             function poll() {
-                if (Atomics.load(arr, 0) === targetVal) {
+                if (Atomics.load(arr, 3) >= seq) {   // doneSeq caught up
                     resolve();
                     return;
                 }
                 elapsed += interval;
                 if (elapsed >= timeoutMs) {
-                    reject(new Error('timeout waiting for arr[0]=' + targetVal));
+                    reject(new Error('timeout waiting for doneSeq>=' + seq));
                     return;
                 }
                 nginx.setTimeout(interval).then(poll);
@@ -74,39 +101,53 @@ var arr = new Int32Array(sab);
         });
     }
 
+    // One shared SAB + one SW => one computation at a time.  Serialise requests
+    // through a promise chain so concurrent /compute/ calls can't clobber each
+    // other's input/result slots (and so a request only reads the result that
+    // belongs to its own seq).
+    var chain = Promise.resolve();
+
+    async function doCompute(r, n) {
+        // Don't race SW startup: ensure its compute loop is running first.
+        if (!swReady) {
+            try { await waitForReady(5000); }
+            catch (e) { r.respond(503, {}, 'SW not ready\n'); return; }
+        }
+
+        // Submit the job, then poll for our doneSeq.  Retry with a fresh seq on
+        // timeout: immediately after startup the very first job can occasionally
+        // not reach the SW (a one-shot cross-process SAB/wakeup warmup hiccup);
+        // a re-submit against the now-warm SW always lands.  Each attempt uses
+        // the same n, so a late result from a prior attempt is still correct.
+        for (var attempt = 0; attempt < 5; attempt++) {
+            Atomics.store(arr, 1, n);               // input BEFORE bumping reqSeq
+            var seq = Atomics.add(arr, 0, 1) + 1;   // unique increasing request id
+            Atomics.notify(arr, 0, 1);              // wake the SW from its wait
+            try {
+                await waitForDone(seq, 1000);
+            } catch (e) {
+                continue;   // re-submit
+            }
+            var result = Atomics.load(arr, 2);
+            lastResult = result;
+            lastInput  = n;
+            r.respond(200, {}, 'fib(' + n + ')=' + result + '\n');
+            return;
+        }
+        r.respond(504, {}, 'timeout: SW did not respond\n');
+    }
+
     // GET /compute/?n=<number> — offload fibonacci(n) to the SW
-    findLoc('/compute/').handler = async function (r) {
+    findLoc('/compute/').handler = function (r) {
         var n = parseInt(r.args, 10);
         if (isNaN(n) || n < 0 || n > 40) {
             r.respond(400, {}, 'n must be 0-40\n');
             return;
         }
-
-        // Set up SAB for this computation (state must be idle before we write)
-        Atomics.store(arr, 1, n);   // write input
-        Atomics.store(arr, 2, 0);   // clear previous result
-        Atomics.store(arr, 0, 1);   // set state = work-requested
-        Atomics.notify(arr, 0, 1);  // wake the SW
-
-        // Non-blocking poll for completion (arr[0] == 2)
-        try {
-            await waitFor(2, 3000);
-        } catch (err) {
-            // Reset state so SW can handle next request
-            Atomics.store(arr, 0, 0);
-            r.respond(504, {}, 'timeout: SW did not respond\n');
-            return;
-        }
-
-        var result = Atomics.load(arr, 2);
-        // Reset state to idle for next request
-        Atomics.store(arr, 0, 0);
-        Atomics.notify(arr, 0, 1);   // wake SW so it loops back to wait
-
-        lastResult = result;
-        lastInput  = n;
-
-        r.respond(200, {}, 'fib(' + n + ')=' + result + '\n');
+        // queue behind any in-flight computation (success or failure)
+        var run = function () { return doCompute(r, n); };
+        chain = chain.then(run, run);
+        return chain;
     };
 
     // GET /status/ — show last computation
@@ -122,7 +163,7 @@ var arr = new Int32Array(sab);
     // Must be called before nginx -s stop; otherwise the pthread blocks in
     // Atomics.wait and the master process hangs until the OS kills it.
     findLoc('/stop-sw/').handler = function (r) {
-        Atomics.store(arr, 3, 1);   // set stop flag
+        Atomics.store(arr, 4, 1);   // set stop flag
         Atomics.notify(arr, 0, 1);  // wake SW so it sees the flag immediately
         r.respond(200, {}, 'SW stop signal sent\n');
     };
