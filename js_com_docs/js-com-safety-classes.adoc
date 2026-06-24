@@ -365,6 +365,11 @@ optional per-class `refine(op, member)` callback overrides it (only upstream
 peers need one today).  A shared helper `ngx_js_describe_members(ctx, op,
 table, n)` builds the descriptor array for any object.
 
+TIP: For the end-to-end recipe of adding a *new* COM class (the bridge file,
+the class registration, and the three describe-side additions — member table,
+registry row, catalog row — plus the `NGX_JS_MF_METHOD` gotcha), see
+*"Third-Party Module Integration"* in `js-dom-manual.adoc`.
+
 == How Layers 2 & 3 consume it
 
 * *Policy plugins (Layer 2):* a safe-operation library asserts on `class`

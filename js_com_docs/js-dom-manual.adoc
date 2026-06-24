@@ -3035,6 +3035,26 @@ as JS properties.
 This section walks through adding COM support to a hypothetical `ngx_http_mymod`
 module with a main-level config struct.
 
+A complete integration has two halves:
+
+1. *Expose* the config as a COM object (Steps 1–4) — getters/setters over the
+   module's structs, surfaced as a JS class instance.
+2. *Classify* it for the safety layer (Step 5) — register the object's members
+   in the `nginx.describe()` tables so it participates in `nginx.describe()`,
+   `nginx.settable()`, the discovery catalog, the Layer-2 safety gate, and the
+   A0.2 inspector.
+
+NOTE: Step 5 is not optional if you want operators to *manage* the module
+through the admin tooling.  A COM object that skips it is reachable from JS but
+*invisible* to `nginx.describe()`/`nginx.settable()`/the catalog/the safety
+gate.  Expose it as a **class instance** (below), not a bare `JS_NewObject`,
+because the safety layer keys off the object's `JSClassID`.  (The one exception
+is a plain object that cannot be a class instance — e.g. `nginx.http` — which is
+classified via the hidden-tag mechanism instead; see
+`ngx_js_describe_tag()` in `ngx_js_com_describe.c`.)  The member tables,
+class registry, and catalog all live in `ngx_js_com_describe.c`; see also the
+companion spec `js_com_docs/js-com-safety-classes.adoc`.
+
 === Step 1 — Identify the Config Structs
 
 [source,c]
@@ -3120,49 +3140,69 @@ ngx_js_mymod_main_set(JSContext *ctx, JSValueConst this_val,
 }
 
 /*
+ * Expose nginx.http.mymod as a CLASS INSTANCE (not a bare JS_NewObject), so
+ * the safety layer can classify it by JSClassID (Step 5).  The class id is a
+ * file-scope global; the getters/setters live on the prototype as a magic
+ * getset list — the same pattern every built-in COM class uses.
+ */
+static JSClassID  ngx_js_mymod_class_id;
+
+static const JSClassDef ngx_js_mymod_class = { "NginxMymod" };
+
+static const JSCFunctionListEntry ngx_js_mymod_proto[] = {
+    JS_CGETSET_MAGIC_DEF("enable",     ngx_js_mymod_main_get,
+                                       ngx_js_mymod_main_set, 0),
+    JS_CGETSET_MAGIC_DEF("maxEntries", ngx_js_mymod_main_get,
+                                       ngx_js_mymod_main_set, 1),
+    JS_CGETSET_MAGIC_DEF("backendUrl", ngx_js_mymod_main_get, NULL, 2),
+};
+
+/*
+ * Register the class + prototype.  Call this once from
+ * ngx_js_com_install_protos() (see Step 3), before any instance is created.
+ */
+ngx_int_t
+ngx_js_com_mymod_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    if (JS_NewClass(JS_GetRuntime(ctx), ngx_js_mymod_class_id,
+                    &ngx_js_mymod_class) < 0)
+    {
+        return NGX_ERROR;
+    }
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto, ngx_js_mymod_proto,
+                               (int) (sizeof(ngx_js_mymod_proto)
+                                      / sizeof(ngx_js_mymod_proto[0])));
+    JS_SetClassProto(ctx, ngx_js_mymod_class_id, proto);   /* takes ownership */
+    return NGX_OK;
+}
+
+/*
  * Install nginx.http.mymod into ctx.
- * Called from ngx_js_install_nginx_com() during init_conf.
+ * Called from ngx_js_com_init() (via ngx_js_http_com_install) at init_conf.
  */
 ngx_int_t
 ngx_js_com_mymod_install(JSContext *ctx, JSValueConst nginx_obj)
 {
     JSValue  http_obj, mymod_obj;
 
-    /* Retrieve the existing nginx.http object. */
     http_obj = JS_GetPropertyStr(ctx, nginx_obj, "http");
     if (JS_IsUndefined(http_obj)) {
         return NGX_ERROR;
     }
 
-    mymod_obj = JS_NewObject(ctx);
+    mymod_obj = JS_NewObjectClass(ctx, ngx_js_mymod_class_id);
     if (JS_IsException(mymod_obj)) {
         JS_FreeValue(ctx, http_obj);
         return NGX_ERROR;
     }
-
-    /* Expose enable / maxEntries / backendUrl as JS properties. */
-    JS_DefinePropertyGetSet(ctx, mymod_obj,
-        JS_NewAtom(ctx, "enable"),
-        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_get, "get_enable", 0,
-                             JS_CFUNC_generic_magic, 0),
-        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_set, "set_enable", 1,
-                             JS_CFUNC_generic_magic, 0),
-        JS_PROP_CONFIGURABLE);
-
-    JS_DefinePropertyGetSet(ctx, mymod_obj,
-        JS_NewAtom(ctx, "maxEntries"),
-        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_get, "get_maxEntries", 0,
-                             JS_CFUNC_generic_magic, 1),
-        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_set, "set_maxEntries", 1,
-                             JS_CFUNC_generic_magic, 1),
-        JS_PROP_CONFIGURABLE);
-
-    JS_DefinePropertyGetSet(ctx, mymod_obj,
-        JS_NewAtom(ctx, "backendUrl"),
-        JS_NewCFunctionMagic(ctx, ngx_js_mymod_main_get, "get_backendUrl", 0,
-                             JS_CFUNC_generic_magic, 2),
-        JS_UNDEFINED,   /* no setter — read-only */
-        JS_PROP_CONFIGURABLE);
 
     JS_SetPropertyStr(ctx, http_obj, "mymod", mymod_obj);
     JS_FreeValue(ctx, http_obj);
@@ -3171,18 +3211,40 @@ ngx_js_com_mymod_install(JSContext *ctx, JSValueConst nginx_obj)
 }
 ----
 
+NOTE: The class id must be allocated with `JS_NewClassID(&ngx_js_mymod_class_id)`
+during runtime init (the COM core does this for built-in classes in
+`ngx_js_com_init()`); call it once before `ngx_js_com_mymod_install_proto()`.
+
 === Step 3 — Register the Bridge in the COM Initialiser
 
-In `ngx_js_com.c`, locate `ngx_js_install_nginx_com` and add a call to your
-bridge function, guarded by whether the module was compiled in:
+The COM is bootstrapped by `ngx_js_com_init()` in `ngx_js_com.c`, which (1)
+registers all class prototypes via `ngx_js_com_install_protos()` and (2) builds
+the `nginx` object tree.  Hook your bridge into both, guarded by whether the
+module was compiled in:
 
 [source,c]
 ----
-/* ngx_js_com.c — in ngx_js_install_nginx_com() */
+/* ngx_js_com.c — in ngx_js_com_install_protos(): register the class once */
+#if defined(NGX_HTTP_MYMOD)
+    if (ngx_js_com_mymod_install_proto(ctx) != NGX_OK) {
+        return NGX_ERROR;
+    }
+#endif
+
+/* ngx_js_com.c — in ngx_js_com_init() (after nginx.http exists): the instance */
 #if defined(NGX_HTTP_MYMOD)
     if (ngx_js_com_mymod_install(ctx, nginx_obj) != NGX_OK) {
         return NGX_ERROR;
     }
+#endif
+----
+
+Also allocate the class id alongside the built-in ones in `ngx_js_com_init()`:
+
+[source,c]
+----
+#if defined(NGX_HTTP_MYMOD)
+    JS_NewClassID(&ngx_js_mymod_class_id);
 #endif
 ----
 
@@ -3201,6 +3263,94 @@ nginx.http.servers[0].locations
         nginx.http.mymod.enable = !nginx.http.mymod.enable;
         req.text(`mymod is now ${nginx.http.mymod.enable ? 'on' : 'off'}\n`);
     };
+----
+
+=== Step 5 — Classify it for the Safety Layer
+
+So far `nginx.http.mymod` is reachable from JS but invisible to
+`nginx.describe()`, `nginx.settable()`, the discovery catalog, and the Layer-2
+safety gate.  Fix that with three additions in `ngx_js_com_describe.c` — all
+keyed off the `JSClassID` you registered in Step 2.
+
+First, expose the class id so the describe registry can reference it.  Add an
+`extern` to `ngx_js_com.h` (next to the other COM class ids):
+
+[source,c]
+----
+/* ngx_js_com.h */
+extern JSClassID  ngx_js_mymod_class_id;     /* nginx.http.mymod */
+----
+
+Then, in `ngx_js_com_describe.c`:
+
+[source,c]
+----
+/* (a) Classification table — one row per settable member + each method.
+ *     class:  SAFE | GRD (guarded) | IRR (irreversible)
+ *     flags:  REV (reversible) · RQS (request-scoped) · METH (callable method)
+ *     prop:   WL (worker-local) · ZS (zoned-shared) · AS (auto-shared)
+ *     Read-only getters are NOT listed here — describe() discovers them from
+ *     the prototype automatically (see the note below). */
+static const ngx_js_member_class_t  ngx_js_mymod_members[] = {
+    { "enable",     "boolean", SAFE, REV, WL, NULL },
+    { "maxEntries", "number",  SAFE, REV, WL, NULL },
+    /* a hypothetical method would be marked METH so it is NOT reported as a
+     * settable property:
+     * { "flush", "function", GRD, REV|METH, WL, "Drops all cached entries" },
+     */
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+/* (b) Registry row — map the class id to its table (add to
+ *     ngx_js_member_registry[]). */
+    { &ngx_js_mymod_class_id, ngx_js_mymod_members, NULL },
+
+/* (c) Catalog row — make it show up in nginx.describe() with no args, the
+ *     discovery root (add to ngx_js_class_catalog[]). */
+    { "NginxMymod", ngx_js_mymod_members },
+----
+
+That is all `settable()` needs too: it is derived from the same table (the
+assignable members are exactly the rows *without* `METH`), so there is no
+separate settable list to maintain and no way for the two to drift.
+
+[IMPORTANT]
+====
+*The `METH` gotcha.*  A callable method (`flush()`, `addPeer()`, …) must carry
+`NGX_JS_MF_METHOD`.  Without it the method is reported as an *assignable
+property* by `settable()` — operators and tooling will try to set it.  Only a
+genuine assignable setter that happens to take a function (like a content
+`handler`) is left unflagged.
+====
+
+Things you get for free, and things to know:
+
+* *Read-only getters* (e.g. `backendUrl`) are listed by `describe()`
+  automatically — it walks the prototype and emits getter-only properties as
+  `class:"readonly"`.  You do **not** add them to the table.
+* `describe()` never *invokes* a getter (it must be side-effect free, and some
+  getters touch unconfigured state).  A discovered read-only member therefore
+  reports `type:"getter"` until you add a `{ "backendUrl", "string" }` row to
+  the static `ngx_js_ro_types[]` map.
+* *Conditional propagation* — if a member is cross-worker only under some
+  runtime condition (the way an upstream peer is `zoned-shared` only when the
+  upstream has a `zone`), supply a propagation *refine hook* in the registry
+  row instead of `NULL` (see `ngx_js_peer_prop_refine`).
+* *Snapshots* — only the seven snapshot-backed classes capture values via
+  `*_snap_props[]`; a new class is not snapshot-captured unless you wire that
+  up too.
+
+Finally, extend the drift check in `t/js_com_describe.t` so the invariant
+"every `settable()` member has a `describe()` entry" covers your class.
+
+After Step 5:
+
+[source,javascript]
+----
+nginx.describe('http.mymod');             // [{name:"enable",class:"safe",…}, …]
+nginx.describe('http.mymod', 'enable');   // single descriptor
+nginx.settable('http.mymod');             // ["enable","maxEntries"]
+nginx.describe().find(c => c.class === 'NginxMymod');  // in the catalog
 ----
 
 === Location-Level Config
