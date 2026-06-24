@@ -73,13 +73,21 @@ nginx.broadcast(function () {
                 }
                 out.r = true;
             }
+            else if (q.op === 'readd') {
+                /* re-adding a removed location must REVIVE it (clear the
+                 * tombstone), not leave it dead or create a duplicate */
+                srv.removeLocation(q.pat);
+                out.found_after_remove = (srv.findLocation(q.pat) !== null);
+                out.r = !!srv.addLocation(q.pat);
+                out.found_after_readd = (srv.findLocation(q.pat) !== null);
+            }
         } catch (e) { out.err = String(e.message); }
         r.respond(200, {'Content-Type':'application/json'}, JSON.stringify(out) + '\n');
     };
 });
 JS
 
-$t->try_run('no js module')->plan(16);
+$t->try_run('no js module')->plan(20);
 
 sub code { my $r = http_get(shift); return $1 if $r =~ m!^HTTP/\d\.\d\s+(\d+)!; 0 }
 sub jbody { my $r = http_get(shift); $r =~ s/.*?\r\n\r\n//s; $r }
@@ -106,6 +114,16 @@ is(code('/exact'), 200, 'after restore: exact /exact live again');
 # ── many cycles: tombstone churn stays correct ───────────────────────────────
 like(jbody('/ctl/?op=cycle&n=100'), qr/"r":true/, '100 remove/restore cycles OK');
 is(code('/gone/'), 200, 'after 100 cycles: /gone/ ends live');
+
+# ── re-add revives a removed location (regression: tombstone re-add) ─────────
+# removeLocation tombstones; findLocation must then return null; addLocation of
+# the same pattern must REVIVE the entry (not leave it dead or duplicate it),
+# so the route serves again with its original handler.
+my $RA = jbody('/ctl/?op=readd&pat=/gone/');
+like($RA, qr/"found_after_remove":false/, 'findLocation null after remove (tombstone hidden)');
+like($RA, qr/"r":true/,                   're-addLocation returns the location');
+like($RA, qr/"found_after_readd":true/,   'findLocation sees the revived location');
+is(code('/gone/'), 200,                   're-added /gone/ serves again (handler revived)');
 
 # ── hard remove is irreversible ──────────────────────────────────────────────
 like(jbody('/ctl/?op=hard&pat=/keep/'), qr/"r":true/, 'hard removeLocation /keep/');

@@ -5582,6 +5582,14 @@ ngx_js_do_add_location(JSContext *ctx, ngx_js_server_opaque_t *op,
                 && ngx_memcmp(dup_e[di].clcf->name.data,
                               name.data, name.len) == 0)
             {
+                /* Re-adding a tombstoned (removed) location revives it. */
+                if (dup_e[di].tombstone) {
+                    dup_e[di].tombstone = 0;
+                    if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+                        dup_e[di].tombstone = 1;
+                        return JS_EXCEPTION;
+                    }
+                }
                 return ngx_js_wrap_location_ex(ctx, dup_e[di].clcf, op);
             }
         }
@@ -5597,6 +5605,13 @@ ngx_js_do_add_location(JSContext *ctx, ngx_js_server_opaque_t *op,
                 && ngx_memcmp(dup_re[di].clcf->name.data,
                               name.data, name.len) == 0)
             {
+                if (dup_re[di].tombstone) {
+                    dup_re[di].tombstone = 0;
+                    if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+                        dup_re[di].tombstone = 1;
+                        return JS_EXCEPTION;
+                    }
+                }
                 return ngx_js_wrap_location_ex(ctx, dup_re[di].clcf, op);
             }
         }
@@ -5613,6 +5628,14 @@ ngx_js_do_add_location(JSContext *ctx, ngx_js_server_opaque_t *op,
                 && ngx_memcmp(dup_e[di].clcf->name.data,
                               name.data, name.len) == 0)
             {
+                /* Re-adding a tombstoned (removed) location revives it. */
+                if (dup_e[di].tombstone) {
+                    dup_e[di].tombstone = 0;
+                    if (ngx_js_rebuild_loc_tree(op, op->cycle->log) != NGX_OK) {
+                        dup_e[di].tombstone = 1;
+                        return JS_EXCEPTION;
+                    }
+                }
                 return ngx_js_wrap_location_ex(ctx, dup_e[di].clcf, op);
             }
         }
@@ -8978,11 +9001,14 @@ ngx_js_server_fn_find_location(JSContext *ctx, JSValueConst this_val,
     JS_FreeCString(ctx, pat_str);
 
 #if (NGX_PCRE)
-    /* Scan regex_locs[] */
+    /* Scan regex_locs[] (tombstoned = removed → not findable) */
     if (is_regex) {
         ngx_js_regex_entry_t  *re = op->regex_locs.elts;
         for (i = 0; i < op->regex_locs.nelts; i++) {
             ngx_http_core_loc_conf_t  *clcf = re[i].clcf;
+            if (re[i].tombstone) {
+                continue;
+            }
             if (clcf->name.len == name.len
                 && ngx_memcmp(clcf->name.data, name.data, name.len) == 0)
             {
@@ -8993,11 +9019,14 @@ ngx_js_server_fn_find_location(JSContext *ctx, JSValueConst this_val,
     }
 #endif
 
-    /* Scan named_locs[] */
+    /* Scan named_locs[] (tombstoned = removed → not findable) */
     if (is_named) {
         pe = op->named_locs.elts;
         for (i = 0; i < op->named_locs.nelts; i++) {
             ngx_http_core_loc_conf_t  *clcf = pe[i].clcf;
+            if (pe[i].tombstone) {
+                continue;
+            }
             if (clcf->name.len == name.len
                 && ngx_memcmp(clcf->name.data, name.data, name.len) == 0)
             {
@@ -9012,6 +9041,9 @@ ngx_js_server_fn_find_location(JSContext *ctx, JSValueConst this_val,
     for (i = 0; i < op->prefix_locs.nelts; i++) {
         ngx_http_core_loc_conf_t  *clcf = pe[i].clcf;
 
+        if (pe[i].tombstone) {
+            continue;   /* removed (restorable) → not findable */
+        }
         if ((int) clcf->exact_match != exact_match) {
             continue;
         }
