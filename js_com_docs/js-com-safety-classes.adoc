@@ -327,10 +327,13 @@ listener binding is `irreversible`.
 | `nginx.describe(path, name)`  | single-member `Descriptor`, or `null`
 |===
 
-Read-only members are listed but their getter is **not** invoked by
-`describe()` (no side effects, and some getters touch unconfigured module state):
-they report `type:"getter"` with a note.  Static read-only types are a possible
-future refinement.
+Read-only members are listed but their getter is **not** invoked by `describe()`
+(no side effects, and some getters touch unconfigured module state and would
+crash if called outside a matching request).  Their `type` instead comes from a
+static name→type map of the verified inspection getters (`path`→`string`,
+`headerFilters`→`object[]`, `port`→`number`, …); anything not in the map falls
+back to `type:"getter"` with an explanatory note (still honest — it is a
+read-only accessor to drill into).
 
 `path` accepts the same syntax as `nginx.get`/`set`
 (e.g. `"http.upstreams[0].peers[0]"`, `"http.servers[0].locations[2].proxy"`).

@@ -925,19 +925,74 @@ ngx_js_table_has(const ngx_js_member_class_t *table, const char *name)
 
 
 /*
- * Build a Descriptor for a read-only getter `name`.
+ * Static type map for read-only getters (follow-up #3a).
  *
- * The getter is deliberately NOT invoked: describe() must have no side effects,
- * and some COM getters (e.g. loc.proxy when the proxy module is not configured
- * for that location) dereference unconfigured module state and would crash if
- * called outside a matching request.  So the type is reported as "getter"
- * rather than the runtime value's typeof.  (Static read-only types are a
- * possible future refinement — see follow-up #3.)
+ * describe() never invokes a getter to learn its type — it must be
+ * side-effect-free, and some COM getters (e.g. loc.proxy when the proxy module
+ * is not configured for that location) dereference unconfigured module state
+ * and crash if called outside a matching request.  So the type of a read-only
+ * member is looked up here by name instead.  Entries are the verified,
+ * cross-class-consistent getters operators inspect; anything not listed falls
+ * back to type "getter" (still honest — it is a read-only accessor).
+ */
+static const struct {
+    const char  *name;
+    const char  *type;
+} ngx_js_ro_types[] = {
+    /* scalars */
+    { "path",                    "string"   },
+    { "pattern",                 "string"   },
+    { "alias",                   "string"   },
+    { "name",                    "string"   },
+    { "address",                 "string"   },
+    { "matchType",               "string"   },
+    { "zone",                    "string"   },
+    { "port",                    "number"   },
+    { "fd",                      "number"   },
+    { "typesHashMaxSize",        "number"   },
+    { "internal",                "boolean"  },
+    { "hasHandler",              "boolean"  },
+    /* collections */
+    { "names",                   "object[]" },
+    { "locations",               "object[]" },
+    { "peers",                   "object[]" },
+    { "servers",                 "object[]" },
+    { "upstreams",               "object[]" },
+    { "sockets",                 "object[]" },
+    { "tryFiles",                "object[]" },
+    { "headerFilters",           "object[]" },
+    { "bodyFilters",             "object[]" },
+    /* single wrapper objects */
+    { "ssl",                     "object"   },
+    { "listener",                "object"   },
+    { "largeClientHeaderBuffers","object"   },
+    { NULL, NULL }
+};
+
+static const char *
+ngx_js_ro_type_lookup(const char *name)
+{
+    ngx_uint_t  i;
+
+    for (i = 0; ngx_js_ro_types[i].name != NULL; i++) {
+        if (ngx_strcmp(ngx_js_ro_types[i].name, name) == 0) {
+            return ngx_js_ro_types[i].type;
+        }
+    }
+    return NULL;
+}
+
+
+/*
+ * Build a Descriptor for a read-only getter `name`.  The getter is NOT invoked
+ * (see ngx_js_ro_types above); the type comes from the static map, or "getter"
+ * with an explanatory note when the member is not in the map.
  */
 static JSValue
 ngx_js_describe_readonly_one(JSContext *ctx, JSValueConst obj, const char *name)
 {
-    JSValue  d;
+    JSValue      d;
+    const char  *type;
 
     (void) obj;
 
@@ -946,17 +1001,20 @@ ngx_js_describe_readonly_one(JSContext *ctx, JSValueConst obj, const char *name)
         return d;
     }
 
-    JS_SetPropertyStr(ctx, d, "name",          JS_NewString(ctx, name));
-    JS_SetPropertyStr(ctx, d, "type",          JS_NewString(ctx, "getter"));
-    JS_SetPropertyStr(ctx, d, "access",        JS_NewString(ctx, "read-only"));
-    JS_SetPropertyStr(ctx, d, "class",         JS_NewString(ctx, "readonly"));
+    type = ngx_js_ro_type_lookup(name);
+
+    JS_SetPropertyStr(ctx, d, "name",   JS_NewString(ctx, name));
+    JS_SetPropertyStr(ctx, d, "type",   JS_NewString(ctx, type ? type : "getter"));
+    JS_SetPropertyStr(ctx, d, "access", JS_NewString(ctx, "read-only"));
+    JS_SetPropertyStr(ctx, d, "class",  JS_NewString(ctx, "readonly"));
     JS_SetPropertyStr(ctx, d, "reversible",    JS_NewBool(ctx, 0));
     JS_SetPropertyStr(ctx, d, "propagation",
                       JS_NewString(ctx, "worker-local"));
     JS_SetPropertyStr(ctx, d, "requestScoped", JS_NewBool(ctx, 0));
     JS_SetPropertyStr(ctx, d, "note",
-                      JS_NewString(ctx, "read-only accessor; value not "
-                                        "pre-evaluated by describe()"));
+                      type ? JS_NULL
+                           : JS_NewString(ctx, "read-only accessor; value not "
+                                               "pre-evaluated by describe()"));
 
     return d;
 }

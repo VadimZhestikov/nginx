@@ -212,6 +212,15 @@ check('readonly_single_form',
       pathD && pathD.class === 'readonly' && pathD.access === 'read-only'
             && pathD.reversible === false,
       pathD && JSON.stringify(pathD));
+/* follow-up #3a: read-only getters carry a static type from the map */
+check('readonly_typed', pathD && pathD.type === 'string', pathD && pathD.type);
+var hfD = nginx.describe(locPath, 'headerFilters');
+check('readonly_typed_array', hfD && hfD.type === 'object[]', hfD && hfD.type);
+/* an unmapped read-only accessor still falls back to "getter" honestly */
+var proxyD = nginx.describe(locPath, 'proxy');
+check('readonly_fallback', proxyD && proxyD.type === 'getter'
+                                  && proxyD.class === 'readonly',
+      proxyD && JSON.stringify(proxyD));
 /* read-only members must NOT leak into settable() */
 check('settable_excludes_readonly',
       nginx.settable(loc).indexOf('path') < 0, JSON.stringify(nginx.settable(loc)));
@@ -227,7 +236,7 @@ probe.handler = function (r) {
 };
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(41);
+$t->try_run('no js module or upstream_zone')->plan(44);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -277,6 +286,9 @@ like($log, qr/JSTEST PASS catalog_is_array/,            'describe() → class ca
 like($log, qr/JSTEST PASS catalog_has_location/,        'catalog lists NginxLocation + members');
 like($log, qr/JSTEST PASS describe_includes_readonly_path/, 'describe() includes read-only path');
 like($log, qr/JSTEST PASS readonly_single_form/,        'describe(path,name) classifies read-only getter');
+like($log, qr/JSTEST PASS readonly_typed/,              'read-only getter typed from static map (path → string)');
+like($log, qr/JSTEST PASS readonly_typed_array/,        'read-only getter typed (headerFilters → object[])');
+like($log, qr/JSTEST PASS readonly_fallback/,           'unmapped read-only getter falls back to type:getter');
 like($log, qr/JSTEST PASS settable_excludes_readonly/,  'settable() excludes read-only members');
 
 # --- Request-phase assertion: zoned-shared vs worker-local ---
