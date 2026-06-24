@@ -11,8 +11,14 @@
 // operator, exactly which runtime changes are safe, which need cross-worker
 // fan-out, and which can never be undone — without reading any C or JS source.
 //
+// The class set is no longer hard-coded: nginx.describe() with no path is the
+// discovery root — it returns every classifiable COM class — and describe(path)
+// now lists read-only getters alongside settable members, so the report is a
+// complete per-object reference.
+//
 // Endpoints (installed per worker via nginx.broadcast):
-//   GET /            HTML traffic-light table
+//   GET /            HTML traffic-light table + class-catalog panel
+//   GET /catalog     JSON discovery root: [{class, members:[…]}] for all classes
 //   GET /inspect     full JSON report (array of {path, members:[…]})
 //   GET /inspect/sum JSON summary counts by class + propagation
 
@@ -36,11 +42,24 @@ nginx.broadcast(function () {
         return { path: path, members: members };
     }
 
+    /* The discovery root: nginx.describe() with no path lists every
+     * classifiable COM class and its members.  The inspector no longer has to
+     * know the class set a priori — it can show "what exists" straight from
+     * the engine. */
+    function catalog() {
+        return nginx.describe();   /* [{ class, members:[…names] }] */
+    }
+
     /* Walk server[0]: its locations + sub-objects, plus all upstream peers. */
     function walk() {
         var nodes = [];
         var srv   = nginx.http.servers[0];
 
+        /* nginx.http itself — its topology methods (addServer/attach are
+         * irreversible, removeServer/removeListener guarded) are now
+         * classified, so the report shows a real 🔴 tier. */
+        nodes.push(describeNode('http'));
+        nodes.push(describeNode('cycle'));
         nodes.push(describeNode('http.servers[0]'));
 
         srv.locations.forEach(function (loc, li) {
@@ -66,7 +85,7 @@ nginx.broadcast(function () {
     }
 
     function summarise(nodes) {
-        var cls  = { safe: 0, guarded: 0, irreversible: 0 };
+        var cls  = { safe: 0, guarded: 0, irreversible: 0, readonly: 0 };
         var prop = { 'worker-local': 0, 'zoned-shared': 0, 'auto-shared': 0 };
         var reqScoped = 0, total = 0;
         nodes.forEach(function (n) {
@@ -86,16 +105,29 @@ nginx.broadcast(function () {
     var CLASS_COLOR = {
         safe:         '#1a7f37',   /* green  */
         guarded:      '#9a6700',   /* amber  */
-        irreversible: '#cf222e'    /* red    */
+        irreversible: '#cf222e',   /* red    */
+        readonly:     '#57606a'    /* grey   */
     };
-    var CLASS_DOT = { safe: '🟢', guarded: '🟡', irreversible: '🔴' };
+    var CLASS_DOT = { safe: '🟢', guarded: '🟡', irreversible: '🔴',
+                      readonly: '⚪' };
 
     function esc(s) {
         return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
                         .replace(/>/g, '&gt;');
     }
 
-    function renderHtml(nodes, sum) {
+    function renderCatalog(cat) {
+        var cells = cat.map(function (e) {
+            return '<span class="cls">' + esc(e.class)
+                 + ' <small>(' + e.members.length + ')</small></span>';
+        }).join('');
+        return '<details class="cat"><summary><b>' + cat.length
+             + ' COM classes</b> exposed by <code>nginx.describe()</code> '
+             + '(the discovery root) — click to expand</summary>'
+             + '<div class="grid">' + cells + '</div></details>';
+    }
+
+    function renderHtml(nodes, sum, cat) {
         var rows = '';
         nodes.forEach(function (n) {
             rows += '<tr class="grp"><td colspan="6">' + esc(n.path)
@@ -129,14 +161,24 @@ nginx.broadcast(function () {
           + '.grp td{background:#eef3f8;font-family:monospace;font-weight:600}'
           + '.mem{font-family:monospace}'
           + '.note{color:#57606a;font-size:12px}'
+          + '.cat{margin:0 0 16px;padding:10px 12px;background:#f6f8fa;'
+              + 'border-radius:8px}'
+          + '.cat summary{cursor:pointer}'
+          + '.cat .grid{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}'
+          + '.cls{font-family:monospace;font-size:12px;background:#fff;'
+              + 'border:1px solid #d0d7de;border-radius:6px;padding:2px 7px}'
+          + '.cls small{color:#57606a}'
           + '</style></head><body>'
           + '<h1>nginx COM — Mutation Safety-Class Inspector</h1>'
+          + renderCatalog(cat)
           + '<div class="sum">'
-          + '<b>' + sum.total + ' settable members</b>'
+          + '<b>' + sum.total + ' members</b>'
           + '<b style="color:#1a7f37">🟢 ' + sum.byClass.safe + ' safe</b>'
           + '<b style="color:#9a6700">🟡 ' + sum.byClass.guarded + ' guarded</b>'
           + '<b style="color:#cf222e">🔴 ' + sum.byClass.irreversible
               + ' irreversible</b>'
+          + '<b style="color:#57606a">⚪ ' + sum.byClass.readonly
+              + ' read-only</b>'
           + '<br><b>propagation:</b>'
           + 'worker-local ' + sum.byPropagation['worker-local'] + ' · '
           + 'zoned-shared ' + sum.byPropagation['zoned-shared'] + ' · '
@@ -166,7 +208,13 @@ nginx.broadcast(function () {
     at('/', function (r) {
         var nodes = walk();
         r.respond(200, {'Content-Type': 'text/html; charset=utf-8'},
-            renderHtml(nodes, summarise(nodes)));
+            renderHtml(nodes, summarise(nodes), catalog()));
+    });
+
+    at('/catalog', function (r) {
+        /* the discovery root straight from the engine */
+        r.respond(200, {'Content-Type': 'application/json'},
+            JSON.stringify(catalog(), null, 1) + '\n');
     });
 
     at('/inspect', function (r) {
