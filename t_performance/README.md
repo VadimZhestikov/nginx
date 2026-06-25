@@ -106,6 +106,25 @@ in `.wslconfig` routes WSL2 loopback traffic through Windows Defender Firewall,
 adding ~2 ms per request and reducing throughput by ~7×. Use NAT mode (the
 default) for loopback benchmarks.
 
+*How to recognise you're in the bad mode* — the run still completes, but the
+numbers are loopback-bound (the network path dominates and the JS cost falls
+into the noise), so they are meaningless. Tell-tale signs:
+
+- **Absolute throughput ~7× low** — baseline lands around ~15–25K req/s instead
+  of ~150K. This is the clearest tell; check baseline first.
+- **High variance** — per-run coefficient of variation well above ~5% (often
+  10–25%), even after outlier filtering.
+- **Impossible orderings** — `empty` slower than `headers` (headers does strictly
+  more work), or a *negative* "empty-handler overhead vs baseline" (a JS handler
+  cannot be faster than no JS). These mean the JS signal is swamped; discard the
+  run.
+
+*Check / fix:* inspect `%USERPROFILE%\.wslconfig` on the Windows host; under
+`[wsl2]` ensure you are **not** using `networkingMode=mirrored` with
+`firewall=true`. Remove those lines (NAT is the default) or set
+`firewall=false`, then `wsl --shutdown` and restart. Also benchmark on a quiet
+box — competing CPU load alone inflates variance independently of networking.
+
 ## Sample results (WSL2, 8 vCPU / 6 schedulable, 4 workers, 50 conn)
 
 4-session grand averages (10 runs × 15s each, outlier-filtered):
