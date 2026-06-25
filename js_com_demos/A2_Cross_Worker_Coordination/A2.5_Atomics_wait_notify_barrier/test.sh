@@ -9,11 +9,9 @@ cd "$DEMO_DIR"
 mkdir -p logs
 
 cleanup() {
-    # Signal the SharedWorker to exit its Atomics.wait loop BEFORE stopping
-    # nginx — without this the SW pthread blocks in futex_wait and the master
-    # process hangs even after nginx -s stop.
-    curl -sf "http://127.0.0.1:$PORT/stop-sw/" >/dev/null 2>&1 || true
-    sleep 0.2
+    # The SharedWorker is event-driven (parked in its channel recv, not in a
+    # blocking Atomics.wait loop), so nginx shuts it down cleanly — no stop
+    # signal needed.
     "$NGINX" -p . -c nginx.conf -s stop 2>/dev/null || true
 }
 trap cleanup EXIT
