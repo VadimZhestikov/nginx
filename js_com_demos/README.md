@@ -1,6 +1,6 @@
 # js_com_demos1
 
-58 self-contained, runnable demos organised by value category. Each demo has
+64 self-contained, runnable demos organised by value category. Each demo has
 its own `nginx.conf`, `handler.js` (or `gen.js`), `test.sh`, and `README.md`.
 
 ## Quick start
