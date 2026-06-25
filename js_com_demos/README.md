@@ -64,10 +64,11 @@ directory, resolving to `objs/nginx` in the repo root).
 | [A2.2 Cross-worker broadcast](A2_Cross_Worker_Coordination/A2.2_Cross_worker_broadcast/) | 8109 | `nginx.broadcast(fn)` + `nginx.shared` — config pushed to all workers at once |
 | [A2.3 Persistent background thread](A2_Cross_Worker_Coordination/A2.3_Persistent_background_thread/) | 8110 | `SharedWorker` with `setInterval` pre-computes data; workers read via postMessage |
 | [A2.4 Self-adjusting canary](A2_Cross_Worker_Coordination/A2.4_Self_adjusting_canary/) | 8111 | SharedWorker counts 5xx, shifts weight from bad → good upstream automatically |
-| [A2.5 Atomics.wait/notify barrier](A2_Cross_Worker_Coordination/A2.5_Atomics_wait_notify_barrier/) | 8114 | SW does slow work, notifies via `Atomics.notify`; handler polls with `nginx.setTimeout` |
+| [A2.5 SharedWorker compute offload](A2_Cross_Worker_Coordination/A2.5_Atomics_wait_notify_barrier/) | 8114 | Offloads fib(n) to a `SharedWorker`: SAB carries the data, the channel (`postMessage`) carries the signal — cross-process `Atomics.notify` is inert, so it is not used |
 | [A2.6 Runtime route enable/disable](A2_Cross_Worker_Coordination/A2.6_Runtime_route_broadcast/) | 8115 | `nginx.broadcast` + `nginx.shared` flag — route live/dead on all workers instantly, no reload |
 | [A2.7 Admin plugin: snapshot/rollback](A2_Cross_Worker_Coordination/A2.7_Admin_plugin_snapshot_rollback/) | 8116 | `nginx.use()` plugin with REST API, snapshots, rollback, and SharedWorker fan-out for structural ops |
 | [A2.8 Live header mutation](A2_Cross_Worker_Coordination/A2.8_Live_header_mutation/) | 8117 | Two approaches side by side: `nginx.shared` + WebSocket for request-phase headers; `loc.headers.addHeader()` + cfgbus SharedWorker for config-phase `add_header` on a JS-handler-free location — both propagate to all 4 workers instantly, no reload |
+| [A2.9 Local worker pool + Atomics barrier](A2_Cross_Worker_Coordination/A2.9_Local_worker_pool_barrier/) | 8112 | Pool of local JS `Worker`s shares a SAB and syncs with an intra-process `Atomics` barrier (where `notify` works); worker 0 folds the result into a `SharedWorker` global aggregate over the channel — the positive counterpart to A2.5 |
 
 #### A3 — Programmatic Config Generation (ports 8118–8120)
 

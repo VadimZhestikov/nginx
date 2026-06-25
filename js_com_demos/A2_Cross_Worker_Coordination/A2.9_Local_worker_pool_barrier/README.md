@@ -76,14 +76,14 @@ bash test.sh
 ../../../objs/nginx -p . -c nginx.conf
 
 # Parallel sum of 0..N-1, folded into the global total
-curl "http://127.0.0.1:8234/task/?100"
+curl "http://127.0.0.1:8112/task/?100"
 # → {"n":100,"local_sum":4950,"global_total":4950,"global_count":1}
 
-curl "http://127.0.0.1:8234/task/?1000"
+curl "http://127.0.0.1:8112/task/?1000"
 # → {"n":1000,"local_sum":499500,"global_total":504450,"global_count":2}
 
 # Read the cross-worker aggregate
-curl "http://127.0.0.1:8234/global/"
+curl "http://127.0.0.1:8112/global/"
 # → {"globalTotal":504450,"globalCount":2}
 
 # Stop nginx (pool workers + SharedWorker are event-driven, so it stops cleanly)

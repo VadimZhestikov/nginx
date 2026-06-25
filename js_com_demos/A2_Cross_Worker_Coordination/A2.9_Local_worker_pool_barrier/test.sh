@@ -2,7 +2,7 @@
 set -euo pipefail
 DEMO_DIR="$(cd "$(dirname "$0")" && pwd)"
 NGINX=../../../objs/nginx
-PORT=8234
+PORT=8112
 PASS=0; FAIL=0
 
 cd "$DEMO_DIR"

@@ -60,10 +60,12 @@
         weight from bad to good upstream, logs the decision.
         Classic: no feedback loop in nginx upstream.
 
-  A2.5  Atomics.wait/notify barrier
-        JS Worker does slow work (compress, encrypt, ML inference);
-        request handler parks on Atomics.wait, wakes when result is ready.
-        Classic: no synchronization primitives.
+  A2.5  SharedWorker compute offload (channel signal + SAB data)
+        Handler offloads fib(n) to a SharedWorker: the SAB carries input/result
+        (zero-copy), the channel (postMessage) carries the signal. Cross-process
+        Atomics.notify is inert (per-process waiter list), so it is NOT used
+        across the worker/master boundary — the channel is the doorbell.
+        Classic: no way to offload CPU work off the event loop.
 
   A2.6  Runtime route enable/disable
         nginx.broadcast installs flag-gated handlers; nginx.shared write
@@ -93,6 +95,16 @@
         no runtime API to add/remove headers on an arbitrary location.
         Browser UI shows both panels; test.sh verifies cross-worker
         propagation by collecting all 4 worker PIDs per check.
+
+  A2.9  Local worker pool + Atomics barrier + cross-worker aggregate
+        Each nginx worker runs a pool of local JS Workers sharing a SAB. A
+        request fans a parallel reduction across the pool; the workers meet at
+        a sense-reversing Atomics barrier (intra-process, where notify reliably
+        works); worker 0 then folds the result into a global total held in a
+        SharedWorker (over the channel — the cross-process hop never uses
+        Atomics). The positive counterpart to A2.5: where Atomics.wait/notify
+        genuinely belongs.
+        Classic: no in-process thread pool; no shared-memory barrier.
 
   A3 · Programmatic Config Generation
 
