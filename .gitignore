@@ -2,3 +2,6 @@
 /js_com_presentations/
 /objs/
 /tmp/
+
+# nginx runtime logs (log dirs are kept in git via .keep / .gitkeep)
+*.log
