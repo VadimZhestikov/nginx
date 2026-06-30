@@ -21,6 +21,19 @@ demos — not a product commitment.
 | 🔵 | Planned — a design exists, not yet built |
 | ❌ | Out of scope — a core-NGINX concern the JS layer does not address |
 
+## Coverage at a glance
+
+```
+Coverage of 17 customer requests
+  ✅ Covered        ████████████████████████  4  (24%)
+  🟡 Partial        ████████████████████████████████████████████████  8  (47%)
+  🔵 Planned        ██████  1  (6%)
+  ❌ Out of scope   ████████████████████████  4  (24%)
+
+  Addressable by js_com (✅+🟡+🔵):  13 / 17  (76%)
+  Core-NGINX, out of scope (❌):       4 / 17  (24%)
+```
+
 ## Coverage
 
 | Feature requested (anonymized) | Coverage | How / where in js_com / pilgrim |
