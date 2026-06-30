@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer feature requests &rarr; js_com / pilgrim coverage</title>
+<style>
+  :root { --fg:#24292f; --muted:#57606a; --border:#d0d7de; --bg:#fff;
+          --code-bg:#f6f8fa; --accent:#0969da; }
+  body { color:var(--fg); background:var(--bg);
+         font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+         max-width:960px; margin:2.5rem auto; padding:0 1.25rem; }
+  h1 { font-size:1.9rem; border-bottom:1px solid var(--border); padding-bottom:.3em; }
+  h2 { font-size:1.4rem; border-bottom:1px solid var(--border); padding-bottom:.3em; margin-top:2em; }
+  h3 { font-size:1.1rem; margin-top:1.6em; }
+  table { border-collapse:collapse; width:100%; margin:1em 0; font-size:.94rem; }
+  th, td { border:1px solid var(--border); padding:.5em .7em; text-align:left; vertical-align:top; }
+  th { background:var(--code-bg); }
+  tr:nth-child(2n) td { background:#fafbfc; }
+  code { background:var(--code-bg); padding:.15em .35em; border-radius:4px;
+         font:0.88em/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:6px;
+        padding:1em; overflow:auto; line-height:1.45; }
+  pre code { background:none; padding:0; font-size:0.85rem; white-space:pre; }
+  blockquote { margin:1em 0; padding:.2em 1em; color:var(--muted);
+               border-left:.25em solid var(--border); }
+  a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+  hr { border:0; border-top:1px solid var(--border); margin:2em 0; }
+</style>
+</head>
+<body>
+<h1>Customer feature requests → js_com / pilgrim coverage</h1>
+<p>This document maps recurring customer requests for NGINX features that current
+NGINX does <strong>not</strong> provide against what the <strong>js_com / pilgrim</strong> programmable
+layer covers today.</p>
+<blockquote>
+<p><strong>Source &amp; confidentiality.</strong> The requests below were extracted from an
+internal feature-request deck and have been <strong>anonymized</strong>: all customer
+names and infrastructure details are deliberately omitted. Only the generic
+capability asks are retained.</p>
+</blockquote>
+<p>The coverage assessment is an engineering mapping to existing js_com APIs and
+demos — not a product commitment.</p>
+<h2>Legend</h2>
+<table>
+<thead>
+<tr>
+<th>Mark</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅</td>
+<td>Covered — an API and/or runnable demo exists</td>
+</tr>
+<tr>
+<td>🟡</td>
+<td>Partial — achievable in JS today, or partially addressed</td>
+</tr>
+<tr>
+<td>🔵</td>
+<td>Planned — a design exists, not yet built</td>
+</tr>
+<tr>
+<td>❌</td>
+<td>Out of scope — a core-NGINX concern the JS layer does not address</td>
+</tr>
+</tbody>
+</table>
+<h2>Coverage at a glance</h2>
+<pre><code>Coverage of 17 customer requests
+  ✅ Covered        ████████████████████████  4  (24%)
+  🟡 Partial        ████████████████████████████████████████████████  8  (47%)
+  🔵 Planned        ██████  1  (6%)
+  ❌ Out of scope   ████████████████████████  4  (24%)
+
+  Addressable by js_com (✅+🟡+🔵):  13 / 17  (76%)
+  Core-NGINX, out of scope (❌):       4 / 17  (24%)
+</code></pre>
+<h2>Coverage</h2>
+<table>
+<thead>
+<tr>
+<th>Feature requested (anonymized)</th>
+<th>Coverage</th>
+<th>How / where in js_com / pilgrim</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Atomic config updates</strong> — one momentary change applied across all workers, no reload</td>
+<td>✅</td>
+<td>Live COM mutation (<code>addServer</code> / <code>addLocation</code> / <code>setCertificate</code> …) + <code>nginx.broadcast</code> fan-out applies atomically to all workers with no reload. Demos <strong>A2.6</strong> (runtime route broadcast), <strong>A2.7</strong> (snapshot / rollback); see <code>js-reconfig-guide-all-workers.adoc</code>. <em>Within one instance: full; cross-machine needs an external coordinator.</em> Note: the request was framed as conflicting with disk-based dynamic reload — pilgrim drives it from JS, not disk.</td>
+</tr>
+<tr>
+<td><strong>HSM / re-read keys without a full reload</strong> (via a control API)</td>
+<td>✅</td>
+<td><code>server.ssl.setCertificate(cert, key)</code> hot-swaps cert + key live, zero connection drop, no reload. Demo <strong>A1.1</strong>.</td>
+</tr>
+<tr>
+<td><strong>Exact cipher actually used</strong> (not the configured one)</td>
+<td>✅</td>
+<td>A JS handler reads the negotiated <code>$ssl_cipher</code> (and related SSL variables) per request and can log or act on it.</td>
+</tr>
+<tr>
+<td><strong>Subrequest logging</strong> (JS-initiated)</td>
+<td>✅</td>
+<td>JS owns its subrequests, so it can log each with full detail (timing, target, result).</td>
+</tr>
+<tr>
+<td><strong>JA3 / JA4 TLS fingerprinting</strong></td>
+<td>🟡</td>
+<td>Demo <strong>D4.3</strong> computes a TLS fingerprint in JS — bounded by which ClientHello fields NGINX exposes to JS (full JA4 may need additional handshake data).</td>
+</tr>
+<tr>
+<td><strong>Better timing observability</strong> — where are the waits / delays; clarity on <code>header_time</code> / <code>connect_time</code> / <code>upstream_time</code></td>
+<td>🟡</td>
+<td>JS request handlers capture per-request timing breakdowns and emit custom structured logs / metrics. Demo <strong>B5.3</strong> (per-request metrics). Surfaces clearer values without changing NGINX's built-in variables.</td>
+</tr>
+<tr>
+<td><strong>Exact reason for "no live upstream" / why a peer failed</strong></td>
+<td>🟡</td>
+<td>The COM tree exposes <code>nginx.http.upstreams[].peers[]</code> state; a JS handler can inspect peer health and log the precise reason.</td>
+</tr>
+<tr>
+<td><strong>Exact reasons for TLS errors</strong></td>
+<td>🟡</td>
+<td>JS can read exposed SSL variables and log richer error context — limited by what NGINX surfaces to JS.</td>
+</tr>
+<tr>
+<td><strong>Stream-level logs for HTTP/2 &amp; HTTP/3</strong></td>
+<td>🟡</td>
+<td>JS handlers (including the stream module) can emit custom logs; coverage depends on the JS hooks available in the h2 / h3 stream path.</td>
+</tr>
+<tr>
+<td><strong>Standardized / certified / documented JS libraries</strong></td>
+<td>🟡</td>
+<td>pilgrim runs full <strong>QuickJS (ES2020+)</strong> with <code>std</code> / <code>os</code> modules — a real, predictable JS standard library vs njs's subset. "Certified / supported" is a product / process concern, not a technical gap.</td>
+</tr>
+<tr>
+<td><strong>Trace the actual config path a request followed</strong> (locations + subrequests via njs / <code>auth_request</code> / <code>error_page</code>)</td>
+<td>🟡</td>
+<td>Demo <strong>A3.3</strong> (config dry-run, <code>nginx.http.match(uri)</code>) simulates which location matches; JS handlers can log the live path. A full cross-subrequest trace would need additional instrumentation.</td>
+</tr>
+<tr>
+<td><strong>Dynamic config updates from disk</strong> (re-read config at runtime — <em>also requested, and flagged as conflicting with the atomic-update ask above</em>)</td>
+<td>🟡</td>
+<td>pilgrim applies live config changes from <strong>JS / COM</strong>, not by re-reading files from disk; a <code>SharedWorker</code> can watch a file and push changes via <code>nginx.broadcast</code>. This also sidesteps the conflict the request itself notes — JS-driven <em>atomic</em> mutation avoids the disk-reload-vs-"one momentary change" race.</td>
+</tr>
+<tr>
+<td><strong>Database-backed config variable storage</strong></td>
+<td>🔵</td>
+<td>The <strong>db-connect</strong> design: a SharedWorker DB gateway + per-worker cache exposing external KV / SQL values to config and handlers. Achievable on this platform; not yet built.</td>
+</tr>
+<tr>
+<td><strong>Remove the kill switch</strong></td>
+<td>❌</td>
+<td>Licensing / build concern — not a JS-extensibility feature.</td>
+</tr>
+<tr>
+<td><strong>Spread cache loader / manager across more than one process</strong></td>
+<td>❌</td>
+<td>NGINX core process-model change; outside the JS layer's scope.</td>
+</tr>
+<tr>
+<td><strong>SVCB / Service Binding DNS (RFC 9460)</strong></td>
+<td>❌</td>
+<td>Resolver / core feature; not addressed by the JS layer.</td>
+</tr>
+<tr>
+<td><strong>HTTP/2 &amp; gRPC proxying performance</strong></td>
+<td>❌</td>
+<td>Core data-plane throughput; JS adds overhead rather than improving NGINX's proxying.</td>
+</tr>
+</tbody>
+</table>
+<h2>Summary</h2>
+<p>Of 17 distinct asks:</p>
+<ul>
+<li><strong>4 directly covered (✅)</strong> — atomic reload-free config changes, live cert/key
+  swap, negotiated-cipher access, subrequest logging.</li>
+<li><strong>8 partial / achievable in JS (🟡)</strong> — mostly observability (timing, upstream
+  and TLS error detail, stream logs), TLS fingerprinting, JS-library maturity,
+  disk-driven dynamic config updates,
+  and config-path tracing.</li>
+<li><strong>1 planned (🔵)</strong> — DB-backed config variables (db-connect).</li>
+<li><strong>4 out of scope (❌)</strong> — kill switch, multi-process cache loader, SVCB DNS,
+  and HTTP/2 / gRPC performance — all core-NGINX, not JS-layer concerns.</li>
+</ul>
+<p>The cluster pilgrim is <strong>strongest</strong> on is precisely the recurring enterprise
+ask: <strong>atomic, reload-free configuration changes propagated to all workers</strong>,
+plus <strong>live certificate rotation</strong>. The biggest gap that already has a design is
+<strong>database-backed config variables</strong> (db-connect).</p>
+<h2>See also</h2>
+<ul>
+<li><a href="../js_com_demos/README.md"><code>../js_com_demos/README.md</code></a> — runnable demos referenced above (A1.1, A2.6, A2.7, A3.3, B5.3, D4.3).</li>
+<li><a href="js-dom-manual.adoc"><code>js-dom-manual.adoc</code></a> — main developer manual (COM tree, dynamic reconfiguration, Workers/SharedWorkers).</li>
+<li><a href="js-reconfig-guide-all-workers.adoc"><code>js-reconfig-guide-all-workers.adoc</code></a> — atomic cross-worker config changes (the flagship coverage item).</li>
+</ul>
+</body>
+</html>
