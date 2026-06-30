@@ -17,6 +17,12 @@ architectural rationale — see [`js_dom_doc_tech/`](../js_dom_doc_tech/README.m
 |---|---|
 | [js-dom-manual.adoc](js-dom-manual.adoc) | **Main developer manual** (~4000 lines). Comprehensive reference covering every feature: quick-start, request handlers, COM tree, dynamic reconfiguration, Workers, SharedWorkers, SharedArrayBuffer, L4 filters, plugin system, admin REPL, resource limits, third-party module integration, and a full API reference. |
 
+### Positioning
+
+| Document | Description |
+|---|---|
+| [feature-request-coverage.md](feature-request-coverage.md) | Maps anonymized customer feature requests (features current NGINX lacks) to js_com / pilgrim coverage — what is covered, partial, planned, or out of scope. |
+
 ### Topic Guides
 
 | Document | Description |

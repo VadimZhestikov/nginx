@@ -3,6 +3,10 @@
 64 self-contained, runnable demos organised by value category. Each demo has
 its own `nginx.conf`, `handler.js` (or `gen.js`), `test.sh`, and `README.md`.
 
+> See [`../js_com_docs/feature-request-coverage.md`](../js_com_docs/feature-request-coverage.md)
+> for how these demos map to real (anonymized) customer feature requests that
+> current NGINX does not cover.
+
 ## Quick start
 
 ```bash
