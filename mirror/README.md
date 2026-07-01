@@ -40,6 +40,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 | `onClientData` (L4) | `mirror.attachStream(streamServer, fn)` + `session.data` | ✅ phase 6 |
 | cross-worker `table` | backed by `nginx.shared` (shmem KV) | ✅ phase 7 |
 | `table` TTL / expiry | `table.set(k, v, ttl)` + `table.ttl(k)` | ✅ phase 8 |
+| iRules → mirror | `mirror.transpile(tclSource)` (decision A) | ✅ phase 9 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
@@ -253,10 +254,33 @@ mirror.table.ttl('greeting');              // ~30, then null once expired
 *different* worker (cross-worker), checks the reported remaining lifetime, waits
 past the TTL, and confirms the value and TTL are gone (self-reclaimed).
 
-## Phase 9 (next)
+## Phase 9 — TCL/iRules → mirror transpiler (decision A, DONE)
+
+The migration layer of the hybrid stance: translate the existing iRules install
+base onto the mirror model built in phases 1–8. `mirror.transpile(tclSource)`
+returns `{events, isStream, handlers, warnings}`, where `handlers` is JS source
+for a `mirror.attach(...)` handlers object. It's a pure-JS layer (no C, no nginx
+deps — also runs under `qjs`); see **`transpile/`** for the supported command
+vocabulary.
+
+Transpiling real iRules is also the sharpest test that the mirror model actually
+**covers** the iRules surface. The acceptance test (`transpile/run.sh`, **32/32**)
+transpiles the *same* spine iRule that `example/app.js` translates **by hand**,
+asserts the generated mirror calls match, then **evals the output and drives it
+with a mock `ev`** to prove behaviour — plus pool/TTL and L4 rules. Anything
+outside the vocabulary is **warned, not silently dropped**.
+
+```js
+var out = mirror.transpile('when HTTP_REQUEST { pool p ; table incr hits }');
+// out.handlers -> "{ onRequestHeaders: function (ev) {
+//                      ev.selectUpstream(\"p\"); ev.table.incr(\"hits\"); } }"
+```
+
+## Phase 10 (next)
 
 - `session`/persistence → a COM persistence API; the db-connect project
   (external KV) as a further `table` tier.
-- Then decision (A): the TCL/iRules → mirror transpiler (migrate existing iRules).
+- Broaden the transpiler: `if`/`switch`/`foreach` control flow, more commands,
+  and a live end-to-end path (transpile an iRule at config time and attach it).
 
 > All commits for this project are prefixed `mirror:`.
