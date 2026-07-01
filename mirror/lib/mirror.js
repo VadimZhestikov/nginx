@@ -540,7 +540,7 @@ function applyRule(target, tclSource) {
 }
 
 globalThis.mirror = {
-    version:      '0.1.0-phase14',
+    version:      '0.1.0',   // prototype model feature-complete (threads 1+3)
     events:       EVENTS,
     caps:         CAPS,
     attach:       attach,

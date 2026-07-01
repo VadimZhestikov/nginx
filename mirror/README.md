@@ -13,6 +13,10 @@ into the other, along three threads:
 This directory is the working prototype for the **event/command model** — the
 heart of threads 1 + 3.
 
+> **See [`CAPABILITIES.md`](CAPABILITIES.md)** for the iRules→mirror capability
+> matrix (events, commands, state tiers), the one-breath architecture, and the
+> honest list of known limitations. The phase sections below are the build log.
+
 ## Decisions
 
 - **Compatibility stance = hybrid.** Build **(B) now**: a clean, *iRules-inspired*
