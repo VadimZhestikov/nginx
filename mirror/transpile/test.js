@@ -147,5 +147,87 @@ var r5 = T('when SERVER_CONNECTED { pool p }');
 ok('unknown event: warning emitted', r5.warnings.length >= 1 &&
    has(r5.warnings.join('|'), "unsupported event 'SERVER_CONNECTED'"));
 
+// ---- fixture 6: if / else control flow (phase 10) ---------------------------
+var iff = [
+    'when HTTP_REQUEST {',
+    '    if { [HTTP::header X-Pool] eq "b" } {',
+    '        pool mirror_poolB',
+    '    } elseif { [HTTP::header X-Pool] eq "c" } {',
+    '        pool mirror_poolC',
+    '    } else {',
+    '        pool mirror_poolA',
+    '    }',
+    '}'
+].join('\n');
+var r6 = T(iff);
+print('\n--- fixture 6 handlers ---\n' + r6.handlers + '\n');
+ok('if: no warnings',                r6.warnings.length === 0);
+ok('if: emits if (...) {',           has(r6.handlers, 'if (ev.header("X-Pool") === "b") {'));
+ok('if: emits } else if (...) {',    has(r6.handlers, '} else if (ev.header("X-Pool") === "c") {'));
+ok('if: emits } else {',             has(r6.handlers, '} else {'));
+var H6 = (0, eval)('(' + r6.handlers + ')');
+var e6b = mockEv({ 'X-Pool': 'b' }); H6.onRequestHeaders(e6b);
+var e6c = mockEv({ 'X-Pool': 'c' }); H6.onRequestHeaders(e6c);
+var e6a = mockEv({ 'X-Pool': 'x' }); H6.onRequestHeaders(e6a);
+ok('behavioral: if b -> poolB',    e6b.upstream === 'mirror_poolB');
+ok('behavioral: elseif c -> poolC', e6c.upstream === 'mirror_poolC');
+ok('behavioral: else -> poolA',    e6a.upstream === 'mirror_poolA');
+
+// ---- fixture 7: switch control flow -----------------------------------------
+var sw = [
+    'when HTTP_REQUEST {',
+    '    switch [HTTP::header X-Cmd] {',
+    '        get  { table incr gets }',
+    '        post { table incr posts }',
+    '        default { table incr other }',
+    '    }',
+    '}'
+].join('\n');
+var r7 = T(sw);
+print('\n--- fixture 7 handlers ---\n' + r7.handlers + '\n');
+ok('switch: no warnings',        r7.warnings.length === 0);
+ok('switch: emits switch (...)', has(r7.handlers, 'switch (ev.header("X-Cmd")) {'));
+ok('switch: case "get"',         has(r7.handlers, 'case "get": {'));
+ok('switch: default clause',     has(r7.handlers, 'default: {'));
+var H7 = (0, eval)('(' + r7.handlers + ')');
+var e7 = mockEv({ 'X-Cmd': 'post' }); H7.onRequestHeaders(e7);
+var e7d = mockEv({ 'X-Cmd': 'zzz' }); H7.onRequestHeaders(e7d);
+ok('behavioral: switch post -> posts', e7._table.posts === 1 && e7._table.gets === undefined);
+ok('behavioral: switch default -> other', e7d._table.other === 1);
+
+// ---- fixture 8: foreach over a literal list ---------------------------------
+var fe = [
+    'when HTTP_REQUEST {',
+    '    foreach h {a b c} {',
+    '        table incr $h',
+    '    }',
+    '}'
+].join('\n');
+var r8 = T(fe);
+print('\n--- fixture 8 handlers ---\n' + r8.handlers + '\n');
+ok('foreach: no warnings',           r8.warnings.length === 0);
+ok('foreach: emits forEach literal', has(r8.handlers, '["a", "b", "c"].forEach(function (_it) {'));
+var H8 = (0, eval)('(' + r8.handlers + ')');
+var e8 = mockEv({}); H8.onRequestHeaders(e8);
+ok('behavioral: foreach incremented all keys',
+   e8._table.a === 1 && e8._table.b === 1 && e8._table.c === 1);
+
+// ---- fixture 9: nested if inside switch (recursion) -------------------------
+var nested = [
+    'when HTTP_REQUEST {',
+    '    switch [HTTP::header X-Cmd] {',
+    '        get {',
+    '            if { [HTTP::header X-Admin] eq "1" } { pool admin } else { pool users }',
+    '        }',
+    '        default { pool users }',
+    '    }',
+    '}'
+].join('\n');
+var r9 = T(nested);
+ok('nested: no warnings', r9.warnings.length === 0);
+var H9 = (0, eval)('(' + r9.handlers + ')');
+var e9 = mockEv({ 'X-Cmd': 'get', 'X-Admin': '1' }); H9.onRequestHeaders(e9);
+ok('behavioral: nested if-in-switch -> admin', e9.upstream === 'admin');
+
 print('\nResults: ' + PASS + ' passed, ' + FAIL + ' failed');
 if (FAIL > 0) { throw new Error(FAIL + ' transpiler test(s) failed'); }

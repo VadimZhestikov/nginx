@@ -36,18 +36,27 @@ var out = mirror.transpile(tclSource);
 | `HTTP::redirect URL` | `ev.redirect(URL)` |
 | `log FACILITY MSG` | `nginx.log(5, MSG)` |
 | `reject` / `TCP::close` | `ev.reject()` |
+| `if {c} {b} elseif {c} {b} else {b}` | `if (c) { b } else if (c) { b } else { b }` |
+| `switch [-exact\|-glob\|--] v { pat {b} … default {b} }` | JS `switch` (no fall-through) |
+| `foreach v {a b c} {b}` | `["a","b","c"].forEach(v => { … })` |
 
-**No silent drops.** Anything outside this vocabulary (e.g. `if`/`foreach`/
-`switch`, `sideband`, unknown events) is emitted as a commented-out line and
-reported in `warnings`, so a human sees exactly what still needs hand-porting.
+Control-flow bodies are translated **recursively**, so `if`/`switch`/`foreach`
+nest arbitrarily. `switch -glob` is matched as exact (a warning is emitted);
+`foreach` over a command-substituted / variable list is warned, not guessed.
+
+**No silent drops.** Anything outside this vocabulary (e.g. `sideband`, unknown
+events) is emitted as a commented-out line and reported in `warnings`, so a
+human sees exactly what still needs hand-porting.
 
 ## Run
 
 ```bash
-bash run.sh        # 32/32 — standalone under qjs, no nginx needed
+bash run.sh        # 50/50 — standalone under qjs, no nginx needed
 ```
 
 The test transpiles the same spine iRule that `example/app.js` translates **by
 hand**, asserts the generated mirror calls match, and then **evals the generated
 handlers and drives them with a mock `ev`** to prove they behave correctly —
-plus pool/TTL, an L4 rule, and the unsupported-command / unknown-event warnings.
+plus pool/TTL, an L4 rule, `if`/`switch`/`foreach` control flow (including a
+nested `if`-inside-`switch`), and the unsupported-command / unknown-event
+warnings.

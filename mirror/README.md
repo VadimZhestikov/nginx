@@ -264,11 +264,16 @@ deps — also runs under `qjs`); see **`transpile/`** for the supported command
 vocabulary.
 
 Transpiling real iRules is also the sharpest test that the mirror model actually
-**covers** the iRules surface. The acceptance test (`transpile/run.sh`, **32/32**)
+**covers** the iRules surface. The acceptance test (`transpile/run.sh`, **50/50**)
 transpiles the *same* spine iRule that `example/app.js` translates **by hand**,
 asserts the generated mirror calls match, then **evals the output and drives it
 with a mock `ev`** to prove behaviour — plus pool/TTL and L4 rules. Anything
 outside the vocabulary is **warned, not silently dropped**.
+
+Phase 10 added **control flow**: `if`/`elseif`/`else`, `switch` (→ a JS `switch`,
+no fall-through), and `foreach` over a literal list — translated **recursively**,
+so blocks nest arbitrarily (the test covers a nested `if`-inside-`switch`). This
+is the biggest real-world coverage gain, since nearly every iRule branches.
 
 ```js
 var out = mirror.transpile('when HTTP_REQUEST { pool p ; table incr hits }');
@@ -276,11 +281,16 @@ var out = mirror.transpile('when HTTP_REQUEST { pool p ; table incr hits }');
 //                      ev.selectUpstream(\"p\"); ev.table.incr(\"hits\"); } }"
 ```
 
-## Phase 10 (next)
+## Phase 10 — transpiler control flow (DONE)
+
+`if`/`elseif`/`else`, `switch`, and `foreach` (literal list), translated
+recursively so they nest. See the phase-9 section above and `transpile/`.
+
+## Phase 11 (next)
 
 - `session`/persistence → a COM persistence API; the db-connect project
   (external KV) as a further `table` tier.
-- Broaden the transpiler: `if`/`switch`/`foreach` control flow, more commands,
-  and a live end-to-end path (transpile an iRule at config time and attach it).
+- A live end-to-end path: transpile an iRule at config time and attach it, so
+  transpiled rules serve real traffic in the example.
 
 > All commits for this project are prefixed `mirror:`.

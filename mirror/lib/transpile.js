@@ -309,6 +309,146 @@
         return '// unsupported: ' + words.map(function (w) { return w.text; }).join(' ');
     }
 
+    // ---- control flow (blocks) -----------------------------------------------
+    // Translate a brace body into indented, newline-joined mirror statements.
+    function block(bodyText, warnings, lineNo, indent) {
+        return splitCommands(bodyText).map(function (s) {
+            return dispatch(splitWords(s), warnings, lineNo, indent);
+        }).filter(function (s) { return s.replace(/\s/g, '').length; }).join('\n');
+    }
+
+    // Statement dispatcher: control-flow blocks emit fully-indented multi-line
+    // text; every other command is a single line prefixed with `indent`.
+    function dispatch(words, warnings, lineNo, indent) {
+        if (!words.length) { return ''; }
+        switch (words[0].text) {
+        case 'if':      return ifBlock(words, warnings, lineNo, indent);
+        case 'switch':  return switchBlock(words, warnings, lineNo, indent);
+        case 'foreach': return foreachBlock(words, warnings, lineNo, indent);
+        default:        return indent + statement(words, warnings, lineNo);
+        }
+    }
+
+    // if {c} [then] {b} [elseif {c} {b}]* [else {b}]
+    function ifBlock(words, warnings, lineNo, indent) {
+        var body = indent + '    ';
+        var idx = 1, clauses = [];
+
+        function grabBody() {                    // consume optional `then`, then a brace
+            if (words[idx] && words[idx].type === 'bare' && words[idx].text === 'then') { idx++; }
+            var b = words[idx++];
+            if (!b || b.type !== 'brace') {
+                warnings.push('line ' + lineNo + ': if-branch body must be a { block }');
+                return null;
+            }
+            return b.text;
+        }
+
+        var cond = words[idx++];
+        if (!cond || cond.type !== 'brace') {
+            warnings.push('line ' + lineNo + ': malformed if condition');
+            return indent + '// unsupported: if ...';
+        }
+        var b0 = grabBody();
+        if (b0 === null) { return indent + '// unsupported: if ...'; }
+        clauses.push({ cond: expr(cond.text, warnings, lineNo), body: b0 });
+
+        while (words[idx] && words[idx].type === 'bare' &&
+               (words[idx].text === 'elseif' || words[idx].text === 'else')) {
+            if (words[idx].text === 'elseif') {
+                idx++;
+                var ec = words[idx++];
+                var eb = grabBody();
+                if (eb === null) { break; }
+                clauses.push({ cond: expr(ec.text, warnings, lineNo), body: eb });
+            } else {                              // else
+                idx++;
+                var elb = words[idx++];
+                if (!elb || elb.type !== 'brace') {
+                    warnings.push('line ' + lineNo + ': else body must be a { block }');
+                    break;
+                }
+                clauses.push({ cond: null, body: elb.text });
+                break;
+            }
+        }
+
+        var out = '';
+        clauses.forEach(function (c, i) {
+            var head;
+            if (i === 0)            { head = indent + 'if (' + c.cond + ') {'; }
+            else if (c.cond !== null) { head = ' else if (' + c.cond + ') {'; }
+            else                    { head = ' else {'; }
+            out += (i === 0 ? head : head) + '\n' +
+                   block(c.body, warnings, lineNo, body) + '\n' +
+                   (i === 0 ? indent + '}' : indent + '}');
+        });
+        return out;
+    }
+
+    // switch [-exact|-glob|--]* $val { pat {body} ... default {body} }
+    // First cut: exact string matching -> a JS switch (no fall-through). -glob
+    // is warned (matched as exact).
+    function switchBlock(words, warnings, lineNo, indent) {
+        var idx = 1;
+        while (words[idx] && words[idx].type === 'bare' &&
+               words[idx].text.charAt(0) === '-') {
+            if (words[idx].text === '-glob') {
+                warnings.push('line ' + lineNo + ': switch -glob matched as exact (glob not supported)');
+            }
+            var stop = (words[idx].text === '--');
+            idx++;
+            if (stop) { break; }
+        }
+        var valWord = words[idx++];
+        var pairsWord = words[idx++];
+        if (!valWord || !pairsWord || pairsWord.type !== 'brace') {
+            warnings.push('line ' + lineNo + ': malformed switch');
+            return indent + '// unsupported: switch ...';
+        }
+        var valExpr = value(valWord, warnings, lineNo);
+        var pw = splitWords(pairsWord.text);
+        var inner = indent + '    ', innerBody = indent + '        ';
+        var out = indent + 'switch (' + valExpr + ') {';
+        for (var i = 0; i + 1 < pw.length; i += 2) {
+            var pat = pw[i], bodyW = pw[i + 1];
+            if (bodyW.type !== 'brace') {
+                warnings.push('line ' + lineNo + ': switch case body must be a { block }');
+                continue;
+            }
+            if (pat.type === 'bare' && pat.text === 'default') {
+                out += '\n' + inner + 'default: {\n' +
+                       block(bodyW.text, warnings, lineNo, innerBody) + '\n' +
+                       innerBody + 'break;\n' + inner + '}';
+            } else {
+                out += '\n' + inner + 'case ' + value(pat, warnings, lineNo) + ': {\n' +
+                       block(bodyW.text, warnings, lineNo, innerBody) + '\n' +
+                       innerBody + 'break;\n' + inner + '}';
+            }
+        }
+        out += '\n' + indent + '}';
+        return out;
+    }
+
+    // foreach var {a b c} {body}  ->  forEach over a literal list.
+    // Command-substituted / variable lists are warned (not supported yet).
+    function foreachBlock(words, warnings, lineNo, indent) {
+        if (words.length < 4 || words[2].type !== 'brace' || words[3].type !== 'brace') {
+            warnings.push('line ' + lineNo + ': foreach supports only a literal { list } (skipped)');
+            return indent + '// unsupported: foreach ' +
+                   words.slice(1).map(function (w) { return w.text; }).join(' ');
+        }
+        var vname = words[1].text.replace(/^\$/, '');
+        var items = words[2].text.trim().split(/\s+/)
+                        .filter(function (t) { return t.length; })
+                        .map(function (t) { return quote(t); });
+        var inner = indent + '    ';
+        return indent + '[' + items.join(', ') + '].forEach(function (_it) {\n' +
+               inner + varRef(vname) + ' = _it;\n' +
+               block(words[3].text, warnings, lineNo, inner) + '\n' +
+               indent + '});';
+    }
+
     // Rough 1-based line number of a substring, for warnings.
     function lineOf(src, needle) {
         var idx = src.indexOf(needle);
@@ -344,12 +484,10 @@
             if (events.indexOf(mEvent) < 0) { events.push(mEvent); }
 
             var baseLine = lineOf(tcl, tclEvent);
-            var body = splitCommands(w[2].text).map(function (s) {
-                return '        ' + statement(splitWords(s), warnings, baseLine);
-            }).filter(function (s) { return s.trim().length; });
+            var body = block(w[2].text, warnings, baseLine, '        ');
 
             handlers.push('    ' + mEvent + ': function (ev) {\n' +
-                          body.join('\n') + '\n    }');
+                          body + '\n    }');
         });
 
         return {
