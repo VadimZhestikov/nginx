@@ -974,12 +974,284 @@ ngx_js_upstream_remove_peer(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ================================================================== */
+/* Per-request peer selection — a custom balancer (iRules LB::select). */
+/* upstream.onSelectPeer(fn): fn(peers, connCtx) -> peer index (or -1  */
+/* to fall back to round-robin). Wraps the RR peer.init/get/free so the */
+/* upstream's health / retry / accounting are preserved; JS only        */
+/* influences WHICH peer is chosen. The selection fn is rooted in the   */
+/* global __ngx_lb_hooks__ array (GC root); a small table maps each     */
+/* balanced upstream to its saved RR init + registry slot.              */
+/* ================================================================== */
+
+typedef struct {
+    ngx_http_upstream_srv_conf_t   *uscf;
+    uint32_t                        slot;        /* index into __ngx_lb_hooks__ */
+} ngx_js_lb_t;
+
+typedef struct {
+    ngx_http_upstream_rr_peer_data_t  *rrp;   /* wrapped RR per-request data */
+    ngx_event_get_peer_pt              get;   /* saved RR get  */
+    ngx_event_free_peer_pt             free;  /* saved RR free */
+    ngx_http_request_t                *r;
+    uint32_t                           slot;
+} ngx_js_lb_peer_t;
+
+static ngx_js_lb_t  ngx_js_lbs[64];
+static ngx_uint_t   ngx_js_nlbs = 0;
+
+
+static JSValue
+ngx_js_lb_registry(JSContext *ctx)
+{
+    JSValue  global, reg;
+
+    global = JS_GetGlobalObject(ctx);
+    reg    = JS_GetPropertyStr(ctx, global, "__ngx_lb_hooks__");
+    if (JS_IsUndefined(reg)) {
+        JS_FreeValue(ctx, reg);
+        reg = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, global, "__ngx_lb_hooks__", JS_DupValue(ctx, reg));
+    }
+    JS_FreeValue(ctx, global);
+    return reg;
+}
+
+
+static ngx_js_lb_t *
+ngx_js_lb_find(ngx_http_upstream_srv_conf_t *uscf)
+{
+    ngx_uint_t  i;
+
+    for (i = 0; i < ngx_js_nlbs; i++) {
+        if (ngx_js_lbs[i].uscf == uscf) {
+            return &ngx_js_lbs[i];
+        }
+    }
+    return NULL;
+}
+
+
+/* Ask JS which peer to use; returns the index or -1 (fall back to RR). */
+static ngx_int_t
+ngx_js_lb_choose(ngx_js_lb_peer_t *lp)
+{
+    ngx_js_conf_t                 *jcf;
+    JSContext                     *ctx;
+    JSRuntime                     *rt;
+    JSValue                        reg, fn, arr, args[2], ret, o;
+    ngx_http_upstream_rr_peers_t  *peers;
+    ngx_http_upstream_rr_peer_t   *peer;
+    uint32_t                       i;
+    int32_t                        idx;
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL || jcf->ctx == NULL) {
+        return -1;
+    }
+    ctx = jcf->ctx;
+    rt  = JS_GetRuntime(ctx);
+
+    reg = ngx_js_lb_registry(ctx);
+    fn  = JS_GetPropertyUint32(ctx, reg, lp->slot);
+    JS_FreeValue(ctx, reg);
+    if (!JS_IsFunction(ctx, fn)) {
+        JS_FreeValue(ctx, fn);
+        return -1;
+    }
+
+    /* build a lightweight snapshot array of the primary peers under rlock,
+     * then release the lock BEFORE calling into JS */
+    peers = lp->rrp->peers;
+    arr   = JS_NewArray(ctx);
+    i     = 0;
+
+    ngx_http_upstream_rr_peers_rlock(peers);
+    for (peer = peers->peer; peer; peer = peer->next) {
+        o = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, o, "name",
+            JS_NewStringLen(ctx, (char *) peer->name.data, peer->name.len));
+        JS_SetPropertyStr(ctx, o, "down",   JS_NewBool(ctx, (int) peer->down));
+        JS_SetPropertyStr(ctx, o, "conns",  JS_NewInt64(ctx, (int64_t) peer->conns));
+        JS_SetPropertyStr(ctx, o, "weight", JS_NewInt32(ctx, (int32_t) peer->weight));
+        JS_SetPropertyUint32(ctx, arr, i++, o);
+    }
+    ngx_http_upstream_rr_peers_unlock(peers);
+
+    args[0] = arr;
+    args[1] = (lp->r && lp->r->connection)
+              ? ngx_js_connection_ctx_obj(ctx, lp->r->connection) : JS_UNDEFINED;
+
+    idx = -1;
+    ret = JS_Call(ctx, fn, JS_UNDEFINED, 2, (JSValueConst *) args);
+    if (JS_IsException(ret)) {
+        ngx_js_log_exception(ctx, ngx_cycle->log);
+    } else {
+        JS_ToInt32(ctx, &idx, ret);
+    }
+
+    JS_FreeValue(ctx, ret);
+    JS_FreeValue(ctx, arr);
+    JS_FreeValue(ctx, args[1]);
+    JS_FreeValue(ctx, fn);
+    while (JS_ExecutePendingJob(rt, NULL) > 0) { /* drain */ }
+
+    return idx;
+}
+
+
+static ngx_int_t
+ngx_js_lb_get(ngx_peer_connection_t *pc, void *data)
+{
+    ngx_js_lb_peer_t              *lp = data;
+    ngx_http_upstream_rr_peers_t  *peers = lp->rrp->peers;
+    ngx_http_upstream_rr_peer_t   *peer;
+    ngx_int_t                      idx, i;
+
+    idx = ngx_js_lb_choose(lp);
+
+    if (idx >= 0) {
+        ngx_http_upstream_rr_peers_wlock(peers);
+
+        peer = peers->peer;
+        for (i = 0; i < idx && peer; i++) {
+            peer = peer->next;
+        }
+
+        if (peer && !peer->down
+            && (peer->max_conns == 0 || peer->conns < peer->max_conns))
+        {
+            pc->sockaddr = peer->sockaddr;
+            pc->socklen  = peer->socklen;
+            pc->name     = &peer->name;
+            peer->conns++;
+            lp->rrp->current = peer;
+
+            ngx_http_upstream_rr_peers_unlock(peers);
+
+            pc->cached     = 0;
+            pc->connection = NULL;
+            return NGX_OK;
+        }
+
+        ngx_http_upstream_rr_peers_unlock(peers);
+    }
+
+    /* -1, out of range, or peer unavailable -> round-robin */
+    return lp->get(pc, lp->rrp);
+}
+
+
+static void
+ngx_js_lb_free(ngx_peer_connection_t *pc, void *data, ngx_uint_t state)
+{
+    ngx_js_lb_peer_t  *lp = data;
+
+    lp->free(pc, lp->rrp, state);
+}
+
+
+static ngx_int_t
+ngx_js_lb_init(ngx_http_request_t *r, ngx_http_upstream_srv_conf_t *uscf)
+{
+    ngx_js_lb_t       *lb;
+    ngx_js_lb_peer_t  *lp;
+
+    lb = ngx_js_lb_find(uscf);
+    if (lb == NULL) {
+        return NGX_ERROR;
+    }
+
+    /* Set up the standard round-robin per-request state directly. (We can't
+     * reuse the upstream's saved peer.init: pilgrim wraps it for the dynamic
+     * RR-peer COM, and that wrapper's per-request struct is not RR-layout
+     * compatible.) This makes r->upstream->peer.{data,get,free} the genuine RR
+     * ones, with rrp->peers == uscf->peer.data (the group the COM reads). */
+    if (ngx_http_upstream_init_round_robin_peer(r, uscf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    lp = ngx_palloc(r->pool, sizeof(ngx_js_lb_peer_t));
+    if (lp == NULL) {
+        return NGX_ERROR;
+    }
+
+    lp->rrp  = r->upstream->peer.data;
+    lp->get  = r->upstream->peer.get;
+    lp->free = r->upstream->peer.free;
+    lp->r    = r;
+    lp->slot = lb->slot;
+
+    r->upstream->peer.data = lp;
+    r->upstream->peer.get  = ngx_js_lb_get;
+    r->upstream->peer.free = ngx_js_lb_free;
+
+    return NGX_OK;
+}
+
+
+static JSValue
+ngx_js_upstream_on_select_peer(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_upstream_opaque_t      *op;
+    ngx_http_upstream_srv_conf_t  *uscf;
+    ngx_js_lb_t                   *lb;
+    JSValue                        reg, lenv;
+    int64_t                        len;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_upstream_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx, "onSelectPeer(fn): expected a function");
+    }
+
+    uscf = op->uscf;
+    if (uscf->peer.data == NULL || uscf->peer.init == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "onSelectPeer: upstream not initialised");
+    }
+
+    reg = ngx_js_lb_registry(ctx);
+
+    lb = ngx_js_lb_find(uscf);
+    if (lb == NULL) {
+        if (ngx_js_nlbs >= 64) {
+            JS_FreeValue(ctx, reg);
+            return JS_ThrowInternalError(ctx,
+                                    "onSelectPeer: too many balanced upstreams");
+        }
+
+        lb            = &ngx_js_lbs[ngx_js_nlbs++];
+        lb->uscf      = uscf;
+
+        len  = 0;
+        lenv = JS_GetPropertyStr(ctx, reg, "length");
+        JS_ToInt64(ctx, &len, lenv);
+        JS_FreeValue(ctx, lenv);
+        lb->slot = (uint32_t) len;
+
+        uscf->peer.init = ngx_js_lb_init;      /* install the wrapper */
+    }
+
+    /* one selection fn per upstream (set/replace) */
+    JS_SetPropertyUint32(ctx, reg, lb->slot, JS_DupValue(ctx, argv[0]));
+    JS_FreeValue(ctx, reg);
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry ngx_js_upstream_proto_funcs[] = {
     NGX_JS_CGETSET_MAGIC_ENUM("name",  ngx_js_upstream_get,       NULL, 0),
     NGX_JS_CGETSET_MAGIC_ENUM("zone",  ngx_js_upstream_get,       NULL, 1),
     NGX_JS_CGETSET_MAGIC_ENUM("peers", ngx_js_upstream_get_peers, NULL, 0),
-    JS_CFUNC_DEF("addPeer",    1, ngx_js_upstream_add_peer),
-    JS_CFUNC_DEF("removePeer", 1, ngx_js_upstream_remove_peer),
+    JS_CFUNC_DEF("addPeer",      1, ngx_js_upstream_add_peer),
+    JS_CFUNC_DEF("removePeer",   1, ngx_js_upstream_remove_peer),
+    JS_CFUNC_DEF("onSelectPeer", 1, ngx_js_upstream_on_select_peer),
     JS_CFUNC_DEF("snapshot",   0, ngx_js_upstream_fn_snapshot),
 };
 

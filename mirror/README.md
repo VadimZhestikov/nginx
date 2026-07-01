@@ -36,7 +36,8 @@ A pure JS layer over pilgrim hooks (no C changes):
 | `onClientClose` | `conn.onClose(fn)` | ✅ wired (phase 2) |
 | `onClientHello` | `server.ssl.onClientHello(fn)` | ✅ wired (phase 3) |
 | LB selection command | `ev.selectUpstream(pool)` in `onRequestHeaders` | ✅ phase 4 |
-| L4 data / peer-level LB | — | phase 5 |
+| peer-level LB | `upstream.onSelectPeer(fn)` (custom balancer) | ✅ phase 5 |
+| L4 data events (`onClientData`) | — | phase 6 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
@@ -49,7 +50,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 16/16 pass
+cd example && bash test.sh    # 20/20 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
@@ -126,13 +127,40 @@ mirror.attach(server, lbLoc, {
 });
 ```
 
-`example/test.sh` (16/16) proves the header-driven pool choice reaches the right
-backend.
+`example/test.sh` proves the header-driven pool choice reaches the right backend.
 
-## Phase 5 (next)
+## Phase 5 — peer-level LB (custom balancer, DONE)
 
-- Peer-level LB (`LB::select` to a specific node — a custom balancer hook) and
-  L4 data events (`onClientData`) — more thread-1 API in the module.
+`upstream.onSelectPeer(fn)` (new pilgrim C API in `ngx_js_com_upstream.c`) is a
+real custom balancer — the iRules `LB::select`. It **wraps** the round-robin
+`peer.init`/`peer.get`/`peer.free`, so upstream health / retry / accounting are
+preserved; JS only influences *which* peer is chosen. Per pick, the balancer
+calls `fn(peers, connCtx)`:
+
+- `peers` — array of `{name, down, conns, weight}` for the upstream's peers.
+- `connCtx` — the per-connection flow-local (so the choice can be request-driven,
+  set from an `onRequestHeaders` rule earlier on the same connection).
+- return value — the peer **index** to use, or `-1` to fall back to round-robin.
+
+```js
+nginx.http.upstreams.find(u => u.name === 'mirror_pool')
+     .onSelectPeer(function (peers, flow) {
+         return (flow && typeof flow.peerIndex === 'number') ? flow.peerIndex : -1;
+     });
+```
+
+The location uses a normal `proxy_pass http://mirror_pool;` (the balancer does
+the picking). `example/test.sh` (20/20) proves a request-chosen peer index routes
+to that specific node, deterministically.
+
+Note: the first cut targets **round-robin** upstreams (it installs the RR
+per-request state directly, since pilgrim wraps `peer.init` for its dynamic
+RR-peer COM). Zoned upstreams work but hold the shared peers lock only while
+snapshotting (not during the JS call). Non-rr methods (hash/ip_hash) are future.
+
+## Phase 6 (next)
+
+- L4 data events (`onClientData`) — raw TCP inspection before HTTP.
 - State: `table` → `nginx.shared` / SharedWorker (multi-worker) and the
   db-connect project (external); `session`/persistence → a COM persistence API.
 - Then decision (A): the TCL/iRules → mirror transpiler.

@@ -113,4 +113,23 @@ var mirror = globalThis.mirror;
             }
         });
     }
+
+    // --- peer-level LB (iRules LB::select): a custom balancer picks the node --
+    // The request hook stashes a peer preference in flow-local; the upstream's
+    // onSelectPeer balancer reads it. -1 falls back to round-robin.
+    var pool = nginx.http.upstreams.find(function (u) { return u.name === 'mirror_pool'; });
+    if (pool) {
+        pool.onSelectPeer(function (peers, flow) {
+            return (flow && typeof flow.peerIndex === 'number') ? flow.peerIndex : -1;
+        });
+    }
+    var pploc = server.locations.find(function (l) { return l.path === '/lbpeer/'; });
+    if (pploc) {
+        mirror.attach(server, pploc, {
+            onRequestHeaders: function (ev) {
+                var h = ev.header('x-peer');
+                ev.flow.peerIndex = (h === undefined) ? -1 : parseInt(h, 10);
+            }
+        });
+    }
 })();

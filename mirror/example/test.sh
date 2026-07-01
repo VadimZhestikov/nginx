@@ -107,6 +107,19 @@ check "LB: default -> poolA"     "backend-A" "$(curl -s http://127.0.0.1:$PORT/l
 check "LB: X-Pool: b -> poolB"   "backend-B" "$(curl -s -H 'X-Pool: b' http://127.0.0.1:$PORT/lb/)"
 check "LB: X-Pool: a -> poolA"   "backend-A" "$(curl -s -H 'X-Pool: a' http://127.0.0.1:$PORT/lb/)"
 
+# --- 8. peer-level LB (upstream.onSelectPeer / iRules LB::select) ------------
+# The custom balancer picks the peer index the request stashed in flow-local.
+P0=$(curl -s -H 'X-Peer: 0' http://127.0.0.1:$PORT/lbpeer/)
+P1=$(curl -s -H 'X-Peer: 1' http://127.0.0.1:$PORT/lbpeer/)
+check "peer 0 reaches a backend" "backend-" "$P0"
+check "peer 1 reaches a backend" "backend-" "$P1"
+if [ -n "$P0" ] && [ "$P0" != "$P1" ]; then
+    echo "PASS: peer index selects distinct nodes ($(echo $P0) vs $(echo $P1))"; PASS=$((PASS+1))
+else
+    echo "FAIL: peer index did not distinguish nodes ($P0 / $P1)"; FAIL=$((FAIL+1))
+fi
+check "peer 0 selection is stable" "$P0" "$(curl -s -H 'X-Peer: 0' http://127.0.0.1:$PORT/lbpeer/)"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]
