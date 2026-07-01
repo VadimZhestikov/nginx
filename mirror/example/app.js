@@ -132,4 +132,21 @@ var mirror = globalThis.mirror;
             }
         });
     }
+
+    // --- L4 rule (iRules CLIENT_DATA): inspect raw TCP bytes, detect protocol -
+    var sstream = nginx.stream && nginx.stream.servers && nginx.stream.servers[0];
+    if (sstream) {
+        mirror.attachStream(sstream, {
+            onClientData: function (ev) {
+                var d     = ev.data || '';
+                var proto = (d.indexOf('SSH-') === 0) ? 'ssh'
+                          : (d.indexOf('GET ') === 0 || d.indexOf('POST ') === 0) ? 'http'
+                          : (d.charCodeAt(0) === 22) ? 'tls'   // TLS handshake record (0x16)
+                          : 'unknown';
+                nginx.log(5, 'mirror onClientData: proto=' + proto +
+                             ' from=' + ev.clientAddr + ' bytes=' + d.length);
+                ev.finalize(200);
+            }
+        });
+    }
 })();

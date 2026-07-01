@@ -18,7 +18,7 @@
 // L4/TLS/LB events get bindings in phase 2 (+ closing nginx API gaps).
 var EVENTS = {
     onClientAccept:    { layer: 'l4',   wired: true  },
-    onClientData:      { layer: 'l4',   wired: false },
+    onClientData:      { layer: 'l4',   wired: true  },   // phase 6: stream preread
     onClientHello:     { layer: 'tls',  wired: true  },   // phase 3: server.ssl.onClientHello
     onClientHandshake: { layer: 'tls',  wired: false },
     onRequestHeaders:  { layer: 'http', wired: true  },
@@ -42,7 +42,8 @@ var CAPS = {
                         'selectUpstream'],
     onResponseHeaders: ['clientAddr', 'clientPort', 'flow', 'ctx', 'table',
                         'setResponseHeader'],
-    onClientClose:     ['flow', 'table']   // no request/conn at close; flow only
+    onClientClose:     ['flow', 'table'],  // no request/conn at close; flow only
+    onClientData:      ['data', 'clientAddr', 'table', 'finalize', 'reject']  // L4 (stream)
 };
 
 // ---- global store (iRules `table`) ------------------------------------------
@@ -173,9 +174,48 @@ function attach(server, location, handlers) {
     }
 }
 
+// ---- L4 / stream: onClientData (iRules CLIENT_DATA) -------------------------
+// Raw TCP inspection. The stream session's preread bytes (session.data) are
+// captured in the stream preread phase; the handler can route/reject on them.
+function makeStreamEvent(event, session) {
+    var ev = { event: event };
+    Object.defineProperty(ev, 'data', {
+        get: function () { cap(event, 'data'); return session.data; } });
+    Object.defineProperty(ev, 'clientAddr', {
+        get: function () { cap(event, 'clientAddr'); return session.remoteAddress; } });
+    ev.table = {
+        get:  function (k)    { cap(event, 'table'); return TABLE.get(k); },
+        set:  function (k, v) { cap(event, 'table'); TABLE.set(k, v); return v; },
+        incr: function (k, d) { cap(event, 'table');
+                                var v = (TABLE.get(k) || 0) + (d === undefined ? 1 : d);
+                                TABLE.set(k, v); return v; }
+    };
+    ev.finalize = function (code) { cap(event, 'finalize'); session.finalize(code || 200); };
+    ev.reject   = function ()     { cap(event, 'reject');   session.finalize(403); };
+    return ev;
+}
+
+// Attach an L4 rule to a stream server: mirror.attachStream(streamServer, {onClientData})
+function attachStream(streamServer, handlers) {
+    Object.keys(handlers).forEach(function (k) {
+        if (k !== 'onClientData') {
+            nginx.log(5, "mirror.attachStream: only onClientData is supported (ignored: " + k + ")");
+        }
+    });
+    if (handlers.onClientData) {
+        // opt in to preread capture so session.data holds the client's first
+        // bytes; without this the stream content handler is not delayed.
+        streamServer.captureData = true;
+        streamServer.handler = function (session) {
+            handlers.onClientData(makeStreamEvent('onClientData', session));
+        };
+    }
+}
+
 globalThis.mirror = {
-    version: '0.1.0-phase1',
-    events:  EVENTS,
-    caps:    CAPS,
-    attach:  attach
+    version:      '0.1.0-phase6',
+    events:       EVENTS,
+    caps:         CAPS,
+    attach:       attach,
+    attachStream: attachStream
 };

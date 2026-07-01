@@ -20,6 +20,7 @@
 
 typedef struct {
     ngx_int_t    handler_idx;   /* index into __ngx_handlers__; -1 = none */
+    ngx_flag_t   want_preread;  /* 1 = capture preread L4 bytes (onClientData) */
 } ngx_js_stream_srv_conf_t;
 
 

@@ -37,7 +37,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 | `onClientHello` | `server.ssl.onClientHello(fn)` | ✅ wired (phase 3) |
 | LB selection command | `ev.selectUpstream(pool)` in `onRequestHeaders` | ✅ phase 4 |
 | peer-level LB | `upstream.onSelectPeer(fn)` (custom balancer) | ✅ phase 5 |
-| L4 data events (`onClientData`) | — | phase 6 |
+| `onClientData` (L4) | `mirror.attachStream(streamServer, fn)` + `session.data` | ✅ phase 6 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
@@ -50,7 +50,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 20/20 pass
+cd example && bash test.sh    # 22/22 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
@@ -158,11 +158,43 @@ per-request state directly, since pilgrim wraps `peer.init` for its dynamic
 RR-peer COM). Zoned upstreams work but hold the shared peers lock only while
 snapshotting (not during the JS call). Non-rr methods (hash/ip_hash) are future.
 
-## Phase 6 (next)
+## Phase 6 — L4 data events (`onClientData`, DONE)
 
-- L4 data events (`onClientData`) — raw TCP inspection before HTTP.
-- State: `table` → `nginx.shared` / SharedWorker (multi-worker) and the
+Raw-TCP inspection — the iRules `CLIENT_DATA` event — in the **stream** module
+(where L4 belongs). `mirror.attachStream(streamServer, { onClientData })` runs
+the rule with the client's initial bytes:
+
+- `ev.data` — the preread L4 bytes; `ev.clientAddr`; `ev.finalize(code)` /
+  `ev.reject()` to close.
+
+New pilgrim C in `ngx_js_stream_module.c` / `ngx_js_stream_listener.c`:
+- A **stream preread-phase handler** (registered in postconfiguration) that, for
+  stream servers that **opted in via `server.captureData`**, waits for the
+  client's first bytes and **snapshots** them into a per-session ctx (nginx
+  rewinds `c->buffer` before the content phase, so the bytes must be captured
+  during preread). A plain `server.handler` that does not set `captureData` is
+  never delayed — a client may open a connection and send nothing.
+- **`server.captureData = true`** — opt in to preread capture (set automatically
+  by `mirror.attachStream`).
+- **`session.data`** — the captured preread bytes, exposed to the stream handler.
+
+```js
+mirror.attachStream(nginx.stream.servers[0], {
+    onClientData: function (ev) {
+        var proto = ev.data.indexOf('SSH-') === 0 ? 'ssh'
+                  : ev.data.indexOf('GET ') === 0 ? 'http' : 'unknown';
+        // route/act on `proto`; ev.finalize()/ev.reject()
+    }
+});
+```
+
+`example/test.sh` (22/22) sends raw TCP and confirms `onClientData` detects the
+protocol from the preread bytes.
+
+## Phase 7 (next)
+
+- State bindings: `table` → `nginx.shared` / SharedWorker (multi-worker) and the
   db-connect project (external); `session`/persistence → a COM persistence API.
-- Then decision (A): the TCL/iRules → mirror transpiler.
+- Then decision (A): the TCL/iRules → mirror transpiler (migrate existing iRules).
 
 > All commits for this project are prefixed `mirror:`.

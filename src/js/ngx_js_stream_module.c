@@ -39,6 +39,14 @@
 #include "ngx_js_stream_module.h"
 
 
+/* Per-session stream context: holds the preread L4 bytes captured in the
+ * preread phase (nginx rewinds c->buffer before the content handler runs, so
+ * we snapshot the bytes while they are present). Exposed as session.data. */
+typedef struct {
+    ngx_str_t  preread;
+} ngx_js_stream_ctx_t;
+
+
 /* ================================================================== */
 /* NginxStreamSession class                                            */
 /* ================================================================== */
@@ -122,6 +130,17 @@ ngx_js_stream_session_get(JSContext *ctx, JSValueConst this_val, int magic)
         return JS_NewInt32(ctx, (int) s->status);
     case 6:   /* ssl */
         return JS_NewBool(ctx, (int) s->ssl);
+    case 7:   /* data — preread L4 bytes captured in the preread phase */
+    {
+        ngx_js_stream_ctx_t  *sctx;
+
+        sctx = ngx_stream_get_module_ctx(s, ngx_js_stream_module);
+        if (sctx != NULL && sctx->preread.len) {
+            return JS_NewStringLen(ctx, (const char *) sctx->preread.data,
+                                   sctx->preread.len);
+        }
+        return JS_NewStringLen(ctx, "", 0);
+    }
     }
 
     return JS_UNDEFINED;
@@ -244,6 +263,7 @@ static const JSCFunctionListEntry  ngx_js_stream_session_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("received",       ngx_js_stream_session_get, NULL, 4),
     JS_CGETSET_MAGIC_DEF("status",         ngx_js_stream_session_get, NULL, 5),
     JS_CGETSET_MAGIC_DEF("ssl",            ngx_js_stream_session_get, NULL, 6),
+    JS_CGETSET_MAGIC_DEF("data",           ngx_js_stream_session_get, NULL, 7),
     JS_CFUNC_DEF        ("finalize",   0,  ngx_js_stream_session_finalize),
     JS_CFUNC_DEF        ("variable",   1,  ngx_js_stream_session_variable),
 };
@@ -414,7 +434,8 @@ ngx_js_stream_create_srv_conf(ngx_conf_t *cf)
         return NULL;
     }
 
-    jscf->handler_idx = -1;
+    jscf->handler_idx  = -1;
+    jscf->want_preread = 0;
 
     return jscf;
 }
@@ -430,13 +451,94 @@ ngx_js_stream_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->handler_idx = prev->handler_idx;
     }
 
+    if (conf->want_preread == 0) {
+        conf->want_preread = prev->want_preread;
+    }
+
     return NGX_CONF_OK;
+}
+
+
+/*
+ * Preread-phase handler — buffers the client's initial L4 bytes into c->buffer
+ * BEFORE the content handler runs, so a JS stream handler can inspect
+ * session.data (iRules CLIENT_DATA / onClientData). Only engages for servers
+ * that have a JS session handler AND opted in via server.captureData; all
+ * others (proxy, plain session handlers that never read session.data) are not
+ * delayed. Waits for the first bytes (bounded by preread_timeout), then
+ * proceeds to content.
+ */
+static ngx_int_t
+ngx_js_stream_preread(ngx_stream_session_t *s)
+{
+    ngx_js_stream_srv_conf_t  *jscf;
+    ngx_js_stream_ctx_t       *sctx;
+    ngx_connection_t          *c;
+    size_t                     n;
+    u_char                    *p;
+
+    jscf = ngx_stream_get_module_srv_conf(s, ngx_js_stream_module);
+
+    if (jscf == NULL || jscf->handler_idx < 0 || !jscf->want_preread) {
+        /*
+         * Not a JS-handled server, or the handler did not opt in to preread
+         * capture (server.captureData).  A plain session handler must not be
+         * delayed waiting for client bytes that may never arrive.
+         */
+        return NGX_OK;
+    }
+
+    c = s->connection;
+
+    if (c->buffer == NULL || c->buffer->last == c->buffer->pos) {
+        return NGX_AGAIN;       /* wait for the client's first bytes */
+    }
+
+    /* snapshot the preread bytes now (c->buffer is rewound before content) */
+    sctx = ngx_stream_get_module_ctx(s, ngx_js_stream_module);
+    if (sctx == NULL) {
+        sctx = ngx_pcalloc(c->pool, sizeof(ngx_js_stream_ctx_t));
+        if (sctx == NULL) {
+            return NGX_ERROR;
+        }
+        ngx_stream_set_ctx(s, sctx, ngx_js_stream_module);
+    }
+
+    n = c->buffer->last - c->buffer->pos;
+    p = ngx_pnalloc(c->pool, n);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+    ngx_memcpy(p, c->buffer->pos, n);
+    sctx->preread.data = p;
+    sctx->preread.len  = n;
+
+    return NGX_OK;              /* proceed to the content handler */
+}
+
+
+static ngx_int_t
+ngx_js_stream_postconf(ngx_conf_t *cf)
+{
+    ngx_stream_core_main_conf_t  *cmcf;
+    ngx_stream_handler_pt        *h;
+
+    cmcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_core_module);
+
+    h = ngx_array_push(&cmcf->phases[NGX_STREAM_PREREAD_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+
+    *h = ngx_js_stream_preread;
+
+    return NGX_OK;
 }
 
 
 static ngx_stream_module_t  ngx_js_stream_module_ctx = {
     NULL,                                   /* preconfiguration  */
-    NULL,                                   /* postconfiguration */
+    ngx_js_stream_postconf,                 /* postconfiguration */
 
     NULL,                                   /* create_main_conf  */
     NULL,                                   /* init_main_conf    */

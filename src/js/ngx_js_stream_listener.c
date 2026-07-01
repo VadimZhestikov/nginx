@@ -152,6 +152,13 @@ ngx_js_stream_server_get(JSContext *ctx, JSValueConst this_val, int magic)
         return ngx_js_wrap_stream_ssl(ctx, sscf);
     }
 #endif
+    case 10:  /* captureData */
+    {
+        ngx_js_stream_srv_conf_t  *jscf;
+
+        jscf = cscf->ctx->srv_conf[ngx_js_stream_module.ctx_index];
+        return JS_NewBool(ctx, jscf != NULL && jscf->want_preread);
+    }
     }
 
     return JS_UNDEFINED;
@@ -231,6 +238,15 @@ ngx_js_stream_server_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         cscf->handler = ngx_js_stream_content_handler;
         return JS_UNDEFINED;
     }
+
+    case 10: /* captureData — opt in to preread L4 capture (session.data) */
+    {
+        ngx_js_stream_srv_conf_t  *jscf;
+
+        jscf = cscf->ctx->srv_conf[ngx_js_stream_module.ctx_index];
+        jscf->want_preread = JS_ToBool(ctx, val) ? 1 : 0;
+        return JS_UNDEFINED;
+    }
     }
 
     return JS_UNDEFINED;
@@ -248,6 +264,7 @@ static const JSCFunctionListEntry  ngx_js_stream_server_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("access",               ngx_js_stream_server_get, NULL,                     7),
     JS_CGETSET_MAGIC_DEF("ssl",                  ngx_js_stream_server_get, NULL,                     8),
     JS_CGETSET_MAGIC_DEF("handler",              NULL, ngx_js_stream_server_set,                     9),
+    JS_CGETSET_MAGIC_DEF("captureData",          ngx_js_stream_server_get, ngx_js_stream_server_set, 10),
 };
 
 

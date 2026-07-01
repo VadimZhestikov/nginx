@@ -120,6 +120,19 @@ else
 fi
 check "peer 0 selection is stable" "$P0" "$(curl -s -H 'X-Peer: 0' http://127.0.0.1:$PORT/lbpeer/)"
 
+# --- 9. L4 data events (onClientData / iRules CLIENT_DATA) -------------------
+# Send raw TCP bytes to the stream server; the rule inspects the preread bytes
+# and detects the protocol. Verified via the log.
+python3 - <<'PY' 2>/dev/null
+import socket, time
+for payload in (b'SSH-2.0-OpenSSH_8.9', b'GET / HTTP/1.0\r\n\r\n'):
+    s = socket.create_connection(('127.0.0.1', 8402)); time.sleep(0.05)
+    s.sendall(payload); time.sleep(0.3); s.close()
+PY
+sleep 0.5
+check "L4 onClientData detects ssh from raw bytes"  "mirror onClientData: proto=ssh"  "$(cat logs/error.log)"
+check "L4 onClientData detects http from raw bytes" "mirror onClientData: proto=http" "$(cat logs/error.log)"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]
