@@ -170,10 +170,187 @@ ngx_js_connection_reject(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* Per-connection JS state — persists across keepalive requests.        */
+/* Stored on c->pool (c->data is taken by the HTTP request) and found   */
+/* by iterating the pool cleanups. The cleanup fires when c->pool is     */
+/* destroyed = the connection closes: it runs the registered close hooks */
+/* then frees the per-connection ctx object. Backs conn.ctx / r.connCtx  */
+/* (flow-local) and conn.onClose (onClientClose).                        */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    JSContext  *js_ctx;
+    JSValue     ctx_obj;      /* lazily-created per-connection object */
+    JSValue     close_fns;    /* lazily-created array of close callbacks */
+} ngx_js_conn_state_t;
+
+
+static void
+ngx_js_conn_state_cleanup(void *data)
+{
+    ngx_js_conn_state_t  *st = data;
+    JSContext            *ctx = st->js_ctx;
+    JSRuntime            *rt;
+    JSValue               arg, fn, ret;
+    int64_t               len, i;
+
+    if (ctx == NULL) {
+        return;
+    }
+
+    rt = JS_GetRuntime(ctx);
+
+    /* fire close hooks (onClientClose), passing the per-connection ctx */
+    if (JS_IsArray(ctx, st->close_fns)) {
+        len = 0;
+        ret = JS_GetPropertyStr(ctx, st->close_fns, "length");
+        JS_ToInt64(ctx, &len, ret);
+        JS_FreeValue(ctx, ret);
+
+        arg = JS_IsUndefined(st->ctx_obj)
+              ? JS_UNDEFINED : JS_DupValue(ctx, st->ctx_obj);
+
+        for (i = 0; i < len; i++) {
+            fn  = JS_GetPropertyUint32(ctx, st->close_fns, (uint32_t) i);
+            ret = JS_Call(ctx, fn, JS_UNDEFINED, 1, (JSValueConst *) &arg);
+            if (JS_IsException(ret)) {
+                ngx_js_log_exception(ctx, ngx_cycle->log);
+            }
+            JS_FreeValue(ctx, ret);
+            JS_FreeValue(ctx, fn);
+            while (JS_ExecutePendingJob(rt, NULL) > 0) { /* drain */ }
+        }
+
+        JS_FreeValue(ctx, arg);
+        JS_FreeValue(ctx, st->close_fns);
+        st->close_fns = JS_UNDEFINED;
+    }
+
+    if (!JS_IsUndefined(st->ctx_obj)) {
+        JS_FreeValue(ctx, st->ctx_obj);
+        st->ctx_obj = JS_UNDEFINED;
+    }
+
+    st->js_ctx = NULL;
+}
+
+
+static ngx_js_conn_state_t *
+ngx_js_conn_state(JSContext *ctx, ngx_connection_t *c)
+{
+    ngx_pool_cleanup_t   *cln;
+    ngx_js_conn_state_t  *st;
+
+    for (cln = c->pool->cleanup; cln != NULL; cln = cln->next) {
+        if (cln->handler == ngx_js_conn_state_cleanup) {
+            return cln->data;
+        }
+    }
+
+    cln = ngx_pool_cleanup_add(c->pool, sizeof(ngx_js_conn_state_t));
+    if (cln == NULL) {
+        return NULL;
+    }
+
+    st            = cln->data;
+    st->js_ctx    = ctx;
+    st->ctx_obj   = JS_UNDEFINED;
+    st->close_fns = JS_UNDEFINED;
+    cln->handler  = ngx_js_conn_state_cleanup;
+
+    return st;
+}
+
+
+/* Exported: a ref to the persistent per-connection ctx object (lazily
+ * created).  Shared by conn.ctx (below) and r.connCtx (HTTP module) so both
+ * see the same object across every request on the connection. */
+JSValue
+ngx_js_connection_ctx_obj(JSContext *ctx, ngx_connection_t *c)
+{
+    ngx_js_conn_state_t  *st;
+
+    st = ngx_js_conn_state(ctx, c);
+    if (st == NULL) {
+        return JS_ThrowInternalError(ctx, "connection ctx: alloc failed");
+    }
+
+    if (JS_IsUndefined(st->ctx_obj)) {
+        st->ctx_obj = JS_NewObject(ctx);
+        if (JS_IsException(st->ctx_obj)) {
+            st->ctx_obj = JS_UNDEFINED;
+            return JS_EXCEPTION;
+        }
+    }
+
+    return JS_DupValue(ctx, st->ctx_obj);
+}
+
+
+static JSValue
+ngx_js_connection_get_ctx(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_conn_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_connection_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_connection_ctx_obj(ctx, op->c);
+}
+
+
+static JSValue
+ngx_js_connection_on_close(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_conn_opaque_t  *op;
+    ngx_js_conn_state_t   *st;
+    JSValue                lenv;
+    int64_t                len;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_connection_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx, "onClose(fn): expected a function");
+    }
+
+    st = ngx_js_conn_state(ctx, op->c);
+    if (st == NULL) {
+        return JS_ThrowInternalError(ctx, "onClose: alloc failed");
+    }
+
+    if (!JS_IsArray(ctx, st->close_fns)) {
+        st->close_fns = JS_NewArray(ctx);
+        if (JS_IsException(st->close_fns)) {
+            st->close_fns = JS_UNDEFINED;
+            return JS_EXCEPTION;
+        }
+    }
+
+    len  = 0;
+    lenv = JS_GetPropertyStr(ctx, st->close_fns, "length");
+    JS_ToInt64(ctx, &len, lenv);
+    JS_FreeValue(ctx, lenv);
+
+    JS_SetPropertyUint32(ctx, st->close_fns, (uint32_t) len,
+                         JS_DupValue(ctx, argv[0]));
+
+    return JS_UNDEFINED;
+}
+
+
 static const JSCFunctionListEntry  ngx_js_connection_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("remoteAddr", ngx_js_connection_get, NULL, 0),
     JS_CGETSET_MAGIC_DEF("remotePort", ngx_js_connection_get, NULL, 1),
+    JS_CGETSET_DEF(      "ctx",        ngx_js_connection_get_ctx, NULL),
     JS_CFUNC_DEF(        "reject",     0, ngx_js_connection_reject),
+    JS_CFUNC_DEF(        "onClose",    1, ngx_js_connection_on_close),
 };
 
 

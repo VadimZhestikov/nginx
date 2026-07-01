@@ -1306,6 +1306,10 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
                                (const char *) r->header_in->pos,
                                (size_t)(r->header_in->last - r->header_in->pos));
 
+    case 28: /* connCtx — persistent PER-CONNECTION object (survives keepalive
+              * requests); the same object as conn.ctx in the accept hook.    */
+        return ngx_js_connection_ctx_obj(ctx, r->connection);
+
     }
 
     return JS_UNDEFINED;
@@ -5171,6 +5175,7 @@ static const JSCFunctionListEntry ngx_js_request_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("responded",    ngx_js_request_get, NULL,               25),
     JS_CGETSET_MAGIC_DEF("ctx",          ngx_js_request_get, NULL,               26),
     JS_CGETSET_MAGIC_DEF("bodyPreread", ngx_js_request_get, NULL,               27),
+    JS_CGETSET_MAGIC_DEF("connCtx",     ngx_js_request_get, NULL,               28),
     JS_CFUNC_DEF("readBody",            0, ngx_js_request_read_body),
     JS_CFUNC_DEF("bodyChunks",          0, ngx_js_request_body_chunks),
     JS_CFUNC_DEF("sendfile",            1, ngx_js_request_sendfile),

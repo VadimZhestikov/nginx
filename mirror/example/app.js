@@ -24,10 +24,11 @@ var mirror = globalThis.mirror;
     mirror.attach(server, loc, {
 
         onClientAccept: function (ev) {
-            var f = ev.flow;
+            var f = ev.flow;                  // the REAL per-connection object
             f.client     = ev.clientAddr;     // stash at accept
             f.acceptedAt = Date.now();
             f.reqCount   = 0;                 // per-connection request counter
+            f.serial     = ev.table.incr('mirror:connSerial');  // unique per connection
         },
 
         onRequestHeaders: function (ev) {
@@ -46,13 +47,24 @@ var mirror = globalThis.mirror;
 
         onResponseHeaders: function (ev) {
             var f = ev.flow;
-            ev.setResponseHeader('x-mirror-route',     ev.ctx.route);
-            ev.setResponseHeader('x-mirror-conn-reqs', f.reqCount);        // proves flow-local
-            ev.setResponseHeader('x-mirror-client',    f.client || 'MISSING'); // proves accept linkage
-            ev.setResponseHeader('x-mirror-total',     ev.table.get('mirror:total'));
+            ev.setResponseHeader('x-mirror-route',       ev.ctx.route);
+            ev.setResponseHeader('x-mirror-conn-reqs',   f.reqCount);          // proves flow-local persists
+            ev.setResponseHeader('x-mirror-conn-serial', f.serial);            // same across keepalive = one conn object
+            ev.setResponseHeader('x-mirror-client',      f.client || 'MISSING'); // proves accept linkage
+            ev.setResponseHeader('x-mirror-total',       ev.table.get('mirror:total'));
+            ev.setResponseHeader('x-mirror-closed',      ev.table.get('mirror:closed') || 0);
             if (ev.ctx.capError) {
                 ev.setResponseHeader('x-mirror-cap-error', ev.ctx.capError);
             }
+        },
+
+        // fires when the connection closes (pilgrim conn.onClose) — flow-local
+        // stashed at accept is still readable here.
+        onClientClose: function (ev) {
+            ev.table.incr('mirror:closed');
+            nginx.log(5, 'mirror: onClientClose serial=' + ev.flow.serial +
+                         ' reqs=' + ev.flow.reqCount +
+                         ' client=' + ev.flow.client);
         }
     });
 })();

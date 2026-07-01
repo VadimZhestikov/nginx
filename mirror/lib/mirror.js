@@ -27,7 +27,7 @@ var EVENTS = {
     onServerConnect:   { layer: 'lb',   wired: false },
     onResponseHeaders: { layer: 'http', wired: true  },
     onResponseBody:    { layer: 'http', wired: false },
-    onClientClose:     { layer: 'l4',   wired: false }    // gap: no pilgrim close hook
+    onClientClose:     { layer: 'l4',   wired: true  }    // phase 2: conn.onClose
 };
 
 // ---- capability table: which commands are valid in which event --------------
@@ -35,11 +35,12 @@ var EVENTS = {
 // command used in the wrong event throws — the machine-checked "iRules command
 // X is only valid in event Y" contract, made explicit.
 var CAPS = {
-    onClientAccept:    ['clientAddr', 'clientPort', 'flow', 'reject'],
+    onClientAccept:    ['clientAddr', 'clientPort', 'flow', 'table', 'reject'],
     onRequestHeaders:  ['clientAddr', 'clientPort', 'flow', 'ctx', 'table',
                         'method', 'uri', 'header', 'respond', 'redirect'],
     onResponseHeaders: ['clientAddr', 'clientPort', 'flow', 'ctx', 'table',
-                        'setResponseHeader']
+                        'setResponseHeader'],
+    onClientClose:     ['flow', 'table']   // no request/conn at close; flow only
 };
 
 // ---- global store (iRules `table`) ------------------------------------------
@@ -47,26 +48,13 @@ var CAPS = {
 // external binding = the db-connect project. TTL is a phase-2 concern.
 var TABLE = new Map();
 
-// ---- connection flow-local store (iRules connection-local vars) -------------
-// KEYED BY THE 4-TUPLE (remote addr:port) as an APPROXIMATION. pilgrim exposes
-// no per-connection handle linking accept -> request, and no close hook to evict
-// — that missing "per-connection ctx + close event" is the phase-1 FINDING and a
-// phase-2 pilgrim gap (thread 1). accept + every request of a connection run in
-// ONE worker, so a per-worker Map is correct; it is size-capped to bound the
-// leak that the absent close hook would otherwise cause.
-var FLOW = new Map();
-var FLOW_CAP = 4096;
-function flowKey(addr, port) { return addr + ':' + port; }
-function flowGet(addr, port) {
-    var k = flowKey(addr, port);
-    var f = FLOW.get(k);
-    if (!f) {
-        if (FLOW.size >= FLOW_CAP) { FLOW.clear(); }   // crude bound; see finding
-        f = {};
-        FLOW.set(k, f);
-    }
-    return f;
-}
+// ---- connection flow-local (iRules connection-local vars) -------------------
+// PHASE 2: backed by pilgrim's REAL per-connection ctx object — conn.ctx in the
+// accept hook, r.connCtx in request/response. It lives on the nginx connection
+// pool, so it persists across every keepalive request and is freed when the
+// connection closes. This replaces phase 1's 4-tuple-keyed Map approximation
+// and its leak workaround. The close event (onClientClose) is wired to the new
+// conn.onClose(). (Both were the phase-1 pilgrim gaps; now closed in the module.)
 
 // ---- capability-gated event context -----------------------------------------
 function cap(event, name) {
@@ -136,22 +124,31 @@ function attach(server, location, handlers) {
         }
     });
 
-    if (handlers.onClientAccept) {
+    // accept hook backs both onClientAccept and (via conn.onClose) onClientClose
+    if (handlers.onClientAccept || handlers.onClientClose) {
         server.on('accept', function (conn) {
-            var flow = flowGet(conn.remoteAddr, conn.remotePort);
-            handlers.onClientAccept(makeEvent('onClientAccept', { conn: conn, flow: flow }));
+            if (handlers.onClientAccept) {
+                handlers.onClientAccept(
+                    makeEvent('onClientAccept', { conn: conn, flow: conn.ctx }));
+            }
+            if (handlers.onClientClose) {
+                conn.onClose(function (connCtx) {
+                    handlers.onClientClose(
+                        makeEvent('onClientClose', { flow: connCtx }));
+                });
+            }
         });
     }
     if (handlers.onRequestHeaders) {
         location.addHook(function (r) {
-            var flow = flowGet(r.variable('remote_addr'), r.variable('remote_port'));
-            handlers.onRequestHeaders(makeEvent('onRequestHeaders', { r: r, flow: flow }));
+            handlers.onRequestHeaders(
+                makeEvent('onRequestHeaders', { r: r, flow: r.connCtx }));
         });
     }
     if (handlers.onResponseHeaders) {
         location.addResponseHook(function (r) {
-            var flow = flowGet(r.variable('remote_addr'), r.variable('remote_port'));
-            handlers.onResponseHeaders(makeEvent('onResponseHeaders', { r: r, flow: flow }));
+            handlers.onResponseHeaders(
+                makeEvent('onResponseHeaders', { r: r, flow: r.connCtx }));
         });
     }
 }

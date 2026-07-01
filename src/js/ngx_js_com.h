@@ -68,6 +68,9 @@ extern JSClassID  ngx_js_events_class_id;       /* nginx.events          (Stage 
 extern JSClassID  ngx_js_socket_class_id;             /* nginx.createSocket()     (Stage 52) */
 extern JSClassID  ngx_js_http_listener_class_id;     /* nginx.http.attach()      (Stage 52) */
 extern JSClassID  ngx_js_connection_class_id;        /* NginxConnection          (P4)       */
+/* Persistent per-connection ctx object (lives on c->pool across keepalive
+ * requests). Shared by conn.ctx and r.connCtx. Defined in ngx_js_listener.c. */
+JSValue  ngx_js_connection_ctx_obj(JSContext *ctx, ngx_connection_t *c);
 extern JSClassID  ngx_js_stream_server_class_id;     /* nginx.stream.servers[]   (Stage 52G) */
 extern JSClassID  ngx_js_stream_listener_class_id;   /* nginx.stream.attach()    (Stage 52G) */
 extern JSClassID  ngx_js_stream_proxy_class_id;      /* server.proxy             (Stage 53)  */
