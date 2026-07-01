@@ -56,7 +56,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 43/43 pass
+cd example && bash test.sh    # 51/51 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
@@ -384,10 +384,31 @@ The example defines an `irule_blocked` list and an `irule_areas` map and uses
 `class match`/`class lookup` in the live `/irule/` rule; `example/test.sh` (43/43)
 confirms a blocked User-Agent and the area→team lookup resolve end-to-end.
 
-## Phase 16 (next)
+## Phase 16 — realistic iRule showcase (capstone, DONE)
 
-- The db-connect project (external KV) as a further `table` tier; more `HTTP::` /
-  `TCP::` commands (`HTTP::respond` bodies, `HTTP::redirect`, status) in the
-  transpiler.
+A single production-shaped iRule (`transpile/showcase.tcl`) that exercises the
+**whole** command surface built across phases 9–15 at once: the four-event spine,
+data groups (`class match`/`class lookup`), string/URI ops, `if`/`elseif`/`else`
++ `switch`, an early `return` after `HTTP::respond`, the `table`, `pool` selection,
+and security-header insertion.
+
+- It **transpiles with zero warnings** — the strongest single signal that the
+  mirror model covers the iRules surface. `transpile/run.sh` (95/95) drives
+  *every* branch of the generated handlers with a mock `ev`. (Building it
+  surfaced and fixed one gap: `return`.)
+- It runs **live** on the `mirror-showcase` server (`example/test.sh`, 51/51):
+  path routing to the right backend, security + context headers on the response,
+  the release-channel `switch`, the bot flag, and — the open question now
+  answered — an **IP-blocklist 403 issued by `HTTP::respond` from an
+  access-phase rule** (it correctly short-circuits the proxy).
+
+The showcase is loaded from **one canonical `showcase.tcl`** via `std.loadFile`
+in both the qjs test and the live example (no drift).
+
+## Phase 17 (next)
+
+- The db-connect project (external KV) as a further `table` tier — brings in
+  **async rules** (hooks currently run synchronously), the largest remaining
+  architectural step.
 
 > All commits for this project are prefixed `mirror:`.

@@ -1,6 +1,11 @@
 // Standalone acceptance test for the TCL/iRules -> mirror transpiler.
-// Run via run.sh, which concatenates ../lib/transpile.js ahead of this file and
-// executes both under qjs. No nginx required. Any failure throws (nonzero exit).
+// Run via run.sh (qjs). It loads the transpiler and the showcase iRule from the
+// paths passed as scriptArgs, so there is a single canonical copy of each.
+// No nginx required. Any failure throws (nonzero exit).
+import * as std from "std";
+
+(0, eval)(std.loadFile(scriptArgs[1]));      // defines globalThis.mirrorTranspile
+var SHOWCASE_TCL = std.loadFile(scriptArgs[2]);
 
 var PASS = 0, FAIL = 0;
 function ok(desc, cond) {
@@ -342,6 +347,73 @@ var e13ok = mockEv({ 'X-Area': 'api' }); e13ok.clientAddr = '8.8.8.8';
 H13.onRequestHeaders(e13ok);
 ok('behavioral: allowed IP -> 0',       e13ok.flow.blk === 0);
 ok('behavioral: class lookup -> value', e13ok.flow.pool === 'poolB');
+
+// ---- fixture 14: the CAPSTONE — a realistic, production-shaped iRule --------
+// showcase.tcl exercises the whole command surface (events, data groups, string
+// ops, if/elseif/else, switch, early return, table, pool, response headers) in
+// one rule. Transpiling it with ZERO warnings is the strongest single signal
+// that the mirror model covers the iRules surface; then we drive every branch.
+DG.ip_blocklist = ['10.0.0.5', '203.0.113.9'];
+DG.bad_agents   = ['badbot', 'evilscanner'];
+DG.routes       = { api: 'poolB', static: 'poolA', web: 'poolA' };
+
+var rc = T(SHOWCASE_TCL);
+print('\n--- showcase handlers ---\n' + rc.handlers + '\n');
+if (rc.warnings.length) { print('showcase warnings: ' + rc.warnings.join(' | ')); }
+ok('showcase: transpiles with ZERO warnings', rc.warnings.length === 0);
+ok('showcase: maps all four events',
+   rc.events.length === 4 &&
+   has(rc.events.join(','), 'onClientAccept') &&
+   has(rc.events.join(','), 'onRequestHeaders') &&
+   has(rc.events.join(','), 'onResponseHeaders') &&
+   has(rc.events.join(','), 'onClientClose'));
+ok('showcase: early return after respond', has(rc.handlers, 'return;'));
+
+// drive every branch behaviourally
+function scMockEv(headers, uri) {
+    var ev = mockEv(headers || {});
+    ev.uri = uri || '/';
+    ev.responded = null;
+    ev.respond = function (code, h, body) { ev.responded = { code: code, body: body }; ev.stopped = true; };
+    return ev;
+}
+var H14 = (0, eval)('(' + rc.handlers + ')');
+
+// (a) accept stashes client IP + bumps conn counter
+var acc = scMockEv({}); acc.clientAddr = '8.8.8.8';
+H14.onClientAccept(acc);
+ok('showcase: accept stashes cip',    acc.flow.cip === '8.8.8.8');
+ok('showcase: accept counts conn',    acc._table['stats:conns'] === 1);
+
+// (b) blocklisted XFF -> 403 + early return (area never set)
+var blk = scMockEv({ 'X-Forwarded-For': '10.0.0.5' }, '/api/x');
+H14.onRequestHeaders(blk);
+ok('showcase: blocked XFF -> 403',        blk.responded && blk.responded.code === 403);
+ok('showcase: block increments counter',  blk._table['stats:blocked'] === 1);
+ok('showcase: early return (no routing)', blk.flow.area === undefined && blk.upstream === undefined);
+
+// (c) clean /api/ request -> api area, poolB, bot flag, canary channel
+var api = scMockEv({ 'User-Agent': 'Evil-BadBot/2', 'X-Channel': 'canary' }, '/API/users');
+H14.onRequestHeaders(api);
+ok('showcase: path tolower + starts_with -> api', api.flow.area === 'api');
+ok('showcase: class lookup routes -> poolB',      api.upstream === 'poolB');
+ok('showcase: UA contains bad_agents -> flagged',  api.flow.flagged === 1);
+ok('showcase: switch X-Channel -> canary',         api.flow.channel === 'canary');
+
+// (d) plain web request -> web area, poolA, default channel, not flagged
+var web = scMockEv({ 'User-Agent': 'Mozilla', 'X-Channel': 'zzz' }, '/home');
+H14.onRequestHeaders(web);
+ok('showcase: default path -> web/poolA', web.flow.area === 'web' && web.upstream === 'poolA');
+ok('showcase: switch default -> stable',  web.flow.channel === 'stable');
+ok('showcase: clean UA -> not flagged',   web.flow.flagged === 0);
+
+// (e) response inserts the security + context headers
+var resp = scMockEv({}); resp.flow = web.flow;
+H14.onResponseHeaders(resp);
+ok('showcase: response sets X-Area',       resp.respHeaders['X-Area'] === 'web');
+ok('showcase: response sets X-Frame-Options', resp.respHeaders['X-Frame-Options'] === 'DENY');
+ok('showcase: response sets HSTS',
+   resp.respHeaders['Strict-Transport-Security'] === 'max-age=31536000');
 
 print('\nResults: ' + PASS + ' passed, ' + FAIL + ' failed');
 if (FAIL > 0) { throw new Error(FAIL + ' transpiler test(s) failed'); }

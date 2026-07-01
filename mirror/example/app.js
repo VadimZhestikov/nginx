@@ -12,6 +12,8 @@
 // keepalive requests (flow-local), and a global counter spans connections
 // (table). A capability self-test proves per-event command gating.
 
+import * as std from 'std';
+
 var mirror = globalThis.mirror;
 
 (function () {
@@ -209,6 +211,21 @@ var mirror = globalThis.mirror;
             '    HTTP::header insert X-Irule-Team $team',
             '}'
         ].join('\n'));
+    }
+
+    // --- phase 16: the realistic showcase iRule, transpiled + applied LIVE ---
+    // showcase.tcl is the canonical rule (also driven branch-by-branch in
+    // transpile/test.js). Here it serves real traffic on the mirror-showcase
+    // server: IP blocklist (403 + return), path routing via a data group,
+    // bot flagging, release-channel switch, and security-header insertion.
+    var scServer = nginx.http.servers.find(function (s) { return s.name === 'mirror-showcase'; });
+    if (scServer && mirror.applyRule) {
+        var scLoc = scServer.locations.find(function (l) { return l.path === '/'; });
+        mirror.datagroup('ip_blocklist', ['10.0.0.5', '203.0.113.9']);
+        mirror.datagroup('bad_agents',   ['badbot', 'evilscanner']);
+        mirror.datagroup('routes', { api: 'mirror_poolB', static: 'mirror_poolA', web: 'mirror_poolA' });
+        mirror.applyRule({ server: scServer, location: scLoc },
+                         std.loadFile('../transpile/showcase.tcl'));
     }
 
     // --- L4 rule (iRules CLIENT_DATA): inspect raw TCP bytes, detect protocol -

@@ -13,10 +13,6 @@ if [ ! -x "$QJS" ]; then
     exit 2
 fi
 
-# The transpiler defines globalThis.mirrorTranspile; concatenate it ahead of the
-# test so no module/std machinery is needed.
-TMP="$(mktemp /tmp/mirror_transpile_test.XXXXXX.js)"
-trap 'rm -f "$TMP"' EXIT
-cat "$DIR/../lib/transpile.js" "$DIR/test.js" > "$TMP"
-
-"$QJS" "$TMP"
+# test.js is a module: it std.loadFile()s the transpiler and the showcase iRule
+# from the paths passed as scriptArgs, so there is a single canonical copy of each.
+"$QJS" "$DIR/test.js" "$DIR/../lib/transpile.js" "$DIR/showcase.tcl"

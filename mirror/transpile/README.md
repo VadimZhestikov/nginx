@@ -41,6 +41,7 @@ var out = mirror.transpile(tclSource);
 | `HTTP::redirect URL` | `ev.redirect(URL)` |
 | `log FACILITY MSG` | `nginx.log(5, MSG)` |
 | `reject` / `TCP::close` | `ev.reject()` |
+| `return` | `return;` (end the event early, e.g. after `HTTP::respond`) |
 | `if {c} {b} elseif {c} {b} else {b}` | `if (c) { b } else if (c) { b } else { b }` |
 | `switch [-exact\|-glob\|--] v { pat {b} … default {b} }` | JS `switch` (no fall-through) |
 | `foreach v {a b c} {b}` | `["a","b","c"].forEach(v => { … })` |
@@ -56,7 +57,7 @@ human sees exactly what still needs hand-porting.
 ## Run
 
 ```bash
-bash run.sh        # 77/77 — standalone under qjs, no nginx needed
+bash run.sh        # 95/95 — standalone under qjs, no nginx needed
 ```
 
 The test transpiles the same spine iRule that `example/app.js` translates **by
@@ -65,3 +66,10 @@ handlers and drives them with a mock `ev`** to prove they behave correctly —
 plus pool/TTL, an L4 rule, `if`/`switch`/`foreach` control flow (including a
 nested `if`-inside-`switch`), and the unsupported-command / unknown-event
 warnings.
+
+**`showcase.tcl`** is the capstone: one realistic, production-shaped iRule
+(IP blocklist → 403, path routing via a data group, bot flagging, release-channel
+`switch`, security headers) that exercises the whole surface at once. It
+transpiles with **zero warnings**, every branch is driven here, and it also runs
+live in `example/` on the `mirror-showcase` server — loaded from this single
+canonical file via `std.loadFile` in both places.

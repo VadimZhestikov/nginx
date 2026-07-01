@@ -266,6 +266,31 @@ else
     echo "FAIL: cookie-insert: cookie re-issued $REISSUE times after pin"; FAIL=$((FAIL+1))
 fi
 
+# --- 15. realistic showcase iRule, transpiled + live (phase 16) --------------
+# transpile/showcase.tcl applied live on mirror-showcase (:8301). Exercises the
+# whole surface end-to-end: path routing (data group), security headers, release
+# channel switch, bot flag, and an IP-blocklist 403 from an access-phase rule.
+SPORT=8301
+API=$(curl -s -D - -o /dev/null "http://127.0.0.1:$SPORT/api/users")
+check "showcase: /api/ routed to poolB (backend-B)" "backend-b" \
+      "$(curl -s http://127.0.0.1:$SPORT/api/users)"
+check "showcase: X-Area header = api"        "x-area: api"          "$API"
+check "showcase: security header X-Frame"    "x-frame-options: DENY" "$API"
+check "showcase: HSTS header inserted"       "strict-transport-security: max-age=31536000" "$API"
+WEB=$(curl -s -D - -o /dev/null -H 'X-Channel: beta' "http://127.0.0.1:$SPORT/home")
+check "showcase: default path -> web area"   "x-area: web"          "$WEB"
+check "showcase: switch X-Channel -> beta"   "x-channel: beta"      "$WEB"
+BOT=$(curl -s -D - -o /dev/null -H 'User-Agent: Nasty-BadBot/3' "http://127.0.0.1:$SPORT/home")
+check "showcase: bot UA -> X-Flagged 1"      "x-flagged: 1"         "$BOT"
+BLK=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 10.0.0.5' \
+        "http://127.0.0.1:$SPORT/home")
+if [ "$BLK" = "403" ]; then
+    echo "showcase: blocklisted XFF -> 403 (respond from access-phase rule): $BLK"
+    echo "PASS: showcase: IP blocklist returns 403"; PASS=$((PASS+1))
+else
+    echo "FAIL: showcase: blocklist did not 403 (got $BLK) — respond-in-access-hook gap"; FAIL=$((FAIL+1))
+fi
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

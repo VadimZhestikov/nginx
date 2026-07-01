@@ -395,6 +395,9 @@
         case 'reject':
         case 'TCP::close':
             return 'ev.reject();';
+        case 'return':
+            // end the current event early (e.g. after HTTP::respond)
+            return 'return;';
         }
 
         warnings.push('line ' + lineNo + ": unsupported command '" + cmd + "'");
