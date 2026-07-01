@@ -2165,6 +2165,7 @@ ngx_js_shared_fn_get(JSContext *ctx, JSValueConst this_val,
     ngx_js_shared_entry_t  *entries;
     const char             *key;
     ngx_uint_t              i;
+    time_t                  now;
     JSValue                 result;
 
     if (argc < 1 || !JS_IsString(argv[0])) {
@@ -2183,6 +2184,8 @@ ngx_js_shared_fn_get(JSContext *ctx, JSValueConst this_val,
 
     entries = (ngx_js_shared_entry_t *)(hdr + 1);
 
+    now = ngx_time();
+
     ngx_spinlock(&hdr->lock, 1, 2048);
 
     result = JS_UNDEFINED;
@@ -2191,7 +2194,13 @@ ngx_js_shared_fn_get(JSContext *ctx, JSValueConst this_val,
         if (entries[i].used
             && ngx_strcmp(entries[i].key, key) == 0)
         {
-            result = JS_NewString(ctx, entries[i].val);
+            if (entries[i].expires != 0 && now >= entries[i].expires) {
+                /* expired — reclaim lazily and report absent */
+                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
+                hdr->count--;
+            } else {
+                result = JS_NewString(ctx, entries[i].val);
+            }
             break;
         }
     }
@@ -2212,11 +2221,24 @@ ngx_js_shared_fn_set(JSContext *ctx, JSValueConst this_val,
     ngx_js_shared_entry_t  *entries;
     const char             *key, *val;
     ngx_uint_t              i, free_slot;
+    int64_t                 ttl;
+    time_t                  now, expires;
     int                     found;
 
     if (argc < 2 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx, "shared.set(key, val): key must be a string");
     }
+
+    /* optional 3rd arg: ttl in seconds (0 / omitted / <=0 = never expires) */
+    ttl = 0;
+    if (argc >= 3 && !JS_IsUndefined(argv[2]) && !JS_IsNull(argv[2])) {
+        if (JS_ToInt64(ctx, &ttl, argv[2]) < 0) {
+            return JS_EXCEPTION;
+        }
+    }
+
+    now     = ngx_time();
+    expires = (ttl > 0) ? now + (time_t) ttl : 0;
 
     hdr = ngx_js_shared_get_hdr(ctx);
     if (hdr == NULL) {
@@ -2257,9 +2279,19 @@ ngx_js_shared_fn_set(JSContext *ctx, JSValueConst this_val,
 
     for (i = 0; i < hdr->capacity; i++) {
         if (entries[i].used) {
+            /* reclaim any expired entry we pass, freeing its slot for reuse */
+            if (entries[i].expires != 0 && now >= entries[i].expires) {
+                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
+                hdr->count--;
+                if (free_slot == (ngx_uint_t) -1) {
+                    free_slot = i;
+                }
+                continue;
+            }
             if (ngx_strcmp(entries[i].key, key) == 0) {
                 ngx_cpystrn((u_char *) entries[i].val, (u_char *) val,
                             NGX_JS_SHARED_VAL_LEN);
+                entries[i].expires = expires;
                 found = 1;
                 break;
             }
@@ -2281,6 +2313,7 @@ ngx_js_shared_fn_set(JSContext *ctx, JSValueConst this_val,
                     NGX_JS_SHARED_KEY_LEN);
         ngx_cpystrn((u_char *) entries[free_slot].val, (u_char *) val,
                     NGX_JS_SHARED_VAL_LEN);
+        entries[free_slot].expires = expires;
         hdr->count++;
     }
 
@@ -2350,6 +2383,7 @@ ngx_js_shared_fn_keys(JSContext *ctx, JSValueConst this_val,
     ngx_js_shared_entry_t  *entries;
     JSValue                 arr;
     ngx_uint_t              i, idx;
+    time_t                  now;
 
     hdr = ngx_js_shared_get_hdr(ctx);
     if (hdr == NULL) {
@@ -2361,10 +2395,17 @@ ngx_js_shared_fn_keys(JSContext *ctx, JSValueConst this_val,
     arr = JS_NewArray(ctx);
     idx = 0;
 
+    now = ngx_time();
+
     ngx_spinlock(&hdr->lock, 1, 2048);
 
     for (i = 0; i < hdr->capacity; i++) {
         if (entries[i].used) {
+            if (entries[i].expires != 0 && now >= entries[i].expires) {
+                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
+                hdr->count--;
+                continue;
+            }
             JS_SetPropertyUint32(ctx, arr, idx++,
                                  JS_NewString(ctx, entries[i].key));
         }
@@ -2385,6 +2426,7 @@ ngx_js_shared_fn_incr(JSContext *ctx, JSValueConst this_val,
     const char             *key;
     ngx_uint_t              i, free_slot;
     int64_t                 delta, cur;
+    time_t                  now;
     char                    buf[32];
     int                     found;
 
@@ -2417,6 +2459,8 @@ ngx_js_shared_fn_incr(JSContext *ctx, JSValueConst this_val,
 
     entries = (ngx_js_shared_entry_t *)(hdr + 1);
 
+    now = ngx_time();
+
     ngx_spinlock(&hdr->lock, 1, 2048);
 
     found = 0;
@@ -2425,6 +2469,15 @@ ngx_js_shared_fn_incr(JSContext *ctx, JSValueConst this_val,
 
     for (i = 0; i < hdr->capacity; i++) {
         if (entries[i].used) {
+            /* an expired counter is reclaimed and restarts from zero */
+            if (entries[i].expires != 0 && now >= entries[i].expires) {
+                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
+                hdr->count--;
+                if (free_slot == (ngx_uint_t) -1) {
+                    free_slot = i;
+                }
+                continue;
+            }
             if (ngx_strcmp(entries[i].key, key) == 0) {
                 cur = ngx_atoi((u_char *) entries[i].val,
                                ngx_strlen(entries[i].val));
@@ -2452,6 +2505,7 @@ ngx_js_shared_fn_incr(JSContext *ctx, JSValueConst this_val,
 
         cur = delta;
         entries[free_slot].used = 1;
+        entries[free_slot].expires = 0;   /* a fresh counter never expires */
         ngx_cpystrn((u_char *) entries[free_slot].key, (u_char *) key,
                     NGX_JS_SHARED_KEY_LEN);
         ngx_snprintf((u_char *) entries[free_slot].val,
@@ -2467,6 +2521,71 @@ ngx_js_shared_fn_incr(JSContext *ctx, JSValueConst this_val,
     (void) buf;  /* silence unused-variable warning */
 
     return JS_NewInt64(ctx, cur);
+}
+
+
+/*
+ * shared.ttl(key) — remaining lifetime of a key, in whole seconds.
+ *   null  — key absent (or already expired)
+ *   -1    — key present but has no expiry (permanent)
+ *   >= 0  — seconds until the key expires
+ * (Redis-style semantics.)
+ */
+static JSValue
+ngx_js_shared_fn_ttl(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    const char             *key;
+    ngx_uint_t              i;
+    time_t                  now;
+    JSValue                 result;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "shared.ttl(key): key must be a string");
+    }
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    key = JS_ToCString(ctx, argv[0]);
+    if (key == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    entries = (ngx_js_shared_entry_t *)(hdr + 1);
+
+    now = ngx_time();
+
+    ngx_spinlock(&hdr->lock, 1, 2048);
+
+    result = JS_NULL;
+
+    for (i = 0; i < hdr->capacity; i++) {
+        if (entries[i].used
+            && ngx_strcmp(entries[i].key, key) == 0)
+        {
+            if (entries[i].expires == 0) {
+                result = JS_NewInt64(ctx, -1);          /* permanent */
+            } else if (now >= entries[i].expires) {
+                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
+                hdr->count--;                           /* expired -> absent */
+            } else {
+                result = JS_NewInt64(ctx,
+                                     (int64_t) (entries[i].expires - now));
+            }
+            break;
+        }
+    }
+
+    ngx_unlock(&hdr->lock);
+
+    JS_FreeCString(ctx, key);
+
+    return result;
 }
 
 
@@ -2694,7 +2813,7 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, shared_obj, "get",
                           JS_NewCFunction(ctx, ngx_js_shared_fn_get, "get", 1));
         JS_SetPropertyStr(ctx, shared_obj, "set",
-                          JS_NewCFunction(ctx, ngx_js_shared_fn_set, "set", 2));
+                          JS_NewCFunction(ctx, ngx_js_shared_fn_set, "set", 3));
         JS_SetPropertyStr(ctx, shared_obj, "delete",
                           JS_NewCFunction(ctx, ngx_js_shared_fn_delete,
                                           "delete", 1));
@@ -2702,6 +2821,8 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                           JS_NewCFunction(ctx, ngx_js_shared_fn_keys, "keys", 0));
         JS_SetPropertyStr(ctx, shared_obj, "incr",
                           JS_NewCFunction(ctx, ngx_js_shared_fn_incr, "incr", 1));
+        JS_SetPropertyStr(ctx, shared_obj, "ttl",
+                          JS_NewCFunction(ctx, ngx_js_shared_fn_ttl, "ttl", 1));
         JS_SetPropertyStr(ctx, nginx_obj, "shared", shared_obj);
     }
 

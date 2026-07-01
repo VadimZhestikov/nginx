@@ -39,6 +39,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 | peer-level LB | `upstream.onSelectPeer(fn)` (custom balancer) | ✅ phase 5 |
 | `onClientData` (L4) | `mirror.attachStream(streamServer, fn)` + `session.data` | ✅ phase 6 |
 | cross-worker `table` | backed by `nginx.shared` (shmem KV) | ✅ phase 7 |
+| `table` TTL / expiry | `table.set(k, v, ttl)` + `table.ttl(k)` | ✅ phase 8 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
@@ -51,12 +52,13 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 25/25 pass
+cd example && bash test.sh    # 30/30 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
 **persisting across keepalive requests**, per-request routing, a **cross-worker**
-`table` counter (phase 7), and the **per-event capability gate** firing.
+`table` counter with **TTL/expiry** (phases 7–8), and the **per-event capability
+gate** firing.
 
 ## Phase-1 findings → phase-2 status (thread-1 nginx gaps)
 
@@ -225,10 +227,36 @@ proves (a) the backend is `shared`, (b) **≥2 distinct workers** served
 single shared counter, not per-worker ones (which would repeat totals between
 workers).
 
-## Phase 8 (next)
+## Phase 8 — `table` TTL / expiry (DONE)
 
-- Further state bindings: `session`/persistence → a COM persistence API; the
-  db-connect project (external KV) as a `table` tier; TTL/expiry on entries.
+The iRules `table set <key> <val> <timeout>` — an entry that self-expires. This
+extends `nginx.shared` in the C module (`ngx_js_com.c`):
+
+- each shared entry gained an absolute `expires` (`ngx_time()` seconds; `0` =
+  never);
+- **`shared.set(key, val, ttlSeconds)`** — optional 3rd arg; `get`, `keys`,
+  `incr` and the new **`shared.ttl(key)`** all honour expiry and **lazily
+  reclaim** expired slots on access (under the zone spinlock), so a TTL'd key
+  also frees its slot for reuse;
+- **`shared.ttl(key)`** — Redis-style: `null` = absent/expired, `-1` =
+  permanent, `>= 0` = seconds remaining.
+
+mirror surfaces this as **`table.set(k, v, ttlSeconds)`** and **`table.ttl(k)`**
+(the per-worker `Map` fallback is TTL-aware too):
+
+```js
+mirror.table.set('greeting', 'hi', 30);   // expires in 30s, all workers
+mirror.table.ttl('greeting');              // ~30, then null once expired
+```
+
+`example/test.sh` (**30/30**) sets a key with a 3 s TTL, reads it back on a
+*different* worker (cross-worker), checks the reported remaining lifetime, waits
+past the TTL, and confirms the value and TTL are gone (self-reclaimed).
+
+## Phase 9 (next)
+
+- `session`/persistence → a COM persistence API; the db-connect project
+  (external KV) as a further `table` tier.
 - Then decision (A): the TCL/iRules → mirror transpiler (migrate existing iRules).
 
 > All commits for this project are prefixed `mirror:`.

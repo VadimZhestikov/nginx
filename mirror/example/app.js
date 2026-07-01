@@ -37,6 +37,12 @@ var mirror = globalThis.mirror;
             ev.table.incr('mirror:total');                   // global across conns
             ev.ctx.route = (ev.header('x-mirror-route') === 'beta') ? 'beta' : 'stable';
 
+            // phase 8: iRules `table set key val <timeout>` — on demand, stash a
+            // key that self-expires after 3s (cross-worker; enforced in the module).
+            if (ev.header('x-mirror-ttlset')) {
+                ev.table.set('mirror:ttltest', 'ephemeral', 3);
+            }
+
             // capability self-test: setResponseHeader is NOT valid in a request
             // event — mirror must throw. Prove it, and carry the message forward.
             if (ev.header('x-mirror-captest')) {
@@ -57,6 +63,10 @@ var mirror = globalThis.mirror;
             // which worker served this request (nginx.workerIdx).
             ev.setResponseHeader('x-mirror-table-backend', mirror.table.backend());
             ev.setResponseHeader('x-mirror-widx',          nginx.workerIdx);
+            // phase 8: report the TTL'd key + its remaining lifetime (null once
+            // expired). Proves table TTL is cross-worker and self-reclaiming.
+            ev.setResponseHeader('x-mirror-ttltest',     ev.table.get('mirror:ttltest'));
+            ev.setResponseHeader('x-mirror-ttltest-ttl', ev.table.ttl('mirror:ttltest'));
             if (ev.ctx.capError) {
                 ev.setResponseHeader('x-mirror-cap-error', ev.ctx.capError);
             }

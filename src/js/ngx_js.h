@@ -67,6 +67,7 @@ typedef struct {
 
 typedef struct {
     u_char  used;
+    time_t  expires;   /* absolute expiry, ngx_time() seconds; 0 = never */
     char    key[NGX_JS_SHARED_KEY_LEN];
     char    val[NGX_JS_SHARED_VAL_LEN];
 } ngx_js_shared_entry_t;

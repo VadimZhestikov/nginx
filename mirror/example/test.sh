@@ -166,6 +166,28 @@ else
     echo "FAIL: table totals not all distinct ($UTOT unique of $NTOT) -> per-worker counters"; FAIL=$((FAIL+1))
 fi
 
+# --- 11. table TTL / expiry (phase 8, iRules `table set key val <timeout>`) --
+# Set a key with a 3s TTL on one request; it must be readable (cross-worker)
+# right after, carry a positive remaining TTL, then be gone after it expires.
+SET=$(curl -s -D - -o /dev/null -H 'Connection: close' -H 'X-Mirror-TtlSet: 1' \
+        "http://127.0.0.1:$PORT/")
+check "TTL: key readable immediately after set" "x-mirror-ttltest: ephemeral" "$SET"
+TREM=$(echo "$SET" | grep -i '^x-mirror-ttltest-ttl:' | grep -oE '[0-9]+')
+if [ -n "$TREM" ] && [ "$TREM" -ge 1 ] && [ "$TREM" -le 3 ]; then
+    echo "PASS: TTL: remaining lifetime reported ($TREM s)"; PASS=$((PASS+1))
+else
+    echo "FAIL: TTL: bad remaining lifetime ('$TREM')"; FAIL=$((FAIL+1))
+fi
+# a second request (no set) still sees it — proves it persists cross-worker
+STILL=$(curl -s -D - -o /dev/null -H 'Connection: close' "http://127.0.0.1:$PORT/")
+check "TTL: key still present before expiry (cross-worker)" \
+      "x-mirror-ttltest: ephemeral" "$STILL"
+# wait past the TTL, then it must be reclaimed
+sleep 4
+GONE=$(curl -s -D - -o /dev/null -H 'Connection: close' "http://127.0.0.1:$PORT/")
+check "TTL: key value gone after expiry"     "x-mirror-ttltest: undefined" "$GONE"
+check "TTL: remaining lifetime null after expiry" "x-mirror-ttltest-ttl: null" "$GONE"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

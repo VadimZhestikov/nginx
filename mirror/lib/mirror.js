@@ -58,9 +58,14 @@ var CAPS = {
 // config-eval time (js_source runs before the zone exists). On the first table
 // op inside a worker the probe succeeds and we bind to shared; if it ever throws
 // (config time, or a build without the zone) we fall back to a per-worker Map so
-// mirror stays usable. External bindings (db-connect / persistence COM) are a
-// later tier; TTL is future.
-var TABLE_MAP = new Map();      // per-worker fallback
+// mirror stays usable.
+//
+// PHASE 8: entries can carry a TTL (iRules `table set key val <timeout>`).
+// table.set(k, v, ttlSeconds) expires the entry after ttlSeconds; the shared
+// backend enforces it in the module (lazy reclaim on access, atomic under the
+// zone spinlock). table.ttl(k) reports the remaining lifetime. External bindings
+// (db-connect / persistence COM) remain a later tier.
+var TABLE_MAP = new Map();      // per-worker fallback: k -> {v, exp} (exp: ms, 0=never)
 var _backend  = null;           // 'shared' | 'map' | null (unresolved)
 
 function tableBackend() {
@@ -75,6 +80,14 @@ function tableBackend() {
     return _backend;
 }
 
+// per-worker Map fallback, TTL-aware (used only when 'shared' is unavailable)
+function mapGet(k) {
+    var e = TABLE_MAP.get(k);
+    if (e === undefined) { return undefined; }
+    if (e.exp !== 0 && Date.now() >= e.exp) { TABLE_MAP.delete(k); return undefined; }
+    return e.v;
+}
+
 // The single shared table object (cross-worker when backend === 'shared').
 var TABLE = {
     get: function (k) {
@@ -83,16 +96,22 @@ var TABLE = {
             if (s === undefined) { return undefined; }
             try { return JSON.parse(s); } catch (e) { return s; }
         }
-        return TABLE_MAP.get(k);
+        return mapGet(k);
     },
-    set: function (k, v) {
-        if (tableBackend() === 'shared') { nginx.shared.set(k, JSON.stringify(v)); return v; }
-        TABLE_MAP.set(k, v); return v;
+    // set(key, value[, ttlSeconds]) — ttlSeconds > 0 expires the entry.
+    set: function (k, v, ttl) {
+        if (tableBackend() === 'shared') {
+            nginx.shared.set(k, JSON.stringify(v), ttl);
+            return v;
+        }
+        var exp = (ttl > 0) ? Date.now() + ttl * 1000 : 0;
+        TABLE_MAP.set(k, { v: v, exp: exp });
+        return v;
     },
     incr: function (k, d) {
         d = (d === undefined) ? 1 : d;
         if (tableBackend() === 'shared') { return nginx.shared.incr(k, d); }
-        var v = (TABLE_MAP.get(k) || 0) + d; TABLE_MAP.set(k, v); return v;
+        var v = (mapGet(k) || 0) + d; TABLE_MAP.set(k, { v: v, exp: 0 }); return v;
     },
     delete: function (k) {
         if (tableBackend() === 'shared') { return nginx.shared.delete(k); }
@@ -100,7 +119,19 @@ var TABLE = {
     },
     keys: function () {
         if (tableBackend() === 'shared') { return nginx.shared.keys(); }
-        return Array.from(TABLE_MAP.keys());
+        var out = [];
+        TABLE_MAP.forEach(function (e, k) { if (mapGet(k) !== undefined) { out.push(k); } });
+        return out;
+    },
+    // ttl(key): null = absent/expired, -1 = permanent, >=0 = seconds remaining.
+    ttl: function (k) {
+        if (tableBackend() === 'shared') { return nginx.shared.ttl(k); }
+        var e = TABLE_MAP.get(k);
+        if (e === undefined) { return null; }
+        if (e.exp === 0) { return -1; }
+        var rem = e.exp - Date.now();
+        if (rem <= 0) { TABLE_MAP.delete(k); return null; }
+        return Math.floor(rem / 1000);
     },
     backend: function () { return tableBackend(); }
 };
@@ -109,11 +140,12 @@ var TABLE = {
 // delegates to the single shared TABLE. Shared by makeEvent + makeStreamEvent.
 function makeTableFacade(event) {
     return {
-        get:    function (k)    { cap(event, 'table'); return TABLE.get(k); },
-        set:    function (k, v) { cap(event, 'table'); return TABLE.set(k, v); },
-        incr:   function (k, d) { cap(event, 'table'); return TABLE.incr(k, d); },
-        delete: function (k)    { cap(event, 'table'); return TABLE.delete(k); },
-        keys:   function ()     { cap(event, 'table'); return TABLE.keys(); }
+        get:    function (k)      { cap(event, 'table'); return TABLE.get(k); },
+        set:    function (k, v, t){ cap(event, 'table'); return TABLE.set(k, v, t); },
+        incr:   function (k, d)   { cap(event, 'table'); return TABLE.incr(k, d); },
+        delete: function (k)      { cap(event, 'table'); return TABLE.delete(k); },
+        keys:   function ()       { cap(event, 'table'); return TABLE.keys(); },
+        ttl:    function (k)      { cap(event, 'table'); return TABLE.ttl(k); }
     };
 }
 
@@ -267,7 +299,7 @@ function attachStream(streamServer, handlers) {
 }
 
 globalThis.mirror = {
-    version:      '0.1.0-phase7',
+    version:      '0.1.0-phase8',
     events:       EVENTS,
     caps:         CAPS,
     attach:       attach,
