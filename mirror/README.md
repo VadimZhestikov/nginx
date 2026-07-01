@@ -16,6 +16,11 @@ heart of threads 1 + 3.
 > **See [`CAPABILITIES.md`](CAPABILITIES.md)** for the iRules→mirror capability
 > matrix (events, commands, state tiers), the one-breath architecture, and the
 > honest list of known limitations. The phase sections below are the build log.
+>
+> **Thread 2** (substrate interchange — nginx-on-TMM / BIG-IP-on-sockets) is
+> scoped in [`substrate/DESIGN.md`](substrate/DESIGN.md) — a design-only doc for
+> the substrate seam + a DPDK stand-in backend + a black-box conformance suite,
+> none of which needs BIG-IP sources. Threads 1+3 (above) are the built prototype.
 
 ## Decisions
 
