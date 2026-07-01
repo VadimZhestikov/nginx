@@ -53,6 +53,10 @@ var mirror = globalThis.mirror;
             ev.setResponseHeader('x-mirror-client',      f.client || 'MISSING'); // proves accept linkage
             ev.setResponseHeader('x-mirror-total',       ev.table.get('mirror:total'));
             ev.setResponseHeader('x-mirror-closed',      ev.table.get('mirror:closed') || 0);
+            // phase 7: prove the table is cross-worker — expose the backend and
+            // which worker served this request (nginx.workerIdx).
+            ev.setResponseHeader('x-mirror-table-backend', mirror.table.backend());
+            ev.setResponseHeader('x-mirror-widx',          nginx.workerIdx);
             if (ev.ctx.capError) {
                 ev.setResponseHeader('x-mirror-cap-error', ev.ctx.capError);
             }

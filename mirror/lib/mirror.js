@@ -46,10 +46,76 @@ var CAPS = {
     onClientData:      ['data', 'clientAddr', 'table', 'finalize', 'reject']  // L4 (stream)
 };
 
-// ---- global store (iRules `table`) ------------------------------------------
-// Phase 1: per-worker Map. Multi-worker binding = nginx.shared / SharedWorker;
-// external binding = the db-connect project. TTL is a phase-2 concern.
-var TABLE = new Map();
+// ---- global store (iRules `table`) — cross-worker in phase 7 ----------------
+// The iRules `table` is cluster-shared state; the nginx analog is cross-WORKER
+// state. Phase 1 used a per-worker Map, so a counter incremented on worker A was
+// invisible to worker B — wrong for a shared table. Phase 7 backs `table` with
+// pilgrim's cross-worker `nginx.shared` (a shared-memory KV store): values are
+// JSON-encoded, and `incr` maps to `nginx.shared.incr`, which is ATOMIC under a
+// spinlock (no read-modify-write race across workers).
+//
+// The backend is probed LAZILY, not at load: `nginx.shared` throws at
+// config-eval time (js_source runs before the zone exists). On the first table
+// op inside a worker the probe succeeds and we bind to shared; if it ever throws
+// (config time, or a build without the zone) we fall back to a per-worker Map so
+// mirror stays usable. External bindings (db-connect / persistence COM) are a
+// later tier; TTL is future.
+var TABLE_MAP = new Map();      // per-worker fallback
+var _backend  = null;           // 'shared' | 'map' | null (unresolved)
+
+function tableBackend() {
+    if (_backend === null) {
+        try {
+            nginx.shared.get('__mirror_probe__');   // throws at config time
+            _backend = 'shared';
+        } catch (e) {
+            _backend = 'map';
+        }
+    }
+    return _backend;
+}
+
+// The single shared table object (cross-worker when backend === 'shared').
+var TABLE = {
+    get: function (k) {
+        if (tableBackend() === 'shared') {
+            var s = nginx.shared.get(k);
+            if (s === undefined) { return undefined; }
+            try { return JSON.parse(s); } catch (e) { return s; }
+        }
+        return TABLE_MAP.get(k);
+    },
+    set: function (k, v) {
+        if (tableBackend() === 'shared') { nginx.shared.set(k, JSON.stringify(v)); return v; }
+        TABLE_MAP.set(k, v); return v;
+    },
+    incr: function (k, d) {
+        d = (d === undefined) ? 1 : d;
+        if (tableBackend() === 'shared') { return nginx.shared.incr(k, d); }
+        var v = (TABLE_MAP.get(k) || 0) + d; TABLE_MAP.set(k, v); return v;
+    },
+    delete: function (k) {
+        if (tableBackend() === 'shared') { return nginx.shared.delete(k); }
+        return TABLE_MAP.delete(k);
+    },
+    keys: function () {
+        if (tableBackend() === 'shared') { return nginx.shared.keys(); }
+        return Array.from(TABLE_MAP.keys());
+    },
+    backend: function () { return tableBackend(); }
+};
+
+// Capability-gated table facade for an event: gates the 'table' capability, then
+// delegates to the single shared TABLE. Shared by makeEvent + makeStreamEvent.
+function makeTableFacade(event) {
+    return {
+        get:    function (k)    { cap(event, 'table'); return TABLE.get(k); },
+        set:    function (k, v) { cap(event, 'table'); return TABLE.set(k, v); },
+        incr:   function (k, d) { cap(event, 'table'); return TABLE.incr(k, d); },
+        delete: function (k)    { cap(event, 'table'); return TABLE.delete(k); },
+        keys:   function ()     { cap(event, 'table'); return TABLE.keys(); }
+    };
+}
 
 // ---- connection flow-local (iRules connection-local vars) -------------------
 // PHASE 2: backed by pilgrim's REAL per-connection ctx object — conn.ctx in the
@@ -78,13 +144,7 @@ function makeEvent(event, o) {   // o = { r?, conn?, flow }
     Object.defineProperty(ev, 'clientHello', {
         get: function () { cap(event, 'clientHello'); return o.clientHello; } });
 
-    ev.table = {
-        get:  function (k)    { cap(event, 'table'); return TABLE.get(k); },
-        set:  function (k, v) { cap(event, 'table'); TABLE.set(k, v); return v; },
-        incr: function (k, d) { cap(event, 'table');
-                                var v = (TABLE.get(k) || 0) + (d === undefined ? 1 : d);
-                                TABLE.set(k, v); return v; }
-    };
+    ev.table = makeTableFacade(event);
 
     Object.defineProperty(ev, 'clientAddr', { get: function () {
         cap(event, 'clientAddr');
@@ -183,13 +243,7 @@ function makeStreamEvent(event, session) {
         get: function () { cap(event, 'data'); return session.data; } });
     Object.defineProperty(ev, 'clientAddr', {
         get: function () { cap(event, 'clientAddr'); return session.remoteAddress; } });
-    ev.table = {
-        get:  function (k)    { cap(event, 'table'); return TABLE.get(k); },
-        set:  function (k, v) { cap(event, 'table'); TABLE.set(k, v); return v; },
-        incr: function (k, d) { cap(event, 'table');
-                                var v = (TABLE.get(k) || 0) + (d === undefined ? 1 : d);
-                                TABLE.set(k, v); return v; }
-    };
+    ev.table = makeTableFacade(event);
     ev.finalize = function (code) { cap(event, 'finalize'); session.finalize(code || 200); };
     ev.reject   = function ()     { cap(event, 'reject');   session.finalize(403); };
     return ev;
@@ -213,9 +267,10 @@ function attachStream(streamServer, handlers) {
 }
 
 globalThis.mirror = {
-    version:      '0.1.0-phase6',
+    version:      '0.1.0-phase7',
     events:       EVENTS,
     caps:         CAPS,
     attach:       attach,
-    attachStream: attachStream
+    attachStream: attachStream,
+    table:        TABLE          // cross-worker store (get/set/incr/delete/keys/backend)
 };

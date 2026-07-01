@@ -38,24 +38,25 @@ A pure JS layer over pilgrim hooks (no C changes):
 | LB selection command | `ev.selectUpstream(pool)` in `onRequestHeaders` | ✅ phase 4 |
 | peer-level LB | `upstream.onSelectPeer(fn)` (custom balancer) | ✅ phase 5 |
 | `onClientData` (L4) | `mirror.attachStream(streamServer, fn)` + `session.data` | ✅ phase 6 |
+| cross-worker `table` | backed by `nginx.shared` (shmem KV) | ✅ phase 7 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
   valid per event (= pilgrim's `describe()`/safety-classes, indexed by event),
-  per-connection **flow-local** store, global **`table`** store, and
-  `mirror.attach(server, location, handlers)`.
+  per-connection **flow-local** store, a **cross-worker `table`** store (phase
+  7, backed by `nginx.shared`), and `mirror.attach(server, location, handlers)`.
 - **`example/`** — one iRule translated by hand as the acceptance test
   (`app.js`), plus `nginx.conf` + `test.sh`.
 
 ### Run
 
 ```bash
-cd example && bash test.sh    # 22/22 pass
+cd example && bash test.sh    # 25/25 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
-**persisting across keepalive requests**, per-request routing, a global `table`
-counter, and the **per-event capability gate** firing.
+**persisting across keepalive requests**, per-request routing, a **cross-worker**
+`table` counter (phase 7), and the **per-event capability gate** firing.
 
 ## Phase-1 findings → phase-2 status (thread-1 nginx gaps)
 
@@ -191,10 +192,43 @@ mirror.attachStream(nginx.stream.servers[0], {
 `example/test.sh` (22/22) sends raw TCP and confirms `onClientData` detects the
 protocol from the preread bytes.
 
-## Phase 7 (next)
+## Phase 7 — state bindings (cross-worker `table`, DONE)
 
-- State bindings: `table` → `nginx.shared` / SharedWorker (multi-worker) and the
-  db-connect project (external); `session`/persistence → a COM persistence API.
+The iRules `table` is *cluster-shared* state; the nginx analog is *cross-worker*
+state. Phase 1 backed `table` with a per-worker `Map`, so a counter incremented
+on worker A was invisible to worker B — wrong for a shared table. Phase 7 binds
+`table` to pilgrim's **`nginx.shared`** (a cross-worker shared-memory KV store,
+auto-created whenever `js_source` is present — **no new C**):
+
+- values are **JSON-encoded** on the way in / decoded on the way out;
+- **`table.incr(k)`** maps to `nginx.shared.incr`, which is **atomic** under a
+  spinlock — no read-modify-write race across workers;
+- also `table.delete(k)` and `table.keys()`; `mirror.table.backend()` reports
+  which tier is active.
+
+The backend is **probed lazily**, not at load: `nginx.shared` throws at
+config-eval time (`js_source` runs before the zone exists), so on the first
+`table` op inside a worker mirror binds to `shared`; if that ever throws it falls
+back to the per-worker `Map`, keeping mirror usable at config time or in a build
+without the zone.
+
+```js
+mirror.table.incr('mirror:total');      // atomic, visible to every worker
+mirror.table.get('mirror:total');       // JSON-decoded
+mirror.table.backend();                 // 'shared' | 'map'
+```
+
+The example runs **`worker_processes 2`** with `listen ... reuseport`; the
+acceptance test (`example/test.sh`, **25/25**) fires 40 close-connections, and
+proves (a) the backend is `shared`, (b) **≥2 distinct workers** served
+(`nginx.workerIdx`), and (c) all 40 running totals are **distinct** — i.e. a
+single shared counter, not per-worker ones (which would repeat totals between
+workers).
+
+## Phase 8 (next)
+
+- Further state bindings: `session`/persistence → a COM persistence API; the
+  db-connect project (external KV) as a `table` tier; TTL/expiry on entries.
 - Then decision (A): the TCL/iRules → mirror transpiler (migrate existing iRules).
 
 > All commits for this project are prefixed `mirror:`.

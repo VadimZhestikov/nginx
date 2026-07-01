@@ -133,6 +133,39 @@ sleep 0.5
 check "L4 onClientData detects ssh from raw bytes"  "mirror onClientData: proto=ssh"  "$(cat logs/error.log)"
 check "L4 onClientData detects http from raw bytes" "mirror onClientData: proto=http" "$(cat logs/error.log)"
 
+# --- 10. cross-worker shared table (phase 7) --------------------------------
+# The mirror `table` is backed by nginx.shared (cross-worker shmem). Fire many
+# close-connections; reuseport spreads them across both workers. Under one
+# SHARED counter every response carries a DISTINCT running total; a per-worker
+# Map would repeat totals between the two workers. We also require >=2 distinct
+# worker indices (nginx.workerIdx), so "all distinct" cannot pass trivially by
+# every request happening to land on a single worker.
+N=40
+: > logs/p7_totals; : > logs/p7_widx
+BACKEND=""
+for i in $(seq 1 $N); do
+    H=$(curl -s -D - -o /dev/null -H 'Connection: close' "http://127.0.0.1:$PORT/")
+    echo "$H" | grep -i '^x-mirror-total:' | grep -oE '[0-9]+' >> logs/p7_totals
+    echo "$H" | grep -i '^x-mirror-widx:'  | grep -oE '[0-9]+' >> logs/p7_widx
+    if [ -z "$BACKEND" ]; then
+        BACKEND=$(echo "$H" | grep -i '^x-mirror-table-backend:' | awk '{print $2}' | tr -d '\r')
+    fi
+done
+check "table backend is cross-worker (nginx.shared)" "shared" "$BACKEND"
+DWIDX=$(sort -u logs/p7_widx | grep -c .)
+if [ "${DWIDX:-0}" -ge 2 ]; then
+    echo "PASS: requests served by multiple workers ($DWIDX distinct worker indices)"; PASS=$((PASS+1))
+else
+    echo "FAIL: only ${DWIDX:-0} worker index seen — cannot prove cross-worker"; FAIL=$((FAIL+1))
+fi
+NTOT=$(grep -c . logs/p7_totals)
+UTOT=$(sort -u logs/p7_totals | grep -c .)
+if [ "$NTOT" -eq "$UTOT" ] && [ "$NTOT" -eq "$N" ]; then
+    echo "PASS: all $N table totals distinct -> single shared counter across workers"; PASS=$((PASS+1))
+else
+    echo "FAIL: table totals not all distinct ($UTOT unique of $NTOT) -> per-worker counters"; FAIL=$((FAIL+1))
+fi
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]
