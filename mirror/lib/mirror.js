@@ -298,11 +298,45 @@ function attachStream(streamServer, handlers) {
     }
 }
 
+// ---- live: transpile an iRule and attach it (phase 11) ----------------------
+// Closes the transpiler loop: turn TCL/iRules source into a running mirror rule
+// at config-eval time. mirror.transpile (from lib/transpile.js) emits the
+// handlers as JS SOURCE; compileRule evals that into a real handlers object and
+// applyRule attaches it to the right surface (HTTP server+location, or a stream
+// server for L4 rules). Load order in nginx.conf: mirror.js, then transpile.js,
+// then the app that calls applyRule.
+function compileRule(tclSource) {
+    if (!globalThis.mirror || typeof globalThis.mirror.transpile !== 'function') {
+        throw new Error('mirror.compileRule: transpiler not loaded ' +
+                        '(add `js_source lib/transpile.js`)');
+    }
+    var out = globalThis.mirror.transpile(tclSource);
+    out.warnings.forEach(function (w) { nginx.log(5, 'mirror.transpile: ' + w); });
+    // indirect eval -> the object literal is built in global scope; the handler
+    // closures capture nothing but globals (ev is a param, nginx is global).
+    out.handlersObj = (0, eval)('(' + out.handlers + ')');
+    return out;
+}
+
+// applyRule(target, tclSource): target = {server, location} for an HTTP rule, or
+// {streamServer} (or the stream server itself) for an L4 rule.
+function applyRule(target, tclSource) {
+    var out = compileRule(tclSource);
+    if (out.isStream) {
+        attachStream(target.streamServer || target, out.handlersObj);
+    } else {
+        attach(target.server, target.location, out.handlersObj);
+    }
+    return out;
+}
+
 globalThis.mirror = {
-    version:      '0.1.0-phase8',
+    version:      '0.1.0-phase11',
     events:       EVENTS,
     caps:         CAPS,
     attach:       attach,
     attachStream: attachStream,
+    applyRule:    applyRule,      // transpile TCL/iRules + attach (live)
+    compileRule:  compileRule,    // transpile TCL/iRules -> {handlersObj, ...}
     table:        TABLE          // cross-worker store (get/set/incr/delete/keys/backend)
 };

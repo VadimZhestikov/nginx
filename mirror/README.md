@@ -53,13 +53,13 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 30/30 pass
+cd example && bash test.sh    # 33/33 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
 **persisting across keepalive requests**, per-request routing, a **cross-worker**
-`table` counter with **TTL/expiry** (phases 7–8), and the **per-event capability
-gate** firing.
+`table` counter with **TTL/expiry** (phases 7–8), a **live-transpiled iRule**
+serving real traffic (phase 11), and the **per-event capability gate** firing.
 
 ## Phase-1 findings → phase-2 status (thread-1 nginx gaps)
 
@@ -286,11 +286,30 @@ var out = mirror.transpile('when HTTP_REQUEST { pool p ; table incr hits }');
 `if`/`elseif`/`else`, `switch`, and `foreach` (literal list), translated
 recursively so they nest. See the phase-9 section above and `transpile/`.
 
-## Phase 11 (next)
+## Phase 11 — live transpiled iRules (DONE)
+
+Closes the transpiler loop: **`mirror.applyRule({server, location}, tclSource)`**
+transpiles genuine iRules TCL at config-eval time and attaches the result, so a
+transpiled rule serves **real traffic**. `mirror.compileRule(tcl)` returns the
+transpiler output plus `handlersObj` (the generated source `eval`'d into a live
+handlers object — the closures capture only globals). Load order:
+`mirror.js` → `transpile.js` → the app.
+
+The example's **`/irule/`** location is served by a hand-written iRule
+(`if/else` tier selection + `table incr` + response headers) transpiled live;
+`example/test.sh` (33/33) drives it and checks the branch-selected tier and the
+table counter reach the response — end-to-end proof that the transpiler output
+runs correctly inside real nginx.
+
+```js
+mirror.applyRule({ server: srv, location: loc },
+  'when HTTP_REQUEST  { if { [HTTP::header X-A] eq "1" } { set t a } else { set t b } }\n' +
+  'when HTTP_RESPONSE { HTTP::header insert X-Tier $t }');
+```
+
+## Phase 12 (next)
 
 - `session`/persistence → a COM persistence API; the db-connect project
   (external KV) as a further `table` tier.
-- A live end-to-end path: transpile an iRule at config time and attach it, so
-  transpiled rules serve real traffic in the example.
 
 > All commits for this project are prefixed `mirror:`.

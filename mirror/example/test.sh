@@ -188,6 +188,20 @@ GONE=$(curl -s -D - -o /dev/null -H 'Connection: close' "http://127.0.0.1:$PORT/
 check "TTL: key value gone after expiry"     "x-mirror-ttltest: undefined" "$GONE"
 check "TTL: remaining lifetime null after expiry" "x-mirror-ttltest-ttl: null" "$GONE"
 
+# --- 12. live-transpiled iRule (phase 11) ------------------------------------
+# /irule/ is served by a genuine iRules TCL rule transpiled to mirror at config
+# time. Prove the transpiled control flow + response headers run for real.
+ADM=$(curl -s -D - -o /dev/null -H 'X-Irule: admin' "http://127.0.0.1:$PORT/irule/")
+USR=$(curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/irule/")
+check "transpiled iRule: if-branch -> admin tier"  "x-irule-tier: admin" "$ADM"
+check "transpiled iRule: else-branch -> user tier" "x-irule-tier: user"  "$USR"
+HITS=$(echo "$USR" | grep -i '^x-irule-hits:' | grep -oE '[0-9]+')
+if [ -n "$HITS" ] && [ "$HITS" -ge 1 ]; then
+    echo "PASS: transpiled iRule: table incr reflected in header ($HITS)"; PASS=$((PASS+1))
+else
+    echo "FAIL: transpiled iRule: no table hits header ('$HITS')"; FAIL=$((FAIL+1))
+fi
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

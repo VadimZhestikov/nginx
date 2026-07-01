@@ -147,6 +147,29 @@ var mirror = globalThis.mirror;
         });
     }
 
+    // --- live-transpiled iRule (phase 11): TCL/iRules -> mirror at config time
+    // The rule below is genuine iRules TCL; mirror.applyRule transpiles it and
+    // attaches the result, so it serves real traffic — proving the transpiler
+    // end-to-end (control flow, flow-local, table, response headers).
+    var iruleLoc = server.locations.find(function (l) { return l.path === '/irule/'; });
+    if (iruleLoc && mirror.applyRule) {
+        iruleLoc.handler = function (r) { r.respond(200, {}, 'irule ok\n'); };
+        mirror.applyRule({ server: server, location: iruleLoc }, [
+            'when HTTP_REQUEST {',
+            '    if { [HTTP::header X-Irule] eq "admin" } {',
+            '        set tier admin',
+            '    } else {',
+            '        set tier user',
+            '    }',
+            '    table incr irule:hits',
+            '}',
+            'when HTTP_RESPONSE {',
+            '    HTTP::header insert X-Irule-Tier $tier',
+            '    HTTP::header insert X-Irule-Hits [table lookup irule:hits]',
+            '}'
+        ].join('\n'));
+    }
+
     // --- L4 rule (iRules CLIENT_DATA): inspect raw TCP bytes, detect protocol -
     var sstream = nginx.stream && nginx.stream.servers && nginx.stream.servers[0];
     if (sstream) {
