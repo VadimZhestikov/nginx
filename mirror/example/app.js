@@ -228,6 +228,39 @@ var mirror = globalThis.mirror;
                          std.loadFile('../transpile/showcase.tcl'));
     }
 
+    // --- phase 17: external KV tier (mirror.kv over r.fetch) -----------------
+    // The "external store" is a tiny HTTP service (mirror-kvsvc) backed by
+    // nginx.shared — GET/PUT/DELETE ?k=KEY[&v=VAL]. A real deployment would point
+    // mirror.kv at Redis/a DB gateway instead.
+    var kvSvc = nginx.http.servers.find(function (s) { return s.name === 'mirror-kvsvc'; });
+    if (kvSvc) {
+        var storeLoc = kvSvc.locations.find(function (l) { return l.path === '/store'; });
+        storeLoc.handler = function (r) {
+            var q = r.queryParams || {};
+            var key = 'kv:' + (q.k || '');
+            if (r.method === 'PUT') { nginx.shared.set(key, q.v !== undefined ? q.v : ''); r.respond(204, {}, ''); return; }
+            if (r.method === 'DELETE') { nginx.shared.delete(key); r.respond(204, {}, ''); return; }
+            var v = nginx.shared.get(key);
+            if (v === undefined) { r.respond(404, {}, ''); } else { r.respond(200, {}, v); }
+        };
+    }
+
+    // frontend: an ASYNC content handler that reads/writes the external KV.
+    //   POST /kv/?k=greeting&set=hello  -> store then echo the stored value
+    //   GET  /kv/?k=greeting            -> echo the (persisted) value
+    var kvLoc = server.locations.find(function (l) { return l.path === '/kv/'; });
+    if (kvLoc && mirror.kv) {
+        kvLoc.handler = async function (r) {
+            var kv = mirror.kv(r, 'http://127.0.0.1:8303/store');
+            var q  = r.queryParams || {};
+            var key = q.k || 'default';
+            if (q.set !== undefined) { await kv.set(key, q.set); }
+            var val = await kv.get(key);
+            r.respond(200, { 'content-type': 'text/plain' },
+                      (val === undefined ? 'MISS' : val) + '\n');
+        };
+    }
+
     // --- L4 rule (iRules CLIENT_DATA): inspect raw TCP bytes, detect protocol -
     var sstream = nginx.stream && nginx.stream.servers && nginx.stream.servers[0];
     if (sstream) {

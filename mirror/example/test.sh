@@ -291,6 +291,17 @@ else
     echo "FAIL: showcase: blocklist did not 403 (got $BLK) — respond-in-access-hook gap"; FAIL=$((FAIL+1))
 fi
 
+# --- 16. external KV tier (phase 17, mirror.kv over r.fetch) ------------------
+# An async content handler on /kv/ reads/writes an external HTTP KV service
+# (mirror-kvsvc, backed by nginx.shared) via mirror.kv. Prove set+readback, and
+# that the value PERSISTS to a later, independent request (separate fetch).
+SET=$(curl -s "http://127.0.0.1:$PORT/kv/?k=greeting&set=hello-kv")
+check "external KV: set + readback in one request" "hello-kv" "$SET"
+GET=$(curl -s "http://127.0.0.1:$PORT/kv/?k=greeting")
+check "external KV: value persisted to a later request" "hello-kv" "$GET"
+MISS=$(curl -s "http://127.0.0.1:$PORT/kv/?k=nonesuch")
+check "external KV: absent key -> MISS" "MISS" "$MISS"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

@@ -56,7 +56,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 51/51 pass
+cd example && bash test.sh    # 54/54 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
@@ -405,10 +405,36 @@ and security-header insertion.
 The showcase is loaded from **one canonical `showcase.tcl`** via `std.loadFile`
 in both the qjs test and the live example (no drift).
 
-## Phase 17 (next)
+## Phase 17 — external KV tier (async, db-connect, DONE)
 
-- The db-connect project (external KV) as a further `table` tier — brings in
-  **async rules** (hooks currently run synchronously), the largest remaining
-  architectural step.
+State that must outlive nginx / span a fleet (the db-connect idea) lives in an
+**external** store reached over HTTP via pilgrim's request-scoped `r.fetch`.
+**`mirror.kv(r, baseUrl)`** returns `{get, set, del}` — all **async** (Promises),
+so it is used from an **async content handler** (which pilgrim can
+suspend/resume), *not* from the synchronous access-phase hooks. That boundary is
+the honest finding of this phase: the request lifecycle's blocking point is the
+content phase, so external I/O belongs there.
+
+```js
+loc.handler = async function (r) {
+    var kv = mirror.kv(r, 'http://kv.internal/store');   // Redis/DB gateway in prod
+    var v  = await kv.get('sess:' + id);
+    r.respond(200, {}, v || 'MISS');
+};
+```
+
+Backend contract: `GET ?k=KEY` → value (404 = absent), `PUT ?k=KEY&v=VAL`,
+`DELETE ?k=KEY`. The example runs a tiny **`mirror-kvsvc`** server (backed by
+`nginx.shared`) as the stand-in store, and an async `/kv/` handler that
+set+reads through it; `example/test.sh` (54/54) proves a value written on one
+request **persists to a later, independent request** (a separate `fetch`).
+
+Contrast with the phase-7/8 `table`: `table` is *cross-worker* shared memory,
+synchronous, node-local; `mirror.kv` is *external*, async, fleet-wide and
+durable. They are complementary tiers.
+
+## Phase 18 (next)
+
+- More `HTTP::` / `TCP::` commands as real iRules demand; or consolidation.
 
 > All commits for this project are prefixed `mirror:`.

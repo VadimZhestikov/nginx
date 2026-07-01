@@ -349,6 +349,37 @@ function classLookup(name, key) {
     return g[key];
 }
 
+// ---- external KV tier (phase 17) --------------------------------------------
+// An EXTERNAL key/value store reached over HTTP via pilgrim's request-scoped
+// `r.fetch`, for state that must outlive nginx / span a fleet (the db-connect
+// idea). Unlike the cross-worker `table` (shared memory, synchronous), this is
+// ASYNC — so it is usable from an async CONTENT handler (which pilgrim can
+// suspend/resume), NOT from the synchronous access-phase hooks. The backend is
+// any HTTP KV service: GET ?k=KEY -> value (404 = absent), PUT ?k=KEY&v=VAL,
+// DELETE ?k=KEY.
+//
+//   loc.handler = async function (r) {
+//       var kv = mirror.kv(r, 'http://kv.internal/store');
+//       var v = await kv.get('sess:' + id);
+//       ...
+//   };
+function kv(r, baseUrl) {
+    function enc(s) { return encodeURIComponent(String(s)); }
+    return {
+        get: async function (k) {
+            var res = await r.fetch(baseUrl + '?k=' + enc(k));
+            return res.status === 200 ? res.body : undefined;
+        },
+        set: async function (k, v) {
+            await r.fetch(baseUrl + '?k=' + enc(k) + '&v=' + enc(v), { method: 'PUT' });
+            return v;
+        },
+        del: async function (k) {
+            await r.fetch(baseUrl + '?k=' + enc(k), { method: 'DELETE' });
+        }
+    };
+}
+
 // ---- session persistence / LB stickiness (phase 12, iRules `persist`) -------
 // Pin a client to a peer, the iRules `persist` command. Built entirely on
 // mirror primitives: the phase-5 onSelectPeer custom balancer + the phase-7/8
@@ -518,6 +549,7 @@ globalThis.mirror = {
     datagroup:    datagroup,      // register a data group (iRules `class`)
     classMatch:   classMatch,     // iRules `class match`
     classLookup:  classLookup,    // iRules `class lookup`
+    kv:           kv,             // async external KV over r.fetch (phase 17)
     applyRule:    applyRule,      // transpile TCL/iRules + attach (live)
     compileRule:  compileRule,    // transpile TCL/iRules -> {handlersObj, ...}
     table:        TABLE          // cross-worker store (get/set/incr/delete/keys/backend)
