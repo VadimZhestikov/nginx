@@ -184,10 +184,40 @@
         case 'TCP::client_port':
         case 'TCP::remote_port':
             return 'ev.clientPort';
-        case 'HTTP::uri':    return 'ev.uri';
+        case 'HTTP::uri':
+        case 'HTTP::path':   return 'ev.uri';
         case 'HTTP::method': return 'ev.method';
+        case 'HTTP::host':   return 'ev.header("host")';
         case 'HTTP::header':
             if (w.length >= 2) { return 'ev.header(' + value(w[1], warnings, lineNo) + ')'; }
+            break;
+        case 'HTTP::cookie':
+            if (w.length >= 2) { return 'ev.cookie(' + value(w[1], warnings, lineNo) + ')'; }
+            break;
+        case 'string': {
+            var s0 = (w.length >= 3) ? value(w[2], warnings, lineNo) : '""';
+            switch (w[1] && w[1].text) {
+            case 'tolower':   return 'String(' + s0 + ').toLowerCase()';
+            case 'toupper':   return 'String(' + s0 + ').toUpperCase()';
+            case 'length':    return 'String(' + s0 + ').length';
+            case 'trim':      return 'String(' + s0 + ').trim()';
+            case 'trimleft':  return 'String(' + s0 + ').replace(/^\\s+/, "")';
+            case 'trimright': return 'String(' + s0 + ').replace(/\\s+$/, "")';
+            case 'range':     // string range S first last  ->  slice(first, last+1)
+                if (w.length >= 5) {
+                    return 'String(' + s0 + ').slice(' + value(w[3], warnings, lineNo) +
+                           ', ' + value(w[4], warnings, lineNo) + ' + 1)';
+                }
+                break;
+            }
+            break;
+        }
+        case 'substr':       // substr S start [length]
+            if (w.length >= 3) {
+                var st = value(w[2], warnings, lineNo);
+                var ln = (w.length >= 4) ? ', ' + value(w[3], warnings, lineNo) : '';
+                return 'String(' + value(w[1], warnings, lineNo) + ').substr(' + st + ln + ')';
+            }
             break;
         case 'table':
             if (w.length >= 3 && (w[1].text === 'lookup' || w[1].text === 'get')) {
@@ -203,16 +233,25 @@
     }
 
     // Translate an [expr {...}] body: TCL operators -> JS, subs translated.
-    var EXPR_OP = { eq: '===', ne: '!==', and: '&&', or: '||', not: '!' };
-    function expr(body, warnings, lineNo) {
-        var out = [], i = 0, n = body.length;
+    // Word operators that map to a JS infix operator:
+    var EXPR_OP = { eq: '===', ne: '!==', equals: '===', and: '&&', or: '||', not: '!' };
+    // Binary string operators that map to a JS method call (folded below):
+    var EXPR_STROP = {
+        contains:    function (l, r) { return '(String(' + l + ').includes(' + r + '))'; },
+        starts_with: function (l, r) { return '(String(' + l + ').startsWith(' + r + '))'; },
+        ends_with:   function (l, r) { return '(String(' + l + ').endsWith(' + r + '))'; }
+    };
+
+    // Tokenize an expr body into {k:'val'|'op'|'strop', v} tokens.
+    function tokenizeExpr(body, warnings, lineNo) {
+        var toks = [], i = 0, n = body.length;
         while (i < n) {
             var c = body[i];
-            if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { out.push(' '); i++; continue; }
+            if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
             if (c === '$') {
                 i++; var name = '';
                 while (i < n && /[A-Za-z0-9_:]/.test(body[i])) { name += body[i++]; }
-                out.push(varRef(name)); continue;
+                toks.push({ k: 'val', v: varRef(name) }); continue;
             }
             if (c === '[') {
                 var depth = 0, s = '';
@@ -222,23 +261,59 @@
                     s += body[i++];
                     if (depth === 0) { break; }
                 }
-                out.push(commandSub(s.slice(1, -1), warnings, lineNo)); continue;
+                toks.push({ k: 'val', v: commandSub(s.slice(1, -1), warnings, lineNo) }); continue;
             }
             if (c === '"') {
                 var q = ''; i++;
                 while (i < n && body[i] !== '"') { q += body[i++]; }
-                i++; out.push(quote(q)); continue;
+                i++; toks.push({ k: 'val', v: quote(q) }); continue;
             }
-            if (/[A-Za-z_]/.test(c)) {                  // bareword operator/keyword
+            if (/[0-9]/.test(c) || (c === '.' && /[0-9]/.test(body[i + 1] || ''))) {
+                var num = '';
+                while (i < n && /[0-9.]/.test(body[i])) { num += body[i++]; }
+                toks.push({ k: 'val', v: num }); continue;
+            }
+            if (/[A-Za-z_]/.test(c)) {                  // bareword: operator or keyword
                 var wtxt = '';
                 while (i < n && /[A-Za-z_0-9]/.test(body[i])) { wtxt += body[i++]; }
-                out.push(EXPR_OP.hasOwnProperty(wtxt) ? EXPR_OP[wtxt] : quote(wtxt));
+                if (EXPR_STROP.hasOwnProperty(wtxt)) { toks.push({ k: 'strop', v: wtxt }); }
+                else if (EXPR_OP.hasOwnProperty(wtxt)) { toks.push({ k: 'op', v: EXPR_OP[wtxt] }); }
+                else if (wtxt === 'true' || wtxt === 'false') { toks.push({ k: 'val', v: wtxt }); }
+                else {
+                    warnings.push('line ' + lineNo + ": unknown expr word '" + wtxt +
+                                  "' (treated as a string literal)");
+                    toks.push({ k: 'val', v: quote(wtxt) });
+                }
                 continue;
             }
-            // operators / punctuation pass through (== != < > <= >= ? : ( ) && ||)
-            out.push(c); i++;
+            // multi-char / single-char symbol operators
+            var two = body.substr(i, 2);
+            if (two === '==' || two === '!=' || two === '<=' || two === '>=' ||
+                two === '&&' || two === '||') {
+                toks.push({ k: 'op', v: (two === '==' ? '===' : two === '!=' ? '!==' : two) });
+                i += 2; continue;
+            }
+            toks.push({ k: 'op', v: c }); i++;          // < > ! ? : ( ) + - * / %
         }
-        return out.join('').replace(/\s+/g, ' ').trim();
+        return toks;
+    }
+
+    function expr(body, warnings, lineNo) {
+        var toks = tokenizeExpr(body, warnings, lineNo);
+        var out = [];
+        for (var i = 0; i < toks.length; i++) {
+            var t = toks[i];
+            if (t.k === 'strop') {
+                var left = out.length ? out.pop() : '""';
+                var rtok = toks[i + 1];
+                var right = (rtok && rtok.k === 'val') ? rtok.v : '""';
+                if (rtok && rtok.k === 'val') { i++; }
+                out.push(EXPR_STROP[t.v](left, right));
+            } else {
+                out.push(t.v);
+            }
+        }
+        return out.join(' ').replace(/\s+/g, ' ').trim();
     }
 
     // ---- statement translation -----------------------------------------------

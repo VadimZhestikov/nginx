@@ -182,16 +182,20 @@ var mirror = globalThis.mirror;
         iruleLoc.handler = function (r) { r.respond(200, {}, 'irule ok\n'); };
         mirror.applyRule({ server: server, location: iruleLoc }, [
             'when HTTP_REQUEST {',
-            '    if { [HTTP::header X-Irule] eq "admin" } {',
+            '    if { [HTTP::header X-Irule] starts_with "adm" } {',   // phase 14: string op
             '        set tier admin',
             '    } else {',
             '        set tier user',
             '    }',
+            '    set ua [string tolower [HTTP::header X-Agent]]',      // phase 14: string tolower
+            '    set sid [HTTP::cookie sid]',                          // phase 14: HTTP::cookie
             '    table incr irule:hits',
             '}',
             'when HTTP_RESPONSE {',
             '    HTTP::header insert X-Irule-Tier $tier',
             '    HTTP::header insert X-Irule-Hits [table lookup irule:hits]',
+            '    HTTP::header insert X-Irule-Ua $ua',
+            '    HTTP::header insert X-Irule-Sid $sid',
             '}'
         ].join('\n'));
     }

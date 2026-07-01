@@ -55,7 +55,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 38/38 pass
+cd example && bash test.sh    # 40/40 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
@@ -349,9 +349,26 @@ the first response inserts the cookie and every subsequent request (cookie jar,
 across both workers, two backends) sticks to the same backend without the cookie
 being re-issued.
 
-## Phase 14 (next)
+## Phase 14 — broaden the transpiler command surface (DONE)
 
-- The db-connect project (external KV) as a further `table` tier; broaden the
-  transpiler command surface (string/IP ops, more `HTTP::`/`TCP::` commands).
+Real iRules lean on string/URI ops and expression operators, so the transpiler
+grew (see `transpile/`):
+
+- `expr()` is now a proper tokenizer + fold, so the binary word-operators
+  **`starts_with` / `ends_with` / `contains`** translate to
+  `String(x).startsWith/endsWith/includes(y)`, `equals` joins `eq`, and an
+  unknown expr word now **warns** instead of silently becoming a string.
+- new command-subs: **`string tolower/toupper/length/trim*/range`**, **`substr`**,
+  **`HTTP::path`**, **`HTTP::host`**, **`HTTP::cookie`** (backed by a new
+  `ev.cookie(name)` in the framework).
+
+`transpile/run.sh` is now **71/71**; the example's live `/irule/` was extended to
+use `starts_with`, `string tolower`, and `HTTP::cookie`, and `example/test.sh`
+(40/40) checks those run correctly end-to-end in real nginx.
+
+## Phase 15 (next)
+
+- The db-connect project (external KV) as a further `table` tier; more `HTTP::` /
+  `TCP::` commands and data-group (`class`) matching in the transpiler.
 
 > All commits for this project are prefixed `mirror:`.

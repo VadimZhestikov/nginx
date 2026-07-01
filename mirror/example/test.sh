@@ -191,10 +191,14 @@ check "TTL: remaining lifetime null after expiry" "x-mirror-ttltest-ttl: null" "
 # --- 12. live-transpiled iRule (phase 11) ------------------------------------
 # /irule/ is served by a genuine iRules TCL rule transpiled to mirror at config
 # time. Prove the transpiled control flow + response headers run for real.
-ADM=$(curl -s -D - -o /dev/null -H 'X-Irule: admin' "http://127.0.0.1:$PORT/irule/")
+ADM=$(curl -s -D - -o /dev/null -H 'X-Irule: admin' -H 'X-Agent: CurL/8' \
+        -H 'Cookie: sid=xyz789; other=1' "http://127.0.0.1:$PORT/irule/")
 USR=$(curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/irule/")
-check "transpiled iRule: if-branch -> admin tier"  "x-irule-tier: admin" "$ADM"
-check "transpiled iRule: else-branch -> user tier" "x-irule-tier: user"  "$USR"
+check "transpiled iRule: starts_with -> admin tier" "x-irule-tier: admin" "$ADM"
+check "transpiled iRule: else-branch -> user tier"  "x-irule-tier: user"  "$USR"
+# phase-14 command surface, end to end:
+check "transpiled iRule: string tolower [HTTP::header]" "x-irule-ua: curl/8" "$ADM"
+check "transpiled iRule: HTTP::cookie read"             "x-irule-sid: xyz789" "$ADM"
 HITS=$(echo "$USR" | grep -i '^x-irule-hits:' | grep -oE '[0-9]+')
 if [ -n "$HITS" ] && [ "$HITS" -ge 1 ]; then
     echo "PASS: transpiled iRule: table incr reflected in header ($HITS)"; PASS=$((PASS+1))

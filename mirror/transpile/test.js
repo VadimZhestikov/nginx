@@ -229,5 +229,75 @@ var H9 = (0, eval)('(' + r9.handlers + ')');
 var e9 = mockEv({ 'X-Cmd': 'get', 'X-Admin': '1' }); H9.onRequestHeaders(e9);
 ok('behavioral: nested if-in-switch -> admin', e9.upstream === 'admin');
 
+// ---- fixture 10: expr string operators + string/HTTP command subs (phase 14)
+// give the mock ev uri/host/cookie for behavioural checks
+function mockEv2(headers, uri, cookies) {
+    var ev = mockEv(headers || {});
+    ev.uri = uri || '/';
+    ev.cookie = function (n) { return (cookies || {})[n]; };
+    return ev;
+}
+
+var strr = [
+    'when HTTP_REQUEST {',
+    '    set host [string tolower [HTTP::host]]',
+    '    if { [HTTP::path] starts_with "/api/" } { set area api } else { set area web }',
+    '    if { [HTTP::header User-Agent] contains "bot" } { set bot 1 } else { set bot 0 }',
+    '    set sid [HTTP::cookie session]',
+    '}'
+].join('\n');
+var r10 = T(strr);
+print('\n--- fixture 10 handlers ---\n' + r10.handlers + '\n');
+ok('str: no warnings',              r10.warnings.length === 0);
+ok('str: string tolower + HTTP::host',
+   has(r10.handlers, 'String(ev.header("host")).toLowerCase()'));
+ok('str: HTTP::path starts_with -> startsWith',
+   has(r10.handlers, 'String(ev.uri).startsWith("/api/")'));
+ok('str: header contains -> includes',
+   has(r10.handlers, 'String(ev.header("User-Agent")).includes("bot")'));
+ok('str: HTTP::cookie -> ev.cookie',  has(r10.handlers, 'ev.cookie("session")'));
+
+var H10 = (0, eval)('(' + r10.handlers + ')');
+var e10a = mockEv2({ 'host': 'API.Example.COM', 'User-Agent': 'good-bot/1' },
+                   '/api/users', { session: 'abc' });
+H10.onRequestHeaders(e10a);
+ok('behavioral: host lowercased',   e10a.flow.host === 'api.example.com');
+ok('behavioral: path starts_with -> api', e10a.flow.area === 'api');
+ok('behavioral: UA contains bot -> 1',    e10a.flow.bot === 1);
+ok('behavioral: cookie read',       e10a.flow.sid === 'abc');
+
+var e10b = mockEv2({ 'host': 'x', 'User-Agent': 'human' }, '/home', {});
+H10.onRequestHeaders(e10b);
+ok('behavioral: non-api path -> web', e10b.flow.area === 'web');
+ok('behavioral: no bot -> 0',         e10b.flow.bot === 0);
+
+// ---- fixture 11: ends_with + equals + substr + string length ----------------
+var strr2 = [
+    'when HTTP_REQUEST {',
+    '    if { [HTTP::path] ends_with ".json" } { set fmt json } else { set fmt html }',
+    '    if { [HTTP::method] equals "POST" } { set write 1 } else { set write 0 }',
+    '    set head [substr [HTTP::path] 0 4]',
+    '    set len [string length [HTTP::path]]',
+    '}'
+].join('\n');
+var r11 = T(strr2);
+ok('str2: no warnings',          r11.warnings.length === 0);
+ok('str2: ends_with -> endsWith', has(r11.handlers, 'String(ev.uri).endsWith(".json")'));
+ok('str2: equals -> ===',         has(r11.handlers, 'ev.method === "POST"'));
+ok('str2: substr',                has(r11.handlers, 'String(ev.uri).substr(0, 4)'));
+ok('str2: string length',         has(r11.handlers, 'String(ev.uri).length'));
+var H11 = (0, eval)('(' + r11.handlers + ')');
+var e11 = mockEv2({}, '/data.json', {}); e11.method = 'POST';
+H11.onRequestHeaders(e11);
+ok('behavioral: ends_with .json -> json', e11.flow.fmt === 'json');
+ok('behavioral: method equals POST -> 1', e11.flow.write === 1);
+ok('behavioral: substr head',             e11.flow.head === '/dat');
+ok('behavioral: length',                  e11.flow.len === 10);
+
+// ---- fixture 12: unknown expr word must WARN (not silently mistranslate) ----
+var r12 = T('when HTTP_REQUEST { set x [expr {$a wibble $b}] }');
+ok('expr: unknown word warns', r12.warnings.length >= 1 &&
+   has(r12.warnings.join('|'), "unknown expr word 'wibble'"));
+
 print('\nResults: ' + PASS + ' passed, ' + FAIL + ' failed');
 if (FAIL > 0) { throw new Error(FAIL + ' transpiler test(s) failed'); }

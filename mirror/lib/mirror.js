@@ -38,10 +38,10 @@ var CAPS = {
     onClientHello:     ['flow', 'clientHello', 'table'],
     onClientAccept:    ['clientAddr', 'clientPort', 'flow', 'table', 'reject'],
     onRequestHeaders:  ['clientAddr', 'clientPort', 'flow', 'ctx', 'table',
-                        'method', 'uri', 'header', 'respond', 'redirect',
+                        'method', 'uri', 'header', 'cookie', 'respond', 'redirect',
                         'selectUpstream'],
     onResponseHeaders: ['clientAddr', 'clientPort', 'flow', 'ctx', 'table',
-                        'setResponseHeader'],
+                        'header', 'cookie', 'setResponseHeader'],
     onClientClose:     ['flow', 'table'],  // no request/conn at close; flow only
     onClientData:      ['data', 'clientAddr', 'table', 'finalize', 'reject']  // L4 (stream)
 };
@@ -193,6 +193,15 @@ function makeEvent(event, o) {   // o = { r?, conn?, flow }
         cap(event, 'header');
         var h = o.r.headers || {};
         return h[name] !== undefined ? h[name] : h[String(name).toLowerCase()];
+    };
+
+    // ev.cookie(name) — one cookie value from the request Cookie header (iRules
+    // HTTP::cookie). Returns undefined if absent.
+    ev.cookie = function (name) {
+        cap(event, 'cookie');
+        var h = o.r.headers || {};
+        var c = h.cookie !== undefined ? h.cookie : h.Cookie;
+        return cookieValue(c, name);
     };
 
     // ---- flow-control / control verbs ----
@@ -458,7 +467,7 @@ function applyRule(target, tclSource) {
 }
 
 globalThis.mirror = {
-    version:      '0.1.0-phase11',
+    version:      '0.1.0-phase14',
     events:       EVENTS,
     caps:         CAPS,
     attach:       attach,
