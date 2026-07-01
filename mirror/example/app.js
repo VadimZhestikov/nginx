@@ -180,6 +180,9 @@ var mirror = globalThis.mirror;
     var iruleLoc = server.locations.find(function (l) { return l.path === '/irule/'; });
     if (iruleLoc && mirror.applyRule) {
         iruleLoc.handler = function (r) { r.respond(200, {}, 'irule ok\n'); };
+        // phase 15: config-defined data groups (iRules `class`).
+        mirror.datagroup('irule_blocked', ['badbot', 'evilscanner']);
+        mirror.datagroup('irule_areas',   { admin: 'A-team', user: 'U-team' });
         mirror.applyRule({ server: server, location: iruleLoc }, [
             'when HTTP_REQUEST {',
             '    if { [HTTP::header X-Irule] starts_with "adm" } {',   // phase 14: string op
@@ -189,6 +192,12 @@ var mirror = globalThis.mirror;
             '    }',
             '    set ua [string tolower [HTTP::header X-Agent]]',      // phase 14: string tolower
             '    set sid [HTTP::cookie sid]',                          // phase 14: HTTP::cookie
+            '    if { [class match $ua contains irule_blocked] } {',   // phase 15: class match
+            '        set blk 1',
+            '    } else {',
+            '        set blk 0',
+            '    }',
+            '    set team [class lookup $tier irule_areas]',           // phase 15: class lookup
             '    table incr irule:hits',
             '}',
             'when HTTP_RESPONSE {',
@@ -196,6 +205,8 @@ var mirror = globalThis.mirror;
             '    HTTP::header insert X-Irule-Hits [table lookup irule:hits]',
             '    HTTP::header insert X-Irule-Ua $ua',
             '    HTTP::header insert X-Irule-Sid $sid',
+            '    HTTP::header insert X-Irule-Blk $blk',
+            '    HTTP::header insert X-Irule-Team $team',
             '}'
         ].join('\n'));
     }

@@ -224,6 +224,23 @@
                 return 'ev.table.get(' + value(w[2], warnings, lineNo) + ')';
             }
             break;
+        case 'class':
+            // class match <subject> <op> <class>   (op: equals/contains/...)
+            // class match <subject> <class>         (equals implied)
+            // class lookup <key> <class>
+            if (w[1] && w[1].text === 'match' && w.length >= 5) {
+                return 'mirror.classMatch(' + value(w[4], warnings, lineNo) + ', ' +
+                       quote(w[3].text) + ', ' + value(w[2], warnings, lineNo) + ')';
+            }
+            if (w[1] && w[1].text === 'match' && w.length === 4) {
+                return 'mirror.classMatch(' + value(w[3], warnings, lineNo) +
+                       ', "equals", ' + value(w[2], warnings, lineNo) + ')';
+            }
+            if (w[1] && w[1].text === 'lookup' && w.length >= 4) {
+                return 'mirror.classLookup(' + value(w[3], warnings, lineNo) + ', ' +
+                       value(w[2], warnings, lineNo) + ')';
+            }
+            break;
         case 'expr':
             if (w.length >= 2) { return '(' + expr(w[1].text, warnings, lineNo) + ')'; }
             break;

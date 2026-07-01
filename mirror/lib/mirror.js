@@ -307,6 +307,48 @@ function attachStream(streamServer, handlers) {
     }
 }
 
+// ---- data groups (phase 15, iRules `class`) ---------------------------------
+// iRules data groups are named, config-defined sets / key-value maps used for
+// blocklists, path->pool maps, etc. mirror.datagroup(name, data) registers one
+// (an array = string group, an object = key/value group). Because data groups
+// are read-only after config, a per-worker registry is fine — every worker
+// inherits the same copy from the config-eval snapshot.
+var DATAGROUPS = {};
+
+function datagroup(name, data) { DATAGROUPS[name] = data; return data; }
+
+function classCmp(subject, op, entry) {
+    subject = String(subject); entry = String(entry);
+    switch (op) {
+    case 'contains':    return subject.indexOf(entry) >= 0;
+    case 'starts_with': return subject.indexOf(entry) === 0;
+    case 'ends_with':   return subject.length >= entry.length &&
+                                subject.slice(subject.length - entry.length) === entry;
+    default:            return subject === entry;      // 'equals'
+    }
+}
+
+// mirror.classMatch(name, op, subject) — true if any member matches (iRules
+// `class match <subject> <op> <class>`).
+function classMatch(name, op, subject) {
+    var g = DATAGROUPS[name];
+    if (!g) { return false; }
+    var items = Array.isArray(g) ? g : Object.keys(g);
+    for (var i = 0; i < items.length; i++) {
+        if (classCmp(subject, op, items[i])) { return true; }
+    }
+    return false;
+}
+
+// mirror.classLookup(name, key) — value for key in a k/v group, or (for a string
+// group) the key itself if present, else undefined (iRules `class lookup`).
+function classLookup(name, key) {
+    var g = DATAGROUPS[name];
+    if (!g) { return undefined; }
+    if (Array.isArray(g)) { return g.indexOf(key) >= 0 ? key : undefined; }
+    return g[key];
+}
+
 // ---- session persistence / LB stickiness (phase 12, iRules `persist`) -------
 // Pin a client to a peer, the iRules `persist` command. Built entirely on
 // mirror primitives: the phase-5 onSelectPeer custom balancer + the phase-7/8
@@ -473,6 +515,9 @@ globalThis.mirror = {
     attach:       attach,
     attachStream: attachStream,
     persist:      persist,        // LB stickiness (iRules `persist`), cross-worker
+    datagroup:    datagroup,      // register a data group (iRules `class`)
+    classMatch:   classMatch,     // iRules `class match`
+    classLookup:  classLookup,    // iRules `class lookup`
     applyRule:    applyRule,      // transpile TCL/iRules + attach (live)
     compileRule:  compileRule,    // transpile TCL/iRules -> {handlersObj, ...}
     table:        TABLE          // cross-worker store (get/set/incr/delete/keys/backend)

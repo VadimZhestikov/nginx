@@ -33,6 +33,7 @@ var out = mirror.transpile(tclSource);
 | `[string range S a b]`, `[substr S a [l]]` | `String(S).slice(a, b+1)`, `String(S).substr(a[, l])` |
 | `[expr { … eq/ne/equals/&&/\|\| ?: … }]` | JS expression (`eq`/`equals`→`===`, …) |
 | `[expr { X starts_with/ends_with/contains Y }]` | `String(X).startsWith/endsWith/includes(Y)` |
+| `[class match SUBJ OP GRP]`, `[class lookup KEY GRP]` | `mirror.classMatch('GRP', 'OP', SUBJ)`, `mirror.classLookup('GRP', KEY)` |
 | `table incr/set/delete/lookup K` | `ev.table.incr/set/delete/get(...)` |
 | `pool NAME` | `ev.selectUpstream('NAME')` |
 | `HTTP::header insert/replace N V` | `ev.setResponseHeader('N', V)` |
@@ -55,7 +56,7 @@ human sees exactly what still needs hand-porting.
 ## Run
 
 ```bash
-bash run.sh        # 71/71 — standalone under qjs, no nginx needed
+bash run.sh        # 77/77 — standalone under qjs, no nginx needed
 ```
 
 The test transpiles the same spine iRule that `example/app.js` translates **by

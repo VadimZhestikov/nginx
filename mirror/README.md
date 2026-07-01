@@ -43,6 +43,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 | iRules → mirror | `mirror.transpile(tclSource)` (decision A) | ✅ phase 9 |
 | session persistence | `mirror.persist(upstream, opts)` (iRules `persist`) | ✅ phase 12 |
 | cookie-insert persistence | `mirror.persist(u, {key:'cookie:N'})` | ✅ phase 13 |
+| data groups | `mirror.datagroup/classMatch/classLookup` (iRules `class`) | ✅ phase 15 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
@@ -55,7 +56,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 40/40 pass
+cd example && bash test.sh    # 43/43 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
@@ -366,9 +367,27 @@ grew (see `transpile/`):
 use `starts_with`, `string tolower`, and `HTTP::cookie`, and `example/test.sh`
 (40/40) checks those run correctly end-to-end in real nginx.
 
-## Phase 15 (next)
+## Phase 15 — data groups (iRules `class`, DONE)
+
+Data groups are iRules' bread and butter — named, config-defined sets / k-v maps
+for blocklists, area→pool maps, etc. Pure JS:
+
+- **`mirror.datagroup(name, data)`** registers one (an array = string group, an
+  object = k/v group) into a per-worker registry (read-only after config, so
+  every worker inherits the same snapshot).
+- **`mirror.classMatch(name, op, subject)`** — true if any member matches
+  (`op` ∈ `equals`/`contains`/`starts_with`/`ends_with`); **`mirror.classLookup(name, key)`**
+  — the mapped value (iRules `class match` / `class lookup`).
+- the transpiler maps `[class match SUBJ OP GRP]` and `[class lookup KEY GRP]`.
+
+The example defines an `irule_blocked` list and an `irule_areas` map and uses
+`class match`/`class lookup` in the live `/irule/` rule; `example/test.sh` (43/43)
+confirms a blocked User-Agent and the area→team lookup resolve end-to-end.
+
+## Phase 16 (next)
 
 - The db-connect project (external KV) as a further `table` tier; more `HTTP::` /
-  `TCP::` commands and data-group (`class`) matching in the transpiler.
+  `TCP::` commands (`HTTP::respond` bodies, `HTTP::redirect`, status) in the
+  transpiler.
 
 > All commits for this project are prefixed `mirror:`.

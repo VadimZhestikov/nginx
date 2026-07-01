@@ -299,5 +299,49 @@ var r12 = T('when HTTP_REQUEST { set x [expr {$a wibble $b}] }');
 ok('expr: unknown word warns', r12.warnings.length >= 1 &&
    has(r12.warnings.join('|'), "unknown expr word 'wibble'"));
 
+// ---- fixture 13: data groups — class match / class lookup (phase 15) --------
+// generated code calls mirror.classMatch/classLookup; provide a tiny stub with
+// the real semantics for the behavioural check.
+var DG = { blocklist: ['1.2.3.4', '9.9.9.9'], routes: { api: 'poolB', web: 'poolA' } };
+function dgCmp(s, op, e) {
+    s = String(s); e = String(e);
+    if (op === 'contains') { return s.indexOf(e) >= 0; }
+    return s === e;
+}
+globalThis.mirror = {
+    classMatch: function (name, op, subj) {
+        var g = DG[name]; if (!g) { return false; }
+        var items = Array.isArray(g) ? g : Object.keys(g);
+        for (var i = 0; i < items.length; i++) { if (dgCmp(subj, op, items[i])) { return true; } }
+        return false;
+    },
+    classLookup: function (name, key) {
+        var g = DG[name]; if (!g) { return undefined; }
+        return Array.isArray(g) ? (g.indexOf(key) >= 0 ? key : undefined) : g[key];
+    }
+};
+
+var dgRule = [
+    'when HTTP_REQUEST {',
+    '    if { [class match [IP::client_addr] equals blocklist] } { set blk 1 } else { set blk 0 }',
+    '    set pool [class lookup [HTTP::header X-Area] routes]',
+    '}'
+].join('\n');
+var r13 = T(dgRule);
+print('\n--- fixture 13 handlers ---\n' + r13.handlers + '\n');
+ok('class: no warnings',             r13.warnings.length === 0);
+ok('class match -> mirror.classMatch',
+   has(r13.handlers, 'mirror.classMatch("blocklist", "equals", ev.clientAddr)'));
+ok('class lookup -> mirror.classLookup',
+   has(r13.handlers, 'mirror.classLookup("routes", ev.header("X-Area"))'));
+var H13 = (0, eval)('(' + r13.handlers + ')');
+var e13blk = mockEv({}); e13blk.clientAddr = '9.9.9.9';
+H13.onRequestHeaders(e13blk);
+ok('behavioral: blocked IP matches datagroup', e13blk.flow.blk === 1);
+var e13ok = mockEv({ 'X-Area': 'api' }); e13ok.clientAddr = '8.8.8.8';
+H13.onRequestHeaders(e13ok);
+ok('behavioral: allowed IP -> 0',       e13ok.flow.blk === 0);
+ok('behavioral: class lookup -> value', e13ok.flow.pool === 'poolB');
+
 print('\nResults: ' + PASS + ' passed, ' + FAIL + ' failed');
 if (FAIL > 0) { throw new Error(FAIL + ' transpiler test(s) failed'); }

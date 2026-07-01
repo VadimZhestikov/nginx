@@ -199,6 +199,11 @@ check "transpiled iRule: else-branch -> user tier"  "x-irule-tier: user"  "$USR"
 # phase-14 command surface, end to end:
 check "transpiled iRule: string tolower [HTTP::header]" "x-irule-ua: curl/8" "$ADM"
 check "transpiled iRule: HTTP::cookie read"             "x-irule-sid: xyz789" "$ADM"
+# phase-15 data groups (class match / class lookup), end to end:
+BOT=$(curl -s -D - -o /dev/null -H 'X-Agent: BadBot/9' "http://127.0.0.1:$PORT/irule/")
+check "transpiled iRule: class match blocklist -> blk 1" "x-irule-blk: 1" "$BOT"
+check "transpiled iRule: class match clean -> blk 0"     "x-irule-blk: 0" "$USR"
+check "transpiled iRule: class lookup tier -> team"      "x-irule-team: A-team" "$ADM"
 HITS=$(echo "$USR" | grep -i '^x-irule-hits:' | grep -oE '[0-9]+')
 if [ -n "$HITS" ] && [ "$HITS" -ge 1 ]; then
     echo "PASS: transpiled iRule: table incr reflected in header ($HITS)"; PASS=$((PASS+1))
