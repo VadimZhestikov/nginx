@@ -318,6 +318,18 @@ function persistPick(peers, key) {
     return up[persistHash(key) % up.length];
 }
 
+// read one cookie value out of a Cookie: header ("a=1; NAME=v; b=2").
+function cookieValue(header, name) {
+    if (!header) { return undefined; }
+    var parts = String(header).split(';');
+    for (var i = 0; i < parts.length; i++) {
+        var eq = parts[i].indexOf('=');
+        if (eq < 0) { continue; }
+        if (parts[i].slice(0, eq).trim() === name) { return parts[i].slice(eq + 1).trim(); }
+    }
+    return undefined;
+}
+
 // key extractor: 'source' (client addr), 'header:NAME', or a custom fn(ev).
 function persistKeyFn(spec) {
     if (typeof spec === 'function') { return spec; }
@@ -329,16 +341,66 @@ function persistKeyFn(spec) {
 }
 
 // mirror.persist(upstream, opts)
-//   opts.key : 'source' | 'header:NAME' | fn(ev)     (default 'source')
+//   opts.key : 'source' | 'header:NAME' | 'cookie:NAME' | fn(ev)  (default 'source')
 //   opts.ttl : seconds the mapping survives idle       (default 0 = never)
-//   opts.via : { server, location } — if given, mirror installs the
-//              onRequestHeaders hook that computes the key for you; otherwise
-//              set ev.flow.persist yourself in your own rule.
+//   opts.via : { server, location } — if given, mirror installs the hook(s)
+//              that compute the key for you; otherwise set ev.flow.persist
+//              yourself in your own rule.
+//
+// 'source' / 'header:' / fn are TABLE-backed (a client key -> peer mapping in
+// the cross-worker table). 'cookie:NAME' is STATELESS cookie-insert (the iRules
+// `persist cookie insert`): the peer index is carried in the cookie itself, so
+// the sticky path needs no table lookup — mirror just inserts a Set-Cookie on
+// the first response and honours it thereafter.
 function persist(upstream, opts) {
     opts = opts || {};
+    var upName  = upstream.name;
+    var keySpec = opts.key || 'source';
+
+    // ---- cookie-insert (stateless) mode -------------------------------------
+    if (typeof keySpec === 'string' && keySpec.indexOf('cookie:') === 0) {
+        var cookieName = keySpec.slice(7);
+
+        if (opts.via && opts.via.location) {
+            attach(opts.via.server, opts.via.location, {
+                onRequestHeaders: function (ev) {
+                    var cv = cookieValue(ev.header('cookie'), cookieName);
+                    var n  = (cv === undefined) ? NaN : parseInt(cv, 10);
+                    ev.flow.persistPeer      = isNaN(n) ? undefined : n;
+                    ev.flow.persistSetCookie = null;     // reset each request
+                },
+                onResponseHeaders: function (ev) {
+                    var idx = ev.flow.persistSetCookie;
+                    if (idx !== null && idx !== undefined) {
+                        ev.setResponseHeader('set-cookie',
+                            cookieName + '=' + idx + '; Path=/');
+                    }
+                }
+            });
+        }
+
+        upstream.onSelectPeer(function (peers, flow) {
+            var forced = flow && flow.persistPeer;
+            if (typeof forced === 'number' && forced >= 0 && forced < peers.length
+                && !peers[forced].down) {
+                return forced;                            // cookie decoded -> sticky
+            }
+            // new session: round-robin among up peers via a cross-worker counter,
+            // then mark the response to insert the cookie carrying the choice.
+            var up = [];
+            for (var i = 0; i < peers.length; i++) { if (!peers[i].down) { up.push(i); } }
+            if (!up.length) { return -1; }
+            var n   = TABLE.incr('persist:rr:' + upName);
+            var idx = up[(n - 1) % up.length];
+            if (flow) { flow.persistSetCookie = idx; }
+            return idx;
+        });
+        return;
+    }
+
+    // ---- table-backed (source / header / fn) mode ---------------------------
     var ttl    = opts.ttl || 0;
-    var upName = upstream.name;
-    var extract = persistKeyFn(opts.key || 'source');
+    var extract = persistKeyFn(keySpec);
 
     if (opts.via && opts.via.location) {
         attach(opts.via.server, opts.via.location, {

@@ -231,6 +231,32 @@ else
     echo "FAIL: persist: 'bob' not sticky ($SB)"; FAIL=$((FAIL+1))
 fi
 
+# --- 14. cookie-insert persistence (phase 13, iRules persist cookie insert) --
+# The LB inserts a Set-Cookie encoding the chosen peer on the first response;
+# subsequent requests carrying the cookie pin to that peer (stateless — no table
+# lookup). Two backends, so without the cookie it would round-robin.
+JAR=logs/cookiejar; rm -f "$JAR"
+H1=$(curl -s -c "$JAR" -D - -o logs/cbody "http://127.0.0.1:$PORT/cookie/")
+B1=$(cat logs/cbody)
+check "cookie-insert: first response inserts the pin cookie" "set-cookie: MIRRORPIN=" "$H1"
+STICK="$B1"; REISSUE=0
+for i in $(seq 1 8); do
+    R=$(curl -s -b "$JAR" -c "$JAR" -D - -o logs/cbody "http://127.0.0.1:$PORT/cookie/")
+    bb=$(cat logs/cbody)
+    if [ "$bb" != "$STICK" ]; then STICK="MISMATCH"; fi
+    if echo "$R" | grep -qi '^set-cookie:'; then REISSUE=$((REISSUE+1)); fi
+done
+if echo "$STICK" | grep -q 'backend-'; then
+    echo "PASS: cookie-insert: pinned to $B1 across 8 reqs/2 workers"; PASS=$((PASS+1))
+else
+    echo "FAIL: cookie-insert: not sticky (drifted to $STICK)"; FAIL=$((FAIL+1))
+fi
+if [ "$REISSUE" -eq 0 ]; then
+    echo "PASS: cookie-insert: cookie not re-issued once pinned"; PASS=$((PASS+1))
+else
+    echo "FAIL: cookie-insert: cookie re-issued $REISSUE times after pin"; FAIL=$((FAIL+1))
+fi
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

@@ -42,6 +42,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 | `table` TTL / expiry | `table.set(k, v, ttl)` + `table.ttl(k)` | ✅ phase 8 |
 | iRules → mirror | `mirror.transpile(tclSource)` (decision A) | ✅ phase 9 |
 | session persistence | `mirror.persist(upstream, opts)` (iRules `persist`) | ✅ phase 12 |
+| cookie-insert persistence | `mirror.persist(u, {key:'cookie:N'})` | ✅ phase 13 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
@@ -54,7 +55,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 35/35 pass
+cd example && bash test.sh    # 38/38 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
@@ -333,9 +334,24 @@ mirror.persist(nginx.http.upstreams.find(u => u.name === 'pool'),
                { via: { server: srv, location: loc }, key: 'source', ttl: 300 });
 ```
 
-## Phase 13 (next)
+## Phase 13 — cookie-insert persistence (DONE)
 
-- The db-connect project (external KV) as a further `table` tier; cookie-based
-  persistence; broaden the transpiler command surface.
+The iRules `persist cookie insert` mode: `mirror.persist(u, {key: 'cookie:NAME',
+via})`. Unlike phase 12's table-backed persistence, this is **stateless** — the
+chosen peer index is carried in the cookie itself, so the sticky path needs no
+table lookup. It composes three hooks: `onRequestHeaders` decodes the cookie into
+`ev.flow.persistPeer`; `onSelectPeer` honours it (or, for a new session,
+RR-picks an up peer via a cross-worker counter and flags the response);
+`onResponseHeaders` inserts `Set-Cookie: NAME=<peer>; Path=/`.
+
+The example's **`/cookie/`** pins by `MIRRORPIN`; `example/test.sh` (38/38) shows
+the first response inserts the cookie and every subsequent request (cookie jar,
+across both workers, two backends) sticks to the same backend without the cookie
+being re-issued.
+
+## Phase 14 (next)
+
+- The db-connect project (external KV) as a further `table` tier; broaden the
+  transpiler command surface (string/IP ops, more `HTTP::`/`TCP::` commands).
 
 > All commits for this project are prefixed `mirror:`.

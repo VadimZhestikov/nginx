@@ -161,6 +161,18 @@ var mirror = globalThis.mirror;
         });
     }
 
+    // --- cookie-insert persistence (phase 13, iRules `persist cookie insert`) -
+    // Stateless stickiness: the LB inserts a Set-Cookie encoding the chosen peer;
+    // subsequent requests carrying the cookie pin to that peer, no table lookup.
+    var cookieUp  = nginx.http.upstreams.find(function (u) { return u.name === 'mirror_cookie'; });
+    var cookieLoc = server.locations.find(function (l) { return l.path === '/cookie/'; });
+    if (cookieUp && cookieLoc) {
+        mirror.persist(cookieUp, {
+            via: { server: server, location: cookieLoc },
+            key: 'cookie:MIRRORPIN'
+        });
+    }
+
     // --- live-transpiled iRule (phase 11): TCL/iRules -> mirror at config time
     // The rule below is genuine iRules TCL; mirror.applyRule transpiles it and
     // attaches the result, so it serves real traffic — proving the transpiler
