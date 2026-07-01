@@ -35,7 +35,8 @@ A pure JS layer over pilgrim hooks (no C changes):
 | `onResponseHeaders` | `location.addResponseHook(fn)` | ✅ wired |
 | `onClientClose` | `conn.onClose(fn)` | ✅ wired (phase 2) |
 | `onClientHello` | `server.ssl.onClientHello(fn)` | ✅ wired (phase 3) |
-| L4 / LB events | — | phase 4 |
+| LB selection command | `ev.selectUpstream(pool)` in `onRequestHeaders` | ✅ phase 4 |
+| L4 data / peer-level LB | — | phase 5 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
@@ -48,7 +49,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 13/13 pass
+cd example && bash test.sh    # 16/16 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
@@ -76,8 +77,8 @@ two in the C module** (the "carefully add missing API to nginx" work):
    JA3 inputs) — plus the per-connection ctx, and can abort the handshake by
    returning `false`. Serves the JA3/JA4 customer request and iRules
    `CLIENTSSL_CLIENTHELLO`.
-4. **Per-request LB/upstream selection** (`onSelectUpstream` / iRules
-   `LB::select`) — still open, deferred to phase 4.
+4. **Per-request LB/upstream selection** (iRules `pool`) — DONE (phase 4, no new
+   C): `ev.selectUpstream(pool)` — see the Phase 4 section below.
 
 Phase-2 acceptance test (`example/test.sh`, 9/9): the per-connection **serial is
 identical across keepalive requests** (proving one shared per-connection object)
@@ -98,10 +99,40 @@ The phase-3 acceptance test (`example/test.sh`, 13/13) drives an HTTPS server an
 proves the SNI carried in the ClientHello (before the handshake completes) is
 read back on the HTTP response — the spine now reaches from TLS to the response.
 
-## Phase 4 (next)
+## Phase 4 — per-request LB / pool selection (DONE)
 
-- Per-request LB/upstream selection (`onSelectUpstream` / iRules `LB::select`)
-  and L4 data events (`onClientData`) — more thread-1 API in the module.
+`ev.selectUpstream(pool)` (available in `onRequestHeaders`) picks the upstream
+per request — the iRules `pool` command. It needed **no new C**: it sets the
+nginx variable `$mirror_upstream` (via the existing `r.setVariable`), and the
+location proxies with `proxy_pass http://$mirror_upstream`, which nginx resolves
+to the named `upstream {}` at request time.
+
+Config contract for an LB location (see `example/`):
+
+```nginx
+upstream mirror_poolA { server ...; }
+upstream mirror_poolB { server ...; }
+location /lb/ {
+    set        $mirror_upstream mirror_poolA;   # default
+    proxy_pass http://$mirror_upstream;         # no JS content handler here
+}
+```
+
+```js
+mirror.attach(server, lbLoc, {
+    onRequestHeaders: function (ev) {
+        ev.selectUpstream(ev.header('x-pool') === 'b' ? 'mirror_poolB' : 'mirror_poolA');
+    }
+});
+```
+
+`example/test.sh` (16/16) proves the header-driven pool choice reaches the right
+backend.
+
+## Phase 5 (next)
+
+- Peer-level LB (`LB::select` to a specific node — a custom balancer hook) and
+  L4 data events (`onClientData`) — more thread-1 API in the module.
 - State: `table` → `nginx.shared` / SharedWorker (multi-worker) and the
   db-connect project (external); `session`/persistence → a COM persistence API.
 - Then decision (A): the TCL/iRules → mirror transpiler.

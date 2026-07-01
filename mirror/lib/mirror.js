@@ -38,7 +38,8 @@ var CAPS = {
     onClientHello:     ['flow', 'clientHello', 'table'],
     onClientAccept:    ['clientAddr', 'clientPort', 'flow', 'table', 'reject'],
     onRequestHeaders:  ['clientAddr', 'clientPort', 'flow', 'ctx', 'table',
-                        'method', 'uri', 'header', 'respond', 'redirect'],
+                        'method', 'uri', 'header', 'respond', 'redirect',
+                        'selectUpstream'],
     onResponseHeaders: ['clientAddr', 'clientPort', 'flow', 'ctx', 'table',
                         'setResponseHeader'],
     onClientClose:     ['flow', 'table']   // no request/conn at close; flow only
@@ -110,6 +111,13 @@ function makeEvent(event, o) {   // o = { r?, conn?, flow }
     ev.setResponseHeader = function (name, val) {
         cap(event, 'setResponseHeader');
         o.r.setHeader(name, String(val));
+    };
+    // per-request LB / pool selection (iRules `pool`). Sets the nginx variable
+    // $mirror_upstream, which the location's `proxy_pass http://$mirror_upstream`
+    // resolves to a named upstream at request time.
+    ev.selectUpstream = function (name) {
+        cap(event, 'selectUpstream');
+        o.r.setVariable('mirror_upstream', String(name));
     };
     ev.reject = function () { cap(event, 'reject'); o.conn.reject(); };
 

@@ -100,6 +100,13 @@ if [ "${VER:-0}" -gt 0 ]; then echo "PASS: onClientHello: TLS version parsed ($V
 else echo "FAIL: onClientHello: no TLS version"; FAIL=$((FAIL+1)); fi
 check "onClientHello: JA3 fingerprint string built" "x-mirror-ja3:" "$OUT"
 
+# --- 7. per-request LB selection (ev.selectUpstream / iRules `pool`) ---------
+# The rule picks the pool from the X-Pool header; nginx proxies to the chosen
+# upstream. Backends return distinguishable bodies.
+check "LB: default -> poolA"     "backend-A" "$(curl -s http://127.0.0.1:$PORT/lb/)"
+check "LB: X-Pool: b -> poolB"   "backend-B" "$(curl -s -H 'X-Pool: b' http://127.0.0.1:$PORT/lb/)"
+check "LB: X-Pool: a -> poolA"   "backend-A" "$(curl -s -H 'X-Pool: a' http://127.0.0.1:$PORT/lb/)"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

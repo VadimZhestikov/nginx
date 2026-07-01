@@ -15,7 +15,7 @@
 var mirror = globalThis.mirror;
 
 (function () {
-    var server = nginx.http.servers[0];
+    var server = nginx.http.servers.find(function (s) { return s.name === 'mirror-demo'; });
     var loc    = server.locations.find(function (l) { return l.path === '/'; });
 
     // content handler — produce a response so the response hook has one to decorate
@@ -97,6 +97,19 @@ var mirror = globalThis.mirror;
                 ev.setResponseHeader('x-mirror-cipher-count', f.cipherCount || 0);
                 ev.setResponseHeader('x-mirror-ext-count',    f.extCount    || 0);
                 ev.setResponseHeader('x-mirror-ja3',          f.ja3 || '');
+            }
+        });
+    }
+
+    // --- LB rule: per-request pool selection (iRules `pool`) -----------------
+    // No content handler here — proxy_pass owns the content phase; the rule just
+    // picks the pool in onRequestHeaders via ev.selectUpstream().
+    var lbloc = server.locations.find(function (l) { return l.path === '/lb/'; });
+    if (lbloc) {
+        mirror.attach(server, lbloc, {
+            onRequestHeaders: function (ev) {
+                ev.selectUpstream(ev.header('x-pool') === 'b'
+                                  ? 'mirror_poolB' : 'mirror_poolA');
             }
         });
     }
