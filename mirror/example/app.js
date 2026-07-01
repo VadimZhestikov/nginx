@@ -147,6 +147,20 @@ var mirror = globalThis.mirror;
         });
     }
 
+    // --- session persistence / stickiness (phase 12, iRules `persist`) -------
+    // Pin a client (keyed by the X-Client header) to a backend peer. The mapping
+    // lives in the cross-worker table, so a client keeps its peer regardless of
+    // which worker serves the request; idle mappings expire after ttl.
+    var persistUp = nginx.http.upstreams.find(function (u) { return u.name === 'mirror_persist'; });
+    var persistLoc = server.locations.find(function (l) { return l.path === '/persist/'; });
+    if (persistUp && persistLoc) {
+        mirror.persist(persistUp, {
+            via: { server: server, location: persistLoc },
+            key: 'header:x-client',
+            ttl: 30
+        });
+    }
+
     // --- live-transpiled iRule (phase 11): TCL/iRules -> mirror at config time
     // The rule below is genuine iRules TCL; mirror.applyRule transpiles it and
     // attaches the result, so it serves real traffic — proving the transpiler

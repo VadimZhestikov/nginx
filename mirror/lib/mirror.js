@@ -298,6 +298,71 @@ function attachStream(streamServer, handlers) {
     }
 }
 
+// ---- session persistence / LB stickiness (phase 12, iRules `persist`) -------
+// Pin a client to a peer, the iRules `persist` command. Built entirely on
+// mirror primitives: the phase-5 onSelectPeer custom balancer + the phase-7/8
+// cross-worker `table` with TTL. Because the mapping lives in the shared table,
+// stickiness is CROSS-WORKER (a client keeps its peer no matter which worker
+// serves it) and self-expiring (idle sessions release their peer after `ttl`).
+function persistHash(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+    return Math.abs(h);
+}
+
+// pick a peer index among the peers that are up (deterministic from the key)
+function persistPick(peers, key) {
+    var up = [];
+    for (var i = 0; i < peers.length; i++) { if (!peers[i].down) { up.push(i); } }
+    if (!up.length) { return -1; }
+    return up[persistHash(key) % up.length];
+}
+
+// key extractor: 'source' (client addr), 'header:NAME', or a custom fn(ev).
+function persistKeyFn(spec) {
+    if (typeof spec === 'function') { return spec; }
+    if (typeof spec === 'string' && spec.indexOf('header:') === 0) {
+        var h = spec.slice(7);
+        return function (ev) { return ev.header(h); };
+    }
+    return function (ev) { return ev.clientAddr; };     // 'source' (default)
+}
+
+// mirror.persist(upstream, opts)
+//   opts.key : 'source' | 'header:NAME' | fn(ev)     (default 'source')
+//   opts.ttl : seconds the mapping survives idle       (default 0 = never)
+//   opts.via : { server, location } — if given, mirror installs the
+//              onRequestHeaders hook that computes the key for you; otherwise
+//              set ev.flow.persist yourself in your own rule.
+function persist(upstream, opts) {
+    opts = opts || {};
+    var ttl    = opts.ttl || 0;
+    var upName = upstream.name;
+    var extract = persistKeyFn(opts.key || 'source');
+
+    if (opts.via && opts.via.location) {
+        attach(opts.via.server, opts.via.location, {
+            onRequestHeaders: function (ev) { ev.flow.persist = extract(ev); }
+        });
+    }
+
+    upstream.onSelectPeer(function (peers, flow) {
+        var key = flow && flow.persist;
+        if (key === undefined || key === null || key === '') { return -1; }
+        var tkey = 'persist:' + upName + ':' + key;
+
+        var stored = TABLE.get(tkey);
+        if (typeof stored === 'number' && stored >= 0 && stored < peers.length
+            && !peers[stored].down) {
+            if (ttl) { TABLE.set(tkey, stored, ttl); }   // sliding refresh on hit
+            return stored;
+        }
+        var idx = persistPick(peers, String(key));
+        if (idx >= 0) { TABLE.set(tkey, idx, ttl); }
+        return idx;
+    });
+}
+
 // ---- live: transpile an iRule and attach it (phase 11) ----------------------
 // Closes the transpiler loop: turn TCL/iRules source into a running mirror rule
 // at config-eval time. mirror.transpile (from lib/transpile.js) emits the
@@ -336,6 +401,7 @@ globalThis.mirror = {
     caps:         CAPS,
     attach:       attach,
     attachStream: attachStream,
+    persist:      persist,        // LB stickiness (iRules `persist`), cross-worker
     applyRule:    applyRule,      // transpile TCL/iRules + attach (live)
     compileRule:  compileRule,    // transpile TCL/iRules -> {handlersObj, ...}
     table:        TABLE          // cross-worker store (get/set/incr/delete/keys/backend)

@@ -41,6 +41,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 | cross-worker `table` | backed by `nginx.shared` (shmem KV) | ✅ phase 7 |
 | `table` TTL / expiry | `table.set(k, v, ttl)` + `table.ttl(k)` | ✅ phase 8 |
 | iRules → mirror | `mirror.transpile(tclSource)` (decision A) | ✅ phase 9 |
+| session persistence | `mirror.persist(upstream, opts)` (iRules `persist`) | ✅ phase 12 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
@@ -53,13 +54,14 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 33/33 pass
+cd example && bash test.sh    # 35/35 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
 **persisting across keepalive requests**, per-request routing, a **cross-worker**
 `table` counter with **TTL/expiry** (phases 7–8), a **live-transpiled iRule**
-serving real traffic (phase 11), and the **per-event capability gate** firing.
+serving real traffic (phase 11), **cross-worker session persistence** (phase 12),
+and the **per-event capability gate** firing.
 
 ## Phase-1 findings → phase-2 status (thread-1 nginx gaps)
 
@@ -307,9 +309,33 @@ mirror.applyRule({ server: srv, location: loc },
   'when HTTP_RESPONSE { HTTP::header insert X-Tier $t }');
 ```
 
-## Phase 12 (next)
+## Phase 12 — session persistence / LB stickiness (DONE)
 
-- `session`/persistence → a COM persistence API; the db-connect project
-  (external KV) as a further `table` tier.
+The iRules `persist` command — pin a client to a peer. Built entirely on mirror
+primitives (no new C): the phase-5 `onSelectPeer` custom balancer + the
+phase-7/8 cross-worker `table` with TTL. **`mirror.persist(upstream, opts)`**:
+
+- `opts.key` — `'source'` (client addr), `'header:NAME'`, or a custom `fn(ev)`;
+- `opts.ttl` — seconds an idle mapping survives (sliding refresh on each hit);
+- `opts.via = {server, location}` — mirror installs the key-computing
+  `onRequestHeaders` hook for you (otherwise set `ev.flow.persist` yourself).
+
+Because the client→peer mapping lives in the shared `table`, stickiness is
+**cross-worker** (a client keeps its peer no matter which worker serves it) and
+self-expiring. The example's **`/persist/`** pins by `X-Client`; `example/test.sh`
+(35/35) fires 10 requests per client across both workers against a **two-backend**
+upstream and asserts each client hits exactly **one** backend every time — which
+round-robin (≈50/50) or a per-worker map could not do, proving stickiness *and*
+that it is cross-worker.
+
+```js
+mirror.persist(nginx.http.upstreams.find(u => u.name === 'pool'),
+               { via: { server: srv, location: loc }, key: 'source', ttl: 300 });
+```
+
+## Phase 13 (next)
+
+- The db-connect project (external KV) as a further `table` tier; cookie-based
+  persistence; broaden the transpiler command surface.
 
 > All commits for this project are prefixed `mirror:`.

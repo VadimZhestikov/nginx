@@ -202,6 +202,35 @@ else
     echo "FAIL: transpiled iRule: no table hits header ('$HITS')"; FAIL=$((FAIL+1))
 fi
 
+# --- 13. session persistence / stickiness (phase 12, iRules `persist`) -------
+# /persist/ pins a client (keyed by X-Client) to a peer via the cross-worker
+# table. The upstream has TWO distinct backends, so round-robin would split
+# requests ~50/50; a sticky client must instead hit ONE backend every time —
+# and it must do so across BOTH workers (reuseport spreads the connections),
+# which a per-worker map could not guarantee. That single invariant proves
+# stickiness AND that it is cross-worker.
+sticky_backend() {   # $1 = client key ; prints the single backend, or "SPLIT"
+    local client="$1" seen="" b
+    for i in $(seq 1 10); do
+        b=$(curl -s -H "X-Client: $client" -H 'Connection: close' \
+                 "http://127.0.0.1:$PORT/persist/")
+        if [ -z "$seen" ]; then seen="$b"; elif [ "$b" != "$seen" ]; then seen="SPLIT"; fi
+    done
+    echo "$seen" | tr -d '\n'
+}
+SA=$(sticky_backend alice)
+SB=$(sticky_backend bob)
+if echo "$SA" | grep -q 'backend-'; then
+    echo "PASS: persist: 'alice' pinned to one backend across 10 reqs/2 workers ($SA)"; PASS=$((PASS+1))
+else
+    echo "FAIL: persist: 'alice' not sticky ($SA)"; FAIL=$((FAIL+1))
+fi
+if echo "$SB" | grep -q 'backend-'; then
+    echo "PASS: persist: 'bob' pinned to one backend across 10 reqs/2 workers ($SB)"; PASS=$((PASS+1))
+else
+    echo "FAIL: persist: 'bob' not sticky ($SB)"; FAIL=$((FAIL+1))
+fi
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]
