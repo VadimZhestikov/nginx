@@ -634,6 +634,330 @@ ngx_js_ssl_set_ciphers(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* onClientHello — fire JS at TLS ClientHello time (iRules             */
+/* CLIENTSSL_CLIENTHELLO). Exposes the JA3 inputs (version, ciphers,   */
+/* extensions, groups, EC point formats) plus SNI and ALPN, and the    */
+/* per-connection ctx (flow-local). A hook returning boolean false     */
+/* aborts the handshake.                                               */
+/* ------------------------------------------------------------------ */
+
+#if (defined SSL_client_hello_cb_fn || OPENSSL_VERSION_NUMBER >= 0x10101000L)
+#define NGX_JS_HAVE_CLIENT_HELLO_CB  1
+#endif
+
+#if (NGX_JS_HAVE_CLIENT_HELLO_CB)
+
+/* Per-SSL_CTX hook record. The callback array itself is NOT stored here —
+ * it lives in the global __ngx_ch_hooks__ array (a GC root, like the accept /
+ * L4-filter registries) so it survives garbage collection; this record only
+ * remembers the slot index into that global array. (Storing the JSValue array
+ * only in C memory let the GC collect it — the cause of the earlier crash.) */
+typedef struct {
+    uint32_t  slot;
+} ngx_js_ch_hooks_t;
+
+static int  ngx_js_ch_ctx_idx = -1;
+
+
+/* Global registry array of per-CTX callback arrays (rooted on globalThis). */
+static JSValue
+ngx_js_ch_registry(JSContext *ctx)
+{
+    JSValue  global, reg;
+
+    global = JS_GetGlobalObject(ctx);
+    reg    = JS_GetPropertyStr(ctx, global, "__ngx_ch_hooks__");
+
+    if (JS_IsUndefined(reg)) {
+        JS_FreeValue(ctx, reg);
+        reg = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, global, "__ngx_ch_hooks__",
+                          JS_DupValue(ctx, reg));
+    }
+
+    JS_FreeValue(ctx, global);
+    return reg;   /* caller frees this ref */
+}
+
+
+static void
+ngx_js_ch_ext_ints(JSContext *ctx, JSValue ch, const char *name, SSL *s,
+    int ext_type, int stride, int skip_list_len)
+{
+    const unsigned char  *p, *q, *end;
+    size_t                len;
+    JSValue               arr;
+    uint32_t              j;
+
+    if (SSL_client_hello_get0_ext(s, ext_type, &p, &len) != 1) {
+        return;
+    }
+
+    q   = p + (skip_list_len ? 2 : 0);
+    end = p + len;
+    arr = JS_NewArray(ctx);
+    j   = 0;
+
+    while (q + stride <= end) {
+        JS_SetPropertyUint32(ctx, arr, j++,
+            JS_NewInt32(ctx, stride == 2 ? ((q[0] << 8) | q[1]) : q[0]));
+        q += stride;
+    }
+
+    JS_SetPropertyStr(ctx, ch, name, arr);
+}
+
+
+static JSValue
+ngx_js_build_client_hello(JSContext *ctx, SSL *s)
+{
+    JSValue               ch, arr;
+    const unsigned char  *cs, *p, *q, *end;
+    size_t                n, k, len;
+    int                  *exts;
+    size_t                nexts;
+    uint32_t              j;
+
+    ch = JS_NewObject(ctx);
+
+    JS_SetPropertyStr(ctx, ch, "version",
+                      JS_NewInt32(ctx, SSL_client_hello_get0_legacy_version(s)));
+
+    /* cipher suites (2-byte ids) */
+    n   = SSL_client_hello_get0_ciphers(s, &cs);
+    arr = JS_NewArray(ctx);
+    j   = 0;
+    for (k = 0; k + 1 < n; k += 2) {
+        JS_SetPropertyUint32(ctx, arr, j++,
+                             JS_NewInt32(ctx, (cs[k] << 8) | cs[k + 1]));
+    }
+    JS_SetPropertyStr(ctx, ch, "cipherSuites", arr);
+
+    /* extensions present (already a flat int list) */
+    if (SSL_client_hello_get1_extensions_present(s, &exts, &nexts) == 1) {
+        arr = JS_NewArray(ctx);
+        for (k = 0; k < nexts; k++) {
+            JS_SetPropertyUint32(ctx, arr, (uint32_t) k,
+                                 JS_NewInt32(ctx, exts[k]));
+        }
+        JS_SetPropertyStr(ctx, ch, "extensions", arr);
+        OPENSSL_free(exts);
+    }
+
+    /* SNI (server_name list): 2-byte list len, then type(1)+len(2)+name */
+    if (SSL_client_hello_get0_ext(s, TLSEXT_TYPE_server_name, &p, &len) == 1
+        && len > 4)
+    {
+        q = p + 2;
+        if (q[0] == 0 /* host_name */) {
+            unsigned nlen = (q[1] << 8) | q[2];
+            if ((size_t) (nlen + 5) <= len) {
+                JS_SetPropertyStr(ctx, ch, "sni",
+                    JS_NewStringLen(ctx, (const char *) (q + 3), nlen));
+            }
+        }
+    }
+
+    /* ALPN: 2-byte list len, then [len(1)+proto]* */
+    if (SSL_client_hello_get0_ext(s,
+            TLSEXT_TYPE_application_layer_protocol_negotiation, &p, &len) == 1
+        && len > 2)
+    {
+        q   = p + 2;
+        end = p + len;
+        arr = JS_NewArray(ctx);
+        j   = 0;
+        while (q < end) {
+            unsigned pl = q[0];
+            if (q + 1 + pl > end) {
+                break;
+            }
+            JS_SetPropertyUint32(ctx, arr, j++,
+                JS_NewStringLen(ctx, (const char *) (q + 1), pl));
+            q += 1 + pl;
+        }
+        JS_SetPropertyStr(ctx, ch, "alpn", arr);
+    }
+
+    /* supported_groups / curves: 2-byte list len, then 2-byte ids */
+    ngx_js_ch_ext_ints(ctx, ch, "supportedGroups", s,
+                       TLSEXT_TYPE_supported_groups, 2, 1);
+
+    /* ec_point_formats: 1-byte list len, then 1-byte formats */
+    if (SSL_client_hello_get0_ext(s, TLSEXT_TYPE_ec_point_formats, &p, &len) == 1
+        && len >= 1)
+    {
+        q   = p + 1;
+        end = p + len;
+        arr = JS_NewArray(ctx);
+        j   = 0;
+        while (q < end) {
+            JS_SetPropertyUint32(ctx, arr, j++, JS_NewInt32(ctx, q[0]));
+            q++;
+        }
+        JS_SetPropertyStr(ctx, ch, "ecPointFormats", arr);
+    }
+
+    return ch;
+}
+
+
+static int
+ngx_js_ch_cb(SSL *s, int *al, void *arg)
+{
+    ngx_js_ch_hooks_t  *hooks = arg;
+    ngx_connection_t   *c;
+    ngx_js_conf_t      *jcf;
+    JSContext          *ctx;
+    JSRuntime          *rt;
+    JSValue             ch, args[2], fn, ret, lenv, reg, fns;
+    int64_t             len, i;
+    int                 rejected;
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL || jcf->ctx == NULL) {
+        return SSL_CLIENT_HELLO_SUCCESS;
+    }
+
+    ctx = jcf->ctx;
+    rt  = JS_GetRuntime(ctx);
+    c   = ngx_ssl_get_connection(s);
+
+    reg = ngx_js_ch_registry(ctx);
+    fns = JS_GetPropertyUint32(ctx, reg, hooks->slot);
+    JS_FreeValue(ctx, reg);
+
+    ch       = ngx_js_build_client_hello(ctx, s);
+    args[0]  = ch;
+    args[1]  = (c != NULL) ? ngx_js_connection_ctx_obj(ctx, c) : JS_UNDEFINED;
+    rejected = 0;
+
+    len  = 0;
+    lenv = JS_GetPropertyStr(ctx, fns, "length");
+    JS_ToInt64(ctx, &len, lenv);
+    JS_FreeValue(ctx, lenv);
+
+    for (i = 0; i < len; i++) {
+        fn  = JS_GetPropertyUint32(ctx, fns, (uint32_t) i);
+        ret = JS_Call(ctx, fn, JS_UNDEFINED, 2, (JSValueConst *) args);
+        if (JS_IsException(ret)) {
+            ngx_js_log_exception(ctx, c ? c->log : ngx_cycle->log);
+        } else if (JS_IsBool(ret) && !JS_ToBool(ctx, ret)) {
+            rejected = 1;   /* explicit `return false` aborts the handshake */
+        }
+        JS_FreeValue(ctx, ret);
+        JS_FreeValue(ctx, fn);
+        while (JS_ExecutePendingJob(rt, NULL) > 0) { /* drain */ }
+    }
+
+    JS_FreeValue(ctx, fns);
+    JS_FreeValue(ctx, ch);
+    JS_FreeValue(ctx, args[1]);
+
+    if (rejected) {
+        *al = SSL_AD_HANDSHAKE_FAILURE;
+        return SSL_CLIENT_HELLO_ERROR;
+    }
+
+    return SSL_CLIENT_HELLO_SUCCESS;
+}
+
+
+/* Frees the hooks record when its SSL_CTX is destroyed (e.g. on reload). */
+static void
+ngx_js_ch_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad, int idx,
+    long argl, void *argp)
+{
+    if (ptr != NULL) {
+        OPENSSL_free(ptr);
+    }
+}
+
+
+static JSValue
+ngx_js_ssl_on_client_hello(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_ssl_opaque_t      *op;
+    ngx_http_ssl_srv_conf_t  *sscf;
+    ngx_js_ch_hooks_t        *hooks;
+    JSValue                   reg, fns, lenv;
+    int64_t                   len;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_ssl_class_id);
+    if (!op) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx, "onClientHello(fn): expected a function");
+    }
+
+    sscf = op->sscf;
+    if (sscf == NULL || sscf->ssl.ctx == NULL) {
+        return JS_ThrowInternalError(ctx,
+                                     "onClientHello: SSL context not initialised");
+    }
+
+    if (ngx_js_ch_ctx_idx < 0) {
+        /* free func ties the hooks record to the SSL_CTX lifetime */
+        ngx_js_ch_ctx_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL,
+                                                     ngx_js_ch_free);
+    }
+
+    reg = ngx_js_ch_registry(ctx);
+
+    hooks = SSL_CTX_get_ex_data(sscf->ssl.ctx, ngx_js_ch_ctx_idx);
+    if (hooks == NULL) {
+        /* NOT an nginx pool: at js_source-eval time ngx_cycle is the transient
+         * init cycle, so its pool would be freed out from under us. OPENSSL_zalloc
+         * lives with the SSL_CTX and is released by ngx_js_ch_free. */
+        hooks = OPENSSL_zalloc(sizeof(ngx_js_ch_hooks_t));
+        if (hooks == NULL) {
+            JS_FreeValue(ctx, reg);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+
+        /* allocate a slot in the global registry for this CTX's fn-array */
+        len = 0;
+        lenv = JS_GetPropertyStr(ctx, reg, "length");
+        JS_ToInt64(ctx, &len, lenv);
+        JS_FreeValue(ctx, lenv);
+
+        hooks->slot = (uint32_t) len;
+        JS_SetPropertyUint32(ctx, reg, hooks->slot, JS_NewArray(ctx));
+
+        SSL_CTX_set_ex_data(sscf->ssl.ctx, ngx_js_ch_ctx_idx, hooks);
+        SSL_CTX_set_client_hello_cb(sscf->ssl.ctx, ngx_js_ch_cb, hooks);
+    }
+
+    /* append fn to this CTX's rooted fn-array */
+    fns  = JS_GetPropertyUint32(ctx, reg, hooks->slot);
+    len  = 0;
+    lenv = JS_GetPropertyStr(ctx, fns, "length");
+    JS_ToInt64(ctx, &len, lenv);
+    JS_FreeValue(ctx, lenv);
+    JS_SetPropertyUint32(ctx, fns, (uint32_t) len, JS_DupValue(ctx, argv[0]));
+    JS_FreeValue(ctx, fns);
+    JS_FreeValue(ctx, reg);
+
+    return JS_UNDEFINED;
+}
+
+#else  /* !NGX_JS_HAVE_CLIENT_HELLO_CB */
+
+static JSValue
+ngx_js_ssl_on_client_hello(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    return JS_ThrowInternalError(ctx,
+        "onClientHello requires OpenSSL 1.1.1+ (SSL_CTX_set_client_hello_cb)");
+}
+
+#endif
+
+
 static const JSCFunctionListEntry ngx_js_ssl_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("sessionTimeout",      ngx_js_ssl_get, ngx_js_ssl_set, 0),
     JS_CGETSET_MAGIC_DEF("sessionTickets",       ngx_js_ssl_get, ngx_js_ssl_set, 1),
@@ -651,6 +975,7 @@ static const JSCFunctionListEntry ngx_js_ssl_proto_funcs[] = {
     JS_CFUNC_DEF         ("setCiphers",      1,   ngx_js_ssl_set_ciphers),
     JS_CFUNC_DEF         ("setProtocols",   1,   ngx_js_ssl_set_protocols),
     JS_CFUNC_DEF         ("setCertificate", 2,   ngx_js_ssl_set_certificate),
+    JS_CFUNC_DEF         ("onClientHello",  1,   ngx_js_ssl_on_client_hello),
 };
 
 

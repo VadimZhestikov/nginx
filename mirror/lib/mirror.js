@@ -19,7 +19,7 @@
 var EVENTS = {
     onClientAccept:    { layer: 'l4',   wired: true  },
     onClientData:      { layer: 'l4',   wired: false },
-    onClientHello:     { layer: 'tls',  wired: false },
+    onClientHello:     { layer: 'tls',  wired: true  },   // phase 3: server.ssl.onClientHello
     onClientHandshake: { layer: 'tls',  wired: false },
     onRequestHeaders:  { layer: 'http', wired: true  },
     onRequestBody:     { layer: 'http', wired: false },
@@ -35,6 +35,7 @@ var EVENTS = {
 // command used in the wrong event throws — the machine-checked "iRules command
 // X is only valid in event Y" contract, made explicit.
 var CAPS = {
+    onClientHello:     ['flow', 'clientHello', 'table'],
     onClientAccept:    ['clientAddr', 'clientPort', 'flow', 'table', 'reject'],
     onRequestHeaders:  ['clientAddr', 'clientPort', 'flow', 'ctx', 'table',
                         'method', 'uri', 'header', 'respond', 'redirect'],
@@ -72,6 +73,8 @@ function makeEvent(event, o) {   // o = { r?, conn?, flow }
         get: function () { cap(event, 'flow'); return o.flow; } });
     Object.defineProperty(ev, 'ctx', {
         get: function () { cap(event, 'ctx'); return o.r.ctx; } });
+    Object.defineProperty(ev, 'clientHello', {
+        get: function () { cap(event, 'clientHello'); return o.clientHello; } });
 
     ev.table = {
         get:  function (k)    { cap(event, 'table'); return TABLE.get(k); },
@@ -123,6 +126,15 @@ function attach(server, location, handlers) {
             nginx.log(5, "mirror: event '" + k + "' not wired in phase 1 (ignored)");
         }
     });
+
+    // onClientHello — TLS ClientHello inspection (server.ssl.onClientHello);
+    // flow-local set here (pre-handshake) carries all the way to the response.
+    if (handlers.onClientHello) {
+        server.ssl.onClientHello(function (ch, connCtx) {
+            handlers.onClientHello(
+                makeEvent('onClientHello', { flow: connCtx, clientHello: ch }));
+        });
+    }
 
     // accept hook backs both onClientAccept and (via conn.onClose) onClientClose
     if (handlers.onClientAccept || handlers.onClientClose) {

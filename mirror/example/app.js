@@ -67,4 +67,37 @@ var mirror = globalThis.mirror;
                          ' client=' + ev.flow.client);
         }
     });
+
+    // --- TLS rule: inspect the ClientHello (JA3 inputs) at handshake time ----
+    // flow-local set in onClientHello (BEFORE the handshake completes) is read
+    // back on the HTTP response — the spine now reaches down to TLS.
+    var tls = nginx.http.servers.find(function (s) { return s.name === 'mirror-tls'; });
+    if (tls) {
+        var tloc = tls.locations.find(function (l) { return l.path === '/'; });
+        tloc.handler = function (r) { r.respond(200, {}, 'mirror tls ok\n'); };
+
+        mirror.attach(tls, tloc, {
+            onClientHello: function (ev) {
+                var f = ev.flow, ch = ev.clientHello;
+                f.sni         = ch.sni || '';
+                f.tlsVersion  = ch.version;
+                f.cipherCount = (ch.cipherSuites || []).length;
+                f.extCount    = (ch.extensions   || []).length;
+                // JA3-style fingerprint string (MD5 left to a hashing lib):
+                f.ja3 = [ch.version,
+                         (ch.cipherSuites    || []).join('-'),
+                         (ch.extensions      || []).join('-'),
+                         (ch.supportedGroups || []).join('-'),
+                         (ch.ecPointFormats  || []).join('-')].join(',');
+            },
+            onResponseHeaders: function (ev) {
+                var f = ev.flow;
+                ev.setResponseHeader('x-mirror-sni',          f.sni || 'none');
+                ev.setResponseHeader('x-mirror-tls-version',  f.tlsVersion  || 0);
+                ev.setResponseHeader('x-mirror-cipher-count', f.cipherCount || 0);
+                ev.setResponseHeader('x-mirror-ext-count',    f.extCount    || 0);
+                ev.setResponseHeader('x-mirror-ja3',          f.ja3 || '');
+            }
+        });
+    }
 })();

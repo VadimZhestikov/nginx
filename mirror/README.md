@@ -34,7 +34,8 @@ A pure JS layer over pilgrim hooks (no C changes):
 | `onRequestHeaders` | `location.addHook(fn)` | ✅ wired |
 | `onResponseHeaders` | `location.addResponseHook(fn)` | ✅ wired |
 | `onClientClose` | `conn.onClose(fn)` | ✅ wired (phase 2) |
-| L4 / TLS / LB events | — | phase 3 |
+| `onClientHello` | `server.ssl.onClientHello(fn)` | ✅ wired (phase 3) |
+| L4 / LB events | — | phase 4 |
 
 - **`lib/mirror.js`** — the framework. Canonical event lattice (full stack,
   HTTP+accept wired), a **capability table** (`CAPS`) gating which commands are
@@ -47,7 +48,7 @@ A pure JS layer over pilgrim hooks (no C changes):
 ### Run
 
 ```bash
-cd example && bash test.sh    # 6/6 pass
+cd example && bash test.sh    # 13/13 pass
 ```
 
 The test proves: accept→request→response **linkage**, per-connection flow-local
@@ -68,9 +69,15 @@ two in the C module** (the "carefully add missing API to nginx" work):
 2. **Connection-close event — DONE.** Added **`conn.onClose(fn)`**; it fires when
    the connection pool is destroyed, with the per-connection ctx as its argument,
    and the module frees the ctx after. This backs `onClientClose`.
-3. **Per-request LB/upstream selection** (`onSelectUpstream` / iRules
-   `LB::select`) and **thin TLS ClientHello events** — still open, deferred to
-   phase 3.
+3. **TLS ClientHello events — DONE (phase 3).** Added
+   **`server.ssl.onClientHello(fn)`** (installs `SSL_CTX_set_client_hello_cb`);
+   the hook fires at handshake time with a parsed ClientHello — `sni`, `version`,
+   `cipherSuites`, `extensions`, `alpn`, `supportedGroups`, `ecPointFormats` (the
+   JA3 inputs) — plus the per-connection ctx, and can abort the handshake by
+   returning `false`. Serves the JA3/JA4 customer request and iRules
+   `CLIENTSSL_CLIENTHELLO`.
+4. **Per-request LB/upstream selection** (`onSelectUpstream` / iRules
+   `LB::select`) — still open, deferred to phase 4.
 
 Phase-2 acceptance test (`example/test.sh`, 9/9): the per-connection **serial is
 identical across keepalive requests** (proving one shared per-connection object)
@@ -82,10 +89,19 @@ New pilgrim API added in phase 2:
 - `NginxConnection.onClose(fn)` — connection-close callback.
 - `request.connCtx` — the same per-connection object, from request/response.
 
-## Phase 3 (next)
+New pilgrim API added in phase 3:
+- `server.ssl.onClientHello(fn)` — TLS ClientHello inspection; `fn(clientHello,
+  connCtx)`, return `false` to abort. `clientHello` = `{sni, version,
+  cipherSuites[], extensions[], alpn[], supportedGroups[], ecPointFormats[]}`.
 
-- Wire L4 / TLS / LB events; close the per-request LB-selection and ClientHello
-  gaps (more thread-1 API in the module).
+The phase-3 acceptance test (`example/test.sh`, 13/13) drives an HTTPS server and
+proves the SNI carried in the ClientHello (before the handshake completes) is
+read back on the HTTP response — the spine now reaches from TLS to the response.
+
+## Phase 4 (next)
+
+- Per-request LB/upstream selection (`onSelectUpstream` / iRules `LB::select`)
+  and L4 data events (`onClientData`) — more thread-1 API in the module.
 - State: `table` → `nginx.shared` / SharedWorker (multi-worker) and the
   db-connect project (external); `session`/persistence → a COM persistence API.
 - Then decision (A): the TCL/iRules → mirror transpiler.

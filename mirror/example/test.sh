@@ -9,7 +9,16 @@ cd "$DEMO_DIR"
 mkdir -p logs
 : > logs/error.log
 
-cleanup() { "$NGINX" -p . -c nginx.conf -s stop 2>/dev/null || true; }
+# self-signed cert for the HTTPS (onClientHello) server
+if [ ! -f cert.pem ] || [ ! -f key.pem ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
+        -days 1 -subj "/CN=mirror-tls" >/dev/null 2>&1
+fi
+
+cleanup() {
+    "$NGINX" -p . -c nginx.conf -s stop 2>/dev/null || true
+    rm -f cert.pem key.pem
+}
 trap cleanup EXIT
 
 "$NGINX" -p . -c nginx.conf
@@ -74,6 +83,22 @@ else
     echo "FAIL: onClientClose did not fire enough (${CLOSES} events)"; FAIL=$((FAIL+1))
 fi
 check "close hook sees accept-time flow-local (client)" "client=127.0.0.1" "$(cat logs/error.log)"
+
+# --- 6. onClientHello (TLS ClientHello inspection; JA3 inputs) ---------------
+# The SNI carried in the ClientHello (before the handshake completes) is read
+# back on the HTTP response — proving the spine now reaches down to TLS. The
+# cipher/extension lists are parsed (the JA3 inputs).
+OUT=$(curl -sk -D - -o /dev/null --resolve mirrorsni.test:8343:127.0.0.1 \
+        https://mirrorsni.test:8343/)
+check "onClientHello: SNI from ClientHello reaches the HTTP response" \
+      "x-mirror-sni: mirrorsni.test" "$OUT"
+CC=$(echo "$OUT" | grep -i 'x-mirror-cipher-count:' | grep -oE '[0-9]+')
+if [ "${CC:-0}" -gt 0 ]; then echo "PASS: onClientHello: cipher suites parsed ($CC)"; PASS=$((PASS+1));
+else echo "FAIL: onClientHello: no cipher suites parsed"; FAIL=$((FAIL+1)); fi
+VER=$(echo "$OUT" | grep -i 'x-mirror-tls-version:' | grep -oE '[0-9]+')
+if [ "${VER:-0}" -gt 0 ]; then echo "PASS: onClientHello: TLS version parsed ($VER)"; PASS=$((PASS+1));
+else echo "FAIL: onClientHello: no TLS version"; FAIL=$((FAIL+1)); fi
+check "onClientHello: JA3 fingerprint string built" "x-mirror-ja3:" "$OUT"
 
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
