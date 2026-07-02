@@ -166,63 +166,72 @@ function cap(event, name) {
     }
 }
 
-function makeEvent(event, o) {   // o = { r?, conn?, flow }
-    var ev = { event: event };
+// The per-request event object. Its getters and control verbs are defined ONCE
+// on a shared prototype, so makeEvent() per hook is just Object.create + two
+// field assignments — no per-request defineProperty / closure churn (that per-hook
+// construction was the dominant mirror overhead; ~10us/hook, see PATH_B perf work).
+// Getters/methods read the request context from `this._o` and gate on `this.event`.
+// NOTE: handlers must call these as methods on ev (ev.header(x)); a detached
+// reference (var f = ev.header) would lose `this`.
+var EVENT_PROTO = {};
+Object.defineProperty(EVENT_PROTO, 'flow', {
+    get: function () { cap(this.event, 'flow'); return this._o.flow; } });
+Object.defineProperty(EVENT_PROTO, 'ctx', {
+    get: function () { cap(this.event, 'ctx'); return this._o.r.ctx; } });
+Object.defineProperty(EVENT_PROTO, 'clientHello', {
+    get: function () { cap(this.event, 'clientHello'); return this._o.clientHello; } });
+Object.defineProperty(EVENT_PROTO, 'clientAddr', { get: function () {
+    cap(this.event, 'clientAddr');
+    var o = this._o; return o.conn ? o.conn.remoteAddr : o.r.variable('remote_addr'); } });
+Object.defineProperty(EVENT_PROTO, 'clientPort', { get: function () {
+    cap(this.event, 'clientPort');
+    var o = this._o; return o.conn ? o.conn.remotePort : o.r.variable('remote_port'); } });
+Object.defineProperty(EVENT_PROTO, 'method', { get: function () {
+    cap(this.event, 'method'); return this._o.r.method; } });
+Object.defineProperty(EVENT_PROTO, 'uri', { get: function () {
+    cap(this.event, 'uri'); return this._o.r.uri; } });
+// table facade is built lazily on first access and cached, so handlers that never
+// touch ev.table pay nothing for it.
+Object.defineProperty(EVENT_PROTO, 'table', { get: function () {
+    return this._table || (this._table = makeTableFacade(this.event)); } });
 
-    Object.defineProperty(ev, 'flow', {
-        get: function () { cap(event, 'flow'); return o.flow; } });
-    Object.defineProperty(ev, 'ctx', {
-        get: function () { cap(event, 'ctx'); return o.r.ctx; } });
-    Object.defineProperty(ev, 'clientHello', {
-        get: function () { cap(event, 'clientHello'); return o.clientHello; } });
+EVENT_PROTO.header = function (name) {
+    cap(this.event, 'header');
+    var h = this._o.r.headers || {};
+    return h[name] !== undefined ? h[name] : h[String(name).toLowerCase()];
+};
+// ev.cookie(name) — one cookie value from the request Cookie header (iRules
+// HTTP::cookie). Returns undefined if absent.
+EVENT_PROTO.cookie = function (name) {
+    cap(this.event, 'cookie');
+    var h = this._o.r.headers || {};
+    var c = h.cookie !== undefined ? h.cookie : h.Cookie;
+    return cookieValue(c, name);
+};
+// ---- flow-control / control verbs ----
+EVENT_PROTO.respond = function (code, headers, body) {
+    cap(this.event, 'respond');
+    this._o.r.respond(code, headers || {}, body || '');
+    this.stopped = true;                         // short-circuit signal
+};
+EVENT_PROTO.setResponseHeader = function (name, val) {
+    cap(this.event, 'setResponseHeader');
+    this._o.r.setHeader(name, String(val));
+};
+// per-request LB / pool selection (iRules `pool`). Sets the nginx variable
+// $mirror_upstream, which the location's `proxy_pass http://$mirror_upstream`
+// resolves to a named upstream at request time.
+EVENT_PROTO.selectUpstream = function (name) {
+    cap(this.event, 'selectUpstream');
+    this._o.r.setVariable('mirror_upstream', String(name));
+};
+EVENT_PROTO.reject = function () { cap(this.event, 'reject'); this._o.conn.reject(); };
 
-    ev.table = makeTableFacade(event);
-
-    Object.defineProperty(ev, 'clientAddr', { get: function () {
-        cap(event, 'clientAddr');
-        return o.conn ? o.conn.remoteAddr : o.r.variable('remote_addr'); } });
-    Object.defineProperty(ev, 'clientPort', { get: function () {
-        cap(event, 'clientPort');
-        return o.conn ? o.conn.remotePort : o.r.variable('remote_port'); } });
-    Object.defineProperty(ev, 'method', { get: function () {
-        cap(event, 'method'); return o.r.method; } });
-    Object.defineProperty(ev, 'uri', { get: function () {
-        cap(event, 'uri'); return o.r.uri; } });
-
-    ev.header = function (name) {
-        cap(event, 'header');
-        var h = o.r.headers || {};
-        return h[name] !== undefined ? h[name] : h[String(name).toLowerCase()];
-    };
-
-    // ev.cookie(name) — one cookie value from the request Cookie header (iRules
-    // HTTP::cookie). Returns undefined if absent.
-    ev.cookie = function (name) {
-        cap(event, 'cookie');
-        var h = o.r.headers || {};
-        var c = h.cookie !== undefined ? h.cookie : h.Cookie;
-        return cookieValue(c, name);
-    };
-
-    // ---- flow-control / control verbs ----
-    ev.respond = function (code, headers, body) {
-        cap(event, 'respond');
-        o.r.respond(code, headers || {}, body || '');
-        ev.stopped = true;                       // short-circuit signal
-    };
-    ev.setResponseHeader = function (name, val) {
-        cap(event, 'setResponseHeader');
-        o.r.setHeader(name, String(val));
-    };
-    // per-request LB / pool selection (iRules `pool`). Sets the nginx variable
-    // $mirror_upstream, which the location's `proxy_pass http://$mirror_upstream`
-    // resolves to a named upstream at request time.
-    ev.selectUpstream = function (name) {
-        cap(event, 'selectUpstream');
-        o.r.setVariable('mirror_upstream', String(name));
-    };
-    ev.reject = function () { cap(event, 'reject'); o.conn.reject(); };
-
+function makeEvent(event, o) {   // o = { r?, conn?, flow, clientHello? }
+    var ev = Object.create(EVENT_PROTO);
+    ev.event  = event;
+    ev._o     = o;
+    ev._table = null;
     return ev;
 }
 
@@ -278,15 +287,21 @@ function attach(server, location, handlers) {
 // ---- L4 / stream: onClientData (iRules CLIENT_DATA) -------------------------
 // Raw TCP inspection. The stream session's preread bytes (session.data) are
 // captured in the stream preread phase; the handler can route/reject on them.
+var STREAM_EVENT_PROTO = {};
+Object.defineProperty(STREAM_EVENT_PROTO, 'data', {
+    get: function () { cap(this.event, 'data'); return this._s.data; } });
+Object.defineProperty(STREAM_EVENT_PROTO, 'clientAddr', {
+    get: function () { cap(this.event, 'clientAddr'); return this._s.remoteAddress; } });
+Object.defineProperty(STREAM_EVENT_PROTO, 'table', {
+    get: function () { return this._table || (this._table = makeTableFacade(this.event)); } });
+STREAM_EVENT_PROTO.finalize = function (code) { cap(this.event, 'finalize'); this._s.finalize(code || 200); };
+STREAM_EVENT_PROTO.reject   = function ()     { cap(this.event, 'reject');   this._s.finalize(403); };
+
 function makeStreamEvent(event, session) {
-    var ev = { event: event };
-    Object.defineProperty(ev, 'data', {
-        get: function () { cap(event, 'data'); return session.data; } });
-    Object.defineProperty(ev, 'clientAddr', {
-        get: function () { cap(event, 'clientAddr'); return session.remoteAddress; } });
-    ev.table = makeTableFacade(event);
-    ev.finalize = function (code) { cap(event, 'finalize'); session.finalize(code || 200); };
-    ev.reject   = function ()     { cap(event, 'reject');   session.finalize(403); };
+    var ev = Object.create(STREAM_EVENT_PROTO);
+    ev.event  = event;
+    ev._s     = session;
+    ev._table = null;
     return ev;
 }
 
