@@ -11,6 +11,22 @@
 #include <ngx_core.h>
 
 
+/* POSIX connection-teardown ops: thin delegates to the socket syscalls. */
+
+static ngx_int_t
+ngx_posix_substrate_close(ngx_socket_t fd)
+{
+    return ngx_close_socket(fd);
+}
+
+
+static ngx_int_t
+ngx_posix_substrate_shutdown(ngx_socket_t fd, int how)
+{
+    return ngx_shutdown_socket(fd, how);
+}
+
+
 /*
  * POSIX backend: the data-movement vtable is the platform's ngx_os_io, which
  * ngx_os_specific_init() fills in (e.g. ngx_linux_io) before any connection is
@@ -19,7 +35,9 @@
  */
 static ngx_substrate_t  ngx_posix_substrate = {
     "posix",
-    &ngx_os_io
+    &ngx_os_io,
+    ngx_posix_substrate_close,
+    ngx_posix_substrate_shutdown
 };
 
 

@@ -3673,7 +3673,9 @@ ngx_http_set_lingering_close(ngx_connection_t *c)
         }
     }
 
-    if (ngx_shutdown_socket(c->fd, NGX_WRITE_SHUTDOWN) == -1) {
+    /* mirror thread 2 (phase 2.1b): shutdown via the active substrate
+     * (POSIX backend == ngx_shutdown_socket). */
+    if (ngx_substrate->shutdown(c->fd, NGX_WRITE_SHUTDOWN) == -1) {
         ngx_connection_error(c, ngx_socket_errno,
                              ngx_shutdown_socket_n " failed");
         ngx_http_close_request(r, 0);

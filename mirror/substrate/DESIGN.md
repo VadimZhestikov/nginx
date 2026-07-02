@@ -1,20 +1,38 @@
 # mirror — Thread 2: Substrate Interchange (design doc, phase 2.x)
 
-Status: **phase 2.1a landed** (the I/O-binding seam); the rest is design-only.
-This scopes the substrate-interchange track for the mirror project, deliberately
+Status: **phases 2.1a + 2.1b landed** (per-connection I/O + teardown seam); the
+rest is design-only. This scopes the substrate-interchange track, deliberately
 targeting the ~90% of thread 2 that needs **no BIG-IP / TMM source access**, and
 quarantining the part that does.
 
 > **Phase 2.1a (done):** `src/core/ngx_substrate.{h,c}` defines `ngx_substrate_t`
 > + the global `ngx_substrate`, with a POSIX reference backend whose `io` is the
-> live `ngx_os_io`. `ngx_event_accept.c` and `ngx_event_connect.c` now bind a
+> live `ngx_os_io`. `ngx_event_accept.c` and `ngx_event_connect.c` bind a
 > connection's `recv`/`send`/chain ops from `ngx_substrate->io` instead of the
-> hardcoded `ngx_recv`/`ngx_send` globals. Behaviour is byte-identical for POSIX
-> (its `io == &ngx_os_io`); wired into `auto/sources` + `ngx_core.h`. Verified:
-> full `t/` suite green + mirror `example` 54/54. This is the single point a
-> DPDK/TMM backend will install its I/O vtable. **Still POSIX-direct (2.1b+):**
-> listener creation, `accept()`, the `ngx_event_actions` readiness vtable, and fd
-> lifecycle / socket-option shims — see §2.1 and §7.
+> hardcoded `ngx_recv`/`ngx_send` globals. Byte-identical for POSIX; wired into
+> `auto/sources` + `ngx_core.h`.
+>
+> **Phase 2.1b (done):** the vtable grew connection-teardown ops
+> `close(fd)` + `shutdown(fd, how)` (POSIX → `ngx_close_socket` /
+> `ngx_shutdown_socket`). The central per-connection close in
+> `ngx_close_connection` (`ngx_connection.c` — every connection, inbound and
+> upstream) and the HTTP write-`shutdown` (`ngx_http_request.c`) now route through
+> the substrate. So the seam now owns both halves of the per-connection
+> data-plane: **I/O (2.1a) + teardown (2.1b)**. Verified: full `t/` green + mirror
+> `example` 54/54.
+>
+> **Reclassified / deferred (was "2.1b" in the original table):**
+> - **Event readiness (`ngx_event_actions`)** is *already* pluggable via nginx's
+>   event-module mechanism (epoll/kqueue/… are selectable modules). A DPDK/TMM
+>   backend adds an **event module** (à la the epoll module), not a `ngx_substrate`
+>   hook — so this is out of the substrate vtable by design.
+> - **`accept()`** is entangled with platform `accept4` detection (a mutable
+>   `static use_accept4` + an `ENOSYS`-fallback retry loop in `ngx_event_accept`).
+>   A real backend delivers connections from its own event source and replaces
+>   that path wholesale, so routing it through a generic POSIX-identity hook now
+>   buys nothing; folded into the backend work (§2.2).
+> - **Listener creation** (`ngx_open_listening_sockets`) and broad **socket-option**
+>   call-sites are setup-time and platform-heavy; deferred to the backend phase.
 
 ## 0. TL;DR
 
@@ -237,8 +255,9 @@ the bottom half pluggable, and the two meet at `ngx_substrate_t`.
 
 | Phase | Deliverable | Needs BIG-IP? | Runs on WSL2? |
 |---|---|---|---|
-| **2.1a** ✅ | `ngx_substrate_t` + POSIX backend; accept/connect bind I/O from `ngx_substrate->io`; `t/` + `mirror/example` green (no behaviour change) | no | yes |
-| **2.1b** | route listener/accept, `ngx_event_actions`, fd lifecycle + socket-opts through the vtable | no | yes |
+| **2.1a** ✅ | `ngx_substrate_t` + POSIX backend; accept/connect bind I/O from `ngx_substrate->io`; green (no behaviour change) | no | yes |
+| **2.1b** ✅ | vtable + `close`/`shutdown`; central connection-close + HTTP write-shutdown routed through it; green | no | yes |
+| ~~listener/accept/event-actions routing~~ | reclassified: event loop already pluggable via event modules; accept/listener fold into the backend (2.2) | — | — |
 | **2.2** | DPDK/F-Stack backend behind the seam; nginx serves over it on a lab host | no | **no** (real Linux + DPDK) |
 | **2.3** | Conformance suite (substrate unit tests + mirror/example run per backend); POSIX≡DPDK | no (VE black-box + docs) | 2.1 part yes |
 | **2.4** | TMM backend | **yes (F5 SDK/partnership)** | n/a |

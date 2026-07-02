@@ -1341,7 +1341,9 @@ ngx_close_connection(ngx_connection_t *c)
         return;
     }
 
-    if (ngx_close_socket(fd) == -1) {
+    /* mirror thread 2 (phase 2.1b): close via the active substrate
+     * (POSIX backend == ngx_close_socket). */
+    if (ngx_substrate->close(fd) == -1) {
 
         err = ngx_socket_errno;
 

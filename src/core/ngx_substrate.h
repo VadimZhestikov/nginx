@@ -36,6 +36,12 @@ typedef struct ngx_substrate_s  ngx_substrate_t;
 struct ngx_substrate_s {
     const char   *name;      /* "posix", "dpdk", "tmm", ... */
     ngx_os_io_t  *io;        /* per-connection I/O vtable (recv/send/chains) */
+
+    /* connection-teardown lifecycle (phase 2.1b). fd-based for now — POSIX
+     * delegates to ngx_close_socket / ngx_shutdown_socket. The signature will
+     * grow to take the connection/handle when a non-fd backend arrives. */
+    ngx_int_t   (*close)(ngx_socket_t fd);
+    ngx_int_t   (*shutdown)(ngx_socket_t fd, int how);
 };
 
 
