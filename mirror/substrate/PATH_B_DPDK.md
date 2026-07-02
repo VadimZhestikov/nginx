@@ -150,7 +150,7 @@ SLIRP hostfwd trick (see DESIGN.md / memory). Perf → bare-metal PCIe/virtio ho
 
 ## 9. Recommended first concrete step
 
-**B.0** — produce the F-Stack-vs-stock-1.28 diff and a hunk-by-hunk catalogue.
+**B.0 — DONE:** see [`PATH_B_B0_CATALOGUE.md`](PATH_B_B0_CATALOGUE.md) (53 files, +1895/-60; 2 new files carry the core; the seam already subsumes the per-connection I/O bucket).
 It's low-risk, needs no pilgrim changes, and turns B.1 from "port a fork blind"
 into "apply N catalogued, understood hunks." Everything after B.0 is gated on
 accepting the effort/risk of B.1–B.2.
