@@ -222,10 +222,12 @@ ngx_event_accept(ngx_event_t *ev)
 
         *log = ls->log;
 
-        c->recv = ngx_recv;
-        c->send = ngx_send;
-        c->recv_chain = ngx_recv_chain;
-        c->send_chain = ngx_send_chain;
+        /* mirror thread 2 (phase 2.1): bind I/O from the active substrate
+         * (POSIX backend == the ngx_recv/ngx_send/... globals). */
+        c->recv = ngx_substrate->io->recv;
+        c->send = ngx_substrate->io->send;
+        c->recv_chain = ngx_substrate->io->recv_chain;
+        c->send_chain = ngx_substrate->io->send_chain;
 
         c->log = log;
         c->pool->log = log;

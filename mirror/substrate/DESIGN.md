@@ -1,8 +1,20 @@
 # mirror — Thread 2: Substrate Interchange (design doc, phase 2.x)
 
-Status: **design only, no code.** This scopes the *first* substrate-interchange
-phase for the mirror project. It deliberately targets the ~90% of thread 2 that
-needs **no BIG-IP / TMM source access**, and quarantines the part that does.
+Status: **phase 2.1a landed** (the I/O-binding seam); the rest is design-only.
+This scopes the substrate-interchange track for the mirror project, deliberately
+targeting the ~90% of thread 2 that needs **no BIG-IP / TMM source access**, and
+quarantining the part that does.
+
+> **Phase 2.1a (done):** `src/core/ngx_substrate.{h,c}` defines `ngx_substrate_t`
+> + the global `ngx_substrate`, with a POSIX reference backend whose `io` is the
+> live `ngx_os_io`. `ngx_event_accept.c` and `ngx_event_connect.c` now bind a
+> connection's `recv`/`send`/chain ops from `ngx_substrate->io` instead of the
+> hardcoded `ngx_recv`/`ngx_send` globals. Behaviour is byte-identical for POSIX
+> (its `io == &ngx_os_io`); wired into `auto/sources` + `ngx_core.h`. Verified:
+> full `t/` suite green + mirror `example` 54/54. This is the single point a
+> DPDK/TMM backend will install its I/O vtable. **Still POSIX-direct (2.1b+):**
+> listener creation, `accept()`, the `ngx_event_actions` readiness vtable, and fd
+> lifecycle / socket-option shims — see §2.1 and §7.
 
 ## 0. TL;DR
 
@@ -225,7 +237,8 @@ the bottom half pluggable, and the two meet at `ngx_substrate_t`.
 
 | Phase | Deliverable | Needs BIG-IP? | Runs on WSL2? |
 |---|---|---|---|
-| **2.1** | `ngx_substrate_t` interface + route fd call-sites through it; POSIX backend behind it; `t/` + `mirror/example` green (no behaviour change) | no | yes |
+| **2.1a** ✅ | `ngx_substrate_t` + POSIX backend; accept/connect bind I/O from `ngx_substrate->io`; `t/` + `mirror/example` green (no behaviour change) | no | yes |
+| **2.1b** | route listener/accept, `ngx_event_actions`, fd lifecycle + socket-opts through the vtable | no | yes |
 | **2.2** | DPDK/F-Stack backend behind the seam; nginx serves over it on a lab host | no | **no** (real Linux + DPDK) |
 | **2.3** | Conformance suite (substrate unit tests + mirror/example run per backend); POSIX≡DPDK | no (VE black-box + docs) | 2.1 part yes |
 | **2.4** | TMM backend | **yes (F5 SDK/partnership)** | n/a |

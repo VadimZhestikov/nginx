@@ -158,10 +158,11 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
     }
 
     if (type == SOCK_STREAM) {
-        c->recv = ngx_recv;
-        c->send = ngx_send;
-        c->recv_chain = ngx_recv_chain;
-        c->send_chain = ngx_send_chain;
+        /* mirror thread 2 (phase 2.1): bind I/O from the active substrate. */
+        c->recv = ngx_substrate->io->recv;
+        c->send = ngx_substrate->io->send;
+        c->recv_chain = ngx_substrate->io->recv_chain;
+        c->send_chain = ngx_substrate->io->send_chain;
 
         c->sendfile = 1;
 
@@ -176,9 +177,9 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
         }
 
     } else { /* type == SOCK_DGRAM */
-        c->recv = ngx_udp_recv;
-        c->send = ngx_send;
-        c->send_chain = ngx_udp_send_chain;
+        c->recv = ngx_substrate->io->udp_recv;
+        c->send = ngx_substrate->io->send;
+        c->send_chain = ngx_substrate->io->udp_send_chain;
 
         c->need_flush_buf = 1;
     }
