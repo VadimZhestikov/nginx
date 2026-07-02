@@ -262,6 +262,11 @@ the bottom half pluggable, and the two meet at `ngx_substrate_t`.
 | **2.3** | Conformance suite (substrate unit tests + mirror/example run per backend); POSIX≡DPDK | no (VE black-box + docs) | 2.1 part yes |
 | **2.4** | TMM backend | **yes (F5 SDK/partnership)** | n/a |
 
+**Path A (F-Stack's own nginx over DPDK) is proven** in the KVM guest; the pilgrim
+DPDK-backend integration (**Path B**) is scoped separately in
+[`PATH_B_DPDK.md`](PATH_B_DPDK.md) — grounded in a recon of F-Stack's actual nginx
+patch (syscall shim + loop inversion + dual event modules).
+
 Recommended first concrete step: **phase 2.1** — it's in-tree, WSL2-friendly,
 regression-guarded by the existing suites, and unlocks everything after it.
 
