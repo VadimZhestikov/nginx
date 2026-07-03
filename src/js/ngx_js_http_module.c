@@ -5254,6 +5254,19 @@ static const char  ngx_js_hook_chain_src[] =
     "})()";
 
 
+/*
+ * Async-continuation helper for the C sync fast path in ngx_js_run_chain: when an
+ * arity<2 hook turns out to be async (returns a thenable), await it and then run
+ * the REMAINING hooks through the normal chain runner.
+ *   __ngx_hook_after__(p, h, r) === p.then(() => __ngx_hook_chain__(h, r))
+ */
+static const char  ngx_js_hook_after_src[] =
+    "(function(){'use strict';\n"
+    "return function(p,h,r){\n"
+    "  return p.then(function(){return __ngx_hook_chain__(h,r);});\n"
+    "};})()";
+
+
 ngx_int_t
 ngx_js_request_install_proto(JSContext *ctx)
 {
@@ -5314,6 +5327,17 @@ ngx_js_request_install_proto(JSContext *ctx)
     JS_SetPropertyStr(ctx, global, "__ngx_hook_chain__", runner);
     JS_FreeValue(ctx, global);
     /* runner ownership transferred to global object */
+
+    /* Install __ngx_hook_after__ (async continuation for the sync fast path) */
+    runner = JS_Eval(ctx, ngx_js_hook_after_src,
+                     sizeof(ngx_js_hook_after_src) - 1,
+                     "<hook_after>", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(runner)) {
+        return NGX_ERROR;
+    }
+    global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "__ngx_hook_after__", runner);
+    JS_FreeValue(ctx, global);
 
     return NGX_OK;
 }
@@ -6223,38 +6247,135 @@ ngx_js_hook_get_fn(JSContext *ctx, uint32_t fn_idx)
  *
  * On all other returns the caller handles cleanup of req_obj / fn / etc.
  */
+/*
+ * Build the async continuation for the sync fast path: await `promise`, then run
+ * the remaining hooks via the normal chain runner. Returns a Promise (owned) or
+ * an exception. `promise` and `req_obj` are borrowed.
+ */
+static JSValue
+ngx_js_hook_chain_after(JSContext *ctx, JSValue promise, uint32_t *hook_idxs,
+    ngx_uint_t n_hooks, JSValue req_obj)
+{
+    JSValue     global, after, arr, args[3], combined;
+    ngx_uint_t  i;
+
+    arr = JS_NewArray(ctx);
+    for (i = 0; i < n_hooks; i++) {
+        JS_SetPropertyUint32(ctx, arr, (uint32_t) i,
+                             ngx_js_hook_get_fn(ctx, hook_idxs[i]));
+    }
+
+    global = JS_GetGlobalObject(ctx);
+    after  = JS_GetPropertyStr(ctx, global, "__ngx_hook_after__");
+    JS_FreeValue(ctx, global);
+
+    args[0] = promise;
+    args[1] = arr;
+    args[2] = req_obj;
+    combined = JS_Call(ctx, after, JS_UNDEFINED, 3, args);
+
+    JS_FreeValue(ctx, after);
+    JS_FreeValue(ctx, arr);
+
+    return combined;
+}
+
+
 static ngx_int_t
 ngx_js_run_chain(ngx_js_worker_t *w, ngx_http_request_t *r,
     JSValue req_obj, uint32_t *hook_idxs, ngx_uint_t n_hooks, int is_p2)
 {
     JSContext                *ctx, *job_ctx;
     JSValue                   hooks_arr, runner, global, chain_args[2], chain;
+    JSValue                   fn, ret, lenv, thenv;
     JSValue                   reason, str;
     const char               *cstr;
     ngx_js_async_ctx_t       *actx;
     ngx_js_request_opaque_t  *req_op;
     ngx_uint_t                i;
+    int                       fast;
+    int32_t                   len;
 
     ctx = w->ctx;
 
-    /* Build JS Array of hook functions */
-    hooks_arr = JS_NewArray(ctx);
+    /*
+     * Tier-2 fast path: a hook declared function(req) — arity < 2 — cannot
+     * reference `next`, so the Koa middleware chain is unnecessary. Such hooks
+     * are called directly from C, skipping the per-request JS hook array, the
+     * __ngx_hook_chain__ runner and its per-hook next()/adv() closures + promise.
+     * A hook with arity >= 2 (may call next()) routes through the runner
+     * unchanged; an arity<2 hook that returns a thenable (async) is awaited and
+     * the REMAINING hooks run via the runner (__ngx_hook_after__).
+     */
+    fast = 1;
     for (i = 0; i < n_hooks; i++) {
-        JS_SetPropertyUint32(ctx, hooks_arr, (uint32_t) i,
-                             ngx_js_hook_get_fn(ctx, hook_idxs[i]));
+        fn   = ngx_js_hook_get_fn(ctx, hook_idxs[i]);
+        len  = 0;
+        lenv = JS_GetPropertyStr(ctx, fn, "length");
+        JS_ToInt32(ctx, &len, lenv);
+        JS_FreeValue(ctx, lenv);
+        JS_FreeValue(ctx, fn);
+        if (len >= 2) { fast = 0; break; }
     }
 
-    /* Retrieve __ngx_hook_chain__ runner */
-    global = JS_GetGlobalObject(ctx);
-    runner = JS_GetPropertyStr(ctx, global, "__ngx_hook_chain__");
-    JS_FreeValue(ctx, global);
+    chain = JS_UNDEFINED;
 
-    /* Call runner(hooks, req) */
-    chain_args[0] = hooks_arr;
-    chain_args[1] = req_obj;
-    chain = JS_Call(ctx, runner, JS_UNDEFINED, 2, chain_args);
-    JS_FreeValue(ctx, runner);
-    JS_FreeValue(ctx, hooks_arr);
+    if (fast) {
+        for (i = 0; i < n_hooks; i++) {
+            fn  = ngx_js_hook_get_fn(ctx, hook_idxs[i]);
+            ret = JS_Call(ctx, fn, JS_UNDEFINED, 1, &req_obj);
+            JS_FreeValue(ctx, fn);
+
+            if (JS_IsException(ret)) {
+                ngx_js_log_exception(ctx, r->connection->log);
+                JS_FreeValue(ctx, ret);
+                return NGX_JS_CHAIN_ERROR;
+            }
+
+            /* async hook (arity<2 but returned a thenable)? */
+            thenv = JS_IsObject(ret) ? JS_GetPropertyStr(ctx, ret, "then")
+                                     : JS_UNDEFINED;
+            if (JS_IsFunction(ctx, thenv)) {
+                JS_FreeValue(ctx, thenv);
+                chain = ngx_js_hook_chain_after(ctx, ret, hook_idxs + i + 1,
+                                                n_hooks - i - 1, req_obj);
+                JS_FreeValue(ctx, ret);
+                break;                       /* -> common promise handling */
+            }
+            JS_FreeValue(ctx, thenv);
+
+            /* sync hook: drain microtasks it scheduled, honour short-circuit */
+            while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { /* drain */ }
+            JS_FreeValue(ctx, ret);
+
+            req_op = JS_GetOpaque(req_obj, ngx_js_request_class_id);
+            if (req_op != NULL && req_op->responded) {
+                return NGX_JS_CHAIN_RESPONDED;
+            }
+        }
+
+        if (i >= n_hooks) {
+            return NGX_JS_CHAIN_DONE;         /* all hooks ran synchronously */
+        }
+        /* else: chain holds the async continuation promise; fall through */
+
+    } else {
+        /* Fallback: Koa-style runner (preserves next() middleware + async) */
+        hooks_arr = JS_NewArray(ctx);
+        for (i = 0; i < n_hooks; i++) {
+            JS_SetPropertyUint32(ctx, hooks_arr, (uint32_t) i,
+                                 ngx_js_hook_get_fn(ctx, hook_idxs[i]));
+        }
+        global = JS_GetGlobalObject(ctx);
+        runner = JS_GetPropertyStr(ctx, global, "__ngx_hook_chain__");
+        JS_FreeValue(ctx, global);
+
+        chain_args[0] = hooks_arr;
+        chain_args[1] = req_obj;
+        chain = JS_Call(ctx, runner, JS_UNDEFINED, 2, chain_args);
+        JS_FreeValue(ctx, runner);
+        JS_FreeValue(ctx, hooks_arr);
+    }
 
     /* Drain microtasks — sync hooks (and fulfilled-immediately async ones) run */
     while (JS_ExecutePendingJob(w->rt, &job_ctx) > 0) { /* drain */ }
