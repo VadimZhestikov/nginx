@@ -87,6 +87,50 @@ make -j$(nproc) && cp objs/nginx ~/tableA/nginx-maxim
 #     after the first iteration.
 ```
 
+## Reduced policy — adding the `nginx directives/vars` baseline
+
+The full "count + tag" policy above is **not** expressible in stock nginx directives —
+the per-request global atomic counter (`ev.table.incr`) has no directive/variable
+equivalent (`$connection` counts connections, not requests; `$request_id` is random;
+`limit_*` expose no count). To get a fair fourth data point, the policy was **reduced to
+its directive-expressible subset** — the "tag" only: echo `x-tenant` → `x-tenant-seen`
+(default `-`) + `ok` body. This drops exactly the shared-state part and keeps the
+stateless request→response mapping.
+
+All four layers implement this identical reduced policy:
+
+- **nginx directives/vars** (`directives.conf`, stock binary): `map $http_x_tenant …` +
+  `add_header x-tenant-seen $tenant_seen always;` + `return 200 "ok\n";`
+- **maxim hand-C** (`ngx_http_maxim_tag_module.c`): content handler, header read + one
+  response header + body; no shm.
+- **interpreted mirror** (`maxim_mirror_tag_app.js`): `onRequestHeaders` stashes
+  `ev.header('x-tenant')` in `ev.flow`, `onResponseHeaders` emits it.
+- **stock floor**: `return 200 "ok\n"`, no policy.
+
+Same method as above (h1 keepalive `-c100`, best of 3).
+
+| Config | loopback (a) | % | cross-host (b) | % |
+|---|--:|--:|--:|--:|
+| stock floor (no policy) | 356,681 | 100% | 402,800 | 100% |
+| **nginx directives/vars** | **368,691** | **103%** | **376,639** | **94%** |
+| maxim hand-C (tag) | 358,677 | 101% | 388,052 | 96% |
+| interpreted mirror (tag) | 168,704 | 47% | 175,838 | 44% |
+
+**Finding.** For a policy simple enough to express declaratively, **directives ≈ hand-C ≈
+stock floor** — all within run-to-run noise (94–103%); the `map`+`add_header` path is
+essentially free. The interpreted mirror still pays ~2.2× (44–47% of stock). So on the
+reduced policy the entire gap *is* the interpreter, and directives already sit at the
+compiled-C ceiling.
+
+**Why this sharpens the thesis, not softens it.** Declarative config is the right (and
+free) tool for the stateless part — so the value of maxim is precisely the policies
+directives **cannot** express: the atomic counter of the full policy, rate-limit token
+buckets, dynamic routing tables, cross-request shared state. There, the only stock
+option is the interpreted layer (the 44% row), and maxim's job is to pull that back up to
+the ~96% hand-C ceiling. The reduced table is the control that isolates where compilation
+actually pays: not the declarative parts (directives already win), but the stateful/logic
+parts (where directives drop out entirely).
+
 ## Spike gotchas (worth remembering)
 
 1. **`return 200` finalizes in the REWRITE phase** — before ACCESS — so an ACCESS-phase
@@ -96,3 +140,8 @@ make -j$(nproc) && cp objs/nginx ~/tableA/nginx-maxim
    `ngx_http_header_filter_module`, so a header-filter addon runs *after* the headers
    are already serialized (too late). Use a content handler, or register the addon as
    `HTTP_FILTER` type.
+3. **`ssh -n` vs the heredoc.** `ssh -n` redirects ssh's *own* stdin from `/dev/null` —
+   use it only for ssh calls nested *inside* a heredoc-driven script (else the inner ssh
+   slurps the rest of the script and the loop dies after one iteration). Do **not** put
+   `-n` on the outer `ssh 'bash -s' <<EOF` call itself — it would swallow the heredoc and
+   the remote shell gets empty input (runs nothing).
