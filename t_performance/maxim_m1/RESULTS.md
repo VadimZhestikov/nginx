@@ -24,11 +24,13 @@ One "count + tag" policy, implemented two ways doing **identical work**:
 All three on an **identical skeleton**: `listen 8080 reuseport; access_log off;`,
 4 workers.
 
-## Method
+## Method + result — two setups
 
-n6 loopback, `h2load -t4 -c100 --h1 -m1 -n 300000 -H 'x-tenant: acme'`, best of 3.
+Both use the same three binaries/configs; they differ only in how load is applied.
 
-## Result
+### (a) Loopback (n6, same-host generator)
+
+`h2load -t4 -c100 --h1 -m1 -n 300000 -H 'x-tenant: acme'`, best of 3.
 
 | Config | req/s | % of stock floor | × vs interpreted |
 |---|--:|--:|--:|
@@ -36,22 +38,35 @@ n6 loopback, `h2load -t4 -c100 --h1 -m1 -n 300000 -H 'x-tenant: acme'`, best of 
 | **maxim hand-C policy** | **350,165** | **90%** | **3.09×** |
 | interpreted mirror policy | 113,327 | 29% | 1.0× |
 
+### (b) Table A′ method — real 10 GbE, cross-host
+
+n6 DUT served over `eno4` (10.98.4.1) to a *separate* generator host n8 running
+`h2load -t8 -c100 --h1 -m1 -n 400000 -H 'x-tenant: acme'`, best of 3. No same-host
+core-sharing → cleaner absolutes.
+
+| Config | req/s | % of stock floor | × vs interpreted |
+|---|--:|--:|--:|
+| stock nginx (no policy) | 424,882 | 100% | — |
+| **maxim hand-C policy** | **409,386** | **96%** | **3.44×** |
+| interpreted mirror policy | 119,044 | 28% | 1.0× |
+
 ## Verdict — GATE PASSED
 
-The C that a typed COMCON policy would compile to runs at **~90% of bare nginx** and
-**~3.1× the interpreted mirror**. A compiler that lowers typed policy JS to this shape
-reclaims essentially all of the ~3× interpretation gap → **the compiler is worth
-building** (proceed to M2).
+The C that a typed COMCON policy would compile to runs at **90–96% of bare nginx** and
+**3.1–3.4× the interpreted mirror** — and the cleaner cross-host setup (b) gives the
+*stronger* result (96% / 3.44×), so the conclusion is not a loopback artifact. A compiler
+that lowers typed policy JS to this shape reclaims essentially all of the ~3×
+interpretation gap → **the compiler is worth building** (proceed to M2).
 
 ## Honest caveats
 
-- **Loopback + same-host generator ⇒ ~10–15% run-to-run noise.** Across two runs the
-  stock floor measured 326k then 391k; maxim 396k then 350k. The **ratios**
-  (maxim:interpreted ≈ 3.1–3.2×) are stable; the absolute floor is noisy. A cross-host
-  real-NIC repeat (Table A′ method) would tighten the absolutes but not the conclusion.
+- **Loopback (a) has ~10–15% run-to-run noise** (same-host generator shares cores): the
+  stock floor measured 326k then 391k across two runs. This is exactly why setup (b) was
+  added — the cross-host real-NIC run tightens the absolutes (stock 425k, maxim 409k
+  within one run) and *strengthens* the ratio (3.44×). The conclusion holds under both.
 - **This is the ceiling, not the compiler's output.** Hand-C is maximally direct; real
-  maxim output may retain some framework structure and land between 113k and 350k,
-  closer to 350k the more direct the typed lowering.
+  maxim output may retain some framework structure and land between the interpreted
+  (~119k) and hand-C (~409k) numbers, closer to hand-C the more direct the typed lowering.
 
 ## Reproduce
 
@@ -64,6 +79,12 @@ auto/configure --with-http_v2_module --with-http_ssl_module --with-stream \
 make -j$(nproc) && cp objs/nginx ~/tableA/nginx-maxim
 # configs + runner: see the ladder in the session notes (stock_m.conf / maxim.conf /
 # mirror_maxim.conf, all "listen 8080 reuseport; access_log off;").
+#
+# (a) loopback: run h2load on n6 against http://127.0.0.1:8080/
+# (b) Table A' cross-host: from n8, h2load against http://10.98.4.1:8080/ (n6 eno4).
+#     NB: wrap ssh in the runner with `ssh -n` (or </dev/null) — an ssh call inside a
+#     heredoc otherwise slurps the rest of the script from stdin and the loop stops
+#     after the first iteration.
 ```
 
 ## Spike gotchas (worth remembering)
