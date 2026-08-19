@@ -215,3 +215,31 @@ Writing the 45 scenarios was itself a design probe. What it surfaced, and what c
 
 The table doubles as a demo-driven acceptance checklist: a milestone is "showcase-true"
 when its scenarios run as written.
+
+## 6. Lessons from the user's manual (2026-08-19) — second working-backwards pass
+
+`MANUAL.md` (written as-if-shipped) surfaced a *different* class of gaps than the
+showcases — the user-journey ones (full harvest: MANUAL.md Appendix B):
+
+1. **Tenant-side SDK is missing from the plan entirely.** `comconctl dev` — run a
+   fragment against **capability doubles** generated from the same environment spec the
+   host binds, with the emulator and production admission being the *same* `admit`
+   gate ("works locally" ≡ "admitted"). → new work item alongside M-LIB; the doubles'
+   fidelity contract is its design question.
+2. **The denial schema needs stable machine codes** (`E_CAP_*`, `E_ADMIT_*`,
+   `E_BUDGET_*`, `E_PIN_*`…) — tenants pin CI to codes, not message text. Sharpens the
+   M2.5 denial-schema deliverable.
+3. **The widening workflow is a product surface:** `comconctl request` → host reviews a
+   descriptor diff → approval = new epoch → generated docs self-update. The lattice
+   makes self-service *narrowing* safe; the manual shows requesting-more must be a
+   first-class (reviewed) flow, not an email.
+4. **Terminology freeze at M2.5** — the manual had to pick user-facing words
+   (cage/binding/epoch/facet/pin); its glossary should become normative before more
+   docs accrete synonyms.
+5. **Product decisions flushed out as [TBD]s:** default-root out-of-box contents
+   (secure-vs-useful line), budget unit semantics (wall vs CPU, per-request vs
+   per-episode), grammar-version compatibility window on engine upgrades, nginx
+   integration knobs.
+6. **Confirmation:** the grant-little → watch-denials → adjust → enforce loop is the
+   product's single repeated motion across all three hats — the tooling deliverables
+   of §5.2 should be sequenced to make *that loop* work end-to-end first.
