@@ -58,6 +58,20 @@ fallback) → the event dispatcher calls the C function pointer directly.
   normative spec: resources, the four operators, possession metatheorem,
   closure/quotation, profiles, node interface, R/L/F/X classes. After M2.5, M3's
   capability check is simply "does this reference resolve in the bound environment."
+  *Expanded per showcase lessons (§5):* also deliver (a) the **selector/target
+  language grammar** (promoted from open questions — the showcases used it constantly
+  and invented syntax ad hoc), and (b) the **denial/explain schema** (promoted — it is
+  the operator UX, the deny-suite assertion language, the learning record, and the LSP
+  diagnostic; design it with the descriptors, not after).
+
+- **M-LIB — standard policy library (new; showcase lesson §5.1).** The user-facing
+  surface is not the kernel but the combinators: `std.profiles.*` (tenant,
+  pure_library, forensics/REL, marketplace, config_builder…) and the mediation
+  vocabulary (`routes/allowHosts/uses/ttl/window/cosign/readOnly/redact/protocol/
+  opaque.*`). Authored *in* the policy language once M3 exists; governed by its own
+  policy (raw operators withheld); interceptors that close over capabilities need
+  **certification criteria** (TCB-adjacent). Seed set specified at M2.5; grows with
+  M5/M6.
 
 - **M-SES — engine hardening.** Phases S1–S6 and the gate as specified in
   `HARDENING.md`. Does not block M2–M5 (trusted code); **gates M6/M7-with-tenants**;
@@ -72,7 +86,12 @@ fallback) → the event dispatcher calls the C function pointer directly.
 - **M5 — maxim lowering (one handler).** Lower typed request-header handlers to
   unboxed C against the typed stubs (the M1 hand-written ABI). Deliverable: a
   compiler-produced `.so` for the M1 example; behavior byte-identical to the
-  interpreted rule; the C ideally ≈ M1's hand-written C.
+  interpreted rule; the C ideally ≈ M1's hand-written C. *Scope note (showcase
+  lesson §5.5):* lowering must **partially evaluate static mediations** — a
+  constant-predicate membrane (e.g. an allowHosts prefix guard) becomes an inline
+  check in the generated C, not a call. Scenario 43's "policy that vanished" is
+  this feature; without it the compile-through performance story is untrue for any
+  mediated capability.
 
 - **M6 — Dispatch + AOT wiring.** The event dispatcher calls the compiled C function
   pointer (per-tenant `.so`, phase-35 precompile); interpreted fallback for the
@@ -146,3 +165,53 @@ Exercises every pillar, updated for the kernel and the anchors model:
 > static + runtime enforcement, the narrowing lattice, the cap-free-quotation rule,
 > and the first hardening probes — a stage-1 artifact honoring the stage-1
 > reservations.
+
+---
+
+## 5. Lessons from writing the showcases (2026-08-19) — plan deltas
+
+Writing the 45 scenarios was itself a design probe. What it surfaced, and what changed:
+
+1. **The standard library is the product surface.** Users see combinators
+   (`routes/uses/ttl/window/redact/protocol/opaque.*`), almost never the raw kernel.
+   → **M-LIB added** (§2), incl. certification criteria for cap-closing interceptors.
+2. **Ops tooling carries half the scenarios** (learn/shadow/enforce, diff, revoke,
+   epoch rollback, forensics attach, evaluate, docs, trust-report). → named as
+   deliverables inside milestones rather than a monolith: deny-trace + diff with
+   M2.5's schema; shadow/audit = the binding failure-semantics option (near-free);
+   revoke/cascade with M-LIB mediations; epoch rewrite/rollback with M6; learning-mode
+   static harvest = stage-1 dry-run (already in staging plan).
+3. **Denial/explain schema promoted** from open question into M2.5 (it is the UX, the
+   deny-suite assertion language, the learning record, and the LSP diagnostic).
+4. **Selector language promoted** from open question into M2.5 (used constantly,
+   invented ad hoc while writing — the clearest "spec missing" signal).
+5. **M5 must partially evaluate static mediations** (scenario 43) — scope note added.
+6. **Opaque values + COW domains have no milestone home** (scenarios 7/16/19/32
+   depend on them; the M-track builds the compiler, not this engine substrate).
+   → recorded as an explicit **engine-substrate track** decision point after M2.5:
+   either schedule it (stage-1 declarative COMCON needs it) or mark those scenarios
+   phase-2. The COW/IC microbenchmark in the first slice (§4.7) is its go/no-go input.
+7. **Cluster-edge policing (scenario 27) crosses process boundaries** — the kernel
+   semantics is single-runtime; workers-as-fragments is genuinely new design surface.
+   → added to FOUNDATION open questions; deferred.
+8. **Confirmations (no change):** determinism-caps-early paid off twice (36, 44);
+   meet-composition (21, 45) and epochs (24, 28, 41) required no new mechanism — the
+   kernel absorbed every scenario that wasn't an explicitly-listed gap.
+
+### Scenario → earliest-home traceability
+
+| Capability cluster | Scenarios | Earliest home |
+|---|---|---|
+| include/admit/bind pipeline, grammar-valued interfaces | 1, 3, 4, 30, 44, 45 | M2.5–M4 (+M-LIB facets) |
+| Intensional queries, quotation/realize, pin-by-hash | 38, 39, 40 | M2.5 (spec) / M3 (engine) |
+| Compile-through + membrane partial-eval | 43, 33(economics), epilogue | M5–M7 |
+| Live epochs: revoke, fuses, overlays, rollback, rewrite | 2, 12, 21, 24, 28, 31, 34, 41 | M6 (+M-LIB mediations) |
+| describe()-derived docs/audit/trust | 29, 37, 25 | M2 registry + tooling verbs |
+| Learning mode / shadow | 5, 14 | bind failure-semantics (early) + stage-1 harvest |
+| Frozen intrinsics, budgets, REL/forensics | 18, 10, 13, 6 | M-SES S1/S5 (+M-LIB profiles) |
+| **Opaque values + COW views** | **7, 16, 19, 32** | **engine-substrate track — UNSCHEDULED (lesson 6)** |
+| Multi-language includes, adaptive transforms | 11, 15, 22, 36 | M9 / stage 2 |
+| Cross-process, mobile fragments, marketplace ops | 27, 17, 8, 9, 20, 23, 26, 35, 42 | mixed; 27 = new open question |
+
+The table doubles as a demo-driven acceptance checklist: a milestone is "showcase-true"
+when its scenarios run as written.

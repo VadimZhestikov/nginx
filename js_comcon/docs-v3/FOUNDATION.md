@@ -385,8 +385,8 @@ Still open, in priority order:
    early; design together with revocation-epoch invalidation.
 2. **The two closed enumerations** (v2 §10.2) — p_symbols (POM node kinds, versioned)
    and compile portals; completeness makes the sandbox-escape claim checkable.
-3. **Selector-language grammar** — the target sub-language needs its spec note; it is
-   also the LSP/query surface.
+3. ~~Selector-language grammar~~ — **promoted into M2.5** (ROADMAP §5.4): the showcase
+   rework used it constantly and invented syntax ad hoc; it needs its spec now.
 4. **Information flow / taint** — capabilities gate *access*, not *flow*; read-X +
    write-Y can leak X→Y. Cross-tenant confidentiality needs IFC labels layered on top.
    Named, deferred (post-M9 track).
@@ -394,10 +394,15 @@ Still open, in priority order:
    mechanics, certified-hook criteria.
 6. **Multi-tenant worked example at system scale** (v2 §10.8) — still the validating
    scenario.
-7. **Denial/explain schema** (v2 §10.9) — designed with the descriptors; doubles as
-   deny-suite assertion language and (sign-flipped) learning-mode observation record.
+7. ~~Denial/explain schema~~ (v2 §10.9) — **promoted into M2.5** (ROADMAP §5.3): it is
+   the operator UX, the deny-suite assertion language, the learning record, and the
+   LSP diagnostic; the showcases lean on it in nearly every scenario.
 8. **Config-tree ⇄ live-tree correspondence across reloads** (v2 §10.10) — now
    interacts with binding epochs.
+8a. **Cluster-edge policing** (new; showcase 27) — workers-as-fragments extends the
+   model across process boundaries, but the kernel semantics is single-runtime;
+   cross-process communication edges (master↔worker, worker↔worker over the js_com
+   SW/broadcast machinery) need their own design pass. Deferred.
 9. **js_com API-factoring audit** (v2 §10.11) — now concrete: the F2 cross-reference
    getters are known level-conflating offenders; fused with M2 + hardening S4
    (HARDENING.md §S4).
