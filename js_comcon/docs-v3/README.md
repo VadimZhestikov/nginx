@@ -16,6 +16,8 @@ safety classes, the M-SES hardening scope — and the first measured performance
 | **HARDENING.md** | M-SES: the engine-hardening milestone (S1–S6), the gate, scheduling. Unforgeability is the *enforcement mechanism* of the possession axiom, not hygiene. |
 | **ROADMAP.md** | Milestones M1 ✅ …M9 (+M2.5, +M-SES) with the measured M1 numbers, delivery staging, and the v3 minimal first slice. |
 | **PERFORMANCE.md** | Expected performance impact: the measured gradient endpoints (96% compiled vs 28% interpreted vs stock), the cost model per enforcement moment, v3-specific costs (live-rewrite windows, meets, hashes), risks and the M7 falsification plan. |
+| **SHOWCASE.md** (1–7), **SHOWCASE17.md** (8–17), **SHOWCASE37.md** (18–37) | The look & feel scenarios, reworked for v3 (envs/grants, include = parse∘admit∘bind, anchors/queries, guarantees-as-theorems). Illustrative, not normative. |
+| **SHOWCASE45.md** (38–45, new) | v3-native scenarios: intensional query hardening, closure vs quotation, pin-by-hash, live-rewrite epochs, the self-auditing plugin (base≡meta), compile-through ("the policy that vanished"), contract admission for AI code, meet-composition. |
 
 ## One paragraph
 
@@ -34,9 +36,7 @@ interpreted form.
 ## Status
 
 Design documentation — nothing here is implemented except where marked (M1 spike
-artifacts in `t_performance/maxim_m1/`). The v2 illustrative scenario files
-(`../docs/SHOWCASE*.md`, 37 scenarios) remain worth reading for **intent**; their
-hypothetical syntax predates v3 (in particular the inline nested-backtick policy form
-is retired in favor of anchors — FOUNDATION §7/§12). Design-session notes and the
-running decision log live in the project memory branch
-(`comcon-architecture-refinement`).
+artifacts in `t_performance/maxim_m1/`). The showcase scenarios (45 total) are fully
+reworked for v3 and **supersede** `../docs/SHOWCASE*.md`; their syntax remains
+hypothetical by design. Design-session notes and the running decision log live in the
+project memory branch (`comcon-architecture-refinement`).
