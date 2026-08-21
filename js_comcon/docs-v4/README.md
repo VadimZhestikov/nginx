@@ -8,7 +8,11 @@ performance gate (M1: hand-C policy at 96% of stock nginx vs 28% interpreted).
 **v4 adds the symmetry correction** (rev 3.1, user-spotted): one governed-language
 pattern with N instances instead of two mirrored trees; the empty-environment principle
 ("data is code bound to ∅"); COM gains its missing admission hinge — a typed,
-admissible config surface (new work item M-CFG, new scenarios 46–47, new manual §3.6).*
+admissible config surface (new work item M-CFG, new scenarios 46–47, new manual §3.6).
+**v4.1 (in place) adds the comconctl closure**: there is no management plane —
+administration is admitted episodes, tool verbs are `std.ops` library programs, and the
+ops-resource capabilities become the third closed enumeration (FOUNDATION §8a,
+Principle 10).*
 
 ## Reading order
 

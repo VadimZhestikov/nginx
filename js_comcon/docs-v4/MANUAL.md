@@ -297,6 +297,11 @@ which: **tests bound correctness; the environment bounds damage.** Review the ca
 
 ## 5. Operations guide (the Host hat, day 2+)
 
+One fact frames this whole chapter *(v4.1)*: there is no management plane. Every verb
+below runs as an admitted episode in your operator session, under your environment —
+so everything in chapters 3–4 (denials, budgets, mediations, audit) applies to *you*
+while you operate.
+
 ### 5.1 The lifecycle verbs
 
 ```
@@ -369,6 +374,14 @@ product decision, not yet made.
 
 ### 7.2 `comconctl` verbs (consolidated)
 
+*(v4.1)* **comconctl is a shell, not a privileged tool.** Each verb below is a library
+program (`std.ops`) executed as an admitted episode in *your* session, over *your*
+granted capabilities — there is no management API behind it. Consequences you can rely
+on: an operator's session is auditable like any tenant (`trust-report` covers it);
+office-hours/cosign mediations apply to admin verbs; CI and AI operators use the same
+gate; and anyone can rebuild any subset of this CLI from the capabilities they hold —
+you get exactly your slice of the verbs, never more.
+
 `init` · `learn` / `propose` / `shadow` / `enforce` · `denials` · `diff` · `docs` ·
 `dev` · `request` · `admit-config` / `propose-config` *(v4)* · `evaluate` ·
 `revoke [--cascade]` · `remove-subtree` · `snapshot` / `rollback` · `rewrite` ·
@@ -420,7 +433,9 @@ bounded, composable validation form that replaces regex in strict profiles ·
 **config fragment** *(v4)* your slice of configuration as admissible sentences — code's
 sibling: same tree, same gate, same epochs (data is code bound to an empty environment)
 · **proposal** *(v4)* inert config/policy text carrying no authority; takes effect only
-when an operator with the authority realizes it.
+when an operator with the authority realizes it · **episode** *(v4.1)* one admitted run
+of a stage-0 program — every comconctl verb, REPL input, and policy execution is one;
+the unit of administration, budgeting, and audit.
 
 ---
 

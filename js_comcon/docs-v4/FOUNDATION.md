@@ -78,6 +78,10 @@ argument of v2 §8.2 is no longer only argued. (Numbers and method: `ROADMAP.md`
    node bound to a rich environment, and everything (config, patterns, typed policy)
    sits between. Monotonicity, meet, quotations, and epochs apply uniformly across the
    gradient.
+10. *(new in v4.1)* **There is no management plane.** Administration is not a
+   privileged API: every operator action is an admitted stage-0 episode in a session,
+   and every tool verb is a library program over the kernel plus granted capabilities.
+   "Administrative" is a property of a session's *environment*, never of a tool (§8a).
 
 **The axiom under all of it (v3):**
 
@@ -350,6 +354,41 @@ performance gradient is the staging gradient**, with M1 as its measured endpoint
 
 ---
 
+## 8a. Administration: there is no management plane *(new in v4.1 — user-spotted)*
+
+`comconctl` (the operations CLI that the manual and showcases lean on) is **a shell,
+not a tool**. Every invocation opens an **admitted stage-0 episode** in an operator
+REPL/REL session under an operator environment; every verb is an ordinary **library
+program** (`std.ops`, governed like any library) written over the four kernel operators
+plus granted capabilities. There is no API a verb can reach that a tenant fragment
+granted the same capabilities could not — v2 §9.3's "the tooling never needs (or gets)
+a backdoor" is thereby *derived*, not asserted.
+
+The verb set decomposes completely: reads (`denials`/`docs`/`diff`/`trust-report`) are
+pure queries over log/describe/provenance caps; `learn`/`propose` = audit-mode bind +
+log + heuristics emitting a **quotation**; `shadow`/`enforce` = rebind;
+`admit-config`/`propose-config`/`realize` = admit/quote/realize verbatim;
+`snapshot`/`rollback` = quote / rebind-to-epoch; `revoke` = mediation flags walked
+along grant chains; `rewrite` = reflect.rewrite + admit + class-F broadcast; `attach`
+*is* a session. Irreducible residue: bootstrap and transport (host integration — in
+pilgrim, the existing admin-shell/`nginx.repl` machinery).
+
+**The third closed enumeration.** For the verbs to be pure library code, the host
+resources previously implicit in "the tool" must be first-class capabilities: the
+denial/observation log · the binding/epoch store · the provenance/grant-chain registry
+· the class-F broadcast channel · the snapshot store · the signing key · the
+learning-recorder switch. This joins p_symbols and compile portals as the third
+enumeration whose *completeness* makes a safety claim checkable — here, "no backdoor."
+
+Consequences: administration inherits every mechanism for free (office-hours/cosign
+mediations govern admin verbs; `trust-report` runs over operator sessions themselves);
+CI, dashboards, and AI operators use the identical gate — comconctl is merely one shell
+among many, rebuildable by anyone from their granted slice; and M-SES loses an entire
+attack-surface class, since there is no separate management API to harden
+(`HARDENING.md`).
+
+---
+
 ## 9. Run-time object model *(v2 §5, carried forward)*
 
 The engine-level mechanisms of v2 remain the run-time substrate; v3 changes their
@@ -437,6 +476,11 @@ M2 schema is declared dual-role (cap types + config-surface types); meet clarifi
 data instances (rights, not values); snapshots recognized as quotations of COM
 subtrees. Kernel, theorem, M-SES, and all measured results unchanged.
 
+**v4.1 (in place, the comconctl closure):** Principle 10 (*there is no management
+plane*) + §8a — administration = admitted episodes; tool verbs = `std.ops` library
+programs over kernel + caps; the **third closed enumeration** (ops-resource
+capabilities) added; M-SES surface shrinks (no separate admin API).
+
 ---
 
 ## 13. Open questions (v3 — updates v2 §10)
@@ -449,8 +493,10 @@ Still open, in priority order:
 
 1. **COW-domain / inline-cache cost** (v2 §10.3) — *the* performance risk; prototype
    early; design together with revocation-epoch invalidation.
-2. **The two closed enumerations** (v2 §10.2) — p_symbols (POM node kinds, versioned)
-   and compile portals; completeness makes the sandbox-escape claim checkable.
+2. **The closed enumerations — now three** (v2 §10.2 + v4.1 §8a) — p_symbols (POM node
+   kinds, versioned), compile portals, and the **ops-resource capabilities** (§8a);
+   completeness of the first two makes the sandbox-escape claim checkable, of the third
+   the no-backdoor claim.
 3. ~~Selector-language grammar~~ — **promoted into M2.5** (ROADMAP §5.4): the showcase
    rework used it constantly and invented syntax ad hoc; it needs its spec now.
 4. **Information flow / taint** — capabilities gate *access*, not *flow*; read-X +

@@ -107,3 +107,9 @@ Coverage: U1 ⇐ S1+S3 · U2 ⇐ S4 · U3 ⇐ S1+S2+S4.
   maxim already forks).
 - Recommended start: **S1 immediately (cheap), S4 fused with M2.**
 - Size: comparable to the compiler front-end itself; S4 is the long pole.
+- *(v4.1 scope reduction)*: **there is no separate management API to harden.**
+  Administration = admitted episodes under operator environments (FOUNDATION §8a), so
+  it is covered by the same S1–S6 machinery as tenant code; the only admin-specific
+  hardening item is that the **ops-resource capabilities** (the third closed
+  enumeration) are unforgeable like every other cap — which S4's facet audit already
+  covers by walking them.

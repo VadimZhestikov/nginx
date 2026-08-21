@@ -68,7 +68,11 @@ fallback) → the event dispatcher calls the C function pointer directly.
   diagnostic; design it with the descriptors, not after). *(v4)* Also state the
   kernel's **instance-genericity** (admit parameterized by grammar+schema; one pattern,
   N instances), the **∅-environment principle**, and the rights-not-values meet rule
-  for data instances (FOUNDATION §2a, SEMANTICS v4 additions).
+  for data instances (FOUNDATION §2a, SEMANTICS v4 additions). *(v4.1)* Plus the
+  **third closed enumeration**: the ops-resource capabilities (denial log,
+  binding/epoch store, provenance registry, class-F broadcast channel, snapshot store,
+  signing key, learning-recorder switch) — first-class caps so tool verbs are pure
+  library code and "no backdoor" is checkable (FOUNDATION §8a).
 
 - **M-CFG — the admissible config surface (new in v4; parallel track, does not block
   M2–M7).** Give COM its admission hinge: tenant config fragments = sentences of a
@@ -87,7 +91,10 @@ fallback) → the event dispatcher calls the C function pointer directly.
   opaque.*`). Authored *in* the policy language once M3 exists; governed by its own
   policy (raw operators withheld); interceptors that close over capabilities need
   **certification criteria** (TCB-adjacent). Seed set specified at M2.5; grows with
-  M5/M6.
+  M5/M6. *(v4.1)* Includes **`std.ops`** — the comconctl verbs as library programs
+  over the kernel + ops-resource caps (FOUNDATION §8a): there is no management plane,
+  so the "tooling track" of §5.2 collapses into this library plus one thin shell
+  (pilgrim substrate: the P19 admin-shell / nginx.repl machinery).
 
 - **M-SES — engine hardening.** Phases S1–S6 and the gate as specified in
   `HARDENING.md`. Does not block M2–M5 (trusted code); **gates M6/M7-with-tenants**;
@@ -304,3 +311,16 @@ already closure-vs-quotation for the config instance — the mechanisms existed 
 the name. Patent note: "config as sentences of a restricted, typed language admitted
 under a schema" is a claimable refinement between the COM claims and the safety-class
 claims.
+
+## 9. The comconctl closure (v4.1, 2026-08-20 — user-spotted)
+
+comconctl looked like "a utility using some API" — an unclosed generalization. Closed:
+**there is no management plane** (FOUNDATION Principle 10 + §8a). Every verb is a
+`std.ops` library program run as an admitted episode in an operator session; all ~20
+verbs decompose over the kernel + the ops-resource capabilities (the new third closed
+enumeration, an M2.5 deliverable). Plan impact: the §5.2 tooling deliverables collapse
+into M-LIB/std.ops + one thin shell (P19 substrate); **M-SES scope shrinks** — no
+separate admin API to harden, administration rides the same admitted-episode gate as
+everything else; audit closes over operators (trust-report on sessions;
+office-hours/cosign mediate admin verbs natively). Residue outside the language:
+bootstrap + transport (host integration).
