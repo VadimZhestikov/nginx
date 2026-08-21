@@ -94,7 +94,13 @@ fallback) → the event dispatcher calls the C function pointer directly.
   M5/M6. *(v4.1)* Includes **`std.ops`** — the comconctl verbs as library programs
   over the kernel + ops-resource caps (FOUNDATION §8a): there is no management plane,
   so the "tooling track" of §5.2 collapses into this library plus one thin shell
-  (pilgrim substrate: the P19 admin-shell / nginx.repl machinery).
+  (pilgrim substrate: the P19 admin-shell / nginx.repl machinery). *(v4.1, WASM note)*
+  Also a future **`wasm` facet**: WASM slots into the one-pattern model as another
+  governed language instance — its validation *is* admit, its import object *is* an
+  environment (grant by another name), wasmtime fuel *is* budget mediation — giving
+  polyglot (Rust/Go) or CPU-heavy leaf fragments a home as admitted, budgeted,
+  mediated compute capabilities. COMCON stays the authority plane; WASM never becomes
+  a second management surface. Low priority; design note in the memory branch §17.
 
 - **M-SES — engine hardening.** Phases S1–S6 and the gate as specified in
   `HARDENING.md`. Does not block M2–M5 (trusted code); **gates M6/M7-with-tenants**;
@@ -125,7 +131,11 @@ fallback) → the event dispatcher calls the C function pointer directly.
 - **M7 — Benchmark the real pipeline.** Compiled-by-COMCON policy vs interpreted vs
   stock, same method as M1. The number that confirms (or corrects) M1 at
   full-pipeline scale — expected between M1's 28% and 96% endpoints, near the top if
-  the lowering is direct.
+  the lowering is direct. *(v4.1)* Add a **WASM baseline column**: the same count+tag
+  policy as a Proxy-Wasm filter (ngx_wasm/wasmtime), measuring the host-boundary
+  marshaling cost against maxim's borrowed-`ngx_str_t` stubs — our claim that WASM
+  pays at exactly the boundary this workload hammers is currently cost-model
+  reasoning, and M7 is where it becomes (or fails to become) a measurement.
 
 - **M8 — Safety hardening + audit. GATE for any multitenant use.** The compiler-
   faithfulness obligation, now precise (SEMANTICS §3 assumption F): *the lowered C
