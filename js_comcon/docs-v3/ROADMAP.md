@@ -243,3 +243,33 @@ showcases — the user-journey ones (full harvest: MANUAL.md Appendix B):
 6. **Confirmation:** the grant-little → watch-denials → adjust → enforce loop is the
    product's single repeated motion across all three hats — the tooling deliverables
    of §5.2 should be sequenced to make *that loop* work end-to-end first.
+
+## 7. Adoptions from Crockford's Misty (2026-08-20)
+
+Reviewed mistysystem.com (same E-lineage ocap tradition as COMCON — its
+authority-by-creation/construction/introduction is our possession metatheorem; its
+facets/revocation are our mediate flavors — so mostly *validation*). Four targeted
+adoptions, all cheap:
+
+1. **M3 subset shape:** define the authored typed profile starting from a
+   "Misty-like core" of JS — no `this`, no classes/`new`/prototype access, no
+   coercion/truthiness. Cuts M3–M5 surface substantially; deletes prototype-authority
+   leaks from authored code by construction. (External hardening still takes full JS.)
+2. **M-LIB: Misty-style patterns** as the validation vocabulary for grammar-valued
+   interfaces (named fields, composable, bounded quantifiers). Two bonuses: ReDoS is
+   impossible by construction → tenant profiles can deny the regex engine and offer
+   patterns instead (a removed vulnerability class, like scenario 3's SQL); and
+   static patterns compile through (maxim lowers them to straight C).
+3. **M-LIB: `stone()`** — deep immutability for plain *data*, paid once, zero
+   per-access cost; the cheap alternative to read-only membranes on hot shared paths
+   (membranes for authority, stone for data).
+4. **Guest posture (M-SES S4):** actor/worker creation is a capability,
+   default-denied in tenant profiles (Misty: "guests cannot create actors") —
+   sharpens the existing Worker-constructor de-ambient item into a stated default.
+
+Also: Misty's actor model (no shared memory; the address IS the capability) is the
+recommended direction for open question 8a (cluster edges); and Misty + ADsafe join
+the patent prior-art list — they confine by language replacement/authored subset,
+COMCON confines unmodified JS via external policy over a program tree, compiled
+through. NOT adopted: Misty as source language, new syntax, DEC64 (violates the
+JS-stays-pure thesis).
