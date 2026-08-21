@@ -78,6 +78,23 @@ argument of v2 §8.2 is no longer only argued. (Numbers and method: `ROADMAP.md`
    node bound to a rich environment, and everything (config, patterns, typed policy)
    sits between. Monotonicity, meet, quotations, and epochs apply uniformly across the
    gradient.
+   *Caveat — this does NOT say data is harmless.* It says data's danger is exactly the
+   danger of authority-free code, which leaves three residual channels, each governed
+   by its own mechanism, none by the theorem: **(a) cost** — ∅-bound evaluation can
+   still burn CPU/stack/memory (billion-laughs nesting, runaway generators) → budgets
+   meter every episode including admission, and bounded-by-construction grammars
+   (patterns) remove runaway classes outright; *the theorem answers "what can it
+   touch?", budgets answer "how long can it try?"*; **(b) persuasion** — data acts
+   through its *consumer's* environment (SQL injection, Log4Shell — a log string
+   implicitly bound to an interpreter holding network authority; `__proto__` keys) →
+   admit data before any authority-holding interpreter touches it, and keep the
+   consumer's own cage narrow; the principle is the *diagnosis* of this attack family:
+   there is no passively-safe data, only data whose eventual binding you did or didn't
+   control — COMCON makes that binding explicit, checked, and ∅ by default;
+   **(c) semantically hostile values** — a perfectly-typed `listen 22` is wrong, not
+   unauthorized → admission types + the quotation/realizer split (a proposal can be a
+   lie; it cannot be a self-executing lie). Covert *content* (stego in output by a
+   fragment that legitimately read something) remains the named IFC gap (§13.4).
 10. *(new in v4.1)* **There is no management plane.** Administration is not a
    privileged API: every operator action is an admitted stage-0 episode in a session,
    and every tool verb is a library program over the kernel plus granted capabilities.
