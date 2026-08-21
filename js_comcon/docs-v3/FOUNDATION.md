@@ -1,6 +1,6 @@
 # COMCON — Foundation & Architecture (v3)
 
-*Supersedes `docs/FOUNDATION.md` (v2, 2026-07-06/07). v3 integrates the architecture-
+*Supersedes `docs-v0/FOUNDATION.md` (v2, 2026-07-06/07). v3 integrates the architecture-
 refinement work of 2026-08-18: the possession kernel, the Program Object Model, the
 closure/quotation distinction, the formal semantics (see `SEMANTICS.md`), the live-
 mutation safety classes (see `POM.md`), the hardening scope (see `HARDENING.md`), and

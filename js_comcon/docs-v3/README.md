@@ -4,7 +4,7 @@
 > governed-language pattern, the empty-environment principle, the admissible config
 > surface / M-CFG, scenarios 46–47). Kept for history.
 
-*Supersedes `../docs/` (v2, 2026-07). v3 integrates the 2026-08-18 architecture
+*Supersedes `../docs-v0/` (v2, 2026-07). v3 integrates the 2026-08-18 architecture
 refinement: the possession kernel, the Program Object Model, the formal semantics with
 the No-Amplification theorem, worked authority-traced examples, the live-mutation
 safety classes, the M-SES hardening scope — and the first measured performance gate
@@ -42,6 +42,6 @@ interpreted form.
 
 Design documentation — nothing here is implemented except where marked (M1 spike
 artifacts in `t_performance/maxim_m1/`). The showcase scenarios (45 total) are fully
-reworked for v3 and **supersede** `../docs/SHOWCASE*.md`; their syntax remains
+reworked for v3 and **supersede** `../docs-v0/SHOWCASE*.md`; their syntax remains
 hypothetical by design. Design-session notes and the running decision log live in the
 project memory branch (`comcon-architecture-refinement`).
