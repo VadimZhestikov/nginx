@@ -1,14 +1,14 @@
-# COMCON documentation, v3
+# COMCON documentation, v4
 
-> **Superseded by `../docs-v4/`** (v4 = v3 + the symmetry correction: one
-> governed-language pattern, the empty-environment principle, the admissible config
-> surface / M-CFG, scenarios 46–47). Kept for history.
-
-*Supersedes `../docs/` (v2, 2026-07). v3 integrates the 2026-08-18 architecture
-refinement: the possession kernel, the Program Object Model, the formal semantics with
-the No-Amplification theorem, worked authority-traced examples, the live-mutation
-safety classes, the M-SES hardening scope — and the first measured performance gate
-(M1: hand-C policy at 96% of stock nginx vs 28% interpreted).*
+*Supersedes `../docs-v3/` (and `../docs/` v2). v3 integrated the 2026-08-18
+architecture refinement: the possession kernel, the Program Object Model, the formal
+semantics with the No-Amplification theorem, worked authority-traced examples, the
+live-mutation safety classes, the M-SES hardening scope — and the first measured
+performance gate (M1: hand-C policy at 96% of stock nginx vs 28% interpreted).
+**v4 adds the symmetry correction** (rev 3.1, user-spotted): one governed-language
+pattern with N instances instead of two mirrored trees; the empty-environment principle
+("data is code bound to ∅"); COM gains its missing admission hinge — a typed,
+admissible config surface (new work item M-CFG, new scenarios 46–47, new manual §3.6).*
 
 ## Reading order
 
@@ -22,7 +22,8 @@ safety classes, the M-SES hardening scope — and the first measured performance
 | **PERFORMANCE.md** | Expected performance impact: the measured gradient endpoints (96% compiled vs 28% interpreted vs stock), the cost model per enforcement moment, v3-specific costs (live-rewrite windows, meets, hashes), risks and the M7 falsification plan. |
 | **SHOWCASE.md** (1–7), **SHOWCASE17.md** (8–17), **SHOWCASE37.md** (18–37) | The look & feel scenarios, reworked for v3 (envs/grants, include = parse∘admit∘bind, anchors/queries, guarantees-as-theorems). Illustrative, not normative. |
 | **SHOWCASE45.md** (38–45, new) | v3-native scenarios: intensional query hardening, closure vs quotation, pin-by-hash, live-rewrite epochs, the self-auditing plugin (base≡meta), compile-through ("the policy that vanished"), contract admission for AI code, meet-composition. |
-| **MANUAL.md** (draft) | The user's manual, written as-if-shipped (working-backwards artifact): the five-minute mental model, quick start, tenant / policy-author / operations handbooks, performance guide, reference (verbs, denial anatomy, glossary) — and Appendix B, the [TBD] harvest of decisions it forced into the open (lessons folded into ROADMAP §6). |
+| **SHOWCASE47.md** (46–47, new in v4) | The config-instance scenarios: typed tenant config (grammar+types cage over config sentences) and propose-the-config-you-can't-apply (quotation proposals realized by operators). |
+| **MANUAL.md** (draft) | The user's manual, written as-if-shipped (working-backwards artifact): the five-minute mental model, quick start, tenant / policy-author / operations handbooks (v4: §3.6 writing config, proposals), performance guide, reference (verbs, denial anatomy, glossary) — and Appendix B, the [TBD] harvest of decisions it forced into the open. |
 
 ## One paragraph
 
