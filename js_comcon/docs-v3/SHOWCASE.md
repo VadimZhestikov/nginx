@@ -139,6 +139,14 @@ resp.headers.set("X-Rate-Limit",
     header_value.number({ min: 0, max: 1_000_000 }).from(user_input));
     // not a number in range → denial; CRLF has no way in — there is no
     // "raw string paste" operation on this interface at all
+
+resp.headers.set("X-Request-Tag",
+    header_value.match(pattern { 1-32 (alpha, digit, "-") }).from(user_input));
+    // richer shapes use PATTERNS, not regex: named, composable, and with
+    // bounded quantifiers — so catastrophic backtracking (ReDoS) is
+    // impossible by construction. Strict tenant profiles deny the regex
+    // engine entirely and grant patterns instead — one more vulnerability
+    // class removed by grammar, exactly like SQL injection above.
 ```
 
 **The point:** "remember to escape" is replaced by "the interface only accepts

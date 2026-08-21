@@ -109,6 +109,8 @@ Your code is normal JavaScript with a shorter horizon:
 | `require("fs")` / `import fs` | **compile error** — imports resolve only to granted modules |
 | `globalThis.leak = x` | **compile error** — there is no ambient global object |
 | `eval(s)`, `new Function(s)` | **denied by default** — dynamic code is a grant like any other |
+| `new Worker(...)`, `new SharedWorker(...)` | **denied by default** — creating executors is a grant (guests cannot spawn actors) |
+| `/regex/` in strict tenant profiles | **denied where profiled** — use `pattern { … }` instead (bounded ⇒ no ReDoS) |
 | `Object.prototype.x = y` | **denied** — the world's floor is frozen (for everyone, always) |
 
 Rule of thumb: *if you can name it, you may use it; if you may not use it, you cannot
@@ -195,6 +197,8 @@ library:
 | `rateLimit(n)`, `budgets({...})` | metering |
 | `opaque.str({pass_to: [...]})` | usable-but-unreadable values |
 | `protocol("handshake", "frames*", "close")` | enforced operation order |
+| `stone(value)` | deep-freeze plain *data* once — membrane-free sharing across boundaries (membranes for authority, stone for data) |
+| `pattern { 1-32 (alpha, digit, "-") }` | readable, composable validation — bounded quantifiers ⇒ ReDoS impossible; static patterns compile through |
 
 Everything above is itself governed code from `comcon:std-policies` — the library
 cannot leak the raw authority it wraps (facet pattern). If you find yourself needing a
@@ -300,6 +304,9 @@ product decision, not yet made.
 - **Stay declarative, stay typed** → your policy compiles away; the measured ceiling is
   ~96% of stock nginx. Dynamic constructs (`any`, computed access, runtime hooks) pull
   toward the interpreted floor (~28%).
+- **Stay in the typed core** — the compilable profile is a deliberately small JS
+  (no `this`, no classes/`new`/prototype tricks, no coercion — a Misty-like core);
+  code outside it still runs, on the interpreted path.
 - **Free:** anchors; frozen intrinsics (often *faster* — ICs never invalidate); grants
   never exercised; policy metadata (∝ policies, not objects).
 - **Reload-time, not request-time:** admission, meet-composition, hashing, tests.
@@ -370,7 +377,9 @@ hides · **quotation** a policy/code *description* — provably carries no autho
 **anchor** an inert source marker naming a policy attachment site · **pin** a content
 hash a policy is locked to · **epoch** one version of a binding; the undo unit ·
 **profile** restrictive (deny-only) or adaptive (transforming) · **contract**
-(environment, spec, tests) — the admission gate for a fragment.
+(environment, spec, tests) — the admission gate for a fragment · **stone** a
+deep-frozen plain-data value, safe to share without a membrane · **pattern** the
+bounded, composable validation form that replaces regex in strict profiles.
 
 ---
 
