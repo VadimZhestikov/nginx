@@ -274,6 +274,70 @@ Unrealized quotations are inert forever.
 *Honesty:* you cannot prevent B from *writing* descriptions — data construction is
 free. You prevent effect (`admit`) and development-against-real-authority (vocabulary).
 
+### 4.4 How `quote` and the quoted policy language work *(clarification, v4)*
+
+**`quote` needs no definition or grant.** Syntactically it is a plain JS tagged
+template (`quote(strings, ...values)` — no new grammar). Semantically it is a **free
+intrinsic constructor** of the policy-JS profile — rule (QUOTE) of §2 — in the same
+class as `env()` and object literals: exempt from the (NAME) rule because a grant would
+be meaningless. It can mint nothing (`A(result) = ∅` by the deep side condition), and
+free-ness is deliberate: a program can always build equivalent inert data by string
+concatenation, so withholding the constructor adds friction, not security. All
+enforcement lives where authority enters — `admit` and `realize`.
+
+**What the constructor does.** It parses the literal text in the **policy-unit
+grammar** into an unbound POM node (a structured tree, not a string), attaching each
+`${…}` splice as an **atomic data leaf** after deep-checking `A = ∅` (a spliced
+capability — even buried in a record — is a stage-0 error at the *producer*). Parse
+errors are likewise the producer's stage-0 errors. Because splices enter at data
+positions, never as text, quotations are structurally immune to injection: an
+attacker-controlled `t.id` cannot smuggle `bind ->` syntax — the same reason
+parameterized SQL kills injection (scenario 3).
+
+**The policy-unit grammar** is the three sub-languages of the enforcement language
+appearing as clauses of one declarative form:
+
+```
+policy-unit ::= env { (name = authority-expr)* }      — AUTHORITY clause
+                bind -> selector  [profile p] [onViolation m]   — TARGET clause
+                [admit { contract-ref | tests | predicates }]   — CONTRACT clause
+```
+
+`authority-expr` = a free-name path (`ratelimit.makeLimiter`, `host.metrics`) applied
+to combinator arguments (data literals and splices); `selector` = the target
+sub-language (`module('…')`, queries).
+
+**Two-phase binding — the one-bit distinction operating *inside* the literal:**
+
+- **Splices are early-bound data.** `${t.rps}` was evaluated at construction, under the
+  *producer's* ρ — and restricted to `A = ∅`, so only data crosses in.
+- **Free names are late-bound authority.** `host.metrics` is a *mention*, not a use —
+  recorded as an unresolved path in the node. It resolves only at realization, under
+  the **realizer's** ρ_R, per the ordinary (NAME) rule: resolve or fail. This is
+  exactly why B may mention what it does not hold.
+
+**`realize(q)` desugars entirely into kernel steps** — no separate interpreter:
+
+```
+realize(q) =  admit(q, K)                                   — the realizer's contract
+              e := env();  for each (name = expr) in q.env:
+                  grant(e, name, eval_{ρ_R}(expr))           — (NAME)+(GRANT) under ρ_R
+              bind(e, resolve_{ρ_R}(q.selector), q.opts)     — (BIND)
+```
+
+The quoted language is thus not a new language: it is the **declarative profile of the
+policy language itself**, one more instance of the general pattern (grammar =
+policy-unit productions; tree = POM nodes of kind `policy`; schema = authority
+expressions typed against the M2 registry; lowering = reified bindings/baked C).
+A quotation *may* carry any policy-JS node — but realizers' contracts typically admit
+**only this declarative profile**, because it is analyzable and diffable (the
+expressiveness-ladder discipline: what can be reviewed as a descriptor diff should be).
+
+**Failure mapping:** parse/splice errors → producer's stage-0 denial; contract
+rejection → `E_ADMIT_*` at the realizer; unresolved free name at realization →
+`E_CAP_UNRESOLVED` charged to the realizer's environment — all through the one denial
+schema.
+
 ---
 
 ## 5. What the formalization itself discovered
