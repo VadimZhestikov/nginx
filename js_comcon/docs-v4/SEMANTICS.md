@@ -250,13 +250,14 @@ that is all its POM handle covers.
 Same A, same `eB`; **one thing changes — which value flows:**
 
 ```js
-// policyB now EMITS descriptions (unbound POM nodes, zero authority)
+// policyB now EMITS descriptions — unbound POLICY-JS nodes, zero authority.
+// Same language as everywhere else, just quoted (v4.2 — no second grammar):
 export default tenants.map(t => quote`
-  env {
-    limit   = ratelimit.makeLimiter({ keyPrefix: "rl:${t.id}:", rps: ${t.rps} })
-    metrics = host.metrics.scoped("${t.id}")     // B does NOT hold host.metrics!
-  }
-  bind -> module('tenants/${t.id}.js')  profile restrictive  onViolation deny
+  const e = env();
+  grant(e, "limit",   ratelimit.makeLimiter({ keyPrefix: "rl:${t.id}:", rps: ${t.rps} }));
+  grant(e, "metrics", host.metrics.scoped("${t.id}"));   // B does NOT hold host.metrics!
+  bind(e, pom.query("module('tenants/${t.id}.js')"),
+          { profile: "restrictive", onViolation: "deny" });
 `);
 ```
 
@@ -274,7 +275,7 @@ Unrealized quotations are inert forever.
 *Honesty:* you cannot prevent B from *writing* descriptions — data construction is
 free. You prevent effect (`admit`) and development-against-real-authority (vocabulary).
 
-### 4.4 How `quote` and the quoted policy language work *(clarification, v4)*
+### 4.4 How `quote` works — and why there is no second policy language *(v4.2)*
 
 **`quote` needs no definition or grant.** Syntactically it is a plain JS tagged
 template (`quote(strings, ...values)` — no new grammar). Semantically it is a **free
@@ -285,58 +286,59 @@ free-ness is deliberate: a program can always build equivalent inert data by str
 concatenation, so withholding the constructor adds friction, not security. All
 enforcement lives where authority enters — `admit` and `realize`.
 
-**What the constructor does.** It parses the literal text in the **policy-unit
-grammar** into an unbound POM node (a structured tree, not a string), attaching each
-`${…}` splice as an **atomic data leaf** after deep-checking `A = ∅` (a spliced
-capability — even buried in a record — is a stage-0 error at the *producer*). Parse
-errors are likewise the producer's stage-0 errors. Because splices enter at data
+**What the constructor does.** It parses the literal text — **as policy-JS, the same
+restricted profile everything else is written in** — into an unbound POM node
+(a structured tree, not a string), attaching each `${…}` splice as an **atomic data
+leaf** after deep-checking `A = ∅` (a spliced capability, even buried in a record, is a
+stage-0 error at the *producer*; parse errors likewise). Because splices enter at data
 positions, never as text, quotations are structurally immune to injection: an
-attacker-controlled `t.id` cannot smuggle `bind ->` syntax — the same reason
+attacker-controlled `t.id` cannot smuggle a `bind(…)` call — the same reason
 parameterized SQL kills injection (scenario 3).
 
-**The policy-unit grammar** is the three sub-languages of the enforcement language
-appearing as clauses of one declarative form:
+**There is no policy language other than policy-JS plus the governed library**
+*(rev 3.3 — an earlier draft of this section specified a bespoke "policy-unit" grammar
+(`env { … } bind -> …`); that was hypothetical showcase syntax mistakenly promoted
+into a spec, and it is withdrawn — it violated the reduction principle and duplicated
+machinery we already own).* The corrected picture, in one sentence:
 
-```
-policy-unit ::= env { (name = authority-expr)* }      — AUTHORITY clause
-                bind -> selector  [profile p] [onViolation m]   — TARGET clause
-                [admit { contract-ref | tests | predicates }]   — CONTRACT clause
-```
+> A **closure** is a policy-JS value that ran; a **quotation** is a policy-JS node
+> that hasn't; **"declarative"** is a `syntax_allowed` profile of it; and the diffable
+> **descriptor table** is its admission-time normal form.
 
-`authority-expr` = a free-name path (`ratelimit.makeLimiter`, `host.metrics`) applied
-to combinator arguments (data literals and splices); `selector` = the target
-sub-language (`module('…')`, queries).
+Concretely:
 
-**Two-phase binding — the one-bit distinction operating *inside* the literal:**
+- **Two-phase binding** (the correct part of the old section, unchanged): `${…}`
+  splices are **early-bound producer data** (`A = ∅` enforced); the quoted code's free
+  names (`ratelimit.makeLimiter`, `host.metrics`, `bind`, `pom`) are **late-bound
+  mentions** — they resolve only when the node is bound and executed under the
+  **realizer's** ρ_R, by the ordinary (NAME) rule. This is exactly why B may mention
+  what it does not hold. No special mention semantics: staging *is* the mechanism.
+- **`realize(q)` is not a desugaring — it is literally the kernel:**
+  `realize(q) = admit(q, K); bind(ρ_R, q); EXEC.` Nothing to interpret; the quoted
+  program performs its own `env()/grant/bind` calls when run.
+- **The declarative profile** realizers demand is a `syntax_allowed` subset of
+  policy-JS productions (straight-line `env`/`grant`/`bind` calls, literal or spliced
+  arguments, free-name paths — no loops, no conditionals, no computed access). This
+  reuses the p_symbols enumeration and the M3 front-end verbatim — checking a JS-AST
+  shape is exactly as easy as checking a bespoke DSL would have been, and it is one
+  grammar, parser, and profile-checker fewer to build, specify, and harden.
+- **Diffs happen on the normal form, not the surface:** admission normalizes a
+  declarative-profile quotation into canonical **descriptor tables** (v2's
+  "declarative residue," reborn as the normal form). The descriptor diff is the review
+  artifact; surface syntax never was.
+- **Pure-data policies** need no quoting at all — a JSON descriptor is code bound to ∅
+  (Principle 9).
 
-- **Splices are early-bound data.** `${t.rps}` was evaluated at construction, under the
-  *producer's* ρ — and restricted to `A = ∅`, so only data crosses in.
-- **Free names are late-bound authority.** `host.metrics` is a *mention*, not a use —
-  recorded as an unresolved path in the node. It resolves only at realization, under
-  the **realizer's** ρ_R, per the ordinary (NAME) rule: resolve or fail. This is
-  exactly why B may mention what it does not hold.
-
-**`realize(q)` desugars entirely into kernel steps** — no separate interpreter:
-
-```
-realize(q) =  admit(q, K)                                   — the realizer's contract
-              e := env();  for each (name = expr) in q.env:
-                  grant(e, name, eval_{ρ_R}(expr))           — (NAME)+(GRANT) under ρ_R
-              bind(e, resolve_{ρ_R}(q.selector), q.opts)     — (BIND)
-```
-
-The quoted language is thus not a new language: it is the **declarative profile of the
-policy language itself**, one more instance of the general pattern (grammar =
-policy-unit productions; tree = POM nodes of kind `policy`; schema = authority
-expressions typed against the M2 registry; lowering = reified bindings/baked C).
-A quotation *may* carry any policy-JS node — but realizers' contracts typically admit
-**only this declarative profile**, because it is analyzable and diffable (the
-expressiveness-ladder discipline: what can be reviewed as a descriptor diff should be).
+What legitimately remains a "little language": **value-level DSLs** interpreted by
+library functions under capabilities — selector strings (`pom.query("callsites(fetch)
+within module('vendor/**')")`) and `pattern{…}`. Those are data arguments, squarely in
+the reduction-principle category (`JSON.parse ≡ eval under json_policy`), same as SQL
+text handed to a governed facet.
 
 **Failure mapping:** parse/splice errors → producer's stage-0 denial; contract
 rejection → `E_ADMIT_*` at the realizer; unresolved free name at realization →
-`E_CAP_UNRESOLVED` charged to the realizer's environment — all through the one denial
-schema.
+`E_CAP_UNRESOLVED` charged against the realizer's environment — all through the one
+denial schema.
 
 ---
 
@@ -355,6 +357,11 @@ schema.
    semantics is needed; config snapshots are quotations, config fragments are
    near-∅-bound nodes, and meet on data instances composes rights, not values. One
    theorem covers the whole gradient.
+6. *(v4.2, user-spotted)* **There is no second policy language.** Quotations quote
+   policy-JS itself; "declarative" is a `syntax_allowed` profile; descriptor tables
+   are the admission-time normal form; `realize` = admit → bind → EXEC. The bespoke
+   policy-unit grammar of an earlier draft is withdrawn — the reduction principle
+   applies to our own designs too.
 
 Plus the two boundary statements that keep the claim honest: unforgeability (U1–U3) and
 compiler faithfulness (F) are *assumptions here and milestones elsewhere* — M-SES and

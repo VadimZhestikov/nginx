@@ -72,7 +72,11 @@ fallback) → the event dispatcher calls the C function pointer directly.
   **third closed enumeration**: the ops-resource capabilities (denial log,
   binding/epoch store, provenance registry, class-F broadcast channel, snapshot store,
   signing key, learning-recorder switch) — first-class caps so tool verbs are pure
-  library code and "no backdoor" is checkable (FOUNDATION §8a).
+  library code and "no backdoor" is checkable (FOUNDATION §8a). *(v4.2)* Explicitly
+  **not** a deliverable: any standalone composed policy grammar — quotations quote
+  policy-JS itself, "declarative" is a `syntax_allowed` profile, descriptor tables are
+  the admission normal form (SEMANTICS §4.4); the selector grammar deliverable stands;
+  the M3 front-end does double duty (tenant code *and* policy quotations).
 
 - **M-CFG — the admissible config surface (new in v4; parallel track, does not block
   M2–M7).** Give COM its admission hinge: tenant config fragments = sentences of a

@@ -348,10 +348,13 @@ declarative sub-languages — all *data*, hence compilable, analyzable, diffable
 3. **Contract (MUST):** types + pre/post predicates + tests + natural-language spec
    (one artifact, three consumers: human intent, AI generator, machine verifier).
 
-Their composed concrete form is the **declarative policy-unit** — the `env { … }` /
-`bind -> …` / `admit { … }` clauses seen inside `quote` literals — whose grammar,
-two-phase name binding (splices early-bound as ∅-data, free names late-bound under the
-realizer), and desugaring into pure kernel steps are specified in `SEMANTICS.md` §4.4.
+There is deliberately **no composed standalone syntax** for these (v4.2): policies —
+including quoted ones — are written in policy-JS plus the governed library; the
+"declarative" form realizers demand is a `syntax_allowed` *profile* of policy-JS,
+normalized at admission into diffable descriptor tables. Target selectors and patterns
+remain value-level DSLs interpreted by library functions under capabilities. Two-phase
+name binding (splices early-bound as ∅-data, free names late-bound under the realizer)
+and the `realize = admit → bind → exec` collapse are specified in `SEMANTICS.md` §4.4.
 
 One policy is enforced at **four moments** — same policy, different stages:
 

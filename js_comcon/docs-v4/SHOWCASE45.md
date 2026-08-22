@@ -52,13 +52,13 @@ are inert data with *provably zero authority inside* (the constructor rejects
 capability values — deeply):
 
 ```js
-// generator (tightly caged itself — it holds ~nothing):
+// generator (tightly caged itself — it holds ~nothing). What it emits is ordinary
+// policy-JS, just QUOTED — same language as everything else, not yet bound:
 export default tenants.map(t => quote`
-  env {
-    limit   = ratelimit.makeLimiter({ keyPrefix: "rl:${t.id}:", rps: ${t.rps} })
-    metrics = host.metrics.scoped("${t.id}")   // generator does NOT hold host.metrics!
-  }
-  bind -> module('tenants/${t.id}.js')  profile restrictive
+  const e = env();
+  grant(e, "limit",   ratelimit.makeLimiter({ keyPrefix: "rl:${t.id}:", rps: ${t.rps} }));
+  grant(e, "metrics", host.metrics.scoped("${t.id}"));  // generator does NOT hold host.metrics!
+  bind(e, pom.query("module('tenants/${t.id}.js')"), { profile: "restrictive" });
 `);
 ```
 
