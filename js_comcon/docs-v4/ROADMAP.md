@@ -114,17 +114,24 @@ fallback) → the event dispatcher calls the C function pointer directly.
   compile-time rejection of out-of-environment references. Typed AST out, no codegen.
 
 - **M4 — Type binding.** Bind the AST against the M2 schema → fully-typed IR; `any`
-  forced to the hybrid path. Typed locals inferred; mismatches rejected.
+  forced to the hybrid path. Typed locals inferred; mismatches rejected. *(v4.2, §10)*
+  Joint M3+M4 output = the **fragment artifact**: standard QuickJS **bytecode** (tier-1
+  executable, produced by type erasure — erasure soundness, §10) + a **type/capability
+  side-table** keyed by provenance/bytecode offsets + environment signature + content
+  hash + admission certificate. One format serving the interpreter, maxim, the
+  sign/cache pipeline, worker shipping, and M8's refinement testing.
 
-- **M5 — maxim lowering (one handler).** Lower typed request-header handlers to
-  unboxed C against the typed stubs (the M1 hand-written ABI). Deliverable: a
-  compiler-produced `.so` for the M1 example; behavior byte-identical to the
-  interpreted rule; the C ideally ≈ M1's hand-written C. *Scope note (showcase
-  lesson §5.5):* lowering must **partially evaluate static mediations** — a
-  constant-predicate membrane (e.g. an allowHosts prefix guard) becomes an inline
-  check in the generated C, not a call. Scenario 43's "policy that vanished" is
-  this feature; without it the compile-through performance story is untrue for any
-  mediated capability.
+- **M5 — maxim lowering (one handler).** Consume the **fragment artifact** (maxim's IR
+  is already QuickJS bytecode — the side-table's declared types feed its existing
+  typed-vars machinery, **replacing inference**; the M5 question is that mapping, not
+  "build a lowering"). Emit unboxed C against the typed stubs (the M1 hand-written
+  ABI). Deliverable: a compiler-produced `.so` for the M1 example; behavior
+  byte-identical to the interpreted rule; the C ideally ≈ M1's hand-written C. *Scope
+  note (showcase lesson §5.5):* lowering must **partially evaluate static mediations**
+  — a constant-predicate membrane (e.g. an allowHosts prefix guard) becomes an inline
+  check in the generated C, not a call. Scenario 43's "policy that vanished" is this
+  feature; without it the compile-through performance story is untrue for any mediated
+  capability.
 
 - **M6 — Dispatch + AOT wiring.** The event dispatcher calls the compiled C function
   pointer (per-tenant `.so`, phase-35 precompile); interpreted fallback for the
@@ -139,13 +146,18 @@ fallback) → the event dispatcher calls the C function pointer directly.
   policy as a Proxy-Wasm filter (ngx_wasm/wasmtime), measuring the host-boundary
   marshaling cost against maxim's borrowed-`ngx_str_t` stubs — our claim that WASM
   pays at exactly the boundary this workload hammers is currently cost-model
-  reasoning, and M7 is where it becomes (or fails to become) a measurement.
+  reasoning, and M7 is where it becomes (or fails to become) a measurement. *(v4.2)*
+  Also a **same-artifact tier row**: one fragment artifact measured on its bytecode
+  (T1) and its C (T2) — the per-fragment version of M1's 28%/96% endpoints.
 
 - **M8 — Safety hardening + audit. GATE for any multitenant use.** The compiler-
   faithfulness obligation, now precise (SEMANTICS §3 assumption F): *the lowered C
   must refine the mediated semantics along the provenance links — simulating every
-  MEDIATE/NAME gate it erased.* Plus per-tenant `.so` isolation, table-key
-  namespacing, worker resource guards, threat-model doc.
+  MEDIATE/NAME gate it erased.* *(v4.2)* Practical method: **T2-refines-T1 differential
+  testing** — run each fragment's admission allow-suite on both tiers of the same
+  artifact and compare; the contract tests double as refinement evidence. Plus
+  per-tenant `.so` isolation, table-key namespacing, worker resource guards,
+  threat-model doc.
 
 - **M9 — Breadth.** More events (response headers, L4/TLS), the borrowed/owned string
   ABI to kill refcount churn, the `any` hybrid, wider typed surface. Iterative.
@@ -338,3 +350,35 @@ separate admin API to harden, administration rides the same admitted-episode gat
 everything else; audit closes over operators (trust-report on sessions;
 office-hours/cosign mediate admin verbs natively). Residue outside the language:
 bootstrap + transport (host integration).
+
+## 10. Compilation tiers & the fragment artifact (v4.2, planning session)
+
+The question "compile typed JS to an interpreted subset first, or directly to C?" has
+a structural answer: **those are not sequential stages but two permanent tiers.** The
+interpreted tier (bytecode) is load-bearing forever — (1) the phase-34 hybrid fallback
+*runs* it during class-F rewrite windows; (2) the `any`/dynamic residue executes on it;
+(3) admission and `comconctl dev` run interpreted (no C toolchain at admit); (4)
+maxim-less deployments are the correct-but-28% tier. Direct-to-C is therefore only
+ever *additive*, and maintaining a second backend that must agree with maxim doubles
+the M8 burden — rejected.
+
+**Deciding fact:** maxim's IR *is* QuickJS bytecode (its pipeline is bytecode → C →
+GCC/TCC). Hence the chosen architecture — **"fat bytecode"**:
+
+```
+typed policy-JS ──M3/M4──▶ FRAGMENT ARTIFACT ──(iff maxim)──▶ C → .so
+                            = bytecode                         phase-34 hybrid:
+                            + type/cap side-table              {C fn, bytecode},
+                            + env signature + hash + cert      prefer C, fall back
+```
+
+**Erasure-soundness principle:** a typed program run interpreted with its types
+ignored behaves identically to its compiled form — types only *reject* (at admission)
+and *accelerate* (at tier 2), never change semantics. So "typed → interpreted subset"
+is type erasure plus the profile check, not a translation; and M8's obligation becomes
+the checkable "T2 refines T1" (differential testing on the same artifact). M1's
+numbers are the two tiers measured: 28% (T1) / 96% (T2 ceiling).
+
+Parked as a post-M7 optimization: a **typed-IR entry point inside maxim** (bypassing
+its bytecode-decode/type-recovery front phases for fully-typed fragments) — better
+type precision, same back phases, still emits the bytecode sibling.
