@@ -99,6 +99,15 @@ argument of v2 §8.2 is no longer only argued. (Numbers and method: `ROADMAP.md`
    privileged API: every operator action is an admitted stage-0 episode in a session,
    and every tool verb is a library program over the kernel plus granted capabilities.
    "Administrative" is a property of a session's *environment*, never of a tool (§8a).
+11. *(new in v4.2)* **Extend by granting, never by syntax.** Every COMCON operation
+   arrives as a granted name — `pom` is a capability object, the kernel operators are
+   environment values, `quote` is a plain tagged template — JavaScript gains
+   vocabulary, never grammar. Load-bearing three ways: external hardening must govern
+   code we cannot edit (no keywords needed in it); withholding a name *is* the access
+   gate (the NAME rule stays the entire story); and the POM's 1:1 source mapping plus
+   all JS tooling survive. Corollary: the typed profile is a *discipline over*
+   policy-JS (schema + inference + erasure-sound comment annotations), never a
+   separate language (ROADMAP §M3).
 
 **The axiom under all of it (v3):**
 
@@ -505,6 +514,14 @@ subtrees. Kernel, theorem, M-SES, and all measured results unchanged.
 plane*) + §8a — administration = admitted episodes; tool verbs = `std.ops` library
 programs over kernel + caps; the **third closed enumeration** (ops-resource
 capabilities) added; M-SES surface shrinks (no separate admin API).
+
+**v4.2 (in place):** the no-second-language correction (policy-unit grammar withdrawn,
+SEMANTICS §4.4); compilation tiers + the fragment artifact (ROADMAP §10); Principle 11
+(*extend by granting, never by syntax*) with the typed profile fixed as a discipline
+over policy-JS (schema + inference + JSDoc-style erasure-sound annotations, ROADMAP
+§M3). **Explicit retirement:** v2 §6's allowance for "extended JS" (new typed syntax)
+is withdrawn — v3 §7 implied it, v4.2 states it: grammar is never extended, only
+vocabulary.
 
 ---
 

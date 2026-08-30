@@ -112,6 +112,14 @@ fallback) → the event dispatcher calls the C function pointer directly.
 
 - **M3 — COMCON front-end.** Restricted-subset parser + capability declarations +
   compile-time rejection of out-of-environment references. Typed AST out, no codegen.
+  *(v4.2, §20)* Deliverable added: the **typed-profile spec** — typed-JS is a *profile
+  of* policy-JS, never a separate language (a grammar fork would break JS-stays-pure,
+  the POM 1:1 mapping, and erasure soundness). Three type layers, none grammar:
+  (i) the M2 schema types the API (types arrive from the environment); (ii) inference
+  covers locals (M4 — the Misty-like core is small precisely so inference works);
+  (iii) residual annotations use an **erasure-sound carrier: JSDoc-style comments**
+  (`/** @type {i64} */` — valid JS by construction; checkJs/Closure precedent). The
+  spec names the profile and fixes the annotation convention + inference boundary.
 
 - **M4 — Type binding.** Bind the AST against the M2 schema → fully-typed IR; `any`
   forced to the hybrid path. Typed locals inferred; mismatches rejected. *(v4.2, §10)*
