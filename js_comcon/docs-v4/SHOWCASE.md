@@ -261,5 +261,5 @@ performance are the same declaration, read twice.
 ---
 
 *Part II: `SHOWCASE17.md` (8–17) · Part III: `SHOWCASE37.md` (18–37) ·
-Part IV: `SHOWCASE45.md` (38–45) · Part V (new in v4): `SHOWCASE47.md` (46–47) ·
-Design: `FOUNDATION.md`.*
+Part IV: `SHOWCASE45.md` (38–45) · Part V (v4): `SHOWCASE47.md` (46–47) ·
+Part VI (v4.2): `SHOWCASE49.md` (48–49) · Design: `FOUNDATION.md`.*
