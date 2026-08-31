@@ -41,6 +41,17 @@ JSClassID              ngx_js_socket_class_id;
 ngx_js_socket_state_t *ngx_js_socket_reg[NGX_JS_SOCKET_REG_MAX];
 
 
+ngx_js_compartment_t
+ngx_js_socket_owner(uint32_t handle)
+{
+    if (handle >= NGX_JS_SOCKET_REG_MAX || ngx_js_socket_reg[handle] == NULL) {
+        return NGX_JS_COMPARTMENT_HOST_ROOT;
+    }
+
+    return ngx_js_socket_reg[handle]->owner;
+}
+
+
 /* ------------------------------------------------------------------ */
 /* NginxSocket opaque + finalizer                                       */
 /* ------------------------------------------------------------------ */

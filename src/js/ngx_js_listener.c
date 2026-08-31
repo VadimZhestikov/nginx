@@ -403,6 +403,15 @@ ngx_js_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
 
     st = ngx_js_listener_reg[op->handle];
 
+    /*
+     * COMCON A1.1: a listener's reach domain is its socket's. Deny every read
+     * (incl. the socket back-ref and serverNames escalation) when the current
+     * compartment may not reach that owner. No-op today (HOST_ROOT).
+     */
+    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))) {
+        return JS_NULL;
+    }
+
     switch (magic) {
     case 0: /* address — same as sock.address */
         if (st->socket_handle >= NGX_JS_SOCKET_REG_MAX
@@ -2479,6 +2488,11 @@ ngx_js_listener_server_by_name(JSContext *ctx, JSValueConst this_val,
     }
 
     st = ngx_js_listener_reg[op->handle];
+
+    /* COMCON A1.1: listener→NginxServer escalation; gate on the socket owner. */
+    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))) {
+        return JS_NULL;
+    }
 
     if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx,

@@ -49,6 +49,15 @@ extern ngx_js_socket_state_t *ngx_js_socket_reg[NGX_JS_SOCKET_REG_MAX];
 
 
 /*
+ * COMCON A1.1: the owning compartment of a registered socket, or HOST_ROOT for
+ * an out-of-range / unregistered handle (conservative — an invalid handle is
+ * then reachable only by HOST_ROOT). A listener's reach domain is its socket's,
+ * so listener→socket/server edges gate on this rather than a separate field.
+ */
+ngx_js_compartment_t ngx_js_socket_owner(uint32_t handle);
+
+
+/*
  * Register the NginxSocket class definition in a JSRuntime.
  * Called from ngx_js_com_register_classes().
  */

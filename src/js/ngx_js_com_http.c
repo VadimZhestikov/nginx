@@ -9305,6 +9305,17 @@ ngx_js_http_socket_entries(JSContext *ctx, JSValue arr,
     ngx_uint_t                 n_seen;
     ngx_uint_t                 already_seen;
 
+    /*
+     * COMCON A1.1: the full-cycle socket enumeration (nginx.cycle.sockets /
+     * nginx.http.sockets) exposes every listening socket — including static
+     * nginx.conf sockets with no JS owner — with serverByName escalation
+     * closures. It is host introspection: a confined compartment gets nothing
+     * here (it still uses its own socket objects directly). No-op today.
+     */
+    if (ngx_js_current_compartment() != NGX_JS_COMPARTMENT_HOST_ROOT) {
+        return;
+    }
+
     if (cycle->listening.nelts == 0) {
         return;
     }
