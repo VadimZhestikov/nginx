@@ -1,6 +1,7 @@
 ngx_module_type=CORE
 ngx_module_name="ngx_js_module"
 ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
+                 $ngx_addon_dir/ngx_js_compartment.c \
                  $ngx_addon_dir/ngx_js_com.c \
                  $ngx_addon_dir/ngx_js_worker.c \
                  $ngx_addon_dir/ngx_js_sw.c \
@@ -50,6 +51,7 @@ ngx_module_srcs="$ngx_addon_dir/ngx_js_module.c \
                  $ngx_addon_dir/ngx_js_http_module.c \
                  $ngx_addon_dir/ngx_js_repl.c"
 ngx_module_deps="$ngx_addon_dir/ngx_js.h \
+                 $ngx_addon_dir/ngx_js_compartment.h \
                  $ngx_addon_dir/ngx_js_com.h \
                  $ngx_addon_dir/ngx_js_worker.h \
                  $ngx_addon_dir/ngx_js_sw.h \

@@ -127,3 +127,41 @@ alongside A0.
 
 Nothing here contradicts the SPEC; it grounds increment A's *sequence* and names the
 specific nginx refactors S3/S4 face. The design survived contact with the code.
+
+## 5. First-unit refinement (from reading the source, not just the map)
+
+Reading `ngx_js_com.c:2700` and `ngx_js_socket.c:99` closely refined the A-order once more:
+
+- **The env model is the PRIMARY control; the registry gate is defense-in-depth.** The
+  reach cycle (`sock→listener→…→addLocation`) is only reachable if a tenant *holds* a
+  socket — which deny-by-default already prevents by not binding `createSocket`/socket
+  handles into the tenant environment. So A1's registry gate is belt-and-suspenders for
+  a *leaked* handle, not the front-line control. Front line = the environment.
+- **The two "confinement bugs" are the env model, not standalone edits.**
+  `workerMemoryLimit`/`Timeout` are *legitimately* host-writable at config time; the fix
+  is that a *tenant* env doesn't expose the writable property. Same for `nginx.shared`
+  prefixing. Neither is a patch — both are consequences of per-compartment environments.
+- **Everything in A1 needs a compartment identity that today does not exist**
+  (`JS_SetContextOpaque` is overloaded; one shared namespace). So the true first buildable
+  unit is **A1.0 — the compartment-identity primitive**: an owner token
+  (`ngx_js_compartment_t`, `HOST_ROOT` default) + a `ngx_js_current_compartment()`
+  accessor (the seam — returns HOST_ROOT today, per-tenant later, set around handler
+  dispatch the way the request-timeout deadline already is). Registry owner-fields,
+  env-withholding, and the gate are all *consumers* of this token.
+
+**Revised first slice (a thin vertical, not horizontal plumbing).** Horizontal
+"owner-field everything" compiles but cannot be tested until a *second* owner exists.
+The testable MVP proves the model end-to-end on one leak path:
+1. **A1.0** the compartment token + `ngx_js_current_compartment()` accessor (returns
+   HOST_ROOT).
+2. one **second compartment** with a reduced-method prototype (`JS_SetClassProto`
+   per context/env — no class surgery, confirmed) and a **deny-by-default env** lacking
+   `createSocket`/`repl`/`use`/`Worker`/writable-limits.
+3. **A1.1** owner-field the socket registry + gate the `sock.listener` scan
+   (defense-in-depth).
+4. a `t/` test: host creates a socket; the tenant handler cannot *name* it, and even
+   handed the handle, `sock.listener` returns empty.
+
+The reality check optimized A1 for smallest diff; this optimizes for smallest *testable*
+increment. They converge (the vertical uses A1's registry field) but sequence
+identity-primitive-first.
