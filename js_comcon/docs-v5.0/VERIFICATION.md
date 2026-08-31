@@ -72,6 +72,14 @@ a build-time assertion that every call site of the internal compile entry is
 enumerated; ops-resource caps emitted by the same S4 registry walk. Drift = build
 failure.
 
+*(v5.1 — E10)* **One generator, two outputs:** the conformance-test generator below and
+the `comconctl dev` capability-doubles generator are the same registry walk with two
+emitters — build it once (the walk's fourth consumer, after types, facet audit, and
+config-surface types). *(v5.1 — E7)* **Two-lane CI:** fast lane per commit (unit +
+kernel oracle + drift/enumeration checks); slow lane nightly (differential fuzzing,
+mutation testing, TLA+, reproducibility) — the verification track must not make the
+edit-test loop slow.
+
 **V8 — Schema conformance tests, generated per registry row.** The typed tier trusts
 the schema's word about C stubs. Auto-generate property tests from the registry (the
 third consumer of the M2+S4 walk): call each op across its typed domain; verify result

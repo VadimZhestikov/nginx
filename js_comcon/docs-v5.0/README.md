@@ -1,5 +1,11 @@
 # COMCON documentation, v5.0
 
+> **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
+> revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
+> (current: **v5.1**, the engineering review E1–E12 + the increment re-cut, ROADMAP
+> §13). Full new directories happen only at genuine architectural reframes. Older sets
+> (`docs-v0/`, `docs-v3/`, `docs-v4/`) are history.
+
 *Supersedes `../docs-v3/` (and `../docs-v0/` v2). v3 integrated the 2026-08-18
 architecture refinement: the possession kernel, the Program Object Model, the formal
 semantics with the No-Amplification theorem, worked authority-traced examples, the

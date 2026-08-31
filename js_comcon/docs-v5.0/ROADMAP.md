@@ -47,6 +47,13 @@ fallback) → the event dispatcher calls the C function pointer directly.
   `js_comcon`). These are the measured endpoints of the performance gradient
   (FOUNDATION §8); v2's cost model (§8.2) is no longer only argued.
 
+- **M-UNIFY — one engine tree (v5.1 — E5, user decision).** Merge maxim's ~54 phases
+  into the vendored `quickjs/` tree (rather than moving pilgrim onto maxim's fork).
+  Rationale: the fat-bytecode artifact couples the engine that runs T1 with the
+  compiler that consumes it — **one tree = one bytecode definition, one hardening
+  surface (M-SES patches land once), one upstream-tracking burden**. Prerequisite for
+  the fragment artifact (§10); schedule before M5, ideally alongside M2.
+
 - **M2 — Typed nginx-API schema.** Machine-readable static type signatures for the
   policy-visible host surface (mirror `ev.*` first: header/cookie reads, response-header
   writes, table get/set/incr, respond/selectUpstream), each op carrying param/return
@@ -70,7 +77,12 @@ fallback) → the event dispatcher calls the C function pointer directly.
   language grammar** (promoted from open questions — the showcases used it constantly
   and invented syntax ad hoc), and (b) the **denial/explain schema** (promoted — it is
   the operator UX, the deny-suite assertion language, the learning record, and the LSP
-  diagnostic; design it with the descriptors, not after). *(v4)* Also state the
+  diagnostic; design it with the descriptors, not after — *(v5.1 — E9, scope
+  reduction:)* the selector deliverable is staged down: **v1 = five registered
+  deterministic combinators as library functions** (`module(glob)`, `callsites(name)`,
+  `exports(f)`, `anchors(n)`, `within`) implemented as NodeView walks — sufficient for
+  R9's re-evaluable born-bound semantics; the general query *grammar* becomes a later
+  ergonomic upgrade). *(v4)* Also state the
   kernel's **instance-genericity** (admit parameterized by grammar+schema; one pattern,
   N instances), the **∅-environment principle**, and the rights-not-values meet rule
   for data instances (FOUNDATION §2a, SEMANTICS v4 additions). *(v4.1)* Plus the
@@ -110,6 +122,11 @@ fallback) → the event dispatcher calls the C function pointer directly.
   polyglot (Rust/Go) or CPU-heavy leaf fragments a home as admitted, budgeted,
   mediated compute capabilities. COMCON stays the authority plane; WASM never becomes
   a second management surface. Low priority; design note in the memory branch §17.
+  *(v5.1 — E1:)* Includes the **dependency workflow** — the #1 tenant question: a
+  lockfile-driven `comconctl install` that admits each npm dependency as a
+  `pure_library` child fragment with a static-harvest-generated candidate policy,
+  pins = lockfile hashes, transitive deps as child cages (v2 §9.5's supply-chain
+  inversion, finally given its tooling and manual chapter).
 
 - **M-SES — engine hardening.** Phases S1–S6 and the gate as specified in
   `HARDENING.md`. Does not block M2–M5 (trusted code); **gates M6/M7-with-tenants**;
@@ -144,7 +161,11 @@ fallback) → the event dispatcher calls the C function pointer directly.
   — a constant-predicate membrane (e.g. an allowHosts prefix guard) becomes an inline
   check in the generated C, not a call. Scenario 43's "policy that vanished" is this
   feature; without it the compile-through performance story is untrue for any mediated
-  capability. *(v5.0 — R4:)* generated C must remain **meterable**: loops emit
+  capability. *(v5.1 — E2:)* deliverable added: **tier-transparent stack traces** — a
+  compiled fragment's crash maps through the provenance links (C → bytecode offset →
+  source line) to a tenant-readable trace, with the redaction rule "your frames
+  visible, neighbors' redacted"; specified now because it is miserable to retrofit.
+  *(v5.0 — R4:)* generated C must remain **meterable**: loops emit
   **back-edge gas checks** (the interpreter's `JS_SetInterruptHandler` does not cover
   native code — without this, a compiled infinite loop hangs the worker unmetered);
   until back-edge gas lands, the tier-2-eligible profile is **loop-free** (the M1
@@ -458,3 +479,39 @@ milestones as a V-column:
 | now / M2–M3 | V3 executable reference semantics (kernel oracle) · V4 monotonicity-as-assertion · V7 generated (never maintained) enumerations |
 | M5–M6 | V5a per-artifact translation validation for the loop-free profile · V6 gas-placement CFG check on emitted C · V8 schema conformance tests (generated per registry row) · V9 drift-check extended to POM ops · V13 erasure spot check |
 | M7/M8/M-SES | V5b coverage-guided differential fuzzing · V10 TLA+ model of the epoch/two-phase protocol (incl. worker crash mid-flip) · V11 **policy mutation testing** (widen-one-permit mutants must be killed by the deny-suite) · V12 golden denial-code corpus · V14 reproducible builds · V15 the assurance case (claim → assumption → evidence; the umbrella) |
+
+## 13. The engineering review (E1–E12) and the increment re-cut (v5.1)
+
+A third review pass — ergonomics, sustainability, reuse, incremental value — with three
+user decisions (2026-08-23): **E5** merge maxim into the vendored tree (→ M-UNIFY);
+**E6** docs-v5.0 is frozen as **the single normative spec** — in-place revisions with
+changelog entries from now on, full new sets only at genuine reframes; **E12** adopt
+the increment re-cut below.
+
+**The re-cut (E12).** The milestone chain is compiler-first, but the *value* order is
+confinement-first: the highest-demand capability — multi-tenant confinement on the
+interpreted tier — needs no compiler at all. Milestones remain the engineering tracks;
+**increments** are the shippable cuts across them, each "showcase-true" for a named
+scenario set:
+
+| Increment | Contents | Showcase-true for | Compiler? |
+|---|---|---|---|
+| **A — COMCON-lite** | S1+S2, registry allow/deny bitmaps, denial log, audit→deny loop | 1, 2, 5 (partial), 7, 18 | **no** |
+| **B — onboarding** | learning-mode static harvest, generated docs, dependency workflow (E1) | 5, 25, 29 | no |
+| **C — typed + compiled** | M-UNIFY, M3–M6, fragment artifact, tiers | 43, 48, 49 | yes |
+| **D — live POM ops** | queries v1 (E9), rewrite/epochs | 38, 41, 42 | partially |
+| **E — config instance** | M-CFG | 36, 46, 47 | no (parallel anytime) |
+
+**Dogfood at increment A:** the first tenant is ourselves — a mirror demo (e.g. A2.8)
+running caged under COMCON-lite. Cheapest ergonomics verification that exists.
+
+**Compatibility principle (write it once, honor it forever):** *pilgrim without COMCON
+remains fully supported; COMCON attaches per-fragment; there is no flag-day.*
+
+Remaining E-findings folded elsewhere: E1 dependency workflow (M-LIB), E2
+tier-transparent stack traces (M5), E3 "tenants see profiles, never the kernel" (a
+standing doc-review criterion), E4 `comconctl docs --json` for generators (std.ops),
+E7 two-lane CI (VERIFICATION), E8 the first slice doubles as the new-engineer
+onboarding exercise, E9 selector staging (M2.5), E10 one generator/two outputs
+(VERIFICATION V8), E11 stage 1 needs no generic membrane machinery — C-side bitmaps +
+JS closure facets suffice; the transform membrane is stage 3 (§3).

@@ -48,6 +48,13 @@ between tenants and between tenants and the host.
 nginx specificity lives in policy libraries and the host integration layer, never in the
 engine mechanism.
 
+**Compatibility principle *(v5.1 — E12)*:** *pilgrim without COMCON remains fully
+supported; COMCON attaches per-fragment; there is no flag-day.* Existing `js_source`
+deployments never break; adoption is one fragment at a time (external binding makes
+even that possible on code nobody edits). Delivery follows the increment re-cut
+(ROADMAP §13): confinement first — the interpreted-tier multi-tenant cage ships and
+pays rent before any compiler exists.
+
 **What is new since v2 — the payoff is now measured.** The M1 perf spike (2026-08-16)
 established the endpoints of the performance gradient on real hardware: a policy
 hand-lowered to C (what a compiled typed COMCON policy becomes) runs at **96% of stock
@@ -528,6 +535,14 @@ over policy-JS (schema + inference + JSDoc-style erasure-sound annotations, ROAD
 §M3). **Explicit retirement:** v2 §6's allowance for "extended JS" (new typed syntax)
 is withdrawn — v3 §7 implied it, v4.2 states it: grammar is never extended, only
 vocabulary.
+
+**v5.1 (in place — the engineering review, E1–E12, ROADMAP §13):** increment re-cut
+(confinement-first delivery: COMCON-lite → onboarding → typed+compiled → live ops →
+config; dogfood at increment A); M-UNIFY (maxim merges into the vendored engine tree —
+one bytecode definition, one hardening surface); docs-v5.0 frozen as the single
+normative spec (in-place revisions only); compatibility principle (§1: no flag-day);
+dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
+one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
 **v5.0 (this set — the pre-implementation design review, R1–R12, ROADMAP §11):**
 confluence restricted to restrictive mediations, ≤1 adaptive policy per node (R1);

@@ -168,6 +168,24 @@ the same gate (`admit`), so "works on my machine" and "admitted by the host" are
 same predicate. **[TBD-3]** The doubles' fidelity contract (record/replay? schema-only
 stubs?) is undesigned — this is the tenant-side SDK the plan currently lacks.
 
+### 3.4a Using npm dependencies *(v5.1)*
+
+Your dependencies come along — each one caged, pinned, and admitted like everything
+else:
+
+```
+$ comconctl install                      # reads your lockfile
+  lodash@4.17.21    → pure_library cage, candidate policy from static harvest
+                      (imports: nothing; exports_to: you)   pin: sha256:…
+  zod@3.23.8        → pure_library cage                     pin: sha256:…
+  left-pad@1.3.0    → WARNING: requests eval — denied by pure_library; see denial #12
+```
+
+Every dependency is a child fragment under a `pure_library` policy generated from its
+own static harvest; pins are your lockfile hashes, so a hijacked update is refused at
+admission (scenario 40); transitive dependencies are cages inside cages. A library
+runs with what *you* grant it — never with what it requests.
+
 ### 3.5 Budgets
 
 Your cage meters CPU, memory, and compile episodes. Exhaustion is a *catchable* error
@@ -388,8 +406,10 @@ office-hours/cosign mediations apply to admin verbs; CI and AI operators use the
 gate; and anyone can rebuild any subset of this CLI from the capabilities they hold —
 you get exactly your slice of the verbs, never more.
 
-`init` · `learn` / `propose` / `shadow` / `enforce` · `denials` · `diff` · `docs` ·
-`dev` · `request` · `admit-config` / `propose-config` *(v4)* · `evaluate` ·
+`init` · `learn` / `propose` / `shadow` / `enforce` · `denials` · `diff` · `docs
+[--json]` *(v5.1: the machine-readable schema/denial feed — what AI generators and CI
+consume; same data as the human docs)* · `dev` · `install` *(v5.1: the dependency
+workflow, §3.4a)* · `request` · `admit-config` / `propose-config` *(v4)* · `evaluate` ·
 `revoke [--cascade]` · `remove-subtree` · `snapshot` / `rollback` · `rewrite` ·
 `apply-overlay` · `attach` · `shadow-world` · `trust-report` · `export` · `optimize`
 
