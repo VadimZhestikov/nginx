@@ -158,7 +158,19 @@ optimization are the same declaration read twice.
    **back-edge gas** in compiled loops (absent entirely in the loop-free profile), and
    **write guards** where a lower tier stores into declared-typed shared slots.
    Expected total low single-digit %; must be measured in M7 — the 96% ceiling was
-   measured *without* them.
+   measured *without* them. *(Framing worth keeping: this overhead is the native tier
+   **buying back what WASM provides intrinsically** — meterability and revocability —
+   so our-born code never needs the sandbox at all.)*
+7. *(v5.2 — the wasm facet lanes, modeled)* **Foreign-code costs by lane:** embedded
+   WASM runtime ≈ 70–90% of native on pure compute (guard-page bounds checks are
+   nearly free on 64-bit) — but the real cost is the **host boundary** (copies through
+   linear memory, no shared references), and chatty hook-style workloads sit in
+   exactly that weakest quadrant; **wasm2c ingestion** ≈ 85–95% of native with the SFI
+   checks preserved, plus our funnel's own item-6 overhead. Both modeled; the M7 WASM
+   baseline column is where they become measurements. **Mass-tenancy note (tiering by
+   heat):** a long tail of thousands of tiny *cold* fragments is served by
+   compartment-per-tenant with per-compartment caps and instant reset (S2), not by
+   per-tenant native `.so`s — compile heat, don't compile population.
 
 **Memory** *(v2 model retained, one v3 addition)*: policy metadata ∝ policies +
 fragments, never ∝ objects or operations; COW views ∝ actual write-divergence; grant

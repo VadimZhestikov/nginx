@@ -554,7 +554,12 @@ one compile/load/gas/revocation story, wasm2c joining the TCB) and one **export 
 (maxim→WASM carries admitted fragments to foreign Proxy-Wasm-class hosts; admission
 guarantees travel, authority discipline degrades to the foreign ABI and is reported).
 Kernel, theorem, tiers, and measured results unchanged (ROADMAP §M-LIB). Scenario 50
-("the border crossing", SHOWCASE50.md) demonstrates the inbound lane.
+("the border crossing", SHOWCASE50.md) demonstrates the inbound lane. Completed from
+the source discussion: WASM natively enforces the possession axiom (modules born-bound
+by construction); R3/R4 = the native tier buying back WASM's intrinsic meterability/
+revocability; the third lane — tiering by heat (cold long tail = compartments with
+per-compartment caps, never per-tenant `.so`s); modeled lane costs in PERFORMANCE §4.7;
+the export lane's strategic reading (foreign extension ABIs become toolchain targets).
 
 **v5.0 (this set — the pre-implementation design review, R1–R12, ROADMAP §11):**
 confluence restricted to restrictive mediations, ≤1 adaptive policy per node (R1);

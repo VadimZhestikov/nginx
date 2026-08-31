@@ -138,8 +138,23 @@ fallback) → the event dispatcher calls the C function pointer directly.
   carries a COMCON-authored fragment onto foreign hosts (Proxy-Wasm layers, edge
   runtimes) — admission-time guarantees (types, contract tests, free-name manifest)
   travel with the artifact; the authority discipline degrades to the foreign host's
-  coarse permission ABI, and the artifact's report says so. WASM is the border
-  crossing, never the interior.
+  coarse permission ABI, and the artifact's report says so — and strategically, every
+  foreign extension ABI thereby becomes **a target of our toolchain rather than a
+  competing model** ("author in typed JS under COMCON; deploy natively on pilgrim;
+  deploy as WASM everywhere else" — a distribution story the WASM-first platforms
+  cannot offer in reverse). Three closing observations that complete the ruling:
+  (i) **WASM natively enforces the possession axiom** — a module has no ambient
+  authority at all and can touch nothing beyond its instantiation-time imports, so it
+  is *born-bound by construction*; of the four kernel operators, the substrate gives
+  us possession for free and COMCON supplies the policy. (ii) **WASM's built-in
+  advantages were already bought back for the native tier**: R3's generation checks
+  and R4's back-edge gas are exactly the meterability and revocability WASM provides
+  intrinsically — engineered into maxim's output so our-born code never needs the
+  sandbox. (iii) **A third lane, tiering by heat**: a long tail of thousands of tiny
+  *cold* tenant fragments wants per-instance memory caps and instant reset, not a
+  per-tenant native `.so` — for our-born code that is QuickJS compartments (S2) with
+  per-compartment caps; WASM instances play that role only for foreign code. WASM is
+  the border crossing, never the interior.
   *(v5.1 — E1:)* Includes the **dependency workflow** — the #1 tenant question: a
   lockfile-driven `comconctl install` that admits each npm dependency as a
   `pure_library` child fragment with a static-harvest-generated candidate policy,
