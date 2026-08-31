@@ -42,3 +42,14 @@ ngx_js_compartment_leave(ngx_js_compartment_t previous)
 {
     ngx_js_cur_compartment = previous;
 }
+
+
+ngx_flag_t
+ngx_js_compartment_may_reach(ngx_js_compartment_t owner)
+{
+    ngx_js_compartment_t  cur;
+
+    cur = ngx_js_cur_compartment;
+
+    return cur == NGX_JS_COMPARTMENT_HOST_ROOT || cur == owner;
+}

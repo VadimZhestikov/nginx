@@ -52,4 +52,18 @@ ngx_js_compartment_t ngx_js_compartment_enter(ngx_js_compartment_t c);
 void ngx_js_compartment_leave(ngx_js_compartment_t previous);
 
 
+/*
+ * Reach check (defense-in-depth for a leaked handle): may the compartment
+ * currently executing reach an object/registry entry owned by `owner`?
+ *
+ * Rule: HOST_ROOT reaches everything; any other compartment reaches only what
+ * it owns. Today the current compartment is always HOST_ROOT, so this always
+ * returns true and behaviour is unchanged; it begins to isolate once confined
+ * fragments run (A2). Front-line control remains the deny-by-default
+ * environment (a tenant should never hold the handle in the first place);
+ * this guards the case where one leaks.
+ */
+ngx_flag_t ngx_js_compartment_may_reach(ngx_js_compartment_t owner);
+
+
 #endif /* _NGX_JS_COMPARTMENT_H_INCLUDED_ */

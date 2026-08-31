@@ -101,6 +101,17 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
     {
         ngx_uint_t  i;
 
+        /*
+         * COMCON A1.1 (defense-in-depth): the listener edge is the entry to
+         * the sock→listener→serverByName→server→addLocation reach cycle. A
+         * compartment that was handed a socket it does not own cannot walk it.
+         * No-op today (current compartment is HOST_ROOT); isolates once
+         * confined fragments run.
+         */
+        if (!ngx_js_compartment_may_reach(st->owner)) {
+            return JS_NULL;
+        }
+
         for (i = 0; i < NGX_JS_LISTENER_REG_MAX; i++) {
             if (ngx_js_listener_reg[i] != NULL
                 && ngx_js_listener_reg[i]->socket_handle == op->handle)
@@ -482,6 +493,7 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
     st->fd          = fd;
     st->port        = port;
     st->in_listening = 0;
+    st->owner        = ngx_js_current_compartment();   /* COMCON A1.1 */
     ngx_cpystrn((u_char *) st->addr, (u_char *) addr_str, sizeof(st->addr));
 
     ngx_js_socket_reg[handle] = st;

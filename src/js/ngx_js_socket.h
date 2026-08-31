@@ -14,6 +14,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <quickjs.h>
+#include "ngx_js_compartment.h"
 
 
 #define NGX_JS_SOCKET_REG_MAX  32
@@ -31,10 +32,11 @@
  *   socket already being used by nginx workers (Phase E).
  */
 typedef struct ngx_js_socket_state_s {
-    int       fd;              /* OS socket fd (bound + listening)         */
-    uint16_t  port;            /* port in host byte order                  */
-    char      addr[64];        /* display string, e.g. "127.0.0.1:9000"   */
-    unsigned  in_listening:1;  /* 1 after addServer() activates this fd    */
+    int                   fd;             /* OS socket fd (bound + listening) */
+    uint16_t              port;           /* port in host byte order          */
+    char                  addr[64];       /* display, e.g. "127.0.0.1:9000"   */
+    unsigned              in_listening:1; /* 1 after addServer() activates fd  */
+    ngx_js_compartment_t  owner;          /* COMCON A1.1: creating compartment */
 } ngx_js_socket_state_t;
 
 
