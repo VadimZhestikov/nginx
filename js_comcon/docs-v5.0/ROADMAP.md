@@ -122,6 +122,24 @@ fallback) → the event dispatcher calls the C function pointer directly.
   polyglot (Rust/Go) or CPU-heavy leaf fragments a home as admitted, budgeted,
   mediated compute capabilities. COMCON stays the authority plane; WASM never becomes
   a second management surface. Low priority; design note in the memory branch §17.
+  *(v5.2 — the provenance ruling:)* the facet's decision rule is now official:
+  **substrate follows provenance, not language** — WASM is a *trust* tier, not a
+  performance tier. Code born in our world as JS runs T1/T2 (the type-checker +
+  compiler is the trust root); JS→WASM is ruled a **category error** — a second
+  sandbox around an already-safe language, paying §17's boundary inversion for zero
+  trust gained. Code born elsewhere enters as WASM (the validator is the trust
+  root), with two execution lanes: an embedded runtime for cold/rare modules, and
+  **wasm2c ingestion** for hot ones — foreign WASM lowered to C (its SFI bounds
+  checks preserved in the generated source) and fed through the *same* TCC/GCC
+  pipeline, `.so` loading, gas and revocation story as maxim output, so everything
+  funnels through one trusted path ("C emitted by a tool we trust") with two
+  provenance front-ends: maxim JS→C, wasm2c WASM→C. Honest cost: this lane moves
+  wasm2c into the TCB beside maxim. Plus one **export lane**: maxim emitting WASM
+  carries a COMCON-authored fragment onto foreign hosts (Proxy-Wasm layers, edge
+  runtimes) — admission-time guarantees (types, contract tests, free-name manifest)
+  travel with the artifact; the authority discipline degrades to the foreign host's
+  coarse permission ABI, and the artifact's report says so. WASM is the border
+  crossing, never the interior.
   *(v5.1 — E1:)* Includes the **dependency workflow** — the #1 tenant question: a
   lockfile-driven `comconctl install` that admits each npm dependency as a
   `pure_library` child fragment with a static-harvest-generated candidate policy,

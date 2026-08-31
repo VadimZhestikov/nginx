@@ -544,6 +544,18 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.2 (in place — the WASM provenance ruling):** the M-LIB `wasm` facet gains its
+decision rule: **substrate follows provenance, not language** (WASM = trust tier, not
+performance tier; our-born JS runs T1/T2 with the compiler as trust root, JS→WASM
+ruled a category error; foreign-born code enters as WASM with the validator as trust
+root); two execution lanes (embedded runtime for cold modules; **wasm2c ingestion**
+into the single C funnel — two provenance front-ends, maxim JS→C and wasm2c WASM→C,
+one compile/load/gas/revocation story, wasm2c joining the TCB) and one **export lane**
+(maxim→WASM carries admitted fragments to foreign Proxy-Wasm-class hosts; admission
+guarantees travel, authority discipline degrades to the foreign ABI and is reported).
+Kernel, theorem, tiers, and measured results unchanged (ROADMAP §M-LIB). Scenario 50
+("the border crossing", SHOWCASE50.md) demonstrates the inbound lane.
+
 **v5.0 (this set — the pre-implementation design review, R1–R12, ROADMAP §11):**
 confluence restricted to restrictive mediations, ≤1 adaptive policy per node (R1);
 quote splices must be **stone** — the TOCTOU fix (R2); per-fragment generation checks
