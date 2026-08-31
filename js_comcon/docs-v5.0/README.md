@@ -1,9 +1,4 @@
-# COMCON documentation, v4
-
-> **Superseded by `../docs-v5.0/`** (v5.0 = v4.2 + the pre-implementation design-review
-> hardening R1–R12: stone quotations, one-adaptive-per-node, compiled-tier
-> revocation/gas/type-boundary fixes, least-authority realization, never-unbound nodes,
-> born-bound queries, monotone rollout). Kept for history.
+# COMCON documentation, v5.0
 
 *Supersedes `../docs-v3/` (and `../docs-v0/` v2). v3 integrated the 2026-08-18
 architecture refinement: the possession kernel, the Program Object Model, the formal
@@ -17,7 +12,12 @@ admissible config surface (new work item M-CFG, new scenarios 46–47, new manua
 **v4.1 (in place) adds the comconctl closure**: there is no management plane —
 administration is admitted episodes, tool verbs are `std.ops` library programs, and the
 ops-resource capabilities become the third closed enumeration (FOUNDATION §8a,
-Principle 10).*
+Principle 10). **v5.0 is the pre-implementation design-review hardening** — twelve
+adversarial findings (R1–R12) adopted in whole: stone-based quotation safety,
+one-adaptive-per-node composition, revocation/gas/type-boundary fixes for the compiled
+tier, least-authority realization, never-unbound nodes, creation-ordered ids, the
+born-bound rule, monotone rollout, and the admission front-end named as attack surface
+(ROADMAP §11 for the full table).*
 
 ## Reading order
 
