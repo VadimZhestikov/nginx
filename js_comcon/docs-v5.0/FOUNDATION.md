@@ -553,6 +553,17 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.5 (in place — construction begins):** `SPEC.md` (the clean normative read, M2.5 doc
+half) and `INCREMENT_A.md` (the ground-truthed build plan). The nginx integration reality
+check ran against the real `src/js/`: the §9.4 contract mostly holds, the QuickJS
+compartment factoring is favourable (S2 confirmed — classes per runtime, prototypes per
+context), the describe registry is extensibly typed. It reordered increment A (owner-field
+the global handle registries *before* context-splitting — the reach cycle is ownerless-
+array-mediated, which contexts don't isolate), named the four omnipotent un-gateable
+members (config.write, repl.eval/listen, use/install, Worker/SharedWorker), and found two
+confinement bugs (script-writable worker limits; flat `nginx.shared`). Design survived
+contact with the code.
+
 **v5.4 (in place — convergence actions):** the two remaining different-in-kind checks
 plus the accepted simplifications. **THREATS.md added** — the adversary × asset ×
 mitigation completeness ledger (12 adversaries; every cell cites its mechanism; three

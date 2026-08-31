@@ -67,7 +67,13 @@ fallback) → the event dispatcher calls the C function pointer directly.
   range** — the numeric model (SEMANTICS §6) is sound in the language but would leak
   through the library without this: expose **ms** timestamps (never ns — ~1.7×10¹⁸
   exceeds 2⁵³), scaled units for large quantities, and strings/opaque handles for true
-  64-bit identifiers. Enforced by the V8 conformance tests per registry row.
+  64-bit identifiers. Enforced by the V8 conformance tests per registry row. *(v5.5 —
+  from the reality check:)* the walk must **add rows for the read-only getters** — the
+  current `describe` tables deliberately omit read-only members
+  (`ngx_js_com_describe.c:41`), but those getters (`sock.listener`, `server.locations`,
+  `listener.serverByName`, …) are exactly the reach/leak paths S4 must give a facet
+  rule; the `type` column is already a stringly-typed signature slot, so M2's type
+  signatures are a pure data extension.
 
 - **M2.5 — THE SPEC (scope expanded, v5.4).** Originally "consolidate SEMANTICS + POM";
   now: produce **one clean normative SPEC of the entire v5.x design** — the
@@ -577,14 +583,25 @@ increment A — opaque values sit on the unscheduled engine-substrate track with
 16/19/32 (§5.6); A's disclosure story is covered by 38 in audit mode instead.
 
 *(v5.4)* Two integration deliverables pinned to increment A: (1) **the nginx
-integration reality check** — confirm v2 §9.4's contract against the actual codebase
-(load point, worker-fork timing, reload semantics, shared-memory zones, and the
-requirement that authority boundaries fall on property/method lines in the real
-`ngx_js_com_*` factoring) — the highest remaining implementation risk, hit first;
-(2) **TM-2, session identity → environment mapping** (THREATS.md): how an
-authenticated principal (human, CI, AI agent) maps to a granted operator environment,
-riding the P19 admin-shell substrate — must exist before the first real operator
-session, i.e. before dogfood.
+integration reality check** — confirm v2 §9.4's contract against the actual codebase;
+(2) **TM-2, session identity → environment mapping** (THREATS.md), riding the
+`nginx.repl` substrate — before dogfood.
+
+*(v5.5 — the reality check DONE, `INCREMENT_A.md`):* verdict — the §9.4 contract
+mostly holds (authority does fall on property/method lines for the *mutation* surface;
+`r.location`'s deliberate `srv_op=NULL` defanging is the precedent to generalize), and
+the QuickJS factoring is favourable (classes registered once per runtime, prototypes
+per context ⇒ per-tenant method-subset compartments need no class surgery — S2
+confirmed). But it reordered the build: **(A1) owner-field the three process-global
+handle registries first** — the `sock→listener→serverByName→server→addLocation` reach
+cycle is mediated by ownerless global arrays that separate contexts do NOT isolate;
+this is higher-leverage than context-splitting and independent of it. **Four
+omnipotent, un-property-gateable members** (`config.write`, `nginx.repl.eval/listen`,
+`nginx.use/install`, `Worker`/`SharedWorker`) are the concrete content of S3's
+withhold-by-default. Two confinement bugs to fix in A1: script-writable
+`workerMemoryLimit`/`Timeout` (a tenant raises its own cap) and the flat un-prefixed
+`nginx.shared` (pulls M8's table-key namespacing earlier). Full task order A0–A4 +
+file:line anchors in `INCREMENT_A.md`.
 
 **Compatibility principle (write it once, honor it forever):** *pilgrim without COMCON
 remains fully supported; COMCON attaches per-fragment; there is no flag-day.*
