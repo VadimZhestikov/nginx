@@ -259,6 +259,7 @@ library:
 | `protocol("handshake", "frames*", "close")` | enforced operation order |
 | `stone(value)` | deep-freeze plain *data* once — membrane-free sharing across boundaries (membranes for authority, stone for data) |
 | `pattern { 1-32 (alpha, digit, "-") }` | readable, composable validation — bounded quantifiers ⇒ ReDoS impossible; static patterns compile through |
+| `wasm.admit(path, {imports, budgets, pin})` *(v5.3)* | admit a foreign (non-JS-born) module: its imports are your grants, its fuel your budgets; hot modules ingest via wasm2c into the native funnel (scenario 50) |
 
 Everything above is itself governed code from `comcon:std-policies` — the library
 cannot leak the raw authority it wraps (facet pattern). If you find yourself needing a

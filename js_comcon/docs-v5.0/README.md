@@ -2,10 +2,10 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.2**, the WASM provenance ruling — ROADMAP §M-LIB `wasm` facet;
-> before it v5.1, the engineering review E1–E12 + the increment re-cut, ROADMAP
-> §13). Full new directories happen only at genuine architectural reframes. Older sets
-> (`docs-v0/`, `docs-v3/`, `docs-v4/`) are history.
+> (current: **v5.3**, the consistency pass C1–C13; before it v5.2, the WASM provenance
+> ruling — ROADMAP §M-LIB `wasm` facet; v5.1, the engineering review E1–E12 + the
+> increment re-cut, ROADMAP §13). Full new directories happen only at genuine
+> architectural reframes. Older sets (`docs-v0/`, `docs-v3/`, `docs-v4/`) are history.
 
 *Supersedes `../docs-v3/` (and `../docs-v0/` v2). v3 integrated the 2026-08-18
 architecture refinement: the possession kernel, the Program Object Model, the formal
@@ -61,7 +61,7 @@ interpreted form.
 ## Status
 
 Design documentation — nothing here is implemented except where marked (M1 spike
-artifacts in `t_performance/maxim_m1/`). The showcase scenarios (45 total) are fully
+artifacts in `t_performance/maxim_m1/`). The showcase scenarios (50 total) are fully
 reworked for v3 and **supersede** `../docs-v0/SHOWCASE*.md`; their syntax remains
 hypothetical by design. Design-session notes and the running decision log live in the
 project memory branch (`comcon-architecture-refinement`).

@@ -360,8 +360,11 @@ tightens — this is v2's learning mode (§11) meeting the binding surface.
 
 ## 8. Enforcement: three sub-languages, four moments
 
-The **enforcement language** is not JavaScript and is never embedded in it; it is three
-declarative sub-languages — all *data*, hence compilable, analyzable, diffable:
+The **enforcement language** is not embedded in JavaScript as syntax; it is three
+sub-languages, **declarative at their normal form** *(reworded v5.3 — C7, after rev
+3.3: the authority language is written as policy-JS programs; what is data — hence
+compilable, analyzable, diffable — is its admission-time normal form, the descriptor
+tables, plus the value-level target selectors and contracts)*:
 
 1. **Target (WHERE):** POM selectors (§7).
 2. **Authority (WHAT):** environments built by grant/mediate — subsuming v2's
@@ -424,8 +427,9 @@ pilgrim, the existing admin-shell/`nginx.repl` machinery).
 resources previously implicit in "the tool" must be first-class capabilities: the
 denial/observation log · the binding/epoch store · the provenance/grant-chain registry
 · the class-F broadcast channel · the snapshot store · the signing key · the
-learning-recorder switch. This joins p_symbols and compile portals as the third
-enumeration whose *completeness* makes a safety claim checkable — here, "no backdoor."
+learning-recorder switch. This joins the per-instance grammar enumerations and the
+compile portals as the third *kind* of closed enumeration (§13.2) whose *completeness*
+makes a safety claim checkable — here, "no backdoor."
 
 Consequences: administration inherits every mechanism for free (office-hours/cosign
 mediations govern admin verbs; `trust-report` runs over operator sessions themselves);
@@ -544,6 +548,20 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.3 (in place — the consistency pass, C1–C13):** fourth review, hunting
+cross-revision drift. Substantive: **C1** node ids are recorded in the canonical
+config tree with a persisted counter — never re-derived across restart/reload (POM §2;
+closes R8's loop); **C2** scenario 7 removed from increment A (opaque is on the
+engine-substrate track; 38-audit covers A's disclosure story); **C3** back-edge gas and
+V6's CFG check apply to *all* C entering the funnel — wasm2c-emitted included.
+Consistency: stone is a kernel intrinsic (C4); enumerations restated per instance +
+two global lists (C5); `E_BIND_ADAPTIVE_CONFLICT` renamed — detected at the meet, not
+admit (C6); "sub-languages declarative *at their normal form*" (C7); environment
+signature ≡ the fragment's free-name manifest (C8); stale counts fixed (C9); first
+slice = increment A's engineering seed (C10); schema-hash pinning stated per-instance
+(C11); the 96% ceiling asterisked at first contact (C12); `wasm.admit` in the manual's
+combinator table (C13).
+
 **v5.2 (in place — the WASM provenance ruling):** the M-LIB `wasm` facet gains its
 decision rule: **substrate follows provenance, not language** (WASM = trust tier, not
 performance tier; our-born JS runs T1/T2 with the compiler as trust root, JS→WASM
@@ -584,10 +602,12 @@ Still open, in priority order:
 
 1. **COW-domain / inline-cache cost** (v2 §10.3) — *the* performance risk; prototype
    early; design together with revocation-epoch invalidation.
-2. **The closed enumerations — now three** (v2 §10.2 + v4.1 §8a) — p_symbols (POM node
-   kinds, versioned), compile portals, and the **ops-resource capabilities** (§8a);
-   completeness of the first two makes the sandbox-escape claim checkable, of the third
-   the no-backdoor claim.
+2. **The closed enumerations** (v2 §10.2 + v4.1 §8a; *restated per instance-genericity,
+   v5.3 — C5*) — **per-instance grammar enumerations** (the JS p_symbols, the config
+   productions of M-CFG, the WASM validated format of the facet), plus two global
+   lists: **compile portals** and the **ops-resource capabilities** (§8a). Completeness
+   of the grammar enumerations and portals makes the sandbox-escape claim checkable;
+   of the ops-resources, the no-backdoor claim. All generated, never maintained (V7).
 3. ~~Selector-language grammar~~ — **promoted into M2.5** (ROADMAP §5.4): the showcase
    rework used it constantly and invented syntax ad hoc; it needs its spec now.
 4. **Information flow / taint** — capabilities gate *access*, not *flow*; read-X +

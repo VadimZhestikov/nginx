@@ -64,7 +64,14 @@ NodeView {
 
 **Identity rule (fragment identity / supply chain):** `id` is **creation-ordered**
 (a monotonic id assigned at first admission), **never positional** *(v5.0 — R8:
-positional paths silently retarget policies when `insertBefore` shifts siblings)*;
+positional paths silently retarget policies when `insertBefore` shifts siblings)*.
+*(v5.3 — C1, persistence:)* creation-ordered ids are **assigned once and recorded in
+the canonical config tree** (representation C — the id map is part of the fragment's
+on-disk manifest), drawn from a **persisted monotonic counter**; restart and reload
+**load** recorded ids, never re-derive them — otherwise a reload would reassign
+parse-order ids and silently retarget every id-bound policy, the exact bug R8 fixed.
+This is the identity half of the config-tree ⇄ live-tree correspondence question
+(FOUNDATION §13.8);
 `hash` is content-stable. Policies **target** by id/selector but **pin** by hash — a
 policy pinned to `F@hash₁` refuses to govern a silently edited `F@hash₂`; re-admission
 is required, and *(v5.0 — R7)* the refusal applies to the **new epoch only**: the

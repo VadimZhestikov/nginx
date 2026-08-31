@@ -133,8 +133,12 @@ fallback) → the event dispatcher calls the C function pointer directly.
   checks preserved in the generated source) and fed through the *same* TCC/GCC
   pipeline, `.so` loading, gas and revocation story as maxim output, so everything
   funnels through one trusted path ("C emitted by a tool we trust") with two
-  provenance front-ends: maxim JS→C, wasm2c WASM→C. Honest cost: this lane moves
-  wasm2c into the TCB beside maxim. Plus one **export lane**: maxim emitting WASM
+  provenance front-ends: maxim JS→C, wasm2c WASM→C. *(v5.3 — C3:)* "same gas story"
+  is made literal: wasm2c emits SFI bounds checks but **not** fuel checks, so the
+  **back-edge gas instrumentation and V6's CFG check apply to all C entering the
+  funnel — wasm2c-emitted as much as maxim-emitted** (else a hot foreign module spins
+  unmetered: R4's bug, one lane over). Honest cost: this lane moves wasm2c into the
+  TCB beside maxim. Plus one **export lane**: maxim emitting WASM
   carries a COMCON-authored fragment onto foreign hosts (Proxy-Wasm layers, edge
   runtimes) — admission-time guarantees (types, contract tests, free-name manifest)
   travel with the artifact; the authority discipline degrades to the foreign host's
@@ -272,7 +276,7 @@ argued (soundness is stage-independent — SEMANTICS §3):
 
 ---
 
-## 4. Minimal first slice (v3 revision of v2 §11)
+## 4. Minimal first slice (v3 revision of v2 §11) — the engineering seed of increment A (§13)
 
 Exercises every pillar, updated for the kernel and the anchors model:
 
@@ -454,7 +458,9 @@ GCC/TCC). Hence the chosen architecture — **"fat bytecode"**:
 typed policy-JS ──M3/M4──▶ FRAGMENT ARTIFACT ──(iff maxim)──▶ C → .so
                             = bytecode                         phase-34 hybrid:
                             + type/cap side-table              {C fn, bytecode},
-                            + env signature + hash + cert      prefer C, fall back
+                            + environment signature (= the      prefer C, fall back
+                              fragment's free-name manifest)
+                            + hash + cert
                             + SCHEMA HASH (v5.0 — V2)
 ```
 
@@ -463,7 +469,9 @@ under**, and the loader **verifies compatibility at every load**: a registry/eng
 upgrade that changes an op's type or effect class makes stale cached artifacts fail
 loudly into re-admission (old epoch keeps serving, per R7) instead of serving with
 stale assumptions baked into their C. Pin-by-hash protects against *content* drift;
-this protects against *schema* drift.
+this protects against *schema* drift. *(v5.3 — C11:)* schema-hash pinning is
+**per-instance**: config-fragment artifacts (M-CFG) and wasm-facet admissions carry
+and verify it exactly as program fragments do.
 
 **Erasure-soundness principle:** a typed program run interpreted with its types
 ignored behaves identically to its compiled form — types only *reject* (at admission)
@@ -483,7 +491,7 @@ decisions: R1 = one-adaptive-per-node; R6 = as proposed). Summary and homes:
 
 | # | Issue found | Fix | Home |
 |---|---|---|---|
-| R1 | meet/ACI claim false for adaptive transforms | confluence restricted to restrictive; **≤1 adaptive policy per node** (`E_ADMIT_ADAPTIVE_CONFLICT`) | SEMANTICS (BIND), FOUNDATION §4 |
+| R1 | meet/ACI claim false for adaptive transforms | confluence restricted to restrictive; **≤1 adaptive policy per node** (`E_BIND_ADAPTIVE_CONFLICT`) | SEMANTICS (BIND), FOUNDATION §4 |
 | R2 | cap-free deep check TOCTOU-unsound (getters/proxies/mutation) | QUOTE side condition = **stone** (deep-frozen plain data); opaque values unspliceable | SEMANTICS (QUOTE), FOUNDATION §6 |
 | R3 | revocation invisible to compiled fragments (membranes erased) | per-fragment **generation check at entry** → self-demote to bytecode; revocation cost classes in describe() | M6, PERFORMANCE |
 | R4 | tier-2 escapes gas/memory metering (interrupt handler = interpreter-only) | maxim emits **back-edge gas**; loop-free profile until then; allocation via metered stubs only | M5, HARDENING S5 |
@@ -529,7 +537,7 @@ scenario set:
 
 | Increment | Contents | Showcase-true for | Compiler? |
 |---|---|---|---|
-| **A — COMCON-lite** | S1+S2, registry allow/deny bitmaps, denial log, audit→deny loop | 1, 2, 5 (partial), 7, 18 | **no** |
+| **A — COMCON-lite** | S1+S2, registry allow/deny bitmaps, denial log, audit→deny loop | 1, 2, 5 (partial), 18, 38 (audit-mode) | **no** |
 | **B — onboarding** | learning-mode static harvest, generated docs, dependency workflow (E1) | 5, 25, 29 | no |
 | **C — typed + compiled** | M-UNIFY, M3–M6, fragment artifact, tiers | 43, 48, 49 | yes |
 | **D — live POM ops** | queries v1 (E9), rewrite/epochs | 38, 41, 42 | partially |
@@ -537,6 +545,9 @@ scenario set:
 
 **Dogfood at increment A:** the first tenant is ourselves — a mirror demo (e.g. A2.8)
 running caged under COMCON-lite. Cheapest ergonomics verification that exists.
+*(v5.3 — C2, consistency fix:)* scenario 7 (opaque secrets) was wrongly listed under
+increment A — opaque values sit on the unscheduled engine-substrate track with
+16/19/32 (§5.6); A's disclosure story is covered by 38 in audit mode instead.
 
 **Compatibility principle (write it once, honor it forever):** *pilgrim without COMCON
 remains fully supported; COMCON attaches per-fragment; there is no flag-day.*

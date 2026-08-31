@@ -1,7 +1,7 @@
 # COMCON — Kernel Semantics & the No-Amplification Theorem (v5.0)
 
 *Formal companion to `FOUNDATION.md` §4/§6. Status: rigorous sketch — precise enough to
-implement against and to find design errors (it already found four, §5), not yet a
+implement against and to find design errors (it has found seven so far, §5), not yet a
 machine-checked development.*
 
 ---
@@ -16,7 +16,7 @@ POM nodes    n ∈ Node,  subtree order  n' ⊑ n
 POM handles  h = cap(POM, {read, rewrite, bind, admin} ↾ reach(h))   — ordinary capabilities
 Values       v ::= d (data: scalars, frozen records) | c | q (quotation) | ρ (environment)
 Environments ρ : Name ⇀ Value                       (frozen at bind; env() = ∅)
-Quotations   q = node(text, v̄)   with side condition  ∀i. A(vᵢ) = ∅   (cap-free, deep)
+Quotations   q = node(text, v̄)   with side condition  ∀i. stone(vᵢ)   (⇒ A(vᵢ) = ∅, stably)
 State        Σ = (P : POM tree,  B : Node ⇀ Env,  W : host world)
 ```
 
@@ -85,6 +85,9 @@ can acquire a capability after the check, and a **getter/proxy** can lazily prod
 when later read (or execute side effects during checking). The side condition is
 therefore **`stone`** — primitives and deep-frozen records/arrays of the same, no
 getters, no proxies, no mutability — which makes cap-freeness a *stable* property.
+*(v5.3 — C4:)* since (QUOTE) depends on it, **`stone()` is a kernel intrinsic** — the
+same free-constructor class as `env()` and `quote` — not a library combinator; M-LIB
+merely re-exports it.
 Splicing anything else, capability or merely non-stone, is a stage-0 error at the
 producer. Corollary: **opaque values carry authority** (their `pass_to` permit), so
 they are never spliceable — secrets structurally cannot leave through quotations or
@@ -103,7 +106,7 @@ mediations (membrane stacking) ⟹ authority = permit intersection. *(v5.0 — R
 correction:)* the ACI/confluence claim holds for **restrictive mediations only** —
 filters commute, **transforms do not** (two rewriting policies produce order-dependent
 results). Rule: **at most one adaptive-profile policy per node**; a second adaptive
-binding on the same node is an admission error (`E_ADMIT_ADAPTIVE_CONFLICT`), while
+binding on the same node is a bind-time error (`E_BIND_ADAPTIVE_CONFLICT` — v5.3: the conflict is detected at the meet, not at admit), while
 restrictive bindings continue to meet freely over the single adaptive one. *(v5.0 —
 R12:)* declared failure modes compose by strictness — `reject > deny > attenuate >
 audit`; the meet takes the strictest. *(v4 clarification, for data-like instances: meet

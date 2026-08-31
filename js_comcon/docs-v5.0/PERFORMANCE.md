@@ -16,10 +16,13 @@ measured:
 
 | Point on the gradient | Throughput vs stock nginx | Status |
 |---|---|---|
-| Fully static policy, compiled through (maxim target shape) | **90–96%** | **measured** (M1 hand-C) |
+| Fully static policy, compiled through (maxim target shape) | **90–96%** \* | **measured** (M1 hand-C) |
 | Declarative-only policy, engine-consulted tables (stage 1) | ~85–95% *(model)* | modeled |
 | Policy with residual runtime membranes on hot paths | strongly workload-dependent | modeled |
 | Fully interpreted policy framework (mirror today) | **28–50%** | **measured** |
+
+\* *ceiling measured before the v5.0 safety machinery (generation check, back-edge
+gas, slot guards — §4.6); expected low-single-digit % lower; M7 re-measures.*
 
 Read the two measured rows as the ceiling and the floor of the same policy: the M1
 experiment ran the *identical* "count + tag" policy both ways — hand-lowered C at
