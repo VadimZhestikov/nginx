@@ -31,7 +31,8 @@ born-bound rule, monotone rollout, and the admission front-end named as attack s
 
 | Doc | What it is |
 |---|---|
-| **FOUNDATION.md** | The architecture: thesis, principles, the POM, the 4-operator kernel, closure vs quotation, anchors & profiles, enforcement pipeline, run-time object model, multi-language, AI contracts, the full v2→v3 delta table, open questions. Start here. |
+| **SPEC.md** *(the normative read — start here)* | The whole design stated once, cleanly, no revision archaeology: the one axiom, four operators, the tree, the vocabulary, the three axes, tiers/artifact, WASM, administration, the layered core, the honest edges. Normative for *what*; the rest is *why*. |
+| **FOUNDATION.md** | The **argued** architecture (rationale, the full vN.M delta log): thesis, principles, the POM, the 4-operator kernel, closure vs quotation, anchors & profiles, enforcement pipeline, run-time object model, multi-language, AI contracts, open questions. Read for *why*. |
 | **SEMANTICS.md** | Formal companion: domains, the authority measure, evaluation rules, the No-Amplification theorem + proof sketch, three worked examples with authority traces, and what the formalization itself discovered. |
 | **POM.md** | The Program Object Model: node interface, COM→POM mirror table, R/L/F/X mutation safety classes, lifecycle, implementation-reuse plan. |
 | **HARDENING.md** | M-SES: the engine-hardening milestone (S1–S6), the gate, scheduling. Unforgeability is the *enforcement mechanism* of the possession axiom, not hygiene. |
