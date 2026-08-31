@@ -18,18 +18,18 @@ policy-JS; types come from three places, and you only *write* the third:
 ```js
 "use comcon: pricing";                        // anchor — inert; this file is plain JS
 
-/** @typedef {{t: str, n: i64}} Flow */       // 1 annotation: declare your flow slots
+/** @typedef {{t: str, n: int}} Flow */       // 1 annotation: declare your flow slots
                                               // (the one thing inference can't guess)
 
 export function onRequestHeaders(ev) {        // ev's whole surface is typed by the
   const t = ev.header("x-tenant") ?? "-";     //   SCHEMA (describe() registry):
-  const n = ev.table.incr("cnt:" + t);        // t: str, n: i64 — INFERRED from the
+  const n = ev.table.incr("cnt:" + t);        // t: str, n: int — INFERRED from the
   ev.flow.t = t;                              //   API signatures; nothing written
   ev.flow.n = n;
 }
 
 export function onResponseHeaders(ev) {
-  ev.setResponseHeader("x-count", String(ev.flow.n));   // i64 → str made explicit
+  ev.setResponseHeader("x-count", String(ev.flow.n));   // int → str made explicit
   ev.setResponseHeader("x-tenant-seen", ev.flow.t);
 }
 ```
@@ -42,7 +42,7 @@ denials** at admission:
 
 ```
 DENIED  E_TYPE_MISMATCH   pricing.js:14
-  why:  setResponseHeader expects str; ev.flow.n is i64
+  why:  setResponseHeader expects str; ev.flow.n is int
   hint: String(ev.flow.n)
 ```
 

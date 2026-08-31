@@ -402,3 +402,31 @@ denial schema.
 Plus the two boundary statements that keep the claim honest: unforgeability (U1–U3) and
 compiler faithfulness (F) are *assumptions here and milestones elsewhere* — M-SES and
 M8 respectively.
+
+---
+
+## 6. The numeric model *(v5.0 — V1, user decision)*
+
+**JavaScript semantics is normative in both tiers: numbers are IEEE-754 doubles.**
+BigInt remains what it is in JS — explicit and outside the typed profile. The typed
+integer is therefore **`int` — a safe-integer refinement of double** (an integral value
+with |x| ≤ 2⁵³−1), *not* a machine i64 with its own arithmetic:
+
+- **Tier 1 is the specification**: whatever the interpreter's double arithmetic does —
+  including precision loss past 2⁵³ — *is* the behavior.
+- **Tier 2 must match it exactly**: compiled C may use a native `int64_t`
+  representation **only where range analysis proves the safe range is never exceeded**
+  (e.g. bounded counters, header lengths); everywhere else it computes in IEEE doubles
+  — still native C arithmetic, still fast.
+- Verified by **boundary-value conformance tests** (2⁵³ ± 1, negative zero, NaN
+  propagation through `num`) in the T1-vs-T2 differential suite (VERIFICATION.md, V1).
+
+Without this rule, erasure soundness ("types never change semantics") would fail
+precisely where differential testing looks: a counter crossing 2⁵³ would saturate in
+T1 doubles and keep counting in a naive T2 int64.
+
+**Implementation note *(V4 — monotonicity as an assertion)*:** the No-Amplification
+theorem holds *given* an unforgeable TCB. Since environments are finite and
+capabilities are registry-typed, `A*(child) ⊆ A*(parent)` is mechanically checkable —
+the kernel **asserts the lattice inclusion at every grant/bind at admission time**, so
+a TCB bug that would violate monotonicity fails loudly instead of silently.

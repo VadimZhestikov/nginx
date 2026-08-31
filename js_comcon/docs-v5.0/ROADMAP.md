@@ -118,7 +118,7 @@ fallback) → the event dispatcher calls the C function pointer directly.
   (i) the M2 schema types the API (types arrive from the environment); (ii) inference
   covers locals (M4 — the Misty-like core is small precisely so inference works);
   (iii) residual annotations use an **erasure-sound carrier: JSDoc-style comments**
-  (`/** @type {i64} */` — valid JS by construction; checkJs/Closure precedent). The
+  (`/** @type {int} */` — valid JS by construction; checkJs/Closure precedent). The
   spec names the profile and fixes the annotation convention + inference boundary.
 
 - **M4 — Type binding.** Bind the AST against the M2 schema → fully-typed IR; `any`
@@ -148,7 +148,7 @@ fallback) → the event dispatcher calls the C function pointer directly.
   boundary**: the compiled tier reads them unboxed on the side-table's word, so every
   **write from a lower tier into a declared-typed slot is guarded** (the
   gradual-typing boundary discipline) — otherwise a hybrid fragment writing `any` into
-  a slot a compiled fragment reads as `i64` is type confusion inside native code.
+  a slot a compiled fragment reads as `int` (unboxed) is type confusion inside native code.
 
 - **M6 — Dispatch + AOT wiring.** The event dispatcher calls the compiled C function
   pointer (per-tenant `.so`, phase-35 precompile); interpreted fallback for the
@@ -396,7 +396,15 @@ typed policy-JS ──M3/M4──▶ FRAGMENT ARTIFACT ──(iff maxim)──�
                             = bytecode                         phase-34 hybrid:
                             + type/cap side-table              {C fn, bytecode},
                             + env signature + hash + cert      prefer C, fall back
+                            + SCHEMA HASH (v5.0 — V2)
 ```
+
+*(v5.0 — V2)* The artifact records the **hash of the schema version it was admitted
+under**, and the loader **verifies compatibility at every load**: a registry/engine
+upgrade that changes an op's type or effect class makes stale cached artifacts fail
+loudly into re-admission (old epoch keeps serving, per R7) instead of serving with
+stale assumptions baked into their C. Pin-by-hash protects against *content* drift;
+this protects against *schema* drift.
 
 **Erasure-soundness principle:** a typed program run interpreted with its types
 ignored behaves identically to its compiled form — types only *reject* (at admission)
@@ -431,3 +439,17 @@ decisions: R1 = one-adaptive-per-node; R6 = as proposed). Summary and homes:
 
 Non-technical: repo confirmed **private** (company-internal) — pushed design docs are
 not public disclosure; keep non-public until the patent-filing decision.
+
+## 12. The verification track (V1–V15)
+
+A second review pass asked, for every claim: *what would convince a skeptic?* The
+resulting verification obligations live in **`VERIFICATION.md`** — two were design
+decisions adopted immediately (V1 numeric model: JS-double semantics normative,
+SEMANTICS §6; V2 schema-hash pinning at artifact load, §10 above); the rest attach to
+milestones as a V-column:
+
+| Phase | Verification deliverables |
+|---|---|
+| now / M2–M3 | V3 executable reference semantics (kernel oracle) · V4 monotonicity-as-assertion · V7 generated (never maintained) enumerations |
+| M5–M6 | V5a per-artifact translation validation for the loop-free profile · V6 gas-placement CFG check on emitted C · V8 schema conformance tests (generated per registry row) · V9 drift-check extended to POM ops · V13 erasure spot check |
+| M7/M8/M-SES | V5b coverage-guided differential fuzzing · V10 TLA+ model of the epoch/two-phase protocol (incl. worker crash mid-flip) · V11 **policy mutation testing** (widen-one-permit mutants must be killed by the deny-suite) · V12 golden denial-code corpus · V14 reproducible builds · V15 the assurance case (claim → assumption → evidence; the umbrella) |
