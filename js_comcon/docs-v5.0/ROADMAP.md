@@ -55,7 +55,12 @@ fallback) → the event dispatcher calls the C function pointer directly.
   and the facet/reach rule per op (HARDENING §S4). *(v4)* The schema is **dual-role**:
   it types the capabilities granted to policies *and* it is the type system of the
   admissible config surface (M-CFG) — design it with value-domain constraints, not
-  only function signatures, so the second role is not precluded.
+  only function signatures, so the second role is not precluded. *(v5.0 — V1
+  companion rule:)* **no host op may expose a numeric domain exceeding the safe-integer
+  range** — the numeric model (SEMANTICS §6) is sound in the language but would leak
+  through the library without this: expose **ms** timestamps (never ns — ~1.7×10¹⁸
+  exceeds 2⁵³), scaled units for large quantities, and strings/opaque handles for true
+  64-bit identifiers. Enforced by the V8 conformance tests per registry row.
 
 - **M2.5 — POM + kernel spec.** Consolidate `SEMANTICS.md` + `POM.md` into the
   normative spec: resources, the four operators, possession metatheorem,

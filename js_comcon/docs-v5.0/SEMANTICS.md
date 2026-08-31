@@ -425,6 +425,23 @@ Without this rule, erasure soundness ("types never change semantics") would fail
 precisely where differential testing looks: a counter crossing 2⁵³ would saturate in
 T1 doubles and keep counting in a naive T2 int64.
 
+*(v5.0 refinements, second look at V1:)*
+
+- **`i32`/`u32` via the asm.js idiom.** `(x|0)` *is* int32 and `x>>>0` *is* uint32 in
+  every JS engine — the "annotation" is executable JS, so erasure soundness holds **by
+  construction**, and the compiler unboxes to native int32/uint32 with no range
+  analysis (a decade of asm.js precedent; WASM's ancestry). The fast lane for ports,
+  status codes, lengths, bounded counters — an idiom inside the model, not a new type
+  system.
+- **`int` is a static refinement, not a runtime-guarded invariant** — with one
+  exception: at R5 slot boundaries, the write guard for an `int`-typed slot is
+  precisely `Number.isSafeInteger`.
+- **Double-fallback is reported:** where range analysis fails and generated C computes
+  in IEEE doubles, the admission report says which operations did (perf transparency —
+  the report is the optimization to-do list, scenarios 48–49).
+- The schema-side companion rule (numeric domains must fit the safe range — ms not ns
+  timestamps, strings/opaque for true 64-bit ids) lives with M2 (ROADMAP).
+
 **Implementation note *(V4 — monotonicity as an assertion)*:** the No-Amplification
 theorem holds *given* an unforgeable TCB. Since environments are finite and
 capabilities are registry-typed, `A*(child) ⊆ A*(parent)` is mechanically checkable —
