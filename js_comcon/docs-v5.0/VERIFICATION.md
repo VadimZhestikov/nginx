@@ -128,6 +128,10 @@ theorem, two gates, probe suites, and a dozen invariants. One GSN-style
 **claim → assumption → evidence** tree: the artifact security reviewers actually want,
 and building it is itself a gap detector — every leaf without evidence is a finding.
 U1–U3, F, the generated enumerations, and V1–V14 get their permanent home here.
+*(v5.4)* Its skeleton now exists: **`THREATS.md`** — the adversary × asset ×
+mitigation matrix with every cell citing its closing mechanism and three residuals
+accepted by name. V15 = that matrix extended with evidence links as the V-track
+deliverables land.
 
 ---
 

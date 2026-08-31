@@ -69,15 +69,26 @@ fallback) → the event dispatcher calls the C function pointer directly.
   exceeds 2⁵³), scaled units for large quantities, and strings/opaque handles for true
   64-bit identifiers. Enforced by the V8 conformance tests per registry row.
 
-- **M2.5 — POM + kernel spec.** Consolidate `SEMANTICS.md` + `POM.md` into the
-  normative spec: resources, the four operators, possession metatheorem,
-  closure/quotation, profiles, node interface, R/L/F/X classes. After M2.5, M3's
-  capability check is simply "does this reference resolve in the bound environment."
+- **M2.5 — THE SPEC (scope expanded, v5.4).** Originally "consolidate SEMANTICS + POM";
+  now: produce **one clean normative SPEC of the entire v5.x design** — the
+  implementer's read — with zero inline archaeology (the `(vN.M — Rx)` annotations move
+  to a history appendix; this document set remains the design record). The rewrite
+  doubles as the final consistency check (contradictions cannot hide behind version
+  tags) and absorbs: the **term-discipline sweep** (fragment≡node vs instance;
+  environment/signature≡manifest; retire `import_list`), the **layered-core framing**
+  (COMCON-lite = the design minus {compiler, tiers, quotations, adaptive, POM-rewrite,
+  config-instance} — the design is layered, not monolithic), and the note that the
+  artifact may be content-addressed by `H(source ∥ schema-version)`, folding the pin
+  and schema checks into one identity match. After M2.5, M3's capability check is
+  simply "does this reference resolve in the bound environment."
   *Expanded per showcase lessons (§5):* also deliver (a) the **selector/target
   language grammar** (promoted from open questions — the showcases used it constantly
   and invented syntax ad hoc), and (b) the **denial/explain schema** (promoted — it is
   the operator UX, the deny-suite assertion language, the learning record, and the LSP
-  diagnostic; design it with the descriptors, not after — *(v5.1 — E9, scope
+  diagnostic; design it with the descriptors, not after — *(v5.4 — TM-1:)* including
+  **per-fragment denial-log quotas with sampling above quota** (exact per-code
+  counters, sampled full records, quota-exceeded itself reported) so a tenant looping
+  on a denied name cannot exhaust disk or drown the audit signal — *(v5.1 — E9, scope
   reduction:)* the selector deliverable is staged down: **v1 = five registered
   deterministic combinators as library functions** (`module(glob)`, `callsites(name)`,
   `exports(f)`, `anchors(n)`, `within`) implemented as NodeView walks — sufficient for
@@ -223,6 +234,19 @@ fallback) → the event dispatcher calls the C function pointer directly.
   the generation → the fragment self-demotes to bytecode (where the live membranes
   are) until re-AOT. Revocation therefore has two `describe()`-visible cost classes:
   dynamic-checked (flag, instant) vs static-baked (generation bump + re-AOT).
+  *(v5.4 — the two-clocks pin:)* **epoch and generation are distinct clocks and their
+  relationship is now fixed.** An *epoch* is a **binding version** (per node; the
+  rollback/rewrite unit — changes when the node's own policy or content changes). A
+  *generation* is a **per-fragment invalidation counter for baked authority** — and
+  crucially it must catch the *transitive* case an epoch cannot: revoking a raw cap in
+  library L invalidates every compiled fragment that baked in a facet *derived from*
+  L, even though those fragments' bindings (epochs) never changed. Mechanism:
+  revocation **fans out at revoke time through the provenance/grant-chain registry**,
+  bumping the generation of every fragment whose baked caps derive from the revoked
+  root — push once at the rare event, so the hot path stays one load + one branch at
+  fragment entry. The two clocks co-trigger re-AOT but answer different questions:
+  "did my policy/content change?" (epoch) vs "did authority I baked in change?"
+  (generation).
   *(v5.0 — R10:)* multi-node changes: **partial application of a meet is itself a
   meet** — restrictive overlays are safe in any order/timing (the monotone-rollout
   property; why the lockdown button needs no transaction); **widenings** (administrative
@@ -250,8 +274,11 @@ fallback) → the event dispatcher calls the C function pointer directly.
 
 - **M9 — Breadth.** More events (response headers, L4/TLS), the borrowed/owned string
   ABI to kill refcount churn, the `any` hybrid, wider typed surface. Iterative.
-  **Post-M9 track:** information-flow/taint labels (confidentiality axis —
-  FOUNDATION §13.4).
+  *(v5.4)* **Adaptive profiles land here** — the core through M8 is restrictive-only
+  (unconditionally-ACI composition; FOUNDATION §7); transforms, mirror-as-policy, and
+  scenario 22's codemods arrive as an isolated addition with the already-specified
+  one-per-node rule. **Post-M9 track:** information-flow/taint labels (confidentiality
+  axis — FOUNDATION §13.4).
 
 **Critical path:** M1 ✅ → M2(+S4) → M2.5 → M3 → M4 → M5 → [M-SES gate] → M6 → M7 →
 M8 gate → M9.
@@ -548,6 +575,16 @@ running caged under COMCON-lite. Cheapest ergonomics verification that exists.
 *(v5.3 — C2, consistency fix:)* scenario 7 (opaque secrets) was wrongly listed under
 increment A — opaque values sit on the unscheduled engine-substrate track with
 16/19/32 (§5.6); A's disclosure story is covered by 38 in audit mode instead.
+
+*(v5.4)* Two integration deliverables pinned to increment A: (1) **the nginx
+integration reality check** — confirm v2 §9.4's contract against the actual codebase
+(load point, worker-fork timing, reload semantics, shared-memory zones, and the
+requirement that authority boundaries fall on property/method lines in the real
+`ngx_js_com_*` factoring) — the highest remaining implementation risk, hit first;
+(2) **TM-2, session identity → environment mapping** (THREATS.md): how an
+authenticated principal (human, CI, AI agent) maps to a granted operator environment,
+riding the P19 admin-shell substrate — must exist before the first real operator
+session, i.e. before dogfood.
 
 **Compatibility principle (write it once, honor it forever):** *pilgrim without COMCON
 remains fully supported; COMCON attaches per-fragment; there is no flag-day.*

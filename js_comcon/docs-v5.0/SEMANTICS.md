@@ -107,7 +107,11 @@ correction:)* the ACI/confluence claim holds for **restrictive mediations only**
 filters commute, **transforms do not** (two rewriting policies produce order-dependent
 results). Rule: **at most one adaptive-profile policy per node**; a second adaptive
 binding on the same node is a bind-time error (`E_BIND_ADAPTIVE_CONFLICT` — v5.3: the conflict is detected at the meet, not at admit), while
-restrictive bindings continue to meet freely over the single adaptive one. *(v5.0 —
+restrictive bindings continue to meet freely over the single adaptive one. *(v5.4 —
+adaptive deferred:)* the shipped core is **restrictive-only** — adaptive profiles land
+with M9 as an isolated late addition — so for everything built before M9 the meet is
+**unconditionally ACI** and this paragraph's caveat is dormant; it activates, already
+specified, when transforms arrive. *(v5.0 —
 R12:)* declared failure modes compose by strictness — `reject > deny > attenuate >
 audit`; the meet takes the strictest. *(v4 clarification, for data-like instances: meet
 composes mutation **rights**, never values — there is no intersection of two listen

@@ -2,10 +2,11 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.3**, the consistency pass C1–C13; before it v5.2, the WASM provenance
-> ruling — ROADMAP §M-LIB `wasm` facet; v5.1, the engineering review E1–E12 + the
-> increment re-cut, ROADMAP §13). Full new directories happen only at genuine
-> architectural reframes. Older sets (`docs-v0/`, `docs-v3/`, `docs-v4/`) are history.
+> (current: **v5.4**, convergence actions — THREATS.md, the two-clocks pin, adaptive
+> deferred to M9, M2.5 rescoped to THE SPEC; before it v5.3 consistency pass, v5.2 WASM
+> provenance ruling, v5.1 engineering review + increment re-cut). Full new directories
+> happen only at genuine architectural reframes. Older sets (`docs-v0/`, `docs-v3/`,
+> `docs-v4/`) are history.
 
 *Supersedes `../docs-v3/` (and `../docs-v0/` v2). v3 integrated the 2026-08-18
 architecture refinement: the possession kernel, the Program Object Model, the formal
@@ -41,6 +42,7 @@ born-bound rule, monotone rollout, and the admission front-end named as attack s
 | **SHOWCASE47.md** (46–47, new in v4) | The config-instance scenarios: typed tenant config (grammar+types cage over config sentences) and propose-the-config-you-can't-apply (quotation proposals realized by operators). |
 | **SHOWCASE49.md** (48–49, new in v4.2) | The typed-profile scenarios: what the 96% tier looks like to write (schema + inference + one JSDoc annotation; type errors as denials; erasure = runs anywhere) and the per-fragment `any` gradient (hybrid tier as a report, not a punishment). |
 | **SHOWCASE50.md** (50, new in v5.2) | The border crossing: a foreign (Rust-built) WASM module admitted through the `wasm` facet — validation = admit, imports = grants, fuel = budgets; cold lane (embedded runtime) vs hot lane (wasm2c into the one C funnel); and why our own JS never crosses out (JS→WASM = category error). |
+| **THREATS.md** (new in v5.4) | The threat model: 12 adversaries × assets × mitigations, every cell citing its closing mechanism; three residuals accepted by name (engine memory safety, IFC/side channels, availability-within-reach); the completeness ledger and the V15 assurance-case skeleton. Found TM-1 (denial-log quotas) and TM-2 (session identity → env mapping). |
 | **VERIFICATION.md** (new in v5.0) | The verification track V1–V15: what would convince a skeptic of each claim — the numeric-model and schema-pinning decisions (V1/V2), executable reference semantics, monotonicity-as-assertion, translation validation, generated enumerations, schema conformance tests, the TLA+ epoch model, policy mutation testing, reproducible builds, and the assurance case. |
 | **MANUAL.md** (draft) | The user's manual, written as-if-shipped (working-backwards artifact): the five-minute mental model, quick start, tenant / policy-author / operations handbooks (v4: §3.6 writing config, proposals), performance guide, reference (verbs, denial anatomy, glossary) — and Appendix B, the [TBD] harvest of decisions it forced into the open. |
 

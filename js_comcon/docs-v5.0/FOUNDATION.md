@@ -350,7 +350,12 @@ Two ways to *name a target*, one policy language:
 - **Adaptive** — mediation *transforms* behavior (rewrites, injected protocols —
   mirror-as-policy lands here). The program then depends on COMCON semantics; the
   policy must **declare** the profile, making "runnable without COMCON" a checkable
-  claim instead of a hope.
+  claim instead of a hope. *(v5.4 — deferred off the critical path:)* **the shipped
+  core is restrictive-only**; adaptive is an isolated late addition (≈M9, with
+  mirror-as-policy and scenario 22). Nothing before M9 needs transforms, so the entire
+  early system enjoys unconditionally-ACI composition — the R1 caveat, the one-per-node
+  rule, and `E_BIND_ADAPTIVE_CONFLICT` stay specified but dormant until then. Deferred,
+  not dropped.
 
 **Failure semantics, declared per rule:** `reject-at-compile` / `deny-at-runtime` /
 `attenuate-silently` / `audit-only`. Hardening brownfield code starts `audit-only` and
@@ -547,6 +552,21 @@ one bytecode definition, one hardening surface); docs-v5.0 frozen as the single
 normative spec (in-place revisions only); compatibility principle (§1: no flag-day);
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
+
+**v5.4 (in place — convergence actions):** the two remaining different-in-kind checks
+plus the accepted simplifications. **THREATS.md added** — the adversary × asset ×
+mitigation completeness ledger (12 adversaries; every cell cites its mechanism; three
+residuals accepted by name: engine memory safety, IFC/side channels, availability-
+within-reach); it found **TM-1** (per-fragment denial-log quotas — into the M2.5 denial
+schema) and **TM-2** (session identity → environment mapping unspecified — pinned to
+increment A with the nginx §9.4 reality check). **The two-clocks pin** (ROADMAP §M6):
+epoch = binding version; generation = per-fragment baked-authority invalidation, fanned
+out at revoke time via the provenance registry — distinct clocks, co-triggering re-AOT.
+**Adaptive profiles deferred to M9** (user decision): the shipped core is
+restrictive-only ⇒ unconditionally-ACI composition until transforms arrive; deferred,
+not dropped. **M2.5 rescoped to THE SPEC**: one clean normative read of the whole
+design, archaeology to an appendix, absorbing the term-discipline sweep and the
+layered-core framing; the rewrite doubles as the final consistency check.
 
 **v5.3 (in place — the consistency pass, C1–C13):** fourth review, hunting
 cross-revision drift. Substantive: **C1** node ids are recorded in the canonical
