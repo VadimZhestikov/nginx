@@ -26,6 +26,7 @@
 #include <pthread.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
+#include "ngx_js_compartment.h"
 #include "ngx_js_socket.h"
 #include "ngx_js_sw.h"
 #include "ngx_js_listener.h"
@@ -361,6 +362,10 @@ static void      ngx_js_dispatch_master_event(ngx_cycle_t *cycle,
     const char *event, ngx_pid_t pid, ngx_int_t slot, int status);
 
 static char   *ngx_js_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char   *ngx_js_tenant_source(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static ngx_int_t ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf,
+    ngx_cycle_t *cycle);
 static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
@@ -375,6 +380,23 @@ static ngx_command_t  ngx_js_commands[] = {
      * against the directory of nginx.conf.  Multiple directives are
      * executed in declaration order.
      */
+    /*
+     * js_tenant_source /path/to/tenant.js;
+     *
+     * COMCON A2.0. Loads a script into a *reduced, deny-by-default*
+     * compartment (compartment != HOST_ROOT): a fresh JSContext whose global
+     * exposes only granted names — no `nginx`, no createSocket / repl / use /
+     * Worker, no free-import module loader. Evaluated in init_conf after the
+     * host js_source scripts, then freed (ephemeral, before fork); the
+     * persistent request-serving tenant context is a later unit (A3).
+     */
+    { ngx_string("js_tenant_source"),
+      NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
+      ngx_js_tenant_source,
+      0,
+      0,
+      NULL },
+
     { ngx_string("js_source"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
       ngx_js_source,
@@ -450,6 +472,12 @@ ngx_js_create_conf(ngx_cycle_t *cycle)
         return NULL;
     }
 
+    if (ngx_array_init(&jcf->tenant_sources, cycle->pool, 2,
+                       sizeof(ngx_str_t)) != NGX_OK)
+    {
+        return NULL;
+    }
+
     /* rt, ctx, worker, sw_list are 0/NULL after pcalloc */
     jcf->master_handlers = JS_UNINITIALIZED;
 
@@ -481,6 +509,121 @@ ngx_js_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/* COMCON A2.0: js_tenant_source directive — mirror of js_source, tenant array. */
+static char *
+ngx_js_tenant_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_js_conf_t  *jcf = conf;
+    ngx_str_t      *value, *path;
+
+    value = cf->args->elts;
+
+    path = ngx_array_push(&jcf->tenant_sources);
+    if (path == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    *path = value[1];
+
+    if (ngx_conf_full_name(cf->cycle, path, 1) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
+
+
+/*
+ * The single granted capability in the A2.0 reduced compartment: report(str)
+ * logs to the cycle log (the context opaque). Enough to observe that the tenant
+ * ran; deny-by-default means nothing else is reachable.
+ */
+static JSValue
+ngx_js_tenant_report(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    const char   *s;
+    ngx_cycle_t  *cycle;
+
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+
+    cycle = JS_GetContextOpaque(ctx);
+
+    s = JS_ToCString(ctx, argv[0]);
+    if (s != NULL) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "js tenant: %s", s);
+        JS_FreeCString(ctx, s);
+    }
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * Evaluate each js_tenant_source in a fresh reduced context under compartment 1.
+ * Deny-by-default: the global has only `report` — no `nginx`, no module loader
+ * (free imports fail), no dangerous constructors. Ephemeral (freed here, before
+ * fork). This is the primary confinement control; the reach-registry gates
+ * (A1) are the defense-in-depth behind it.
+ */
+static ngx_int_t
+ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
+{
+    u_char                *src;
+    size_t                 src_len;
+    ngx_str_t             *path;
+    ngx_uint_t             i;
+    JSValue                global;
+    JSContext             *tctx;
+    ngx_js_compartment_t   prev;
+    char                  *rc;
+
+    path = jcf->tenant_sources.elts;
+
+    for (i = 0; i < jcf->tenant_sources.nelts; i++) {
+
+        src = ngx_js_read_file(cycle, &path[i], &src_len);
+        if (src == NULL) {
+            return NGX_ERROR;
+        }
+
+        tctx = JS_NewContext(jcf->rt);
+        if (tctx == NULL) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "js: failed to create tenant context for \"%V\"",
+                          &path[i]);
+            return NGX_ERROR;
+        }
+
+        /* cycle for report(); no module loader is set → free imports fail */
+        JS_SetContextOpaque(tctx, cycle);
+
+        global = JS_GetGlobalObject(tctx);
+        JS_SetPropertyStr(tctx, global, "report",
+                          JS_NewCFunction(tctx, ngx_js_tenant_report,
+                                          "report", 1));
+        JS_FreeValue(tctx, global);
+
+        prev = ngx_js_compartment_enter((ngx_js_compartment_t) 1);
+
+        rc = ngx_js_eval_module(tctx, jcf->rt, src, src_len, path[i].data,
+                                cycle->log);
+
+        ngx_js_compartment_leave(prev);
+
+        JS_FreeContext(tctx);
+
+        if (rc != NGX_CONF_OK) {
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
+}
+
+
 /*
  * ngx_js_init_conf — called after ngx_conf_parse() completes.
  *
@@ -500,7 +643,7 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     u_char         *src;
     size_t          src_len;
 
-    if (jcf->sources.nelts == 0) {
+    if (jcf->sources.nelts == 0 && jcf->tenant_sources.nelts == 0) {
         return NGX_CONF_OK;    /* nothing to do — pure static config */
     }
 
@@ -577,6 +720,11 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
         {
             goto failed_ctx;
         }
+    }
+
+    /* COMCON A2.0: tenant scripts, in reduced deny-by-default compartments. */
+    if (ngx_js_eval_tenant_sources(jcf, cycle) != NGX_OK) {
+        goto failed_ctx;
     }
 
     /*

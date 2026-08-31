@@ -39,6 +39,9 @@ typedef struct ngx_js_socket_state_s ngx_js_socket_state_t;
  */
 typedef struct {
     ngx_array_t          sources;         /* ngx_str_t: paths from js_source  */
+    ngx_array_t          tenant_sources;  /* ngx_str_t: js_tenant_source paths
+                                             — evaluated in a reduced,
+                                             deny-by-default compartment (A2.0) */
     JSRuntime           *rt;              /* master-process QuickJS runtime   */
     JSContext           *ctx;             /* master-process QuickJS context   */
     void                *worker;          /* ngx_js_worker_t* after fork      */
