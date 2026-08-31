@@ -61,6 +61,20 @@ typedef struct {
 } ngx_js_socket_opaque_t;
 
 
+int32_t
+ngx_js_socket_handle(JSValueConst val)
+{
+    ngx_js_socket_opaque_t  *op;
+
+    op = JS_GetOpaque(val, ngx_js_socket_class_id);
+    if (op == NULL) {
+        return -1;
+    }
+
+    return (int32_t) op->handle;
+}
+
+
 static void
 ngx_js_socket_finalizer(JSRuntime *rt, JSValue val)
 {

@@ -58,6 +58,14 @@ ngx_js_compartment_t ngx_js_socket_owner(uint32_t handle);
 
 
 /*
+ * COMCON A2.1: the registry handle behind a NginxSocket JSValue, or -1 if the
+ * value is not a socket. Lets the grant primitive re-wrap the same socket into
+ * a tenant context by handle.
+ */
+int32_t ngx_js_socket_handle(JSValueConst val);
+
+
+/*
  * Register the NginxSocket class definition in a JSRuntime.
  * Called from ngx_js_com_register_classes().
  */

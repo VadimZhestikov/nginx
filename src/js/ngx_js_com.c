@@ -2589,6 +2589,74 @@ ngx_js_shared_fn_ttl(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * COMCON A2.1: nginx.grantToTenant(name, socket) — the host publishes a socket
+ * into the tenant compartment under `name`. Recorded per-cycle; the tenant eval
+ * re-wraps the handle into the tenant context. Host-authority only (on the full
+ * nginx global); a tenant has no such method (deny-by-default). This is the
+ * minimal grant primitive that lets us prove the A1 reach gate isolates: the
+ * tenant can use the granted socket (scalar reads) but sock.listener returns
+ * null cross-compartment.
+ */
+static JSValue
+ngx_js_grant_to_tenant(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_str_t               name;
+    ngx_cycle_t            *cycle;
+    ngx_js_conf_t          *jcf;
+    ngx_js_tenant_grant_t  *grant;
+    const char             *s;
+    int32_t                 handle;
+
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.grantToTenant(name, socket): two arguments required");
+    }
+
+    handle = ngx_js_socket_handle(argv[1]);
+    if (handle < 0) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.grantToTenant: second argument must be a NginxSocket");
+    }
+
+    cycle = JS_GetContextOpaque(ctx);
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "nginx.grantToTenant: no cycle");
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL) {
+        return JS_ThrowInternalError(ctx, "nginx.grantToTenant: no jcf");
+    }
+
+    s = JS_ToCString(ctx, argv[0]);
+    if (s == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    name.len = ngx_strlen(s);
+    name.data = ngx_pnalloc(cycle->pool, name.len + 1);   /* NUL for prop name */
+    if (name.data == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowInternalError(ctx, "nginx.grantToTenant: alloc failed");
+    }
+    ngx_memcpy(name.data, s, name.len);
+    name.data[name.len] = '\0';
+    JS_FreeCString(ctx, s);
+
+    grant = ngx_array_push(&jcf->tenant_grants);
+    if (grant == NULL) {
+        return JS_ThrowInternalError(ctx, "nginx.grantToTenant: alloc failed");
+    }
+
+    grant->name = name;
+    grant->handle = (uint32_t) handle;
+
+    return JS_UNDEFINED;
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -2800,6 +2868,11 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     /* nginx.use(path[, config]) — JS-Pilgrim P7: filesystem plugin loader */
     JS_SetPropertyStr(ctx, nginx_obj, "use",
                       JS_NewCFunction(ctx, ngx_js_use, "use", 1));
+
+    /* COMCON A2.1: host-only grant primitive (tenants never see this). */
+    JS_SetPropertyStr(ctx, nginx_obj, "grantToTenant",
+                      JS_NewCFunction(ctx, ngx_js_grant_to_tenant,
+                                      "grantToTenant", 2));
 
     /* nginx.install(plugin[, config]) — JS-Pilgrim P7: inline plugin caller */
     JS_SetPropertyStr(ctx, nginx_obj, "install",

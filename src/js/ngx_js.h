@@ -33,6 +33,16 @@ typedef struct ngx_js_socket_state_s ngx_js_socket_state_t;
 #define NGX_JS_LOCAL_SOCKET_REG_MAX  32
 
 /*
+ * COMCON A2.1: a socket the host granted into the tenant compartment, by name.
+ * The tenant eval re-wraps `handle` into the tenant context as `name`.
+ */
+typedef struct {
+    ngx_str_t            name;
+    uint32_t             handle;
+} ngx_js_tenant_grant_t;
+
+
+/*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).
  * Allocated in cycle->pool via create_conf; populated by js_source
  * directives during ngx_conf_parse(), executed by init_conf().
@@ -42,6 +52,8 @@ typedef struct {
     ngx_array_t          tenant_sources;  /* ngx_str_t: js_tenant_source paths
                                              — evaluated in a reduced,
                                              deny-by-default compartment (A2.0) */
+    ngx_array_t          tenant_grants;   /* ngx_js_tenant_grant_t: sockets the
+                                             host granted into the tenant (A2.1) */
     JSRuntime           *rt;              /* master-process QuickJS runtime   */
     JSContext           *ctx;             /* master-process QuickJS context   */
     void                *worker;          /* ngx_js_worker_t* after fork      */

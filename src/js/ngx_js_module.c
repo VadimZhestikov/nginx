@@ -478,6 +478,12 @@ ngx_js_create_conf(ngx_cycle_t *cycle)
         return NULL;
     }
 
+    if (ngx_array_init(&jcf->tenant_grants, cycle->pool, 2,
+                       sizeof(ngx_js_tenant_grant_t)) != NGX_OK)
+    {
+        return NULL;
+    }
+
     /* rt, ctx, worker, sw_list are 0/NULL after pcalloc */
     jcf->master_handlers = JS_UNINITIALIZED;
 
@@ -577,6 +583,7 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
     ngx_uint_t             i;
     JSValue                global;
     JSContext             *tctx;
+    JSRuntime             *trt;
     ngx_js_compartment_t   prev;
     char                  *rc;
 
@@ -589,8 +596,23 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
             return NGX_ERROR;
         }
 
-        tctx = JS_NewContext(jcf->rt);
+        /* A fully isolated runtime per tenant eval (the js_preprocess pattern):
+         * cleanly torn down, no interaction with the master runtime. The socket
+         * class is registered here so granted sockets are usable; class IDs are
+         * process-global (allocated once), so this just binds the class in trt. */
+        trt = JS_NewRuntime();
+        if (trt == NULL) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "js: failed to create tenant runtime for \"%V\"",
+                          &path[i]);
+            return NGX_ERROR;
+        }
+
+        (void) ngx_js_socket_register_class(trt);
+
+        tctx = JS_NewContext(trt);
         if (tctx == NULL) {
+            JS_FreeRuntime(trt);
             ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
                           "js: failed to create tenant context for \"%V\"",
                           &path[i]);
@@ -600,20 +622,43 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
         /* cycle for report(); no module loader is set → free imports fail */
         JS_SetContextOpaque(tctx, cycle);
 
+        /* The socket prototype must exist in the tenant context so a granted
+         * socket is usable (per-context proto install; classes are per-runtime,
+         * already registered). */
+        (void) ngx_js_socket_install_proto(tctx);
+
         global = JS_GetGlobalObject(tctx);
         JS_SetPropertyStr(tctx, global, "report",
                           JS_NewCFunction(tctx, ngx_js_tenant_report,
                                           "report", 1));
+
+        /* COMCON A2.1: inject the host's grants — sockets re-wrapped by handle
+         * into the tenant context. The socket carries its HOST_ROOT owner, so
+         * the A1 reach gate (sock.listener) denies the tenant even though it
+         * legitimately holds the object. */
+        {
+            ngx_uint_t              gi;
+            ngx_js_tenant_grant_t  *g;
+
+            g = jcf->tenant_grants.elts;
+
+            for (gi = 0; gi < jcf->tenant_grants.nelts; gi++) {
+                JS_SetPropertyStr(tctx, global, (const char *) g[gi].name.data,
+                                  ngx_js_socket_wrap(tctx, g[gi].handle));
+            }
+        }
+
         JS_FreeValue(tctx, global);
 
         prev = ngx_js_compartment_enter((ngx_js_compartment_t) 1);
 
-        rc = ngx_js_eval_module(tctx, jcf->rt, src, src_len, path[i].data,
+        rc = ngx_js_eval_module(tctx, trt, src, src_len, path[i].data,
                                 cycle->log);
 
         ngx_js_compartment_leave(prev);
 
         JS_FreeContext(tctx);
+        JS_FreeRuntime(trt);
 
         if (rc != NGX_CONF_OK) {
             return NGX_ERROR;
