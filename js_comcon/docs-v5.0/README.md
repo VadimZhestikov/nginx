@@ -2,7 +2,8 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.11**, INCREMENT B COMPLETE — the dependency workflow (js_tenant_dependency
+> (current: **v5.12**, increment C PLAN (INCREMENT_C.md — the maxim compiler,
+> spike-first sequencing C0–C7); v5.11 INCREMENT B COMPLETE — the dependency workflow (js_tenant_dependency
 > pin-by-hash + pure_library cages); v5.10 B1 generated grant-stub; v5.9 B0 learning mode; v5.8 INCREMENT A COMPLETE — A3.1 + dogfood; v5.7 A4 denial log + audit→enforce; v5.6, the COMCON-lite core BUILT + TESTED through the
 > request path; build log INCREMENT_A.md §6, status SPEC.md §13; before it
 > v5.5, SPEC.md + the ground-truthed INCREMENT_A.md build plan from the
@@ -46,6 +47,7 @@ born-bound rule, monotone rollout, and the admission front-end named as attack s
 | **SHOWCASE47.md** (46–47, new in v4) | The config-instance scenarios: typed tenant config (grammar+types cage over config sentences) and propose-the-config-you-can't-apply (quotation proposals realized by operators). |
 | **SHOWCASE49.md** (48–49, new in v4.2) | The typed-profile scenarios: what the 96% tier looks like to write (schema + inference + one JSDoc annotation; type errors as denials; erasure = runs anywhere) and the per-fragment `any` gradient (hybrid tier as a report, not a punishment). |
 | **SHOWCASE50.md** (50, new in v5.2) | The border crossing: a foreign (Rust-built) WASM module admitted through the `wasm` facet — validation = admit, imports = grants, fuel = budgets; cold lane (embedded runtime) vs hot lane (wasm2c into the one C funnel); and why our own JS never crosses out (JS→WASM = category error). |
+| **INCREMENT_C.md** (new in v5.12) | The ground-truthed PLAN for increment C (the typed/compiled maxim tier): the reality check on the real maxim tree (same Bellard base ~4% delta, compiler in a separate `quickjs-jit.c`, type-inference + bytecode-hash already present, gcc+tcc available), the erasure-soundness invariant + differential-test discipline, and the risk-ordered C0 (integration spike/gate) → C1 M-UNIFY → C2–C7 sequencing. |
 | **INCREMENT_A.md** (new in v5.5) | The first construction plan, ground-truthed against `nginx/src/js/`: what the reality check confirmed (single load point, favourable QuickJS compartment factoring, extensible describe registry), the real work in leverage order (owner-field the global handle registries; the four omnipotent members; two confinement bugs), and the A0–A4 task order with file:line anchors. |
 | **THREATS.md** (new in v5.4) | The threat model: 12 adversaries × assets × mitigations, every cell citing its closing mechanism; three residuals accepted by name (engine memory safety, IFC/side channels, availability-within-reach); the completeness ledger and the V15 assurance-case skeleton. Found TM-1 (denial-log quotas) and TM-2 (session identity → env mapping). |
 | **VERIFICATION.md** (new in v5.0) | The verification track V1–V15: what would convince a skeptic of each claim — the numeric-model and schema-pinning decisions (V1/V2), executable reference semantics, monotonicity-as-assertion, translation validation, generated enumerations, schema conformance tests, the TLA+ epoch model, policy mutation testing, reproducible builds, and the assurance case. |

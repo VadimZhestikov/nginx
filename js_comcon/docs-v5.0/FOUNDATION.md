@@ -553,6 +553,18 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.12 (in place — increment C PLAN):** `INCREMENT_C.md`, the ground-truthed build
+plan for the typed/compiled maxim tier. Reality check on the real maxim tree: same
+Bellard 2017-2025 base as the vendored engine (~4% delta), the compiler is a separate
+`quickjs-jit.{c,h}` (type inference + bytecode content-hash already implemented), gcc+tcc
+present — so M-UNIFY is additive, not a fork reconciliation. The plan is spike-first: C0
+(a feasibility GATE — compile one trivial handler to a callable `.so`) → C1 M-UNIFY → C2
+typed schema → C3 front-end → C4 fragment artifact → C5 lowering → C6 dispatch/benchmark
+→ C7 the M8 faithfulness gate. Load-bearing invariant: erasure soundness, enforced by a
+differential test on every slice (interpreted vs compiled = identical outputs AND
+denials) so A/B's security is inherited, not re-implemented. M-SES gates production
+compiled-untrusted tenants; C0–C6 proceed as a dev tier. Immediate next action: C0.
+
 **v5.11 (in place — increment B COMPLETE, the dependency workflow):**
 `js_tenant_dependency <name> <path> <sha256>;` loads a **pure library** — evaluated in a
 bare no-capability environment (before any grant), bound on the tenant global, admitted
