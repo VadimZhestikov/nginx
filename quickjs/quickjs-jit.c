@@ -1986,8 +1986,31 @@ void js_jit_schedule_warm_recompile(JSContext *ctx, JSFunctionBytecode *b)
     js_jit_queue_warm_gcc(ctx, b);
 }
 
+/*
+ * After fork(), only the calling thread is cloned — the background GCC worker
+ * thread does NOT exist in the child, but the child inherits jit_worker.started
+ * == 1 and a possibly-locked queue mutex. A child that then enqueues/drains
+ * would deadlock on a thread that isn't there. This atfork CHILD handler zeroes
+ * 'started' so every enqueue path (js_jit_queue_gcc / js_jit_queue_warm_gcc,
+ * both guarded by 'if (!jit_worker.started) return;') and js_jit_drain/free
+ * early-return: the child runs pure interpreter with no JIT. This makes a
+ * forking host (e.g. nginx: master starts the thread, workers fork) safe. Real
+ * per-worker JIT activation (start a worker-local thread + wire install) is a
+ * later step; here the goal is only "forked workers don't hang".
+ */
+static void jit_atfork_child(void)
+{
+    jit_worker.started = 0;
+}
+
 void js_jit_init(void)
 {
+    static int atfork_registered = 0;
+    if (!atfork_registered) {
+        pthread_atfork(NULL, NULL, jit_atfork_child);
+        atfork_registered = 1;
+    }
+
     if (jit_worker.started) {
         jit_worker.ref_count++;
         return;
