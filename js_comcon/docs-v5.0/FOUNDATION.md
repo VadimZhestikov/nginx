@@ -553,6 +553,14 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.10 (in place — B1, generated grant-stub docs):** `nginx.tenantLearning()` now also
+reports the already-granted names; an onboarding generator (plain library JS per
+Principle 10 — `js_com_demos/COMCON_onboard/onboard.js`) turns the learning record into a
+paste-ready contract stub: each wanted path classified REFUSE (omnipotent) / REVIEW
+(narrow-to-a-facet), the wanted-vs-granted delta, and the enforce next-step. Fixes a
+worker-side segfault (tenantLearning must read jcf via ngx_cycle, not the context
+opaque). Test t/comcon_onboard.t. Remaining B: the dependency workflow.
+
 **v5.9 (in place — increment B begins, B0 learning mode):** `js_tenant_mode learn`
 (the A4 flag is now enforce|audit|learn). Learn mode seeds the tenant global with a
 recorder for each withheld host name (a callable catch-all exotic object) that harvests
