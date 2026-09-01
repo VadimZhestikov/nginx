@@ -553,6 +553,16 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.7 (in place — A4, the observability layer):** the denial log at all seven gate
+sites with **TM-1 implemented to spec** (exact counters always; 100 full records then
+1/100 sampling; quota-exceeded reported once — verified 250→101 records/250 counted);
+`js_tenant_mode audit|enforce` (audit = log-and-allow: the observe-then-enforce loop);
+`nginx.tenantDenials()` host report. Tenant runtime now carries the full COM class set
+(classes per-runtime, protos per-context — no `nginx` global, so no authority) so
+audit-allow can hand wrapped objects into the tenant context. Name-level denials remain
+structural (silent, primary); gates are the observable layer. Increment A's core is
+now complete through observability; the dogfood demo is the acceptance step.
+
 **v5.6 (in place — the COMCON-lite core is real):** increment A built through the
 request path, each unit tested: A1.0 identity seam, A1.1 reach-cycle gates, A2.0
 deny-by-default tenant environment (`js_tenant_source`), A2.1 grants

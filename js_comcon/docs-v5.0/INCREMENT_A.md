@@ -177,6 +177,7 @@ The vertical slice of §5 is **built, tested, and non-regressing** (each unit be
 | **A1.1** reach gates | `a053740e5`, `a3b8c2bb6` | socket-owner field; the whole `sock↔listener→serverByName→server` cycle gated on it (a listener's reach domain *is* its socket's — no separate listener field needed); the `cycle.sockets`/`http.sockets` enumerators host-only |
 | **A2.0** deny-by-default env | `33c4f0d52` | `js_tenant_source`: a reduced tenant context (no `nginx`, no module loader, granted names only) — *the primary control*, tested (`comcon_tenant_deny.t`) |
 | **A2.1** grants | `14f7a25b7` | `nginx.grantToTenant(name, sock)` (host-only); tenant holds + uses the socket, yet `.listener` is null cross-compartment — *the gate isolates by compartment, not by holding* (`comcon_tenant_grant.t`) |
+| **A4** denial log + audit loop | `0730ba201` | denial events at all seven gate sites; **TM-1 to spec** (exact per-code counters always; 100 full records then 1/100 sampling; quota-exceeded reported once — verified: 250 denials → 101 records, counters exactly 250); `js_tenant_mode audit\|enforce;` (audit = log-and-allow, the observe-then-enforce loop); `nginx.tenantDenials()` host report; the tenant runtime now carries the full COM class set (classes per-runtime, protos per-context, still no `nginx` global) so audit-allow can hand wrapped objects in (`comcon_denial_log.t`, `comcon_audit_mode.t`) |
 | **A3.0** request path | `39a496cab` | persistent tenant runtime (COW into workers, torn down at the same four sites as the host runtime); granted `onRequest(fn)`; `js_tenant_handler;` location directive; deny-by-default + gates active **during live requests** (`comcon_tenant_request.t`) |
 
 **A design decision made in code, now recorded:** the A3.0 tenant handler receives
@@ -198,7 +199,8 @@ separate grant) is the later widening, not the starting point.
 - Reload semantics verified both ways for the tenant: idempotent config → new tenant
   runtime serves, old freed cleanly; throwing config → master survives.
 
-**Remaining for increment A:** **A4** — registry allow/deny beyond the environment,
-the denial log (with TM-1 quotas), and the audit→enforce loop; then the dogfood demo.
-Multi-tenant (N named compartments; the `{compartment, idx}` handler generalization is
-only needed then) and request-facet grants + budgets/gas (S5) follow.
+**Remaining for increment A:** the **dogfood demo** (a caged mirror-style tenant on
+real traffic — increment A's acceptance). Then beyond A: multi-tenant (N named
+compartments; the `{compartment, idx}` handler generalization is only needed then),
+request-facet grants, budgets/gas (S5), and per-member registry policy (the M2+S4
+schema walk supersedes today's hard-coded gate set).

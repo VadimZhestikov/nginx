@@ -606,9 +606,9 @@ file:line anchors in `INCREMENT_A.md`.
 *(v5.6 — increment A is UNDER CONSTRUCTION, most of it built:)* the identity seam,
 the reach gates, the deny-by-default tenant environment, host→tenant grants, and a
 **confined tenant serving live HTTP requests** are implemented and tested
-(`t/comcon_*`; build log `INCREMENT_A.md` §6). Remaining: A4 (registry allow/deny +
-denial log + audit→enforce) + the dogfood demo; multi-tenant and request-facet
-grants follow.
+(`t/comcon_*`; build log `INCREMENT_A.md` §6). *(v5.7)* A4 done too
+(denial log w/ TM-1 quotas, audit→enforce mode, tenantDenials() report). Remaining:
+the dogfood demo (acceptance); multi-tenant and request-facet grants follow.
 
 **Compatibility principle (write it once, honor it forever):** *pilgrim without COMCON
 remains fully supported; COMCON attaches per-fragment; there is no flag-day.*

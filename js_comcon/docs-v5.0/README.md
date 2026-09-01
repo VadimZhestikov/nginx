@@ -2,7 +2,8 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.6**, the COMCON-lite core is BUILT + TESTED — increment A through the
+> (current: **v5.7**, A4 done — denial log w/ TM-1 quotas, audit→enforce loop,
+> tenantDenials() report; v5.6, the COMCON-lite core BUILT + TESTED through the
 > request path; build log INCREMENT_A.md §6, status SPEC.md §13; before it
 > v5.5, SPEC.md + the ground-truthed INCREMENT_A.md build plan from the
 > nginx reality check; before it v5.4 convergence actions — THREATS.md, two-clocks pin,
@@ -66,8 +67,12 @@ interpreted form.
 
 ## Status
 
-Design documentation — nothing here is implemented except where marked (M1 spike
-artifacts in `t_performance/maxim_m1/`). The showcase scenarios (50 total) are fully
-reworked for v3 and **supersede** `../docs-v0/SHOWCASE*.md`; their syntax remains
+Design documentation, with **construction underway**: the COMCON-lite core is built and
+tested — compartment identity, deny-by-default tenant environments, grants, the
+reach-cycle gates, a confined tenant serving live requests, and the denial log with the
+audit→enforce loop (`src/js/ngx_js_compartment.*` + integration; tests `t/comcon_*`;
+build log `INCREMENT_A.md` §6; status `SPEC.md` §13). The M1 spike artifacts live in
+`t_performance/maxim_m1/`. Everything not in the build log remains design; the showcase
+scenarios (50 total) supersede `../docs-v0/SHOWCASE*.md` and their syntax remains
 hypothetical by design. Design-session notes and the running decision log live in the
 project memory branch (`comcon-architecture-refinement`).
