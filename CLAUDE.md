@@ -17,10 +17,36 @@ quickjs/         # the JS engine, VENDORED IN-TREE (2026-09-01)
 **quickjs is vendored into this repo** (subdir `quickjs/`), not a sibling checkout —
 so the engine (pilgrim patches + maxim's COMCON JIT) and its consumer co-evolve
 atomically and a clone is self-contained. It was brought in with `git subtree`
-(`--prefix=quickjs`, base = the bellard tree at VERSION 2025-09-13 + patches); to pull
-upstream later, `git subtree pull --prefix=quickjs <fork> <ref> --squash`. Build:
-`make -C quickjs libquickjs.a` then configure nginx with `-Iquickjs -Lquickjs -lquickjs`
-(see the project memory build recipe).
+(`--prefix=quickjs --squash`, base = the bellard tree at VERSION 2025-09-13 + patches).
+Build: `make -C quickjs libquickjs.a` then configure nginx with
+`-Iquickjs -Lquickjs -lquickjs` (see the project memory build recipe).
+
+### Updating the vendored engine
+
+Three cases, by how much reconciliation is involved:
+
+1. **Our own engine changes** (the common case: the COMCON JIT glue, M-SES hardening,
+   bugfixes we author). **Just edit `quickjs/…` in place and commit to pilgrim.** No
+   special mechanism — that atomicity is the whole point of vendoring: an engine change
+   and the `src/js` change that needs it land in one commit.
+
+2. **A specific upstream bugfix** (a bellard CVE, a maxim fix). Small/single → apply the
+   patch directly to `quickjs/` and commit. A batch →
+   `git subtree pull --prefix=quickjs <upstream-repo> <ref> --squash`; expect conflicts
+   where the fix touches lines our patches changed, resolve once.
+
+3. **A major rebase** (new bellard base, or maxim finalization — the next known event, to
+   clear maxim's ~200 test262 fails before COMCON C7). **Do NOT reconcile inside
+   pilgrim.** Do the 3-way merge (new base + pilgrim patches + maxim JIT) in a separate
+   *engine workbench* checkout that has bellard and maxim as real remotes with full
+   history; produce one clean updated branch; then `git subtree pull --squash` **that
+   branch** into pilgrim. Pilgrim only ever receives an already-merged result.
+
+**Recommendation for the first real upstream pull:** stand up a single `pilgrim-quickjs`
+fork repo that integrates bellard + maxim + our patches, and always `subtree pull`
+pilgrim from *that one repo* — juggling bellard and maxim as separate subtree sources
+makes the squash-diff bases confusing. That keeps daily work atomic (case 1) while
+giving upstream pulls a single clean lineage.
 
 ## Build Commands
 
