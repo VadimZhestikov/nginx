@@ -44,6 +44,11 @@ compilation rather than re-implemented — and it is the M8 gate in miniature.
 - **M1 was hand-C, not maxim.** `t_performance/maxim_m1/` hand-wrote the C a
   compiled policy *would* become (96% of stock). So the entire maxim→nginx pipeline
   is ahead of us; M1 only proved the payoff is worth building it.
+- **maxim is not finished.** It still fails ~200 test262 tests and needs a
+  finalization pass. This is **non-blocking for C0–C6** (a dev tier compiling
+  trusted fragments, where the interpreted tier is always the correct fallback) but
+  **blocking for C7 and for any compiled *untrusted* tenant** — both need semantics
+  trustworthy across the full language. See §3.
 
 ## 2. Risk-ordered sequencing (spike first, like M1 was a gate)
 
@@ -111,6 +116,14 @@ The biggest unknowns are front-loaded. Each slice is a differential-tested verti
   compiling genuinely untrusted tenants to native waits for the engine-hardening
   milestone. State this in the shipped config (a compiled tenant needs either
   M-SES-complete or a trusted-author declaration).
+- **maxim must be finalized before C7 / production.** maxim currently fails ~200
+  test262 tests (an incomplete engine, to be finished later). C0–C6 tolerate this —
+  they compile trusted fragments and always keep the interpreted tier as the correct
+  fallback. But **C7 (T2-refines-T1 faithfulness) cannot pass, and no untrusted
+  fragment may be compiled to native, until maxim clears those failures.** Sequencing:
+  build C0–C6 on maxim-as-is; **insert a "finalize maxim" milestone immediately
+  before C7.** A second, independent reason (besides M-SES) that native-untrusted is
+  the last thing to light up.
 - **Scale, stated plainly.** A/B slices were day-scale and self-contained. C0 is
   the same (a spike). **C1 (M-UNIFY) and C5 (lowering the confinement semantics
   faithfully) are the two multi-day, genuinely hard pieces** — C1 is engine
