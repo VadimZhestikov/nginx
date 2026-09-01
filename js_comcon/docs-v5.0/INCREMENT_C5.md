@@ -124,3 +124,20 @@ then becomes mostly the **benchmark + the live-dispatch polish** (and any lazy/t
 activation, if wanted beyond AOT). **C7 = M8 (= SR-2)** generalizes C5.0-c's differential test
 into the faithfulness gate. Gas + revocation (post-C5) complete the compiled-tier safety
 surface the SPEC envisions.
+
+## 7. C6 benchmark — measured (2026-09-01)
+
+Interpreted vs AOT-compiled, same confined handler under load
+(`t_performance/comcon_c6/`, wrk, 1 pinned worker):
+
+| Handler | Interpreted | AOT-compiled | Speedup |
+|---|---:|---:|---:|
+| realistic (uri split + object + JSON) | ~186 K req/s | ~181 K req/s | ~1.0× (tied) |
+| compute (hot 20 000-iter typed-int loop) | ~5.3 K req/s | ~72 K req/s | **~13.5×** |
+
+Exactly the design profile: a **~13.5× win where JS compute is the bottleneck**, neutral on
+I/O/builtin-bound handlers (JS is a small slice there; the ~3% dip is noise + install cost).
+Confinement is unchanged in both tiers (erasure) — the speedup costs no gate/denial fidelity.
+So the compiled tier's value is real and targeted; C5.1 (inline gate checks) would help the
+*reach-gated hot path* specifically, measured separately when it lands. Full results +
+interpretation: `t_performance/comcon_c6/RESULTS.md`.

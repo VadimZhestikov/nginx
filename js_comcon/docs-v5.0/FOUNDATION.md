@@ -553,6 +553,18 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.24 (in place — C6 benchmark: the compiled tier's value, measured):** interpreted vs
+AOT-compiled, the same confined handler under load (`t_performance/comcon_c6/`): a
+**~13.5× speedup where JS compute is the bottleneck** (a hot typed-int loop: ~5.3K → ~72K
+req/s) and **neutral on I/O/builtin-bound handlers** (~186K both — JS is a small slice of a
+thin routing handler; the compiled tier accelerates *that* slice, not nginx/HTTP/builtin
+time). This is exactly the tier's design profile, honestly bounded: the compiled tier is a
+large win for compute-heavy confined tenants and a no-op for thin ones (which are already
+fast). Confinement is identical in both tiers (erasure) — the speedup costs no A1-gate or
+denial fidelity. Implication for the roadmap: C5.1 (partial-eval inline gate checks) targets
+the *reach-gated hot path* specifically, not the raw compute measured here. Results +
+interpretation: `t_performance/comcon_c6/RESULTS.md`.
+
 **v5.23 (in place — C5.0: the compiled confined tier is real):** a confined tenant handler
 now runs as **native C**. After the C3/C4 admission gate, `js_comcon_aot_compile` lowers the
 handler via maxim's synchronous server-AOT (`js_jit_compile_all → drain → install_results`,
