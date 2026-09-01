@@ -2703,8 +2703,11 @@ static JSValue
 ngx_js_tenant_learning(JSContext *ctx, JSValueConst this_val, int argc,
     JSValueConst *argv)
 {
-    JSValue     obj, arr, e;
-    ngx_uint_t  i, n;
+    JSValue                 obj, arr, grants, e;
+    ngx_uint_t              i, n;
+    ngx_cycle_t            *cycle;
+    ngx_js_conf_t          *jcf;
+    ngx_js_tenant_grant_t  *g;
 
     obj = JS_NewObject(ctx);
     arr = JS_NewArray(ctx);
@@ -2720,9 +2723,31 @@ ngx_js_tenant_learning(JSContext *ctx, JSValueConst this_val, int argc,
         JS_SetPropertyUint32(ctx, arr, i, e);
     }
 
+    /* The names already granted — the "current environment" side of the
+     * contract, so a generator can emit the wanted-vs-granted delta.
+     * NB: use ngx_cycle, not JS_GetContextOpaque(ctx) — in a worker request
+     * handler the context opaque is the ngx_js_worker_t, not the cycle. */
+    grants = JS_NewArray(ctx);
+    cycle = (ngx_cycle_t *) ngx_cycle;
+
+    if (cycle != NULL) {
+        jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
+
+        if (jcf != NULL) {
+            g = jcf->tenant_grants.elts;
+
+            for (i = 0; i < jcf->tenant_grants.nelts; i++) {
+                JS_SetPropertyUint32(ctx, grants, i,
+                    JS_NewStringLen(ctx, (const char *) g[i].name.data,
+                                    g[i].name.len));
+            }
+        }
+    }
+
     JS_SetPropertyStr(ctx, obj, "mode",
                       JS_NewString(ctx, ngx_js_tenant_mode_name()));
     JS_SetPropertyStr(ctx, obj, "wants", arr);
+    JS_SetPropertyStr(ctx, obj, "grants", grants);
 
     return obj;
 }
