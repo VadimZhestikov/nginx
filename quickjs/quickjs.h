@@ -831,6 +831,14 @@ JSValue JS_EvalThis(JSContext *ctx, JSValueConst this_obj,
                     const char *input, size_t input_len,
                     const char *filename, int eval_flags);
 JSValue JS_GetGlobalObject(JSContext *ctx);
+
+/* COMCON C3: collect the free-global names a compiled function (and its nested
+ * functions) references — its free-name manifest — for admission-time
+ * capability checking. `cb` is called once per referenced global name (a
+ * name may repeat). Returns 0 on success, -1 if `func` is not a bytecode
+ * function. Static: no fragment code runs. */
+int js_comcon_collect_free_globals(JSContext *ctx, JSValueConst func,
+                                   void (*cb)(void *, const char *), void *ud);
 int JS_IsInstanceOf(JSContext *ctx, JSValueConst val, JSValueConst obj);
 int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,
                       JSAtom prop, JSValueConst val,

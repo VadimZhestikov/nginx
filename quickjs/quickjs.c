@@ -24254,6 +24254,52 @@ static const JSOpCode opcode_info[OP_COUNT + (OP_TEMP_END - OP_TEMP_START)] = {
 #define short_opcode_info(op) opcode_info[op]
 #endif
 
+/* COMCON C3: the free-GLOBAL name manifest of a compiled function. Walks the
+ * bytecode for the free-variable reference opcodes (OP_get_var etc. — each
+ * carries a name atom) and recurses into nested function bytecodes in the
+ * cpool. The caller checks each name against the bound tenant environment so a
+ * fragment that references an ungranted host name (e.g. `nginx`) is refused at
+ * ADMISSION, not left to fail at runtime. Uses opcode_info[] (present in every
+ * build); static — no fragment code runs. */
+static void comcon_walk_fb(JSContext *ctx, JSFunctionBytecode *b,
+                           void (*cb)(void *, const char *), void *ud)
+{
+    int  i;
+
+    /* A function's closure_var table IS its free-variable manifest. Entries
+     * of a GLOBAL closure type are references to the global object (nginx,
+     * JSON, report, granted, …); captured module/parent locals (JS_CLOSURE_
+     * LOCAL/ARG/REF/MODULE_*) are fragment-internal and must NOT be flagged. */
+    for (i = 0; i < b->closure_var_count; i++) {
+        JSClosureVar *cv = &b->closure_var[i];
+        if (cv->closure_type == JS_CLOSURE_GLOBAL_REF
+            || cv->closure_type == JS_CLOSURE_GLOBAL)
+        {
+            const char *s = JS_AtomToCString(ctx, cv->var_name);
+            if (s) { cb(ud, s); JS_FreeCString(ctx, s); }
+        }
+    }
+
+    for (i = 0; i < b->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+            comcon_walk_fb(ctx, JS_VALUE_GET_PTR(b->cpool[i]), cb, ud);
+    }
+}
+
+int js_comcon_collect_free_globals(JSContext *ctx, JSValueConst func,
+                                   void (*cb)(void *, const char *), void *ud)
+{
+    JSObject *p;
+
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
+        return -1;
+    p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+        return -1;
+    comcon_walk_fb(ctx, p->u.func.function_bytecode, cb, ud);
+    return 0;
+}
+
 static __exception int next_token(JSParseState *s);
 
 static void free_token(JSParseState *s, JSToken *token)

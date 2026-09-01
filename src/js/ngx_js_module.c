@@ -1016,6 +1016,40 @@ ngx_js_learn_seed(JSContext *ctx, JSValue global)
  * the host runtime is (failed init_conf, reload old-cycle, exit_process,
  * exit_master).
  */
+
+/*
+ * COMCON C3: the callback for the static free-name admission check. Every
+ * free-global name the tenant handler references must exist in the tenant
+ * environment (the deny-by-default global: standard JS + report/onRequest +
+ * grants). A reference to anything else — `nginx`, `fetch`, an undeclared
+ * name — is an ungranted capability and refuses the fragment at load.
+ */
+typedef struct {
+    JSContext   *ctx;
+    JSValue      global;
+    ngx_log_t   *log;
+    ngx_uint_t   rejected;
+} ngx_js_c3_check_t;
+
+static void
+ngx_js_c3_free_name(void *ud, const char *name)
+{
+    ngx_js_c3_check_t  *c = ud;
+    JSAtom              atom;
+    int                 has;
+
+    atom = JS_NewAtom(c->ctx, name);
+    has = JS_HasProperty(c->ctx, c->global, atom);
+    JS_FreeAtom(c->ctx, atom);
+
+    if (has <= 0) {          /* absent (0) or error (<0) => ungranted */
+        ngx_log_error(NGX_LOG_EMERG, c->log, 0,
+                      "js: tenant fragment references ungranted name \"%s\" "
+                      "— refused (COMCON C3 admission)", name);
+        c->rejected = 1;
+    }
+}
+
 static ngx_int_t
 ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 {
@@ -1137,6 +1171,28 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
         ngx_js_compartment_leave(prev);
 
         if (rc != NGX_CONF_OK) {
+            ngx_js_tenant_teardown(jcf);
+            return NGX_ERROR;
+        }
+    }
+
+    /* COMCON C3: static free-name admission check. Walk the registered handler
+     * (and its nested functions) for free-global references and refuse the
+     * fragment if any names a capability it was not granted — fail fast at
+     * load rather than deep in a request. */
+    if (!JS_IsUninitialized(jcf->tenant_request_handler)) {
+        ngx_js_c3_check_t  chk;
+
+        chk.ctx      = tctx;
+        chk.global   = JS_GetGlobalObject(tctx);
+        chk.log      = cycle->log;
+        chk.rejected = 0;
+
+        js_comcon_collect_free_globals(tctx, jcf->tenant_request_handler,
+                                       ngx_js_c3_free_name, &chk);
+        JS_FreeValue(tctx, chk.global);
+
+        if (chk.rejected) {
             ngx_js_tenant_teardown(jcf);
             return NGX_ERROR;
         }
