@@ -244,7 +244,33 @@ upstream rebases (this fork has diverged far anyway). nginx builds `-Iquickjs -L
 all comcon_* + js_com tests pass against the vendored engine. Upstream pulls later via
 `git subtree pull`. The sibling `../quickjs` checkout is retained only as a rebase base.
 
-**Status: C1.0 (analysis) done, C1.1 (vendor + wiring) done; C1.2–C1.4 is the engine merge — the genuinely multi-day
+## 6. C1.2/C1.3 execution result — Option A done, JIT-thread task identified (2026-09-01)
+
+**C1.2 executed via Option A (maxim-as-base) — DONE, T1 green.** Test262 validated maxim's
+interpreter is bellard-quality (72/83257 known, 0 unexpected; ~200 fails are JIT-only; vs
+vendored's 60 the delta is ~6 non-core staging tests). So instead of guarding maxim's
+base changes onto vendored (Option B, which the JIT-coupling made a two-interpreter
+reconciliation), **maxim became the base**: workbench branch `comcon-engine` = `maxim/jit`
++ cherry-picked pilgrim patches (oversized-bytecode, JSON source-text, `js_std_tick_timers`
+— load-bearing), all clean. Pilgrim's `quickjs/` was replaced with it; nginx relinked
+(maxim's public `quickjs.h` ≡ vendored's → src/js ABI-compatible). **Acceptance met:**
+~505 tests green on the maxim interpreter (comcon_* 74, core js 117, sighup stress 15,
+broad js_com 299). Commit `3d1e9c08c`. (`set_loc_check` intentionally gone — vendored's
+opcode; maxim's table is self-consistent, no pilgrim C references it.)
+
+**C1.3 — partial: the JIT-enabled engine builds + links into nginx, but the JIT's
+background-compile thread needs nginx-lifecycle adaptation.** `make CONFIG_JIT=y
+libquickjs.a` builds clean (has `js_jit_rt`); nginx relinks against it (+`-ldl -lpthread`)
+with no undefined refs; a **single-process** JIT nginx runs and serves. But under the
+Test::Nginx master/worker harness a tenant test **hangs** — maxim's JIT spawns a
+background GCC-compile pthread, which conflicts with nginx's `fork` + signal model (a
+thread doesn't survive fork cleanly; clean `-s stop`/reload stalls). **Remaining C1.3/C6
+task:** adapt the JIT thread to nginx — start it *per-worker post-fork*, join it on
+`exit_process`, or use synchronous compile — before the JIT can run under nginx's real
+process model. The working pilgrim binary is restored to the non-JIT (T1) engine.
+
+**Status: C1.0/C1.1 done; C1.2 (Option A base-engine swap) DONE + T1 green; C1.3 = JIT
+builds+links, JIT-thread/fork adaptation remaining; C1.4 differential — the genuinely multi-day
 piece, now scoped and de-risked (same base, benign opcode divergence, additive
 CONFIG_JIT-guarded glue).** Deliberately not started mid-session: a half-merged 60k-line
 engine that does not build is worse than a validated plan. It is the next focused
