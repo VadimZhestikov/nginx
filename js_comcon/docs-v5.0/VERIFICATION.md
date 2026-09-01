@@ -205,7 +205,11 @@ not breaches:
   on the absence of dynamic code. **Root cause = full-intrinsic `JS_NewContext` (LOW-6).
   The real fix is M-SES (curated intrinsics), which this audit ELEVATES from optional
   hardening to a hard prerequisite for C5 erasure soundness and C4 env-signature
-  completeness.**
+  completeness.** ✅ **CLOSED by M-SES-0 (v5.19):** the tenant context is now
+  `JS_NewContextRaw` + curated intrinsics (Proxy omitted) + an SES-style lockdown taming
+  the four evaluator constructors and deleting the `eval`/`Function`/`Reflect` globals;
+  `[].constructor.constructor(...)` now throws, so the "no dynamic code" property holds.
+  (`t/comcon_mses.t`; INCREMENT_MSES.md.)
 - **A2 (MEDIUM→fixed as DiD): reflective global aliases.** `globalThis`/`global`/`self`
   let `globalThis[<computed>]` reach a bound name (incl. a granted capability) invisibly
   to the manifest. **Refused now** in `ngx_js_c3_free_name` (defense-in-depth — the

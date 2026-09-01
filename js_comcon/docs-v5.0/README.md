@@ -2,7 +2,12 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.18**, the front-end soundness audit — adversarial audit of the C
+> (current: **v5.19**, M-SES-0 dynamic-code lockdown — tenant context is now
+> JS_NewContextRaw + curated intrinsics (Proxy omitted) + an SES-style lockdown that tames
+> the Function/generator/async constructors and deletes the eval/Function/Reflect globals;
+> closes front-end audit A1 so C3-rest's "no dynamic code" is now SOUND (prerequisite for
+> C5 erasure); Eval intrinsic stays (module compiler), only the eval global removed;
+> t/comcon_mses.t + INCREMENT_MSES.md; v5.18 the front-end soundness audit — adversarial audit of the C
 > admission front-end: CONFINEMENT HELD (no capability escaped — dynamic code + globalThis
 > reach only the deny-by-default global), but C3-rest does NOT eliminate dynamic code
 > (`[].constructor.constructor` etc.), so M-SES (curated intrinsics) is promoted to a hard

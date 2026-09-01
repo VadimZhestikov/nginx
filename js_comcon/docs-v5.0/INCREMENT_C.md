@@ -98,12 +98,12 @@ The biggest unknowns are front-loaded. Each slice is a differential-tested verti
     direct `eval`/`with` (OP_eval/OP_apply_eval/OP_with_*, recursing), and an `eval`/
     `Function` *name* deny-list catches indirect references; reflective global aliases
     (`globalThis`/`global`/`self`) are refused too. (`with` is also a strict-mode syntax
-    error in the tenant module.) Test: `t/comcon_restricted.t`. **NOT sound on its own
-    (front-end audit, v5.18):** dynamic code is still reachable via
-    `[].constructor.constructor`, the async/generator constructors and `Reflect.construct`
-    — C3-rest stops the naive forms, but "no dynamic code" is delivered only once M-SES
-    removes the reflective intrinsics. Confinement still holds meanwhile (deny-by-default
-    global); it is *manifest completeness* that waits on M-SES.
+    error in the tenant module.) Test: `t/comcon_restricted.t`. **Made sound by M-SES-0
+    (v5.19):** on its own C3-rest stops only the naive forms — dynamic code was still
+    reachable via `[].constructor.constructor`, the async/generator constructors and
+    `Reflect.construct` (front-end audit A1). M-SES-0's curated-intrinsics + lockdown
+    (INCREMENT_MSES.md) neutralizes those, so "no dynamic code" now holds and the free-name
+    manifest is a complete over-approximation.
   - **C3-types — type-checking against the C2 schema (first slice).** The front-end now
     checks *types*, not only names/constructs. Two schema contracts, each soundly
     decidable at admission: **(a) the `env.onRequest` signature** `(Request) => Response`

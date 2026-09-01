@@ -553,6 +553,23 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.19 (in place — M-SES-0: dynamic-code lockdown):** the tenant context is no longer a
+full-intrinsic `JS_NewContext`. It is now `JS_NewContextRaw` + a **curated intrinsic set**
+(`ngx_js_tenant_context_new` — everything except `Proxy`, which nothing in the tenant path
+needs) followed by an **SES-style lockdown** (`ngx_js_tenant_lockdown`, run as a module):
+the Function / generator / async / async-generator constructors are neutralized (their
+prototypes' `constructor` redefined to a frozen throwing stub) and the `eval` / `Function`
+/ `Reflect` globals are deleted. This **closes front-end audit finding A1**: dynamic code
+is now genuinely unreachable (`[].constructor.constructor(...)` throws), so C3-rest's "no
+dynamic code" guarantee is *sound* and C4's free-name manifest is a *complete* over-
+approximation of reached capabilities — the prerequisite the audit flagged for C5 erasure
+soundness. The Eval intrinsic must stay (it installs the module compiler `JS_Eval` needs);
+only the reflective `eval` *global* is removed. Standard tenant JS (Object/Array/JSON/Math/
+Date/RegExp/Map/Set/Promise/TypedArray) is unaffected. This is M-SES-0 only — cross-tenant
+intrinsic *freezing* (M-SES-1) and the full escape-completeness pentest (SR-3) remain.
+Tests: `t/comcon_mses.t`, `t/comcon_frontend_audit.t` (A1 line now asserts the route
+throws). Scope + implementation notes: `INCREMENT_MSES.md`.
+
 **v5.18 (in place — the front-end soundness audit):** an adversarial audit of the
 increment-C admission front-end (C3.0/C3-rest/C3-types/C4), run empirically before
 building the compiled tier on it. **Confinement held — no capability escaped in any

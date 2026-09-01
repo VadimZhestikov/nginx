@@ -199,9 +199,19 @@ Two findings **accepted/deferred, recorded here** (the ledger discipline):
   compiled tier may not trust the free-name manifest as complete until the intrinsics that
   defeat it are gone. Reflective global aliases (`globalThis`/`global`/`self`) are refused
   now as defense-in-depth (not a fix). See VERIFICATION.md "Front-end soundness audit".
+  *Update (M-SES-0, v5.19) — finding A1 CLOSED:* the tenant context is now
+  `JS_NewContextRaw` + a curated intrinsic set (Proxy omitted) with an SES-style lockdown
+  that neutralizes the Function / generator / async constructors and deletes the `eval`/
+  `Function`/`Reflect` globals (`ngx_js_tenant_context_new` + `ngx_js_tenant_lockdown`,
+  `t/comcon_mses.t`). Dynamic code is now genuinely unreachable — `[].constructor
+  .constructor(...)` throws — so C3-rest's "no dynamic code" guarantee and the C4 free-
+  name-manifest completeness are **sound**, not merely contained. The Eval intrinsic
+  stays (it also provides the module compiler); only the `eval` global is removed.
+  Intrinsic *freezing* for cross-tenant prototype-pollution isolation is M-SES-1; the full
+  escape-completeness pentest remains SR-3.
 
 Verdict: with HIGH-1 closed, the A/B capability logic is a sound foundation for
 increment C, within the stated TCB assumption. Confinement held under the front-end audit
-(no escape); the manifest-completeness / dynamic-code-freedom *soundness* properties are
-blocked on M-SES. The full adversarial pentest (engine escapes) remains SR-3, after
-M-SES.
+(no escape); with M-SES-0 the dynamic-code-freedom / manifest-completeness *soundness*
+properties are now delivered for the interpreted tier. The full adversarial pentest
+(engine escapes, cross-tenant intrinsic freezing) remains SR-3, after M-SES.

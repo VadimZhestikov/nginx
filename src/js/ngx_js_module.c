@@ -373,6 +373,9 @@ static char   *ngx_js_tenant_dependency(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char   *ngx_js_tenant_artifact(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static JSContext *ngx_js_tenant_context_new(JSRuntime *trt);
+static ngx_int_t ngx_js_tenant_lockdown(JSContext *tctx, JSRuntime *trt,
+    ngx_log_t *log);
 static ngx_int_t ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf,
     ngx_cycle_t *cycle);
 static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -1181,6 +1184,98 @@ ngx_js_c3_free_name(void *ud, const char *name)
     }
 }
 
+/*
+ * COMCON M-SES-0: build the tenant context with a CURATED intrinsic set.
+ * Everything JS_NewContext installs EXCEPT Proxy (membrane-defeating; THREATS
+ * LOW-6 — nothing in the tenant path needs it). The Eval intrinsic MUST stay:
+ * it installs the compiler entry point (ctx->eval_internal) that every JS_Eval
+ * — including MODULE compilation, i.e. how tenant sources run — depends on;
+ * omitting it disables running any tenant code. The reflective `eval` GLOBAL it
+ * also installs, and the dynamic-code reach welded into JS_AddIntrinsicBaseObjects
+ * (the Function constructor, hence `.constructor.constructor`; and Reflect), are
+ * removed afterwards by ngx_js_tenant_lockdown().
+ */
+static JSContext *
+ngx_js_tenant_context_new(JSRuntime *trt)
+{
+    JSContext  *tctx;
+
+    tctx = JS_NewContextRaw(trt);
+    if (tctx == NULL) {
+        return NULL;
+    }
+
+    if (JS_AddIntrinsicBaseObjects(tctx)
+        || JS_AddIntrinsicDate(tctx)
+        || JS_AddIntrinsicEval(tctx)
+        || JS_AddIntrinsicStringNormalize(tctx)
+        || JS_AddIntrinsicRegExp(tctx)
+        || JS_AddIntrinsicJSON(tctx)
+        || JS_AddIntrinsicMapSet(tctx)
+        || JS_AddIntrinsicTypedArrays(tctx)
+        || JS_AddIntrinsicPromise(tctx)
+        || JS_AddIntrinsicWeakRef(tctx))
+    {
+        JS_FreeContext(tctx);
+        return NULL;
+    }
+
+    return tctx;
+}
+
+
+/*
+ * COMCON M-SES-0: SES-style lockdown. The Function constructor (and the
+ * generator / async / async-generator function constructors, reached via their
+ * prototypes' `constructor`) and Reflect remain after the curated intrinsics
+ * because BaseObjects welds them in. Neutralize them so DYNAMIC CODE is truly
+ * unreachable — this is what makes C3-rest's "no dynamic code" guarantee sound
+ * and the C4 free-name manifest a complete over-approximation (front-end audit
+ * finding A1). Runs in the tenant context BEFORE any tenant code (deps or
+ * sources). The taming stubs are frozen (non-writable, non-configurable) so a
+ * tenant cannot restore them. It also deletes the reflective `eval` global
+ * (the Eval intrinsic had to stay for the compiler; deleting the global removes
+ * the JS-reachable `eval`) — and `Proxy` was omitted at context creation.
+ */
+static const char  ngx_js_tenant_lockdown_js[] =
+    "(function () {"
+    "  function block() {"
+    "    throw new TypeError('dynamic code disabled (COMCON M-SES)');"
+    "  }"
+    "  function tame(proto) {"
+    "    if (proto) {"
+    "      Object.defineProperty(proto, 'constructor', {"
+    "        value: block, writable: false, enumerable: false,"
+    "        configurable: false"
+    "      });"
+    "    }"
+    "  }"
+    "  tame(Function.prototype);"
+    "  tame(Object.getPrototypeOf(function* () {}));"
+    "  tame(Object.getPrototypeOf(async function () {}));"
+    "  tame(Object.getPrototypeOf(async function* () {}));"
+    "  delete globalThis.Function;"
+    "  delete globalThis.Reflect;"
+    "  delete globalThis.eval;"
+    "})();";
+
+static ngx_int_t
+ngx_js_tenant_lockdown(JSContext *tctx, JSRuntime *trt, ngx_log_t *log)
+{
+    char  *rc;
+
+    /* Run as a MODULE, not JS_EVAL_TYPE_GLOBAL — indirect (global) eval needs
+     * the Eval intrinsic we deliberately omitted, whereas module compilation
+     * (the same path tenant sources take) does not. */
+    rc = ngx_js_eval_module(tctx, trt,
+                            (const u_char *) ngx_js_tenant_lockdown_js,
+                            sizeof(ngx_js_tenant_lockdown_js) - 1,
+                            (const u_char *) "<comcon-m-ses-lockdown>", log);
+
+    return (rc == NGX_CONF_OK) ? NGX_OK : NGX_ERROR;
+}
+
+
 static ngx_int_t
 ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 {
@@ -1226,7 +1321,7 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
     }
     JS_NewClass(trt, ngx_js_recorder_class_id, &ngx_js_recorder_class);
 
-    tctx = JS_NewContext(trt);
+    tctx = ngx_js_tenant_context_new(trt);
     if (tctx == NULL) {
         JS_FreeRuntime(trt);
         ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
@@ -1239,6 +1334,13 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 
     /* cycle for report()/onRequest(); no module loader → free imports fail */
     JS_SetContextOpaque(tctx, cycle);
+
+    /* COMCON M-SES-0: neutralize the dynamic-code portals still present after
+     * the curated intrinsics BEFORE any tenant code (deps or sources) runs. */
+    if (ngx_js_tenant_lockdown(tctx, trt, cycle->log) != NGX_OK) {
+        ngx_js_tenant_teardown(jcf);
+        return NGX_ERROR;
+    }
 
     /* Per-context prototypes for the whole COM class set, so granted (or
      * audit-allowed) objects are usable in the tenant context. */

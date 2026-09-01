@@ -12,11 +12,11 @@
 #    would let `globalThis[<computed>]` reach a bound name without it appearing
 #    in the static free-name manifest.
 #
-#  * CONTAINMENT (the load-bearing property): dynamic code IS reachable via
-#    `[].constructor.constructor` (C3-rest does not eliminate it — that needs
-#    curated intrinsics / M-SES), BUT it runs against the deny-by-default tenant
-#    global, so it sees NO ungranted host authority. This is the guarantee that
-#    keeps the gap from being an escape; it must hold.
+#  * DYNAMIC CODE CLOSED (M-SES-0): the audit found dynamic code was still
+#    reachable via `[].constructor.constructor` (contained by deny-by-default,
+#    but the "no dynamic code" claim was false). M-SES-0's lockdown neutralizes
+#    the Function / generator / async constructors, so that route now THROWS.
+#    This test pins that it is closed.
 
 use warnings;
 use strict;
@@ -51,26 +51,25 @@ http {
 }
 EOF
 
-# The tenant reaches for the global via the Function-constructor route (which
-# the front-end does NOT statically block) and reports what host names it can
-# see. The deny-by-default global must expose none of them.
+# The tenant tries the Function-constructor route to build dynamic code. Under
+# M-SES-0 the constructor is tamed, so the attempt throws — the fragment loads
+# (the call site is not a named reference), but the route is dead at runtime.
 $t->write_file('tenant.js', <<'JS');
 onRequest(function(req) {
-    var g = [].constructor.constructor("return this")();
-    var names = ["nginx", "fetch", "require", "process", "createSocket"];
-    var seen = 0, i;
-    for (i = 0; i < names.length; i++) {
-        if (typeof g[names[i]] !== "undefined") { seen++; }
+    try {
+        [].constructor.constructor("return 1")();
+        return "DYNAMIC-CODE-RAN\n";
+    } catch (e) {
+        return "dynamic-code-blocked\n";
     }
-    return "reachable-host-names=" + seen + "\n";
 });
 JS
 
 $t->try_run('no js module')->plan(6);
 
-# --- CONTAINMENT: dynamic code sees zero ungranted host names ---
-like(http_get('/t'), qr/reachable-host-names=0/,
-     'dynamic code (Function-ctor) reaches the bare tenant global: no host authority');
+# --- M-SES-0: the Function-constructor dynamic-code route is closed ---
+like(http_get('/t'), qr/dynamic-code-blocked/,
+     'M-SES-0: [].constructor.constructor is tamed — dynamic code throws');
 
 my $dir = $t->testdir();
 my $bin = $ENV{TEST_NGINX_BINARY} || 'nginx';
