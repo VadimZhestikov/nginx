@@ -2,7 +2,13 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.19**, M-SES-0 dynamic-code lockdown — tenant context is now
+> (current: **v5.20**, maxim finalization SCOPED (INCREMENT_MAXIM.md) — the JIT correctness
+> gate for the compiled tier: JIT compiles nearly everything (bails only on eval), so the
+> ~200 test262 failures are MISCOMPILES concentrated at the JIT-closure/callback-from-builtin
+> boundary (Bucket 1 = var_ref refcount-underflow crashes, Bucket 2 = callback this/arg
+> marshaling), not missing coverage; done = errors(JIT) ⊆ interp 72; M8 gate adopted
+> PROFILE-SCOPED (Buckets 1-2 in-profile must-fix, Atomics/DataView/Promise deferred);
+> proceeding via a bounded T0-measurement + Bucket-1 root-cause go/no-go spike; v5.19 M-SES-0 dynamic-code lockdown — tenant context is now
 > JS_NewContextRaw + curated intrinsics (Proxy omitted) + an SES-style lockdown that tames
 > the Function/generator/async constructors and deletes the eval/Function/Reflect globals;
 > closes front-end audit A1 so C3-rest's "no dynamic code" is now SOUND (prerequisite for
