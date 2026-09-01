@@ -2683,12 +2683,46 @@ ngx_js_tenant_denials(JSContext *ctx, JSValueConst this_val, int argc,
     }
 
     JS_SetPropertyStr(ctx, obj, "mode",
-                      JS_NewString(ctx, ngx_js_compartment_audit_mode()
-                                        ? "audit" : "enforce"));
+                      JS_NewString(ctx, ngx_js_tenant_mode_name()));
     JS_SetPropertyStr(ctx, obj, "total",
                       JS_NewInt64(ctx,
                           (int64_t) ngx_js_compartment_denial_total()));
     JS_SetPropertyStr(ctx, obj, "byOp", by);
+
+    return obj;
+}
+
+
+/*
+ * COMCON B0: nginx.tenantLearning() — the onboarding harvest. In learn mode
+ * the tenant's references into the withheld host surface are recorded as
+ * access paths; this host-only report returns {mode, wants:[{path, hits}]} —
+ * the exact wishlist the operator grants the safe subset of, then enforces.
+ */
+static JSValue
+ngx_js_tenant_learning(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    JSValue     obj, arr, e;
+    ngx_uint_t  i, n;
+
+    obj = JS_NewObject(ctx);
+    arr = JS_NewArray(ctx);
+
+    n = ngx_js_learn_count();
+
+    for (i = 0; i < n; i++) {
+        e = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, e, "path",
+                          JS_NewString(ctx, ngx_js_learn_path(i)));
+        JS_SetPropertyStr(ctx, e, "hits",
+                          JS_NewInt64(ctx, (int64_t) ngx_js_learn_hits(i)));
+        JS_SetPropertyUint32(ctx, arr, i, e);
+    }
+
+    JS_SetPropertyStr(ctx, obj, "mode",
+                      JS_NewString(ctx, ngx_js_tenant_mode_name()));
+    JS_SetPropertyStr(ctx, obj, "wants", arr);
 
     return obj;
 }
@@ -2915,6 +2949,11 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "tenantDenials",
                       JS_NewCFunction(ctx, ngx_js_tenant_denials,
                                       "tenantDenials", 0));
+
+    /* COMCON B0: host-only learning report (onboarding harvest). */
+    JS_SetPropertyStr(ctx, nginx_obj, "tenantLearning",
+                      JS_NewCFunction(ctx, ngx_js_tenant_learning,
+                                      "tenantLearning", 0));
 
     /* nginx.install(plugin[, config]) — JS-Pilgrim P7: inline plugin caller */
     JS_SetPropertyStr(ctx, nginx_obj, "install",

@@ -66,7 +66,7 @@ typedef struct {
     JSRuntime           *tenant_rt;
     JSContext           *tenant_ctx;
     JSValue              tenant_request_handler;
-    ngx_flag_t           tenant_audit;    /* A4: js_tenant_mode audit|enforce */
+    ngx_uint_t           tenant_mode;     /* A4/B0: ngx_js_tenant_mode_e */
     JSRuntime           *rt;              /* master-process QuickJS runtime   */
     JSContext           *ctx;             /* master-process QuickJS context   */
     void                *worker;          /* ngx_js_worker_t* after fork      */

@@ -67,19 +67,99 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */
-static ngx_flag_t  ngx_js_audit_mode;
+static ngx_js_tenant_mode_e  ngx_js_tenant_mode;
 static ngx_uint_t  ngx_js_denial_counts[NGX_JS_DENIAL_LAST];
 static ngx_uint_t  ngx_js_denials_total;
 static ngx_uint_t  ngx_js_denial_records;    /* full records written */
 
+/* B0: the learning record — distinct harvested access paths, deduped. */
+static u_char      ngx_js_learn_paths[NGX_JS_LEARN_MAX][128];
+static ngx_uint_t  ngx_js_learn_path_hits[NGX_JS_LEARN_MAX];
+static ngx_uint_t  ngx_js_learn_n;
+
 
 void
-ngx_js_compartment_policy_init(ngx_flag_t audit)
+ngx_js_compartment_policy_init(ngx_js_tenant_mode_e mode)
 {
-    ngx_js_audit_mode = audit;
+    ngx_js_tenant_mode = mode;
     ngx_js_denials_total = 0;
     ngx_js_denial_records = 0;
     ngx_memzero(ngx_js_denial_counts, sizeof(ngx_js_denial_counts));
+
+    ngx_js_learn_n = 0;
+    ngx_memzero(ngx_js_learn_path_hits, sizeof(ngx_js_learn_path_hits));
+}
+
+
+void
+ngx_js_learn_record(const char *path)
+{
+    size_t      len;
+    ngx_uint_t  i;
+
+    for (i = 0; i < ngx_js_learn_n; i++) {
+        if (ngx_strcmp(ngx_js_learn_paths[i], path) == 0) {
+            ngx_js_learn_path_hits[i]++;
+            return;
+        }
+    }
+
+    if (ngx_js_learn_n >= NGX_JS_LEARN_MAX) {
+        return;                          /* bounded; the wishlist is capped */
+    }
+
+    len = ngx_strlen(path);
+    if (len > sizeof(ngx_js_learn_paths[0]) - 1) {
+        len = sizeof(ngx_js_learn_paths[0]) - 1;
+    }
+
+    ngx_memcpy(ngx_js_learn_paths[ngx_js_learn_n], path, len);
+    ngx_js_learn_paths[ngx_js_learn_n][len] = '\0';
+    ngx_js_learn_path_hits[ngx_js_learn_n] = 1;
+    ngx_js_learn_n++;
+
+    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                  "js learn: comp=%ui wants \"%s\"",
+                  (ngx_uint_t) ngx_js_cur_compartment, path);
+}
+
+
+ngx_flag_t
+ngx_js_compartment_learn_mode(void)
+{
+    return ngx_js_tenant_mode == NGX_JS_TENANT_LEARN;
+}
+
+
+ngx_uint_t
+ngx_js_learn_count(void)
+{
+    return ngx_js_learn_n;
+}
+
+
+const char *
+ngx_js_learn_path(ngx_uint_t i)
+{
+    return i < ngx_js_learn_n ? (const char *) ngx_js_learn_paths[i] : "";
+}
+
+
+ngx_uint_t
+ngx_js_learn_hits(ngx_uint_t i)
+{
+    return i < ngx_js_learn_n ? ngx_js_learn_path_hits[i] : 0;
+}
+
+
+const char *
+ngx_js_tenant_mode_name(void)
+{
+    switch (ngx_js_tenant_mode) {
+    case NGX_JS_TENANT_LEARN:   return "learn";
+    case NGX_JS_TENANT_AUDIT:   return "audit";
+    default:                    return "enforce";
+    }
 }
 
 
@@ -91,7 +171,7 @@ ngx_js_compartment_denial(ngx_js_denial_code_t code, const char *obj)
     ngx_js_denial_counts[code]++;      /* exact, always (TM-1) */
     ngx_js_denials_total++;
 
-    mode = ngx_js_audit_mode ? "audit" : "enforce";
+    mode = ngx_js_tenant_mode_name();
 
     if (ngx_js_denial_records < NGX_JS_DENIAL_QUOTA) {
         ngx_js_denial_records++;
@@ -121,14 +201,8 @@ ngx_js_compartment_denial(ngx_js_denial_code_t code, const char *obj)
                       obj ? obj : "-", mode, ngx_js_denials_total);
     }
 
-    return ngx_js_audit_mode ? 0 : 1;
-}
-
-
-ngx_flag_t
-ngx_js_compartment_audit_mode(void)
-{
-    return ngx_js_audit_mode;
+    /* enforce denies; audit and learn log-and-allow */
+    return ngx_js_tenant_mode == NGX_JS_TENANT_ENFORCE ? 1 : 0;
 }
 
 

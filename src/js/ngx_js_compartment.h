@@ -99,10 +99,36 @@ typedef enum {
 
 
 /*
- * Reset counters and set the mode for this cycle (called from init_conf,
- * before the tenant evaluates; workers inherit the post-init state by fork).
+ * Tenant enforcement mode (A4 + B0):
+ *   ENFORCE — gates deny (default).
+ *   AUDIT   — gates log-and-allow (observe-then-enforce).
+ *   LEARN   — audit + the withheld host surface is recorded (onboarding
+ *             harvest): references to ungranted host names are captured into
+ *             the learning record instead of failing, so the operator sees
+ *             what the fragment wants and grants the safe subset.
  */
-void ngx_js_compartment_policy_init(ngx_flag_t audit);
+typedef enum {
+    NGX_JS_TENANT_ENFORCE = 0,
+    NGX_JS_TENANT_AUDIT,
+    NGX_JS_TENANT_LEARN
+} ngx_js_tenant_mode_e;
+
+#define NGX_JS_LEARN_MAX       64      /* distinct harvested paths / process */
+
+
+/*
+ * Reset counters + learning record and set the mode for this cycle (called
+ * from init_conf before the tenant evaluates; workers inherit by fork).
+ */
+void ngx_js_compartment_policy_init(ngx_js_tenant_mode_e mode);
+
+/* B0: record a harvested access path (deny-by-default wishlist entry). */
+void         ngx_js_learn_record(const char *path);
+ngx_flag_t   ngx_js_compartment_learn_mode(void);
+ngx_uint_t   ngx_js_learn_count(void);
+const char  *ngx_js_learn_path(ngx_uint_t i);
+ngx_uint_t   ngx_js_learn_hits(ngx_uint_t i);
+const char  *ngx_js_tenant_mode_name(void);
 
 /*
  * Record a denial event at a gate. Returns 1 = DENY (enforce mode: the gate
@@ -113,7 +139,6 @@ ngx_flag_t ngx_js_compartment_denial(ngx_js_denial_code_t code,
     const char *obj);
 
 /* Introspection for the host-side report (nginx.tenantDenials()). */
-ngx_flag_t   ngx_js_compartment_audit_mode(void);
 ngx_uint_t   ngx_js_compartment_denial_total(void);
 ngx_uint_t   ngx_js_compartment_denial_count(ngx_js_denial_code_t code);
 const char  *ngx_js_denial_code_name(ngx_js_denial_code_t code);

@@ -557,7 +557,7 @@ ngx_js_tenant_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
-/* COMCON A4: js_tenant_mode audit|enforce; */
+/* COMCON A4/B0: js_tenant_mode enforce|audit|learn; */
 static char *
 ngx_js_tenant_mode(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -566,16 +566,19 @@ ngx_js_tenant_mode(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
-    if (ngx_strcmp(value[1].data, "audit") == 0) {
-        jcf->tenant_audit = 1;
+    if (ngx_strcmp(value[1].data, "enforce") == 0) {
+        jcf->tenant_mode = NGX_JS_TENANT_ENFORCE;
 
-    } else if (ngx_strcmp(value[1].data, "enforce") == 0) {
-        jcf->tenant_audit = 0;
+    } else if (ngx_strcmp(value[1].data, "audit") == 0) {
+        jcf->tenant_mode = NGX_JS_TENANT_AUDIT;
+
+    } else if (ngx_strcmp(value[1].data, "learn") == 0) {
+        jcf->tenant_mode = NGX_JS_TENANT_LEARN;
 
     } else {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "js_tenant_mode: expected \"audit\" or "
-                           "\"enforce\", got \"%V\"", &value[1]);
+                           "js_tenant_mode: expected \"enforce\", \"audit\" "
+                           "or \"learn\", got \"%V\"", &value[1]);
         return NGX_CONF_ERROR;
     }
 
@@ -675,6 +678,185 @@ ngx_js_tenant_onrequest(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 
+/* ------------------------------------------------------------------ */
+/* COMCON B0: the learn-mode recorder — a catch-all object that records  */
+/* every access path a tenant walks into the withheld host surface.      */
+/* ------------------------------------------------------------------ */
+
+static JSClassID  ngx_js_recorder_class_id;
+
+static JSValue ngx_js_recorder_new(JSContext *ctx, const char *path);
+
+
+static void
+ngx_js_recorder_finalizer(JSRuntime *rt, JSValue val)
+{
+    char  *path;
+
+    path = JS_GetOpaque(val, ngx_js_recorder_class_id);
+    if (path != NULL) {
+        js_free_rt(rt, path);
+    }
+}
+
+
+static JSValue
+ngx_js_recorder_get(JSContext *ctx, JSValueConst obj, JSAtom atom,
+    JSValueConst receiver)
+{
+    char        *path;
+    const char  *key;
+    u_char       child[128], *e;
+
+    key = JS_AtomToCString(ctx, atom);
+    if (key == NULL) {
+        return JS_UNDEFINED;
+    }
+
+    /* only identifier-like names — skip symbols, indices, coercion probes */
+    if (!((key[0] >= 'a' && key[0] <= 'z') || (key[0] >= 'A' && key[0] <= 'Z')
+          || key[0] == '_' || key[0] == '$'))
+    {
+        JS_FreeCString(ctx, key);
+        return JS_UNDEFINED;
+    }
+
+    path = JS_GetOpaque(obj, ngx_js_recorder_class_id);
+
+    e = ngx_snprintf(child, sizeof(child) - 1, "%s.%s",
+                     path ? path : "?", key);
+    *e = '\0';
+
+    ngx_js_learn_record((const char *) child);
+    JS_FreeCString(ctx, key);
+
+    return ngx_js_recorder_new(ctx, (const char *) child);
+}
+
+
+static JSValue
+ngx_js_recorder_get_proto(JSContext *ctx, JSValueConst obj)
+{
+    return JS_NULL;
+}
+
+
+static int
+ngx_js_recorder_set_proto(JSContext *ctx, JSValueConst obj,
+    JSValueConst proto)
+{
+    return 1;                             /* ignore */
+}
+
+
+static int
+ngx_js_recorder_set(JSContext *ctx, JSValueConst obj, JSAtom atom,
+    JSValueConst value, JSValueConst receiver, int flags)
+{
+    return 1;                             /* swallow writes */
+}
+
+
+static int
+ngx_js_recorder_has(JSContext *ctx, JSValueConst obj, JSAtom atom)
+{
+    return 1;
+}
+
+
+static JSValue
+ngx_js_recorder_call(JSContext *ctx, JSValueConst func_obj,
+    JSValueConst this_val, int argc, JSValueConst *argv, int flags)
+{
+    char    *path;
+    u_char   callp[128], *e;
+
+    path = JS_GetOpaque(func_obj, ngx_js_recorder_class_id);
+
+    e = ngx_snprintf(callp, sizeof(callp) - 1, "%s()", path ? path : "?");
+    *e = '\0';
+
+    ngx_js_learn_record((const char *) callp);
+
+    return ngx_js_recorder_new(ctx, path ? path : "?");
+}
+
+
+static JSClassExoticMethods  ngx_js_recorder_exotic = {
+    .get_property  = ngx_js_recorder_get,
+    .set_property  = ngx_js_recorder_set,
+    .has_property  = ngx_js_recorder_has,
+    .get_prototype = ngx_js_recorder_get_proto,
+    .set_prototype = ngx_js_recorder_set_proto,
+};
+
+static JSClassDef  ngx_js_recorder_class = {
+    "ComconRecorder",
+    .finalizer = ngx_js_recorder_finalizer,
+    .call      = ngx_js_recorder_call,
+    .exotic    = &ngx_js_recorder_exotic,
+};
+
+
+static JSValue
+ngx_js_recorder_new(JSContext *ctx, const char *path)
+{
+    JSValue  obj;
+    size_t   len;
+    char    *copy;
+
+    /* JS_NULL proto: required for consistent exotic get_property behaviour. */
+    obj = JS_NewObjectProtoClass(ctx, JS_NULL, ngx_js_recorder_class_id);
+    if (JS_IsException(obj)) {
+        return obj;
+    }
+
+    len = ngx_strlen(path);
+    if (len > 120) {
+        len = 120;
+    }
+
+    copy = js_malloc(ctx, len + 1);
+    if (copy != NULL) {
+        ngx_memcpy(copy, path, len);
+        copy[len] = '\0';
+        JS_SetOpaque(obj, copy);
+    }
+
+    JS_SetConstructorBit(ctx, obj, 1);    /* so `new Worker()` records too */
+
+    return obj;
+}
+
+
+/* Seed globalThis with a recorder for each withheld host-authority name that
+ * is not already granted — learn mode only. */
+static void
+ngx_js_learn_seed(JSContext *ctx, JSValue global)
+{
+    static const char *const withheld[] = {
+        "nginx", "createSocket", "fetch", "Worker", "SharedWorker",
+        "config", "use", "install", "require", "broadcast", "std", "os",
+        NULL
+    };
+
+    JSValue     existing;
+    ngx_uint_t  i;
+    ngx_flag_t  present;
+
+    for (i = 0; withheld[i] != NULL; i++) {
+        existing = JS_GetPropertyStr(ctx, global, withheld[i]);
+        present = !JS_IsUndefined(existing);
+        JS_FreeValue(ctx, existing);
+
+        if (!present) {
+            JS_SetPropertyStr(ctx, global, withheld[i],
+                              ngx_js_recorder_new(ctx, withheld[i]));
+        }
+    }
+}
+
+
 /*
  * COMCON A2/A3: the tenant compartment. ONE isolated runtime + context
  * (compartment 1) shared by all js_tenant_source files — deny-by-default:
@@ -725,6 +907,12 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
      * global; only granted names resolve. */
     (void) ngx_js_com_register_classes(trt);
 
+    /* B0: the learn-mode recorder class (class ids are process-global). */
+    if (ngx_js_recorder_class_id == 0) {
+        JS_NewClassID(&ngx_js_recorder_class_id);
+    }
+    JS_NewClass(trt, ngx_js_recorder_class_id, &ngx_js_recorder_class);
+
     tctx = JS_NewContext(trt);
     if (tctx == NULL) {
         JS_FreeRuntime(trt);
@@ -765,6 +953,12 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
             JS_SetPropertyStr(tctx, global, (const char *) g[gi].name.data,
                               ngx_js_socket_wrap(tctx, g[gi].handle));
         }
+    }
+
+    /* B0: in learn mode, seed recorders for the withheld host surface so
+     * references to it are harvested instead of failing. */
+    if (ngx_js_compartment_learn_mode()) {
+        ngx_js_learn_seed(tctx, global);
     }
 
     JS_FreeValue(tctx, global);
@@ -822,7 +1016,7 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     /* COMCON A4: fresh denial counters + this cycle's audit/enforce mode
      * (before any eval, so config-time gate events follow the mode too;
      * workers inherit the post-init state by fork). */
-    ngx_js_compartment_policy_init(jcf->tenant_audit);
+    ngx_js_compartment_policy_init((ngx_js_tenant_mode_e) jcf->tenant_mode);
 
     /* ---- Create the master QuickJS runtime ---- */
 
