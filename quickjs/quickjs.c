@@ -46,6 +46,9 @@
 #include "libregexp.h"
 #include "libunicode.h"
 #include "dtoa.h"
+#ifdef CONFIG_JIT
+#include "quickjs-jit.h"
+#endif
 
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
@@ -90,7 +93,7 @@
   32: dump line number table
   64: dump compute_stack_size
  */
-//#define DUMP_BYTECODE  (1)
+//#define DUMP_BYTECODE (1)
 /* dump the occurence of the automatic GC */
 //#define DUMP_GC
 /* dump objects freed by the garbage collector */
@@ -309,6 +312,26 @@ struct JSRuntime {
     int shape_hash_count; /* number of hashed shapes */
     JSShape **shape_hash;
     void *user_opaque;
+#ifdef CONFIG_JIT
+    /* Monotonically-increasing generation counter, set once in JS_NewRuntime2.
+     * Used by JIT inline caches (JSJITICEntry.rt_gen) to defeat the ABA
+     * problem: if a new runtime is allocated at the same address as a freed
+     * one, the generation counter will differ, forcing an IC miss. */
+    uint32_t jit_ic_gen;
+    /* Current JIT callee function object and new.target.
+     * Set in every JIT call path (JS_CallInternal and js_jit_call/ic_direct).
+     * Read by js_jit_special_object for HOME_OBJECT/THIS_FUNC/NEW_TARGET.
+     * Decouples these reads from sf->cur_func so that JIT-to-JIT calls via
+     * js_jit_call do not corrupt the outer frame's cur_func — which was
+     * causing get_var_ref assertion failures when define_class in a JIT
+     * callee captured outer locals via js_closure2. */
+    JSValue jit_callee_func;
+    JSValue jit_new_target;
+    /* Actual argument count from the call site, set by every JIT call path.
+     * The JIT function receives argc=max(actual,arg_count) for GEN_PUT_ARG safety,
+     * but js_jit_special_object(ARGUMENTS) reads this field for the correct .length. */
+    int jit_actual_argc;
+#endif
 };
 
 struct JSClass {
@@ -330,11 +353,13 @@ typedef struct JSStackFrame {
     JSValue cur_func; /* current function, JS_UNDEFINED if the frame is detached */
     JSValue *arg_buf; /* arguments */
     JSValue *var_buf; /* variables */
-    struct JSVarRef **var_refs; /* references to arguments or local variables */ 
+    struct JSVarRef **var_refs; /* references to arguments or local variables */
     const uint8_t *cur_pc; /* only used in bytecode functions : PC of the
                         instruction after the call */
     int arg_count;
     int js_mode; /* not supported for C functions */
+    JSValue new_target; /* new.target value: JS_UNDEFINED for normal calls,
+                           else the constructor function (for OP_special_object) */
     /* only used in generators. Current stack pointer value. NULL if
        the function is running. */
     JSValue *cur_sp;
@@ -452,6 +477,13 @@ struct JSContext {
 
     uint16_t binary_object_count;
     int binary_object_size;
+    /* TRUE if the array prototype is "normal":
+      - no small index properties which are get/set or non writable
+      - its prototype is Object.prototype
+      - Object.prototype has no small index properties which are get/set or non writable
+      - the prototype of Object.prototype is null (always true as it is immutable)
+    */
+    uint8_t std_array_prototype;
     
     JSShape *array_shape;   /* initial shape for Array objects */
     JSShape *arguments_shape;  /* shape for arguments objects */
@@ -634,7 +666,14 @@ typedef struct JSFunctionBytecode {
     uint8_t has_debug : 1;
     uint8_t read_only_bytecode : 1;
     uint8_t is_direct_or_indirect_eval : 1; /* used by JS_GetScriptOrModuleName() */
-    /* XXX: 10 bits available */
+    /* XXX: 7 bits available */
+#ifdef CONFIG_JIT
+    /* JIT state — 4 bits consumed from the 10 available */
+    uint8_t jit_no_compile : 1; /* permanently excluded from JIT */
+    uint8_t jit_tier : 2;       /* 0=interp, 1=TCC compiled, 2=GCC compiled */
+    uint8_t jit_p103_safe : 1;  /* P10.3: 1 = .so compiled with mutated_arg_mask
+                                 * protection; safe for direct JIT-to-JIT calls. */
+#endif
     uint8_t *byte_code_buf; /* (self pointer) */
     int byte_code_len;
     JSAtom func_name;
@@ -649,10 +688,42 @@ typedef struct JSFunctionBytecode {
     JSValue *cpool; /* constant pool (self pointer) */
     int cpool_count;
     int closure_var_count;
+#ifdef CONFIG_JIT
+    /* JIT hotness counter and compiled function pointer.
+     * Placed before `debug` so that the !has_debug allocation
+     * (offsetof(JSFunctionBytecode, debug)) still covers these fields.
+     * jit_func is written once (atomically) after compilation and read on
+     * every call thereafter — no lock required on x86-64 (TSO) but we use
+     * __atomic builtins for portability.
+     * jit_handle: dlopen handle for the compiled .so; dlclose()'d on free. */
+    int               jit_call_count; /* incremented on every JS_CallInternal */
+    JSJITFunc         jit_func;       /* NULL → interpreter, else JIT entry  */
+    void             *jit_handle;     /* dlopen handle for compiled .so      */
+    uint64_t          jit_bc_hash;    /* P11.3: stable bc identity for call IC ABA guard */
+    uint16_t         *stack_depth_tab; /* [byte_code_len] stack depth before each opcode; P9.0 */
+    JSJITCFAnnotation *cf_annotations;  /* loop CF annotations; P9.3 */
+    int                cf_annotation_count;
+    /* P45b: warm-IC recompile state.
+     * After the first GCC compile, warm_count accumulates JIT calls.  When it
+     * reaches JIT_WARM_THRESHOLD_GCC, js_jit_schedule_warm_recompile() dlsym's
+     * __jit_vt_HASH from jit_handle, copies hints to jit_vt_hints, and queues
+     * a second GCC compilation with INT-typed get_field for observed INT properties. */
+    uint32_t          jit_warm_count; /* JIT call count after first compile     */
+    uint16_t          jit_n_gf;       /* OP_get_field count in bytecode         */
+    uint16_t          jit_n_pf;       /* P48: OP_put_field count in bytecode    */
+    uint16_t          jit_n_vr;       /* P49: OP_get_var_ref* count in bytecode */
+    uint16_t          jit_n_pa;       /* P50: OP_put_array_el count in bytecode */
+    uint16_t          jit_n_ad;       /* P51: OP_add count in bytecode          */
+    uint16_t          jit_n_pv;       /* P52: OP_put/set_var_ref* count         */
+    uint8_t           jit_warm_done;  /* 1 = warm recompile scheduled or n_gf==0 */
+    uint8_t           jit_n_ae;       /* P46: OP_get_array_el count (max 255)   */
+    uint8_t          *jit_vt_hints;   /* val_tag hints array (malloc'd) or NULL */
+    void             *jit_warm_handle; /* warm-recompile .so handle (kept loaded) */
+#endif
     struct {
         /* debug info, move to separate structure to save memory? */
         JSAtom filename;
-        int source_len; 
+        int source_len;
         int pc2line_len;
         uint8_t *pc2line_buf;
         char *source;
@@ -727,6 +798,9 @@ typedef struct JSAsyncFunctionState {
     JSValue resolving_funcs[2]; /* only used in JS async functions */
     JSStackFrame frame;
     /* arg_buf, var_buf, stack_buf and var_refs follow */
+#ifdef CONFIG_JIT
+    void *jit_gen_frame; /* JSJITGeneratorFrame* — non-NULL after first JIT-compiled resume */
+#endif
 } JSAsyncFunctionState;
 
 typedef enum {
@@ -914,6 +988,14 @@ struct JSShape {
     /* true if the shape is inserted in the shape hash table. If not,
        JSShape.hash is not valid */
     uint8_t is_hashed;
+    uint8_t _shape_pad[3]; /* explicit padding to align shape_gen at offset 28 */
+    /* Monotonically-increasing generation counter assigned at shape
+     * allocation.  Used by JIT_IC_CHECK to defeat the within-runtime
+     * shape ABA problem: if a JSShape is freed and a new one is
+     * allocated at the same address, the generation will differ,
+     * forcing an IC miss and safe refill.  uint32_t gives 4 billion
+     * distinct values — wrap-around is not a practical concern. */
+    uint32_t shape_gen;
     uint32_t hash; /* current hash value */
     uint32_t prop_hash_mask;
     int prop_size; /* allocated properties */
@@ -930,13 +1012,7 @@ struct JSObject {
         struct {
             int __gc_ref_count; /* corresponds to header.ref_count */
             uint8_t __gc_mark : 7; /* corresponds to header.mark/gc_obj_type */
-            /* TRUE if the array prototype is "normal":
-               - no small index properties which are get/set or non writable
-               - its prototype is Object.prototype
-               - Object.prototype has no small index properties which are get/set or non writable
-               - the prototype of Object.prototype is null (always true as it is immutable)
-            */
-            uint8_t is_std_array_prototype : 1;
+            uint8_t is_prototype : 1; /* object may be used as prototype */
 
             uint8_t extensible : 1;
             uint8_t free_mark : 1; /* only used when freeing objects with cycles */
@@ -1644,6 +1720,19 @@ static inline BOOL js_check_stack_overflow(JSRuntime *rt, size_t alloca_size)
 }
 #endif
 
+#ifdef CONFIG_JIT
+/* Process-global counter incremented by each JS_NewRuntime2 call.
+ * Stored in JSRuntime.jit_ic_gen to defeat the IC ABA problem:
+ * if a new runtime is allocated at the same address as a freed one,
+ * the generation counter will differ, causing JIT_IC_CHECK to miss. */
+static uint32_t js_jit_rt_gen_counter;
+
+uint32_t JS_GetRuntimeICGen(JSRuntime *rt)
+{
+    return rt->jit_ic_gen;
+}
+#endif /* CONFIG_JIT */
+
 JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
 {
     JSRuntime *rt;
@@ -1664,6 +1753,14 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
     }
     rt->malloc_state = ms;
     rt->malloc_gc_threshold = 256 * 1024;
+#ifdef CONFIG_JIT
+    /* Assign a unique generation to this runtime so JIT ICs can detect ABA
+     * (a new runtime allocated at the same address as a freed one). */
+    rt->jit_ic_gen = ++js_jit_rt_gen_counter;
+    rt->jit_callee_func   = JS_UNDEFINED;
+    rt->jit_new_target    = JS_UNDEFINED;
+    rt->jit_actual_argc   = 0;
+#endif
 
     init_list_head(&rt->context_list);
     init_list_head(&rt->gc_obj_list);
@@ -1700,6 +1797,9 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
 
     rt->current_exception = JS_UNINITIALIZED;
 
+#ifdef CONFIG_JIT
+    js_jit_init();
+#endif
     return rt;
  fail:
     JS_FreeRuntime(rt);
@@ -1843,17 +1943,15 @@ int JS_GetStripInfo(JSRuntime *rt)
     return rt->strip_flags;
 }
 
-static int JS_EnqueueJob2(JSContext *ctx, JSJobFunc *job_func,
-                          int argc, JSValueConst *argv, BOOL no_exception)
+/* return 0 if OK, < 0 if exception */
+int JS_EnqueueJob(JSContext *ctx, JSJobFunc *job_func,
+                  int argc, JSValueConst *argv)
 {
     JSRuntime *rt = ctx->rt;
     JSJobEntry *e;
     int i;
 
-    if (no_exception)
-        e = js_malloc_rt(ctx->rt, sizeof(*e) + argc * sizeof(JSValue));
-    else
-        e = js_malloc(ctx, sizeof(*e) + argc * sizeof(JSValue));
+    e = js_malloc(ctx, sizeof(*e) + argc * sizeof(JSValue));
     if (!e)
         return -1;
     e->realm = JS_DupContext(ctx);
@@ -1864,13 +1962,6 @@ static int JS_EnqueueJob2(JSContext *ctx, JSJobFunc *job_func,
     }
     list_add_tail(&e->link, &rt->job_list);
     return 0;
-}
-
-/* return 0 if OK, < 0 if exception */
-int JS_EnqueueJob(JSContext *ctx, JSJobFunc *job_func,
-                  int argc, JSValueConst *argv)
-{
-    return JS_EnqueueJob2(ctx, job_func, argc, argv, FALSE);
 }
 
 BOOL JS_IsJobPending(JSRuntime *rt)
@@ -1987,6 +2078,10 @@ void JS_SetRuntimeInfo(JSRuntime *rt, const char *s)
 
 void JS_FreeRuntime(JSRuntime *rt)
 {
+#ifdef CONFIG_JIT
+    /* Drain the GCC worker queue before GC frees any bytecodes. */
+    js_jit_free();
+#endif
     struct list_head *el, *el1;
     int i;
 
@@ -2044,6 +2139,7 @@ void JS_FreeRuntime(JSRuntime *rt)
             printf("Secondary object leaks: %d\n", count);
     }
 #endif
+    fflush(stdout); fflush(stderr);
     assert(list_empty(&rt->gc_obj_list));
     assert(list_empty(&rt->weakref_list));
 
@@ -4808,6 +4904,12 @@ static void js_shape_hash_unlink(JSRuntime *rt, JSShape *sh)
     rt->shape_hash_count--;
 }
 
+/* Process-wide shape generation counter.  Each new JSShape gets a unique
+ * (mod 2^16) generation so that JIT_IC_CHECK can distinguish a freshly
+ * allocated shape at the same address from the one that was previously cached.
+ * Shared across all runtimes; only ever incremented, never reset. */
+static uint32_t js_shape_gen_counter;
+
 /* create a new empty shape with prototype 'proto'. It is not hashed */
 static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
                                            int hash_size, int prop_size)
@@ -4822,6 +4924,7 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
     sh = get_shape_from_alloc(sh_alloc, hash_size);
     sh->header.ref_count = 1;
     add_gc_object(rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
+    sh->shape_gen = ++js_shape_gen_counter;
     if (proto)
         JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, proto));
     sh->proto = proto;
@@ -4884,6 +4987,7 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     sh = get_shape_from_alloc(sh_alloc, hash_size);
     sh->header.ref_count = 1;
     add_gc_object(ctx->rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
+    sh->shape_gen = ++js_shape_gen_counter; /* new generation — distinct from source */
     sh->is_hashed = FALSE;
     if (sh->proto) {
         JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, sh->proto));
@@ -5216,7 +5320,7 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
     if (unlikely(!p))
         goto fail;
     p->class_id = class_id;
-    p->is_std_array_prototype = 0;
+    p->is_prototype = 0;
     p->extensible = TRUE;
     p->free_mark = 0;
     p->is_exotic = 0;
@@ -5765,11 +5869,15 @@ static void free_var_ref(JSRuntime *rt, JSVarRef *var_ref)
                 JS_FreeValueRT(rt, var_ref->value);
             } else {
                 JSStackFrame *sf = var_ref->stack_frame;
-                assert(sf->var_refs[var_ref->var_ref_idx] == var_ref);
-                sf->var_refs[var_ref->var_ref_idx] = NULL;
-                if (sf->js_mode & JS_MODE_ASYNC) {
-                    JSAsyncFunctionState *async_func = container_of(sf, JSAsyncFunctionState, frame);
-                    async_func_free(rt, async_func);
+                /* P13: JIT-owned var_refs have stack_frame=NULL; nothing to clean up
+                 * in the stack frame (js_jit_close_caps handles detachment instead). */
+                if (sf) {
+                    assert(sf->var_refs[var_ref->var_ref_idx] == var_ref);
+                    sf->var_refs[var_ref->var_ref_idx] = NULL;
+                    if (sf->js_mode & JS_MODE_ASYNC) {
+                        JSAsyncFunctionState *async_func = container_of(sf, JSAsyncFunctionState, frame);
+                        async_func_free(rt, async_func);
+                    }
                 }
             }
             remove_gc_object(&var_ref->header);
@@ -6224,7 +6332,12 @@ static void mark_children(JSRuntime *rt, JSGCObjectHeader *gp,
                 JS_MarkValue(rt, *var_ref->pvalue, mark_func);
             } else {
                 JSStackFrame *sf = var_ref->stack_frame;
-                if (sf->js_mode & JS_MODE_ASYNC) {
+                if (sf == NULL) {
+                    /* P13: JIT-created open var_ref (is_detached=0, stack_frame=NULL):
+                     * pvalue points to a variable on the JIT C-stack.  There is no
+                     * JSStackFrame GC-root to cover it, so mark *pvalue directly. */
+                    JS_MarkValue(rt, *var_ref->pvalue, mark_func);
+                } else if (sf->js_mode & JS_MODE_ASYNC) {
                     JSAsyncFunctionState *async_func = container_of(sf, JSAsyncFunctionState, frame);
                     mark_func(rt, &async_func->header);
                 }
@@ -6249,6 +6362,25 @@ static void mark_children(JSRuntime *rt, JSGCObjectHeader *gp,
                     for(sp = sf->arg_buf; sp < sf->cur_sp; sp++)
                         JS_MarkValue(rt, *sp, mark_func);
                 }
+#ifdef CONFIG_JIT
+                /* JIT-compiled generators save live local JSValues in
+                 * jit_gen_frame->saved_lv[] and closure var-refs in
+                 * saved_vrefs[], bypassing sf->var_buf[].  Both must be
+                 * marked here so the GC cycle detector sees all live refs. */
+                if (s->jit_gen_frame) {
+                    JSJITGeneratorFrame *gf = (JSJITGeneratorFrame *)s->jit_gen_frame;
+                    int i;
+                    if (gf->saved_lv) {
+                        for (i = 0; i < gf->n_lv; i++)
+                            JS_MarkValue(rt, gf->saved_lv[i], mark_func);
+                    }
+                    if (gf->saved_vrefs) {
+                        for (i = 0; i < gf->n_vrefs; i++)
+                            if (gf->saved_vrefs[i])
+                                mark_func(rt, &gf->saved_vrefs[i]->header);
+                    }
+                }
+#endif
             }
             JS_MarkValue(rt, s->resolving_funcs[0], mark_func);
             JS_MarkValue(rt, s->resolving_funcs[1], mark_func);
@@ -7576,7 +7708,14 @@ static int JS_SetPrototypeInternal(JSContext *ctx, JSValueConst obj,
     if (sh->proto)
         JS_FreeValue(ctx, JS_MKPTR(JS_TAG_OBJECT, sh->proto));
     sh->proto = proto;
-    p->is_std_array_prototype = FALSE; 
+    if (proto)
+        proto->is_prototype = TRUE;
+    if (p->is_prototype) {
+        /* track modification of Array.prototype */
+        if (unlikely(p == JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]))) {
+            ctx->std_array_prototype = FALSE;
+        }
+    }
     return TRUE;
 }
 
@@ -7651,8 +7790,8 @@ static JSValue JS_GetPrototypeFree(JSContext *ctx, JSValue obj)
 }
 
 /* return TRUE, FALSE or (-1) in case of exception */
-static int JS_OrdinaryIsInstanceOf(JSContext *ctx, JSValueConst val,
-                                   JSValueConst obj)
+int JS_OrdinaryIsInstanceOf(JSContext *ctx, JSValueConst val,
+                            JSValueConst obj)
 {
     JSValue obj_proto;
     JSObject *proto;
@@ -8776,25 +8915,12 @@ static JSProperty *add_property(JSContext *ctx,
 {
     JSShape *sh, *new_sh;
 
-    if (unlikely(__JS_AtomIsTaggedInt(prop))) {
-        /* update is_std_array_prototype */
-        if (unlikely(p->is_std_array_prototype)) {
-            p->is_std_array_prototype = FALSE;
-        } else if (unlikely(p->has_immutable_prototype)) {
-            struct list_head *el;
-            
-            /* modifying Object.prototype : reset the corresponding is_std_array_prototype */
-            list_for_each(el, &ctx->rt->context_list) {
-                JSContext *ctx1 = list_entry(el, JSContext, link);
-                if (JS_IsObject(ctx1->class_proto[JS_CLASS_OBJECT]) && 
-                    JS_VALUE_GET_OBJ(ctx1->class_proto[JS_CLASS_OBJECT]) == p) {
-                    if (JS_IsObject(ctx1->class_proto[JS_CLASS_ARRAY])) {
-                        JSObject *p1 = JS_VALUE_GET_OBJ(ctx1->class_proto[JS_CLASS_ARRAY]);
-                        p1->is_std_array_prototype = FALSE;
-                    }
-                    break;
-                }
-            }
+    if (unlikely(p->is_prototype)) {
+        /* track addition of small integer properties to Array.prototype and Object.prototype */
+        if (unlikely((p == JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]) ||
+                      p == JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_OBJECT])) &&
+                     __JS_AtomIsTaggedInt(prop))) {
+            ctx->std_array_prototype = FALSE;
         }
     }
     sh = p->shape;
@@ -8876,7 +9002,11 @@ static no_inline __exception int convert_fast_array_to_array(JSContext *ctx,
     p->u.array.u.values = NULL; /* fail safe */
     p->u.array.u1.size = 0;
     p->fast_array = 0;
-    p->is_std_array_prototype = FALSE;
+
+    /* track modification of Array.prototype */
+    if (unlikely(p == JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]))) {
+        ctx->std_array_prototype = FALSE;
+    }
     return 0;
 }
 
@@ -9164,15 +9294,14 @@ static inline int add_fast_array_element(JSContext *ctx, JSObject *p,
     return TRUE;
 }
 
-/* Allocate a new fast array initialized to JS_UNDEFINED. Its maximum
-   size is 2^31-1 elements. For convenience, 'len' is a 64 bit
-   integer. */
+/* Allocate a new fast array. Its 'length' property is set to zero. It
+   maximum size is 2^31-1 elements. For convenience, 'len' is a 64 bit
+   integer. WARNING: the content of the array is not initialized. */
 static JSValue js_allocate_fast_array(JSContext *ctx, int64_t len)
 {
     JSValue arr;
     JSObject *p;
-    int i;
-    
+
     if (len > INT32_MAX)
         return JS_ThrowRangeError(ctx, "invalid array length");
     arr = JS_NewArray(ctx);
@@ -9185,10 +9314,6 @@ static JSValue js_allocate_fast_array(JSContext *ctx, int64_t len)
             return JS_EXCEPTION;
         }
         p->u.array.count = len;
-        for(i = 0; i < len; i++) 
-            p->u.array.u.values[i] = JS_UNDEFINED;
-        /* update the 'length' field */
-        set_value(ctx, &p->prop[0].u.value, JS_NewInt32(ctx, len));
     }
     return arr;
 }
@@ -9526,18 +9651,6 @@ int JS_SetPropertyInternal(JSContext *ctx, JSValueConst obj,
     }
 }
 
-/* return true if an element can be added to a fast array without further tests */
-static force_inline BOOL can_extend_fast_array(JSObject *p)
-{
-    JSObject *proto;
-    if (!p->extensible)
-        return FALSE;
-    proto = p->shape->proto;
-    if (!proto)
-        return TRUE;
-    return proto->is_std_array_prototype;
-}
-
 /* flags can be JS_PROP_THROW or JS_PROP_THROW_STRICT */
 static int JS_SetPropertyValue(JSContext *ctx, JSValueConst this_obj,
                                JSValue prop, JSValue val, int flags)
@@ -9558,7 +9671,9 @@ static int JS_SetPropertyValue(JSContext *ctx, JSValueConst this_obj,
                 /* fast path to add an element to the array */
                 if (unlikely(idx != (uint32_t)p->u.array.count ||
                              !p->fast_array ||
-                             !can_extend_fast_array(p))) {
+                             !p->extensible ||
+                             p->shape->proto != JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]) ||
+                             !ctx->std_array_prototype)) {
                     goto slow_path;
                 }
                 /* add element */
@@ -15603,6 +15718,1844 @@ static __exception int js_operator_private_in(JSContext *ctx, JSValue *sp)
     return 0;
 }
 
+#ifdef CONFIG_JIT
+/* -----------------------------------------------------------------------
+ * Accessor functions for JSFunctionBytecode fields.
+ *
+ * JSFunctionBytecode is defined entirely inside quickjs.c.  quickjs-jit.c
+ * is a separate translation unit and cannot see the struct layout.  These
+ * thin accessors provide the field values needed by the JIT without
+ * exposing the full internal struct.
+ *
+ * Phase 3 (code generator) will need direct struct access for bulk field
+ * reads; at that point the struct definition will be moved to a shared
+ * internal header.  For Phase 1 these accessors are sufficient.
+ * ----------------------------------------------------------------------- */
+
+/* js_jit_fb_free() is defined in quickjs-jit.c where libtcc.h is available.
+ * Its declaration is in quickjs-jit.h and it is called from
+ * free_function_bytecode() via the accessor below.                       */
+
+/* Accessor pair: read tier/handle/old_handle, clear them after use */
+uint8_t  js_jit_fb_get_tier(JSFunctionBytecode *b) { return b->jit_tier; }
+void    *js_jit_fb_get_handle(JSFunctionBytecode *b) { return b->jit_handle; }
+void     js_jit_fb_clear_handles(JSFunctionBytecode *b) {
+    b->jit_handle = NULL;
+    b->jit_func   = NULL;
+}
+
+uint8_t  js_jit_fb_func_kind(JSFunctionBytecode *b) { return b->func_kind; }
+uint8_t  js_jit_fb_has_simple_params(JSFunctionBytecode *b) { return b->has_simple_parameter_list; }
+uint8_t  js_jit_fb_need_home_object(JSFunctionBytecode *b) { return b->need_home_object; }
+uint8_t  js_jit_fb_is_derived_ctor(JSFunctionBytecode *b) { return b->is_derived_class_constructor; }
+uint8_t  js_jit_fb_is_eval(JSFunctionBytecode *b) { return b->is_direct_or_indirect_eval; }
+uint8_t  js_jit_fb_jit_no_compile(JSFunctionBytecode *b) { return b->jit_no_compile; }
+void     js_jit_fb_set_no_compile(JSFunctionBytecode *b) { b->jit_no_compile = 1; }
+JSJITFunc js_jit_fb_get_func(JSFunctionBytecode *b) { return b->jit_func; }
+void     js_jit_fb_set_func(JSFunctionBytecode *b, JSJITFunc f, void *handle, int tier)
+{
+    b->jit_handle = handle;
+    b->jit_tier   = (uint8_t)tier;
+    __atomic_store_n(&b->jit_func, f, __ATOMIC_RELEASE);
+}
+void     js_jit_fb_set_bc_hash(JSFunctionBytecode *b, uint64_t hash)
+{
+    b->jit_bc_hash = hash;
+}
+uint64_t js_jit_fb_get_bc_hash(JSFunctionBytecode *b) { return b->jit_bc_hash; }
+void     js_jit_fb_set_p103_safe(JSFunctionBytecode *b, int v)
+{
+    b->jit_p103_safe = v ? 1 : 0;
+}
+int      js_jit_fb_inc_count(JSFunctionBytecode *b) { return ++b->jit_call_count; }
+int      js_jit_fb_get_call_count(JSFunctionBytecode *b) { return b->jit_call_count; }
+/* P45b: warm-IC recompile accessors */
+uint16_t js_jit_fb_get_n_gf(JSFunctionBytecode *b)          { return b->jit_n_gf; }
+void     js_jit_fb_set_n_gf(JSFunctionBytecode *b, uint16_t n) { b->jit_n_gf = n; }
+uint8_t  js_jit_fb_get_n_ae(JSFunctionBytecode *b)          { return b->jit_n_ae; }
+void     js_jit_fb_set_n_ae(JSFunctionBytecode *b, uint8_t n)  { b->jit_n_ae = n; }
+/* P48: put_field count accessor */
+uint16_t js_jit_fb_get_n_pf(JSFunctionBytecode *b)          { return b->jit_n_pf; }
+void     js_jit_fb_set_n_pf(JSFunctionBytecode *b, uint16_t n) { b->jit_n_pf = n; }
+/* P49: get_var_ref count accessor */
+uint16_t js_jit_fb_get_n_vr(JSFunctionBytecode *b)          { return b->jit_n_vr; }
+void     js_jit_fb_set_n_vr(JSFunctionBytecode *b, uint16_t n) { b->jit_n_vr = n; }
+/* P50: put_array_el count accessor */
+uint16_t js_jit_fb_get_n_pa(JSFunctionBytecode *b)          { return b->jit_n_pa; }
+void     js_jit_fb_set_n_pa(JSFunctionBytecode *b, uint16_t n) { b->jit_n_pa = n; }
+/* P51: add count accessor */
+uint16_t js_jit_fb_get_n_ad(JSFunctionBytecode *b)          { return b->jit_n_ad; }
+void     js_jit_fb_set_n_ad(JSFunctionBytecode *b, uint16_t n) { b->jit_n_ad = n; }
+/* P52: put/set_var_ref* count accessor */
+uint16_t js_jit_fb_get_n_pv(JSFunctionBytecode *b)          { return b->jit_n_pv; }
+void     js_jit_fb_set_n_pv(JSFunctionBytecode *b, uint16_t n) { b->jit_n_pv = n; }
+uint8_t  js_jit_fb_get_warm_done(JSFunctionBytecode *b)      { return b->jit_warm_done; }
+void     js_jit_fb_set_warm_done(JSFunctionBytecode *b)      { b->jit_warm_done = 1; }
+uint8_t *js_jit_fb_get_vt_hints(JSFunctionBytecode *b)       { return b->jit_vt_hints; }
+void     js_jit_fb_set_vt_hints(JSFunctionBytecode *b, uint8_t *hints) {
+    b->jit_vt_hints = hints; /* caller is responsible for freeing old value */
+}
+void     js_jit_fb_set_warm_handle(JSFunctionBytecode *b, void *h) { b->jit_warm_handle = h; }
+void    *js_jit_fb_get_warm_handle(JSFunctionBytecode *b)    { return b->jit_warm_handle; }
+void     js_jit_fb_set_warm_func(JSFunctionBytecode *b, JSJITFunc f) {
+    /* Atomically replace jit_func without touching jit_handle/jit_tier.
+     * Used by P45b warm-IC recompile to upgrade jit_func to the warm version
+     * while keeping the cold .so loaded (old call ICs use its function pointers). */
+    __atomic_store_n(&b->jit_func, f, __ATOMIC_RELEASE);
+}
+
+/* Return pointer to the JSValue inside a JSVarRef.  Used by generated C code
+ * that cannot see the full JSVarRef definition (defined only in quickjs.c). */
+JSValue *js_jit_var_ref_value(JSVarRef *ref) { return ref->pvalue; }
+JSVarRef *js_jit_var_ref_dup(JSVarRef *ref) { ref->header.ref_count++; return ref; }
+void js_jit_varref_reattach(JSVarRef *vr, JSValue *slot) {
+    if (vr && vr->is_detached) {
+        *slot = vr->value;
+        vr->value = JS_UNDEFINED;
+        vr->pvalue = slot;
+        vr->is_detached = FALSE;
+    }
+}
+
+/* P10.4: public wrapper for OP_instanceof — routes through JS_IsInstanceOf
+ * (which handles Symbol.hasInstance), matching the interpreter behaviour.
+ * js_jit_ordinary_instanceof is kept as an alias for combined.so compat shims
+ * that reference it; both names do the same thing. */
+int js_jit_ordinary_instanceof(JSContext *ctx, JSValue val, JSValue obj)
+{
+    return JS_IsInstanceOf(ctx, val, obj);
+}
+
+/* P10.3: extract JSFunctionBytecode from a JSValue (code-gen time use).
+ * Returns NULL if the value is not a bytecode function object. */
+JSFunctionBytecode *js_jit_get_callee_fb(JSValue func)
+{
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT) return NULL;
+    JSObject *p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION) return NULL;
+    return p->u.func.function_bytecode;
+}
+
+/* P10.3: guard check + cpool/var_refs extraction for generated direct calls.
+ * Returns 1 if func is the expected JIT function and fills *cpool_out and *var_refs_out. */
+int js_jit_check_and_extract(JSValue func, JSJITFunc expected,
+                              JSValue **cpool_out, JSVarRef ***var_refs_out)
+{
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT) return 0;
+    JSObject *p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION) return 0;
+    JSFunctionBytecode *b = p->u.func.function_bytecode;
+    /* P10.3 safety: only use direct call if callee was compiled with
+     * mutated_arg_mask protection (jit_p103_safe=1).  Old cached .so
+     * files compiled without that protection write to argv[] directly,
+     * which would double-free the caller's _ca[] values. */
+    if (!b->jit_p103_safe) return 0;
+    JSJITFunc jf = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
+    if (jf != expected) return 0;
+    *cpool_out    = b->cpool;
+    *var_refs_out = p->u.func.var_refs;
+    return 1;
+}
+
+/* Bytecode/metadata accessors for the code generator (Phase 2+) */
+const uint8_t *js_jit_fb_get_bytecode(JSFunctionBytecode *b, int *len)
+{
+    *len = b->byte_code_len;
+    return b->byte_code_buf;
+}
+int      js_jit_fb_get_arg_count(JSFunctionBytecode *b) { return b->arg_count; }
+int      js_jit_fb_get_var_count(JSFunctionBytecode *b) { return b->var_count; }
+int      js_jit_fb_get_stack_size(JSFunctionBytecode *b) { return b->stack_size; }
+int      js_jit_fb_get_closure_var_count(JSFunctionBytecode *b) { return b->closure_var_count; }
+JSAtom   js_jit_fb_get_closure_var_atom(JSFunctionBytecode *b, int idx) { return b->closure_var[idx].var_name; }
+int      js_jit_fb_get_closure_var_is_lexical(JSFunctionBytecode *b, int idx) { return b->closure_var[idx].is_lexical; }
+
+/* Slow path for OP_get_var when the var_ref value is JS_UNINITIALIZED.
+ * Replicates the interpreter's fallback: lexical → TDZ throw,
+ * non-lexical → global property lookup (throws ReferenceError if absent). */
+JSValue js_jit_op_get_var_slow(JSContext *ctx, JSAtom atom, int is_lexical)
+{
+    if (is_lexical) {
+        JS_ThrowReferenceErrorUninitialized(ctx, atom);
+        return JS_EXCEPTION;
+    }
+    JSValue val = JS_GetPropertyInternal(ctx, ctx->global_obj, atom,
+                                         ctx->global_obj, TRUE);
+    return val;
+}
+/* Slow path for OP_put_var / OP_put_var_init when *var_ref->pvalue is
+ * JS_UNINITIALIZED.  Mirrors the interpreter's OP_put_var branch exactly:
+ *   is_lexical && !is_put_init → TDZ / const throw
+ *   is_lexical &&  is_put_init → caller should write directly (not called here)
+ *   !is_lexical                → JS_SetPropertyInternal on global_obj
+ * val is always consumed (freed on error, stored/transferred on success).
+ * Returns 0 on success, -1 on exception. */
+int js_jit_op_put_var_slow(JSContext *ctx, JSAtom atom, int is_lexical,
+                           int is_put_init, JSValue val)
+{
+    int ret;
+    if (is_lexical) {
+        /* OP_put_var_init into an uninit lexical slot is handled by the caller
+         * (direct write); we only get here for OP_put_var on a lexical TDZ. */
+        JS_FreeValue(ctx, val);
+        JS_ThrowReferenceErrorUninitialized(ctx, atom);
+        return -1;
+    }
+    /* Non-lexical implicit global: set on global_obj */
+    ret = JS_SetPropertyInternal(ctx, ctx->global_obj, atom, val,
+                                 ctx->global_obj, JS_PROP_THROW_STRICT);
+    /* val was consumed by JS_SetPropertyInternal regardless of ret */
+    return (ret < 0) ? -1 : 0;
+}
+/* P16: delete_var — mirrors JS_DeleteGlobalVar (which is static). */
+int js_jit_op_delete_global_var(JSContext *ctx, JSAtom atom)
+{
+    return JS_DeleteGlobalVar(ctx, atom);
+}
+/* P17: apply — mirrors js_function_apply (which is static).
+ * func, this_val, args_array are borrowed (not consumed). */
+JSValue js_jit_op_apply(JSContext *ctx, JSValue func, JSValue this_val,
+                        JSValue args_array, int magic)
+{
+    JSValueConst argv[2] = { this_val, args_array };
+    return js_function_apply(ctx, func, 2, argv, magic);
+}
+/* P17: apply_eval — mirrors OP_apply_eval interpreter logic.
+ * func and args_array are borrowed (not consumed).
+ * scope_idx: raw value from bytecode operand (already + ARG_SCOPE_END). */
+JSValue js_jit_op_apply_eval(JSContext *ctx, JSValue func, JSValue args_array,
+                              int scope_idx)
+{
+    uint32_t len;
+    JSValue *tab;
+    JSValueConst obj;
+    JSValue ret_val;
+
+    tab = build_arg_list(ctx, &len, args_array);
+    if (!tab)
+        return JS_EXCEPTION;
+    if (js_same_value(ctx, func, ctx->eval_obj)) {
+        obj = (len >= 1) ? tab[0] : JS_UNDEFINED;
+        ret_val = JS_EvalObject(ctx, JS_UNDEFINED, obj,
+                                JS_EVAL_TYPE_DIRECT, scope_idx);
+    } else {
+        ret_val = JS_Call(ctx, func, JS_UNDEFINED, len,
+                          (JSValueConst *)tab);
+    }
+    free_arg_list(ctx, tab, len);
+    return ret_val;
+}
+int      js_jit_fb_get_cpool_count(JSFunctionBytecode *b) { return b->cpool_count; }
+JSAtom   js_jit_fb_get_func_atom(JSFunctionBytecode *b)  { return b->func_name; }
+/* P9.1: atom-to-string helper for codegen name table building */
+const char *js_jit_atom_get_str(JSRuntime *rt, char *buf, int buf_size, JSAtom atom) {
+    return JS_AtomGetStrRT(rt, buf, buf_size, atom);
+}
+/* P9.0: per-PC stack depth table (0xffff = unreachable/unexplored) */
+const uint16_t *js_jit_fb_get_stack_depth_tab(JSFunctionBytecode *b) {
+    return b->stack_depth_tab;
+}
+/* P9.3: CF annotation table (loop header/exit PCs) */
+const JSJITCFAnnotation *js_jit_fb_cf_annotations(JSFunctionBytecode *b, int *count_out) {
+    if (count_out) *count_out = b->cf_annotation_count;
+    return b->cf_annotations;
+}
+/* P9.1: original JS identifier atoms for locals and arguments */
+JSAtom js_jit_fb_get_local_atom(JSFunctionBytecode *b, int local_idx) {
+    if (!b->vardefs) return JS_ATOM_NULL;
+    return b->vardefs[b->arg_count + local_idx].var_name;
+}
+JSAtom js_jit_fb_get_arg_atom(JSFunctionBytecode *b, int arg_idx) {
+    if (!b->vardefs) return JS_ATOM_NULL;
+    return b->vardefs[arg_idx].var_name;
+}
+/* P13: inner function's cpool entry as JSFunctionBytecode* (NULL if not a function). */
+JSFunctionBytecode *js_jit_cpool_get_fb(JSFunctionBytecode *b, int idx) {
+    if (idx < 0 || idx >= b->cpool_count) return NULL;
+    JSValue v = b->cpool[idx];
+    if (JS_VALUE_GET_TAG(v) != JS_TAG_FUNCTION_BYTECODE) return NULL;
+    return (JSFunctionBytecode *)JS_VALUE_GET_PTR(v);
+}
+/* P34.4: extract the body JSFunctionBytecode from a JS_TAG_MODULE value.
+ * Used by js_init_module in --jit-hybrid generated code to walk bytecodes
+ * for JIT function pointer installation after JS_ReadObject. */
+JSFunctionBytecode *js_jit_module_get_bc(JSValue module_val) {
+    if (JS_VALUE_GET_TAG(module_val) != JS_TAG_MODULE) return NULL;
+    JSModuleDef *m = (JSModuleDef *)JS_VALUE_GET_PTR(module_val);
+    if (JS_VALUE_GET_TAG(m->func_obj) != JS_TAG_FUNCTION_BYTECODE) return NULL;
+    return (JSFunctionBytecode *)JS_VALUE_GET_PTR(m->func_obj);
+}
+/* P35.2: get the root JSFunctionBytecode for a module, handling both the
+ * pre-evaluation case (func_obj = JS_TAG_FUNCTION_BYTECODE, set by parser)
+ * and the post-evaluation case (func_obj = JS_CLASS_BYTECODE_FUNCTION object,
+ * set by js_create_module_function). */
+static JSFunctionBytecode *module_get_root_bc(JSModuleDef *m)
+{
+    JSValue fv = m->func_obj;
+    if (JS_VALUE_GET_TAG(fv) == JS_TAG_FUNCTION_BYTECODE)
+        return (JSFunctionBytecode *)JS_VALUE_GET_PTR(fv);
+    if (JS_VALUE_GET_TAG(fv) == JS_TAG_OBJECT) {
+        JSObject *p = JS_VALUE_GET_OBJ(fv);
+        if (p->class_id == JS_CLASS_BYTECODE_FUNCTION)
+            return p->u.func.function_bytecode;
+    }
+    return NULL;
+}
+/* P35.2: module graph walk — deduplication state (module-level) */
+typedef struct {
+    JSModuleDef **ptr;
+    int           count;
+    int           cap;
+} MGWalkVisited;
+static int mgwalk_visited_has(MGWalkVisited *v, JSModuleDef *m) {
+    for (int i = 0; i < v->count; i++) if (v->ptr[i] == m) return 1;
+    return 0;
+}
+static int mgwalk_visited_add(JSRuntime *rt, MGWalkVisited *v, JSModuleDef *m) {
+    if (v->count == v->cap) {
+        int nc = v->cap ? v->cap * 2 : 8;
+        JSModuleDef **p = js_realloc_rt(rt, v->ptr, (size_t)nc * sizeof(*p));
+        if (!p) return -1;
+        v->ptr = p; v->cap = nc;
+    }
+    v->ptr[v->count++] = m; return 0;
+}
+static void mgwalk_rec(JSRuntime *rt, JSModuleDef *m,
+                        void (*cb)(JSFunctionBytecode *, void *),
+                        void *opaque, MGWalkVisited *visited)
+{
+    if (!m || mgwalk_visited_has(visited, m)) return;
+    if (mgwalk_visited_add(rt, visited, m) < 0) return;
+    JSFunctionBytecode *root_bc = module_get_root_bc(m);
+    if (root_bc)
+        js_jit_walk_bytecodes(root_bc, cb, opaque);
+    for (int i = 0; i < m->req_module_entries_count; i++) {
+        JSModuleDef *sub = m->req_module_entries[i].module;
+        if (sub) mgwalk_rec(rt, sub, cb, opaque, visited);
+    }
+}
+/* P35.2 — walk the module import graph from entry_module_val.
+ * Follows req_module_entries recursively; each module visited once.
+ * Works with both COMPILE_ONLY modules (imports unresolved, only entry module
+ * walked) and fully evaluated modules (full graph walked). */
+void js_jit_walk_module_graph(JSContext *ctx, JSValue entry_module_val,
+                               void (*cb)(JSFunctionBytecode *, void *),
+                               void *opaque)
+{
+    if (JS_VALUE_GET_TAG(entry_module_val) != JS_TAG_MODULE || !cb) return;
+    JSRuntime *rt = JS_GetRuntime(ctx);
+    JSModuleDef *m = (JSModuleDef *)JS_VALUE_GET_PTR(entry_module_val);
+    MGWalkVisited visited = {NULL, 0, 0};
+    mgwalk_rec(rt, m, cb, opaque, &visited);
+    js_free_rt(rt, visited.ptr);
+}
+/* P35.2 — walk all modules currently loaded in ctx.
+ * Iterates ctx->loaded_modules and calls js_jit_walk_bytecodes on each
+ * module body.  Used by generated js_init_app(ctx) to install JIT functions
+ * without needing the entry module JSValue. */
+void js_jit_walk_all_modules(JSContext *ctx,
+                              void (*cb)(JSFunctionBytecode *, void *),
+                              void *opaque)
+{
+    if (!cb) return;
+    struct list_head *el;
+    list_for_each(el, &ctx->loaded_modules) {
+        JSModuleDef *m = list_entry(el, JSModuleDef, link);
+        JSFunctionBytecode *root_bc = module_get_root_bc(m);
+        if (root_bc)
+            js_jit_walk_bytecodes(root_bc, cb, opaque);
+    }
+}
+/* P13: inner function's closure_var[] accessors. */
+int js_jit_fb_get_inner_cv_type(JSFunctionBytecode *b_inner, int cv_idx) {
+    return (int)b_inner->closure_var[cv_idx].closure_type;
+}
+int js_jit_fb_get_inner_cv_var_idx(JSFunctionBytecode *b_inner, int cv_idx) {
+    return (int)b_inner->closure_var[cv_idx].var_idx;
+}
+/* P13: outer function's var_ref_count (size of sf->var_refs[]). */
+int js_jit_fb_get_var_ref_count(JSFunctionBytecode *b) {
+    return (int)b->var_ref_count;
+}
+/* P13: outer function's per-local/arg captured-variable metadata. */
+int js_jit_fb_get_local_var_ref_idx(JSFunctionBytecode *b, int local_idx) {
+    if (!b->vardefs) return -1;
+    return (int)b->vardefs[b->arg_count + local_idx].var_ref_idx;
+}
+int js_jit_fb_get_arg_var_ref_idx(JSFunctionBytecode *b, int arg_idx) {
+    if (!b->vardefs) return -1;
+    return (int)b->vardefs[arg_idx].var_ref_idx;
+}
+int js_jit_fb_is_local_captured(JSFunctionBytecode *b, int local_idx) {
+    if (!b->vardefs) return 0;
+    return (int)b->vardefs[b->arg_count + local_idx].is_captured;
+}
+int js_jit_fb_is_arg_captured(JSFunctionBytecode *b, int arg_idx) {
+    if (!b->vardefs) return 0;
+    return (int)b->vardefs[arg_idx].is_captured;
+}
+
+/* P13: create a JSVarRef with refcount=1, pvalue=slot, stack_frame=NULL.
+ * Used by JIT-compiled functions to build closure var-refs pointing at
+ * shadow-array slots (_cap_buf / _arg_cap_buf) on the JIT C stack. */
+JSVarRef *js_jit_make_var_ref(JSContext *ctx, JSValue *slot) {
+    JSVarRef *vr = js_malloc(ctx, sizeof(*vr));
+    if (!vr) return NULL;
+    vr->header.ref_count = 1;
+    add_gc_object(ctx->rt, &vr->header, JS_GC_OBJ_TYPE_VAR_REF);
+    vr->is_detached  = FALSE;
+    vr->is_lexical   = FALSE;
+    vr->is_const     = FALSE;
+    vr->var_ref_idx  = 0;       /* unused: managed via _sf_vrefs[], not sf->var_refs[] */
+    vr->stack_frame  = NULL;    /* NULL signals JIT ownership to free_var_ref */
+    vr->pvalue       = slot;
+    return vr;
+}
+
+/* P13: heap-promote all live var_refs before the JIT frame exits.
+ * For each non-NULL vrefs[i]: copy *pvalue → var_ref->value, redirect pvalue.
+ * MUST be called on ALL exit paths before _cap_buf/_arg_cap_buf go out of scope. */
+void js_jit_close_caps(JSContext *ctx, JSVarRef **vrefs, int n) {
+    JSRuntime *rt = JS_GetRuntime(ctx);
+    for (int i = 0; i < n; i++) {
+        if (vrefs[i] && !vrefs[i]->is_detached) {
+            vrefs[i]->value  = JS_DupValueRT(rt, *vrefs[i]->pvalue);
+            vrefs[i]->pvalue = &vrefs[i]->value;
+            vrefs[i]->is_detached = TRUE;
+        }
+    }
+}
+
+/* P13: build a closure function object from pre-constructed var_refs.
+ * bfunc (JS_TAG_FUNCTION_BYTECODE) is consumed (freed on error or stored).
+ * pre_vrefs[0..n_vrefs-1] are pre-filled with refcounts already set by the caller.
+ * On success, the inner function's p->u.func.var_refs[] takes ownership of the entries.
+ * On error, pre_vrefs entries are released (refcount decremented) and JS_EXCEPTION returned. */
+JSValue js_jit_create_closure(JSContext *ctx, JSValue bfunc,
+                               JSVarRef **pre_vrefs, int n_vrefs) {
+    JSFunctionBytecode *b = (JSFunctionBytecode *)JS_VALUE_GET_PTR(bfunc);
+    /* Create the function object with the correct class for the function kind */
+    static const uint16_t fk_to_cid[] = {
+        [JS_FUNC_NORMAL]           = JS_CLASS_BYTECODE_FUNCTION,
+        [JS_FUNC_GENERATOR]        = JS_CLASS_GENERATOR_FUNCTION,
+        [JS_FUNC_ASYNC]            = JS_CLASS_ASYNC_FUNCTION,
+        [JS_FUNC_ASYNC_GENERATOR]  = JS_CLASS_ASYNC_GENERATOR_FUNCTION,
+    };
+    int class_id = (b->func_kind < (int)(sizeof(fk_to_cid)/sizeof(fk_to_cid[0])))
+                   ? fk_to_cid[b->func_kind] : JS_CLASS_BYTECODE_FUNCTION;
+    JSValue func_obj = JS_NewObjectClass(ctx, class_id);
+    if (JS_IsException(func_obj)) {
+        JS_FreeValue(ctx, bfunc);
+        goto fail_no_func;
+    }
+    /* Delegate to js_closure2 with NULL sf/cur_var_refs — but we need to set
+     * var_refs ourselves since js_closure2 uses get_var_ref(sf,...) for LOCAL/ARG.
+     * Instead, call js_closure2 with is_eval=FALSE and cur_var_refs=pre_vrefs,
+     * but since js_closure2 calls get_var_ref for LOCAL/ARG which needs sf, we
+     * cannot use it for those types.  We replicate the js_closure2 logic here for
+     * P13's supported subset (LOCAL/ARG already resolved; REF/GLOBAL_REF passed as-is). */
+    {
+        JSObject *p = JS_VALUE_GET_OBJ(func_obj);
+        p->u.func.function_bytecode = b;
+        p->u.func.home_object = NULL;
+        p->u.func.var_refs = NULL;
+        if (n_vrefs > 0) {
+            JSVarRef **var_refs = js_malloc(ctx, sizeof(*var_refs) * n_vrefs);
+            if (!var_refs) {
+                JS_FreeValue(ctx, func_obj); /* frees bfunc too via bytecode deref */
+                goto fail_no_func;
+            }
+            memcpy(var_refs, pre_vrefs, sizeof(*var_refs) * n_vrefs);
+            p->u.func.var_refs = var_refs;
+        }
+    }
+    /* Set function properties: name and length */
+    {
+        JSAtom name_atom = b->func_name;
+        if (name_atom == JS_ATOM_NULL) name_atom = JS_ATOM_empty_string;
+        js_function_set_properties(ctx, func_obj, name_atom, b->defined_arg_count);
+    }
+    /* Generator prototype setup (mirrors js_closure) */
+    if (b->func_kind & JS_FUNC_GENERATOR) {
+        JSValue proto;
+        int proto_class_id = (b->func_kind == JS_FUNC_ASYNC_GENERATOR)
+                             ? JS_CLASS_ASYNC_GENERATOR : JS_CLASS_GENERATOR;
+        proto = JS_NewObjectProto(ctx, ctx->class_proto[proto_class_id]);
+        if (JS_IsException(proto)) {
+            JS_FreeValue(ctx, func_obj);
+            goto fail_no_func;
+        }
+        JS_DefinePropertyValue(ctx, func_obj, JS_ATOM_prototype, proto, JS_PROP_WRITABLE);
+    } else if (b->has_prototype) {
+        JS_SetConstructorBit(ctx, func_obj, TRUE);
+        JS_DefineAutoInitProperty(ctx, func_obj, JS_ATOM_prototype,
+                                  JS_AUTOINIT_ID_PROTOTYPE, NULL, JS_PROP_WRITABLE);
+    }
+    return func_obj;
+fail_no_func:
+    /* bfunc already freed above; release pre_vrefs entries */
+    for (int i = 0; i < n_vrefs; i++)
+        free_var_ref(ctx->rt, pre_vrefs[i]);
+    return JS_EXCEPTION;
+}
+/* P8.2: interrupt poll wrapper — also checks C stack depth.
+ * Direct P8.2/P8.3 JIT calls bypass JS_CallInternal's stack overflow check,
+ * so we combine the interrupt poll with a stack check here.                  */
+int js_jit_poll_interrupts(JSContext *ctx)
+{
+    if (js_poll_interrupts(ctx))
+        return -1;
+    JSRuntime *rt = JS_GetRuntime(ctx);
+    if (unlikely(js_check_stack_overflow(rt, 0))) {
+        JS_ThrowStackOverflow(ctx);
+        return -1;
+    }
+    return 0;
+}
+
+/* P8.3: JIT-to-JIT fast call path.
+ *
+ * Replaces the simple JS_Call vtable entry.  For bytecode functions that have
+ * already been JIT-compiled, this bypasses JS_CallInternal entirely:
+ *   1. Check tag == JS_TAG_OBJECT && class_id == JS_CLASS_BYTECODE_FUNCTION
+ *   2. Atomic-read jit_func (ACQUIRE)
+ *   3. If non-NULL: poll interrupts, then call jit_func directly with the
+ *      function's own cpool and var_refs.
+ *   4. Otherwise: fall through to JS_Call (interpreter or future GCC compile).
+ *
+ * Cost on the fast path: tag check + class_id check + one ACQUIRE load +
+ * poll_interrupts (mostly a counter decrement) + one direct call.
+ * Cost on the slow path: same checks + JS_Call.
+ *
+ * Self-recursive calls are handled by P8.2 (zero vtable overhead); this
+ * function handles all other JIT-to-JIT calls.                              */
+JSValue js_jit_call(JSContext *ctx, JSValue func, JSValue this_val,
+                    int argc, JSValue *argv)
+{
+    if (JS_VALUE_GET_TAG(func) == JS_TAG_OBJECT) {
+        JSObject *p = JS_VALUE_GET_OBJ(func);
+        if (p->class_id == JS_CLASS_BYTECODE_FUNCTION) {
+            JSFunctionBytecode *b = p->u.func.function_bytecode;
+            JSJITFunc jf = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
+            if (jf) {
+                if (js_jit_poll_interrupts(ctx))
+                    return JS_EXCEPTION;
+                /* Temporarily update cur_func and new_target in the existing
+                 * current_stack_frame so that js_jit_special_object
+                 * (HOME_OBJECT, THIS_FUNC, NEW_TARGET) reads the callee's
+                 * function object, not the caller's.  Without this, super.method()
+                 * in a JIT-to-JIT call would read home_object from the caller's
+                 * function object, causing infinite recursion in 3-level class
+                 * inheritance chains.
+                 *
+                 * We update in-place rather than pushing a new minimal stack
+                 * frame to preserve sf->var_refs, sf->arg_buf, and sf->var_buf
+                 * (used by js_closure2 when define_class captures outer locals).
+                 * The saved values are restored before this function returns. */
+                JSRuntime *rt = ctx->rt;
+                JSValue saved_jit_callee    = rt->jit_callee_func;
+                JSValue saved_jit_new_target = rt->jit_new_target;
+                int saved_jit_actual_argc   = rt->jit_actual_argc;
+                rt->jit_callee_func   = func;
+                rt->jit_new_target    = JS_UNDEFINED;
+                rt->jit_actual_argc   = argc;
+
+                /* Always pad argv to arg_count and DUP each element.
+                 *
+                 * Padding ensures that GEN_PUT_ARG does not access out-of-range
+                 * slots (e.g. when f(x,p) is called as f(x), arg_count=2 but
+                 * argc=1 — without padding _FREE(argv[1]) would be invalid).
+                 *
+                 * DUP-ing is required for correctness: GEN_PUT_ARG does
+                 * _FREE(argv[i]) then stores a new value.  If argv pointed
+                 * directly into the caller's JIT stack, that free would
+                 * corrupt the caller's reference and cause a double-free when
+                 * the caller cleans up its own _tsv slot.  By giving the callee
+                 * its own copy, the caller's value is untouched.
+                 *
+                 * After the call we free all padded slots: the JIT has already
+                 * freed/replaced each slot it touched via put_arg, so this
+                 * correctly frees any slots that were not modified.
+                 *
+                 * Variadic functions (arg_count == 0) never use put_arg and
+                 * access arguments via js_build_arguments which DUPs from argv.
+                 * Pass the actual argc/argv directly — no padding needed and
+                 * doing so avoids the bug where argc=0 produces an empty
+                 * arguments object inside the callee. */
+                JSValue ret;
+                {
+                    int n = b->arg_count;
+                    if (n == 0) {
+                        /* Variadic (arg_count=0): pass actual args; callee DUPs
+                         * them via js_build_arguments, never _FREE()s argv. */
+                        ret = jf(ctx, this_val, argc, argv,
+                                 b->cpool, p->u.func.var_refs);
+                    } else if (!b->has_simple_parameter_list) {
+                        /* P33: complex params (rest/defaults/destructuring).
+                         * Must pass REAL argc so OP_rest sees extras beyond
+                         * b->arg_count, and GEN_GET_ARG correctly detects
+                         * "not supplied" args for default-value checks.
+                         * Allocate max(argc, n) slots: named slots need
+                         * to be writable (GEN_PUT_ARG), extra rest slots
+                         * need to survive until OP_rest consumes them. */
+                        int total = argc > n ? argc : n;
+                        JSValue *padded = alloca(sizeof(JSValue) * total);
+                        int i;
+                        for (i = 0; i < argc; i++)
+                            padded[i] = JS_DupValue(ctx, argv[i]);
+                        for (; i < total; i++)
+                            padded[i] = JS_UNDEFINED;
+                        ret = jf(ctx, this_val, argc, padded,
+                                 b->cpool, p->u.func.var_refs);
+                        for (i = 0; i < total; i++)
+                            JS_FreeValue(ctx, padded[i]);
+                    } else {
+                        /* Simple params: pad argv to exactly n slots. */
+                        JSValue *padded = alloca(sizeof(JSValue) * n);
+                        int i;
+                        for (i = 0; i < argc && i < n; i++)
+                            padded[i] = JS_DupValue(ctx, argv[i]);
+                        for (; i < n; i++)
+                            padded[i] = JS_UNDEFINED;
+                        ret = jf(ctx, this_val, n, padded,
+                                 b->cpool, p->u.func.var_refs);
+                        for (i = 0; i < n; i++)
+                            JS_FreeValue(ctx, padded[i]);
+                    }
+                }
+                rt->jit_callee_func  = saved_jit_callee;
+                rt->jit_new_target   = saved_jit_new_target;
+                rt->jit_actual_argc  = saved_jit_actual_argc;
+                return ret;
+            }
+        }
+    }
+    return JS_Call(ctx, func, this_val, argc, argv);
+}
+
+/* P34.6: Call a JIT-compiled function directly by its JSFunctionBytecode.
+ * Intended for testing and tooling that has a bytecode pointer but no
+ * JSFunction object.  var_refs is passed as NULL — suitable for
+ * non-closure functions.  Returns JS_EXCEPTION if not JIT-compiled. */
+JSValue js_jit_call_fb(JSContext *ctx, JSFunctionBytecode *b,
+                       JSValue this_val, int argc, JSValue *argv)
+{
+    JSJITFunc fn = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
+    if (!fn)
+        return JS_ThrowTypeError(ctx, "js_jit_call_fb: function not JIT-compiled");
+    if (js_jit_poll_interrupts(ctx))
+        return JS_EXCEPTION;
+    return fn(ctx, this_val, argc, argv, b->cpool, NULL);
+}
+
+/* P11.3: Direct JIT call with argument padding.
+ *
+ * The callee's JIT code assumes argc == callee_arg_count: it may write back
+ * to argv[i] (via put_arg) for any i < callee_arg_count.  When nargs <
+ * callee_arg_count, argv[i] for i >= nargs would be out-of-bounds, and when
+ * nargs == callee_arg_count the callee's _FREE(argv[i]) would double-free the
+ * caller's own arg slots.  We therefore create a private padded copy.
+ *
+ * This mirrors the padding in js_jit_call(). */
+JSValue js_jit_ic_direct_call(
+    JSContext *ctx, JSValue this_val,
+    int nargs, JSValue *argv,
+    JSJITCallICEntry *ic, JSVarRef **var_refs)
+{
+    /* Set jit_callee_func / jit_new_target so that js_jit_special_object
+     * (HOME_OBJECT, THIS_FUNC, NEW_TARGET) sees the callee's function object.
+     * We do NOT touch sf->cur_func because that belongs to the outer frame
+     * and is used by get_var_ref to look up var_ref_idx from the outer
+     * function's bytecode when js_closure2 captures outer locals. */
+    JSRuntime *rt = ctx->rt;
+    JSValue saved_jit_callee    = rt->jit_callee_func;
+    JSValue saved_jit_new_target = rt->jit_new_target;
+    int saved_jit_actual_argc   = rt->jit_actual_argc;
+    rt->jit_callee_func   = JS_MKPTR(JS_TAG_OBJECT, ic->expected_func);
+    rt->jit_new_target    = JS_UNDEFINED;
+    rt->jit_actual_argc   = nargs;
+
+    /* P50b: Always derive cpool from the live bytecode object (ic->expected_bc
+     * was verified in the hot path to equal the current func's bytecode).
+     * ic->callee_cpool is stale under malloc ABA (same bc address in a new
+     * runtime), so never pass it to the JIT function — use the live cpool
+     * to avoid UAF. */
+    JSValue *live_cpool = ic->expected_bc->cpool;
+
+    int n = ic->callee_arg_count;
+    JSValue ret;
+    if (n == 0) {
+        /* Variadic callee (arg_count == 0): pass actual args directly. */
+        ret = ic->direct_jit(ctx, this_val, nargs, argv,
+                             live_cpool, var_refs);
+    } else if (!ic->expected_bc->has_simple_parameter_list) {
+        /* P33: complex params — pass real nargs and all args. */
+        int total = nargs > n ? nargs : n;
+        JSValue *padded = (JSValue *)alloca(sizeof(JSValue) * total);
+        int i;
+        for (i = 0; i < nargs; i++)
+            padded[i] = JS_DupValue(ctx, argv[i]);
+        for (; i < total; i++)
+            padded[i] = JS_UNDEFINED;
+        ret = ic->direct_jit(ctx, this_val, nargs, padded,
+                             live_cpool, var_refs);
+        for (i = 0; i < total; i++)
+            JS_FreeValue(ctx, padded[i]);
+    } else {
+        /* Simple params: pad to exactly n slots. */
+        JSValue *padded = (JSValue *)alloca(sizeof(JSValue) * n);
+        int i;
+        for (i = 0; i < nargs && i < n; i++)
+            padded[i] = JS_DupValue(ctx, argv[i]);
+        for (; i < n; i++)
+            padded[i] = JS_UNDEFINED;
+        ret = ic->direct_jit(ctx, this_val, n, padded,
+                             live_cpool, var_refs);
+        for (i = 0; i < n; i++)
+            JS_FreeValue(ctx, padded[i]);
+    }
+    rt->jit_callee_func  = saved_jit_callee;
+    rt->jit_new_target   = saved_jit_new_target;
+    rt->jit_actual_argc  = saved_jit_actual_argc;
+    return ret;
+}
+
+/* P11.3: Populate call IC after a miss.
+ *
+ * On first miss (cold):  fill with the callee's identity + JIT info.
+ * On same callee again:  refresh direct_jit if it has since been compiled.
+ * On different callee:   mark megamorphic — never cache again.
+ *
+ * Only bytecode functions are cached; builtins/bound functions go megamorphic
+ * immediately since they are almost always monomorphic in practice and
+ * js_jit_call already handles them cheaply.
+ */
+/* P41.2: Compute the callee_is_fast flag for an IC entry.
+ * A callee is "fast" when it is a zero-arg, plain JS_FUNC_NORMAL closure that:
+ *   - arg_count == 0: no argument padding or duplication needed at call site
+ *   - does not use super (need_home_object == 0): cur_func update not needed
+ *   - var_ref_count == 0: does not create var_refs for child closures
+ *   - closure_var_count == 0: does not capture variables from outer scope.
+ *     When closure_var_count > 0, fo->u.func.var_refs is non-NULL and the JIT
+ *     function reads var_refs[i] for captured variables.  js_jit_ic_fast_call
+ *     passes var_refs=NULL, which would crash on the first captured-var access.
+ * For such callees the call IC hot path can call direct_jit() directly —
+ * no alloca, no arg dup/free, no cur_func/new_target save/restore. */
+static uint8_t js_jit_ic_compute_fast(JSFunctionBytecode *b)
+{
+    return (b->arg_count == 0 &&
+            b->func_kind == JS_FUNC_NORMAL &&
+            !b->need_home_object &&
+            b->var_ref_count == 0 &&
+            b->closure_var_count == 0) ? 1 : 0;
+}
+
+/* P41.2: slim direct call — only for callees where callee_is_fast == 1.
+ * Calls the JIT function directly with no cur_func / new_target mutation.
+ * The caller must check callee_is_fast before using this path.
+ * callee_is_fast => need_home_object==0 so js_jit_special_object is never
+ * called for HOME_OBJECT/THIS_FUNC, and rt->jit_callee_func need not be set.
+ * P50b: read cpool from the live bytecode (ic->expected_bc verified in hot
+ * path) to avoid UAF from ABA address reuse; callee_is_fast ⇒ var_refs==0
+ * so callee_var_refs is unused and NULL is safe. */
+JSValue js_jit_ic_fast_call(JSContext *ctx, JSValue this_val,
+                             JSJITCallICEntry *ic)
+{
+    return ic->direct_jit(ctx, this_val, 0, NULL,
+                          ic->expected_bc->cpool, NULL);
+}
+
+void js_jit_callIC_fill(JSContext *ctx, JSValue func, JSJITCallICEntry *ic)
+{
+    /* P50: Cross-runtime ABA guard.  Static IC entries in .so files persist
+     * across runtimes in the same process.  If this IC was filled for a
+     * different runtime, reset it to cold so it can be refilled correctly. */
+    if (ic->rt != NULL && ic->rt != (void *)ctx->rt) {
+        ic->expected_func = NULL;
+        ic->rt            = NULL;
+    }
+    if (ic->expected_func == JIT_IC_MEGAMORPHIC)
+        return; /* already megamorphic — no point filling */
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT) {
+        ic->expected_func = JIT_IC_MEGAMORPHIC; /* primitive callee — not cacheable */
+        return;
+    }
+    JSObject *fo = JS_VALUE_GET_OBJ(func);
+    if (fo->class_id != JS_CLASS_BYTECODE_FUNCTION) {
+        ic->expected_func = JIT_IC_MEGAMORPHIC; /* builtin/bound — go megamorphic */
+        return;
+    }
+    JSFunctionBytecode *b = fo->u.func.function_bytecode;
+    if (ic->expected_func == NULL) {
+        /* Cold → fill */
+        ic->expected_func     = fo;
+        ic->expected_bc       = b;
+        ic->direct_jit        = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
+        ic->callee_cpool      = b->cpool;
+        ic->callee_var_refs   = fo->u.func.var_refs;
+        ic->callee_arg_count  = b->arg_count;
+        ic->callee_bc_hash    = b->jit_bc_hash;
+        ic->callee_is_fast    = js_jit_ic_compute_fast(b); /* P41.2 */
+        ic->rt                = (void *)ctx->rt;           /* P50: bind to this runtime */
+    } else if (ic->expected_func == fo && ic->expected_bc == b) {
+        /* Same callee — refresh jit_func if it was compiled since last fill */
+        if (ic->direct_jit == NULL) {
+            JSJITFunc jf = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
+            if (jf) {
+                ic->direct_jit      = jf;
+                ic->callee_cpool    = b->cpool;
+                ic->callee_var_refs = fo->u.func.var_refs;
+                ic->callee_bc_hash  = b->jit_bc_hash;
+            }
+        }
+    } else {
+        /* Different callee — megamorphic */
+        ic->expected_func = JIT_IC_MEGAMORPHIC;
+    }
+}
+/* Returns function name as a C string (caller must NOT free - static buffer). */
+const char *js_jit_fb_get_func_name(JSRuntime *rt, JSFunctionBytecode *b)
+{
+    if (b->func_name == JS_ATOM_NULL) return "<anonymous>";
+    /* Use a static buffer - good enough for debug use in the JIT codegen path */
+    static char buf[256];
+    const char *s = JS_AtomGetStrRT(rt, buf, sizeof(buf), b->func_name);
+    return s ? s : "<unknown>";
+}
+/* Return the JS source text for b (from debug info), or NULL if unavailable.
+ * *len_out receives the byte length (not NUL-terminated). */
+const char *js_jit_fb_get_source(JSFunctionBytecode *b, int *len_out)
+{
+    if (!b->has_debug || !b->debug.source) { *len_out = 0; return NULL; }
+    *len_out = b->debug.source_len;
+    return b->debug.source;
+}
+
+/* Opcode size table — built from quickjs-opcode.h so the JIT scan pass
+ * can iterate bytecode without seeing the static opcode_info[] array.  */
+const uint8_t *js_jit_get_opcode_size_table(int *count)
+{
+    /* Use the DEF macro to populate a static local table.
+     * 'size' is in bytes including the opcode byte itself.              */
+    static uint8_t tbl[OP_COUNT];
+    static int     tbl_ready;
+    if (!tbl_ready) {
+#define FMT(f)
+#define DEF(id, size, n_pop, n_push, f) tbl[OP_##id] = size;
+#define def(id, size, n_pop, n_push, f) /* short opcode, keep as 0 */
+#include "quickjs-opcode.h"
+#undef def
+#undef DEF
+#undef FMT
+        tbl_ready = 1;
+    }
+    *count = OP_COUNT;
+    return tbl;
+}
+
+/* -----------------------------------------------------------------------
+ * Non-static arithmetic/comparison wrappers for the JIT vtable.
+ *
+ * Internal helpers work on a JSValue stack pointer (sp[-2], sp[-1]).
+ * These wrappers adapt them to the (ctx, a, b) → JSValue calling
+ * convention the JSJITRuntime vtable needs.
+ *
+ * Ownership: a and b are CONSUMED by the callee (freed on both success
+ * and error paths — matching what the internal slow helpers already do).
+ * The return value is a new reference owned by the caller.
+ * ----------------------------------------------------------------------- */
+
+/* Binary arithmetic: dedicated fast-add helper */
+JSValue js_jit_op_add(JSContext *ctx, JSValue a, JSValue b)
+{
+    JSValue sp[2] = { a, b };
+    if (js_add_slow(ctx, &sp[2]) < 0)
+        return JS_EXCEPTION;
+    return sp[0]; /* result stored in sp[-2] = sp[0]; inputs already freed */
+}
+
+/* Binary arithmetic routed through opcode-generic slow path */
+#define DEF_JIT_ARITH(name, op)                                          \
+JSValue js_jit_op_##name(JSContext *ctx, JSValue a, JSValue b)           \
+{                                                                         \
+    JSValue sp[2] = { a, b };                                            \
+    if (js_binary_arith_slow(ctx, &sp[2], op) < 0)                      \
+        return JS_EXCEPTION;                                              \
+    return sp[0];                                                         \
+}
+DEF_JIT_ARITH(sub, OP_sub)
+DEF_JIT_ARITH(mul, OP_mul)
+DEF_JIT_ARITH(div, OP_div)
+DEF_JIT_ARITH(mod, OP_mod)
+DEF_JIT_ARITH(pow, OP_pow)
+#undef DEF_JIT_ARITH
+
+/* Bitwise — shl/sar/band/bor/bxor route through js_binary_logic_slow */
+#define DEF_JIT_LOGIC(name, op)                                          \
+JSValue js_jit_op_##name(JSContext *ctx, JSValue a, JSValue b)           \
+{                                                                         \
+    JSValue sp[2] = { a, b };                                            \
+    if (js_binary_logic_slow(ctx, &sp[2], op) < 0)                      \
+        return JS_EXCEPTION;                                              \
+    return sp[0];                                                         \
+}
+DEF_JIT_LOGIC(shl,  OP_shl)
+DEF_JIT_LOGIC(sar,  OP_sar)
+DEF_JIT_LOGIC(band, OP_and)
+DEF_JIT_LOGIC(bor,  OP_or)
+DEF_JIT_LOGIC(bxor, OP_xor)
+#undef DEF_JIT_LOGIC
+
+/* >>> uses js_shr_slow (bigint forbidden, converts to uint32) */
+JSValue js_jit_op_shr(JSContext *ctx, JSValue a, JSValue b)
+{
+    JSValue sp[2] = { a, b };
+    if (js_shr_slow(ctx, &sp[2]) < 0)
+        return JS_EXCEPTION;
+    return sp[0];
+}
+
+/* Unary arithmetic */
+#define DEF_JIT_UNARY(name, op)                                          \
+JSValue js_jit_op_##name(JSContext *ctx, JSValue a)                      \
+{                                                                        \
+    JSValue sp[1] = { a };                                               \
+    if (js_unary_arith_slow(ctx, &sp[1], op) < 0)                       \
+        return JS_EXCEPTION;                                              \
+    return sp[0];                                                        \
+}
+DEF_JIT_UNARY(neg,  OP_neg)
+DEF_JIT_UNARY(plus, OP_plus)
+DEF_JIT_UNARY(bnot, OP_not)
+#undef DEF_JIT_UNARY
+
+/* Comparisons: relational (lt, lte, gt, gte) */
+#define DEF_JIT_RELATIONAL(name, op)                                     \
+JSValue js_jit_op_##name(JSContext *ctx, JSValue a, JSValue b)           \
+{                                                                         \
+    JSValue sp[2] = { a, b };                                            \
+    if (js_relational_slow(ctx, &sp[2], op) < 0)                        \
+        return JS_EXCEPTION;                                              \
+    return sp[0];                                                         \
+}
+DEF_JIT_RELATIONAL(lt,  OP_lt)
+DEF_JIT_RELATIONAL(lte, OP_lte)
+DEF_JIT_RELATIONAL(gt,  OP_gt)
+DEF_JIT_RELATIONAL(gte, OP_gte)
+#undef DEF_JIT_RELATIONAL
+
+/* Abstract equality == */
+JSValue js_jit_op_eq(JSContext *ctx, JSValue a, JSValue b)
+{
+    JSValue sp[2] = { a, b };
+    if (js_eq_slow(ctx, &sp[2], 0) < 0)
+        return JS_EXCEPTION;
+    return sp[0];
+}
+
+/* Strict equality === */
+JSValue js_jit_op_strict_eq(JSContext *ctx, JSValue a, JSValue b)
+{
+    BOOL res = js_strict_eq(ctx, a, b);
+    JS_FreeValue(ctx, a);
+    JS_FreeValue(ctx, b);
+    return JS_NewBool(ctx, res);
+}
+
+/* typeof — returns a JS string value.
+ * js_operator_typeof() returns a JSAtom (uint32_t) disguised as int.   */
+static int js_operator_typeof(JSContext *ctx, JSValueConst op1); /* fwd */
+JSValue js_jit_op_type_of(JSContext *ctx, JSValue a)
+{
+    JSAtom atom = (JSAtom)js_operator_typeof(ctx, a);
+    JS_FreeValue(ctx, a);
+    return JS_AtomToString(ctx, atom);
+}
+
+/* P18: typeof_is_undefined / typeof_is_function helpers.
+ * These consume the value (free it) and return 1/0.
+ * They use js_operator_typeof() which handles HTMLDDA objects correctly. */
+int js_jit_op_typeof_is_undefined(JSContext *ctx, JSValue a)
+{
+    int r = ((JSAtom)js_operator_typeof(ctx, a) == JS_ATOM_undefined);
+    JS_FreeValue(ctx, a);
+    return r;
+}
+
+int js_jit_op_typeof_is_function(JSContext *ctx, JSValue a)
+{
+    int r = ((JSAtom)js_operator_typeof(ctx, a) == JS_ATOM_function);
+    JS_FreeValue(ctx, a);
+    return r;
+}
+
+/* -----------------------------------------------------------------------
+ * P19 — simple utility op helpers
+ * ----------------------------------------------------------------------- */
+
+/* OP_get_var_undef slow path: like get_var_slow but passes FALSE (no throw)
+ * to JS_GetPropertyInternal when the global var is not found. */
+JSValue js_jit_op_get_var_undef(JSContext *ctx, JSAtom atom, int is_lexical)
+{
+    if (is_lexical) {
+        JS_ThrowReferenceErrorUninitialized(ctx, atom);
+        return JS_EXCEPTION;
+    }
+    return JS_GetPropertyInternal(ctx, ctx->global_obj, atom,
+                                   ctx->global_obj, FALSE);
+}
+
+/* OP_throw_error: throw by (atom, type) pair — mirrors interpreter exactly. */
+void js_jit_op_throw_error(JSContext *ctx, JSAtom atom, int type)
+{
+#define JS_THROW_VAR_RO             0
+#define JS_THROW_VAR_REDECL         1
+#define JS_THROW_VAR_UNINITIALIZED  2
+#define JS_THROW_ERROR_DELETE_SUPER   3
+#define JS_THROW_ERROR_ITERATOR_THROW 4
+    switch (type) {
+    case JS_THROW_VAR_RO:
+        JS_ThrowTypeErrorReadOnly(ctx, JS_PROP_THROW, atom); break;
+    case JS_THROW_VAR_REDECL:
+        JS_ThrowSyntaxErrorVarRedeclaration(ctx, atom); break;
+    case JS_THROW_VAR_UNINITIALIZED:
+        JS_ThrowReferenceErrorUninitialized(ctx, atom); break;
+    case JS_THROW_ERROR_DELETE_SUPER:
+        JS_ThrowReferenceError(ctx, "unsupported reference to 'super'"); break;
+    case JS_THROW_ERROR_ITERATOR_THROW:
+        JS_ThrowTypeError(ctx, "iterator does not have a throw method"); break;
+    default:
+        JS_ThrowInternalError(ctx, "invalid throw error type %d", type); break;
+    }
+#undef JS_THROW_VAR_RO
+#undef JS_THROW_VAR_REDECL
+#undef JS_THROW_VAR_UNINITIALIZED
+#undef JS_THROW_ERROR_DELETE_SUPER
+#undef JS_THROW_ERROR_ITERATOR_THROW
+}
+
+/* OP_to_object: borrows val, returns new reference (or JS_EXCEPTION). */
+JSValue js_jit_op_to_object(JSContext *ctx, JSValue val)
+{
+    return JS_ToObject(ctx, val);
+}
+
+/* OP_to_propkey: borrows val, returns new reference (or JS_EXCEPTION). */
+JSValue js_jit_op_to_propkey(JSContext *ctx, JSValue val)
+{
+    return JS_ToPropertyKey(ctx, val);
+}
+
+/* OP_regexp: consumes both pattern and bc (matches JS_NewRegexp). */
+JSValue js_jit_op_regexp(JSContext *ctx, JSValue pattern, JSValue bc)
+{
+    return JS_NewRegexp(ctx, pattern, bc);
+}
+
+/* OP_set_name_computed: borrows func and name_src.
+ * Returns 0 on success, -1 on exception. */
+int js_jit_op_set_name_computed(JSContext *ctx, JSValue func, JSValue name_src)
+{
+    return JS_DefineObjectNameComputed(ctx, func, name_src, JS_PROP_CONFIGURABLE);
+}
+
+/* OP_set_proto: borrows obj and proto.
+ * Only calls JS_SetPrototypeInternal when proto is object or null.
+ * Returns 0 on success, -1 on exception. */
+int js_jit_op_set_proto(JSContext *ctx, JSValue obj, JSValue proto)
+{
+    if (JS_IsObject(proto) || JS_IsNull(proto))
+        return JS_SetPrototypeInternal(ctx, obj, proto, TRUE);
+    return 0;
+}
+
+/* OP_set_home_object: borrows both func and home. */
+void js_jit_op_set_home_object(JSContext *ctx, JSValue func, JSValue home)
+{
+    js_method_set_home_object(ctx, func, home);
+}
+
+/* OP_get_array_el2: borrows obj, CONSUMES prop.
+ * Returns the element (new reference) or JS_EXCEPTION. */
+JSValue js_jit_op_get_array_el2(JSContext *ctx, JSValue obj, JSValue prop)
+{
+    return JS_GetPropertyValue(ctx, obj, prop);
+}
+
+/* OP_define_array_el: borrows arr, CONSUMES prop and val.
+ * Returns 0 on success, -1 on exception. */
+int js_jit_op_define_array_el(JSContext *ctx, JSValue arr, JSValue prop, JSValue val)
+{
+    return JS_DefinePropertyValueValue(ctx, arr, prop, val,
+                                       JS_PROP_C_W_E | JS_PROP_THROW);
+}
+
+/* OP_push_bigint_i32: create a BigInt from an int32 literal.
+ * __JS_NewShortBigInt never fails (no allocation for small values). */
+JSValue js_jit_op_push_bigint_i32(JSContext *ctx, int32_t v)
+{
+    return __JS_NewShortBigInt(ctx, (js_slimb_t)v);
+}
+
+/* OP_close_loc: detach one captured local's JSVarRef from its _cap_buf slot.
+ * Mirrors js_jit_close_caps but for a single entry. */
+void js_jit_op_close_loc(JSContext *ctx, JSVarRef *vref)
+{
+    if (vref && !vref->is_detached) {
+        JSRuntime *rt = JS_GetRuntime(ctx);
+        vref->value    = JS_DupValueRT(rt, *vref->pvalue);
+        vref->pvalue   = &vref->value;
+        vref->is_detached = TRUE;
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * P20 — reference-slot op helpers
+ * ----------------------------------------------------------------------- */
+
+/* Create a ref-pair JSObject using an existing JSVarRef.
+ * Increments vref->header.ref_count; fills *pobj (the ref object) and
+ * *patom (JS_AtomToValue of atom).
+ * Used by OP_make_loc_ref / OP_make_arg_ref / OP_make_var_ref_ref. */
+int js_jit_op_make_ref_pair(JSContext *ctx, JSVarRef *var_ref, JSAtom atom,
+                             JSValue *pobj, JSValue *patom)
+{
+    JSRuntime *rt = JS_GetRuntime(ctx);
+    JSValue obj = JS_NewObjectProto(ctx, JS_NULL);
+    if (JS_IsException(obj)) return -1;
+    var_ref->header.ref_count++;
+    JSProperty *pr = add_property(ctx, JS_VALUE_GET_OBJ(obj), atom,
+                                   JS_PROP_WRITABLE | JS_PROP_VARREF);
+    if (!pr) {
+        free_var_ref(rt, var_ref);
+        JS_FreeValue(ctx, obj);
+        return -1;
+    }
+    pr->u.var_ref = var_ref;
+    *pobj  = obj;
+    *patom = JS_AtomToValue(ctx, atom);
+    return 0;
+}
+
+/* OP_make_var_ref: create a ref-pair for a global variable. */
+int js_jit_op_make_var_ref(JSContext *ctx, JSAtom atom,
+                            JSValue *pobj, JSValue *patom)
+{
+    JSValue sp[2];
+    if (JS_GetGlobalVarRef(ctx, atom, sp))
+        return -1;
+    *pobj  = sp[0];
+    *patom = sp[1];
+    return 0;
+}
+
+/* OP_get_ref_value: read value from ref-pair (borrows obj and atom_val).
+ * Mirrors the interpreter's OP_get_ref_value exactly. */
+JSValue js_jit_op_get_ref_value(JSContext *ctx, JSValue obj, JSValue atom_val)
+{
+    JSAtom atom = JS_ValueToAtom(ctx, atom_val);
+    if (atom == JS_ATOM_NULL)
+        return JS_EXCEPTION;
+    if (unlikely(JS_IsUndefined(obj))) {
+        JS_ThrowReferenceErrorNotDefined(ctx, atom);
+        JS_FreeAtom(ctx, atom);
+        return JS_EXCEPTION;
+    }
+    int ret = JS_HasProperty(ctx, obj, atom);
+    JSValue val;
+    if (ret <= 0) {
+        if (ret < 0) { JS_FreeAtom(ctx, atom); return JS_EXCEPTION; }
+        if (is_strict_mode(ctx)) {
+            JS_ThrowReferenceErrorNotDefined(ctx, atom);
+            JS_FreeAtom(ctx, atom);
+            return JS_EXCEPTION;
+        }
+        val = JS_UNDEFINED;
+    } else {
+        val = JS_GetProperty(ctx, obj, atom);
+    }
+    JS_FreeAtom(ctx, atom);
+    return val;
+}
+
+/* OP_put_ref_value: write value via ref-pair (CONSUMES obj, atom_val, val).
+ * Mirrors the interpreter's OP_put_ref_value exactly. */
+int js_jit_op_put_ref_value(JSContext *ctx, JSValue obj, JSValue atom_val, JSValue val)
+{
+    int ret;
+    JSAtom atom = JS_ValueToAtom(ctx, atom_val);
+    if (unlikely(atom == JS_ATOM_NULL)) {
+        JS_FreeValue(ctx, obj); JS_FreeValue(ctx, atom_val); JS_FreeValue(ctx, val);
+        return -1;
+    }
+    if (unlikely(JS_IsUndefined(obj))) {
+        if (is_strict_mode(ctx)) {
+            JS_ThrowReferenceErrorNotDefined(ctx, atom);
+            JS_FreeAtom(ctx, atom);
+            JS_FreeValue(ctx, obj); JS_FreeValue(ctx, atom_val); JS_FreeValue(ctx, val);
+            return -1;
+        }
+        JS_FreeValue(ctx, obj);
+        obj = JS_DupValue(ctx, ctx->global_obj);
+    }
+    ret = JS_HasProperty(ctx, obj, atom);
+    if (unlikely(ret < 0)) {
+        JS_FreeAtom(ctx, atom);
+        JS_FreeValue(ctx, obj); JS_FreeValue(ctx, atom_val); JS_FreeValue(ctx, val);
+        return -1;
+    }
+    if (ret == 0 && is_strict_mode(ctx)) {
+        JS_ThrowReferenceErrorNotDefined(ctx, atom);
+        JS_FreeAtom(ctx, atom);
+        JS_FreeValue(ctx, obj); JS_FreeValue(ctx, atom_val); JS_FreeValue(ctx, val);
+        return -1;
+    }
+    /* JS_SetPropertyInternal consumes val; js_op_put_ref_value frees obj+atom_val */
+    ret = JS_SetPropertyInternal(ctx, obj, atom, val, obj, JS_PROP_THROW_STRICT);
+    JS_FreeAtom(ctx, atom);
+    JS_FreeValue(ctx, atom_val);
+    JS_FreeValue(ctx, obj);
+    return (ret < 0) ? -1 : 0;
+}
+
+/* -----------------------------------------------------------------------
+ * P21 — spread / rest / copy helpers
+ * ----------------------------------------------------------------------- */
+
+/* Forward declarations for static functions used by P21 helpers */
+static __exception int js_append_enumerate(JSContext *ctx, JSValue *sp);
+static __exception int JS_CopyDataProperties(JSContext *ctx,
+                                             JSValueConst target,
+                                             JSValueConst source,
+                                             JSValueConst excluded,
+                                             BOOL setprop);
+
+/* OP_rest: create rest argument array from argv[first..argc]. */
+JSValue js_jit_op_rest(JSContext *ctx, int first, int argc, JSValue *argv)
+{
+    if (first > argc) first = argc;
+    return js_create_array(ctx, argc - first, (JSValueConst *)(argv + first));
+}
+
+/* OP_append: append spread elements from enumobj into array at pos.
+ * Wraps js_append_enumerate.  On success, *parray and *ppos are updated,
+ * enumobj is consumed (freed).  On error, all three are freed. */
+int js_jit_op_append(JSContext *ctx, JSValue *parray, JSValue *ppos, JSValue enumobj)
+{
+    JSValue buf[3];
+    buf[0] = *parray;
+    buf[1] = *ppos;
+    buf[2] = enumobj;
+    if (js_append_enumerate(ctx, buf + 3)) {
+        /* Error: js_append_enumerate did not free buf[0/1/2]. */
+        JS_FreeValue(ctx, buf[0]);
+        JS_FreeValue(ctx, buf[1]);
+        JS_FreeValue(ctx, buf[2]);
+        return -1;
+    }
+    /* Success: buf[2] (enumobj) must be freed; buf[0/1] are updated values. */
+    JS_FreeValue(ctx, buf[2]);
+    *parray = buf[0];
+    *ppos   = buf[1];
+    return 0;
+}
+
+/* OP_copy_data_properties: copy enumerable own props from source to target,
+ * excluding properties found in excluded.  All three are borrowed (not freed). */
+int js_jit_op_copy_data_properties(JSContext *ctx,
+                                    JSValue target, JSValue source,
+                                    JSValue excluded)
+{
+    return JS_CopyDataProperties(ctx, target, source, excluded, 0);
+}
+
+/* -----------------------------------------------------------------------
+ * P22 — private field helpers
+ * ----------------------------------------------------------------------- */
+
+/* OP_private_symbol: push a new private symbol for the given atom. */
+JSValue js_jit_op_private_symbol(JSContext *ctx, JSAtom atom)
+{
+    return JS_NewSymbolFromAtom(ctx, atom, JS_ATOM_TYPE_PRIVATE);
+}
+
+/* OP_get_private_field: obj(borrowed) prop(borrowed) → value(new ref). */
+JSValue js_jit_op_get_private_field(JSContext *ctx, JSValue obj, JSValue prop)
+{
+    return JS_GetPrivateField(ctx, obj, prop);
+}
+
+/* OP_put_private_field: obj(d-3) val(d-2) prop(d-1) — all consumed.
+ * JS_SetPrivateField consumes val; we free obj and prop. */
+int js_jit_op_put_private_field(JSContext *ctx, JSValue obj,
+                                 JSValue prop, JSValue val)
+{
+    int ret = JS_SetPrivateField(ctx, obj, prop, val); /* val consumed */
+    JS_FreeValue(ctx, obj);
+    JS_FreeValue(ctx, prop);
+    return ret;
+}
+
+/* OP_define_private_field: obj(borrowed) prop(consumed) val(consumed). */
+int js_jit_op_define_private_field(JSContext *ctx, JSValue obj,
+                                    JSValue prop, JSValue val)
+{
+    int ret = JS_DefinePrivateField(ctx, obj, prop, val); /* val consumed */
+    JS_FreeValue(ctx, prop);
+    return ret;
+}
+
+/* OP_private_in: prop(consumed) obj(consumed) → bool(new JSValue).
+ * Wraps js_operator_private_in — on any error path neither op1 nor op2
+ * are freed by the inner function, so we free them here. */
+JSValue js_jit_op_private_in(JSContext *ctx, JSValue obj, JSValue prop)
+{
+    JSValue buf[2] = {obj, prop};
+    if (js_operator_private_in(ctx, buf + 2)) {
+        /* Error paths in js_operator_private_in do NOT free op1/op2.
+         * buf[0/1] still hold the original values. */
+        JS_FreeValue(ctx, buf[0]);
+        JS_FreeValue(ctx, buf[1]);
+        return JS_EXCEPTION;
+    }
+    /* Success: buf[0] = bool result (obj freed, prop freed by function). */
+    return buf[0];
+}
+
+/* -----------------------------------------------------------------------
+ * P23 — OOP / class helpers (feasible subset; check_ctor/init_ctor/
+ *        define_class/define_class_computed are deferred — need new_target or sf)
+ * ----------------------------------------------------------------------- */
+
+/* OP_check_brand: returns 0 on success, -1 on error or invalid brand. */
+int js_jit_op_check_brand(JSContext *ctx, JSValue obj, JSValue func)
+{
+    int ret = JS_CheckBrand(ctx, obj, func);
+    if (ret < 0) return -1;
+    if (!ret) {
+        JS_ThrowTypeError(ctx, "invalid brand on object");
+        return -1;
+    }
+    return 0;
+}
+
+/* OP_add_brand: obj(borrowed) home_obj(borrowed). */
+int js_jit_op_add_brand(JSContext *ctx, JSValue obj, JSValue home_obj)
+{
+    return JS_AddBrand(ctx, obj, home_obj);
+}
+
+/* OP_get_super_value: this_val(consumed) obj(consumed) prop(consumed) → value. */
+JSValue js_jit_op_get_super_value(JSContext *ctx,
+                                   JSValue this_val, JSValue obj, JSValue prop)
+{
+    JSAtom atom = JS_ValueToAtom(ctx, prop);
+    if (unlikely(atom == JS_ATOM_NULL)) {
+        JS_FreeValue(ctx, this_val);
+        JS_FreeValue(ctx, obj);
+        JS_FreeValue(ctx, prop);
+        return JS_EXCEPTION;
+    }
+    JSValue val = JS_GetPropertyInternal(ctx, obj, atom, this_val, FALSE);
+    JS_FreeAtom(ctx, atom);
+    JS_FreeValue(ctx, prop);
+    JS_FreeValue(ctx, obj);
+    JS_FreeValue(ctx, this_val);
+    return val;
+}
+
+/* OP_put_super_value: this_val(consumed) obj(consumed) prop(consumed) val(consumed).
+ * Note: val is consumed by JS_SetPropertyInternal. */
+int js_jit_op_put_super_value(JSContext *ctx,
+                               JSValue this_val, JSValue obj,
+                               JSValue prop, JSValue val)
+{
+    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT) {
+        JS_FreeValue(ctx, this_val);
+        JS_FreeValue(ctx, obj);
+        JS_FreeValue(ctx, prop);
+        JS_FreeValue(ctx, val);
+        JS_ThrowTypeErrorNotAnObject(ctx);
+        return -1;
+    }
+    JSAtom atom = JS_ValueToAtom(ctx, prop);
+    if (unlikely(atom == JS_ATOM_NULL)) {
+        JS_FreeValue(ctx, this_val);
+        JS_FreeValue(ctx, obj);
+        JS_FreeValue(ctx, prop);
+        JS_FreeValue(ctx, val);
+        return -1;
+    }
+    int ret = JS_SetPropertyInternal(ctx, obj, atom, val, this_val,
+                                     JS_PROP_THROW_STRICT);
+    JS_FreeAtom(ctx, atom);
+    JS_FreeValue(ctx, prop);
+    JS_FreeValue(ctx, obj);
+    JS_FreeValue(ctx, this_val);
+    return ret;
+}
+
+/* OP_define_method: obj(borrowed) func(consumed) → obj stays.
+ * Bake atom and op_flags at codegen time. */
+int js_jit_op_define_method(JSContext *ctx, JSValue obj, JSValue func,
+                             JSAtom atom, int op_flags_raw)
+{
+#define _OP_DEFINE_METHOD_METHOD     0
+#define _OP_DEFINE_METHOD_GETTER     1
+#define _OP_DEFINE_METHOD_SETTER     2
+#define _OP_DEFINE_METHOD_ENUMERABLE 4
+    int op_flags = op_flags_raw;
+    int flags = JS_PROP_HAS_CONFIGURABLE | JS_PROP_CONFIGURABLE |
+                JS_PROP_HAS_ENUMERABLE | JS_PROP_THROW;
+    if (op_flags & _OP_DEFINE_METHOD_ENUMERABLE)
+        flags |= JS_PROP_ENUMERABLE;
+    op_flags &= 3;
+    JSValue value = JS_UNDEFINED, getter = JS_UNDEFINED, setter = JS_UNDEFINED;
+    if (op_flags == _OP_DEFINE_METHOD_METHOD) {
+        value = func;
+        flags |= JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE | JS_PROP_WRITABLE;
+    } else if (op_flags == _OP_DEFINE_METHOD_GETTER) {
+        getter = func;
+        flags |= JS_PROP_HAS_GET;
+    } else {
+        setter = func;
+        flags |= JS_PROP_HAS_SET;
+    }
+    int ret = js_method_set_properties(ctx, func, atom, flags, obj);
+    if (ret >= 0)
+        ret = JS_DefineProperty(ctx, obj, atom, value, getter, setter, flags);
+    JS_FreeValue(ctx, func);
+    return ret;
+#undef _OP_DEFINE_METHOD_METHOD
+#undef _OP_DEFINE_METHOD_GETTER
+#undef _OP_DEFINE_METHOD_SETTER
+#undef _OP_DEFINE_METHOD_ENUMERABLE
+}
+
+/* OP_define_method_computed: obj(borrowed) key(consumed) func(consumed) → obj stays. */
+int js_jit_op_define_method_computed(JSContext *ctx, JSValue obj, JSValue key,
+                                      JSValue func, int op_flags_raw)
+{
+#define _OP_DEFINE_METHOD_METHOD     0
+#define _OP_DEFINE_METHOD_GETTER     1
+#define _OP_DEFINE_METHOD_SETTER     2
+#define _OP_DEFINE_METHOD_ENUMERABLE 4
+    JSAtom atom = JS_ValueToAtom(ctx, key);
+    if (unlikely(atom == JS_ATOM_NULL)) {
+        JS_FreeValue(ctx, key);
+        JS_FreeValue(ctx, func);
+        return -1;
+    }
+    int op_flags = op_flags_raw;
+    int flags = JS_PROP_HAS_CONFIGURABLE | JS_PROP_CONFIGURABLE |
+                JS_PROP_HAS_ENUMERABLE | JS_PROP_THROW;
+    if (op_flags & _OP_DEFINE_METHOD_ENUMERABLE)
+        flags |= JS_PROP_ENUMERABLE;
+    op_flags &= 3;
+    JSValue value = JS_UNDEFINED, getter = JS_UNDEFINED, setter = JS_UNDEFINED;
+    if (op_flags == _OP_DEFINE_METHOD_METHOD) {
+        value = func;
+        flags |= JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE | JS_PROP_WRITABLE;
+    } else if (op_flags == _OP_DEFINE_METHOD_GETTER) {
+        getter = func;
+        flags |= JS_PROP_HAS_GET;
+    } else {
+        setter = func;
+        flags |= JS_PROP_HAS_SET;
+    }
+    int ret = js_method_set_properties(ctx, func, atom, flags, obj);
+    if (ret >= 0)
+        ret = JS_DefineProperty(ctx, obj, atom, value, getter, setter, flags);
+    JS_FreeAtom(ctx, atom);
+    JS_FreeValue(ctx, key);
+    JS_FreeValue(ctx, func);
+    return ret;
+#undef _OP_DEFINE_METHOD_METHOD
+#undef _OP_DEFINE_METHOD_GETTER
+#undef _OP_DEFINE_METHOD_SETTER
+#undef _OP_DEFINE_METHOD_ENUMERABLE
+}
+
+/* -----------------------------------------------------------------------
+ * P26 — constructor / class-definition helpers
+ * ----------------------------------------------------------------------- */
+
+/* Forward declarations for static functions used below */
+static int js_op_define_class(JSContext *ctx, JSValue *sp,
+                              JSAtom class_name, int class_flags,
+                              JSVarRef **cur_var_refs,
+                              JSStackFrame *sf, BOOL is_computed_name);
+static JSValue js_dynamic_import(JSContext *ctx, JSValueConst specifier,
+                                 JSValueConst options);
+
+/* OP_check_ctor: throw TypeError if not invoked as constructor.
+ * Reads new_target from ctx->rt->current_stack_frame (set by JS_CallInternal). */
+int js_jit_op_check_ctor(JSContext *ctx)
+{
+    JSStackFrame *sf = ctx->rt->current_stack_frame;
+    if (JS_IsUndefined(sf->new_target)) {
+        JS_ThrowTypeError(ctx, "class constructors must be invoked with 'new'");
+        return -1;
+    }
+    return 0;
+}
+
+/* OP_init_ctor: initialise derived-class `this` via super().
+ * Reads new_target and func_obj from the current stack frame. */
+JSValue js_jit_op_init_ctor(JSContext *ctx, int argc, JSValue *argv)
+{
+    JSStackFrame *sf = ctx->rt->current_stack_frame;
+    if (JS_IsUndefined(sf->new_target)) {
+        JS_ThrowTypeError(ctx, "class constructors must be invoked with 'new'");
+        return JS_EXCEPTION;
+    }
+    JSValue super = JS_GetPrototype(ctx, sf->cur_func);
+    if (JS_IsException(super))
+        return JS_EXCEPTION;
+    JSValue ret = JS_CallConstructor2(ctx, super, sf->new_target,
+                                     argc, (JSValueConst *)argv);
+    JS_FreeValue(ctx, super);
+    return ret;
+}
+
+/* OP_define_class: parent_class(d-2) bfunc(d-1) → ctor(d-2) proto(d-1).
+ * js_op_define_class consumes both inputs; on error it frees them and
+ * writes JS_UNDEFINED.  Caller must keep _sp=d-2 before the call so the
+ * JIT exception handler does not double-free the consumed slots. */
+int js_jit_op_define_class(JSContext *ctx, JSValue *pparent, JSValue *pbfunc,
+                           JSAtom atom, int class_flags, JSVarRef **var_refs)
+{
+    JSStackFrame *sf = ctx->rt->current_stack_frame;
+    JSValue stk[2];
+    stk[0] = *pparent;
+    stk[1] = *pbfunc;
+    if (js_op_define_class(ctx, stk + 2, atom, class_flags, var_refs, sf, FALSE) < 0) {
+        /* Inputs were freed by js_op_define_class; write JS_UNDEFINED back so
+         * the JIT exception handler does not attempt a second free. */
+        *pparent = JS_UNDEFINED;
+        *pbfunc  = JS_UNDEFINED;
+        return -1;
+    }
+    *pparent = stk[0]; /* ctor */
+    *pbfunc  = stk[1]; /* proto */
+    return 0;
+}
+
+/* OP_define_class_computed: key(d-3) parent(d-2) bfunc(d-1) → key ctor proto.
+ * key is read-only (not freed by js_op_define_class); parent and bfunc are consumed. */
+int js_jit_op_define_class_computed(JSContext *ctx,
+                                    JSValue *pkey, JSValue *pparent, JSValue *pbfunc,
+                                    JSAtom atom, int class_flags, JSVarRef **var_refs)
+{
+    JSStackFrame *sf = ctx->rt->current_stack_frame;
+    JSValue stk[3];
+    stk[0] = *pkey;
+    stk[1] = *pparent;
+    stk[2] = *pbfunc;
+    if (js_op_define_class(ctx, stk + 3, atom, class_flags, var_refs, sf, TRUE) < 0) {
+        *pparent = JS_UNDEFINED;
+        *pbfunc  = JS_UNDEFINED;
+        /* *pkey is still valid; JIT exception handler frees it via _tsv{d-3} */
+        return -1;
+    }
+    *pkey    = stk[0]; /* key unchanged */
+    *pparent = stk[1]; /* ctor */
+    *pbfunc  = stk[2]; /* proto */
+    return 0;
+}
+
+/* -----------------------------------------------------------------------
+ * P27 — dynamic import helper
+ * ----------------------------------------------------------------------- */
+
+/* OP_import: specifier(d-2) options(d-1) → promise.
+ * js_dynamic_import does not consume its inputs; we free them after. */
+JSValue js_jit_op_import(JSContext *ctx, JSValue specifier, JSValue options)
+{
+    JSValue ret = js_dynamic_import(ctx, specifier, options);
+    JS_FreeValue(ctx, specifier);
+    JS_FreeValue(ctx, options);
+    return ret;
+}
+
+/* -----------------------------------------------------------------------
+ * Inline Property Cache helpers — Phase 6.2
+ * ----------------------------------------------------------------------- */
+
+/* Shape check: returns non-zero iff obj is an OBJECT with the cached shape. */
+/* Megamorphic sentinel: defined in quickjs-jit.h (JIT_IC_MEGAMORPHIC).
+ * Repeated here only as a cross-check; the #include above brings it in via
+ * quickjs-jit.h when CONFIG_JIT is defined. */
+
+/* Verify that the byte offsets used by JIT_IC_CHECK and the P11.1 inline
+ * property slot read in quickjs-jit.h match the actual struct layout.
+ * These assertions fire at compile time if the structs ever change. */
+_Static_assert(offsetof(JSObject,  shape)       == JIT_OBJIC_SHAPE_OFF,
+               "JIT_OBJIC_SHAPE_OFF mismatch");
+_Static_assert(offsetof(JSObject,  prop)        == JIT_OBJ_PROP_OFF,
+               "JIT_OBJ_PROP_OFF mismatch");
+_Static_assert(sizeof(JSProperty)               == JIT_PROP_SIZE,
+               "JIT_PROP_SIZE mismatch — JSProperty stride != sizeof(JSValue)");
+_Static_assert(offsetof(JSShape,   shape_gen)   == JIT_SHAPEIC_SHAPEGEN_OFF,
+               "JIT_SHAPEIC_SHAPEGEN_OFF mismatch");
+/* P39.1: JIT_SHAPEIC_PROPCOUNT_OFF removed — prop_count check is redundant when
+ * shape_gen matches (shape unchanged => prop_count unchanged >= slot). */
+_Static_assert(offsetof(JSShape,   prop)        == JIT_SHAPEIC_PROP_OFF,
+               "JIT_SHAPEIC_PROP_OFF mismatch");
+_Static_assert(sizeof(JSShapeProperty)          == JIT_SHAPEIC_PROPSIZE,
+               "JIT_SHAPEIC_PROPSIZE mismatch");
+_Static_assert(offsetof(JSShapeProperty, atom)  == JIT_SHAPEIC_ATOM_OFF,
+               "JIT_SHAPEIC_ATOM_OFF mismatch");
+
+/* P11.4: Verify JSObject array layout constants used by the inline array
+ * element fast path in quickjs-jit.c (OP_get_array_el / OP_put_array_el). */
+_Static_assert(offsetof(JSObject, class_id)           == JIT_OBJ_CLASSID_OFF,
+               "JIT_OBJ_CLASSID_OFF mismatch");
+_Static_assert((int)JS_CLASS_ARRAY                    == JIT_CLASS_ARRAY,
+               "JIT_CLASS_ARRAY mismatch");
+_Static_assert(offsetof(JSObject, u.array.count)      == JIT_ARR_COUNT_OFF,
+               "JIT_ARR_COUNT_OFF mismatch");
+_Static_assert(offsetof(JSObject, u.array.u.values)   == JIT_ARR_VALUES_OFF,
+               "JIT_ARR_VALUES_OFF mismatch");
+
+/* P40: Verify JSVarRef.pvalue offset used by the direct byte-offset access
+ * in the generated JIT C code (JIT_VARREF_PVALUE_OFF). */
+_Static_assert(offsetof(JSVarRef, pvalue) == JIT_VARREF_PVALUE_OFF,
+               "JIT_VARREF_PVALUE_OFF mismatch — update JIT_VARREF_PVALUE_OFF in quickjs-jit.h");
+
+/* P11.3: Verify JSObject bytecode-function layout constants used by the
+ * call IC in quickjs-jit.c (OP_call / OP_call_method). */
+_Static_assert(offsetof(JSContext, rt) == JIT_CTX_RT_OFF,
+               "JIT_CTX_RT_OFF mismatch — update JIT_CTX_RT_OFF in quickjs-jit.h");
+_Static_assert(offsetof(JSObject, u.func.function_bytecode) == JIT_FUNC_BC_OFF,
+               "JIT_FUNC_BC_OFF mismatch");
+_Static_assert(offsetof(JSObject, u.func.var_refs)          == JIT_FUNC_VARREFS_OFF,
+               "JIT_FUNC_VARREFS_OFF mismatch");
+_Static_assert((int)JS_CLASS_BYTECODE_FUNCTION              == JIT_CLASS_BYTECODE_FUNCTION,
+               "JIT_CLASS_BYTECODE_FUNCTION mismatch");
+_Static_assert(offsetof(JSFunctionBytecode, jit_func)       == JIT_BC_JIT_FUNC_OFF,
+               "JIT_BC_JIT_FUNC_OFF mismatch");
+_Static_assert(offsetof(JSFunctionBytecode, jit_bc_hash)    == JIT_BC_BCHASH_OFF,
+               "JIT_BC_BCHASH_OFF mismatch");
+/* P13: verify JSClosureTypeEnum values match the JIT_CLOSURE_* constants */
+_Static_assert((int)JS_CLOSURE_LOCAL         == JIT_CLOSURE_LOCAL,         "JIT_CLOSURE_LOCAL mismatch");
+_Static_assert((int)JS_CLOSURE_ARG           == JIT_CLOSURE_ARG,           "JIT_CLOSURE_ARG mismatch");
+_Static_assert((int)JS_CLOSURE_REF           == JIT_CLOSURE_REF,           "JIT_CLOSURE_REF mismatch");
+_Static_assert((int)JS_CLOSURE_GLOBAL_REF    == JIT_CLOSURE_GLOBAL_REF,    "JIT_CLOSURE_GLOBAL_REF mismatch");
+_Static_assert((int)JS_CLOSURE_GLOBAL_DECL   == JIT_CLOSURE_GLOBAL_DECL,   "JIT_CLOSURE_GLOBAL_DECL mismatch");
+_Static_assert((int)JS_CLOSURE_GLOBAL        == JIT_CLOSURE_GLOBAL,        "JIT_CLOSURE_GLOBAL mismatch");
+_Static_assert((int)JS_CLOSURE_MODULE_DECL   == JIT_CLOSURE_MODULE_DECL,   "JIT_CLOSURE_MODULE_DECL mismatch");
+_Static_assert((int)JS_CLOSURE_MODULE_IMPORT == JIT_CLOSURE_MODULE_IMPORT, "JIT_CLOSURE_MODULE_IMPORT mismatch");
+
+/* js_jit_ic_check: shape pointer guard + atom-at-slot ABA guard.
+ * The atom check prevents false positives when a shape is freed and its
+ * memory is reused for a different shape at the same address: the new shape
+ * will have a different atom at the cached slot unless the layout is identical,
+ * in which case the IC hit is valid anyway.
+ * NULL and JIT_IC_MEGAMORPHIC entries always miss. */
+int js_jit_ic_check(JSValue obj, const JSJITICEntry *ic)
+{
+    JSObject *p;
+    if (ic->shape == NULL || ic->shape == JIT_IC_MEGAMORPHIC)
+        return 0;
+    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
+        return 0;
+    p = JS_VALUE_GET_OBJ(obj);
+    if ((void *)p->shape != ic->shape)
+        return 0;
+    /* ABA guard: verify the expected atom is still at the cached slot.
+     * P39.1: prop_count > slot check removed — shape_gen match already guarantees
+     * the shape is unchanged since fill time, so slot < prop_count still holds. */
+    return get_shape_prop(p->shape)[ic->slot].atom == ic->atom;
+}
+
+/* Fill IC entry for a get_field callsite.
+ * Only caches own simple data properties (no accessor, no varref, no proto).
+ * If we see a second distinct shape the callsite is polymorphic: mark it
+ * megamorphic so subsequent misses skip the find_own_property() hash lookup. */
+int js_jit_ic_fill_get(JSContext *ctx, JSValue obj, JSAtom atom,
+                       JSJITICEntry *ic)
+{
+    JSObject *p;
+    JSProperty *pr;
+    JSShapeProperty *prs;
+    if (ic->shape == JIT_IC_MEGAMORPHIC)
+        return 0; /* already megamorphic — skip */
+    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
+        return 0;
+    p = JS_VALUE_GET_OBJ(obj);
+    if (ic->shape != NULL && ic->shape != p->shape) {
+        ic->shape = JIT_IC_MEGAMORPHIC;
+        return 0; /* polymorphic — degrade to megamorphic */
+    }
+    prs = find_own_property(&pr, p, atom);
+    if (!prs || (prs->flags & JS_PROP_TMASK))
+        return 0;
+    ic->shape     = p->shape;
+    /* P39.2: Cache the JSProperty array pointer.  Safe because:
+     * - p->prop is reallocated only when adding properties (shape transition).
+     * - Any shape transition increments shape_gen, invalidating this IC entry.
+     * - So whenever shape_gen matches at IC check time, p->prop has not moved. */
+    ic->prop_arr  = p->prop;
+    ic->slot      = (uint32_t)(pr - p->prop);
+    ic->atom      = prs->atom;
+    ic->kind      = (JS_VALUE_GET_TAG(pr->u.value) == JS_TAG_FLOAT64) ? 1 : 0;
+    ic->val_tag   = (uint8_t)JS_VALUE_GET_TAG(pr->u.value); /* P45: record value tag for INT fast path */
+    ic->shape_gen = p->shape->shape_gen;
+    ic->rt_gen    = ctx->rt->jit_ic_gen;
+    ic->rt        = ctx->rt;
+    return 1;
+}
+
+/* Fill IC entry for a put_field callsite.
+ * Only caches own writable simple data properties.
+ * Same megamorphic demotion as js_jit_ic_fill_get. */
+int js_jit_ic_fill_put(JSContext *ctx, JSValue obj, JSAtom atom,
+                       JSJITICEntry *ic)
+{
+    JSObject *p;
+    JSProperty *pr;
+    JSShapeProperty *prs;
+    if (ic->shape == JIT_IC_MEGAMORPHIC)
+        return 0; /* already megamorphic — skip */
+    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
+        return 0;
+    p = JS_VALUE_GET_OBJ(obj);
+    if (ic->shape != NULL && ic->shape != p->shape) {
+        ic->shape = JIT_IC_MEGAMORPHIC;
+        return 0; /* polymorphic — degrade to megamorphic */
+    }
+    prs = find_own_property(&pr, p, atom);
+    if (!prs)
+        return 0;
+    if ((prs->flags & (JS_PROP_TMASK | JS_PROP_WRITABLE)) != JS_PROP_WRITABLE)
+        return 0;
+    ic->shape     = p->shape;
+    ic->prop_arr  = p->prop; /* P39.2: cache prop_arr — valid while shape_gen matches */
+    ic->slot      = (uint32_t)(pr - p->prop);
+    ic->atom      = prs->atom;
+    ic->shape_gen = p->shape->shape_gen;
+    ic->rt_gen    = ctx->rt->jit_ic_gen;
+    ic->rt        = ctx->rt;
+    return 1;
+}
+
+/* P43.2: Quadrimorphic IC fill for get_field.
+ * Promotes: empty(0)→mono(1)→bi(2)→tri(3)→quad(4)→megamorphic(5).
+ * Once megamorphic (n==5), all checks miss permanently for this callsite. */
+void js_jit_ic2_fill_get(JSContext *ctx, JSValue obj, JSAtom atom,
+                          JSJITICEntry2 *ic2)
+{
+    uint8_t n = ic2->n;
+    if (n >= 5) return; /* megamorphic */
+    /* Stale mega sentinel from a prior promotion (shouldn't happen, but guard). */
+    if (n > 0 && ic2->e[0].shape == JIT_IC_MEGAMORPHIC) { ic2->n = 5; return; }
+    if (n == 0) {
+        js_jit_ic_fill_get(ctx, obj, atom, &ic2->e[0]);
+        if (ic2->e[0].shape != NULL) ic2->n = 1;
+        return;
+    }
+    /* n == 1, 2, or 3: fill the next slot; n == 4: 5th shape → megamorphic. */
+    if (n >= 4) { ic2->e[0].shape = JIT_IC_MEGAMORPHIC; ic2->n = 5; return; }
+    memset(&ic2->e[n], 0, sizeof(ic2->e[n]));
+    js_jit_ic_fill_get(ctx, obj, atom, &ic2->e[n]);
+    if (ic2->e[n].shape != NULL && ic2->e[n].shape != JIT_IC_MEGAMORPHIC)
+        ic2->n = n + 1;
+    else { ic2->e[0].shape = JIT_IC_MEGAMORPHIC; ic2->n = 5; }
+}
+
+/* P43.2: Quadrimorphic IC fill for put_field.
+ * Same promotion sequence as js_jit_ic2_fill_get. */
+void js_jit_ic2_fill_put(JSContext *ctx, JSValue obj, JSAtom atom,
+                          JSJITICEntry2 *ic2)
+{
+    uint8_t n = ic2->n;
+    if (n >= 5) return;
+    if (n > 0 && ic2->e[0].shape == JIT_IC_MEGAMORPHIC) { ic2->n = 5; return; }
+    if (n == 0) {
+        js_jit_ic_fill_put(ctx, obj, atom, &ic2->e[0]);
+        if (ic2->e[0].shape != NULL) ic2->n = 1;
+        return;
+    }
+    if (n >= 4) { ic2->e[0].shape = JIT_IC_MEGAMORPHIC; ic2->n = 5; return; }
+    memset(&ic2->e[n], 0, sizeof(ic2->e[n]));
+    js_jit_ic_fill_put(ctx, obj, atom, &ic2->e[n]);
+    if (ic2->e[n].shape != NULL && ic2->e[n].shape != JIT_IC_MEGAMORPHIC)
+        ic2->n = n + 1;
+    else { ic2->e[0].shape = JIT_IC_MEGAMORPHIC; ic2->n = 5; }
+}
+
+/* Read property from cached slot (IC hit — returns new reference). */
+JSValue js_jit_ic_read(JSContext *ctx, JSValue obj, uint32_t slot)
+{
+    JSObject *p = JS_VALUE_GET_OBJ(obj);
+    return JS_DupValue(ctx, p->prop[slot].u.value);
+}
+
+/* Write property to cached slot (IC hit — transfers ownership of val). */
+int js_jit_ic_write(JSContext *ctx, JSValue obj, JSValue val, uint32_t slot)
+{
+    JSObject *p = JS_VALUE_GET_OBJ(obj);
+    set_value(ctx, &p->prop[slot].u.value, val);
+    return 0;
+}
+
+/* -----------------------------------------------------------------------
+ * P8.5: Dense array element fast paths
+ * ----------------------------------------------------------------------- */
+
+/* Fast array element read (P8.5).
+ * Precondition: JS_VALUE_GET_TAG(obj) == JS_TAG_OBJECT (caller-checked).
+ * Returns 1 if fast path succeeded (*out set to a new reference to arr[idx]).
+ * Returns 0 if slow path is needed (*out unchanged).
+ * Only handles dense JS_CLASS_ARRAY with integer index in bounds. */
+int js_jit_array_get(JSContext *ctx, JSValue obj, uint32_t idx, JSValue *out)
+{
+    JSObject *p = JS_VALUE_GET_OBJ(obj);
+    if (p->class_id != JS_CLASS_ARRAY)
+        return 0;
+    if (idx >= (uint32_t)p->u.array.count)
+        return 0;
+    *out = JS_DupValue(ctx, p->u.array.u.values[idx]);
+    return 1;
+}
+
+/* Fast array element write (P8.5).
+ * Precondition: JS_VALUE_GET_TAG(obj) == JS_TAG_OBJECT (caller-checked).
+ * Returns 1 if fast path succeeded (val is consumed / stored in the array).
+ * Returns 0 if slow path is needed (val is NOT consumed).
+ * Only handles dense JS_CLASS_ARRAY with integer index within current bounds.
+ * Array extension (idx == count) falls through to the slow path. */
+int js_jit_array_set(JSContext *ctx, JSValue obj, uint32_t idx, JSValue val)
+{
+    JSObject *p = JS_VALUE_GET_OBJ(obj);
+    if (p->class_id != JS_CLASS_ARRAY)
+        return 0;
+    if (idx >= (uint32_t)p->u.array.count)
+        return 0;
+    set_value(ctx, &p->u.array.u.values[idx], val);
+    return 1;
+}
+
+/* Recursively enqueue all eligible bytecode functions for GCC compilation.
+ * Walks the cpool tree to find nested function definitions.
+ * Called from --jit-aot mode after parsing, before execution. */
+void js_jit_compile_all(JSContext *ctx, JSFunctionBytecode *b)
+{
+    int i;
+    if (!b) return;
+    if (js_jit_is_eligible(b) && !js_jit_fb_jit_no_compile(b) &&
+        js_jit_fb_get_func(b) == NULL) {
+        js_jit_queue_gcc(ctx, b, NULL);  /* no var_refs in AOT pre-pass */
+    }
+    for (i = 0; i < b->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+            js_jit_compile_all(ctx, JS_VALUE_GET_PTR(b->cpool[i]));
+    }
+}
+
+#endif /* CONFIG_JIT */
+
 static __exception int js_has_unscopable(JSContext *ctx, JSValueConst obj,
                                          JSAtom atom)
 {
@@ -16413,6 +18366,246 @@ static JSValue js_array_iterator_next(JSContext *ctx, JSValueConst this_val,
 
 static JSValue js_create_array_iterator(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv, int magic);
+
+#ifdef CONFIG_JIT
+/* ---- P15: JIT iterator helpers ---- */
+
+/* for_in_start: replace *pobj with a for-in iterator object (takes ownership) */
+int js_jit_for_in_start(JSContext *ctx, JSValue *pobj)
+{
+    *pobj = build_for_in_iterator(ctx, *pobj);
+    return JS_IsException(*pobj) ? -1 : 0;
+}
+
+/* for_in_next: produce next key+done from iter (iter is NOT consumed).
+ * On done: *pkey = JS_UNDEFINED, *pdone = JS_TRUE.
+ * Returns -1 on exception, 0 on success. */
+int js_jit_for_in_next(JSContext *ctx, JSValue iter,
+                       JSValue *pkey, JSValue *pdone)
+{
+    JSValue stk[3];
+    JSValue *sp;
+    stk[0] = iter;          /* sp[-1] = iter  (not freed by js_for_in_next) */
+    stk[1] = JS_UNDEFINED;  /* sp[0]  = key out */
+    stk[2] = JS_UNDEFINED;  /* sp[1]  = done out */
+    sp = &stk[1];
+    if (js_for_in_next(ctx, sp) < 0) return -1;
+    *pkey  = stk[1];
+    *pdone = stk[2];
+    return 0;
+}
+
+/* for_of_start: get iterator from obj (obj ownership transferred).
+ * Sets *piter = iterator, *pnext = next method.
+ * Returns -1 on exception, 0 on success. */
+int js_jit_for_of_start(JSContext *ctx,
+                        JSValue *piter, JSValue *pnext, JSValue obj)
+{
+    JSValue stk[2];
+    JSValue *sp;
+    stk[0] = obj;           /* sp[-1] = obj (freed by js_for_of_start) */
+    stk[1] = JS_UNDEFINED;  /* sp[0]  = next out */
+    sp = &stk[1];
+    if (js_for_of_start(ctx, sp, FALSE) < 0) return -1;
+    *piter = stk[0];
+    *pnext = stk[1];
+    return 0;
+}
+
+/* P30: for_await_of_start — async variant of for_of_start (Symbol.asyncIterator).
+ * obj ownership transferred; sets *piter and *pnext.
+ * Returns -1 on exception, 0 on success. */
+int js_jit_for_await_of_start(JSContext *ctx,
+                               JSValue *piter, JSValue *pnext, JSValue obj)
+{
+    JSValue stk[2];
+    JSValue *sp;
+    stk[0] = obj;           /* sp[-1] = obj (freed by js_for_of_start) */
+    stk[1] = JS_UNDEFINED;  /* sp[0]  = next out */
+    sp = &stk[1];
+    if (js_for_of_start(ctx, sp, TRUE) < 0) return -1;
+    *piter = stk[0];
+    *pnext = stk[1];
+    return 0;
+}
+
+/* P30: for_await_of_next — advance async for-of; returns raw (unawaited) Promise.
+ * iter and next are borrowed (not consumed).
+ * *pcatch_ph is cleared (set to JS_UNDEFINED, old value freed).
+ * *ppromise receives the Promise (caller owns); must follow with OP_await.
+ * Returns -1 on exception, 0 on success. */
+int js_jit_for_await_of_next(JSContext *ctx, JSValue iter, JSValue next,
+                              JSValue *pcatch_ph, JSValue *ppromise)
+{
+    /* Disable the catch offset so that exceptions from next() don't close the iterator */
+    JS_FreeValue(ctx, *pcatch_ph);
+    *pcatch_ph = JS_UNDEFINED;
+    JSValue promise = JS_Call(ctx, next, iter, 0, NULL);
+    if (JS_IsException(promise))
+        return -1;
+    *ppromise = promise;
+    return 0;
+}
+
+/* P30: with_has — combined HasProperty + optional @@unscopables check.
+ * obj borrowed. Returns 1 (found+in-scope), 0 (not found/unscopable), -1 (exception). */
+int js_jit_with_has(JSContext *ctx, JSValue obj, JSAtom atom, int is_with)
+{
+    int ret = JS_HasProperty(ctx, obj, atom);
+    if (ret < 0) return -1;
+    if (ret && is_with) {
+        ret = js_has_unscopable(ctx, obj, atom);
+        if (ret < 0) return -1;
+        return !ret; /* unscopable=1 → treat as not-found=0 */
+    }
+    return ret;
+}
+
+/* P30: with_get_var found path — get property, replace *pobj_val with value.
+ * *pobj_val is in (obj, freed) and out (val, caller owns).
+ * Returns -1 on exception, 0 on success. */
+int js_jit_with_get_var(JSContext *ctx, JSValue *pobj_val, JSAtom atom)
+{
+    JSValue val = JS_GetProperty(ctx, *pobj_val, atom);
+    if (JS_IsException(val)) return -1;
+    JS_FreeValue(ctx, *pobj_val);
+    *pobj_val = val;
+    return 0;
+}
+
+/* P30: with_put_var found path — set property on scope object.
+ * obj borrowed (remains on stack). val is consumed (JS_SetProperty takes ownership).
+ * Returns -1 on exception, 0 on success. */
+int js_jit_with_put_var(JSContext *ctx, JSValue obj, JSAtom atom, JSValue val)
+{
+    return JS_SetProperty(ctx, obj, atom, val);
+}
+
+/* P30: with_delete_var found path — delete property from scope object.
+ * obj borrowed. Returns 1 (deleted), 0 (non-deletable), -1 (exception). */
+int js_jit_with_delete_var(JSContext *ctx, JSValue obj, JSAtom atom)
+{
+    return JS_DeleteProperty(ctx, obj, atom, 0);
+}
+
+/* P30: with_make_ref found path — return atom as a JSValue (for ref-pair).
+ * Caller owns the returned value. */
+JSValue js_jit_with_make_ref(JSContext *ctx, JSAtom atom)
+{
+    return JS_AtomToValue(ctx, atom);
+}
+
+/* P30: with_get_ref found path — get property for method call reference.
+ * obj borrowed. Returns property value (caller owns) or JS_EXCEPTION. */
+JSValue js_jit_with_get_ref(JSContext *ctx, JSValue obj, JSAtom atom)
+{
+    return JS_GetProperty(ctx, obj, atom);
+}
+
+/* for_of_next: advance for-of iterator.
+ * *piter may be set to JS_UNDEFINED (and freed) if iteration is done.
+ * next is NOT consumed.
+ * Returns -1 on exception, 0 on success. */
+int js_jit_for_of_next(JSContext *ctx, JSValue *piter, JSValue next,
+                       JSValue *pvalue, JSValue *pdone)
+{
+    JSValue stk[5];
+    JSValue *sp;
+    stk[0] = *piter;        /* sp[-3] = iter */
+    stk[1] = next;          /* sp[-2] = next (not freed) */
+    stk[2] = JS_UNDEFINED;  /* sp[-1] = catch_offset placeholder (ignored) */
+    stk[3] = JS_UNDEFINED;  /* sp[0]  = value out */
+    stk[4] = JS_UNDEFINED;  /* sp[1]  = done out */
+    sp = &stk[3];
+    if (js_for_of_next(ctx, sp, -3) < 0) return -1;
+    *piter  = stk[0];   /* may be JS_UNDEFINED now if done */
+    *pvalue = stk[3];
+    *pdone  = stk[4];
+    return 0;
+}
+
+/* iterator_close: close iterator on normal exit (iter and next ownership transferred).
+ * If iter is JS_UNDEFINED (iteration finished normally), just frees next.
+ * Returns -1 on exception, 0 on success. */
+int js_jit_iterator_close(JSContext *ctx, JSValue iter, JSValue next)
+{
+    int r = 0;
+    JS_FreeValue(ctx, next);
+    if (!JS_IsUndefined(iter)) {
+        r = JS_IteratorClose(ctx, iter, FALSE);
+        JS_FreeValue(ctx, iter);
+    }
+    return r;
+}
+
+/* iterator_get_value_done: extract value and done from {value, done} result object.
+ * obj ownership transferred.
+ * Returns -1 on exception, 0 on success. */
+int js_jit_iterator_get_value_done(JSContext *ctx, JSValue obj,
+                                   JSValue *pvalue, JSValue *pdone)
+{
+    BOOL done;
+    JSValue value;
+    if (!JS_IsObject(obj)) {
+        JS_ThrowTypeError(ctx, "iterator must return an object");
+        JS_FreeValue(ctx, obj);
+        return -1;
+    }
+    value = JS_IteratorGetCompleteValue(ctx, obj, &done);
+    JS_FreeValue(ctx, obj);
+    if (JS_IsException(value)) return -1;
+    *pvalue = value;
+    *pdone  = JS_NewBool(ctx, done);
+    return 0;
+}
+
+/* iterator_next_step: call next.call(iter, val); result replaces *presult.
+ * iter and next are NOT consumed.  val ownership transferred.
+ * Returns -1 on exception, 0 on success. */
+int js_jit_iterator_next_step(JSContext *ctx,
+                              JSValue iter, JSValue next,
+                              JSValue val, JSValue *presult)
+{
+    JSValue ret = JS_Call(ctx, next, iter, 1, (JSValueConst *)&val);
+    JS_FreeValue(ctx, val);
+    if (JS_IsException(ret)) return -1;
+    *presult = ret;
+    return 0;
+}
+
+/* iterator_call: call return/throw on iterator; result and ret_flag written.
+ * iter is NOT consumed.  val ownership transferred.
+ * flags: bit0 = use throw (else return), bit1 = no argument.
+ * Returns -1 on exception, 0 on success. */
+int js_jit_iterator_call(JSContext *ctx,
+                         JSValue iter, JSValue val, int flags,
+                         JSValue *presult, int *pret_flag)
+{
+    JSValue method, ret;
+    BOOL ret_flag;
+    method = JS_GetProperty(ctx, iter, (flags & 1) ? JS_ATOM_throw : JS_ATOM_return);
+    if (JS_IsException(method)) { JS_FreeValue(ctx, val); return -1; }
+    if (JS_IsUndefined(method) || JS_IsNull(method)) {
+        JS_FreeValue(ctx, method);
+        JS_FreeValue(ctx, val);
+        ret_flag = TRUE;
+        *presult = JS_UNDEFINED;
+    } else {
+        if (flags & 2) {
+            ret = JS_CallFree(ctx, method, iter, 0, NULL);
+            JS_FreeValue(ctx, val);
+        } else {
+            ret = JS_CallFree(ctx, method, iter, 1, (JSValueConst *)&val);
+        }
+        if (JS_IsException(ret)) return -1;
+        *presult = ret;
+        ret_flag = FALSE;
+    }
+    *pret_flag = ret_flag;
+    return 0;
+}
+
+#endif /* CONFIG_JIT */
 
 static BOOL js_is_fast_array(JSContext *ctx, JSValueConst obj)
 {
@@ -17363,6 +19556,52 @@ typedef enum {
     OP_SPECIAL_OBJECT_IMPORT_META,
 } OPSpecialObjectEnum;
 
+#ifdef CONFIG_JIT
+/* js_jit_special_object — JIT handler for OP_special_object.
+ * For HOME_OBJECT, THIS_FUNC, and NEW_TARGET reads rt->jit_callee_func /
+ * rt->jit_new_target (set by every JIT call path — both JS_CallInternal
+ * and js_jit_call / js_jit_ic_direct_call).  This avoids reading sf->cur_func,
+ * which belongs to the OUTER interpreter frame in JIT-to-JIT calls and would
+ * give the wrong function object when define_class captures outer locals. */
+JSValue js_jit_special_object(JSContext *ctx, int kind, int argc, JSValue *argv)
+{
+    JSRuntime *rt = ctx->rt;
+    JSObject *p;
+
+    switch ((OPSpecialObjectEnum)kind) {
+    case OP_SPECIAL_OBJECT_ARGUMENTS:
+        /* Use rt->jit_actual_argc (the real call-site count) rather than the
+         * JIT function's argc parameter, which is padded to b->arg_count for
+         * simple-param functions so that GEN_PUT_ARG range checks always pass.
+         * Without this, arguments.length returns the declared param count even
+         * when fewer args are supplied. */
+        return js_build_arguments(ctx, rt->jit_actual_argc, (JSValueConst *)argv);
+    case OP_SPECIAL_OBJECT_MAPPED_ARGUMENTS:
+        /* Non-strict mapped arguments: ideally would alias parameters, but the
+         * JIT copies captured args into shadow buffers, breaking the aliasing
+         * invariant.  Use the simple (unmapped) builder — a known JIT limitation. */
+        return js_build_arguments(ctx, rt->jit_actual_argc, (JSValueConst *)argv);
+    case OP_SPECIAL_OBJECT_THIS_FUNC:
+        return JS_DupValue(ctx, rt->jit_callee_func);
+    case OP_SPECIAL_OBJECT_NEW_TARGET:
+        return JS_DupValue(ctx, rt->jit_new_target);
+    case OP_SPECIAL_OBJECT_HOME_OBJECT:
+        if (JS_VALUE_GET_TAG(rt->jit_callee_func) != JS_TAG_OBJECT)
+            return JS_UNDEFINED;
+        p = JS_VALUE_GET_OBJ(rt->jit_callee_func);
+        if (p->u.func.home_object)
+            return JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, p->u.func.home_object));
+        return JS_UNDEFINED;
+    case OP_SPECIAL_OBJECT_VAR_OBJECT:
+        return JS_NewObjectProto(ctx, JS_NULL);
+    case OP_SPECIAL_OBJECT_IMPORT_META:
+        return js_import_meta(ctx);
+    default:
+        abort();
+    }
+}
+#endif /* CONFIG_JIT */
+
 #define FUNC_RET_AWAIT         0
 #define FUNC_RET_YIELD         1
 #define FUNC_RET_YIELD_STAR    2
@@ -17418,6 +19657,40 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             b = p->u.func.function_bytecode;
             ctx = b->realm;
             var_refs = p->u.func.var_refs;
+#ifdef CONFIG_JIT
+            /* P12.2: if a JIT-compiled version exists, dispatch to it directly. */
+            {
+                JSJITFunc jf = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
+                if (jf) {
+                    JSValue ret2;
+                    sf->prev_frame = rt->current_stack_frame;
+                    rt->current_stack_frame = sf;
+                    sf->cur_sp = NULL; /* mark as running */
+                    JSValue _sv_as_callee = rt->jit_callee_func;
+                    JSValue _sv_as_nt     = rt->jit_new_target;
+                    int _sv_as_aargc      = rt->jit_actual_argc;
+                    rt->jit_callee_func  = sf->cur_func;
+                    rt->jit_new_target   = JS_UNDEFINED;
+                    rt->jit_actual_argc  = s->argc;
+                    ret2 = jf(ctx, s->this_val, s->argc, sf->arg_buf,
+                              b->cpool, var_refs);
+                    rt->jit_callee_func = _sv_as_callee;
+                    rt->jit_new_target  = _sv_as_nt;
+                    rt->jit_actual_argc = _sv_as_aargc;
+                    rt->current_stack_frame = sf->prev_frame;
+                    /* Restore cur_sp to a safe value if exception fired before
+                     * any yield (async_func_free_frame asserts cur_sp != NULL). */
+                    if (JS_IsException(ret2) && !sf->cur_sp)
+                        sf->cur_sp = sf->var_buf + b->var_count;
+                    /* P45b: warm-IC recompile trigger. */
+                    if (unlikely(!b->jit_warm_done && (b->jit_n_gf > 0 || b->jit_n_ae > 0 || b->jit_n_pf > 0 || b->jit_n_vr > 0 || b->jit_n_pa > 0))) {
+                        if (++b->jit_warm_count == 200u)
+                            js_jit_schedule_warm_recompile(ctx, b);
+                    }
+                    return ret2;
+                }
+            }
+#endif
             local_buf = arg_buf = sf->arg_buf;
             var_buf = sf->var_buf;
             stack_buf = sf->var_buf + b->var_count;
@@ -17447,8 +19720,97 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
     }
     b = p->u.func.function_bytecode;
 
+#ifdef CONFIG_JIT
+    /* P41.1: Early JIT fast-path — fires before alloca and most JSStackFrame setup.
+     *
+     * When a function is already JIT-compiled and meets all bypass criteria, we skip
+     * the alloca (for var_buf / stack_buf / var_refs array), all initialization loops,
+     * and the close_var_refs call after the JIT function returns.
+     *
+     * Bypass conditions (all must hold):
+     *   1. jit_func != NULL          — already compiled; call it directly
+     *   2. var_ref_count == 0        — the JIT function never writes to sf->var_refs[];
+     *                                  close_var_refs() is provably a no-op
+     *   3. has_simple_parameter_list — no rest / default / destructuring; arg_count
+     *                                  is the exact parameter count; no argc padding
+     *   4. argc >= arg_count         — caller supplies all needed arguments; no padding
+     *   5. func_kind == NORMAL       — generators and async functions reuse the
+     *                                  JSStackFrame for coroutine resumption; they need
+     *                                  the full alloca'd var_buf and stack_buf
+     *   6. !(flags & COPY_ARGV)      — the JIT may write back to argv[i] via GEN_PUT_ARG;
+     *                                  COPY_ARGV means the caller requires argv to be
+     *                                  preserved, so we cannot pass it directly
+     *
+     * Fields set on sf (the C-stack local sf_s, already allocated):
+     *   prev_frame  — restore chain for current_stack_frame after the call
+     *   cur_func    — callee function object (read by js_jit_special_object + backtrace)
+     *   new_target  — forwarded new.target (read by OP_special_object NEW_TARGET)
+     *   arg_count   — original argc (fallback for exception-recovery code)
+     *   cur_pc      — pointer to start of bytecode (function name visible in backtrace)
+     *   var_refs    — NULL; var_ref_count==0 guarantees it is never dereferenced
+     *
+     * Not set (and not needed):
+     *   arg_buf / var_buf — JIT uses its own C locals (_jsv_* / _jsi_*)
+     *   js_mode           — JIT ignores it; only the interpreter switch uses it
+     *   var_refs[]        — no OP_define_class / js_closure2 runs in NORMAL+var_ref_count==0 */
+    {
+        JSJITFunc _jf41 = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
+        if (_jf41 != NULL &&
+            b->var_ref_count == 0 &&
+            b->has_simple_parameter_list &&
+            argc >= b->arg_count &&
+            b->func_kind == JS_FUNC_NORMAL &&
+            !(flags & JS_CALL_FLAG_COPY_ARGV))
+        {
+            sf->prev_frame  = rt->current_stack_frame;
+            sf->cur_func    = (JSValue)func_obj;
+            sf->new_target  = (JSValue)new_target;
+            sf->arg_count   = argc;
+            sf->cur_pc      = b->byte_code_buf; /* start of bytecode for backtrace */
+            sf->var_refs    = NULL;              /* var_ref_count==0: never accessed */
+            rt->current_stack_frame = sf;
+            ctx = b->realm;                      /* must switch to callee's realm */
+            /* Variadic functions (arg_count==0) use arguments object built from
+             * argc/argv; must pass real argc so js_build_arguments creates the
+             * correct number of elements.  Fixed-arity functions pass arg_count
+             * so that GEN_PUT_ARG range checks succeed for all declared slots
+             * (matching the behaviour of the standard JIT hot-path below). */
+            int _argc41 = b->arg_count > 0 ? b->arg_count : argc;
+            JSValue _sv41_callee = rt->jit_callee_func;
+            JSValue _sv41_nt     = rt->jit_new_target;
+            int _sv41_aargc      = rt->jit_actual_argc;
+            rt->jit_callee_func  = (JSValue)func_obj;
+            rt->jit_new_target   = (JSValue)new_target;
+            rt->jit_actual_argc  = argc; /* actual call-site argc for arguments.length */
+            JSValue _ret41 = _jf41(ctx, (JSValue)this_obj, _argc41,
+                                   argv, b->cpool, p->u.func.var_refs);
+            rt->jit_callee_func = _sv41_callee;
+            rt->jit_new_target  = _sv41_nt;
+            rt->jit_actual_argc = _sv41_aargc;
+            rt->current_stack_frame = sf->prev_frame;
+            /* P45b: warm-IC recompile trigger — count JIT calls after first compile. */
+            if (unlikely(!b->jit_warm_done && (b->jit_n_gf > 0 || b->jit_n_ae > 0 || b->jit_n_pf > 0 || b->jit_n_vr > 0 || b->jit_n_pa > 0))) {
+                if (++b->jit_warm_count == 200u)
+                    js_jit_schedule_warm_recompile(caller_ctx, b);
+            }
+            /* close_var_refs() is a no-op when var_ref_count==0 — skip it. */
+            return _ret41;
+        }
+    }
+#endif /* CONFIG_JIT */
+
     if (unlikely(argc < b->arg_count || (flags & JS_CALL_FLAG_COPY_ARGV))) {
         arg_allocated_size = b->arg_count;
+#ifdef CONFIG_JIT
+        /* P33: for complex-param JIT functions (rest/default/destructuring),
+         * arg_buf must cover ALL argc slots so that OP_rest can read
+         * argv[arg_count..argc].  JS_Call always sets COPY_ARGV, which would
+         * otherwise truncate arg_buf to just arg_count slots while the JIT
+         * still receives the original argc — causing a buffer overread.
+         * We only need the extension when argc > arg_count. */
+        if (!b->has_simple_parameter_list && argc > b->arg_count)
+            arg_allocated_size = argc;
+#endif
     } else {
         arg_allocated_size = 0;
     }
@@ -17467,13 +19829,22 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
 
     local_buf = alloca(alloca_size);
     if (unlikely(arg_allocated_size)) {
-        int n = min_int(argc, b->arg_count);
+        /* Copy min(argc, arg_allocated_size) provided args, then pad to
+         * arg_allocated_size with JS_UNDEFINED.  For complex-param JIT
+         * functions (P33) arg_allocated_size may equal argc (> arg_count).
+         * For simple-param functions it always equals arg_count. */
+        int n = min_int(argc, arg_allocated_size);
         arg_buf = local_buf;
         for(i = 0; i < n; i++)
             arg_buf[i] = JS_DupValue(caller_ctx, argv[i]);
-        for(; i < b->arg_count; i++)
+        for(; i < arg_allocated_size; i++)
             arg_buf[i] = JS_UNDEFINED;
-        sf->arg_count = b->arg_count;
+        /* Simple params: override sf->arg_count so GEN_PUT_ARG checks pass
+         * for all arg slots.  Complex params: leave sf->arg_count = original
+         * argc so OP_rest computes the correct rest-element count; the JIT's
+         * GEN_GET/PUT_ARG are unconditional for complex params. */
+        if (b->has_simple_parameter_list || arg_allocated_size == b->arg_count)
+            sf->arg_count = b->arg_count;
     }
     var_buf = local_buf + arg_allocated_size;
     sf->var_buf = var_buf;
@@ -17489,8 +19860,88 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
     sp = stack_buf;
     pc = b->byte_code_buf;
     sf->prev_frame = rt->current_stack_frame;
+    sf->new_target = (JSValue)new_target; /* P15: stored for OP_special_object in JIT */
     rt->current_stack_frame = sf;
     ctx = b->realm; /* set the current realm */
+
+#ifdef CONFIG_JIT
+    /* ----------------------------------------------------------------
+     * JIT hot-path probe.
+     *
+     * Check the compiled function pointer first (fast path — no atomic
+     * needed because we only care about seeing a non-NULL value; the
+     * RELEASE store in js_jit_fb_set_func guarantees visibility).
+     * If a JIT function is already installed, call it and return.
+     *
+     * Otherwise increment the call counter and trigger compilation
+     * when the appropriate threshold is crossed.  Compilation itself
+     * is idempotent (guarded by CAS); parallel calls just increment
+     * the counter redundantly which is harmless.
+     * ---------------------------------------------------------------- */
+    if (js_jit_is_eligible(b)) {
+        JSJITFunc jf = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
+        if (unlikely(jf != NULL)) {
+            /* Already compiled — call the native function directly.
+             * Use arg_buf (not argv) so the JIT gets a properly-sized
+             * array even when JS_CALL_FLAG_COPY_ARGV was set.
+             * If we made copies (arg_allocated_size > 0), free them
+             * after the call — mirroring what the interpreter's done:
+             * path does via the local_buf..sp loop.
+             *
+             * Keep sf in rt->current_stack_frame while the JIT runs so
+             * that exceptions thrown from JIT code (or functions it calls)
+             * include this function in e.stack.  Set cur_pc to the start of
+             * the bytecode — the JIT does not track PC so we cannot give an
+             * exact line, but the function name and source file appear. */
+            sf->cur_pc = pc; /* pc == b->byte_code_buf at this point */
+            /* P33: for complex-param functions (rest/default/destructuring)
+             * pass the ORIGINAL argc so OP_rest computes the correct count.
+             * The JIT's GEN_GET/PUT_ARG are unconditional for complex params
+             * (arg_buf is always padded to at least arg_count), so they work
+             * correctly regardless of the argc value.
+             *
+             * For simple-param functions pass sf->arg_count (= b->arg_count
+             * when argc was padded) so the argc-gated GEN_PUT_ARG checks in
+             * the JIT succeed for all named parameter slots. */
+            int jit_argc = b->has_simple_parameter_list ? sf->arg_count : argc;
+            JSValue _sv_hot_callee = rt->jit_callee_func;
+            JSValue _sv_hot_nt     = rt->jit_new_target;
+            int _sv_hot_aargc      = rt->jit_actual_argc;
+            rt->jit_callee_func  = (JSValue)func_obj;
+            rt->jit_new_target   = (JSValue)new_target;
+            rt->jit_actual_argc  = argc; /* actual call-site argc for arguments.length */
+            JSValue jit_ret = jf(ctx, (JSValue)this_obj, jit_argc,
+                                 arg_buf, b->cpool, var_refs);
+            rt->jit_callee_func = _sv_hot_callee;
+            rt->jit_new_target  = _sv_hot_nt;
+            rt->jit_actual_argc = _sv_hot_aargc;
+            rt->current_stack_frame = sf->prev_frame;
+            /* Close any JSVarRefs created by the interpreter inside this JIT
+             * call (e.g. js_closure2 called from js_jit_op_define_class sets
+             * sf->var_refs[i] for captured args/locals).  The interpreter's
+             * normal return path always calls close_var_refs; the JIT fast
+             * exit path must do the same, otherwise closures created inside
+             * the JIT function hold dangling pvalue pointers into the dead
+             * C stack frame. */
+            close_var_refs(rt, b, sf);
+            if (unlikely(arg_allocated_size)) {
+                for (i = 0; i < arg_allocated_size; i++)
+                    JS_FreeValue(ctx, arg_buf[i]);
+            }
+            return jit_ret;
+        }
+        /* jit_no_compile=1 means GCC compilation is queued or permanently
+         * disabled; don't enqueue again, but do check jit_func above in
+         * case GCC finished and installed the pointer since last call. */
+        if (!b->jit_no_compile) {
+            int cnt = js_jit_fb_inc_count(b);
+            int thr = js_jit_get_threshold();
+            if (unlikely(thr >= 1 && cnt == thr)) {
+                js_jit_queue_gcc(caller_ctx, b, var_refs);
+            }
+        }
+    }
+#endif
 
  restart:
     for(;;) {
@@ -18362,18 +20813,6 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 sp--;
             }
             BREAK;
-        CASE(OP_set_loc_check):
-            {
-                int idx;
-                idx = get_u16(pc);
-                pc += 2;
-                if (unlikely(JS_IsUninitialized(var_buf[idx]))) {
-                    JS_ThrowReferenceErrorUninitialized2(ctx, b, idx, FALSE);
-                    goto exception;
-                }
-                set_value(ctx, &var_buf[idx], JS_DupValue(ctx, sp[-1]));
-            }
-            BREAK;
         CASE(OP_put_loc_check_init):
             {
                 int idx;
@@ -19181,7 +21620,9 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                         uint32_t new_len, array_len;
                         if (unlikely(idx != (uint32_t)p->u.array.count ||
                                      !p->fast_array ||
-                                     !can_extend_fast_array(p))) {
+                                     !p->extensible ||
+                                     p->shape->proto != JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]) ||
+                                     !ctx->std_array_prototype)) {
                             goto put_array_el_slow_path;
                         }
                         if (likely(JS_VALUE_GET_TAG(p->prop[0].u.value) != JS_TAG_INT))
@@ -20367,6 +22808,27 @@ static void async_func_free_frame(JSRuntime *rt, JSAsyncFunctionState *s)
     JSStackFrame *sf = &s->frame;
     JSValue *sp;
 
+#ifdef CONFIG_JIT
+    if (s->jit_gen_frame) {
+        JSJITGeneratorFrame *gf = (JSJITGeneratorFrame *)s->jit_gen_frame;
+        if (gf->saved_lv) {
+            int i;
+            for (i = 0; i < gf->n_lv; i++)
+                JS_FreeValueRT(rt, gf->saved_lv[i]);
+            js_free_rt(rt, gf->saved_lv);
+        }
+        /* P12.2: release frame-owned refs on saved closure var-refs */
+        if (gf->saved_vrefs) {
+            int i;
+            for (i = 0; i < gf->n_vrefs; i++)
+                if (gf->saved_vrefs[i])
+                    free_var_ref(rt, gf->saved_vrefs[i]);
+            js_free_rt(rt, gf->saved_vrefs);
+        }
+        js_free_rt(rt, gf);
+        s->jit_gen_frame = NULL;
+    }
+#endif
     /* cannot free the function if it is running */
     assert(sf->cur_sp != NULL);
     for(sp = sf->arg_buf; sp < sf->cur_sp; sp++) {
@@ -20375,6 +22837,178 @@ static void async_func_free_frame(JSRuntime *rt, JSAsyncFunctionState *s)
     JS_FreeValueRT(rt, sf->cur_func);
     JS_FreeValueRT(rt, s->this_val);
 }
+
+#ifdef CONFIG_JIT
+/* P12: JIT generator frame helpers — called from JIT-compiled generator code. */
+
+/*
+ * js_jit_gen_init_frame — allocate/retrieve the JSJITGeneratorFrame for the
+ * currently-executing generator.  Called once at the start of every JIT entry
+ * into a generator function.  Returns NULL on OOM (caller should goto _ex).
+ */
+JSJITGeneratorFrame *js_jit_gen_init_frame(JSContext *ctx, int n_lv, int n_vrefs)
+{
+    JSRuntime *rt = ctx->rt;
+    JSStackFrame *sf = rt->current_stack_frame;
+    JSAsyncFunctionState *s = container_of(sf, JSAsyncFunctionState, frame);
+    if (!s->jit_gen_frame) {
+        JSJITGeneratorFrame *gf;
+        JSObject *p;
+        JSFunctionBytecode *b;
+        JSValue *stack_start;
+        int i;
+        gf = js_malloc(ctx, sizeof(JSJITGeneratorFrame));
+        if (!gf)
+            return NULL;
+        gf->resume_idx = -1;
+        gf->catch_depth = 0;
+        gf->n_lv = n_lv;
+        gf->n_vrefs = n_vrefs;
+        if (n_lv > 0) {
+            gf->saved_lv = js_malloc(ctx, (size_t)n_lv * sizeof(JSValue));
+            if (!gf->saved_lv) {
+                js_free(ctx, gf);
+                return NULL;
+            }
+            for (i = 0; i < n_lv; i++)
+                gf->saved_lv[i] = JS_UNDEFINED;
+        } else {
+            gf->saved_lv = NULL;
+        }
+        /* P12.2: allocate saved_vrefs array (closure var-ref save area) */
+        if (n_vrefs > 0) {
+            gf->saved_vrefs = js_malloc(ctx, (size_t)n_vrefs * sizeof(JSVarRef *));
+            if (!gf->saved_vrefs) {
+                js_free(ctx, gf->saved_lv);
+                js_free(ctx, gf);
+                return NULL;
+            }
+            for (i = 0; i < n_vrefs; i++)
+                gf->saved_vrefs[i] = NULL;
+        } else {
+            gf->saved_vrefs = NULL;
+        }
+        /* Pre-initialise the two stack slots used for value handshake. */
+        p = JS_VALUE_GET_OBJ(sf->cur_func);
+        b = p->u.func.function_bytecode;
+        stack_start = sf->var_buf + b->var_count;
+        if (b->stack_size >= 1) stack_start[0] = JS_UNDEFINED;
+        if (b->stack_size >= 2) stack_start[1] = JS_UNDEFINED;
+        s->jit_gen_frame = gf;
+    }
+    return (JSJITGeneratorFrame *)s->jit_gen_frame;
+}
+
+/*
+ * js_jit_gen_get_throw — check and consume the throw_flag.
+ * Returns 1 if the generator was resumed via .throw() and an exception is
+ * already pending; the JIT should goto _ex immediately.
+ */
+int js_jit_gen_get_throw(JSContext *ctx)
+{
+    JSRuntime *rt = ctx->rt;
+    JSStackFrame *sf = rt->current_stack_frame;
+    JSAsyncFunctionState *s = container_of(sf, JSAsyncFunctionState, frame);
+    if (s->throw_flag) {
+        s->throw_flag = FALSE;
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * js_jit_gen_yield_setup — save the yield value into the stack buffer and
+ * update resume_idx so the next entry dispatches to the right _Lresume_N label.
+ *
+ * After this call sf->cur_sp points one slot past stack_start[0] (the yield
+ * value slot), matching the invariant expected by js_generator_next.
+ */
+void js_jit_gen_yield_setup(JSContext *ctx, JSValue yield_val,
+                             int resume_idx, JSJITGeneratorFrame *gf)
+{
+    JSRuntime *rt = ctx->rt;
+    JSStackFrame *sf = rt->current_stack_frame;
+    JSObject *p = JS_VALUE_GET_OBJ(sf->cur_func);
+    JSFunctionBytecode *b = p->u.func.function_bytecode;
+    JSValue *stack_start = sf->var_buf + b->var_count;
+    stack_start[0] = yield_val;
+    sf->cur_sp = stack_start + 1;
+    gf->resume_idx = resume_idx;
+}
+
+/*
+ * js_jit_gen_get_next_val — consume the .next(v) value written by
+ * js_generator_next into stack_start[0].  Clears the slot so it is not
+ * double-freed.  The caller is responsible for freeing the returned value
+ * when it is no longer needed.
+ */
+JSValue js_jit_gen_get_next_val(JSContext *ctx)
+{
+    JSRuntime *rt = ctx->rt;
+    JSStackFrame *sf = rt->current_stack_frame;
+    JSObject *p = JS_VALUE_GET_OBJ(sf->cur_func);
+    JSFunctionBytecode *b = p->u.func.function_bytecode;
+    JSValue *stack_start = sf->var_buf + b->var_count;
+    JSValue val = stack_start[0];
+    stack_start[0] = JS_UNDEFINED;
+    return val;
+}
+
+/*
+ * js_jit_gen_get_magic_int — read the magic integer (GEN_MAGIC_NEXT=0,
+ * GEN_MAGIC_RETURN=1, GEN_MAGIC_THROW=2) from stack_start[1].
+ * Called only after js_jit_gen_get_next_val (magic is at [1]).
+ */
+int js_jit_gen_get_magic_int(JSContext *ctx)
+{
+    JSRuntime *rt = ctx->rt;
+    JSStackFrame *sf = rt->current_stack_frame;
+    JSObject *p = JS_VALUE_GET_OBJ(sf->cur_func);
+    JSFunctionBytecode *b = p->u.func.function_bytecode;
+    JSValue *stack_start = sf->var_buf + b->var_count;
+    return JS_VALUE_GET_INT(stack_start[1]);
+}
+
+/*
+ * js_jit_gen_save_vrefs — snapshot _sf_vrefs[] into the generator frame.
+ * Called at every OP_yield/OP_await site AFTER js_jit_close_caps() so all
+ * JSVarRefs are already heap-promoted (is_detached==TRUE, pvalue==&value).
+ * Takes an extra reference on each non-NULL entry so the frame keeps them
+ * alive while the generator is suspended.
+ */
+void js_jit_gen_save_vrefs(JSContext *ctx, JSVarRef **vrefs, int n,
+                            JSJITGeneratorFrame *gf)
+{
+    JSRuntime *rt = ctx->rt;
+    int i;
+    for (i = 0; i < n && i < gf->n_vrefs; i++) {
+        /* Release previously saved ref (safety — should be NULL in practice) */
+        if (gf->saved_vrefs[i]) {
+            free_var_ref(rt, gf->saved_vrefs[i]);
+            gf->saved_vrefs[i] = NULL;
+        }
+        if (vrefs[i]) {
+            vrefs[i]->header.ref_count++;
+            gf->saved_vrefs[i] = vrefs[i];
+        }
+    }
+}
+
+/*
+ * js_jit_gen_restore_vrefs — transfer frame-owned JSVarRef pointers back to
+ * the JIT's _sf_vrefs[] C-local array on resume.  The frame relinquishes its
+ * reference (slots cleared to NULL).  The caller then re-attaches each VarRef
+ * to the corresponding _cap_buf / _arg_cap_buf slot.
+ */
+void js_jit_gen_restore_vrefs(JSVarRef **vrefs, int n, JSJITGeneratorFrame *gf)
+{
+    int i;
+    for (i = 0; i < n && i < gf->n_vrefs; i++) {
+        vrefs[i] = gf->saved_vrefs[i]; /* transfer ownership */
+        gf->saved_vrefs[i] = NULL;
+    }
+}
+#endif /* CONFIG_JIT */
 
 static JSValue async_func_resume(JSContext *ctx, JSAsyncFunctionState *s)
 {
@@ -21116,8 +23750,9 @@ static JSValue js_async_generator_resolve_function(JSContext *ctx,
         } else {
             js_async_generator_resolve(ctx, s, arg, TRUE);
         }
-    } else if (s->state == JS_ASYNC_GENERATOR_STATE_EXECUTING) {
+    } else {
         /* restart function execution after await() */
+        assert(s->state == JS_ASYNC_GENERATOR_STATE_EXECUTING);
         s->func_state->throw_flag = is_reject;
         if (is_reject) {
             JS_Throw(ctx, JS_DupValue(ctx, arg));
@@ -21534,6 +24169,12 @@ typedef struct JSFunctionDef {
 
     JSModuleDef *module; /* != NULL when parsing a module */
     BOOL has_await; /* TRUE if await is used (used in module eval) */
+#ifdef CONFIG_JIT
+    /* Raw CF records accumulated during parsing; 9 bytes per record:
+     * uint8 kind + int32 header_label + int32 exit_label.
+     * Finalized to cf_annotations in js_create_function() after resolve_labels(). */
+    DynBuf jit_cf_raw;
+#endif
 } JSFunctionDef;
 
 typedef struct JSToken {
@@ -23391,10 +26032,8 @@ static int cpool_add(JSParseState *s, JSValue val)
     JSFunctionDef *fd = s->cur_func;
 
     if (js_resize_array(s->ctx, (void *)&fd->cpool, sizeof(fd->cpool[0]),
-                        &fd->cpool_size, fd->cpool_count + 1)) {
-        JS_FreeValue(s->ctx, val);
+                        &fd->cpool_size, fd->cpool_count + 1))
         return -1;
-    }
     fd->cpool[fd->cpool_count++] = val;
     return fd->cpool_count - 1;
 }
@@ -28085,6 +30724,23 @@ static int is_let(JSParseState *s, int decl_mask)
     return res;
 }
 
+#ifdef CONFIG_JIT
+/* P9.3: record a raw CF annotation (kind + label IDs) into fd->jit_cf_raw.
+ * Called at loop back-edges during parsing; resolved to PCs after resolve_labels(). */
+static void jit_cf_record(JSFunctionDef *fd, int kind, int header_label, int exit_label)
+{
+    if (!fd || header_label < 0 || exit_label < 0) return;
+    uint8_t  k  = (uint8_t)kind;
+    int32_t  hl = (int32_t)header_label;
+    int32_t  el = (int32_t)exit_label;
+    dbuf_put(&fd->jit_cf_raw, &k,  1);
+    dbuf_put(&fd->jit_cf_raw, (uint8_t*)&hl, 4);
+    dbuf_put(&fd->jit_cf_raw, (uint8_t*)&el, 4);
+}
+#else
+#define jit_cf_record(fd, kind, hl, el) (void)0
+#endif
+
 /* XXX: handle IteratorClose when exiting the loop before the
    enumeration is done */
 static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
@@ -28206,7 +30862,8 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
     JS_FreeAtom(ctx, var_name);
 
     if (token_is_pseudo_keyword(s, JS_ATOM_of)) {
-        is_for_of = TRUE;
+        break_entry.has_iterator = is_for_of = TRUE;
+        break_entry.drop_count += 2;
         if (has_initializer)
             goto initializer_error;
     } else if (s->token.val == TOK_IN) {
@@ -28235,11 +30892,6 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
        the TDZ values are in the closures */
     close_scopes(s, s->cur_func->scope_level, block_scope_level);
     if (is_for_of) {
-        /* set has_iterator after the iterable expression is parsed so
-           that a yield in the expression does not try to close a
-           not-yet-created iterator */
-        break_entry.has_iterator = TRUE;
-        break_entry.drop_count += 2;
         if (is_async)
             emit_op(s, OP_for_await_of_start);
         else
@@ -28298,6 +30950,7 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
     }
     /* on stack: enum_rec / enum_obj value bool */
     emit_goto(s, OP_if_false, label_next);
+    jit_cf_record(fd, JIT_CF_FORIN_LOOP, label_next, label_break);
     /* drop the undefined value from for_xx_next */
     emit_op(s, OP_drop);
 
@@ -28497,6 +31150,7 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             if (js_parse_statement(s))
                 goto fail;
             emit_goto(s, OP_goto, label_cont);
+            jit_cf_record(s->cur_func, JIT_CF_WHILE_LOOP, label_cont, label_break);
 
             emit_label(s, label_break);
 
@@ -28536,6 +31190,7 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
                     goto fail;
             }
             emit_goto(s, OP_if_true, label1);
+            jit_cf_record(s->cur_func, JIT_CF_DOWHILE_LOOP, label1, label_break);
 
             emit_label(s, label_break);
 
@@ -28677,8 +31332,10 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
                     if (ls->pos >= pos_cont && ls->pos < pos_body)
                         ls->pos += offset;
                 }
+                jit_cf_record(s->cur_func, JIT_CF_FOR_LOOP, label_test, label_break);
             } else {
                 emit_goto(s, OP_goto, label_cont);
+                jit_cf_record(s->cur_func, JIT_CF_FOR_LOOP, label_cont, label_break);
             }
 
             emit_label(s, label_break);
@@ -28793,7 +31450,7 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             if (js_parse_expect(s, '}'))
                 goto fail;
             if (default_label_pos >= 0) {
-                /* Ugly patch for the `default` label, shameful and risky */
+                /* Ugly patch for the the `default` label, shameful and risky */
                 put_u32(s->cur_func->byte_code.buf + default_label_pos,
                         label_case);
                 s->cur_func->label_slots[label_case].pos = default_label_pos + 4;
@@ -29988,7 +32645,6 @@ static int js_create_module_bytecode_function(JSContext *ctx, JSModuleDef *m)
 
     if (JS_IsException(func_obj))
         return -1;
-    m->func_obj = func_obj;
     b = JS_VALUE_GET_PTR(bfunc);
     func_obj = js_closure2(ctx, func_obj, b, NULL, NULL, TRUE, m);
     if (JS_IsException(func_obj)) {
@@ -29996,6 +32652,7 @@ static int js_create_module_bytecode_function(JSContext *ctx, JSModuleDef *m)
         JS_FreeValue(ctx, func_obj);
         return -1;
     }
+    m->func_obj = func_obj;
     return 0;
 }
 
@@ -30214,8 +32871,9 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
 
         /* initialize the global variables */
         ret_val = JS_Call(ctx, m->func_obj, JS_TRUE, 0, NULL);
-        if (JS_IsException(ret_val))
+        if (JS_IsException(ret_val)) {
             goto fail;
+        }
         JS_FreeValue(ctx, ret_val);
     }
 
@@ -31544,6 +34202,9 @@ static JSFunctionDef *js_new_function_def(JSContext *ctx,
     //fd->pc2line_last_line_num = line_num;
     //fd->pc2line_last_pc = 0;
     fd->last_opcode_source_ptr = source_ptr;
+#ifdef CONFIG_JIT
+    dbuf_init(&fd->jit_cf_raw);
+#endif
     return fd;
 }
 
@@ -31633,6 +34294,9 @@ static void js_free_function_def(JSContext *ctx, JSFunctionDef *fd)
 
     JS_FreeAtom(ctx, fd->filename);
     dbuf_free(&fd->pc2line);
+#ifdef CONFIG_JIT
+    dbuf_free(&fd->jit_cf_raw);
+#endif
 
     js_free(ctx, fd->source);
 
@@ -34788,7 +37452,7 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                 /* Transformation: dup put_x(n) drop -> put_x(n) */
                 int op1, line2 = -1;
                 /* Transformation: dup put_x(n) -> set_x(n) */
-                if (code_match(&cc, pos_next, M4(OP_put_loc, OP_put_loc_check, OP_put_arg, OP_put_var_ref), -1, -1)) {
+                if (code_match(&cc, pos_next, M3(OP_put_loc, OP_put_arg, OP_put_var_ref), -1, -1)) {
                     if (cc.line_num >= 0) line_num = cc.line_num;
                     op1 = cc.op + 1;  /* put_x -> set_x */
                     pos_next = cc.pos;
@@ -34878,9 +37542,63 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                     pos_next = cc.pos;
                     break;
                 }
+                /* transformation:
+                   get_loc(n) get_loc/get_arg/get_var_ref(x) get_field add dup put_loc[_check](n) drop
+                   -> get_loc/get_arg/get_var_ref(x) get_field add_loc(n)
+                   Folds property-read accumulation (e.g. s += o.x) into add_loc. */
+                {
+                    CodeContext cc2;
+                    cc2.bc_buf = cc.bc_buf;
+                    cc2.bc_len = cc.bc_len;
+                    if (code_match(&cc2, pos_next, M3(OP_get_loc, OP_get_arg, OP_get_var_ref), -1, -1)) {
+                        int obj_op = cc2.op, obj_idx = cc2.idx;
+                        if (code_match(&cc, cc2.pos, OP_get_field, OP_add, OP_dup, M2(OP_put_loc, OP_put_loc_check), idx, OP_drop, -1)) {
+                            if (cc.line_num >= 0) line_num = cc.line_num;
+                            add_pc2line_info(s, bc_out.size, line_num);
+                            put_short_code(&bc_out, obj_op, obj_idx);
+                            dbuf_putc(&bc_out, OP_get_field);
+                            dbuf_put_u32(&bc_out, cc.atom);
+                            dbuf_putc(&bc_out, OP_add_loc);
+                            dbuf_putc(&bc_out, idx);
+                            pos_next = cc.pos;
+                            break;
+                        }
+                    }
+                }
                 add_pc2line_info(s, bc_out.size, line_num);
                 put_short_code(&bc_out, op, idx);
                 break;
+            }
+            goto no_change;
+        case OP_get_loc_check:
+            /* transformation:
+               get_loc_check(n) get_loc/get_arg/get_var_ref(x) get_field add dup put_loc[_check](n) drop
+               -> get_loc/get_arg/get_var_ref(x) get_field add_loc(n)
+               Folds lexical-var (let/const) property-read accumulation into add_loc. */
+            if (OPTIMIZE) {
+                int idx;
+                idx = get_u16(bc_buf + pos + 1);
+                if (idx >= 256)
+                    goto no_change;
+                {
+                    CodeContext cc2;
+                    cc2.bc_buf = cc.bc_buf;
+                    cc2.bc_len = cc.bc_len;
+                    if (code_match(&cc2, pos_next, M3(OP_get_loc, OP_get_arg, OP_get_var_ref), -1, -1)) {
+                        int obj_op = cc2.op, obj_idx = cc2.idx;
+                        if (code_match(&cc, cc2.pos, OP_get_field, OP_add, OP_dup, M2(OP_put_loc, OP_put_loc_check), idx, OP_drop, -1)) {
+                            if (cc.line_num >= 0) line_num = cc.line_num;
+                            add_pc2line_info(s, bc_out.size, line_num);
+                            put_short_code(&bc_out, obj_op, obj_idx);
+                            dbuf_putc(&bc_out, OP_get_field);
+                            dbuf_put_u32(&bc_out, cc.atom);
+                            dbuf_putc(&bc_out, OP_add_loc);
+                            dbuf_putc(&bc_out, idx);
+                            pos_next = cc.pos;
+                            break;
+                        }
+                    }
+                }
             }
             goto no_change;
 #if SHORT_OPCODES
@@ -34896,7 +37614,6 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
             goto no_change;
 #endif
         case OP_put_loc:
-        case OP_put_loc_check:
         case OP_put_arg:
         case OP_put_var_ref:
             if (OPTIMIZE) {
@@ -35093,6 +37810,40 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
     js_free(ctx, s->jump_slots);
     s->jump_slots = NULL;
 #endif
+#ifdef CONFIG_JIT
+    /* P9.3: resolve raw CF annotations (label IDs → PCs) while label_slots is
+     * still valid. Results stored temporarily back into jit_cf_raw as a flat
+     * array of JSJITCFAnnotation structs (replacing the 9-byte packed records).
+     * js_create_function() will move these into b->cf_annotations. */
+    if (s->jit_cf_raw.size > 0 && !s->jit_cf_raw.error) {
+        int _n = (int)(s->jit_cf_raw.size / 9);
+        JSJITCFAnnotation *_resolved = js_mallocz(ctx, _n * sizeof(JSJITCFAnnotation));
+        if (_resolved) {
+            const uint8_t *_p = s->jit_cf_raw.buf;
+            int _valid = 0;
+            for (int _i = 0; _i < _n; _i++, _p += 9) {
+                uint8_t _kind = _p[0];
+                int32_t _hl, _el;
+                memcpy(&_hl, _p + 1, 4);
+                memcpy(&_el, _p + 5, 4);
+                if (_hl >= 0 && _hl < s->label_count &&
+                    _el >= 0 && _el < s->label_count &&
+                    s->label_slots[_hl].addr >= 0 &&
+                    s->label_slots[_el].addr >= 0) {
+                    _resolved[_valid].header_pc = (uint32_t)s->label_slots[_hl].addr;
+                    _resolved[_valid].exit_pc   = (uint32_t)s->label_slots[_el].addr;
+                    _resolved[_valid].kind      = _kind;
+                    _valid++;
+                }
+            }
+            dbuf_free(&s->jit_cf_raw);
+            dbuf_init(&s->jit_cf_raw);
+            /* Store resolved annotations as raw bytes in jit_cf_raw for pickup by js_create_function */
+            dbuf_put(&s->jit_cf_raw, (uint8_t *)_resolved, _valid * sizeof(JSJITCFAnnotation));
+            js_free(ctx, _resolved);
+        }
+    }
+#endif
     js_free(ctx, s->label_slots);
     s->label_slots = NULL;
     /* XXX: should delay until copying to runtime bytecode function */
@@ -35170,7 +37921,8 @@ static __exception int ss_check(JSContext *ctx, StackSizeState *s,
 
 static __exception int compute_stack_size(JSContext *ctx,
                                           JSFunctionDef *fd,
-                                          int *pstack_size)
+                                          int *pstack_size,
+                                          uint16_t **ptab)
 {
     StackSizeState s_s, *s = &s_s;
     int i, diff, n_pop, pos_next, stack_len, pos, op, catch_pos, catch_level;
@@ -35358,7 +38110,11 @@ static __exception int compute_stack_size(JSContext *ctx,
     }
     js_free(ctx, s->pc_stack);
     js_free(ctx, s->catch_pos_tab);
-    js_free(ctx, s->stack_level_tab);
+    /* P9.0: save per-PC depth table instead of freeing it */
+    if (ptab)
+        *ptab = s->stack_level_tab;
+    else
+        js_free(ctx, s->stack_level_tab);
     *pstack_size = s->stack_len_max;
     return 0;
  fail:
@@ -35448,6 +38204,9 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     int function_size, byte_code_offset, cpool_offset;
     int closure_var_offset, vardefs_offset;
     BOOL strip_var_debug;
+#ifdef CONFIG_JIT
+    uint16_t *sdt = NULL; /* stack_depth_tab output from compute_stack_size; P9.0 */
+#endif
     
     /* recompute scope linkage */
     for (scope = 0; scope < fd->scope_count; scope++) {
@@ -35533,7 +38292,11 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     if (resolve_labels(ctx, fd))
         goto fail;
 
-    if (compute_stack_size(ctx, fd, &stack_size) < 0)
+#ifdef CONFIG_JIT
+    if (compute_stack_size(ctx, fd, &stack_size, &sdt) < 0)
+#else
+    if (compute_stack_size(ctx, fd, &stack_size, NULL) < 0)
+#endif
         goto fail;
 
     if (fd->strip_debug) {
@@ -35617,6 +38380,27 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     fd->cpool = NULL;
 
     b->stack_size = stack_size;
+#ifdef CONFIG_JIT
+    b->stack_depth_tab = sdt;
+    sdt = NULL; /* ownership transferred to b */
+
+    /* P9.3: transfer CF annotations resolved by resolve_labels() into b.
+     * resolve_labels() already resolved label IDs → PCs and stored them as
+     * flat JSJITCFAnnotation structs in jit_cf_raw. */
+    {
+        int _n = (int)(fd->jit_cf_raw.size / sizeof(JSJITCFAnnotation));
+        if (_n > 0 && !fd->jit_cf_raw.error) {
+            JSJITCFAnnotation *_annots = js_mallocz(ctx, _n * sizeof(JSJITCFAnnotation));
+            if (_annots) {
+                memcpy(_annots, fd->jit_cf_raw.buf, _n * sizeof(JSJITCFAnnotation));
+                b->cf_annotations      = _annots;
+                b->cf_annotation_count = _n;
+            }
+        }
+        dbuf_free(&fd->jit_cf_raw);
+        dbuf_init(&fd->jit_cf_raw); /* reset so js_free_function_def doesn't double-free */
+    }
+#endif
 
     if (fd->strip_debug) {
         JS_FreeAtom(ctx, fd->filename);
@@ -35694,6 +38478,9 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     js_free(ctx, fd);
     return JS_MKPTR(JS_TAG_FUNCTION_BYTECODE, b);
  fail:
+#ifdef CONFIG_JIT
+    js_free(ctx, sdt);
+#endif
     js_free_function_def(ctx, fd);
     return JS_EXCEPTION;
 }
@@ -35735,6 +38522,13 @@ static void free_function_bytecode(JSRuntime *rt, JSFunctionBytecode *b)
     }
 
     remove_gc_object(&b->header);
+#ifdef CONFIG_JIT
+    js_free_rt(rt, b->stack_depth_tab);
+    js_free_rt(rt, b->cf_annotations);
+    b->cf_annotations = NULL;
+    /* P45b: js_jit_free_bytecode handles freeing jit_vt_hints and jit_warm_handle. */
+    js_jit_free_bytecode(b);  /* closes jit_handle, jit_warm_handle, frees jit_vt_hints */
+#endif
     if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES && b->header.ref_count != 0) {
         list_add_tail(&b->header.link, &rt->gc_zero_ref_count_list);
     } else {
@@ -41418,13 +44212,20 @@ static JSValue js_array_with(JSContext *ctx, JSValueConst this_val,
     } else {
         for (; i < idx; i++, pval++)
             if (-1 == JS_TryGetPropertyInt64(ctx, obj, i, pval))
-                goto exception;
+                goto fill_and_fail;
         *pval = JS_DupValue(ctx, argv[1]);
         for (i++, pval++; i < len; i++, pval++) {
-            if (-1 == JS_TryGetPropertyInt64(ctx, obj, i, pval))
+            if (-1 == JS_TryGetPropertyInt64(ctx, obj, i, pval)) {
+            fill_and_fail:
+                for (; i < len; i++, pval++)
+                    *pval = JS_UNDEFINED;
                 goto exception;
+            }
         }
     }
+
+    if (JS_SetProperty(ctx, arr, JS_ATOM_length, JS_NewInt64(ctx, len)) < 0)
+        goto exception;
 
     ret = arr;
     arr = JS_UNDEFINED;
@@ -42157,7 +44958,9 @@ static JSValue js_array_push(JSContext *ctx, JSValueConst this_val,
     if (likely(JS_VALUE_GET_TAG(this_val) == JS_TAG_OBJECT && !unshift)) {
         JSObject *p = JS_VALUE_GET_OBJ(this_val);
         if (likely(p->class_id == JS_CLASS_ARRAY && p->fast_array &&
-                   can_extend_fast_array(p) &&
+                   p->extensible &&
+                   p->shape->proto == JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]) &&
+                   ctx->std_array_prototype &&
                    JS_VALUE_GET_TAG(p->prop[0].u.value) == JS_TAG_INT &&
                    JS_VALUE_GET_INT(p->prop[0].u.value) == p->u.array.count &&
                    (get_shape_prop(p->shape)->flags & JS_PROP_WRITABLE) != 0)) {
@@ -42309,10 +45112,17 @@ static JSValue js_array_toReversed(JSContext *ctx, JSValueConst this_val,
         } else {
             // Query order is observable; test262 expects descending order.
             for (; i >= 0; i--, pval++) {
-                if (-1 == JS_TryGetPropertyInt64(ctx, obj, i, pval))
+                if (-1 == JS_TryGetPropertyInt64(ctx, obj, i, pval)) {
+                    // Exception; initialize remaining elements.
+                    for (; i >= 0; i--, pval++)
+                        *pval = JS_UNDEFINED;
                     goto exception;
+                }
             }
         }
+
+        if (JS_SetProperty(ctx, arr, JS_ATOM_length, JS_NewInt64(ctx, len)) < 0)
+            goto exception;
     }
 
     ret = arr;
@@ -42501,11 +45311,17 @@ static JSValue js_array_toSpliced(JSContext *ctx, JSValueConst this_val,
 
     assert(pval == last);
 
+    if (JS_SetProperty(ctx, arr, JS_ATOM_length, JS_NewInt64(ctx, newlen)) < 0)
+        goto exception;
+
 done:
     ret = arr;
     arr = JS_UNDEFINED;
 
 exception:
+    while (pval != last)
+        *pval++ = JS_UNDEFINED;
+
     JS_FreeValue(ctx, arr);
     JS_FreeValue(ctx, obj);
     return ret;
@@ -42850,10 +45666,16 @@ static JSValue js_array_toSorted(JSContext *ctx, JSValueConst this_val,
                 *pval = JS_DupValue(ctx, arrp[i]);
         } else {
             for (; i < len; i++, pval++) {
-                if (-1 == JS_TryGetPropertyInt64(ctx, obj, i, pval))
+                if (-1 == JS_TryGetPropertyInt64(ctx, obj, i, pval)) {
+                    for (; i < len; i++, pval++)
+                        *pval = JS_UNDEFINED;
                     goto exception;
+                }
             }
         }
+
+        if (JS_SetProperty(ctx, arr, JS_ATOM_length, JS_NewInt64(ctx, len)) < 0)
+            goto exception;
     }
 
     ret = js_array_sort(ctx, arr, argc, argv);
@@ -43974,7 +46796,6 @@ static JSValue js_iterator_helper_next(JSContext *ctx, JSValueConst this_val,
             args[1] = index_val;
             ret = JS_Call(ctx, it->func, JS_UNDEFINED, countof(args), args);
             JS_FreeValue(ctx, index_val);
-            JS_FreeValue(ctx, item);
             if (JS_IsException(ret))
                 goto fail;
             goto done;
@@ -45153,7 +47974,7 @@ static JSValue js_string_match(JSContext *ctx, JSValueConst this_val,
     if (JS_IsUndefined(O) || JS_IsNull(O))
         return JS_ThrowTypeError(ctx, "cannot convert to object");
 
-    if (JS_IsObject(regexp)) {
+    if (!JS_IsUndefined(regexp) && !JS_IsNull(regexp)) {
         matcher = JS_GetProperty(ctx, regexp, atom);
         if (JS_IsException(matcher))
             return JS_EXCEPTION;
@@ -45333,7 +48154,7 @@ static JSValue js_string_replace(JSContext *ctx, JSValueConst this_val,
     replaceValue_str = JS_UNDEFINED;
     repl_str = JS_UNDEFINED;
 
-    if (JS_IsObject(searchValue)) {
+    if (!JS_IsUndefined(searchValue) && !JS_IsNull(searchValue)) {
         JSValue replacer;
         if (is_replaceAll) {
             if (check_regexp_g_flag(ctx, searchValue) < 0)
@@ -45444,7 +48265,7 @@ static JSValue js_string_split(JSContext *ctx, JSValueConst this_val,
     A = JS_UNDEFINED;
     R = JS_UNDEFINED;
 
-    if (JS_IsObject(separator)) {
+    if (!JS_IsUndefined(separator) && !JS_IsNull(separator)) {
         JSValue splitter;
         splitter = JS_GetProperty(ctx, separator, JS_ATOM_Symbol_split);
         if (JS_IsException(splitter))
@@ -45485,6 +48306,7 @@ static JSValue js_string_split(JSContext *ctx, JSValueConst this_val,
             goto add_tail;
         goto done;
     }
+    q = p;
     for (q = p; (q += !r) <= s - r - !r; q = p = e + r) {
         e = string_indexof(sp, rp, q);
         if (e < 0)
@@ -47332,10 +50154,9 @@ static JSValue js_regexp_escape(JSContext *ctx, JSValueConst this_val,
     JSValue str;
     StringBuffer b_s, *b = &b_s;
     JSString *p;
-    uint32_t c;
+    uint32_t c, i;
     char s[16];
-    int i, i0;
-    
+
     if (!JS_IsString(argv[0]))
         return JS_ThrowTypeError(ctx, "not a string");
     str = JS_ToString(ctx, argv[0]); /* must call it to linearlize ropes */
@@ -47343,9 +50164,8 @@ static JSValue js_regexp_escape(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     p = JS_VALUE_GET_STRING(str);
     string_buffer_init2(ctx, b, 0, p->is_wide_char);
-    for (i = 0; i < p->len; ) {
-        i0 = i;
-        c = string_getc(p, &i);
+    for (i = 0; i < p->len; i++) {
+        c = string_get(p, i);
         if (c < 33) {
             if (c >= 9 && c <= 13) {
                 string_buffer_putc8(b, '\\');
@@ -47357,7 +50177,7 @@ static JSValue js_regexp_escape(JSContext *ctx, JSValueConst this_val,
             if ((c >= '0' && c <= '9')
              || (c >= 'A' && c <= 'Z')
              || (c >= 'a' && c <= 'z')) {
-                if (i0 == 0)
+                if (i == 0)
                     goto hex2;
             } else if (strchr(",-=<>#&!%:;@~'`\"", c)) {
                 goto hex2;
@@ -47373,7 +50193,7 @@ static JSValue js_regexp_escape(JSContext *ctx, JSValueConst this_val,
             snprintf(s, sizeof(s), "\\u%04x", c);
             string_buffer_puts8(b, s);
         } else {
-            string_buffer_putc(b, c);
+            string_buffer_putc16(b, c);
         }
     }
     JS_FreeValue(ctx, str);
@@ -47422,12 +50242,11 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
     JSValue indices, indices_groups;
     uint8_t *re_bytecode;
     uint8_t **capture, *str_buf;
-    int rc, capture_count, shift, i, re_flags, alloc_count;
+    int rc, capture_count, shift, i, re_flags;
     int64_t last_index;
     const char *group_name_ptr;
     JSObject *p_obj;
-    JSAtom group_name;
-    
+
     if (!re)
         return JS_EXCEPTION;
 
@@ -47441,8 +50260,7 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
     indices = JS_UNDEFINED;
     indices_groups = JS_UNDEFINED;
     capture = NULL;
-    group_name = JS_ATOM_NULL;
-    
+
     if (js_regexp_get_lastIndex(ctx, &last_index, this_val))
         goto fail;
 
@@ -47452,13 +50270,12 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
         last_index = 0;
     }
     str = JS_VALUE_GET_STRING(str_val);
-    alloc_count = lre_get_alloc_count(re_bytecode);
-    if (alloc_count > 0) {
-        capture = js_malloc(ctx, sizeof(capture[0]) * alloc_count);
+    capture_count = lre_get_capture_count(re_bytecode);
+    if (capture_count > 0) {
+        capture = js_malloc(ctx, sizeof(capture[0]) * capture_count * 2);
         if (!capture)
             goto fail;
     }
-    capture_count = lre_get_capture_count(re_bytecode);
     shift = str->is_wide_char;
     str_buf = str->u.str8;
     if (last_index > str->len) {
@@ -47525,20 +50342,15 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
             goto fail;
         
         for(i = 0; i < capture_count; i++) {
+            const char *name = NULL;
             uint8_t **match = &capture[2 * i];
             int start = -1;
             int end = -1;
             JSValue val;
 
             if (group_name_ptr && i > 0) {
-                if (*group_name_ptr) {
-                    /* XXX: slow, should create a shape when the regexp is
-                       compiled */
-                    group_name = JS_NewAtom(ctx, group_name_ptr);
-                    if (group_name == JS_ATOM_NULL)
-                        goto fail;
-                }
-                group_name_ptr += strlen(group_name_ptr) + LRE_GROUP_NAME_TRAILER_LEN;
+                if (*group_name_ptr) name = group_name_ptr;
+                group_name_ptr += strlen(group_name_ptr) + 1;
             }
 
             if (match[0] && match[1]) {
@@ -47565,15 +50377,12 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
                         goto fail;
                     }
                 }
-                if (group_name != JS_ATOM_NULL) {
-                    /* JS_HasProperty() cannot fail here */
-                    if (!JS_IsUndefined(val) ||
-                        !JS_HasProperty(ctx, indices_groups, group_name)) {
-                        if (JS_DefinePropertyValue(ctx, indices_groups,
-                                                   group_name, JS_DupValue(ctx, val), prop_flags) < 0) {
-                            JS_FreeValue(ctx, val);
-                            goto fail;
-                        }
+                if (name && !JS_IsUndefined(indices_groups)) {
+                    val = JS_DupValue(ctx, val);
+                    if (JS_DefinePropertyValueStr(ctx, indices_groups,
+                                                  name, val, prop_flags) < 0) {
+                        JS_FreeValue(ctx, val);
+                        goto fail;
                     }
                 }
                 if (JS_DefinePropertyValueUint32(ctx, indices, i, val,
@@ -47589,19 +50398,13 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
                     goto fail;
             }
 
-            if (group_name != JS_ATOM_NULL) {
-                /* JS_HasProperty() cannot fail here */
-                if (!JS_IsUndefined(val) ||
-                    !JS_HasProperty(ctx, groups, group_name)) {
-                    if (JS_DefinePropertyValue(ctx, groups, group_name,
-                                               JS_DupValue(ctx, val),
-                                               prop_flags) < 0) {
-                        JS_FreeValue(ctx, val);
-                        goto fail;
-                    }
+            if (name) {
+                if (JS_DefinePropertyValueStr(ctx, groups, name,
+                                              JS_DupValue(ctx, val),
+                                              prop_flags) < 0) {
+                    JS_FreeValue(ctx, val);
+                    goto fail;
                 }
-                JS_FreeAtom(ctx, group_name);
-                group_name = JS_ATOM_NULL;
             }
             p_obj->u.array.u.values[p_obj->u.array.count++] = val;
         }
@@ -47622,7 +50425,6 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
     ret = obj;
     obj = JS_UNDEFINED;
 fail:
-    JS_FreeAtom(ctx, group_name);
     JS_FreeValue(ctx, indices_groups);
     JS_FreeValue(ctx, indices);
     JS_FreeValue(ctx, str_val);
@@ -47642,7 +50444,7 @@ static JSValue js_regexp_replace(JSContext *ctx, JSValueConst this_val, JSValueC
     uint8_t *re_bytecode;
     int ret;
     uint8_t **capture, *str_buf;
-    int capture_count, alloc_count, shift, re_flags;
+    int capture_count, shift, re_flags;
     int next_src_pos, start, end;
     int64_t last_index;
     StringBuffer b_s, *b = &b_s;
@@ -47676,13 +50478,12 @@ static JSValue js_regexp_replace(JSContext *ctx, JSValueConst this_val, JSValueC
         if (js_regexp_get_lastIndex(ctx, &last_index, this_val))
             goto fail;
     }
-    alloc_count = lre_get_alloc_count(re_bytecode);
-    if (alloc_count > 0) {
-        capture = js_malloc(ctx, sizeof(capture[0]) * alloc_count);
+    capture_count = lre_get_capture_count(re_bytecode);
+    if (capture_count > 0) {
+        capture = js_malloc(ctx, sizeof(capture[0]) * capture_count * 2);
         if (!capture)
             goto fail;
     }
-    capture_count = lre_get_capture_count(re_bytecode);
     fullUnicode = ((re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0);
     shift = str->is_wide_char;
     str_buf = str->u.str8;
@@ -55770,11 +58571,6 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
         return -1;
     ctx->array_ctor = obj;
 
-    {
-        JSObject *p = JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]);
-        p->is_std_array_prototype = TRUE;
-    }
-    
     ctx->array_shape = js_new_shape2(ctx, get_proto_obj(ctx->class_proto[JS_CLASS_ARRAY]),
                                      JS_PROP_INITIAL_HASH_SIZE, 1);
     if (!ctx->array_shape)
@@ -55782,6 +58578,7 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
     if (add_shape_property(ctx, &ctx->array_shape, NULL,
                            JS_ATOM_length, JS_PROP_WRITABLE | JS_PROP_LENGTH))
         return -1;
+    ctx->std_array_prototype = TRUE;
 
     ctx->arguments_shape = js_new_shape2(ctx, get_proto_obj(ctx->class_proto[JS_CLASS_OBJECT]),
                                          JS_PROP_INITIAL_HASH_SIZE, 3);
@@ -56960,8 +59757,6 @@ static JSValue js_typed_array_with(JSContext *ctx, JSValueConst this_val,
     if (typed_array_is_oob(p) || idx < 0 || idx >= p->u.array.count)
         return JS_ThrowRangeError(ctx, "invalid array index");
 
-    /* warning: 'this_val' may have been resized, so 'len' may be
-       larger than its length */
     arr = js_typed_array_constructor_ta(ctx, JS_UNDEFINED, this_val,
                                         p->class_id, len);
     if (JS_IsException(arr)) {
@@ -58038,7 +60833,7 @@ static JSValue js_TA_get_float64(JSContext *ctx, const void *a) {
 struct TA_sort_context {
     JSContext *ctx;
     int exception; /* 1 = exception, 2 = detached typed array */
-    uint8_t *array;
+    JSValueConst arr;
     JSValueConst cmp;
     JSValue (*getfun)(JSContext *ctx, const void *a);
     int elt_size;
@@ -58051,6 +60846,7 @@ static int js_TA_cmp_generic(const void *a, const void *b, void *opaque) {
     JSValueConst argv[2];
     JSValue res;
     int cmp;
+    JSObject *p;
     
     cmp = 0;
     if (!psc->exception) {
@@ -58058,9 +60854,15 @@ static int js_TA_cmp_generic(const void *a, const void *b, void *opaque) {
            error */
         a_idx = *(uint32_t *)a;
         b_idx = *(uint32_t *)b;
-        argv[0] = psc->getfun(ctx, psc->array +
+        p = JS_VALUE_GET_PTR(psc->arr);
+        if (a_idx >= p->u.array.count || b_idx >= p->u.array.count) {
+            /* OOB case */
+            psc->exception = 2;
+            return 0;
+        }
+        argv[0] = psc->getfun(ctx, p->u.array.u.uint8_ptr +
                               a_idx * (size_t)psc->elt_size);
-        argv[1] = psc->getfun(ctx, psc->array +
+        argv[1] = psc->getfun(ctx, p->u.array.u.uint8_ptr +
                               b_idx * (size_t)(psc->elt_size));
         res = JS_Call(ctx, psc->cmp, JS_UNDEFINED, 2, argv);
         if (JS_IsException(res)) {
@@ -58101,6 +60903,7 @@ static JSValue js_typed_array_sort(JSContext *ctx, JSValueConst this_val,
 
     tsc.ctx = ctx;
     tsc.exception = 0;
+    tsc.arr = this_val;
     tsc.cmp = argv[0];
 
     if (!JS_IsUndefined(tsc.cmp) && check_function(ctx, tsc.cmp))
@@ -58163,69 +60966,65 @@ static JSValue js_typed_array_sort(JSContext *ctx, JSValueConst this_val,
         elt_size = 1 << typed_array_size_log2(p->class_id);
         if (!JS_IsUndefined(tsc.cmp)) {
             uint32_t *array_idx;
-            void *array;
+            void *array_tmp;
             size_t i, j;
 
-            /* the array must be copied because the comparison
-               function may modify it */
-            array = js_malloc(ctx, len * elt_size);
-            if (!array)
-                return JS_EXCEPTION;
-            memcpy(array, p->u.array.u.ptr, len * elt_size);
-            
-            /* array_idx is needed to have a stable sort */
+            /* XXX: a stable sort would use less memory */
             array_idx = js_malloc(ctx, len * sizeof(array_idx[0]));
-            if (!array_idx) {
-                js_free(ctx, array);
+            if (!array_idx)
                 return JS_EXCEPTION;
-            }
             for(i = 0; i < len; i++)
                 array_idx[i] = i;
             tsc.elt_size = elt_size;
-            tsc.array = array;
             rqsort(array_idx, len, sizeof(array_idx[0]),
                    js_TA_cmp_generic, &tsc);
             if (tsc.exception) {
-                if (tsc.exception == 1) {
-                    js_free(ctx, array_idx);
-                    js_free(ctx, array);
-                    return JS_EXCEPTION;
-                }
+                if (tsc.exception == 1)
+                    goto fail;
                 /* detached typed array during the sort: no error */
             } else {
                 void *array_ptr = p->u.array.u.ptr;
                 len = min_int(len, p->u.array.count);
-                switch(elt_size) {
-                case 1:
-                    for(i = 0; i < len; i++) {
-                        j = array_idx[i];
-                        ((uint8_t *)array_ptr)[i] = ((uint8_t *)array)[j];
+                if (len != 0) {
+                    array_tmp = js_malloc(ctx, len * elt_size);
+                    if (!array_tmp) {
+                    fail:
+                        js_free(ctx, array_idx);
+                        return JS_EXCEPTION;
                     }
-                    break;
-                case 2:
-                    for(i = 0; i < len; i++) {
-                        j = array_idx[i];
-                        ((uint16_t *)array_ptr)[i] = ((uint16_t *)array)[j];
+                    memcpy(array_tmp, array_ptr, len * elt_size);
+                    switch(elt_size) {
+                    case 1:
+                        for(i = 0; i < len; i++) {
+                            j = array_idx[i];
+                            ((uint8_t *)array_ptr)[i] = ((uint8_t *)array_tmp)[j];
+                        }
+                        break;
+                    case 2:
+                        for(i = 0; i < len; i++) {
+                            j = array_idx[i];
+                            ((uint16_t *)array_ptr)[i] = ((uint16_t *)array_tmp)[j];
+                        }
+                        break;
+                    case 4:
+                        for(i = 0; i < len; i++) {
+                            j = array_idx[i];
+                            ((uint32_t *)array_ptr)[i] = ((uint32_t *)array_tmp)[j];
+                        }
+                        break;
+                    case 8:
+                        for(i = 0; i < len; i++) {
+                            j = array_idx[i];
+                            ((uint64_t *)array_ptr)[i] = ((uint64_t *)array_tmp)[j];
+                        }
+                        break;
+                    default:
+                        abort();
                     }
-                    break;
-                case 4:
-                    for(i = 0; i < len; i++) {
-                        j = array_idx[i];
-                        ((uint32_t *)array_ptr)[i] = ((uint32_t *)array)[j];
-                    }
-                    break;
-                case 8:
-                    for(i = 0; i < len; i++) {
-                        j = array_idx[i];
-                        ((uint64_t *)array_ptr)[i] = ((uint64_t *)array)[j];
-                    }
-                    break;
-                default:
-                    abort();
+                    js_free(ctx, array_tmp);
                 }
             }
             js_free(ctx, array_idx);
-            js_free(ctx, array);
         } else {
             rqsort(p->u.array.u.ptr, len, elt_size, cmpfun, &tsc);
             if (tsc.exception)
@@ -58458,6 +61257,9 @@ static JSValue js_typed_array_constructor_ta(JSContext *ctx,
         JS_ThrowTypeErrorArrayBufferOOB(ctx);
         goto fail;
     }
+    ta = p->u.typed_array;
+    src_buffer = ta->buffer;
+    src_abuf = src_buffer->u.array_buffer;
     size_log2 = typed_array_size_log2(classid);
     buffer = js_array_buffer_constructor1(ctx, JS_UNDEFINED,
                                           (uint64_t)len << size_log2,
@@ -58473,12 +61275,8 @@ static JSValue js_typed_array_constructor_ta(JSContext *ctx,
     abuf = JS_GetOpaque(buffer, JS_CLASS_ARRAY_BUFFER);
     if (typed_array_init(ctx, obj, buffer, 0, len, /*track_rab*/FALSE))
         goto fail;
-    ta = p->u.typed_array;
-    src_buffer = ta->buffer;
-    src_abuf = src_buffer->u.array_buffer;
-    if (p->class_id == classid &&
-        (int64_t)ta->offset + (int64_t)abuf->byte_length <= src_abuf->byte_length) {
-        /* same type and no overflow: copy the content */
+    if (p->class_id == classid) {
+        /* same type: copy the content */
         memcpy(abuf->data, src_abuf->data + ta->offset, abuf->byte_length);
     } else {
         for(i = 0; i < len; i++) {
@@ -58511,54 +61309,38 @@ static JSValue js_typed_array_constructor(JSContext *ctx,
     if (JS_VALUE_GET_TAG(argv[0]) != JS_TAG_OBJECT) {
         if (JS_ToIndex(ctx, &len, argv[0]))
             return JS_EXCEPTION;
-        obj = js_create_from_ctor(ctx, new_target, classid);
-        if (JS_IsException(obj))
-            return JS_EXCEPTION;
         buffer = js_array_buffer_constructor1(ctx, JS_UNDEFINED,
                                               len << size_log2,
                                               NULL);
         if (JS_IsException(buffer))
-            goto fail;
+            return JS_EXCEPTION;
         offset = 0;
     } else {
         JSObject *p = JS_VALUE_GET_OBJ(argv[0]);
         if (p->class_id == JS_CLASS_ARRAY_BUFFER ||
             p->class_id == JS_CLASS_SHARED_ARRAY_BUFFER) {
-            obj = js_create_from_ctor(ctx, new_target, classid);
-            if (JS_IsException(obj))
-                return JS_EXCEPTION;
-            if (JS_ToIndex(ctx, &offset, argv[1]))
-                goto fail;
-            if ((offset & ((1 << size_log2) - 1)) != 0)
-                goto invalid_offset;
             abuf = p->u.array_buffer;
+            if (JS_ToIndex(ctx, &offset, argv[1]))
+                return JS_EXCEPTION;
+            if (abuf->detached)
+                return JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
+            if ((offset & ((1 << size_log2) - 1)) != 0 ||
+                offset > abuf->byte_length)
+                return JS_ThrowRangeError(ctx, "invalid offset");
             if (JS_IsUndefined(argv[2])) {
-                if (abuf->detached) {
-                    JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
-                    goto fail;
-                }
-                if (offset > abuf->byte_length) {
-                invalid_offset:
-                    JS_ThrowRangeError(ctx, "invalid offset");
-                    goto fail;
-                }
                 track_rab = array_buffer_is_resizable(abuf);
-                if (!track_rab) {
+                if (!track_rab)
                     if ((abuf->byte_length & ((1 << size_log2) - 1)) != 0)
                         goto invalid_length;
-                }
                 len = (abuf->byte_length - offset) >> size_log2;
             } else {
                 if (JS_ToIndex(ctx, &len, argv[2]))
-                    goto fail;
-                if (abuf->detached) {
-                    JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
-                    goto fail;
-                }
+                    return JS_EXCEPTION;
+                if (abuf->detached)
+                    return JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
                 if ((offset + (len << size_log2)) > abuf->byte_length) {
                 invalid_length:
-                    JS_ThrowRangeError(ctx, "invalid length");
-                    goto fail;
+                    return JS_ThrowRangeError(ctx, "invalid length");
                 }
             }
             buffer = JS_DupValue(ctx, argv[0]);
@@ -58572,12 +61354,17 @@ static JSValue js_typed_array_constructor(JSContext *ctx,
             }
         }
     }
-    if (typed_array_init(ctx, obj, buffer, offset, len, track_rab))
-        goto fail;
+
+    obj = js_create_from_ctor(ctx, new_target, classid);
+    if (JS_IsException(obj)) {
+        JS_FreeValue(ctx, buffer);
+        return JS_EXCEPTION;
+    }
+    if (typed_array_init(ctx, obj, buffer, offset, len, track_rab)) {
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
     return obj;
- fail:
-    JS_FreeValue(ctx, obj);
-    return JS_EXCEPTION;
 }
 
 static void js_typed_array_finalizer(JSRuntime *rt, JSValue val)
@@ -59006,8 +61793,9 @@ typedef enum AtomicsOpEnum {
     ATOMICS_OP_LOAD,
 } AtomicsOpEnum;
 
-static int js_atomics_get_ptr(JSContext *ctx, void **pptr,
-                              JSObject **pobj, uint64_t *pidx,
+static int js_atomics_get_ptr(JSContext *ctx,
+                              void **pptr,
+                              JSArrayBuffer **pabuf,
                               int *psize_log2, JSClassID *pclass_id,
                               JSValueConst obj, JSValueConst idx_val,
                               int is_waitable)
@@ -59074,16 +61862,13 @@ static int js_atomics_get_ptr(JSContext *ctx, void **pptr,
 
     size_log2 = typed_array_size_log2(p->class_id);
     ptr = p->u.array.u.uint8_ptr + ((uintptr_t)idx << size_log2);
-
-    *pptr = ptr;
-    if (pobj)
-        *pobj = p;
-    if (pidx)
-        *pidx = idx;
+    if (pabuf)
+        *pabuf = abuf;
     if (psize_log2)
         *psize_log2 = size_log2;
     if (pclass_id)
         *pclass_id = p->class_id;
+    *pptr = ptr;
     return 0;
 }
 
@@ -59092,13 +61877,13 @@ static JSValue js_atomics_op(JSContext *ctx,
                              int argc, JSValueConst *argv, int op)
 {
     int size_log2;
-    uint64_t v, a, rep_val, idx;
+    uint64_t v, a, rep_val;
     void *ptr;
     JSValue ret;
     JSClassID class_id;
-    JSObject *p;
-    
-    if (js_atomics_get_ptr(ctx, &ptr, &p, &idx, &size_log2, &class_id,
+    JSArrayBuffer *abuf;
+
+    if (js_atomics_get_ptr(ctx, &ptr, &abuf, &size_log2, &class_id,
                            argv[0], argv[1], 0))
         return JS_EXCEPTION;
     rep_val = 0;
@@ -59126,10 +61911,8 @@ static JSValue js_atomics_op(JSContext *ctx,
                     rep_val = v32;
                 }
         }
-        if (typed_array_is_oob(p))
+        if (abuf->detached)
             return JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
-        if (idx >= p->u.array.count)
-            return JS_ThrowRangeError(ctx, "out-of-bound access");
    }
 
    switch(op | (size_log2 << 3)) {
@@ -59240,53 +62023,48 @@ static JSValue js_atomics_store(JSContext *ctx,
     int size_log2;
     void *ptr;
     JSValue ret;
-    JSObject *p;
-    uint64_t idx;
-    int64_t v;
-    
-    if (js_atomics_get_ptr(ctx, &ptr, &p, &idx, &size_log2, NULL,
+    JSArrayBuffer *abuf;
+
+    if (js_atomics_get_ptr(ctx, &ptr, &abuf, &size_log2, NULL,
                            argv[0], argv[1], 0))
         return JS_EXCEPTION;
     if (size_log2 == 3) {
+        int64_t v64;
         ret = JS_ToBigIntFree(ctx, JS_DupValue(ctx, argv[2]));
         if (JS_IsException(ret))
             return ret;
-        if (JS_ToBigInt64(ctx, &v, ret)) {
+        if (JS_ToBigInt64(ctx, &v64, ret)) {
             JS_FreeValue(ctx, ret);
             return JS_EXCEPTION;
         }
+        if (abuf->detached)
+            return JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
+        atomic_store((_Atomic(uint64_t) *)ptr, v64);
     } else {
-        uint32_t v32;
+        uint32_t v;
         /* XXX: spec, would be simpler to return the written value */
         ret = JS_ToIntegerFree(ctx, JS_DupValue(ctx, argv[2]));
         if (JS_IsException(ret))
             return ret;
-        if (JS_ToUint32(ctx, &v32, ret)) {
+        if (JS_ToUint32(ctx, &v, ret)) {
             JS_FreeValue(ctx, ret);
             return JS_EXCEPTION;
         }
-        v = v32;
-    }
-    if (typed_array_is_oob(p))
-        return JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
-    if (idx >= p->u.array.count)
-        return JS_ThrowRangeError(ctx, "out-of-bound access");
-
-    switch(size_log2) {
-    case 0:
-        atomic_store((_Atomic(uint8_t) *)ptr, v);
-        break;
-    case 1:
-        atomic_store((_Atomic(uint16_t) *)ptr, v);
-        break;
-    case 2:
-        atomic_store((_Atomic(uint32_t) *)ptr, v);
-        break;
-    case 3:
-        atomic_store((_Atomic(uint64_t) *)ptr, v);
-        break;
-    default:
-        abort();
+        if (abuf->detached)
+            return JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
+        switch(size_log2) {
+        case 0:
+            atomic_store((_Atomic(uint8_t) *)ptr, v);
+            break;
+        case 1:
+            atomic_store((_Atomic(uint16_t) *)ptr, v);
+            break;
+        case 2:
+            atomic_store((_Atomic(uint32_t) *)ptr, v);
+            break;
+        default:
+            abort();
+        }
     }
     return ret;
 }
@@ -59369,10 +62147,9 @@ static JSValue js_atomics_wait(JSContext *ctx,
     int ret, size_log2, res;
     double d;
 
-    if (js_atomics_get_ptr(ctx, &ptr, NULL, NULL, &size_log2, NULL,
+    if (js_atomics_get_ptr(ctx, &ptr, NULL, &size_log2, NULL,
                              argv[0], argv[1], 2))
         return JS_EXCEPTION;
-    /* 'argv[0]' is a SharedArrayBuffer so it cannot be detached nor reduced */
     if (size_log2 == 3) {
         if (JS_ToBigInt64(ctx, &v, argv[2]))
             return JS_EXCEPTION;
@@ -59448,9 +62225,8 @@ static JSValue js_atomics_notify(JSContext *ctx,
     void *ptr;
     JSAtomicsWaiter *waiter;
     JSArrayBuffer *abuf;
-    JSObject *p;
-    
-    if (js_atomics_get_ptr(ctx, &ptr, &p, NULL, NULL, NULL, argv[0], argv[1], 1))
+
+    if (js_atomics_get_ptr(ctx, &ptr, &abuf, NULL, NULL, argv[0], argv[1], 1))
         return JS_EXCEPTION;
     
     if (JS_IsUndefined(argv[2])) {
@@ -59461,9 +62237,7 @@ static JSValue js_atomics_notify(JSContext *ctx,
     }
 
     n = 0;
-    abuf = p->u.typed_array->buffer->u.array_buffer;
     if (abuf->shared && count > 0) {
-        /* 'argv[0]' is a SharedArrayBuffer so it cannot be detached nor reduced */
         pthread_mutex_lock(&js_atomics_mutex);
         init_list_head(&waiter_list);
         list_for_each_safe(el, el1, &js_atomics_waiter_list) {
@@ -59752,8 +62526,7 @@ static void finrec_delete_weakref(JSRuntime *rt, JSWeakRefHeader *wh)
             JSValueConst args[2];
             args[0] = frd->cb;
             args[1] = fre->held_val;
-            /* no exception is raised to avoid recursing into the GC */
-            JS_EnqueueJob2(frd->realm, js_finrec_job, 2, args, TRUE);
+            JS_EnqueueJob(frd->realm, js_finrec_job, 2, args);
                 
             js_weakref_free(rt, fre->target);
             js_weakref_free(rt, fre->token);

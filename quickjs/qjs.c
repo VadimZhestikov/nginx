@@ -42,9 +42,23 @@
 
 #include "cutils.h"
 #include "quickjs-libc.h"
+#ifdef CONFIG_JIT
+#include "quickjs-jit.h"
+#endif
 
 extern const uint8_t qjsc_repl[];
 extern const uint32_t qjsc_repl_size;
+
+static int jit_aot_mode         = 0; /* set by --jit-aot     */
+static int jit_warmup_mode      = 0; /* set by --jit-warmup  */
+static int jit_link_mode        = 0; /* set by --jit-link    */
+static int jit_threshold_mode   = 0; /* set by --jit-threshold-gcc=N (N=0: AOT pre-pass) */
+static int jit_compile_all_mode = 0; /* set by --jit-compile-all (P35.3) */
+static int jit_exit_mode        = 0; /* set by --jit-exit (P35.3-D): skip execution */
+static const char *jit_profile_path      = NULL; /* set by --jit-profile=<file> (P35.5-B) */
+static const char *jit_profile_time_path = NULL; /* set by --jit-profile-time=<file>[,Hz] (P36.4) */
+static int         jit_profile_time_hz   = 1000; /* sampler Hz for --jit-profile-time */
+static char        jit_profile_time_path_buf[512]; /* backing store for path copy */
 
 static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
                     const char *filename, int eval_flags)
@@ -59,9 +73,75 @@ static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
                       eval_flags | JS_EVAL_FLAG_COMPILE_ONLY);
         if (!JS_IsException(val)) {
             js_module_set_import_meta(ctx, val, TRUE, TRUE);
+#ifdef CONFIG_JIT
+            if (jit_aot_mode || jit_compile_all_mode) {
+                if (jit_aot_mode)
+                    js_jit_preload_combined();  /* P10.4: open combined.so before compile_all */
+                if (JS_VALUE_GET_TAG(val) == JS_TAG_FUNCTION_BYTECODE)
+                    js_jit_compile_all(ctx, JS_VALUE_GET_PTR(val));
+                js_jit_drain();
+                if (jit_aot_mode)
+                    js_jit_install_combined_if_exists();  /* P10.4 */
+                else
+                    js_jit_install_results();
+                if (jit_exit_mode) {
+                    JS_FreeValue(ctx, val);
+                    return 0;
+                }
+            }
+#endif
             val = JS_EvalFunction(ctx, val);
         }
         val = js_std_await(ctx, val);
+    } else if (jit_aot_mode || jit_warmup_mode || jit_threshold_mode) {
+#ifdef CONFIG_JIT
+        /* Compile-only pass to gather all functions, then GCC-compile them */
+        val = JS_Eval(ctx, buf, buf_len, filename,
+                      eval_flags | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (!JS_IsException(val)) {
+            js_jit_preload_combined();  /* P10.4: open combined.so before compile_all */
+            if (JS_VALUE_GET_TAG(val) == JS_TAG_FUNCTION_BYTECODE)
+                js_jit_compile_all(ctx, JS_VALUE_GET_PTR(val));
+            js_jit_drain();
+            js_jit_install_combined_if_exists();  /* P10.4 */
+            /* Execute the script so that load() / import() calls fire,
+             * allowing js_loadScript()'s AOT hook to compile and cache
+             * all functions from dynamically-loaded files. */
+            val = JS_EvalFunction(ctx, val);
+            if (jit_warmup_mode) {
+                /* --jit-warmup: exit after the warmup execution; the
+                 * cache is now fully populated for --jit-aot runs. */
+                if (JS_IsException(val))
+                    js_std_dump_error(ctx);
+                JS_FreeValue(ctx, val);
+                return 0;
+            }
+        }
+#else
+        val = JS_Eval(ctx, buf, buf_len, filename, eval_flags);
+#endif
+    } else if (jit_compile_all_mode) {
+#ifdef CONFIG_JIT
+        /* P35.3: static enumeration — compile all functions before execution.
+         * Unlike --jit-aot, this does NOT use the combined LTO .so;
+         * each function is installed from its own cached .so file.
+         * --jit-exit (P35.3-D): skip execution after compilation. */
+        val = JS_Eval(ctx, buf, buf_len, filename,
+                      eval_flags | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (!JS_IsException(val)) {
+            if (JS_VALUE_GET_TAG(val) == JS_TAG_FUNCTION_BYTECODE)
+                js_jit_compile_all(ctx, JS_VALUE_GET_PTR(val));
+            js_jit_drain();
+            js_jit_install_results();
+            if (jit_exit_mode) {
+                JS_FreeValue(ctx, val);
+                return 0;
+            }
+            val = JS_EvalFunction(ctx, val);
+        }
+#else
+        val = JS_Eval(ctx, buf, buf_len, filename, eval_flags);
+#endif
     } else {
         val = JS_Eval(ctx, buf, buf_len, filename, eval_flags);
     }
@@ -307,7 +387,22 @@ void help(void)
            "    --no-unhandled-rejection  ignore unhandled promise rejections\n"
            "-s                    strip all the debug info\n"
            "    --strip-source    strip the source code\n"
-           "-q  --quit         just instantiate the interpreter and quit\n");
+           "-q  --quit         just instantiate the interpreter and quit\n"
+#ifdef CONFIG_JIT
+           "    --jit-aot      compile all functions with GCC before running\n"
+           "    --jit-warmup   compile all functions into cache, then exit\n"
+           "    --jit-link     combine cached .c files into one LTO .so after running\n"
+           "    --jit-dump-c   print generated C source for each compiled function\n"
+           "    --jit-threshold-gcc=N  compile after N calls (0=AOT pre-pass, default=100)\n"
+           "    --jit-max-bc=N         skip JIT for functions with bytecode > N bytes (default=32768, 0=no cap)\n"
+           "    --jit-save-sources     save original JS source of each compiled function to cache as <hash>.js\n"
+           "    --jit-compile-all  (P35.3) statically compile all functions to cache before running\n"
+           "    --jit-exit         (P35.3) skip execution after --jit-compile-all (pure build step)\n"
+           "    --jit-profile=<file>  (P35.5) write call-count JSON profile to <file> after execution\n"
+           "    --jit-profile-time=<file>[,Hz]  (P36.4) run SIGPROF sampler at Hz (default 1000) and\n"
+           "                                    write timed profile with time_ms fields to <file>\n"
+#endif
+           );
     exit(1);
 }
 
@@ -441,6 +536,75 @@ int main(int argc, char **argv)
                 strip_flags = JS_STRIP_SOURCE;
                 continue;
             }
+#ifdef CONFIG_JIT
+            if (!strcmp(longopt, "jit-aot")) {
+                jit_aot_mode = 1;
+                js_jit_set_aot_mode(1);
+                continue;
+            }
+            if (!strcmp(longopt, "jit-warmup")) {
+                jit_warmup_mode = 1;
+                js_jit_set_aot_mode(1);
+                continue;
+            }
+            if (!strcmp(longopt, "jit-link")) {
+                jit_link_mode = 1;
+                jit_aot_mode = 1;
+                js_jit_set_aot_mode(1);
+                js_jit_set_link_mode(1);
+                continue;
+            }
+            if (!strcmp(longopt, "jit-dump-c")) {
+                js_jit_set_dump_c_mode(1);
+                continue;
+            }
+            if (!strcmp(longopt, "jit-save-sources")) {
+                js_jit_set_save_sources(1);
+                continue;
+            }
+            if (!strncmp(longopt, "jit-threshold-gcc=", 18)) {
+                int n = atoi(longopt + 18);
+                js_jit_set_threshold(n);
+                if (n == 0)
+                    jit_threshold_mode = 1; /* trigger AOT pre-pass */
+                continue;
+            }
+            if (!strncmp(longopt, "jit-max-bc=", 11)) {
+                js_jit_set_max_bc_len(atoi(longopt + 11));
+                continue;
+            }
+            if (!strcmp(longopt, "jit-compile-all")) {
+                jit_compile_all_mode = 1;
+                js_jit_set_aot_mode(1);
+                continue;
+            }
+            if (!strcmp(longopt, "jit-exit")) {
+                jit_exit_mode = 1;
+                continue;
+            }
+            if (!strncmp(longopt, "jit-profile=", 12)) {
+                jit_profile_path = longopt + 12;
+                continue;
+            }
+            if (!strncmp(longopt, "jit-profile-time=", 17)) {
+                const char *arg = longopt + 17;
+                const char *comma = strrchr(arg, ',');
+                if (comma && comma[1] >= '0' && comma[1] <= '9') {
+                    jit_profile_time_hz = atoi(comma + 1);
+                    if (jit_profile_time_hz <= 0) jit_profile_time_hz = 1000;
+                    int plen = (int)(comma - arg);
+                    if (plen >= (int)sizeof(jit_profile_time_path_buf))
+                        plen = (int)sizeof(jit_profile_time_path_buf) - 1;
+                    memcpy(jit_profile_time_path_buf, arg, plen);
+                    jit_profile_time_path_buf[plen] = '\0';
+                    jit_profile_time_path = jit_profile_time_path_buf;
+                } else {
+                    jit_profile_time_path = arg;
+                    jit_profile_time_hz   = 1000;
+                }
+                continue;
+            }
+#endif
             if (opt) {
                 fprintf(stderr, "qjs: unknown option '-%c'\n", opt);
             } else {
@@ -498,6 +662,11 @@ int main(int argc, char **argv)
                 goto fail;
         }
 
+#ifdef CONFIG_JIT
+        /* P36.4: start sampler before eval so JIT execution time is captured. */
+        if (jit_profile_time_path)
+            js_jit_sampler_start(jit_profile_time_hz);
+#endif
         if (expr) {
             int eval_flags;
             if (module > 0) {
@@ -524,6 +693,29 @@ int main(int argc, char **argv)
             js_std_eval_binary(ctx, qjsc_repl, qjsc_repl_size, 0);
         }
         js_std_loop(ctx);
+
+#ifdef CONFIG_JIT
+        /* P36.4: stop sampler after event loop completes. */
+        if (jit_profile_time_path)
+            js_jit_sampler_stop();
+        /* P10.2: --jit-link — after execution collect all seen .c cache files
+         * and combine them into a single GCC LTO shared library. */
+        if (jit_link_mode)
+            js_jit_link();
+        /* P35.5-B: --jit-profile=<file> — write call-count profile. */
+        if (jit_profile_path) {
+            if (js_jit_write_profile(ctx, jit_profile_path) != 0)
+                fprintf(stderr, "qjs: --jit-profile: failed to write '%s'\n",
+                        jit_profile_path);
+        }
+        /* P36.4: --jit-profile-time=<file>[,Hz] — write timed profile. */
+        if (jit_profile_time_path) {
+            if (js_jit_write_profile_timed(ctx, jit_profile_time_path,
+                                           jit_profile_time_hz) != 0)
+                fprintf(stderr, "qjs: --jit-profile-time: failed to write '%s'\n",
+                        jit_profile_time_path);
+        }
+#endif
     }
 
     if (dump_memory) {
@@ -561,6 +753,11 @@ int main(int argc, char **argv)
     }
     return 0;
  fail:
+#ifdef CONFIG_JIT
+    /* P36.4: ensure sampler is stopped even on error exit. */
+    if (jit_profile_time_path)
+        js_jit_sampler_stop();
+#endif
     js_std_free_handlers(rt);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);

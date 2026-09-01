@@ -1,0 +1,47 @@
+QJS_DIR := $(realpath ../..)
+
+CFLAGS := -g -O0 -DCONFIG_JIT -I$(QJS_DIR)
+OBJS   := $(QJS_DIR)/.obj/quickjs.o \
+           $(QJS_DIR)/.obj/quickjs-jit.o \
+           $(QJS_DIR)/.obj/quickjs-libc.o \
+           $(QJS_DIR)/.obj/dtoa.o \
+           $(QJS_DIR)/.obj/libregexp.o \
+           $(QJS_DIR)/.obj/libunicode.o \
+           $(QJS_DIR)/.obj/cutils.o
+LIBS   := -lm -lpthread -ldl
+
+.PHONY: all run clean
+
+all: /tmp/test_p35_1 /tmp/test_p35_2 /tmp/test_p35_3 /tmp/test_p35_5a
+
+/tmp/test_p35_1: test_p35_1.c
+	gcc $(CFLAGS) -rdynamic -o $@ $< $(OBJS) $(LIBS)
+
+/tmp/test_p35_2: test_p35_2.c
+	gcc $(CFLAGS) -rdynamic -o $@ $< $(OBJS) $(LIBS)
+
+/tmp/test_p35_3: test_p35_3.c
+	gcc $(CFLAGS) -rdynamic -o $@ $< $(OBJS) $(LIBS)
+
+/tmp/test_p35_5a: test_p35_5a.c
+	gcc $(CFLAGS) -rdynamic -o $@ $< $(OBJS) $(LIBS)
+
+run: all
+	@echo "=== P35.1: bytecode size cap ==="
+	@/tmp/test_p35_1
+	@echo "=== P35.2: module graph walkers ==="
+	@/tmp/test_p35_2
+	@echo "=== P35.3: --jit-compile-all static enumeration ==="
+	@/tmp/test_p35_3
+	@echo "=== P35.4: --standalone self-contained binary ==="
+	@sh test_p35_4.sh $(QJS_DIR)/qjsc
+	@echo "=== P35.5-A: js_jit_write_profile call-count profile writer ==="
+	@/tmp/test_p35_5a
+	@echo "=== P35.5-B: qjs --jit-profile flag ==="
+	@sh test_p35_5b.sh $(QJS_DIR)/qjs
+	@echo "=== P35.5-C+D: qjsc --jit-pgo PGO filter and pragma emission ==="
+	@sh test_p35_5cd.sh $(QJS_DIR)/qjs $(QJS_DIR)/qjsc
+	@echo "=== ALL P35 TESTS COMPLETE ==="
+
+clean:
+	rm -f /tmp/test_p35_1 /tmp/test_p35_2 /tmp/test_p35_3 /tmp/test_p35_5a

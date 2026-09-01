@@ -38,6 +38,9 @@
 #include "cutils.h"
 #include "list.h"
 #include "quickjs-libc.h"
+#ifdef CONFIG_JIT
+#include "quickjs-jit.h"
+#endif
 
 /* enable test262 thread support to test SharedArrayBuffer and Atomics */
 #define CONFIG_AGENT
@@ -65,6 +68,10 @@ enum test_mode_t {
 } test_mode = TEST_DEFAULT_NOSTRICT;
 int compact;
 int show_timings;
+#ifdef CONFIG_JIT
+int jit_aot;   /* --jit-aot: pre-install combined.so into each test */
+int jit_link;  /* --jit-link: combine cached .c files into combined.so after all tests */
+#endif
 int skip_async;
 int skip_module;
 int new_style;
@@ -1260,7 +1267,28 @@ static int eval_buf(JSContext *ctx, const char *buf, size_t buf_len,
     ret_promise = ((eval_flags & JS_EVAL_TYPE_MODULE) != 0);
     async_done = 0; /* counter of "Test262:AsyncTestComplete" messages */
 
-    res_val = JS_Eval(ctx, buf, buf_len, filename, eval_flags);
+#ifdef CONFIG_JIT
+    if (jit_aot && !(eval_flags & JS_EVAL_TYPE_MODULE)) {
+        /* AOT path: compile-only, pre-install all functions from combined.so, then execute */
+        JSValue compiled = JS_Eval(ctx, buf, buf_len, filename,
+                                   eval_flags | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (!JS_IsException(compiled)) {
+            if (JS_VALUE_GET_TAG(compiled) == JS_TAG_FUNCTION_BYTECODE)
+                js_jit_compile_all(ctx, JS_VALUE_GET_PTR(compiled));
+            /* js_jit_compile_all already installed from combined.so via
+             * js_jit_queue_gcc's manifest fast-path; no extra install needed.
+             * Do NOT call js_jit_install_combined_if_exists() here — it uses
+             * jit_link_bytecodes[] which accumulates stale pointers from
+             * previous tests in the same run, causing GC corruption. */
+            res_val = JS_EvalFunction(ctx, compiled);
+        } else {
+            res_val = compiled;
+        }
+    } else
+#endif
+    {
+        res_val = JS_Eval(ctx, buf, buf_len, filename, eval_flags);
+    }
 
     if ((is_async || ret_promise) && !JS_IsException(res_val)) {
         JSValue promise = JS_UNDEFINED;
@@ -1632,6 +1660,13 @@ int run_test_buf(const char *filename, const char *harness, namelist_t *ip,
     }
 #ifdef CONFIG_AGENT
     js_agent_free(ctx);
+#endif
+#ifdef CONFIG_JIT
+    /* Drain background GCC jobs, then install any completed results into live
+     * bytecodes (skipping those freed during execution) and clear the session
+     * map before the runtime is freed so pointers don't become stale. */
+    js_jit_drain();
+    js_jit_install_results();
 #endif
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
@@ -2050,6 +2085,11 @@ void help(void)
            "-u             update error file\n"
            "-v             verbose: output error messages\n"
            "-T duration    display tests taking more than 'duration' ms\n"
+#ifdef CONFIG_JIT
+           "--jit-threshold-gcc=N  set JIT compilation threshold (default=100; 0=AOT)\n"
+           "--jit-aot              pre-install combined.so into each test (requires prior --jit-link)\n"
+           "--jit-link             combine all cached .c files into combined.so after tests\n"
+#endif
            "-c file        read configuration from 'file'\n"
            "-d dir         run all test files in directory tree 'dir'\n"
            "-e file        load the known errors from 'file'\n"
@@ -2146,6 +2186,19 @@ int main(int argc, char **argv)
             is_module = TRUE;
         } else if (str_equal(arg, "--count_skipped_features")) {
             count_skipped_features = TRUE;
+#ifdef CONFIG_JIT
+        } else if (has_prefix(arg, "--jit-threshold-gcc=")) {
+            js_jit_set_threshold(atoi(skip_prefix(arg, "--jit-threshold-gcc=")));
+        } else if (str_equal(arg, "--jit-aot")) {
+            jit_aot = 1;
+            js_jit_init();             /* hold extra ref so combined.so survives across tests */
+            js_jit_preload_combined(); /* open combined.so once; all tests share it */
+        } else if (str_equal(arg, "--jit-link")) {
+            jit_link = 1;
+            js_jit_set_link_mode(1); /* record hashes during test run for linking */
+        } else if (str_equal(arg, "--jit-dump-c")) {
+            js_jit_set_dump_c_mode(1);
+#endif
         } else {
             fatal(1, "unknown option: %s", arg);
             break;
@@ -2298,5 +2351,12 @@ int main(int argc, char **argv)
     free(error_file);
 
     /* Signal that the error file is out of date. */
+#ifdef CONFIG_JIT
+    js_jit_drain(); /* wait for any background GCC compilations to finish */
+    if (jit_link)
+        js_jit_link(); /* combine all cached .c files into combined.so */
+    if (jit_aot)
+        js_jit_free(); /* release the extra ref held across all tests */
+#endif
     return new_errors || changed_errors || fixed_errors;
 }
