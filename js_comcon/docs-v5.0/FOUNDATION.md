@@ -553,7 +553,14 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
-**v5.12 (in place — increment C PLAN):** `INCREMENT_C.md`, the ground-truthed build
+**v5.12 (in place — increment C PLAN + the security-review cadence):** [C plan as
+below]. Also **VERIFICATION.md gains the security-review cadence**: reviews at inflection
+points, not by step count — four gate-reviews (SR-1 A/B conformance before C; SR-2 =
+M8 faithfulness at C7; SR-3 full pentest after M-SES; SR-4 = V15 assurance case before
+untrusted production), plus a per-change THREATS.md-touch discipline; within C the review
+IS the per-slice differential test, not a checkpoint. SR-1 is being run now.
+
+**v5.12-plan (in place — increment C PLAN):** `INCREMENT_C.md`, the ground-truthed build
 plan for the typed/compiled maxim tier. Reality check on the real maxim tree: same
 Bellard 2017-2025 base as the vendored engine (~4% delta), the compiler is a separate
 `quickjs-jit.{c,h}` (type inference + bytecode content-hash already implemented), gcc+tcc

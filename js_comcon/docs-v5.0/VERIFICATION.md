@@ -146,3 +146,40 @@ and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maint
 metadata rot** (V7–V9) and **the distance between "tested" and "verified"** (V3–V6).
 Both patterns say the same thing: wherever a human keeps two artifacts in agreement by
 discipline, replace the discipline with generation, assertion, or proof.
+
+---
+
+## Security-review cadence (v5.12)
+
+Reviews are **not** scheduled by step count — a review keyed to "every N steps"
+becomes a rubber stamp. They are placed at **inflection points**: where a *new class
+of adversary* becomes relevant, a *correctness property becomes load-bearing for the
+first time*, or the *cost-to-fix a flaw jumps*. Between those points the load is
+carried by the per-slice discipline (below), not by a checkpoint. There are only four
+gate-reviews across the whole roadmap, and two already exist as milestones (M8, V15):
+
+| Gate | Fires | Scope | Maps to |
+|---|---|---|---|
+| **SR-1 conformance** | end of increment B → **before C** | the A/B capability logic vs `THREATS.md`, *within* the current TCB assumption (an unforgeable engine). Finds gaps between claimed and implemented confinement. Explicitly **not** engine escapes. | new (this doc) |
+| **SR-2 faithfulness** | **C7** | did compilation preserve the reach gates and not leak authority via the type/cap side-tables? T2 refines T1. | **= M8** |
+| **SR-3 adversarial pentest** | after **M-SES** | engine escapes, eval/Function/Proxy sandbox completeness, memory safety — closes the accepted residuals (`THREATS.md` T8/T4/T9). The full red-team pass. | M-SES exit |
+| **SR-4 assurance case** | before first untrusted-tenant **production** | assemble the whole claim→assumption→evidence tree; every leaf without evidence is a finding. | **= V15** |
+
+**Why SR-1 before C, specifically:** A/B *are* the entire confinement surface; C is a
+performance layer that must preserve it. And C's correctness argument is *differential*
+— T2 is proven only to match T1 — so a hole in T1 (the interpreted A/B enforcement) is
+faithfully reproduced in native code. Validating T1 is therefore a **prerequisite** for
+C, not optional. (C5 compiling the confinement *in* also makes a late fix far more
+expensive.) The full pentest is deliberately deferred to SR-3: pre-M-SES the TCB is not
+yet real and untrusted tenants are not yet exposed, so an engine red-team would be
+premature.
+
+**Within increment C there is no separate review step** — the review *is* the
+methodology: a differential test on every slice (interpreted ≡ compiled, identical
+outputs **and** identical denials) plus the SR-2/M8 gate. Injecting a checkpoint at C3
+or C5 would only duplicate it.
+
+**The continuous piece is a per-change discipline, not a review:** every commit that
+adds a *granted capability* or a *new reach edge* must touch `THREATS.md` — "does this
+open a cell?" Cheap, per-commit, no ceremony; it keeps the ledger live so the gate
+reviews have less to rediscover.

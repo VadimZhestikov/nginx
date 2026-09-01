@@ -2,8 +2,8 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.12**, increment C PLAN (INCREMENT_C.md — the maxim compiler,
-> spike-first sequencing C0–C7); v5.11 INCREMENT B COMPLETE — the dependency workflow (js_tenant_dependency
+> (current: **v5.12**, increment C PLAN (INCREMENT_C.md, spike-first C0–C7) +
+> the security-review cadence in VERIFICATION.md (SR-1..SR-4 at inflection points); v5.11 INCREMENT B COMPLETE — the dependency workflow (js_tenant_dependency
 > pin-by-hash + pure_library cages); v5.10 B1 generated grant-stub; v5.9 B0 learning mode; v5.8 INCREMENT A COMPLETE — A3.1 + dogfood; v5.7 A4 denial log + audit→enforce; v5.6, the COMCON-lite core BUILT + TESTED through the
 > request path; build log INCREMENT_A.md §6, status SPEC.md §13; before it
 > v5.5, SPEC.md + the ground-truthed INCREMENT_A.md build plan from the
