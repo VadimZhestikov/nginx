@@ -43,6 +43,20 @@ typedef struct {
 
 
 /*
+ * COMCON B (E1): a pinned tenant dependency — a pure library evaluated in a
+ * bare (no-capability) environment and bound on the tenant global as `name`,
+ * admitted only if its bytes hash to `sha256`. A hijacked update (different
+ * bytes) is refused at load; the dependency runs with what the consumer
+ * granted (nothing), never what it requests.
+ */
+typedef struct {
+    ngx_str_t            name;         /* NUL-terminated global bind name    */
+    ngx_str_t            path;
+    u_char               sha256[32];   /* expected content hash             */
+} ngx_js_tenant_dep_t;
+
+
+/*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).
  * Allocated in cycle->pool via create_conf; populated by js_source
  * directives during ngx_conf_parse(), executed by init_conf().
@@ -54,6 +68,8 @@ typedef struct {
                                              deny-by-default compartment (A2.0) */
     ngx_array_t          tenant_grants;   /* ngx_js_tenant_grant_t: sockets the
                                              host granted into the tenant (A2.1) */
+    ngx_array_t          tenant_deps;     /* ngx_js_tenant_dep_t: pinned pure
+                                             libraries (B/E1) */
 
     /*
      * COMCON A3: the persistent tenant compartment. One isolated runtime +

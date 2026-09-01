@@ -29,6 +29,8 @@
 #include "ngx_js_com.h"
 #include "ngx_js_compartment.h"
 #include "ngx_js_socket.h"
+
+#include <openssl/sha.h>
 #include "ngx_js_sw.h"
 #include "ngx_js_listener.h"
 
@@ -367,6 +369,8 @@ static char   *ngx_js_tenant_source(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char   *ngx_js_tenant_mode(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char   *ngx_js_tenant_dependency(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 static ngx_int_t ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf,
     ngx_cycle_t *cycle);
 static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -410,6 +414,21 @@ static ngx_command_t  ngx_js_commands[] = {
     { ngx_string("js_tenant_mode"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
       ngx_js_tenant_mode,
+      0,
+      0,
+      NULL },
+
+    /*
+     * js_tenant_dependency <name> <path> <sha256hex>;
+     *
+     * COMCON B (E1). A pinned pure library: evaluated in a bare, no-capability
+     * environment and bound on the tenant global as <name>, admitted only if
+     * the file's bytes hash to <sha256hex>. A hijacked update is refused at
+     * load. Declaration order = load order (a later dep may use an earlier one).
+     */
+    { ngx_string("js_tenant_dependency"),
+      NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE3,
+      ngx_js_tenant_dependency,
       0,
       0,
       NULL },
@@ -501,6 +520,12 @@ ngx_js_create_conf(ngx_cycle_t *cycle)
         return NULL;
     }
 
+    if (ngx_array_init(&jcf->tenant_deps, cycle->pool, 2,
+                       sizeof(ngx_js_tenant_dep_t)) != NGX_OK)
+    {
+        return NULL;
+    }
+
     /* rt, ctx, worker, sw_list, tenant_rt, tenant_ctx are 0/NULL after pcalloc */
     jcf->master_handlers = JS_UNINITIALIZED;
     jcf->tenant_request_handler = JS_UNINITIALIZED;
@@ -583,6 +608,127 @@ ngx_js_tenant_mode(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     return NGX_CONF_OK;
+}
+
+
+/* COMCON B (E1): js_tenant_dependency <name> <path> <sha256hex>; */
+static char *
+ngx_js_tenant_dependency(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_js_conf_t        *jcf = conf;
+    ngx_str_t            *value;
+    ngx_js_tenant_dep_t  *dep;
+    ngx_uint_t            i;
+    u_char                hi, lo;
+
+    value = cf->args->elts;   /* [1]=name [2]=path [3]=sha256hex */
+
+    if (value[3].len != 64) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "js_tenant_dependency: sha256 must be 64 hex chars");
+        return NGX_CONF_ERROR;
+    }
+
+    dep = ngx_array_push(&jcf->tenant_deps);
+    if (dep == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    /* name, NUL-terminated for JS_SetPropertyStr */
+    dep->name.len  = value[1].len;
+    dep->name.data = ngx_pnalloc(cf->pool, value[1].len + 1);
+    if (dep->name.data == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    ngx_memcpy(dep->name.data, value[1].data, value[1].len);
+    dep->name.data[value[1].len] = '\0';
+
+    dep->path = value[2];
+    if (ngx_conf_full_name(cf->cycle, &dep->path, 1) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    for (i = 0; i < 32; i++) {
+        hi = value[3].data[i * 2];
+        lo = value[3].data[i * 2 + 1];
+
+        hi = (hi >= '0' && hi <= '9') ? hi - '0'
+           : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+           : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : 0xff;
+        lo = (lo >= '0' && lo <= '9') ? lo - '0'
+           : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+           : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : 0xff;
+
+        if (hi == 0xff || lo == 0xff) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "js_tenant_dependency: invalid hex in sha256");
+            return NGX_CONF_ERROR;
+        }
+
+        dep->sha256[i] = (u_char) ((hi << 4) | lo);
+    }
+
+    return NGX_CONF_OK;
+}
+
+
+/*
+ * Load the pinned pure-library dependencies into the tenant context BEFORE any
+ * capability (report/onRequest/grants) is installed, so each runs in a bare,
+ * no-authority environment (standard JS only — `nginx` etc. are unbound). Each
+ * file is admitted only if its SHA-256 matches the pin; a mismatch refuses the
+ * whole config (a hijacked update cannot load). The dependency's completion
+ * value is bound on the tenant global under its name for the tenant to use.
+ */
+static ngx_int_t
+ngx_js_load_tenant_deps(ngx_js_conf_t *jcf, ngx_cycle_t *cycle,
+    JSContext *tctx, JSValue global)
+{
+    u_char                digest[32];
+    u_char               *src;
+    size_t                src_len;
+    ngx_uint_t            i;
+    JSValue               val;
+    ngx_js_tenant_dep_t  *dep;
+
+    dep = jcf->tenant_deps.elts;
+
+    for (i = 0; i < jcf->tenant_deps.nelts; i++) {
+
+        src = ngx_js_read_file(cycle, &dep[i].path, &src_len);
+        if (src == NULL) {
+            return NGX_ERROR;
+        }
+
+        SHA256(src, src_len, digest);
+
+        if (ngx_memcmp(digest, dep[i].sha256, 32) != 0) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "js: dependency \"%V\" (%V) hash mismatch — refused "
+                          "(supply-chain pin); serving the last good config",
+                          &dep[i].name, &dep[i].path);
+            return NGX_ERROR;
+        }
+
+        /* Pure library: bare global at this point (no host capability), plain
+         * script — free imports/host names are unbound and throw. */
+        val = JS_Eval(tctx, (const char *) src, src_len,
+                      (const char *) dep[i].path.data, JS_EVAL_TYPE_GLOBAL);
+
+        if (JS_IsException(val)) {
+            ngx_js_log_exception(tctx, cycle->log);
+            JS_FreeValue(tctx, val);
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "js: dependency \"%V\" failed to load (a pure "
+                          "library must not reach for host authority)",
+                          &dep[i].name);
+            return NGX_ERROR;
+        }
+
+        JS_SetPropertyStr(tctx, global, (const char *) dep[i].name.data, val);
+    }
+
+    return NGX_OK;
 }
 
 
@@ -932,6 +1078,16 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
     (void) ngx_js_com_install_protos(tctx);
 
     global = JS_GetGlobalObject(tctx);
+
+    /* B/E1: pinned pure-library dependencies FIRST, while the global is bare
+     * (no capability) — a mismatched pin or a lib reaching for host authority
+     * refuses the config. */
+    if (ngx_js_load_tenant_deps(jcf, cycle, tctx, global) != NGX_OK) {
+        JS_FreeValue(tctx, global);
+        ngx_js_tenant_teardown(jcf);
+        return NGX_ERROR;
+    }
+
     JS_SetPropertyStr(tctx, global, "report",
                       JS_NewCFunction(tctx, ngx_js_tenant_report,
                                       "report", 1));
