@@ -167,6 +167,56 @@ estimates are now evidence-based: the merge is bringing `quickjs-jit.{c,h}` + th
 `js_jit_fb_set_func` / the `jit_func` dispatch." Artifacts: scratchpad `c0/` (add.js,
 the dumped C, the cache `.so`s).
 
+## 5. C1 (M-UNIFY) — the diff analysis + strategy (2026-09-01)
+
+Ran the C1 reconnaissance (the analysis before touching the 60k-line engine). It
+settles the merge shape:
+
+**It is a clean 3-way merge, not a fork reconciliation.** Both trees share the **exact
+same Bellard base, `VERSION 2025-09-13`** — so there is *no base-version drift*. The
+delta is entirely `base + {pilgrim's patches} + {maxim's JIT}`:
+- **`quickjs.h` (public ABI): identical.** No consumer-facing surface change.
+- **Vendored is its own git repo with pilgrim patches that maxim lacks** (js_std_tick_
+  timers, JSON.parse source-text access, oversized-serialized-bytecode protection, +
+  the opcode/atom below). These **must be preserved** — so vendored is the merge *base*,
+  never overwritten. (It also carries the A/B code and the SR-1 fixes.)
+- **The one sharp edge — opcode/atom divergence — is BENIGN.** Vendored adds one opcode
+  (`set_loc_check`) and one atom (`rawJSON`) that maxim's tree lacks. maxim's JIT
+  references *neither* (0 hits in `quickjs.c`/`quickjs-jit.c`), and its code generator
+  **default-bails**: `js_jit_gen_c`'s `switch(op)` sets `*unsupported=1; return -1` for
+  any opcode without an explicit case, excluding that function from JIT (it runs
+  interpreted — correct, just unaccelerated). So keeping vendored's opcode/atom tables
+  and compiling maxim's JIT against them is safe: worst case, a `set_loc_check`-using
+  function is not accelerated. T1≡T2 is preserved because the JIT only ever *matches or
+  declines*, never reinterprets.
+
+**Merge strategy (decided):** **vendored is the base**; add maxim's `quickjs-jit.{c,h}`
+and the `js_jit_*` glue in `quickjs.c` (the `jit_func` field on `JSFunctionBytecode`,
+the `JS_CallInternal` dispatch, `js_jit_fb_set_func`/…) **all under `#ifdef CONFIG_JIT`**;
+keep vendored's opcode/atom tables; add a `CONFIG_JIT=y` variant to the `../quickjs`
+build and a pilgrim build flavour. The `quickjs.c` glue is the ~3128 maxim-only lines
+*minus* whatever is base/pilgrim-independent — extracted as JIT hunks, applied onto
+vendored.
+
+**Sub-steps (the multi-day construction, C1.1–C1.4):**
+- **C1.1** — vendor `quickjs-jit.{c,h}` into `../quickjs`; add the CONFIG_JIT Makefile
+  wiring (object + guard), matching maxim's Makefile stanza.
+- **C1.2** — port the `quickjs.c` JIT glue onto vendored under `#ifdef CONFIG_JIT`
+  (`jit_func`/`jit_call_count` fields, the `js_jit_*` functions, the `JS_CallInternal`
+  hot-path dispatch). **Acceptance: CONFIG_JIT-OFF build is byte-identical** — the full
+  `t/` + `t_stress/` + `comcon_*` suites green, because nothing compiled changed.
+- **C1.3** — pilgrim builds a `CONFIG_JIT=y` `libquickjs.a` variant; nginx links it;
+  same suites green (JIT present but threshold-gated → same semantics).
+- **C1.4** — differential: a hot pilgrim/tenant function gets JIT-compiled and produces
+  identical results (the erasure-soundness invariant, first live instance).
+
+**Status: C1.0 (analysis) done; C1.1–C1.4 is the engine merge — the genuinely multi-day
+piece, now scoped and de-risked (same base, benign opcode divergence, additive
+CONFIG_JIT-guarded glue).** Deliberately not started mid-session: a half-merged 60k-line
+engine that does not build is worse than a validated plan. It is the next focused
+construction task, with the CONFIG_JIT-off byte-identical build (C1.2) as its first hard
+checkpoint.
+
 *(Design references: ROADMAP §2 M-UNIFY/M2/M3/M4/M5/M6/M7/M8; SPEC §7 typed
 profile, §8 artifact & tiers; PERFORMANCE.md the M1 endpoints; VERIFICATION V5
 translation validation / V13 erasure spot check — the differential-test discipline
