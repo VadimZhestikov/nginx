@@ -8436,6 +8436,13 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
  * No request capability object is granted — data in, data out. Budgets/gas
  * on the tenant runtime are the S5 milestone; not wired here yet.
  */
+
+/* SR-1 MEDIUM-3: cheap per-response caps (the 64MB tenant-runtime memory cap
+ * is the real backstop; full per-fragment budgets are S5). */
+#define NGX_JS_TENANT_HDR_NAME_MAX    256
+#define NGX_JS_TENANT_HDR_VALUE_MAX   (32 * 1024)
+#define NGX_JS_TENANT_BODY_MAX        (16 * 1024 * 1024)
+
 static ngx_int_t
 ngx_js_tenant_content_handler(ngx_http_request_t *r)
 {
@@ -8526,13 +8533,22 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
     /* Drain the tenant runtime's microtasks (its own job queue). */
     while (JS_ExecutePendingJob(jcf->tenant_rt, &jctx) > 0) { /* void */ }
 
-    ngx_js_compartment_leave(prev);
-
     JS_FreeValue(tctx, req);
+
+    /*
+     * SR-1 HIGH-1: the return value's status/body/headers may be GETTERS or a
+     * Proxy — reading them invokes tenant JS. That MUST run under the tenant
+     * compartment, never HOST_ROOT: otherwise a getter could walk
+     * grantedSock.listener → serverByName → server while cur==HOST_ROOT and
+     * every A1 reach gate would short-circuit to "allowed". So leave() happens
+     * only once the response is inert C data (after this whole block); every
+     * early return until then must leave() first.
+     */
 
     if (JS_IsException(ret)) {
         ngx_js_log_exception(tctx, r->connection->log);
         JS_FreeValue(tctx, ret);
+        ngx_js_compartment_leave(prev);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -8601,13 +8617,45 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
                         }
                     }
 
+                    /* SR-1 MEDIUM-2: never let a tenant set framing / hop-by-hop
+                     * headers — nginx emits Content-Length itself, so a tenant
+                     * "content-length" or "transfer-encoding" is a response-
+                     * smuggling primitive against a downstream. Drop them. */
+                    if (ok
+                        && (ngx_strcasecmp((u_char *) kc,
+                                           (u_char *) "content-length") == 0
+                            || ngx_strcasecmp((u_char *) kc,
+                                           (u_char *) "transfer-encoding") == 0
+                            || ngx_strcasecmp((u_char *) kc,
+                                           (u_char *) "connection") == 0
+                            || ngx_strcasecmp((u_char *) kc,
+                                           (u_char *) "keep-alive") == 0
+                            || ngx_strcasecmp((u_char *) kc,
+                                           (u_char *) "upgrade") == 0
+                            || ngx_strcasecmp((u_char *) kc,
+                                           (u_char *) "te") == 0
+                            || ngx_strcasecmp((u_char *) kc,
+                                           (u_char *) "trailer") == 0))
+                    {
+                        ok = 0;
+                    }
+
                     if (ok) {
+                        /* no CR/LF (header splitting); an embedded NUL simply
+                         * truncates the C string (JS_ToCString), which is safe. */
                         for (p = vc; *p; p++) {
                             if (*p == '\r' || *p == '\n') {
                                 ok = 0;
                                 break;
                             }
                         }
+                    }
+
+                    /* SR-1 MEDIUM-3: bound header name + value length. */
+                    if (ok && (ngx_strlen(kc) > NGX_JS_TENANT_HDR_NAME_MAX
+                               || ngx_strlen(vc) > NGX_JS_TENANT_HDR_VALUE_MAX))
+                    {
+                        ok = 0;
                     }
 
                     if (ok
@@ -8670,6 +8718,20 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
                       "js_tenant_handler: handler must return a string or "
                       "{status, body} object");
         JS_FreeValue(tctx, ret);
+        ngx_js_compartment_leave(prev);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    /* SR-1 MEDIUM-3: bound the body. The tenant runtime's 64MB memory cap is
+     * the backstop; this caps the per-request r->pool amplification. Real
+     * per-fragment budgets are S5. */
+    if (bstr != NULL && blen > NGX_JS_TENANT_BODY_MAX) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "js_tenant_handler: response body %uz exceeds cap %uz",
+                      blen, (size_t) NGX_JS_TENANT_BODY_MAX);
+        JS_FreeCString(tctx, bstr);
+        JS_FreeValue(tctx, ret);
+        ngx_js_compartment_leave(prev);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -8679,6 +8741,7 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
         if (body == NULL) {
             JS_FreeCString(tctx, bstr);
             JS_FreeValue(tctx, ret);
+            ngx_js_compartment_leave(prev);
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
         ngx_memcpy(body, bstr, blen);
@@ -8690,6 +8753,9 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
     }
 
     JS_FreeValue(tctx, ret);
+
+    /* SR-1 HIGH-1: response is now inert C data — all tenant JS is done. */
+    ngx_js_compartment_leave(prev);
 
     r->headers_out.status           = (ngx_uint_t) status;
     r->headers_out.content_length_n = (off_t) blen;

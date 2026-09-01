@@ -64,6 +64,7 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
     "listener.read",
     "listener.serverByName",
     "enum.sockets",
+    "sock.mutate",
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */

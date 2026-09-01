@@ -191,6 +191,15 @@ ngx_js_socket_close(JSContext *ctx, JSValueConst this_val,
 
     st = ngx_js_socket_reg[op->handle];
 
+    /* COMCON SR-1 MEDIUM-4: close() destroys host state — a mutating op, not a
+     * scalar read. A tenant handed this socket via grantToTenant may not close
+     * a socket it does not own. */
+    if (!ngx_js_compartment_may_reach(st->owner)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_SOCK_MUTATE, st->addr))
+    {
+        return JS_ThrowTypeError(ctx, "sock.close: denied (not owner)");
+    }
+
     if (st->in_listening) {
         return JS_ThrowInternalError(ctx,
             "sock.close: cannot close a socket already added to"
@@ -255,6 +264,14 @@ ngx_js_socket_broadcast(JSContext *ctx, JSValueConst this_val,
     }
 
     st = ngx_js_socket_reg[op->handle];
+
+    /* COMCON SR-1 MEDIUM-4: broadcast distributes the fd fleet-wide — mutating;
+     * gate on ownership like close(). */
+    if (!ngx_js_compartment_may_reach(st->owner)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_SOCK_MUTATE, st->addr))
+    {
+        return JS_ThrowTypeError(ctx, "sock.broadcast: denied (not owner)");
+    }
 
     rc = ngx_js_socket_mgr_broadcast(op->handle, st->addr,
                                      ngx_strlen(st->addr));

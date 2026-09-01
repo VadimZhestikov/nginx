@@ -91,6 +91,7 @@ typedef enum {
     NGX_JS_DENIAL_LISTENER_READ,       /* listener getter (socket/serverNames) */
     NGX_JS_DENIAL_SERVER_BY_NAME,      /* listener.serverByName escalation  */
     NGX_JS_DENIAL_ENUM_SOCKETS,        /* cycle.sockets / http.sockets enum */
+    NGX_JS_DENIAL_SOCK_MUTATE,         /* sock.close / sock.broadcast (SR-1)  */
     NGX_JS_DENIAL_LAST
 } ngx_js_denial_code_t;
 
