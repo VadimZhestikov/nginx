@@ -7,6 +7,25 @@ tier can be trusted. This blocks C5 (lowering builds on it), C6 (activation), an
 input to C7 / M8 (= SR-2 faithfulness, "T2 refines T1"). Grounded in a categorization run
 (~10.5k tests under forced JIT) + the maxim repo's prior AOT artifact.*
 
+> **Executed (2026-09-01) — in-profile gate effectively MET; C5 unblocked.** The go/no-go
+> spike + T0 measurement below were run. **Bucket 1 (the dominant closure `var_ref` crash)
+> is fixed** (maxim `b07ca5d`): always-dup the frame's var_ref + release it in
+> `close_caps`. **T0 harness built** (maxim `73bba6d`: `t0-measure-jit.sh` + `make
+> test262-jit-delta`). With the fix, the whole common surface is **0-new** (Array.prototype.*,
+> Atomics, Promise, arrow-function, for-of, TypedArray set/fill), and an in-profile
+> strict-module handler ran **200k invocations clean, stable 34 MB RSS**, including the
+> phase-35 cache-load path (cold+warm). The residual delta is small and **out-of-profile**:
+> (a) the biggest correctness bucket — non-strict callback `this`=undefined-vs-global — is
+> **sloppy-mode only**, and COMCON tenants are strict modules where the JIT's answer is
+> *correct*; (b) a residual crash in `filter/map` is a **cache-load-path** bug specific to
+> the exotic `speciesctor-destination-resizable` function (species constructor + resizable
+> ArrayBuffer + BigInt TA), which the cache-load path handles fine for all normal functions;
+> (c) a BigInt-callback-conversion edge. **Conclusion:** the COMCON-profile-scoped gate is
+> met — in-profile T2 is correct (incl. server-AOT cache-load) — so **C5 lowering is
+> unblocked**. The three residual items go to a parallel maxim full-suite track (fix or
+> exclude), not the C5 critical path. Details: §5 (categories) updated by the run; the
+> full delta report is maxim `jit-test262-results/t0-delta.txt`.
+
 ---
 
 ## 1. Goal & definition of done

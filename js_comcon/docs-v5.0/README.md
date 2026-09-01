@@ -2,7 +2,12 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.20**, maxim finalization SCOPED (INCREMENT_MAXIM.md) — the JIT correctness
+> (current: **v5.21**, maxim finalization go/no-go EXECUTED — Bucket-1 closure var_ref crash
+> FIXED (maxim b07ca5d) + T0 measurement harness built (73bba6d); with the fix the common
+> JIT surface is 0-new and an in-profile strict handler ran 200k clean incl. server-AOT
+> cache-load; residual delta is small + OUT-OF-PROFILE (sloppy-mode `this`, a species/
+> resizable cache-load crash, a BigInt edge) → COMCON profile-scoped gate MET, C5 UNBLOCKED,
+> residuals to a parallel maxim full-suite track; v5.20 maxim finalization SCOPED (INCREMENT_MAXIM.md) — the JIT correctness
 > gate for the compiled tier: JIT compiles nearly everything (bails only on eval), so the
 > ~200 test262 failures are MISCOMPILES concentrated at the JIT-closure/callback-from-builtin
 > boundary (Bucket 1 = var_ref refcount-underflow crashes, Bucket 2 = callback this/arg
