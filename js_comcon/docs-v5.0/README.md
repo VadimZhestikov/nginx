@@ -2,7 +2,9 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.5**, SPEC.md + the ground-truthed INCREMENT_A.md build plan from the
+> (current: **v5.6**, the COMCON-lite core is BUILT + TESTED — increment A through the
+> request path; build log INCREMENT_A.md §6, status SPEC.md §13; before it
+> v5.5, SPEC.md + the ground-truthed INCREMENT_A.md build plan from the
 > nginx reality check; before it v5.4 convergence actions — THREATS.md, two-clocks pin,
 > adaptive deferred to M9; v5.3 consistency pass, v5.2 WASM ruling, v5.1 engineering
 > review + increment re-cut). Full new directories happen only at genuine architectural

@@ -165,3 +165,40 @@ The testable MVP proves the model end-to-end on one leak path:
 The reality check optimized A1 for smallest diff; this optimizes for smallest *testable*
 increment. They converge (the vertical uses A1's registry field) but sequence
 identity-primitive-first.
+
+## 6. Build log — what is now real (v5.6)
+
+The vertical slice of §5 is **built, tested, and non-regressing** (each unit behind a
+`t/comcon_*` test that proves the confinement claim it implements; sighup stress green):
+
+| Unit | Commit | What exists |
+|---|---|---|
+| **A1.0** identity seam | `b2f135c11` | `src/js/ngx_js_compartment.{c,h}`: the owner token, `current/enter/leave`, `may_reach` |
+| **A1.1** reach gates | `a053740e5`, `a3b8c2bb6` | socket-owner field; the whole `sock↔listener→serverByName→server` cycle gated on it (a listener's reach domain *is* its socket's — no separate listener field needed); the `cycle.sockets`/`http.sockets` enumerators host-only |
+| **A2.0** deny-by-default env | `33c4f0d52` | `js_tenant_source`: a reduced tenant context (no `nginx`, no module loader, granted names only) — *the primary control*, tested (`comcon_tenant_deny.t`) |
+| **A2.1** grants | `14f7a25b7` | `nginx.grantToTenant(name, sock)` (host-only); tenant holds + uses the socket, yet `.listener` is null cross-compartment — *the gate isolates by compartment, not by holding* (`comcon_tenant_grant.t`) |
+| **A3.0** request path | `39a496cab` | persistent tenant runtime (COW into workers, torn down at the same four sites as the host runtime); granted `onRequest(fn)`; `js_tenant_handler;` location directive; deny-by-default + gates active **during live requests** (`comcon_tenant_request.t`) |
+
+**A design decision made in code, now recorded:** the A3.0 tenant handler receives
+plain request *data* (`{method, uri, args}`) and its **entire authority over the
+response is its return value** (`"body"` or `{status, body}`). There is no request
+capability object to confine — the zero-capability request path is the confinement
+floor, and the graded request *facet* (headers, variables, subrequest — each a
+separate grant) is the later widening, not the starting point.
+
+**Lessons the code taught (carried forward):**
+- An ephemeral or secondary evaluation needs a **fully isolated runtime** (the
+  `js_preprocess` pattern); a second context on the shared master runtime trips
+  QuickJS's `list_empty(&rt->gc_obj_list)` assertion at teardown. Every GC-tracked
+  JSValue held in C structs must be freed *before* `JS_FreeContext`.
+- **Pre-existing bug fixed en route:** `failed_ctx` in `init_conf` violated exactly
+  that rule for `master_handlers`, so any SIGHUP whose `js_source` throws (e.g.
+  `createSocket` EADDRINUSE on reload) *aborted the master* instead of rolling back.
+  Failed reloads now leave the master serving the old cycle.
+- Reload semantics verified both ways for the tenant: idempotent config → new tenant
+  runtime serves, old freed cleanly; throwing config → master survives.
+
+**Remaining for increment A:** **A4** — registry allow/deny beyond the environment,
+the denial log (with TM-1 quotas), and the audit→enforce loop; then the dogfood demo.
+Multi-tenant (N named compartments; the `{compartment, idx}` handler generalization is
+only needed then) and request-facet grants + budgets/gas (S5) follow.

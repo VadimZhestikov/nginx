@@ -553,6 +553,17 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.6 (in place — the COMCON-lite core is real):** increment A built through the
+request path, each unit tested: A1.0 identity seam, A1.1 reach-cycle gates, A2.0
+deny-by-default tenant environment (`js_tenant_source`), A2.1 grants
+(`nginx.grantToTenant`) with the cross-compartment isolation proof, A3.0 a persistent
+tenant runtime serving live requests (`onRequest` + `js_tenant_handler;`) with
+confinement active on the request path. Design decision recorded from code: the A3.0
+request path is **zero-capability** — the tenant gets request *data* and its response
+authority is its *return value*; request facets are a later widening. Pre-existing
+master-abort-on-throwing-reload bug fixed en route. Build log: `INCREMENT_A.md` §6;
+status: `SPEC.md` §13.
+
 **v5.5 (in place — construction begins):** `SPEC.md` (the clean normative read, M2.5 doc
 half) and `INCREMENT_A.md` (the ground-truthed build plan). The nginx integration reality
 check ran against the real `src/js/`: the §9.4 contract mostly holds, the QuickJS

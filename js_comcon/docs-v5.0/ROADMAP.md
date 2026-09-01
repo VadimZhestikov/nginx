@@ -603,6 +603,13 @@ withhold-by-default. Two confinement bugs to fix in A1: script-writable
 `nginx.shared` (pulls M8's table-key namespacing earlier). Full task order A0–A4 +
 file:line anchors in `INCREMENT_A.md`.
 
+*(v5.6 — increment A is UNDER CONSTRUCTION, most of it built:)* the identity seam,
+the reach gates, the deny-by-default tenant environment, host→tenant grants, and a
+**confined tenant serving live HTTP requests** are implemented and tested
+(`t/comcon_*`; build log `INCREMENT_A.md` §6). Remaining: A4 (registry allow/deny +
+denial log + audit→enforce) + the dogfood demo; multi-tenant and request-facet
+grants follow.
+
 **Compatibility principle (write it once, honor it forever):** *pilgrim without COMCON
 remains fully supported; COMCON attaches per-fragment; there is no flag-day.*
 

@@ -6,7 +6,8 @@ it, lives in the companion documents (`FOUNDATION.md` for the argued form, `SEMA
 for the formal kernel, `POM.md`, `HARDENING.md`, `VERIFICATION.md`, `THREATS.md`,
 `PERFORMANCE.md`, `ROADMAP.md`) and in the design-record appendix (§14). Where this
 document and a companion disagree, this document is normative for **what**; the companion
-is authoritative for **why**. Nothing here is implemented yet (except the M1 spike).*
+is authoritative for **why**. Implementation status: §13 — the COMCON-lite core
+(increment A through the request path) is built and tested; the rest is design.*
 
 ---
 
@@ -339,10 +340,16 @@ fully supported; COMCON attaches per-fragment; there is no flag-day.
 ## 13. Status
 
 Design-complete after five review passes (correctness R, verifiability V, engineering E,
-consistency C, threat model). Nothing implemented except the M1 perf spike
-(`t_performance/maxim_m1/`, which measured the 28%/96% endpoints). Delivery follows the
-increment re-cut (`ROADMAP.md` §13), confinement-first. This SPEC is normative for
-*what*; the design record (§14) holds *why* and *how we got here*.
+consistency C, threat model); the M1 perf spike measured the 28%/96% endpoints
+(`t_performance/maxim_m1/`). **Construction has begun and the COMCON-lite core is real**
+(`src/js/ngx_js_compartment.*` + integration; build log in `INCREMENT_A.md` §6): the
+compartment identity, the deny-by-default tenant environment, the host→tenant grant
+primitive, the reach-cycle registry gates, and a **confined tenant serving live HTTP
+requests** — each behind a `t/comcon_*` test that proves the confinement claim it
+implements. Everything else in this SPEC (typed profile, tiers, quotations, POM
+rewrite, config instance, adaptive) remains design. Delivery follows the increment
+re-cut (`ROADMAP.md` §13), confinement-first. This SPEC is normative for *what*; the
+design record (§14) holds *why* and *how we got here*.
 
 ---
 
