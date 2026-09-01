@@ -2,7 +2,13 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.16**, C3-types type-checking the tenant against the C2 schema — the
+> (current: **v5.17**, C4 the fragment artifact ("fat bytecode") — after the C3 checks
+> pass the admitted fragment gets a content-addressed identity H(H(source)‖schema-version)
+> + an admission certificate (env-signature size + which C3 checks cleared), logged at
+> load; the `js_tenant_artifact <hex>` directive pins the identity so content drift OR
+> schema drift refuses the config (generalizes B/E1 pin-by-hash from a dependency file to
+> the whole fragment); no lowering yet — the artifact is the T1 record C5 lowers;
+> t/comcon_artifact.t; v5.16 C3-types type-checking the tenant against the C2 schema — the
 > env.onRequest signature (handler is (Request)=>Response: a function of ≤1 param,
 > registered exactly once) enforced at registration, and the sealed types.Request
 > (a direct read of a non-schema field on the handler's Request parameter refused:

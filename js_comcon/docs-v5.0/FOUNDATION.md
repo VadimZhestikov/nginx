@@ -553,6 +553,24 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.17 (in place — C4: the fragment artifact):** the admitted fragment is no longer a
+transient — after the C3 checks pass it is sealed into an **artifact** (SPEC §8's "fat
+bytecode", minus the not-yet-built lowering): a **content-addressed identity**
+`H(H(source) ‖ schema-version)` plus an **admission certificate** (the env-signature size
+— the free-name manifest from C3.0 — and a bit per C3 clearance: free-names resolved,
+dynamic-code-free, Request sealed, onRequest signature). The identity folds the content
+pin and the schema pin into one match, so the new **`js_tenant_artifact <hex>`** directive
+refuses the config on *either* content drift (the fragment's bytes changed) or schema
+drift (the C2 surface it was admitted against changed) — generalizing B/E1's pin-by-hash
+from a single dependency file to the whole fragment + its schema. The certificate is
+logged at admission (identity prefix, schema version, clearances) — the audit trail of
+*what was admitted, against which schema*. Reuses the B/E1 SHA-256 machinery; the schema
+identity is the C2 `version` string (`NGX_JS_C4_SCHEMA_VERSION`, drift-guarded by
+`comcon_schema_conformance.t`). No lowering: this record is exactly the T1-executable
+fragment C5 will lower, and the identity is what C5's compiled `.so` and M8's differential
+test will be keyed to. Test: `t/comcon_artifact.t` (the Perl side recomputes the identity
+independently and matches).
+
 **v5.16 (in place — C3-types: the fragment is checked against the C2 schema):** the
 typed-profile front-end stops checking only *names and constructs* and begins checking
 *types* — the tenant's USE of its environment against `schema/tenant-env.schema.json`.

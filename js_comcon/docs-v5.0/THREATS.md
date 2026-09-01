@@ -32,6 +32,11 @@ bounded by admission types + realizer review); covert/timing channels → T9.
 workflow); **pin-by-hash** — the hijacked update is refused at admission, old epoch
 serves (scenario 40, R7); transitive deps = cages in cages; cascade revocation on CVE
 day (grant chains); library runs with what the consumer granted, never what it requests.
+*Implemented:* dependency pin-by-hash (`js_tenant_dependency`, B/E1) and — since C4 —
+the **fragment artifact pin** (`js_tenant_artifact`, v5.17): the whole admitted fragment
+has an identity `H(H(source) ‖ schema-version)`, so one pin refuses both content drift and
+**schema drift** (the C2 surface the fragment was admitted against changed) — the
+schema-hash drift channel named at V2/C11, now closed for the fragment itself.
 *Residual:* the platform's own supply chain (QuickJS upstream, wasm2c, GCC/TCC) →
 vendored trees + V14 reproducible builds; trusting-trust accepted and named.
 

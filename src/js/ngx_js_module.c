@@ -371,6 +371,8 @@ static char   *ngx_js_tenant_mode(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char   *ngx_js_tenant_dependency(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char   *ngx_js_tenant_artifact(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 static ngx_int_t ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf,
     ngx_cycle_t *cycle);
 static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -429,6 +431,22 @@ static ngx_command_t  ngx_js_commands[] = {
     { ngx_string("js_tenant_dependency"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE3,
       ngx_js_tenant_dependency,
+      0,
+      0,
+      NULL },
+
+    /*
+     * js_tenant_artifact <sha256hex>;
+     *
+     * COMCON C4. Pin the admitted fragment's ARTIFACT IDENTITY —
+     * H(H(source) ‖ schema-version). One match verifies both content drift
+     * (the fragment changed) and schema drift (the C2 surface it was admitted
+     * against changed); a mismatch refuses the config. Generalizes B/E1's
+     * pin-by-hash from a dependency file to the whole fragment + its schema.
+     */
+    { ngx_string("js_tenant_artifact"),
+      NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
+      ngx_js_tenant_artifact,
       0,
       0,
       NULL },
@@ -667,6 +685,57 @@ ngx_js_tenant_dependency(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
         dep->sha256[i] = (u_char) ((hi << 4) | lo);
     }
+
+    return NGX_CONF_OK;
+}
+
+
+/* COMCON C4: js_tenant_artifact <sha256hex>; — pin the fragment artifact's
+ * identity. Parsed into jcf->tenant_artifact_pin; checked at admission against
+ * the identity computed in ngx_js_eval_tenant_sources. */
+static char *
+ngx_js_tenant_artifact(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_js_conf_t  *jcf = conf;
+    ngx_str_t      *value;
+    ngx_uint_t      i;
+    u_char          hi, lo;
+
+    value = cf->args->elts;   /* [1]=sha256hex of the artifact identity */
+
+    if (jcf->tenant_artifact_pinned) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "js_tenant_artifact: already pinned once");
+        return NGX_CONF_ERROR;
+    }
+
+    if (value[1].len != 64) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "js_tenant_artifact: identity must be 64 hex chars");
+        return NGX_CONF_ERROR;
+    }
+
+    for (i = 0; i < 32; i++) {
+        hi = value[1].data[i * 2];
+        lo = value[1].data[i * 2 + 1];
+
+        hi = (hi >= '0' && hi <= '9') ? hi - '0'
+           : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+           : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : 0xff;
+        lo = (lo >= '0' && lo <= '9') ? lo - '0'
+           : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+           : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : 0xff;
+
+        if (hi == 0xff || lo == 0xff) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "js_tenant_artifact: invalid hex in identity");
+            return NGX_CONF_ERROR;
+        }
+
+        jcf->tenant_artifact_pin[i] = (u_char) ((hi << 4) | lo);
+    }
+
+    jcf->tenant_artifact_pinned = 1;
 
     return NGX_CONF_OK;
 }
@@ -1056,6 +1125,7 @@ typedef struct {
     JSValue      global;
     ngx_log_t   *log;
     ngx_uint_t   rejected;
+    ngx_uint_t   count;      /* C4: env-signature size (free-name references) */
 } ngx_js_c3_check_t;
 
 static void
@@ -1064,6 +1134,8 @@ ngx_js_c3_free_name(void *ud, const char *name)
     ngx_js_c3_check_t  *c = ud;
     JSAtom              atom;
     int                 has;
+
+    c->count++;
 
     /* C3 restricted profile: `eval`/`Function` are standard globals, so they
      * are present on the tenant global — but they enable DYNAMIC CODE that
@@ -1101,6 +1173,8 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
     JSRuntime             *trt;
     ngx_js_compartment_t   prev;
     char                  *rc;
+    SHA256_CTX             sctx;
+    ngx_js_artifact_t     *art;
 
     if (jcf->tenant_sources.nelts == 0) {
         return NGX_OK;
@@ -1194,6 +1268,10 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 
     path = jcf->tenant_sources.elts;
 
+    /* C4: accumulate the fragment content hash over the tenant sources (in
+     * declaration order) as they are read — the artifact's content pin. */
+    SHA256_Init(&sctx);
+
     for (i = 0; i < jcf->tenant_sources.nelts; i++) {
 
         src = ngx_js_read_file(cycle, &path[i], &src_len);
@@ -1201,6 +1279,8 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
             ngx_js_tenant_teardown(jcf);
             return NGX_ERROR;
         }
+
+        SHA256_Update(&sctx, src, src_len);
 
         prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
 
@@ -1215,12 +1295,21 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
         }
     }
 
+    /* C4: seal the content hash (the fragment's content pin). */
+    art = &jcf->tenant_artifact;
+    SHA256_Final(art->content_hash, &sctx);
+
     /* COMCON C3: static free-name admission check. Walk the registered handler
      * (and its nested functions) for free-global references and refuse the
      * fragment if any names a capability it was not granted — fail fast at
      * load rather than deep in a request. */
     if (!JS_IsUninitialized(jcf->tenant_request_handler)) {
         ngx_js_c3_check_t  chk;
+
+        /* onRequest's (Request)=>Response signature was enforced at
+         * registration (arity + single registration); reaching here with a
+         * handler means it cleared. */
+        art->cert_onreq_sig = 1;
 
         /* C3 restricted profile: no direct eval / `with` — they hide name
          * references from the static free-name analysis below. */
@@ -1231,11 +1320,13 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
             ngx_js_tenant_teardown(jcf);
             return NGX_ERROR;
         }
+        art->cert_no_dyn_code = 1;
 
         chk.ctx      = tctx;
         chk.global   = JS_GetGlobalObject(tctx);
         chk.log      = cycle->log;
         chk.rejected = 0;
+        chk.count    = 0;
 
         js_comcon_collect_free_globals(tctx, jcf->tenant_request_handler,
                                        ngx_js_c3_free_name, &chk);
@@ -1245,6 +1336,8 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
             ngx_js_tenant_teardown(jcf);
             return NGX_ERROR;
         }
+        art->cert_free_names = 1;
+        art->free_name_count = chk.count;
 
         /* C3 typed profile: the handler's Request parameter is SEALED — a
          * direct read of a field the schema Request type does not declare is
@@ -1262,6 +1355,43 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
                 return NGX_ERROR;
             }
         }
+        art->cert_request_sealed = 1;
+    }
+
+    /* C4: seal the artifact identity — H(content_hash ‖ schema-version) —
+     * folding the content pin and the schema pin into one match, then honour
+     * an js_tenant_artifact pin (content OR schema drift refuses the config).
+     * No lowering here: this record is the T1-executable fragment C5 lowers. */
+    SHA256_Init(&sctx);
+    SHA256_Update(&sctx, art->content_hash, 32);
+    SHA256_Update(&sctx, (const u_char *) NGX_JS_C4_SCHEMA_VERSION,
+                  ngx_strlen(NGX_JS_C4_SCHEMA_VERSION));
+    SHA256_Final(art->identity, &sctx);
+    art->built = 1;
+
+    if (jcf->tenant_artifact_pinned
+        && ngx_memcmp(art->identity, jcf->tenant_artifact_pin, 32) != 0)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "js: tenant fragment artifact identity mismatch — refused "
+                      "(COMCON C4 pin: content or schema drift)");
+        ngx_js_tenant_teardown(jcf);
+        return NGX_ERROR;
+    }
+
+    {
+        u_char  hex[16 + 1];
+
+        ngx_hex_dump(hex, art->identity, 8);
+        hex[16] = '\0';
+
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+            "js tenant: fragment artifact %s admitted "
+            "(schema %s; %ui free names; cert free-names=%d dyn-code-free=%d "
+            "request-sealed=%d onRequest-sig=%d)",
+            hex, NGX_JS_C4_SCHEMA_VERSION, art->free_name_count,
+            art->cert_free_names, art->cert_no_dyn_code,
+            art->cert_request_sealed, art->cert_onreq_sig);
     }
 
     return NGX_OK;

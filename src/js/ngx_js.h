@@ -57,6 +57,33 @@ typedef struct {
 
 
 /*
+ * COMCON C4: the fragment artifact ("fat bytecode"). The admitted fragment's
+ * content-addressed identity plus its admission certificate, computed at
+ * admission after the C3 checks pass. Identity = H(H(source) ∥ schema-version)
+ * folds the content pin and the schema pin into one match (SPEC §8): it detects
+ * both content drift (the source changed) and schema drift (the C2 surface the
+ * fragment was admitted against changed). The env-signature is the free-name
+ * manifest (C3.0); the certificate bits record which admission checks cleared.
+ * No lowering here — the artifact is the T1-executable record C5 will lower.
+ */
+typedef struct {
+    ngx_uint_t           built;             /* artifact computed this cycle    */
+    u_char               content_hash[32];  /* SHA-256 over the tenant sources */
+    u_char               identity[32];      /* SHA-256(content_hash‖schema-ver)*/
+    ngx_uint_t           free_name_count;   /* env-signature size (C3.0)       */
+    unsigned             cert_free_names:1; /* every free name resolved (C3.0) */
+    unsigned             cert_no_dyn_code:1;/* no eval/Function/with (C3-rest) */
+    unsigned             cert_request_sealed:1; /* no non-schema field (types) */
+    unsigned             cert_onreq_sig:1;  /* onRequest (Request)=>Response    */
+} ngx_js_artifact_t;
+
+/* The C2 schema version this build admits against — the "schema hash" folded
+ * into the artifact identity. Matches schema/tenant-env.schema.json `version`
+ * (drift is caught by t/comcon_schema_conformance.t). */
+#define NGX_JS_C4_SCHEMA_VERSION  "c2-tenant-env-1"
+
+
+/*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).
  * Allocated in cycle->pool via create_conf; populated by js_source
  * directives during ngx_conf_parse(), executed by init_conf().
@@ -83,6 +110,10 @@ typedef struct {
     JSContext           *tenant_ctx;
     JSValue              tenant_request_handler;
     ngx_uint_t           tenant_mode;     /* A4/B0: ngx_js_tenant_mode_e */
+
+    ngx_js_artifact_t    tenant_artifact;      /* C4: the admitted-fragment record */
+    u_char               tenant_artifact_pin[32]; /* C4: js_tenant_artifact pin    */
+    ngx_uint_t           tenant_artifact_pinned;  /* C4: 1 if an identity is pinned */
     JSRuntime           *rt;              /* master-process QuickJS runtime   */
     JSContext           *ctx;             /* master-process QuickJS context   */
     void                *worker;          /* ngx_js_worker_t* after fork      */

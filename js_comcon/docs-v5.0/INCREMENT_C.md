@@ -116,10 +116,23 @@ The biggest unknowns are front-loaded. Each slice is a differential-tested verti
     against. C3 today *rejects* on types where it can prove a violation; it does not yet
     *certify* a fragment fully-typed.
 
-- **C4 — M4: the fragment artifact ("fat bytecode").** bytecode + type/cap
+- **C4 — M4: the fragment artifact ("fat bytecode"). LANDED (v5.17).** bytecode + type/cap
   side-table + env-signature (we have this — the learn/grant machinery) + content
-  hash (**reuse maxim's `jit_hash_*`**) + schema hash + admission cert. Generalizes
-  B/E1's pin-by-hash from "a file" to "the artifact."
+  hash + schema hash + admission cert. Generalizes B/E1's pin-by-hash from "a file" to
+  "the artifact."
+
+  **Built + tested:** at admission (after the C3 checks pass) the fragment is sealed into
+  `ngx_js_artifact_t` on `jcf`: **content hash** = SHA-256 over the tenant sources;
+  **identity** = `H(content_hash ‖ schema-version)` — `NGX_JS_C4_SCHEMA_VERSION` =
+  the C2 `version`; **env-signature** = the C3.0 free-name count; **certificate** = a bit
+  per C3 clearance (free-names / dyn-code-free / Request-sealed / onRequest-sig). The
+  certificate is logged at load. New directive **`js_tenant_artifact <hex>`** pins the
+  identity: content OR schema drift refuses the config (one match, both drifts). Reuses
+  the B/E1 SHA-256 path; no engine change. Test: `t/comcon_artifact.t`. **Deferred to C5:**
+  the type/cap *side-table* is today the certificate bits + the free-name manifest, not yet
+  a per-value type table — that fills in with the erasure-complete typing lowering needs;
+  and the content hash is over source (a bytecode-level `jit_hash_*` identity is a C5/M8
+  refinement once lowering exists).
 
 - **C5 — M5: lowering (the hard, valuable core).** maxim lowers the typed fragment
   → C → `.so`, with the confinement compiled *in*: static mediations partial-
