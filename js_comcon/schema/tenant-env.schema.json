@@ -1,0 +1,97 @@
+{
+  "$comment": "COMCON C2 — the typed schema of the confined tenant ENVIRONMENT. This is the machine-readable type surface a tenant fragment may reference; the typed-profile front-end (C3) type-checks fragments against it, and the lowering (C5) erases against it. It covers only the small REAL tenant surface (deny-by-default: no `nginx`, no COM). The host COM surface — typed from the describe() registry with read-only-getter rows — is a later C2 extension. Grounded: t/comcon_schema_conformance.t proves this matches the running surface.",
+  "version": "c2-tenant-env-1",
+
+  "numeric": {
+    "$comment": "V1 numeric discipline. JS doubles are normative in both tiers (T1/T2). The typed integer is a safe-integer refinement.",
+    "int": {
+      "repr": "IEEE-754 double restricted to safe integers",
+      "range": "|x| <= 2^53 - 1 (Number.isSafeInteger)"
+    },
+    "rule": "No host op may expose a numeric domain past the safe-integer range: ms not ns for timestamps, scaled units for large quantities, strings (or opaque handles) for true 64-bit identifiers. Enforced per schema row."
+  },
+
+  "types": {
+    "Request": {
+      "kind": "object",
+      "sealed": true,
+      "fields": {
+        "method":  { "type": "string" },
+        "uri":     { "type": "string" },
+        "args":    { "type": "string" },
+        "headers": { "type": "Headers" }
+      },
+      "note": "Plain request DATA — no capability. A copy; mutating it does nothing."
+    },
+    "Headers": {
+      "kind": "record",
+      "key":   { "type": "string", "domain": "lowercased header name" },
+      "value": { "type": "string" }
+    },
+    "Response": {
+      "kind": "union",
+      "of": [
+        { "type": "string", "note": "shorthand: 200 text/plain with this body" },
+        {
+          "kind": "object",
+          "fields": {
+            "status":  { "type": "int",     "optional": true, "domain": "HTTP status; default 200" },
+            "body":    { "type": "string",  "optional": true },
+            "headers": { "type": "OutHeaders", "optional": true }
+          }
+        }
+      ],
+      "note": "The tenant's ENTIRE authority over the response. Data out, no capability."
+    },
+    "OutHeaders": {
+      "kind": "record",
+      "key":   { "type": "string", "domain": "token chars [A-Za-z0-9_-]; framing/hop-by-hop names rejected (SR-1 MEDIUM-2)" },
+      "value": { "type": "string", "domain": "no CR/LF; length <= 32768 (SR-1 MEDIUM-3)" },
+      "bounds": { "maxCount": 32 }
+    },
+    "Socket": {
+      "kind": "object",
+      "sealed": true,
+      "fields": {
+        "address":  { "type": "string", "access": "read" },
+        "port":     { "type": "int",    "access": "read", "domain": "uint16" },
+        "fd":       { "type": "int",    "access": "read" },
+        "listener": { "type": "Listener", "nullable": true, "access": "read",
+                      "gated": "A1 reach: null cross-compartment (may_reach)" },
+        "close":     { "type": "method", "gated": "A1: denied unless owner (SR-1 MEDIUM-4)" },
+        "broadcast": { "type": "method", "gated": "A1: denied unless owner (SR-1 MEDIUM-4)" }
+      },
+      "note": "A host-granted capability. Scalar reads are the intended use; reach edges (.listener) and mutators (close/broadcast) are compartment-gated."
+    },
+    "Listener": {
+      "kind": "opaque",
+      "note": "Reachable only by the owning compartment; a tenant handed a foreign socket gets null here."
+    }
+  },
+
+  "env": {
+    "$comment": "Names bound in EVERY confined tenant fragment (deny-by-default: these and only these, plus host grants).",
+    "report": {
+      "type": "function",
+      "params":  [ { "type": "string" } ],
+      "returns": { "type": "undefined" },
+      "effect":  "log",
+      "note": "The one always-granted capability: write a line to the host log."
+    },
+    "onRequest": {
+      "type": "function",
+      "params":  [ { "type": "function", "params": [ { "type": "Request" } ], "returns": { "type": "Response" } } ],
+      "returns": { "type": "undefined" },
+      "note": "Register the request handler. Its return value IS the response."
+    }
+  },
+
+  "grants": {
+    "$comment": "Optional, host-authorized (nginx.grantToTenant). Present only when granted; bound by the name the host chose.",
+    "socket": {
+      "type": "Socket",
+      "authorizedBy": "nginx.grantToTenant(name, socketObject)",
+      "note": "A tenant HOLDS the object but the A1 gates bound what it can reach."
+    }
+  }
+}
