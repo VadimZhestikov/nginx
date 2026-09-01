@@ -217,6 +217,14 @@ does not have; the operator grants the safe subset and flips to *enforce*.
 workflow). Next: **increment C** — the typed/compiled tier (typed profile, the
 fragment artifact, T1/T2), which needs M-UNIFY + the front-end/binder/lowering.
 
+**SR-1 hardening (commit `66dfdb0dd`):** the pre-C conformance review (VERIFICATION.md
+cadence) found and fixed one HIGH (return-value getters ran under HOST_ROOT after an
+early `leave()` — a granted-socket tenant could walk the reach cycle from a `get
+status()`) and three MEDIUM (framing-header smuggling, unbounded response sizes,
+ungated granted-socket `close`/`broadcast`) in the request path. Regression:
+`t/comcon_sr1_regression.t`. Deny-by-default (the primary control) verified sound.
+Details: THREATS.md "SR-1 result".
+
 **Increment A is COMPLETE** — accepted by the dogfood demo (a confined tenant serving
 real multi-worker traffic, cage proven on live requests, the audit→enforce loop closed
 by the host). Beyond A: **increment B** (onboarding — learning-mode harvest, generated

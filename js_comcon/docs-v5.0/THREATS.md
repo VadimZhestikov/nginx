@@ -142,3 +142,40 @@ co-resident tenants (T4/T9 — the post-M9 IFC track), and availability-within-r
 controllers (T6 — inside the trust model). Everything else in the matrix cites a
 specific closing mechanism. When a future review finds a threat with no cell, it goes
 here first and gets a mechanism second — this document is the completeness ledger.
+
+## SR-1 result (the A/B pre-C conformance review, 2026-09-01)
+
+The first gate-review of the cadence (VERIFICATION.md). It audited the *implemented*
+A/B capability logic against the claims above, within the current TCB assumption. Result:
+the **primary control — deny-by-default environments — verified sound** (a grant-less
+tenant has no nameable host authority, no I/O, inert learn-mode recorders, no
+`nginx.shared`, pinned deps loaded before capabilities). It found one **HIGH** and three
+**MEDIUM** defects in the *defense-in-depth* layer, **all now fixed** (commit
+`66dfdb0dd`), each with a regression test (`t/comcon_sr1_regression.t`):
+
+- **HIGH-1 (T1/T4)** — the request handler restored the compartment to HOST_ROOT
+  *before* reading the tenant return value, so a `get status()` getter ran under
+  HOST_ROOT and `may_reach` passed → a granted-socket tenant could walk the reach cycle
+  from a getter. Fixed: `leave()` only after the response is inert C data.
+- **MEDIUM-2** — framing/hop-by-hop response headers (`content-length`, …) passed the
+  A3.1 guard → response smuggling. Fixed: dropped.
+- **MEDIUM-3** — unbounded response header/body sizes. Fixed: per-response caps (the
+  64MB runtime cap is the backstop; real budgets = S5, T11).
+- **MEDIUM-4** — a granted socket's `close()`/`broadcast()` were ungated. Fixed: gated
+  on `may_reach` (`sock.mutate` denial code).
+
+Two findings **accepted/deferred, recorded here** (the ledger discipline):
+- **LOW-5** — listener/server *mutators* (`addServer`, `addLocation`, …) carry no
+  independent reach gate; they are reachable only by *holding* a foreign listener/server
+  object, which the getters (now correctly gated under HIGH-1's fix) no longer hand out.
+  Defense-in-depth-in-depth; revisit when POM-rewrite (increment D) widens who holds
+  such objects.
+- **LOW-6** — the tenant context is a full `JS_NewContext` (eval/Function/Proxy present),
+  not `JS_NewContextRaw` + selective intrinsics. Within the TCB assumption these are not
+  capability escapes (the global holds no host authority); dropping them is the S1/S3
+  hardening lever, deferred to **M-SES**. (`Proxy` made HIGH-1 trivially exploitable, so
+  HIGH-1's fix is what actually closed the exposure.)
+
+Verdict: with HIGH-1 closed, the A/B capability logic is a sound foundation for
+increment C, within the stated TCB assumption. The full adversarial pentest (engine
+escapes) remains SR-3, after M-SES.

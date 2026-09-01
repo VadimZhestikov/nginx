@@ -558,7 +558,7 @@ below]. Also **VERIFICATION.md gains the security-review cadence**: reviews at i
 points, not by step count — four gate-reviews (SR-1 A/B conformance before C; SR-2 =
 M8 faithfulness at C7; SR-3 full pentest after M-SES; SR-4 = V15 assurance case before
 untrusted production), plus a per-change THREATS.md-touch discipline; within C the review
-IS the per-slice differential test, not a checkpoint. SR-1 is being run now.
+IS the per-slice differential test, not a checkpoint. SR-1 has now run (2026-09-01): deny-by-default verified sound; one HIGH (return-value getters ran under HOST_ROOT) + three MEDIUM found and FIXED (commit 66dfdb0dd, test comcon_sr1_regression.t); LOW-5/LOW-6 recorded (THREATS.md 'SR-1 result').
 
 **v5.12-plan (in place — increment C PLAN):** `INCREMENT_C.md`, the ground-truthed build
 plan for the typed/compiled maxim tier. Reality check on the real maxim tree: same
