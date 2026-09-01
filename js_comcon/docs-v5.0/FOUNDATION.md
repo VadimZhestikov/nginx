@@ -553,6 +553,28 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.13–v5.15 (in place — increment C front-end lands: the typed schema + the admission
+gate):** the first three built slices of the typed-profile front-end (INCREMENT_C.md §C2–
+C3). **v5.13 (C2 — the typed schema):** the tenant environment is now *data* —
+`schema/tenant-env.schema.json` + `SCHEMA.md`, grounded by `t/comcon_schema_conformance.t`
+(every schema row probed against the running surface; drift is a test failure, the
+`describe ⊇ reality` discipline). **v5.14 (C3.0 — static free-name admission):** a
+fragment is refused at *load* if its handler references any name not in the bound
+environment — `js_comcon_collect_free_globals` (a recursive walk of the handler's
+`closure_var` globals, into nested `cpool` functions) drives an admission gate in
+`ngx_js_module.c`; the runtime deny-by-default of A/B becomes an admission-time refusal
+(fail fast, not a throw deep in a request). **v5.15 (C3-rest — restricted constructs):**
+that free-name guarantee is only *sound* if a fragment cannot conjure invisible name
+references, so **dynamic code is refused at load**: `js_comcon_uses_dynamic_code` scans
+the handler's bytecode for direct `eval`/`with` (OP_eval/OP_apply_eval/OP_with_*,
+recursing into nested functions), and an `eval`/`Function` *name* deny-list catches
+indirect references (`var f = eval`) that the plain free-name gate would wave through as
+standard globals. `with` is separately a strict-mode syntax error in the tenant module,
+so it never compiles. Tests: `t/comcon_admission.t` (C3.0), `t/comcon_restricted.t`
+(C3-rest). Still deferred within C3: full type-checking against the C2 schema (the
+largest remaining sub-part) — the front-end today admits/rejects on *names and
+constructs*, not yet on *types*.
+
 **v5.12 (in place — increment C PLAN + the security-review cadence):** [C plan as
 below]. Also **VERIFICATION.md gains the security-review cadence**: reviews at inflection
 points, not by step count — four gate-reviews (SR-1 A/B conformance before C; SR-2 =

@@ -175,6 +175,12 @@ Two findings **accepted/deferred, recorded here** (the ledger discipline):
   capability escapes (the global holds no host authority); dropping them is the S1/S3
   hardening lever, deferred to **M-SES**. (`Proxy` made HIGH-1 trivially exploitable, so
   HIGH-1's fix is what actually closed the exposure.)
+  *Update (C3-rest, v5.15):* the typed/restricted profile now **refuses at admission**
+  any fragment that references or uses `eval`/`Function`/`with` (name deny-list +
+  `js_comcon_uses_dynamic_code` bytecode scan). This is not the S1/S3 intrinsic removal
+  — the names still *exist* in the context — but it removes dynamic code from the class
+  of *admitted* tenants, which is also what makes the C3.0 static free-name analysis
+  sound (dynamic code could otherwise hide a host-name reference from the analyzer).
 
 Verdict: with HIGH-1 closed, the A/B capability logic is a sound foundation for
 increment C, within the stated TCB assumption. The full adversarial pentest (engine

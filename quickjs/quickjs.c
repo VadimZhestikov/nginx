@@ -24300,6 +24300,48 @@ int js_comcon_collect_free_globals(JSContext *ctx, JSValueConst func,
     return 0;
 }
 
+/* COMCON C3 (restricted profile): does a function (or any nested function)
+ * use DYNAMIC CODE — direct eval or `with`? These defeat the static free-name
+ * analysis (a name reference can be hidden in an eval string or a with-scope),
+ * so a typed/checked fragment must not use them. Bytecode scan; static. */
+static int comcon_fb_uses_dynamic(JSFunctionBytecode *b)
+{
+    const uint8_t *bc = b->byte_code_buf;
+    int            len = b->byte_code_len, pc = 0, i;
+
+    while (pc < len) {
+        int op = bc[pc];
+        int sz = short_opcode_info(op).size;
+        if (sz == 0)
+            break;
+        if (op == OP_eval || op == OP_apply_eval
+            || op == OP_with_get_var || op == OP_with_put_var
+            || op == OP_with_delete_var || op == OP_with_make_ref
+            || op == OP_with_get_ref)
+            return 1;
+        pc += sz;
+    }
+
+    for (i = 0; i < b->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE
+            && comcon_fb_uses_dynamic(JS_VALUE_GET_PTR(b->cpool[i])))
+            return 1;
+    }
+    return 0;
+}
+
+int js_comcon_uses_dynamic_code(JSValueConst func)
+{
+    JSObject *p;
+
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
+        return 0;
+    p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+        return 0;
+    return comcon_fb_uses_dynamic(p->u.func.function_bytecode);
+}
+
 static __exception int next_token(JSParseState *s);
 
 static void free_token(JSParseState *s, JSToken *token)

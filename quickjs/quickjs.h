@@ -839,6 +839,10 @@ JSValue JS_GetGlobalObject(JSContext *ctx);
  * function. Static: no fragment code runs. */
 int js_comcon_collect_free_globals(JSContext *ctx, JSValueConst func,
                                    void (*cb)(void *, const char *), void *ud);
+
+/* COMCON C3: 1 if the function (or any nested function) uses direct eval or
+ * `with` — dynamic code that defeats the static free-name analysis. */
+int js_comcon_uses_dynamic_code(JSValueConst func);
 int JS_IsInstanceOf(JSContext *ctx, JSValueConst val, JSValueConst obj);
 int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,
                       JSAtom prop, JSValueConst val,

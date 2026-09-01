@@ -1038,6 +1038,18 @@ ngx_js_c3_free_name(void *ud, const char *name)
     JSAtom              atom;
     int                 has;
 
+    /* C3 restricted profile: `eval`/`Function` are standard globals, so they
+     * are present on the tenant global — but they enable DYNAMIC CODE that
+     * would defeat the static free-name analysis (a host name can hide in an
+     * eval/Function string). Refuse them regardless of presence. */
+    if (ngx_strcmp(name, "eval") == 0 || ngx_strcmp(name, "Function") == 0) {
+        ngx_log_error(NGX_LOG_EMERG, c->log, 0,
+                      "js: tenant fragment references dynamic-code name \"%s\" "
+                      "— refused (COMCON C3: defeats static admission)", name);
+        c->rejected = 1;
+        return;
+    }
+
     atom = JS_NewAtom(c->ctx, name);
     has = JS_HasProperty(c->ctx, c->global, atom);
     JS_FreeAtom(c->ctx, atom);
@@ -1182,6 +1194,16 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
      * load rather than deep in a request. */
     if (!JS_IsUninitialized(jcf->tenant_request_handler)) {
         ngx_js_c3_check_t  chk;
+
+        /* C3 restricted profile: no direct eval / `with` — they hide name
+         * references from the static free-name analysis below. */
+        if (js_comcon_uses_dynamic_code(jcf->tenant_request_handler)) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "js: tenant fragment uses eval or `with` — refused "
+                          "(COMCON C3: dynamic code defeats static admission)");
+            ngx_js_tenant_teardown(jcf);
+            return NGX_ERROR;
+        }
 
         chk.ctx      = tctx;
         chk.global   = JS_GetGlobalObject(tctx);

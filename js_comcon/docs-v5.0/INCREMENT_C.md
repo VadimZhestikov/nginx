@@ -87,6 +87,22 @@ The biggest unknowns are front-loaded. Each slice is a differential-tested verti
   fragment is type-checked against the C2 schema at load (rejected on mismatch) and
   runs identically interpreted.
 
+  **Landed so far (built + tested):**
+  - **C3.0 — static free-name admission.** `js_comcon_collect_free_globals`
+    (quickjs.c) recursively walks the registered handler's `closure_var` globals
+    (into nested `cpool` functions); `ngx_js_module.c` refuses the fragment at load
+    if any free name is absent from the bound tenant environment. The A/B runtime
+    deny-by-default becomes an admission-time refusal. Test: `t/comcon_admission.t`.
+  - **C3-rest — restricted constructs (soundness).** Dynamic code is refused at load
+    so the free-name analysis cannot be evaded: `js_comcon_uses_dynamic_code`
+    (quickjs.c) scans the handler's bytecode for direct `eval`/`with`
+    (OP_eval/OP_apply_eval/OP_with_*, recursing), and an `eval`/`Function` *name*
+    deny-list catches indirect references. (`with` is also a strict-mode syntax error
+    in the tenant module and never compiles.) Test: `t/comcon_restricted.t`.
+  - **Still open in C3:** full **type**-checking against the C2 schema — the front-end
+    today admits/rejects on *names and constructs*, not yet on *types*. This is the
+    largest remaining C3 sub-part.
+
 - **C4 — M4: the fragment artifact ("fat bytecode").** bytecode + type/cap
   side-table + env-signature (we have this — the learn/grant machinery) + content
   hash (**reuse maxim's `jit_hash_*`**) + schema hash + admission cert. Generalizes

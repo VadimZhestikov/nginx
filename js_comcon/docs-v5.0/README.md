@@ -2,7 +2,10 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.14**, C3.0 static free-name admission check (js_comcon_collect_free_globals
+> (current: **v5.15**, C3-rest the restricted-construct admission check (dynamic code —
+> `eval`/`Function`/`with` — refused at load so the C3.0 free-name analysis is sound:
+> `js_comcon_uses_dynamic_code` bytecode scan + an `eval`/`Function` name deny-list;
+> t/comcon_restricted.t); v5.14 C3.0 static free-name admission check (js_comcon_collect_free_globals
 > + the admission gate; ungranted refs refused at load); v5.13 C2 the typed tenant-env schema (SCHEMA.md +
 > schema/tenant-env.schema.json, grounded); C1 M-UNIFY done (pilgrim on maxim, T1 green);
 > v5.12 C0 gate PASSED + C1.0 M-UNIFY analysis (INCREMENT_C.md §4-5: same Bellard base → clean 3-way merge, benign opcode divergence; the engine merge C1.1-C1.4 is scoped/next) +
