@@ -1257,6 +1257,46 @@ static const char  ngx_js_tenant_lockdown_js[] =
     "  delete globalThis.Function;"
     "  delete globalThis.Reflect;"
     "  delete globalThis.eval;"
+    "})();"
+    /* COMCON M-SES-1: transitively FREEZE the intrinsic graph so a tenant can
+     * neither pollute a shared prototype (Object.prototype.x = ...) nor tamper
+     * with a built-in — mutations that otherwise PERSIST across requests in the
+     * long-lived tenant runtime. Runs before the caps (report/onRequest/grants)
+     * and the COM prototypes are installed, and never freezes globalThis itself
+     * (so those can still be added afterwards). Standard JS still works: only
+     * MUTATING intrinsics is refused; creating/using instances is unaffected. */
+    "(function () {"
+    "  var seen = new Set();"
+    "  function harden(o) {"
+    "    if (o === null || o === globalThis) return;"
+    "    var t = typeof o;"
+    "    if (t !== 'object' && t !== 'function') return;"
+    "    if (seen.has(o)) return;"
+    "    seen.add(o);"
+    "    Object.freeze(o);"
+    "    var n = Object.getOwnPropertyNames(o), i, d;"
+    "    for (i = 0; i < n.length; i++) {"
+    "      d = Object.getOwnPropertyDescriptor(o, n[i]); if (!d) continue;"
+    "      if ('value' in d) harden(d.value);"
+    "      if (d.get) harden(d.get); if (d.set) harden(d.set);"
+    "    }"
+    "    var s = Object.getOwnPropertySymbols(o), j, e;"
+    "    for (j = 0; j < s.length; j++) {"
+    "      e = Object.getOwnPropertyDescriptor(o, s[j]); if (!e) continue;"
+    "      if ('value' in e) harden(e.value);"
+    "      if (e.get) harden(e.get); if (e.set) harden(e.set);"
+    "    }"
+    "    harden(Object.getPrototypeOf(o));"
+    "  }"
+    "  var r = Object.getOwnPropertyNames(globalThis), k, rd;"
+    "  for (k = 0; k < r.length; k++) {"
+    "    rd = Object.getOwnPropertyDescriptor(globalThis, r[k]);"
+    "    if (rd && ('value' in rd)) harden(rd.value);"
+    "  }"
+    "  harden(Object.getPrototypeOf(function* () {}));"
+    "  harden(Object.getPrototypeOf(async function () {}));"
+    "  harden(Object.getPrototypeOf(async function* () {}));"
+    "  harden(Object.getPrototypeOf([][Symbol.iterator]()));"
     "})();";
 
 static ngx_int_t
