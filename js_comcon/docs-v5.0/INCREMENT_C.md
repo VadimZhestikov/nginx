@@ -258,8 +258,22 @@ reconciliation), **maxim became the base**: workbench branch `comcon-engine` = `
 broad js_com 299). Commit `3d1e9c08c`. (`set_loc_check` intentionally gone — vendored's
 opcode; maxim's table is self-consistent, no pilgrim C references it.)
 
-**C1.3 — partial: the JIT-enabled engine builds + links into nginx, but the JIT's
-background-compile thread needs nginx-lifecycle adaptation.** `make CONFIG_JIT=y
+**C1.3 — DONE (JIT-safe under nginx) + a C6 boundary clarified.** The JIT-enabled engine
+builds + links into nginx; the master/worker hang was maxim's JIT background thread
+(started in the master via JS_NewRuntime, not surviving fork). Fixed engine-side (commit
+`34642f087`): a `pthread_atfork` CHILD handler zeroes `jit_worker.started`, so forked
+workers run pure interpreter (both enqueue paths + drain/free already guard on
+`started`) — no thread, no hang, no inherited-mutex use; master + standalone qjs
+unaffected. Acceptance: the previously-hanging tests pass in ~1s; full comcon_* (74) +
+sighup stress incl. SW reload + core js (64) green on the CONFIG_JIT build. CONFIG_JIT is
+opt-in; the default build stays T1. **C6 boundary made explicit:** JIT *install* is
+driven only by an explicit `js_jit_install_results()` call (qjs main loop) — so nginx
+workers would not *activate* JIT even absent the hang. Real per-worker activation (a
+worker-local thread post-fork + install wired into the event loop + benchmark) is C6.
+The prior partial note follows.
+
+**C1.3 (prior partial note): the JIT-enabled engine builds + links into nginx, the
+background-compile thread needed nginx-lifecycle adaptation —** now done (above). `make CONFIG_JIT=y
 libquickjs.a` builds clean (has `js_jit_rt`); nginx relinks against it (+`-ldl -lpthread`)
 with no undefined refs; a **single-process** JIT nginx runs and serves. But under the
 Test::Nginx master/worker harness a tenant test **hangs** — maxim's JIT spawns a
@@ -269,8 +283,7 @@ task:** adapt the JIT thread to nginx — start it *per-worker post-fork*, join 
 `exit_process`, or use synchronous compile — before the JIT can run under nginx's real
 process model. The working pilgrim binary is restored to the non-JIT (T1) engine.
 
-**Status: C1.0/C1.1 done; C1.2 (Option A base-engine swap) DONE + T1 green; C1.3 = JIT
-builds+links, JIT-thread/fork adaptation remaining; C1.4 differential — the genuinely multi-day
+**Status: C1.0/C1.1 done; C1.2 (Option A base-engine swap) DONE + T1 green; C1.3 DONE (JIT-safe under fork; workers interpret; real JIT activation deferred to C6); C1.4 differential — the genuinely multi-day
 piece, now scoped and de-risked (same base, benign opcode divergence, additive
 CONFIG_JIT-guarded glue).** Deliberately not started mid-session: a half-merged 60k-line
 engine that does not build is worse than a validated plan. It is the next focused
