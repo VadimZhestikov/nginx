@@ -199,8 +199,11 @@ build and a pilgrim build flavour. The `quickjs.c` glue is the ~3128 maxim-only 
 vendored.
 
 **Sub-steps (the multi-day construction, C1.1–C1.4):**
-- **C1.1** — vendor `quickjs-jit.{c,h}` into `../quickjs`; add the CONFIG_JIT Makefile
-  wiring (object + guard), matching maxim's Makefile stanza.
+- **C1.1 — DONE** (`../quickjs` branch `comcon-jit`, commit `f6a2646`). Vendored
+  `quickjs-jit.{c,h}` + ported maxim's CONFIG_JIT Makefile stanza. Verified: JIT-off
+  build byte-identical (archive has no `quickjs-jit.o`, no `js_jit_*`); JIT-on dry-run
+  compiles it with the right defines. A JIT-on build won't *link* yet (needs C1.2 glue)
+  — expected.
 - **C1.2** — port the `quickjs.c` JIT glue onto vendored under `#ifdef CONFIG_JIT`
   (`jit_func`/`jit_call_count` fields, the `js_jit_*` functions, the `JS_CallInternal`
   hot-path dispatch). **Acceptance: CONFIG_JIT-OFF build is byte-identical** — the full
@@ -210,7 +213,13 @@ vendored.
 - **C1.4** — differential: a hot pilgrim/tenant function gets JIT-compiled and produces
   identical results (the erasure-soundness invariant, first live instance).
 
-**Status: C1.0 (analysis) done; C1.1–C1.4 is the engine merge — the genuinely multi-day
+**Where the merged engine lives (a decision to make):** the vendored `../quickjs` is
+its own git repo whose remote is *bellard upstream* — we cannot push there. C1's engine
+commits go on a local branch (`comcon-jit`). Before/at C1.3 the project must choose: (a)
+add our own quickjs fork remote and push `comcon-jit` to it, or (b) vendor `quickjs` into
+the pilgrim repo. Until then the merged engine is a local branch only.
+
+**Status: C1.0 (analysis) done, C1.1 (vendor + wiring) done; C1.2–C1.4 is the engine merge — the genuinely multi-day
 piece, now scoped and de-risked (same base, benign opcode divergence, additive
 CONFIG_JIT-guarded glue).** Deliberately not started mid-session: a half-merged 60k-line
 engine that does not build is worse than a validated plan. It is the next focused
