@@ -131,12 +131,41 @@ The biggest unknowns are front-loaded. Each slice is a differential-tested verti
   C0 precisely so the C1 scope decision is made on evidence (the measured tree
   delta + a working .so), not a guess.
 
-## 4. Immediate next action
+## 4. C0 result — GATE PASSED (2026-09-01)
 
-**Do C0.** It is cheap, it is a gate, and it converts every downstream estimate
-from speculation to measurement: build maxim here, compile one trivial handler to a
-`.so`, call it from a harness. If C0 is green, commit to C1 with the tree-delta
-evidence in hand; if not, the increment is reassessed before any engine surgery.
+Ran the spike. Every question C0 was meant to answer is now a measured fact, not a
+guess:
+
+- **maxim builds here.** `make CONFIG_JIT=y` — clean (one harmless incompatible-pointer
+  warning at `quickjs.c:16331` `js_jit_call`, to tidy during the merge); `libquickjs.a`
+  rebuilt; `qjs` advertises the full `--jit-*` flag set (`--jit-aot`, `--jit-warmup`,
+  `--jit-compile-all`, `--jit-dump-c`, `--jit-threshold-gcc=N`, …).
+- **A trivial function compiles to a persistent `.so` and runs correctly.**
+  `qjs --jit-compile-all add.js` and `--jit-warmup` both produced GCC-compiled
+  `<hash>.so` files (`c7f3c39…​.so` for `add`, one per function) and executed correct
+  results (`result=45`). The fragment → C → GCC → `.so` → dlopen → call pipeline works
+  end to end in this environment.
+- **The ABI is fully characterized** (`--jit-dump-c`): every compiled function is
+  `JSValue __jit_f_<hash>(JSContext *ctx, JSValue this_val, int argc, JSValue *argv,
+  JSValue *cpool, JSVarRef **var_refs)` (the `JSJITFunc` convention). All runtime ops
+  route through a **single data symbol `js_jit_rt`** (a vtable), plus a handful of
+  extern helpers. Type specialization is real and visible: `add(a,b)` has an unboxed
+  `int`+`int` fast path — this is the typed-tier acceleration C2/C3 will feed.
+- **The C5 integration path is real** (the key de-risk): the `add()` `.so`'s only
+  non-libc undefined symbols are `JS_GetRuntime` and `js_jit_rt`, and **every** symbol
+  it (and the install path) needs — `js_jit_rt`, `js_jit_fb_set_func`/`get_func` (install
+  a compiled function onto a `JSFunctionBytecode`), `js_jit_create_closure`,
+  `js_jit_ic_direct_call`, `js_jit_callIC_fill` — is a **defined symbol in
+  `libquickjs.a`**. Unresolved-from-libquickjs count: **0**. So a maxim-enabled
+  `libquickjs.a` lets nginx `dlopen` a compiled fragment and install+call its function
+  with no additional runtime.
+
+**Decision: proceed to C1 (M-UNIFY).** The gate is green and the two hard-piece
+estimates are now evidence-based: the merge is bringing `quickjs-jit.{c,h}` + the
+`js_jit_*` surface into the vendored tree over a ~4% `quickjs.c` delta, and C5's
+"call the `.so` from nginx" reduces to "link the maxim-enabled `libquickjs.a` and use
+`js_jit_fb_set_func` / the `jit_func` dispatch." Artifacts: scratchpad `c0/` (add.js,
+the dumped C, the cache `.so`s).
 
 *(Design references: ROADMAP §2 M-UNIFY/M2/M3/M4/M5/M6/M7/M8; SPEC §7 typed
 profile, §8 artifact & tiers; PERFORMANCE.md the M1 endpoints; VERIFICATION V5

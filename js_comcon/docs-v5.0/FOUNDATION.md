@@ -570,7 +570,12 @@ typed schema → C3 front-end → C4 fragment artifact → C5 lowering → C6 di
 → C7 the M8 faithfulness gate. Load-bearing invariant: erasure soundness, enforced by a
 differential test on every slice (interpreted vs compiled = identical outputs AND
 denials) so A/B's security is inherited, not re-implemented. M-SES gates production
-compiled-untrusted tenants; C0–C6 proceed as a dev tier. Immediate next action: C0.
+compiled-untrusted tenants; C0–C6 proceed as a dev tier. C0 GATE PASSED (2026-09-01): built maxim (make CONFIG_JIT=y, clean), compiled a trivial
+function to a persistent GCC `.so` that ran correctly (result=45), characterized the ABI
+(JSJITFunc + the single js_jit_rt vtable + visible int-unboxing), and confirmed the .so's
+only non-libc undefineds (JS_GetRuntime, js_jit_rt) + all install helpers are in
+libquickjs.a (0 unresolved) — so nginx can dlopen+call a compiled fragment. Decision:
+proceed to C1 (M-UNIFY). Details: INCREMENT_C.md §4.
 
 **v5.11 (in place — increment B COMPLETE, the dependency workflow):**
 `js_tenant_dependency <name> <path> <sha256>;` loads a **pure library** — evaluated in a
