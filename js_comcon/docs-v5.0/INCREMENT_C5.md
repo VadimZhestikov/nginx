@@ -89,14 +89,16 @@ checks" is a **later perf optimization** (§4), not a correctness prerequisite.
 
 ## 5. Risks / open questions
 
-- **KNOWN FOLLOW-UP (found in C5.0-b): single-process-mode teardown crash.** With
-  `master_process off`, after AOT + serving, shutdown segfaults in `js_std_free_handlers`
-  (the master runtime's opaque is valid, so it's a heap/teardown-order issue tied to the
-  live JIT worker thread + a compiled handler that ran). **Multi-process (production) is
-  clean** — the crash does not occur, and the full comcon suite passes on the JIT build. So
-  this is a debug-mode-only teardown bug, tracked for a later fix (likely: stop the JIT
-  worker thread / order `js_jit_free` before `js_std_free_handlers` in `ngx_js_exit_master`).
-  The C5.0 differential test therefore runs in multi-process mode.
+- **Single-process-mode teardown crash — FIXED (2026-09-01).** Surfaced while validating
+  C5.0-b (the differential test used `master_process off`), but it was a **pre-existing bug
+  in both builds, not JIT/AOT specific**: in single-process mode one process runs both
+  `ngx_js_exit_process` and `ngx_js_exit_master` on the same `jcf`, and `w->rt`/`w->ctx`
+  alias `jcf->rt`/`jcf->ctx` — so exit_process freed the runtime and exit_master then
+  dereferenced the freed opaque in `js_std_free_handlers` (SIGSEGV). Fix: exit_process nulls
+  the shared `jcf->` handles when it frees them, so exit_master's NULL-guarded teardown
+  skips (harmless in multi-process, where `jcf` is the worker's COW copy). Regression guard:
+  `t/comcon_teardown.t` (clean single-process shutdown, both builds). The C5.0 differential
+  test uses multi-process (production-representative) regardless.
 - **`.so` across fork (COW/RTLD).** AOT installs in the master pre-fork; the `.so` is
   dlopen'd in the master and must remain valid in workers post-fork. Confirmed working:
   workers serve the compiled handler and shut down cleanly (C5.0-c multi-process). The

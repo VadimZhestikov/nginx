@@ -566,9 +566,10 @@ handler actually compiled) and clean shutdown. Full comcon suite green on both t
 interpreter and JIT builds (18 files / 148), AOT active for every tenant on the JIT build.
 This rests on the maxim in-profile JIT correctness gate (v5.21). Deferred per the scope:
 back-edge gas + two-clocks revocation (no budget/epoch machinery at either tier yet);
-partial-eval inline gate checks (perf, C5.1). Known follow-up: a single-process-mode
-(`master_process off`) teardown crash after AOT — multi-process/production is clean.
-Scope + status: `INCREMENT_C5.md`.
+partial-eval inline gate checks (perf, C5.1). Also fixed a pre-existing single-process-mode
+teardown crash (both builds; exit_process freed a runtime that exit_master then re-freed via
+the aliased `jcf->rt` — `t/comcon_teardown.t`), surfaced while validating C5.0-b. Scope +
+status: `INCREMENT_C5.md`.
 
 **v5.19 (in place — M-SES-0: dynamic-code lockdown):** the tenant context is no longer a
 full-intrinsic `JS_NewContext`. It is now `JS_NewContextRaw` + a **curated intrinsic set**
