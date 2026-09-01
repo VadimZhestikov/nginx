@@ -16,6 +16,7 @@
 #include "ngx_js_com.h"
 #include "ngx_js_worker.h"
 #include "ngx_js_sw.h"
+#include "ngx_js_compartment.h"
 #include "ngx_js_socket.h"
 #include "ngx_js_listener.h"
 #include "ngx_js_stream_listener.h"
@@ -2657,6 +2658,42 @@ ngx_js_grant_to_tenant(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 
+/*
+ * COMCON A4: nginx.tenantDenials() — the host-side denial report that closes
+ * the audit→enforce loop: {mode, total, byOp:{op: n}}. Counters are exact
+ * regardless of the TM-1 log-record quota/sampling. Per-process (call it from
+ * the worker that served the traffic).
+ */
+static JSValue
+ngx_js_tenant_denials(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    JSValue                obj, by;
+    ngx_uint_t             i;
+    ngx_js_denial_code_t   code;
+
+    obj = JS_NewObject(ctx);
+    by  = JS_NewObject(ctx);
+
+    for (i = 0; i < NGX_JS_DENIAL_LAST; i++) {
+        code = (ngx_js_denial_code_t) i;
+        JS_SetPropertyStr(ctx, by, ngx_js_denial_code_name(code),
+                          JS_NewInt64(ctx,
+                              (int64_t) ngx_js_compartment_denial_count(code)));
+    }
+
+    JS_SetPropertyStr(ctx, obj, "mode",
+                      JS_NewString(ctx, ngx_js_compartment_audit_mode()
+                                        ? "audit" : "enforce"));
+    JS_SetPropertyStr(ctx, obj, "total",
+                      JS_NewInt64(ctx,
+                          (int64_t) ngx_js_compartment_denial_total()));
+    JS_SetPropertyStr(ctx, obj, "byOp", by);
+
+    return obj;
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -2873,6 +2910,11 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "grantToTenant",
                       JS_NewCFunction(ctx, ngx_js_grant_to_tenant,
                                       "grantToTenant", 2));
+
+    /* COMCON A4: host-only denial report (audit→enforce loop). */
+    JS_SetPropertyStr(ctx, nginx_obj, "tenantDenials",
+                      JS_NewCFunction(ctx, ngx_js_tenant_denials,
+                                      "tenantDenials", 0));
 
     /* nginx.install(plugin[, config]) — JS-Pilgrim P7: inline plugin caller */
     JS_SetPropertyStr(ctx, nginx_obj, "install",

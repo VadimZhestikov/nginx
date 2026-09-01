@@ -26,6 +26,7 @@
 #include <pthread.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
+#include "ngx_js_com.h"
 #include "ngx_js_compartment.h"
 #include "ngx_js_socket.h"
 #include "ngx_js_sw.h"
@@ -364,6 +365,8 @@ static void      ngx_js_dispatch_master_event(ngx_cycle_t *cycle,
 static char   *ngx_js_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char   *ngx_js_tenant_source(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char   *ngx_js_tenant_mode(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 static ngx_int_t ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf,
     ngx_cycle_t *cycle);
 static char   *ngx_js_preprocess(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -393,6 +396,20 @@ static ngx_command_t  ngx_js_commands[] = {
     { ngx_string("js_tenant_source"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
       ngx_js_tenant_source,
+      0,
+      0,
+      NULL },
+
+    /*
+     * js_tenant_mode audit | enforce;      (default: enforce)
+     *
+     * COMCON A4: in audit mode every reach gate LOGS the denial event and
+     * allows the operation — the observe-then-enforce onboarding loop.
+     * Counters are exact in both modes (nginx.tenantDenials()).
+     */
+    { ngx_string("js_tenant_mode"),
+      NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
+      ngx_js_tenant_mode,
       0,
       0,
       NULL },
@@ -540,6 +557,32 @@ ngx_js_tenant_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/* COMCON A4: js_tenant_mode audit|enforce; */
+static char *
+ngx_js_tenant_mode(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_js_conf_t  *jcf = conf;
+    ngx_str_t      *value;
+
+    value = cf->args->elts;
+
+    if (ngx_strcmp(value[1].data, "audit") == 0) {
+        jcf->tenant_audit = 1;
+
+    } else if (ngx_strcmp(value[1].data, "enforce") == 0) {
+        jcf->tenant_audit = 0;
+
+    } else {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "js_tenant_mode: expected \"audit\" or "
+                           "\"enforce\", got \"%V\"", &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
+
+
 /*
  * The single granted capability in the A2.0 reduced compartment: report(str)
  * logs to the cycle log (the context opaque). Enough to observe that the tenant
@@ -675,7 +718,12 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 
     JS_SetMemoryLimit(trt, 64 * 1024 * 1024);
 
-    (void) ngx_js_socket_register_class(trt);
+    /* A4: the FULL COM class set, per-runtime — audit mode lets a gate
+     * return e.g. a wrapped listener into the tenant context, so every
+     * wrappable class must exist here. Deny-by-default is untouched:
+     * classes/protos carry no authority — there is still no `nginx`
+     * global; only granted names resolve. */
+    (void) ngx_js_com_register_classes(trt);
 
     tctx = JS_NewContext(trt);
     if (tctx == NULL) {
@@ -691,10 +739,9 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
     /* cycle for report()/onRequest(); no module loader → free imports fail */
     JS_SetContextOpaque(tctx, cycle);
 
-    /* The socket prototype must exist in the tenant context so a granted
-     * socket is usable (per-context proto install; classes are per-runtime,
-     * already registered). */
-    (void) ngx_js_socket_install_proto(tctx);
+    /* Per-context prototypes for the whole COM class set, so granted (or
+     * audit-allowed) objects are usable in the tenant context. */
+    (void) ngx_js_com_install_protos(tctx);
 
     global = JS_GetGlobalObject(tctx);
     JS_SetPropertyStr(tctx, global, "report",
@@ -771,6 +818,11 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     if (jcf->sources.nelts == 0 && jcf->tenant_sources.nelts == 0) {
         return NGX_CONF_OK;    /* nothing to do — pure static config */
     }
+
+    /* COMCON A4: fresh denial counters + this cycle's audit/enforce mode
+     * (before any eval, so config-time gate events follow the mode too;
+     * workers inherit the post-init state by fork). */
+    ngx_js_compartment_policy_init(jcf->tenant_audit);
 
     /* ---- Create the master QuickJS runtime ---- */
 

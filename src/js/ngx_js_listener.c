@@ -408,7 +408,9 @@ ngx_js_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
      * (incl. the socket back-ref and serverNames escalation) when the current
      * compartment may not reach that owner. No-op today (HOST_ROOT).
      */
-    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))) {
+    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_LISTENER_READ, NULL))
+    {
         return JS_NULL;
     }
 
@@ -2490,7 +2492,9 @@ ngx_js_listener_server_by_name(JSContext *ctx, JSValueConst this_val,
     st = ngx_js_listener_reg[op->handle];
 
     /* COMCON A1.1: listener→NginxServer escalation; gate on the socket owner. */
-    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))) {
+    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_SERVER_BY_NAME, NULL))
+    {
         return JS_NULL;
     }
 

@@ -9312,7 +9312,9 @@ ngx_js_http_socket_entries(JSContext *ctx, JSValue arr,
      * closures. It is host introspection: a confined compartment gets nothing
      * here (it still uses its own socket objects directly). No-op today.
      */
-    if (ngx_js_current_compartment() != NGX_JS_COMPARTMENT_HOST_ROOT) {
+    if (ngx_js_current_compartment() != NGX_JS_COMPARTMENT_HOST_ROOT
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_ENUM_SOCKETS, NULL))
+    {
         return;
     }
 

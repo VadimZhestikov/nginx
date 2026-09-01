@@ -69,4 +69,54 @@ void ngx_js_compartment_leave(ngx_js_compartment_t previous);
 ngx_flag_t ngx_js_compartment_may_reach(ngx_js_compartment_t owner);
 
 
+/*
+ * COMCON A4: the denial log + the audit→enforce loop.
+ *
+ * A denial event fires where a REACH GATE denies (name-level denials are
+ * structural — the withheld name simply does not exist in the tenant
+ * environment — that is the primary control working silently; the gates are
+ * the observable layer). Per TM-1 (THREATS.md): counters are EXACT per code,
+ * always; full log records are written up to a quota; above quota, records
+ * are sampled; quota-exceeded is itself reported (once). This keeps a tenant
+ * looping on a denied operation from exhausting disk or drowning the audit
+ * signal while losing no counting precision.
+ *
+ * Audit mode (js_tenant_mode audit;): every gate consults
+ * ngx_js_compartment_denial() — in audit mode it logs the event and ALLOWS,
+ * so an operator observes the full would-be-denied reach before enforcing.
+ */
+
+typedef enum {
+    NGX_JS_DENIAL_SOCK_LISTENER = 0,   /* sock.listener reach edge          */
+    NGX_JS_DENIAL_LISTENER_READ,       /* listener getter (socket/serverNames) */
+    NGX_JS_DENIAL_SERVER_BY_NAME,      /* listener.serverByName escalation  */
+    NGX_JS_DENIAL_ENUM_SOCKETS,        /* cycle.sockets / http.sockets enum */
+    NGX_JS_DENIAL_LAST
+} ngx_js_denial_code_t;
+
+#define NGX_JS_DENIAL_QUOTA    100     /* full records per process          */
+#define NGX_JS_DENIAL_SAMPLE   100     /* above quota: log every Nth event  */
+
+
+/*
+ * Reset counters and set the mode for this cycle (called from init_conf,
+ * before the tenant evaluates; workers inherit the post-init state by fork).
+ */
+void ngx_js_compartment_policy_init(ngx_flag_t audit);
+
+/*
+ * Record a denial event at a gate. Returns 1 = DENY (enforce mode: the gate
+ * must refuse), 0 = ALLOW (audit mode: log only, let it through). `obj` is a
+ * short object identifier for the record (e.g. the socket address), or NULL.
+ */
+ngx_flag_t ngx_js_compartment_denial(ngx_js_denial_code_t code,
+    const char *obj);
+
+/* Introspection for the host-side report (nginx.tenantDenials()). */
+ngx_flag_t   ngx_js_compartment_audit_mode(void);
+ngx_uint_t   ngx_js_compartment_denial_total(void);
+ngx_uint_t   ngx_js_compartment_denial_count(ngx_js_denial_code_t code);
+const char  *ngx_js_denial_code_name(ngx_js_denial_code_t code);
+
+
 #endif /* _NGX_JS_COMPARTMENT_H_INCLUDED_ */

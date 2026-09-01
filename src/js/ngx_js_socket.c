@@ -133,7 +133,10 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
          * No-op today (current compartment is HOST_ROOT); isolates once
          * confined fragments run.
          */
-        if (!ngx_js_compartment_may_reach(st->owner)) {
+        if (!ngx_js_compartment_may_reach(st->owner)
+            && ngx_js_compartment_denial(NGX_JS_DENIAL_SOCK_LISTENER,
+                                         st->addr))
+        {
             return JS_NULL;
         }
 

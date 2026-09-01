@@ -543,7 +543,9 @@ ngx_js_stream_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
     st = ngx_js_stream_listener_reg[op->handle];
 
     /* COMCON A1.1: gate on the socket owner (reach domain is its socket's). */
-    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))) {
+    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_LISTENER_READ, NULL))
+    {
         return JS_NULL;
     }
 
@@ -1012,7 +1014,9 @@ ngx_js_stream_listener_server_by_name(JSContext *ctx, JSValueConst this_val,
     st = ngx_js_stream_listener_reg[op->handle];
 
     /* COMCON A1.1: listener→server escalation; gate on the socket owner. */
-    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))) {
+    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_SERVER_BY_NAME, NULL))
+    {
         return JS_NULL;
     }
 
@@ -1243,8 +1247,10 @@ ngx_js_stream_socket_entries(JSContext *ctx, JSValue arr,
     u_char                           *lc_key;
 
     /* COMCON A1.1: host-introspection enumeration; empty for a confined
-     * compartment (no-op today). See the HTTP twin. */
-    if (ngx_js_current_compartment() != NGX_JS_COMPARTMENT_HOST_ROOT) {
+     * compartment. See the HTTP twin. */
+    if (ngx_js_current_compartment() != NGX_JS_COMPARTMENT_HOST_ROOT
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_ENUM_SOCKETS, NULL))
+    {
         return;
     }
 
