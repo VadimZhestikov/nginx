@@ -49,22 +49,24 @@ checks" is a **later perf optimization** (§4), not a correctness prerequisite.
   quickjs/conf` links `libquickjs.a` without `CONFIG_JIT`). So **C5 step 0 is a JIT-enabled
   build** (`make -C quickjs CONFIG_JIT=y libquickjs.a`; nginx ld-opt `-ldl -lpthread`).
 
-## 3. The C5 MVP (C5.0) — the deliverable
+## 3. The C5 MVP (C5.0) — the deliverable — **DONE (2026-09-01)**
 
-1. **C5.0-a — JIT-enabled pilgrim build.** A build variant (configure switch / build flag)
-   that links the `CONFIG_JIT` engine + `-ldl -lpthread`. Keep the interpreter-only build as
-   default; JIT is opt-in until C6 benchmarks justify it. Confirm all `comcon_*` + regression
-   suites still pass on the JIT build (interpreted paths unchanged).
-2. **C5.0-b — AOT-compile the handler at load.** After admission (the C3/C4 gate, master,
-   pre-fork), `js_jit_compile_all(tenant_ctx, handler_bc)` → `drain` → `install_results` so
-   `jcf->tenant_request_handler` runs compiled. Workers inherit the installed `jit_func` +
-   dlopen'd `.so` via fork/COW (the C1.3 `jit_atfork_child` fork-safety is already in place —
-   verify the `.so` mapping survives fork; RTLD lifetime across workers is a named risk, §5).
-3. **C5.0-c — the differential test (the M8 demonstration).** `t/comcon_lowering.t`: run a
-   representative confined handler (report + granted socket + typed Request use + a denial-
-   triggering reach) against a fixed request set, **interpreted** vs **AOT-compiled**, and
-   assert **byte-identical responses AND identical denial-counter deltas**. This is erasure
-   soundness on a real fragment — the core C5 value, and the seed of the SR-2/M8 gate.
+1. **C5.0-a — JIT-enabled pilgrim build. DONE.** A separate `objs_jit/` builddir links the
+   `CONFIG_JIT` engine (`-DCONFIG_JIT` + `-ldl`); the interpreter `objs/` stays the default.
+   Full `comcon_*` + regression + SIGHUP-reload suites pass on the JIT build. Recipe +
+   gotchas (CONFIG_JIT needs a clean quickjs rebuild; ABI match; one lib at a time):
+   memory `build-and-test`.
+2. **C5.0-b — AOT-compile the handler at load. DONE.** `js_comcon_aot_compile()`
+   (quickjs.c, CONFIG_JIT) runs `js_jit_compile_all → drain → install_results` on the
+   registered handler after admission (`ngx_js_eval_tenant_sources`), `#ifdef CONFIG_JIT`;
+   logs "handler lowered to native C". Workers inherit the installed `jit_func` + `.so` via
+   fork/COW; multi-process serves compiled and shuts down cleanly.
+3. **C5.0-c — the differential test. DONE.** `t/comcon_lowering.t` runs the same confined
+   tenant interpreted (`objs/nginx`) vs AOT-compiled (`objs_jit/nginx`) and asserts
+   **byte-identical responses AND an identical denial-counter total** (erasure soundness on
+   a real fragment), plus that the JIT build actually compiled the handler (non-vacuous) and
+   shut down cleanly. Full comcon suite green on both builds (18 files / 148), AOT active for
+   every tenant on the JIT build.
 
 **Done when:** the compiled handler is behaviorally indistinguishable from interpreted
 (responses + denials) on the differential suite, on the JIT build, with the confinement
@@ -87,11 +89,18 @@ checks" is a **later perf optimization** (§4), not a correctness prerequisite.
 
 ## 5. Risks / open questions
 
+- **KNOWN FOLLOW-UP (found in C5.0-b): single-process-mode teardown crash.** With
+  `master_process off`, after AOT + serving, shutdown segfaults in `js_std_free_handlers`
+  (the master runtime's opaque is valid, so it's a heap/teardown-order issue tied to the
+  live JIT worker thread + a compiled handler that ran). **Multi-process (production) is
+  clean** — the crash does not occur, and the full comcon suite passes on the JIT build. So
+  this is a debug-mode-only teardown bug, tracked for a later fix (likely: stop the JIT
+  worker thread / order `js_jit_free` before `js_std_free_handlers` in `ngx_js_exit_master`).
+  The C5.0 differential test therefore runs in multi-process mode.
 - **`.so` across fork (COW/RTLD).** AOT installs in the master pre-fork; the `.so` is
-  dlopen'd in the master and must remain valid in workers post-fork. The `jit_atfork_child`
-  handler (C1.3) zeroes the worker's JIT-thread state; confirm the *installed AOT function*
-  (no thread needed) works in workers. If master-side dlopen doesn't inherit cleanly,
-  fallback is per-worker AOT at `init_process`.
+  dlopen'd in the master and must remain valid in workers post-fork. Confirmed working:
+  workers serve the compiled handler and shut down cleanly (C5.0-c multi-process). The
+  `jit_atfork_child` handler (C1.3) zeroes the worker's JIT-thread state.
 - **Reload.** On SIGHUP the tenant runtime is rebuilt; re-run AOT at each config load. Verify
   no `.so`/fd leak across reloads (the existing `sighup_*` leak tests should extend to cover
   the JIT build).

@@ -2,7 +2,13 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.22**, C5 SCOPED (INCREMENT_C5.md) — lowering the compiled confined tier:
+> (current: **v5.23**, C5.0 DONE — the compiled confined tier: a confined tenant handler is
+> server-AOT-compiled to native C at load (js_comcon_aot_compile: js_jit_compile_all→drain→
+> install; CONFIG_JIT objs_jit build) and the differential test t/comcon_lowering.t proves
+> BYTE-IDENTICAL responses AND identical denial counters interp-vs-compiled (erasure
+> soundness on a real fragment); confinement preserved by construction; full comcon green on
+> both builds (18/148); known follow-up: single-process-mode teardown crash (multi-process
+> clean); v5.22, C5 SCOPED (INCREMENT_C5.md) — lowering the compiled confined tier:
 > confinement is preserved by construction (it lives in the host boundary + gated callees,
 > not the handler bytecode), so the MVP compiles the handler via maxim server-AOT
 > (js_jit_compile_all→drain→install, no background thread → sidesteps C6-lite) + a

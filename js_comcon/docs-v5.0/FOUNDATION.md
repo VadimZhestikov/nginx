@@ -553,6 +553,23 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.23 (in place — C5.0: the compiled confined tier is real):** a confined tenant handler
+now runs as **native C**. After the C3/C4 admission gate, `js_comcon_aot_compile` lowers the
+handler via maxim's synchronous server-AOT (`js_jit_compile_all → drain → install_results`,
+CONFIG_JIT `objs_jit` build); workers inherit the compiled function via fork/COW. The
+**confinement is preserved by construction** — the compiled code calls the same gated host
+functions under the same host-set compartment — proven by the C5.0 differential test
+(`t/comcon_lowering.t`): the same fragment run interpreted vs AOT-compiled yields
+**byte-identical responses AND an identical denial-counter total** (erasure soundness on a
+real fragment, the seed of the M8/SR-2 gate), with the test guarding non-vacuity (the
+handler actually compiled) and clean shutdown. Full comcon suite green on both the
+interpreter and JIT builds (18 files / 148), AOT active for every tenant on the JIT build.
+This rests on the maxim in-profile JIT correctness gate (v5.21). Deferred per the scope:
+back-edge gas + two-clocks revocation (no budget/epoch machinery at either tier yet);
+partial-eval inline gate checks (perf, C5.1). Known follow-up: a single-process-mode
+(`master_process off`) teardown crash after AOT — multi-process/production is clean.
+Scope + status: `INCREMENT_C5.md`.
+
 **v5.19 (in place — M-SES-0: dynamic-code lockdown):** the tenant context is no longer a
 full-intrinsic `JS_NewContext`. It is now `JS_NewContextRaw` + a **curated intrinsic set**
 (`ngx_js_tenant_context_new` — everything except `Proxy`, which nothing in the tenant path
