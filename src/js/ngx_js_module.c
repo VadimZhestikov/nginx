@@ -2572,16 +2572,24 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
          */
         if (!JS_IsUninitialized(jcf->master_handlers)) {
             JS_FreeValue(w->ctx, jcf->master_handlers);
+            jcf->master_handlers = JS_UNINITIALIZED;
         }
 
         JS_FreeContext(w->ctx);
         w->ctx = NULL;
+        /* w->ctx aliases jcf->ctx (init_process). In single-process mode the
+         * same jcf is torn down again by ngx_js_exit_master; null the shared
+         * handle so that pass skips it (avoids a use-after-free). In
+         * multi-process this jcf is the worker's private COW copy, so nulling
+         * it here does not affect the master's teardown. */
+        jcf->ctx = NULL;
     }
 
     if (w->rt) {
         js_std_free_handlers(w->rt);
         JS_FreeRuntime(w->rt);
         w->rt = NULL;
+        jcf->rt = NULL;   /* aliases jcf->rt — see note above (single-process) */
     }
 }
 
