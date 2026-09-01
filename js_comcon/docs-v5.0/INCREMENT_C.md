@@ -204,10 +204,32 @@ vendored.
   build byte-identical (archive has no `quickjs-jit.o`, no `js_jit_*`); JIT-on dry-run
   compiles it with the right defines. A JIT-on build won't *link* yet (needs C1.2 glue)
   — expected.
-- **C1.2** — port the `quickjs.c` JIT glue onto vendored under `#ifdef CONFIG_JIT`
-  (`jit_func`/`jit_call_count` fields, the `js_jit_*` functions, the `JS_CallInternal`
-  hot-path dispatch). **Acceptance: CONFIG_JIT-OFF build is byte-identical** — the full
-  `t/` + `t_stress/` + `comcon_*` suites green, because nothing compiled changed.
+- **C1.2 — IN PROGRESS: merge mechanics solved, reconciliation scoped (2026-09-01).**
+  The port is done as a **3-way merge** (auto-combines pilgrim patches + maxim JIT).
+  Key findings:
+  - **The correct BASE is maxim's true base**, commit `b226856` (parent of maxim's first
+    JIT commit `731c0f2` "JIT Phase 1"; find via
+    `git -C <maxim> log --diff-filter=A -- quickjs-jit.c | tail -1`, then `^`). Using
+    vendored's base instead leaks maxim's base-drift into the merge (820-line JIT-off
+    diff); using maxim's base isolates **pure JIT** (2873 lines).
+  - The two forks have **538 lines of genuine base drift** (different bellard commits
+    despite the same `2025-09-13` VERSION label) — so the merge must keep *vendored's*
+    base, adding only the pure JIT.
+  - **Reproduce:** `git merge-file -p <vendored quickjs.c> <maxim@b226856:quickjs.c>
+    <maxim@HEAD:quickjs.c>` → **0 conflicts**.
+  - **The remaining work — reconcile ~97 unguarded lines.** The clean merge still pulls
+    in maxim's *unguarded* base changes: `new_target`/`jit_new_target` (JIT refs it 11×
+    in quickjs-jit.c), the `shape_gen` IC counter + `_shape_pad`, a debug `fflush`, and
+    an `sf`-NULL-check refactor. **Rule per unguarded addition:** wrap in `#ifdef
+    CONFIG_JIT` if JIT code references it (new_target, shape_gen), else revert to
+    vendored (fflush, the sf-check unless the JIT needs it). **Verify** by preprocessing
+    the merged file with `CONFIG_JIT` undefined and diffing vs the current vendored
+    `quickjs.c` → target **0 differing lines** = JIT-off provably identical.
+  - **Then:** install, build JIT-OFF (**acceptance: full `t/` + `t_stress/` + `comcon_*`
+    green**), then build JIT-ON — which links `quickjs-jit.c` and may surface further
+    guarded base-support the JIT needs (iterative build-debug). Not installed this
+    session: a subtly-wrong 62k-line engine file would break the whole product; the
+    reconciliation + JIT-on bring-up is executed with a full build/test loop.
 - **C1.3** — pilgrim builds a `CONFIG_JIT=y` `libquickjs.a` variant; nginx links it;
   same suites green (JIT present but threshold-gated → same semantics).
 - **C1.4** — differential: a hot pilgrim/tenant function gets JIT-compiled and produces
