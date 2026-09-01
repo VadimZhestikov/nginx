@@ -55,13 +55,15 @@ nginx.grantToTenant("granted", sock);
 JS
 
 # Tenant: registers a request handler through its granted onRequest().
+# Note: the tenant does NOT probe `typeof nginx` — since C3.0 a mere reference
+# to `nginx` is refused at LOAD (COMCON C3 admission; see comcon_admission.t), a
+# stronger guarantee than the old runtime `typeof nginx === "undefined"` check.
 $t->write_file('tenant.js', <<'JS');
 onRequest(function(req) {
     var iso = (typeof granted === "object" && granted.listener === null)
               ? "isolated" : "LEAK";
     return { status: 200,
-             body: "tenant " + req.method + " " + req.uri +
-                   " nginx=" + (typeof nginx) + " " + iso + "\n" };
+             body: "tenant " + req.method + " " + req.uri + " " + iso + "\n" };
 });
 report("A3 handler registered");
 JS
@@ -70,13 +72,13 @@ $t->try_run('no js module')->plan(6);
 
 my $r1 = http_get('/t');
 like($r1, qr/ 200 /, 'tenant handler serves a real request (200)');
-like($r1, qr/tenant GET \/t nginx=undefined/,
-     'deny-by-default holds ON THE REQUEST PATH: tenant cannot name nginx');
+like($r1, qr/tenant GET \/t /,
+     'the confined Request carries the real method + uri on the request path');
 like($r1, qr/isolated/,
      'A1 gate isolates during a live request: granted socket .listener null');
 
 my $r2 = http_get('/t');
-like($r2, qr/tenant GET \/t nginx=undefined isolated/,
+like($r2, qr/tenant GET \/t isolated/,
      'second request served (handler JSValue lifecycle stable across calls)');
 
 like(http_get('/host'), qr/host-ok/,

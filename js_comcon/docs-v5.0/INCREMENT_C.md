@@ -99,9 +99,22 @@ The biggest unknowns are front-loaded. Each slice is a differential-tested verti
     (OP_eval/OP_apply_eval/OP_with_*, recursing), and an `eval`/`Function` *name*
     deny-list catches indirect references. (`with` is also a strict-mode syntax error
     in the tenant module and never compiles.) Test: `t/comcon_restricted.t`.
-  - **Still open in C3:** full **type**-checking against the C2 schema — the front-end
-    today admits/rejects on *names and constructs*, not yet on *types*. This is the
-    largest remaining C3 sub-part.
+  - **C3-types — type-checking against the C2 schema (first slice).** The front-end now
+    checks *types*, not only names/constructs. Two schema contracts, each soundly
+    decidable at admission: **(a) the `env.onRequest` signature** `(Request) => Response`
+    — enforced at registration (`ngx_js_tenant_onrequest`): the handler is a function of
+    ≤1 parameter, registered exactly once; **(b) the sealed `types.Request`** —
+    `js_comcon_check_request_fields` (quickjs.c) refuses a *direct* read of a field the
+    Request type does not declare (method/uri/args/headers). A **sound rejecter** (fires
+    only where the base is provably the handler's `arg0`; no false positives). Test:
+    `t/comcon_types.t`. Also recovered `comcon_tenant_request` + `comcon_dependency`,
+    which had silently skipped since C3.0 (obsolete `typeof nginx` probes now refused at
+    load).
+  - **Still open in C3 (the erasure-complete remainder, for C5):** aliased/interprocedural
+    value-flow typing, the `Response` return type, granted-`Socket` member typing, and
+    computed member keys — i.e. the full type inference the compiled tier needs to erase
+    against. C3 today *rejects* on types where it can prove a violation; it does not yet
+    *certify* a fragment fully-typed.
 
 - **C4 — M4: the fragment artifact ("fat bytecode").** bytecode + type/cap
   side-table + env-signature (we have this — the learn/grant machinery) + content

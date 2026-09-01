@@ -843,6 +843,12 @@ int js_comcon_collect_free_globals(JSContext *ctx, JSValueConst func,
 /* COMCON C3: 1 if the function (or any nested function) uses direct eval or
  * `with` — dynamic code that defeats the static free-name analysis. */
 int js_comcon_uses_dynamic_code(JSValueConst func);
+
+/* COMCON C3 (typed profile): 1 if the handler directly reads a field its
+ * sealed Request parameter (arg0) does not have; the offending name is copied
+ * into errbuf. Sound rejecter (direct arg0 access only). 0 if clean. */
+int js_comcon_check_request_fields(JSContext *ctx, JSValueConst func,
+                                   char *errbuf, size_t errlen);
 int JS_IsInstanceOf(JSContext *ctx, JSValueConst val, JSValueConst obj);
 int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,
                       JSAtom prop, JSValueConst val,

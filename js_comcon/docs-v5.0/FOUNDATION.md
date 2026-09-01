@@ -553,6 +553,27 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.16 (in place — C3-types: the fragment is checked against the C2 schema):** the
+typed-profile front-end stops checking only *names and constructs* and begins checking
+*types* — the tenant's USE of its environment against `schema/tenant-env.schema.json`.
+Two schema contracts land, chosen because each is decidable soundly at admission: (1) the
+**`env.onRequest` signature** `(Request) => Response` — enforced at registration
+(`ngx_js_tenant_onrequest`): the handler must be a function of at most one parameter (the
+Request) and may be registered exactly once (a second registration or an over-arity
+handler is refused, where before the last writer silently won); and (2) the **sealed
+`types.Request`** — `js_comcon_check_request_fields` (quickjs.c) scans the handler's own
+body and refuses a *direct* read of any field the Request type does not declare
+(`method`/`uri`/`args`/`headers`). It is a **sound rejecter** (it fires only where the
+base is provably the handler's `arg0`, never a false positive), which is exactly the
+"types only reject at admission" contract; the erasure-*complete* remainder — aliased/
+interprocedural value-flow, the `Response` return type, granted-`Socket` member typing,
+and computed keys — is the type inference C5 needs and is named-and-deferred. Recovered
+two tests that had silently skipped since C3.0 landed (`comcon_tenant_request`,
+`comcon_dependency`) because their tenant fragments carried an obsolete `typeof nginx`
+probe that C3.0 now refuses at load — the probes were removed (the property they checked
+at runtime is now an admission-time refusal, a strictly stronger guarantee).
+Test: `t/comcon_types.t`.
+
 **v5.13–v5.15 (in place — increment C front-end lands: the typed schema + the admission
 gate):** the first three built slices of the typed-profile front-end (INCREMENT_C.md §C2–
 C3). **v5.13 (C2 — the typed schema):** the tenant environment is now *data* —

@@ -24342,6 +24342,73 @@ int js_comcon_uses_dynamic_code(JSValueConst func)
     return comcon_fb_uses_dynamic(p->u.func.function_bytecode);
 }
 
+/*
+ * COMCON C3 (typed profile): the tenant environment's Request type is SEALED
+ * (schema/tenant-env.schema.json, types.Request) — its only fields are method,
+ * uri, args and headers. A confined handler's single parameter IS a Request
+ * (the onRequest signature (Request) => Response), so a DIRECT read of any
+ * other field on that parameter names a member the type does not have and is
+ * refused at admission. Only the handler's OWN body is scanned — a nested
+ * function's arg0 is a different variable — and only where the base is provably
+ * arg0 (`OP_get_arg0` / `OP_get_arg 0` immediately before the field access), so
+ * this is a sound REJECTER with no false positives. Interprocedural/aliased
+ * access and computed keys are the erasure-complete remainder (deferred to C5).
+ *
+ * On a violation returns 1 and copies the offending field name into errbuf;
+ * returns 0 if the handler reads only schema fields of its Request parameter.
+ */
+static int comcon_is_request_field(const char *name)
+{
+    return strcmp(name, "method") == 0 || strcmp(name, "uri") == 0
+        || strcmp(name, "args") == 0 || strcmp(name, "headers") == 0;
+}
+
+int js_comcon_check_request_fields(JSContext *ctx, JSValueConst func,
+                                   char *errbuf, size_t errlen)
+{
+    JSObject           *p;
+    JSFunctionBytecode *b;
+    const uint8_t      *bc;
+    int                 len, pc, base_is_arg0, ret = 0;
+
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
+        return 0;
+    p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+        return 0;
+    b = p->u.func.function_bytecode;
+
+    bc = b->byte_code_buf;
+    len = b->byte_code_len;
+    pc = 0;
+    base_is_arg0 = 0;
+
+    while (pc < len) {
+        int op = bc[pc];
+        int sz = short_opcode_info(op).size;
+        if (sz == 0)
+            break;
+
+        if ((op == OP_get_field || op == OP_get_field2) && base_is_arg0) {
+            JSAtom      atom = get_u32(bc + pc + 1);
+            const char *nm = JS_AtomToCString(ctx, atom);
+            if (nm != NULL && !comcon_is_request_field(nm)) {
+                snprintf(errbuf, errlen, "%s", nm);
+                JS_FreeCString(ctx, nm);
+                ret = 1;
+                break;
+            }
+            JS_FreeCString(ctx, nm);
+        }
+
+        base_is_arg0 = (op == OP_get_arg0)
+                    || (op == OP_get_arg && get_u16(bc + pc + 1) == 0);
+        pc += sz;
+    }
+
+    return ret;
+}
+
 static __exception int next_token(JSParseState *s);
 
 static void free_token(JSParseState *s, JSToken *token)

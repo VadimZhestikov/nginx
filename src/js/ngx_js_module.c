@@ -804,6 +804,28 @@ ngx_js_tenant_onrequest(JSContext *ctx, JSValueConst this_val, int argc,
             "onRequest(fn): a function argument is required");
     }
 
+    /* COMCON C3 typed contract (schema env.onRequest): the handler is
+     * (Request) => Response — it takes at most one parameter (the Request). A
+     * handler declaring more arguments expects data the host never passes: a
+     * contract mismatch, refused at load. */
+    {
+        JSValue  lv;
+        int32_t  nargs = 0;
+
+        lv = JS_GetPropertyStr(ctx, argv[0], "length");
+        if (JS_IsException(lv)) {
+            return lv;
+        }
+        JS_ToInt32(ctx, &nargs, lv);
+        JS_FreeValue(ctx, lv);
+
+        if (nargs > 1) {
+            return JS_ThrowTypeError(ctx,
+                "onRequest(fn): the handler must take at most one argument "
+                "(the Request)");
+        }
+    }
+
     cycle = JS_GetContextOpaque(ctx);
     if (cycle == NULL) {
         return JS_ThrowInternalError(ctx, "onRequest: no cycle");
@@ -814,8 +836,13 @@ ngx_js_tenant_onrequest(JSContext *ctx, JSValueConst this_val, int argc,
         return JS_ThrowInternalError(ctx, "onRequest: no jcf");
     }
 
+    /* Schema env.onRequest registers THE handler (singular). A second
+     * registration is a contract violation — refuse it rather than silently
+     * letting the last writer win. */
     if (!JS_IsUninitialized(jcf->tenant_request_handler)) {
-        JS_FreeValue(ctx, jcf->tenant_request_handler);
+        return JS_ThrowTypeError(ctx,
+            "onRequest(fn): a handler is already registered — a confined "
+            "tenant registers exactly one");
     }
 
     jcf->tenant_request_handler = JS_DupValue(ctx, argv[0]);
@@ -1217,6 +1244,23 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
         if (chk.rejected) {
             ngx_js_tenant_teardown(jcf);
             return NGX_ERROR;
+        }
+
+        /* C3 typed profile: the handler's Request parameter is SEALED — a
+         * direct read of a field the schema Request type does not declare is
+         * refused at load (schema types.Request). */
+        {
+            char  field[128];
+
+            if (js_comcon_check_request_fields(tctx,
+                    jcf->tenant_request_handler, field, sizeof(field)))
+            {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                    "js: tenant handler reads non-schema Request field \"%s\" "
+                    "— refused (COMCON C3: Request is sealed)", field);
+                ngx_js_tenant_teardown(jcf);
+                return NGX_ERROR;
+            }
         }
     }
 

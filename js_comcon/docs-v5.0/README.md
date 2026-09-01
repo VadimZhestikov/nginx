@@ -2,7 +2,14 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.15**, C3-rest the restricted-construct admission check (dynamic code —
+> (current: **v5.16**, C3-types type-checking the tenant against the C2 schema — the
+> env.onRequest signature (handler is (Request)=>Response: a function of ≤1 param,
+> registered exactly once) enforced at registration, and the sealed types.Request
+> (a direct read of a non-schema field on the handler's Request parameter refused:
+> `js_comcon_check_request_fields` bytecode scan; sound rejecter — interprocedural /
+> Response / Socket typing deferred to C5); recovered two tests that had silently
+> skipped since C3.0 (comcon_tenant_request, comcon_dependency — obsolete `typeof nginx`
+> probes); t/comcon_types.t; v5.15 C3-rest the restricted-construct admission check (dynamic code —
 > `eval`/`Function`/`with` — refused at load so the C3.0 free-name analysis is sound:
 > `js_comcon_uses_dynamic_code` bytecode scan + an `eval`/`Function` name deny-list;
 > t/comcon_restricted.t); v5.14 C3.0 static free-name admission check (js_comcon_collect_free_globals

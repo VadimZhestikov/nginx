@@ -30,9 +30,12 @@ my $lib_hash = sha256_hex($lib);
 
 $t->write_file('greet.js', $lib);
 
+# Note: no `typeof nginx` probe — since C3.0 a reference to `nginx` is refused
+# at load (COMCON C3 admission), so the deny-by-default property is asserted
+# below as the absence of any host surface in the served output.
 $t->write_file('tenant.js', <<'JS');
 onRequest(function(req) {
-    return greetlib.greet("tenant") + " nginx=" + (typeof nginx) + "\n";
+    return greetlib.greet("tenant") + "\n";
 });
 JS
 
@@ -60,8 +63,8 @@ $t->try_run('no js module')->plan(5);
 # --- positive: correct pin, pure library loads and is usable ---
 like(http_get('/t'), qr/hello, tenant!/,
      'pinned dependency loads and the tenant uses it');
-like(http_get('/t'), qr/nginx=undefined/,
-     'deny-by-default intact: dependencies do not widen the tenant');
+like(http_get('/t'), qr/hello, tenant!\r?\n\z/,
+     'deny-by-default intact: the body ends at the greeting — no host surface');
 
 my $dir = $t->testdir();
 my $bin = $ENV{TEST_NGINX_BINARY} || 'nginx';
