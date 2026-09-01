@@ -152,9 +152,18 @@ The biggest unknowns are front-loaded. Each slice is a differential-tested verti
   epochs for live re-AOT on revocation; benchmark the real pipeline — the M1
   numbers, now measured not hand-written.
 
-- **C7 — M8: the safety gate.** Compiler faithfulness = T2 refines T1, per fragment,
-  by differential testing (same inputs → same outputs → same denials), plus proof
-  the A1 gates survive compilation. **Increment C is not done until C7 passes.**
+- **C7 — M8: the safety gate. PASSED profile-scoped (2026-09-01, v5.25).** Compiler
+  faithfulness = T2 refines T1, per fragment, by differential testing (same inputs → same
+  outputs → same denials), plus proof the A1 gates survive compilation. `t/comcon_faithfulness.t`
+  runs a suite over the confinement surface (report / Request reads / Response shapes /
+  compute / granted-socket reads / **A1 gated reach `.listener` / gated mutator `close()`**),
+  each interpreted vs AOT-compiled, asserting byte-identical responses AND identical denial
+  totals (the gates fire the same number of times in both tiers) AND that every fragment
+  actually compiled (non-vacuous). 22/22. **Scope:** the COMCON tenant profile (strict-module
+  confined fragments) — the maxim surface that is in-profile-clean (INCREMENT_MAXIM.md). Full
+  test262 conformance under AOT is a parallel maxim track; **untrusted-native *production*
+  additionally waits on M-SES + full maxim finalization** (§3). So: the *increment-C* gate is
+  met for the confined profile; the *production-untrusted* bar is the wider one.
 
 ## 3. Gating and honest scale
 

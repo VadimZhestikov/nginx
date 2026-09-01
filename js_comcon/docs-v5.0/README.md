@@ -2,7 +2,12 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.24**, C6 benchmark — interpreted vs AOT-compiled confined handler under load
+> (current: **v5.25**, C7 = M8 = SR-2 the compiler-faithfulness gate PASSED (profile-scoped):
+> t/comcon_faithfulness.t runs a suite over the confinement surface (incl. A1 gated reach
+> .listener + gated mutator close()) interp-vs-AOT-compiled, asserting identical responses AND
+> identical denials — confinement provably survives compilation, 22/22; scope = confined
+> strict-module profile, untrusted-native production still gated on M-SES + full maxim
+> finalization; the compiled tier is now erasure(C5.0)+perf(C6)+faithful(C7); v5.24, C6 benchmark — interpreted vs AOT-compiled confined handler under load
 > (t_performance/comcon_c6): ~13.5× on compute-heavy JS (hot typed-int loop 5.3K→72K req/s),
 > tied on I/O/builtin-bound handlers (~186K both); matches the tier's design profile,
 > confinement identical in both tiers (erasure); v5.23, C5.0 DONE — the compiled confined tier: a confined tenant handler is

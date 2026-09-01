@@ -161,7 +161,7 @@ gate-reviews across the whole roadmap, and two already exist as milestones (M8, 
 | Gate | Fires | Scope | Maps to |
 |---|---|---|---|
 | **SR-1 conformance** | end of increment B → **before C** | the A/B capability logic vs `THREATS.md`, *within* the current TCB assumption (an unforgeable engine). Finds gaps between claimed and implemented confinement. Explicitly **not** engine escapes. | new (this doc) |
-| **SR-2 faithfulness** | **C7** | did compilation preserve the reach gates and not leak authority via the type/cap side-tables? T2 refines T1. | **= M8** |
+| **SR-2 faithfulness** | **C7** | did compilation preserve the reach gates and not leak authority via the type/cap side-tables? T2 refines T1. | **= M8** — **PASSED profile-scoped 2026-09-01** (`t/comcon_faithfulness.t`: interp vs AOT-compiled over the confinement surface incl. A1 gated reach/mutator → identical responses + identical denials, 22/22). Scope = confined strict-module profile; full-test262-under-AOT + untrusted-native production still gated on M-SES + full maxim finalization. |
 | **SR-3 adversarial pentest** | after **M-SES** | engine escapes, eval/Function/Proxy sandbox completeness, memory safety — closes the accepted residuals (`THREATS.md` T8/T4/T9). The full red-team pass. | M-SES exit |
 | **SR-4 assurance case** | before first untrusted-tenant **production** | assemble the whole claim→assumption→evidence tree; every leaf without evidence is a finding. | **= V15** |
 

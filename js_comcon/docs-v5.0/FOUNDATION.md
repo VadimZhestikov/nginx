@@ -553,6 +553,21 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.25 (in place — C7 / M8 / SR-2: the compiler-faithfulness gate PASSES, profile-scoped):**
+the compiled tier is now certified faithful — **T2 refines T1** — across the confinement
+surface, not just one fragment. `t/comcon_faithfulness.t` runs a suite (report / Request
+reads / Response shapes / compute / granted-socket reads / **the A1 gated reach `.listener`
+and gated mutator `close()`**) interpreted vs AOT-compiled and asserts byte-identical
+responses AND identical denial totals — the gates fire the *same* number of times in both
+tiers, so **confinement provably survives compilation and the compiled code leaks no
+authority** — plus that every fragment actually compiled (non-vacuous). 22/22. This is the
+security capstone of the compiled tier: erasure (C5.0) + performance (C6) + faithfulness
+(C7). **Scope is the COMCON tenant profile** (strict-module confined fragments — the maxim
+surface that is in-profile-clean); the *increment-C* gate is met, while **untrusted-native
+production** additionally waits on M-SES + full maxim test262 finalization (INCREMENT_C.md
+§3). Deferred still: back-edge gas + two-clocks revocation (interpreted-first), and the C5.1
+inline-gate perf optimization (narrow value per the C6 data).
+
 **v5.24 (in place — C6 benchmark: the compiled tier's value, measured):** interpreted vs
 AOT-compiled, the same confined handler under load (`t_performance/comcon_c6/`): a
 **~13.5× speedup where JS compute is the bottleneck** (a hot typed-int loop: ~5.3K → ~72K
