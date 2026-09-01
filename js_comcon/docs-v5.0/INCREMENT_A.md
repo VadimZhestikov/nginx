@@ -201,6 +201,20 @@ separate grant) is the later widening, not the starting point.
 - Reload semantics verified both ways for the tenant: idempotent config → new tenant
   runtime serves, old freed cleanly; throwing config → master survives.
 
+## 7. Increment B — onboarding (build log)
+
+| Unit | Commit | What exists |
+|---|---|---|
+| **B0** learning mode | `afd2aaa46` | `js_tenant_mode learn;` (the A4 flag is now a tri-state enforce\|audit\|learn). Learn seeds the tenant global with a **recorder** for each withheld host name — a callable catch-all exotic object that records every access *path* the fragment walks (`nginx.http.addServer()`, `createSocket()`, …) and lets it run to completion instead of throwing. `nginx.tenantLearning()` (host-only) returns `{mode, wants:[{path,hits}]}` — the onboarding wishlist. Test `t/comcon_learn_mode.t`. |
+
+Together A4 + B0 are the **observe → onboard → enforce** loop: *audit* shows a
+tenant's granted-but-gated reaches; *learn* shows the host surface it wants but
+does not have; the operator grants the safe subset and flips to *enforce*.
+
+**Remaining for increment B:** generated docs from the learning record (a
+paste-ready grant/contract stub), and the dependency workflow (per-dependency
+`pure_library` cages, pin-by-hash — E1). Then increment C (typed/compiled).
+
 **Increment A is COMPLETE** — accepted by the dogfood demo (a confined tenant serving
 real multi-worker traffic, cage proven on live requests, the audit→enforce loop closed
 by the host). Beyond A: **increment B** (onboarding — learning-mode harvest, generated

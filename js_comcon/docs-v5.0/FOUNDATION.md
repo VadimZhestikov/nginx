@@ -553,6 +553,15 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.9 (in place — increment B begins, B0 learning mode):** `js_tenant_mode learn`
+(the A4 flag is now enforce|audit|learn). Learn mode seeds the tenant global with a
+recorder for each withheld host name (a callable catch-all exotic object) that harvests
+every access *path* the fragment walks and lets it run to completion; `nginx.tenantLearning()`
+reports `{mode, wants:[{path,hits}]}` — the onboarding wishlist. A4 audit + B0 learn =
+the observe→onboard→enforce loop (audit = what gated reaches happened; learn = what host
+surface is wanted-but-absent). Next in B: generated grant-stub docs + the dependency
+workflow. Build log: INCREMENT_A.md §7.
+
 **v5.8 (in place — increment A COMPLETE):** A3.1 puts headers on the confined request
 path as *data* (request headers in as a copy; response headers out via the return value,
 CRLF/non-token dropped — showcase-4 guard), and the **dogfood demo**
