@@ -2,7 +2,7 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.25**, C7 = M8 = SR-2 the compiler-faithfulness gate PASSED (profile-scoped):
+> (current: **v5.26**, M-SES-1 intrinsic freezing — the tenant lockdown transitively Object.freezes the intrinsic graph (constructors/prototypes/methods off globalThis; globalThis stays extensible for caps), closing a demonstrated cross-request prototype-pollution leak (Object.prototype.x set in req1 was visible in req2; now the write throws + never persists); ordinary JS unaffected; t/comcon_freeze.t, comcon 21/180 both builds; v5.25 C7 = M8 = SR-2 the compiler-faithfulness gate PASSED (profile-scoped):
 > t/comcon_faithfulness.t runs a suite over the confinement surface (incl. A1 gated reach
 > .listener + gated mutator close()) interp-vs-AOT-compiled, asserting identical responses AND
 > identical denials — confinement provably survives compilation, 22/22; scope = confined

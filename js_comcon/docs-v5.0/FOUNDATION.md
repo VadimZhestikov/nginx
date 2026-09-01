@@ -553,6 +553,20 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.26 (in place — M-SES-1: intrinsic freezing):** the tenant lockdown now transitively
+**hardens (Object.freeze) the intrinsic graph** — every constructor/prototype/method reachable
+off `globalThis` (plus the generator/async + array-iterator prototypes), leaving `globalThis`
+itself extensible so caps still install. This closes a real, demonstrated **cross-request
+state leak**: the tenant runtime is long-lived, so `Object.prototype.x = …` in one request
+persisted into the next (and would leak across tenants under a shared runtime). Now such a
+write throws (frozen + strict) and never takes effect; ordinary JS — creating/mutating one's
+own objects, calling built-in methods — is unaffected. This is the S1 "frozen intrinsics"
+control (`ngx_js_tenant_lockdown`, `t/comcon_freeze.t`; comcon 21/180 on both builds). It
+complements M-SES-0 (which closed *dynamic code*, not *prototype tampering*). Remaining M-SES:
+M-SES-2 = the SR-3 escape-completeness pentest (the wider untrusted-production gate, with full
+maxim finalization). Small follow-up: freeze the COM/Socket protos too (installed after the
+lockdown; their mutators are C-gated regardless).
+
 **v5.25 (in place — C7 / M8 / SR-2: the compiler-faithfulness gate PASSES, profile-scoped):**
 the compiled tier is now certified faithful — **T2 refines T1** — across the confinement
 surface, not just one fragment. `t/comcon_faithfulness.t` runs a suite (report / Request

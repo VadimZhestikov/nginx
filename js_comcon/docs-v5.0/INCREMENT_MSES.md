@@ -111,10 +111,20 @@ with the taming stubs frozen so a tenant cannot restore them.
   lockdown must run as a **module**, not `JS_EVAL_TYPE_GLOBAL` (indirect global eval needs
   the eval global, which we remove). Proxy is genuinely omittable (nothing in the tenant
   path uses JS `Proxy`; the learn recorder is a C exotic class).
-- **M-SES-1 — intrinsic freezing (cross-tenant isolation).** `Object.freeze` the shared
-  intrinsics / prototype-pollution defense (S1 "frozen intrinsics"). Needed once multiple
-  tenants share a runtime or when prototype mutation could leak across requests. Distinct
-  from M-SES-0 (which closes *dynamic code*, not *prototype tampering*).
+- **M-SES-1 — intrinsic freezing (cross-tenant isolation). DONE (2026-09-01, v5.26).**
+  `Object.freeze` the shared intrinsics / prototype-pollution defense (S1 "frozen
+  intrinsics"). Distinct from M-SES-0 (which closes *dynamic code*, not *prototype
+  tampering*). **Built:** the tenant lockdown (`ngx_js_tenant_lockdown`) now transitively
+  hardens the intrinsic graph — from every intrinsic reachable off `globalThis` (+ the
+  generator/async + array-iterator prototypes), `Object.freeze` constructors, prototypes,
+  methods and accessor functions; `globalThis` itself is left extensible (caps + COM protos
+  install afterwards). Confirmed exposure it closes: a tenant setting `Object.prototype.evil`
+  in req 1 was visible in req 2 (long-lived tenant runtime); now the write throws (frozen +
+  strict) and never persists. Ordinary JS is unaffected (own-object mutation + built-in
+  method calls still work). Test `t/comcon_freeze.t`; full comcon green on both builds
+  (21/180). **Noted extension:** the COM/Socket prototypes are installed *after* the lockdown
+  so this pass does not freeze them — their mutators are C-side-gated regardless; freezing
+  them too is a small follow-up (a second harden after `ngx_js_com_install_protos`).
 - **M-SES-2 — portal taming + escape-probe gate (= SR-3).** The full adversarial pentest
   of intrinsic/engine escape completeness (memory safety, remaining reflective surface),
   closing THREATS T8/T4/T9. This is the scheduled SR-3, after M-SES.
