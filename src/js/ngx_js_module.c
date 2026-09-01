@@ -1516,6 +1516,25 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
             art->cert_request_sealed, art->cert_onreq_sig);
     }
 
+#ifdef CONFIG_JIT
+    /* COMCON C5.0-b: lower the admitted handler to native C (server-AOT) at
+     * load, so requests dispatch to compiled code. Synchronous — no lazy
+     * per-request JIT thread; workers inherit the installed jit_func + the
+     * dlopen'd .so via fork/COW. Confinement is preserved by construction: the
+     * compiled code calls the same gated host functions under the same
+     * host-set compartment as the interpreted handler (the compiled and
+     * interpreted tiers must produce identical responses AND denial counters —
+     * t/comcon_lowering.t). Compilation is best-effort: on failure the handler
+     * transparently runs interpreted (maxim skips-to-interpreter). */
+    if (!JS_IsUninitialized(jcf->tenant_request_handler)) {
+        if (js_comcon_aot_compile(tctx, jcf->tenant_request_handler) == 0) {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "js tenant: handler lowered to native C "
+                          "(COMCON C5 server-AOT)");
+        }
+    }
+#endif
+
     return NGX_OK;
 }
 

@@ -849,6 +849,10 @@ int js_comcon_uses_dynamic_code(JSValueConst func);
  * into errbuf. Sound rejecter (direct arg0 access only). 0 if clean. */
 int js_comcon_check_request_fields(JSContext *ctx, JSValueConst func,
                                    char *errbuf, size_t errlen);
+
+/* COMCON C5.0-b: server-AOT-compile a confined handler at load (CONFIG_JIT
+ * only). Returns 0 on success, -1 if func is not a bytecode function. */
+int js_comcon_aot_compile(JSContext *ctx, JSValueConst func);
 int JS_IsInstanceOf(JSContext *ctx, JSValueConst val, JSValueConst obj);
 int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,
                       JSAtom prop, JSValueConst val,

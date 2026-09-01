@@ -15836,6 +15836,24 @@ JSFunctionBytecode *js_jit_get_callee_fb(JSValue func)
     return p->u.func.function_bytecode;
 }
 
+/* COMCON C5.0-b: server-AOT-compile a confined handler at load. Synchronously
+ * lowers the function (and its nested functions) to native C via GCC and
+ * installs jit_func, so subsequent calls dispatch to compiled code — no lazy
+ * per-request background thread. Confinement is preserved by construction: the
+ * compiled code calls the SAME gated host functions under the SAME host-set
+ * compartment as the interpreted handler. Returns 0 on success, -1 if `func`
+ * is not a bytecode function. */
+int js_comcon_aot_compile(JSContext *ctx, JSValueConst func)
+{
+    JSFunctionBytecode *b = js_jit_get_callee_fb(func);
+    if (!b)
+        return -1;
+    js_jit_compile_all(ctx, b);
+    js_jit_drain();
+    js_jit_install_results();
+    return 0;
+}
+
 /* P10.3: guard check + cpool/var_refs extraction for generated direct calls.
  * Returns 1 if func is the expected JIT function and fills *cpool_out and *var_refs_out. */
 int js_jit_check_and_extract(JSValue func, JSJITFunc expected,
