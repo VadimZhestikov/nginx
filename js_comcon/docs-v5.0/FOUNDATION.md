@@ -553,6 +553,15 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.11 (in place — increment B COMPLETE, the dependency workflow):**
+`js_tenant_dependency <name> <path> <sha256>;` loads a **pure library** — evaluated in a
+bare no-capability environment (before any grant), bound on the tenant global, admitted
+only if its bytes match the pin. Threat-T2 supply chain, live: a hijacked update (bytes
+changed) is refused at load (the last good config keeps serving); a dependency that
+reaches for host authority is not admitted (truly pure). Test t/comcon_dependency.t.
+Increment B (onboarding) is done: learning mode + generated grant-stub + dependency
+workflow. Next: increment C (typed/compiled).
+
 **v5.10 (in place — B1, generated grant-stub docs):** `nginx.tenantLearning()` now also
 reports the already-granted names; an onboarding generator (plain library JS per
 Principle 10 — `js_com_demos/COMCON_onboard/onboard.js`) turns the learning record into a
