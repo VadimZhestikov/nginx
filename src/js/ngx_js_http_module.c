@@ -18,6 +18,7 @@
 #include <cutils.h>
 #include <quickjs-libc.h>
 #include "ngx_js.h"
+#include "ngx_js_compartment.h"
 #include "ngx_js_com.h"
 #include "ngx_js_sw.h"
 #include "ngx_js_listener.h"
@@ -8419,7 +8420,194 @@ ngx_js_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+/*
+ * COMCON A3: js_tenant_handler — content handler for a confined tenant.
+ *
+ * The location's content is produced by the function the tenant registered
+ * via its granted onRequest(fn) (see ngx_js_eval_tenant_sources). The handler
+ * runs in the tenant's OWN persistent context under the tenant compartment,
+ * so the deny-by-default environment and the A1 reach gates apply on the
+ * request path. The tenant receives plain request DATA ({method, uri, args})
+ * and its entire authority over the response is its RETURN VALUE:
+ *
+ *   return "body";                       → 200, text/plain
+ *   return {status: 404, body: "..."};   → status + body
+ *
+ * No request capability object is granted — data in, data out. Budgets/gas
+ * on the tenant runtime are the S5 milestone; not wired here yet.
+ */
+static ngx_int_t
+ngx_js_tenant_content_handler(ngx_http_request_t *r)
+{
+    size_t                 blen;
+    u_char                *body;
+    JSValue                req, ret, v;
+    JSContext             *tctx, *jctx;
+    ngx_int_t              rc;
+    ngx_buf_t             *b;
+    ngx_chain_t            out;
+    const char            *bstr;
+    int32_t                status;
+    ngx_js_conf_t         *jcf;
+    ngx_js_compartment_t   prev;
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+
+    if (jcf == NULL || jcf->tenant_ctx == NULL
+        || JS_IsUninitialized(jcf->tenant_request_handler))
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "js_tenant_handler: no tenant onRequest handler "
+                      "registered");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    rc = ngx_http_discard_request_body(r);
+    if (rc != NGX_OK) {
+        return rc;
+    }
+
+    tctx = jcf->tenant_ctx;
+
+    /* Plain request data — no capabilities. */
+    req = JS_NewObject(tctx);
+    JS_SetPropertyStr(tctx, req, "method",
+                      JS_NewStringLen(tctx, (const char *) r->method_name.data,
+                                      r->method_name.len));
+    JS_SetPropertyStr(tctx, req, "uri",
+                      JS_NewStringLen(tctx, (const char *) r->uri.data,
+                                      r->uri.len));
+    JS_SetPropertyStr(tctx, req, "args",
+                      JS_NewStringLen(tctx, (const char *) r->args.data,
+                                      r->args.len));
+
+    prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
+
+    ret = JS_Call(tctx, jcf->tenant_request_handler, JS_UNDEFINED,
+                  1, (JSValueConst *) &req);
+
+    /* Drain the tenant runtime's microtasks (its own job queue). */
+    while (JS_ExecutePendingJob(jcf->tenant_rt, &jctx) > 0) { /* void */ }
+
+    ngx_js_compartment_leave(prev);
+
+    JS_FreeValue(tctx, req);
+
+    if (JS_IsException(ret)) {
+        ngx_js_log_exception(tctx, r->connection->log);
+        JS_FreeValue(tctx, ret);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    /* Interpret the return value: string body, or {status, body}. */
+    status = NGX_HTTP_OK;
+    bstr   = NULL;
+
+    if (JS_IsString(ret)) {
+        bstr = JS_ToCStringLen(tctx, &blen, ret);
+
+    } else if (JS_IsObject(ret)) {
+        v = JS_GetPropertyStr(tctx, ret, "status");
+        if (JS_IsNumber(v)) {
+            (void) JS_ToInt32(tctx, &status, v);
+        }
+        JS_FreeValue(tctx, v);
+
+        v = JS_GetPropertyStr(tctx, ret, "body");
+        if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+            bstr = JS_ToCStringLen(tctx, &blen, v);
+        }
+        JS_FreeValue(tctx, v);
+
+    } else {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "js_tenant_handler: handler must return a string or "
+                      "{status, body} object");
+        JS_FreeValue(tctx, ret);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    /* Copy the body into the request pool BEFORE freeing JS values. */
+    if (bstr != NULL) {
+        body = ngx_pnalloc(r->pool, blen);
+        if (body == NULL) {
+            JS_FreeCString(tctx, bstr);
+            JS_FreeValue(tctx, ret);
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        ngx_memcpy(body, bstr, blen);
+        JS_FreeCString(tctx, bstr);
+
+    } else {
+        body = NULL;
+        blen = 0;
+    }
+
+    JS_FreeValue(tctx, ret);
+
+    r->headers_out.status           = (ngx_uint_t) status;
+    r->headers_out.content_length_n = (off_t) blen;
+
+    ngx_str_set(&r->headers_out.content_type, "text/plain");
+    r->headers_out.content_type_len = r->headers_out.content_type.len;
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+        return rc;
+    }
+
+    /* Zero-size buf with last_buf=1 is the empty-body idiom (see respond()) */
+    if (blen > 0) {
+        b = ngx_create_temp_buf(r->pool, blen);
+        if (b == NULL) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        b->last = ngx_cpymem(b->pos, body, blen);
+
+    } else {
+        b = ngx_calloc_buf(r->pool);
+        if (b == NULL) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    b->last_buf      = (r == r->main) ? 1 : 0;
+    b->last_in_chain = 1;
+
+    out.buf  = b;
+    out.next = NULL;
+
+    return ngx_http_output_filter(r, &out);
+}
+
+
+/* COMCON A3: js_tenant_handler; — route this location to the tenant. */
+static char *
+ngx_js_tenant_handler_directive(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_core_loc_conf_t  *clcf;
+
+    clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+    clcf->handler = ngx_js_tenant_content_handler;
+
+    return NGX_CONF_OK;
+}
+
+
 static ngx_command_t  ngx_js_http_commands[] = {
+
+    /*
+     * js_tenant_handler;
+     *
+     * COMCON A3. The location's content is served by the confined tenant's
+     * onRequest handler, running in the tenant compartment.
+     */
+    { ngx_string("js_tenant_handler"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
+      ngx_js_tenant_handler_directive,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
 
     /*
      * js_init_http /path/to/script.js;

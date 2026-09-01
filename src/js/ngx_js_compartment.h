@@ -31,6 +31,9 @@ typedef ngx_uint_t  ngx_js_compartment_t;
 
 #define NGX_JS_COMPARTMENT_HOST_ROOT   ((ngx_js_compartment_t) 0)
 
+/* The single MVP tenant compartment (increment A). Multi-tenant = later. */
+#define NGX_JS_COMPARTMENT_TENANT      ((ngx_js_compartment_t) 1)
+
 
 /*
  * The compartment currently executing on this worker's main event loop.

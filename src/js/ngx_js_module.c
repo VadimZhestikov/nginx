@@ -484,8 +484,9 @@ ngx_js_create_conf(ngx_cycle_t *cycle)
         return NULL;
     }
 
-    /* rt, ctx, worker, sw_list are 0/NULL after pcalloc */
+    /* rt, ctx, worker, sw_list, tenant_rt, tenant_ctx are 0/NULL after pcalloc */
     jcf->master_handlers = JS_UNINITIALIZED;
+    jcf->tenant_request_handler = JS_UNINITIALIZED;
 
     return jcf;
 }
@@ -568,11 +569,81 @@ ngx_js_tenant_report(JSContext *ctx, JSValueConst this_val, int argc,
 
 
 /*
- * Evaluate each js_tenant_source in a fresh reduced context under compartment 1.
- * Deny-by-default: the global has only `report` — no `nginx`, no module loader
- * (free imports fail), no dangerous constructors. Ephemeral (freed here, before
- * fork). This is the primary confinement control; the reach-registry gates
- * (A1) are the defense-in-depth behind it.
+ * COMCON A3: tear down the persistent tenant compartment of this process's
+ * copy of jcf. The GC-tracked handler JSValue must be freed BEFORE
+ * JS_FreeContext (the "list_empty(&rt->gc_obj_list)" rule, as with
+ * master_handlers). Safe to call when no tenant exists; idempotent.
+ */
+static void
+ngx_js_tenant_teardown(ngx_js_conf_t *jcf)
+{
+    if (jcf->tenant_ctx != NULL) {
+        if (!JS_IsUninitialized(jcf->tenant_request_handler)) {
+            JS_FreeValue(jcf->tenant_ctx, jcf->tenant_request_handler);
+            jcf->tenant_request_handler = JS_UNINITIALIZED;
+        }
+        JS_FreeContext(jcf->tenant_ctx);
+        jcf->tenant_ctx = NULL;
+    }
+
+    if (jcf->tenant_rt != NULL) {
+        JS_FreeRuntime(jcf->tenant_rt);
+        jcf->tenant_rt = NULL;
+    }
+}
+
+
+/*
+ * COMCON A3: onRequest(fn) — the tenant's granted way to register a request
+ * handler. The function value is held in jcf->tenant_request_handler and is
+ * called (in the tenant context, under the tenant compartment) by
+ * js_tenant_handler locations. Its ENTIRE authority over the response is its
+ * return value: a string body, or {status, body} — data out, no capabilities.
+ */
+static JSValue
+ngx_js_tenant_onrequest(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_cycle_t    *cycle;
+    ngx_js_conf_t  *jcf;
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "onRequest(fn): a function argument is required");
+    }
+
+    cycle = JS_GetContextOpaque(ctx);
+    if (cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "onRequest: no cycle");
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL) {
+        return JS_ThrowInternalError(ctx, "onRequest: no jcf");
+    }
+
+    if (!JS_IsUninitialized(jcf->tenant_request_handler)) {
+        JS_FreeValue(ctx, jcf->tenant_request_handler);
+    }
+
+    jcf->tenant_request_handler = JS_DupValue(ctx, argv[0]);
+
+    return JS_UNDEFINED;
+}
+
+
+/*
+ * COMCON A2/A3: the tenant compartment. ONE isolated runtime + context
+ * (compartment 1) shared by all js_tenant_source files — deny-by-default:
+ * the global has only granted names (report, onRequest, the host's grants) —
+ * no `nginx`, no module loader (free imports fail), no dangerous
+ * constructors. This is the primary confinement control; the reach-registry
+ * gates (A1) are the defense-in-depth behind it.
+ *
+ * A3: the runtime PERSISTS in jcf (COW-inherited by workers) so that the
+ * handler registered via onRequest() can serve requests; torn down wherever
+ * the host runtime is (failed init_conf, reload old-cycle, exit_process,
+ * exit_master).
  */
 static ngx_int_t
 ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
@@ -587,80 +658,89 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
     ngx_js_compartment_t   prev;
     char                  *rc;
 
+    if (jcf->tenant_sources.nelts == 0) {
+        return NGX_OK;
+    }
+
+    /* A fully isolated runtime (the js_preprocess pattern): no interaction
+     * with the master runtime. The socket class is registered here so granted
+     * sockets are usable; class IDs are process-global (allocated once), so
+     * this just binds the class in trt. */
+    trt = JS_NewRuntime();
+    if (trt == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "js: failed to create tenant runtime");
+        return NGX_ERROR;
+    }
+
+    JS_SetMemoryLimit(trt, 64 * 1024 * 1024);
+
+    (void) ngx_js_socket_register_class(trt);
+
+    tctx = JS_NewContext(trt);
+    if (tctx == NULL) {
+        JS_FreeRuntime(trt);
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "js: failed to create tenant context");
+        return NGX_ERROR;
+    }
+
+    jcf->tenant_rt  = trt;
+    jcf->tenant_ctx = tctx;
+
+    /* cycle for report()/onRequest(); no module loader → free imports fail */
+    JS_SetContextOpaque(tctx, cycle);
+
+    /* The socket prototype must exist in the tenant context so a granted
+     * socket is usable (per-context proto install; classes are per-runtime,
+     * already registered). */
+    (void) ngx_js_socket_install_proto(tctx);
+
+    global = JS_GetGlobalObject(tctx);
+    JS_SetPropertyStr(tctx, global, "report",
+                      JS_NewCFunction(tctx, ngx_js_tenant_report,
+                                      "report", 1));
+    JS_SetPropertyStr(tctx, global, "onRequest",
+                      JS_NewCFunction(tctx, ngx_js_tenant_onrequest,
+                                      "onRequest", 1));
+
+    /* COMCON A2.1: inject the host's grants — sockets re-wrapped by handle
+     * into the tenant context. The socket carries its HOST_ROOT owner, so
+     * the A1 reach gate (sock.listener) denies the tenant even though it
+     * legitimately holds the object. */
+    {
+        ngx_uint_t              gi;
+        ngx_js_tenant_grant_t  *g;
+
+        g = jcf->tenant_grants.elts;
+
+        for (gi = 0; gi < jcf->tenant_grants.nelts; gi++) {
+            JS_SetPropertyStr(tctx, global, (const char *) g[gi].name.data,
+                              ngx_js_socket_wrap(tctx, g[gi].handle));
+        }
+    }
+
+    JS_FreeValue(tctx, global);
+
     path = jcf->tenant_sources.elts;
 
     for (i = 0; i < jcf->tenant_sources.nelts; i++) {
 
         src = ngx_js_read_file(cycle, &path[i], &src_len);
         if (src == NULL) {
+            ngx_js_tenant_teardown(jcf);
             return NGX_ERROR;
         }
 
-        /* A fully isolated runtime per tenant eval (the js_preprocess pattern):
-         * cleanly torn down, no interaction with the master runtime. The socket
-         * class is registered here so granted sockets are usable; class IDs are
-         * process-global (allocated once), so this just binds the class in trt. */
-        trt = JS_NewRuntime();
-        if (trt == NULL) {
-            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                          "js: failed to create tenant runtime for \"%V\"",
-                          &path[i]);
-            return NGX_ERROR;
-        }
-
-        (void) ngx_js_socket_register_class(trt);
-
-        tctx = JS_NewContext(trt);
-        if (tctx == NULL) {
-            JS_FreeRuntime(trt);
-            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                          "js: failed to create tenant context for \"%V\"",
-                          &path[i]);
-            return NGX_ERROR;
-        }
-
-        /* cycle for report(); no module loader is set → free imports fail */
-        JS_SetContextOpaque(tctx, cycle);
-
-        /* The socket prototype must exist in the tenant context so a granted
-         * socket is usable (per-context proto install; classes are per-runtime,
-         * already registered). */
-        (void) ngx_js_socket_install_proto(tctx);
-
-        global = JS_GetGlobalObject(tctx);
-        JS_SetPropertyStr(tctx, global, "report",
-                          JS_NewCFunction(tctx, ngx_js_tenant_report,
-                                          "report", 1));
-
-        /* COMCON A2.1: inject the host's grants — sockets re-wrapped by handle
-         * into the tenant context. The socket carries its HOST_ROOT owner, so
-         * the A1 reach gate (sock.listener) denies the tenant even though it
-         * legitimately holds the object. */
-        {
-            ngx_uint_t              gi;
-            ngx_js_tenant_grant_t  *g;
-
-            g = jcf->tenant_grants.elts;
-
-            for (gi = 0; gi < jcf->tenant_grants.nelts; gi++) {
-                JS_SetPropertyStr(tctx, global, (const char *) g[gi].name.data,
-                                  ngx_js_socket_wrap(tctx, g[gi].handle));
-            }
-        }
-
-        JS_FreeValue(tctx, global);
-
-        prev = ngx_js_compartment_enter((ngx_js_compartment_t) 1);
+        prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
 
         rc = ngx_js_eval_module(tctx, trt, src, src_len, path[i].data,
                                 cycle->log);
 
         ngx_js_compartment_leave(prev);
 
-        JS_FreeContext(tctx);
-        JS_FreeRuntime(trt);
-
         if (rc != NGX_CONF_OK) {
+            ngx_js_tenant_teardown(jcf);
             return NGX_ERROR;
         }
     }
@@ -803,6 +883,21 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     return NGX_CONF_OK;
 
 failed_ctx:
+    ngx_js_tenant_teardown(jcf);          /* COMCON A3 */
+
+    /*
+     * Pre-existing bug fixed alongside A3: on a failed eval, the GC-tracked
+     * master_handlers JSValue held in jcf must be freed BEFORE JS_FreeContext
+     * (same rule the exit paths follow), or JS_FreeRuntime below trips the
+     * "list_empty(&rt->gc_obj_list)" assertion — e.g. on a SIGHUP reload
+     * whose js_source throws (seen: createSocket EADDRINUSE), aborting the
+     * MASTER instead of rolling back to the old cycle.
+     */
+    if (!JS_IsUninitialized(jcf->master_handlers)) {
+        JS_FreeValue(jcf->ctx, jcf->master_handlers);
+        jcf->master_handlers = JS_UNINITIALIZED;
+    }
+
     JS_FreeContext(jcf->ctx);
     jcf->ctx = NULL;
 
@@ -1545,6 +1640,10 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
 
     jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
 
+    /* COMCON A3: the tenant runtime is COW-inherited like the host runtime;
+     * free this process's copy. Independent of w — safe before the w check. */
+    ngx_js_tenant_teardown(jcf);
+
     w = jcf->worker;
     if (w == NULL) {
         return;
@@ -1759,6 +1858,9 @@ ngx_js_init_module(ngx_cycle_t *cycle)
                 JS_FreeRuntime(old_jcf->rt);
                 old_jcf->rt = NULL;
             }
+
+            /* COMCON A3: the old cycle's tenant runtime (reload leak guard) */
+            ngx_js_tenant_teardown(old_jcf);
         }
     }
 
@@ -1881,6 +1983,8 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
     jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
 
     ngx_js_sw_exit_master(jcf);
+
+    ngx_js_tenant_teardown(jcf);          /* COMCON A3 */
 
     if (jcf->ctx) {
         if (!JS_IsUninitialized(jcf->master_handlers)) {

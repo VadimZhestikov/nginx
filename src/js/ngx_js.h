@@ -54,6 +54,18 @@ typedef struct {
                                              deny-by-default compartment (A2.0) */
     ngx_array_t          tenant_grants;   /* ngx_js_tenant_grant_t: sockets the
                                              host granted into the tenant (A2.1) */
+
+    /*
+     * COMCON A3: the persistent tenant compartment. One isolated runtime +
+     * context for ALL js_tenant_source files (compartment 1), created in
+     * init_conf before fork, COW-inherited by workers, serving requests via
+     * js_tenant_handler locations. tenant_request_handler is the function the
+     * tenant registered through its granted onRequest() — a GC-tracked JSValue
+     * held in jcf, freed BEFORE JS_FreeContext (same rule as master_handlers).
+     */
+    JSRuntime           *tenant_rt;
+    JSContext           *tenant_ctx;
+    JSValue              tenant_request_handler;
     JSRuntime           *rt;              /* master-process QuickJS runtime   */
     JSContext           *ctx;             /* master-process QuickJS context   */
     void                *worker;          /* ngx_js_worker_t* after fork      */
