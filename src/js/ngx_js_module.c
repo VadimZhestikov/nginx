@@ -1149,6 +1149,26 @@ ngx_js_c3_free_name(void *ud, const char *name)
         return;
     }
 
+    /* Reflective global aliases: `globalThis[<computed>]` reaches any bound
+     * name (incl. a granted capability) WITHOUT that name appearing in the
+     * static free-name manifest — the manifest would no longer be a complete
+     * over-approximation. Refuse them in the restricted profile. NB: this is
+     * defense-in-depth, not a soundness guarantee — the Function-constructor
+     * route (`[].constructor.constructor`) can still reach `this`; closing
+     * THAT requires curated intrinsics (M-SES, THREATS LOW-6 / front-end
+     * audit finding A1). */
+    if (ngx_strcmp(name, "globalThis") == 0
+        || ngx_strcmp(name, "global") == 0
+        || ngx_strcmp(name, "self") == 0)
+    {
+        ngx_log_error(NGX_LOG_EMERG, c->log, 0,
+                      "js: tenant fragment references reflective global \"%s\" "
+                      "— refused (COMCON C3: defeats the free-name manifest)",
+                      name);
+        c->rejected = 1;
+        return;
+    }
+
     atom = JS_NewAtom(c->ctx, name);
     has = JS_HasProperty(c->ctx, c->global, atom);
     JS_FreeAtom(c->ctx, atom);

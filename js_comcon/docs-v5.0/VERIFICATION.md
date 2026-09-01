@@ -183,3 +183,39 @@ or C5 would only duplicate it.
 adds a *granted capability* or a *new reach edge* must touch `THREATS.md` — "does this
 open a cell?" Cheap, per-commit, no ceremony; it keeps the ledger live so the gate
 reviews have less to rediscover.
+
+### Front-end soundness audit (2026-09-01, between SR-1 and SR-2)
+
+Not a gate review — a focused adversarial audit of the increment-C admission front-end
+(C3.0/C3-rest/C3-types/C4) run empirically (≈30 evasion fragments through `nginx -t` +
+runtime probes) when the front-end was complete but before building the compiled tier on
+it. **Verdict: confinement HELD — no capability escaped in any vector** (dynamic code and
+`globalThis[…]` reach only the deny-by-default tenant global; every ungranted host name —
+`nginx`/`fetch`/`require`/`process`/`createSocket` — reads `undefined`). The free-name
+walk proved robust (default initializers, computed keys, class `extends`/fields,
+destructuring defaults, nested arrows all caught). Findings, all about *soundness claims*,
+not breaches:
+
+- **A1 (MEDIUM — claim, not escape): C3-rest does not eliminate dynamic code.** The
+  Function constructor is reachable via `[].constructor.constructor`, `(function(){})
+  .constructor`, the async/generator function constructors, and `Reflect.construct`;
+  `import()` is admitted (inert without a loader). All bypass the `eval`/`Function`
+  name-deny-list and the opcode scan. So "no dynamic code ⇒ the static analysis is sound"
+  is **false**; the manifest's completeness rests on the global being deny-by-default, not
+  on the absence of dynamic code. **Root cause = full-intrinsic `JS_NewContext` (LOW-6).
+  The real fix is M-SES (curated intrinsics), which this audit ELEVATES from optional
+  hardening to a hard prerequisite for C5 erasure soundness and C4 env-signature
+  completeness.**
+- **A2 (MEDIUM→fixed as DiD): reflective global aliases.** `globalThis`/`global`/`self`
+  let `globalThis[<computed>]` reach a bound name (incl. a granted capability) invisibly
+  to the manifest. **Refused now** in `ngx_js_c3_free_name` (defense-in-depth — the
+  Function-ctor route still reaches `this`, so this is not a soundness fix; M-SES is).
+- **A3 (LOW — type-check completeness, no security impact): a destructured Request
+  parameter** (`onRequest(function({secret}){…})`) and **computed/aliased member access**
+  bypass the sealed-Request field check; **rest params** (`function(req,...r)`) bypass the
+  ≤1 arity check (`.length` ignores rest/defaults). Folded into the C5 erasure-complete
+  type remainder; pinned by `t/comcon_frontend_audit.t` so closure is a visible change.
+
+Regressions: `t/comcon_frontend_audit.t` pins the containment guarantee (dynamic code sees
+zero host authority) and the A2 fix. The escape-completeness of the intrinsics themselves
+remains **SR-3** (post-M-SES), as scheduled.

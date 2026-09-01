@@ -93,12 +93,17 @@ The biggest unknowns are front-loaded. Each slice is a differential-tested verti
     (into nested `cpool` functions); `ngx_js_module.c` refuses the fragment at load
     if any free name is absent from the bound tenant environment. The A/B runtime
     deny-by-default becomes an admission-time refusal. Test: `t/comcon_admission.t`.
-  - **C3-rest — restricted constructs (soundness).** Dynamic code is refused at load
-    so the free-name analysis cannot be evaded: `js_comcon_uses_dynamic_code`
-    (quickjs.c) scans the handler's bytecode for direct `eval`/`with`
-    (OP_eval/OP_apply_eval/OP_with_*, recursing), and an `eval`/`Function` *name*
-    deny-list catches indirect references. (`with` is also a strict-mode syntax error
-    in the tenant module and never compiles.) Test: `t/comcon_restricted.t`.
+  - **C3-rest — restricted constructs.** Dynamic code in its naive forms is refused at
+    load: `js_comcon_uses_dynamic_code` (quickjs.c) scans the handler's bytecode for
+    direct `eval`/`with` (OP_eval/OP_apply_eval/OP_with_*, recursing), and an `eval`/
+    `Function` *name* deny-list catches indirect references; reflective global aliases
+    (`globalThis`/`global`/`self`) are refused too. (`with` is also a strict-mode syntax
+    error in the tenant module.) Test: `t/comcon_restricted.t`. **NOT sound on its own
+    (front-end audit, v5.18):** dynamic code is still reachable via
+    `[].constructor.constructor`, the async/generator constructors and `Reflect.construct`
+    — C3-rest stops the naive forms, but "no dynamic code" is delivered only once M-SES
+    removes the reflective intrinsics. Confinement still holds meanwhile (deny-by-default
+    global); it is *manifest completeness* that waits on M-SES.
   - **C3-types — type-checking against the C2 schema (first slice).** The front-end now
     checks *types*, not only names/constructs. Two schema contracts, each soundly
     decidable at admission: **(a) the `env.onRequest` signature** `(Request) => Response`

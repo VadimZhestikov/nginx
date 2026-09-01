@@ -186,7 +186,22 @@ Two findings **accepted/deferred, recorded here** (the ledger discipline):
   — the names still *exist* in the context — but it removes dynamic code from the class
   of *admitted* tenants, which is also what makes the C3.0 static free-name analysis
   sound (dynamic code could otherwise hide a host-name reference from the analyzer).
+  *Update (front-end audit, v5.18) — the C3-rest claim above is INCOMPLETE:* the audit
+  showed dynamic code is still reachable via `[].constructor.constructor`, the
+  async/generator function constructors, and `Reflect.construct` — none named `eval`/
+  `Function`, none using OP_eval — so the name-deny-list + opcode scan do **not** make
+  the analysis sound; they only stop the *naive* forms. Confinement still holds (the
+  reached global is deny-by-default — every ungranted host name reads `undefined`), so
+  this is not an escape, but the "static analysis is sound" property is **not** delivered
+  by C3-rest alone. **This promotes M-SES (curated intrinsics: `JS_NewContextRaw` + a
+  vetted subset, no reflective Function/Reflect/Proxy) from a deferred hardening lever to
+  a HARD PREREQUISITE for C5 erasure soundness and C4 env-signature completeness** — the
+  compiled tier may not trust the free-name manifest as complete until the intrinsics that
+  defeat it are gone. Reflective global aliases (`globalThis`/`global`/`self`) are refused
+  now as defense-in-depth (not a fix). See VERIFICATION.md "Front-end soundness audit".
 
 Verdict: with HIGH-1 closed, the A/B capability logic is a sound foundation for
-increment C, within the stated TCB assumption. The full adversarial pentest (engine
-escapes) remains SR-3, after M-SES.
+increment C, within the stated TCB assumption. Confinement held under the front-end audit
+(no escape); the manifest-completeness / dynamic-code-freedom *soundness* properties are
+blocked on M-SES. The full adversarial pentest (engine escapes) remains SR-3, after
+M-SES.

@@ -2,7 +2,12 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.17**, C4 the fragment artifact ("fat bytecode") — after the C3 checks
+> (current: **v5.18**, the front-end soundness audit — adversarial audit of the C
+> admission front-end: CONFINEMENT HELD (no capability escaped — dynamic code + globalThis
+> reach only the deny-by-default global), but C3-rest does NOT eliminate dynamic code
+> (`[].constructor.constructor` etc.), so M-SES (curated intrinsics) is promoted to a hard
+> prerequisite for C5 erasure soundness; fix: reflective globals globalThis/global/self
+> refused; t/comcon_frontend_audit.t; v5.17 C4 the fragment artifact ("fat bytecode") — after the C3 checks
 > pass the admitted fragment gets a content-addressed identity H(H(source)‖schema-version)
 > + an admission certificate (env-signature size + which C3 checks cleared), logged at
 > load; the `js_tenant_artifact <hex>` directive pins the identity so content drift OR

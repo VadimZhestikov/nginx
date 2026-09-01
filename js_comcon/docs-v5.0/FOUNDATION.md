@@ -553,6 +553,28 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.18 (in place — the front-end soundness audit):** an adversarial audit of the
+increment-C admission front-end (C3.0/C3-rest/C3-types/C4), run empirically before
+building the compiled tier on it. **Confinement held — no capability escaped in any
+vector** (dynamic code and `globalThis[…]` reach only the deny-by-default tenant global;
+every ungranted host name reads `undefined`), and the free-name walk proved robust across
+default initializers, computed keys, class `extends`/fields, destructuring defaults and
+nested arrows. But two soundness *claims* were overstated (details in VERIFICATION.md
+"Front-end soundness audit" + THREATS LOW-6): **C3-rest does not actually eliminate
+dynamic code** — the Function constructor is reachable via `[].constructor.constructor`,
+the async/generator constructors, and `Reflect.construct`, none of which the name-deny-
+list or opcode scan catch — so "no dynamic code ⇒ the analysis is sound" is false; the
+manifest's completeness rests on the global being deny-by-default, not on the absence of
+dynamic code. The audit's key strategic result: **M-SES (curated intrinsics) is promoted
+from optional hardening to a hard prerequisite for C5 erasure soundness and C4 env-
+signature completeness** — the compiled tier may not treat the free-name manifest as a
+complete capability set until the reflective intrinsics that defeat it are removed. Fix
+landed: reflective global aliases (`globalThis`/`global`/`self`) are refused
+(defense-in-depth, not a soundness fix). Minor type-check-completeness gaps (destructured
+Request param, computed/aliased access, rest-param arity) folded into the C5 erasure
+remainder. Regressions: `t/comcon_frontend_audit.t` (pins the containment guarantee + the
+fix).
+
 **v5.17 (in place — C4: the fragment artifact):** the admitted fragment is no longer a
 transient — after the C3 checks pass it is sealed into an **artifact** (SPEC §8's "fat
 bytecode", minus the not-yet-built lowering): a **content-addressed identity**
