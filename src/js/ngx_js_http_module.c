@@ -8481,6 +8481,43 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
                       JS_NewStringLen(tctx, (const char *) r->args.data,
                                       r->args.len));
 
+    /* A3.1: request headers as plain data (a copy — still no capability). */
+    {
+        JSValue           hobj;
+        u_char            key_buf[64];
+        size_t            klen;
+        ngx_uint_t        hi;
+        ngx_list_part_t  *part;
+        ngx_table_elt_t  *h;
+
+        hobj = JS_NewObject(tctx);
+        part = &r->headers_in.headers.part;
+        h    = part->elts;
+
+        for (hi = 0; /* break below */; hi++) {
+            if (hi >= part->nelts) {
+                if (part->next == NULL) {
+                    break;
+                }
+                part = part->next;
+                h    = part->elts;
+                hi   = 0;
+            }
+
+            klen = h[hi].key.len < sizeof(key_buf) - 1
+                   ? h[hi].key.len : sizeof(key_buf) - 1;
+            ngx_memcpy(key_buf, h[hi].lowcase_key, klen);
+            key_buf[klen] = '\0';
+
+            JS_SetPropertyStr(tctx, hobj, (const char *) key_buf,
+                              JS_NewStringLen(tctx,
+                                              (const char *) h[hi].value.data,
+                                              h[hi].value.len));
+        }
+
+        JS_SetPropertyStr(tctx, req, "headers", hobj);
+    }
+
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
 
     ret = JS_Call(tctx, jcf->tenant_request_handler, JS_UNDEFINED,
@@ -8519,6 +8556,115 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
         }
         JS_FreeValue(tctx, v);
 
+        /*
+         * A3.1: response headers from .headers — still data out, but the
+         * tenant chooses the strings, so this is the classic header-CRLF
+         * injection surface (showcase 4): validate every name (token chars)
+         * and value (no CR/LF/NUL) and drop offenders, bounded count.
+         */
+        v = JS_GetPropertyStr(tctx, ret, "headers");
+
+        if (JS_IsObject(v)) {
+            uint32_t          tab_len, j, applied;
+            JSValue           hkey, hval;
+            const char       *kc, *vc, *p;
+            size_t            klen2, vlen2;
+            ngx_flag_t        ok;
+            JSPropertyEnum   *tab;
+            ngx_table_elt_t  *he;
+
+            applied = 0;
+
+            if (JS_GetOwnPropertyNames(tctx, &tab, &tab_len, v,
+                                       JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY)
+                >= 0)
+            {
+                for (j = 0; j < tab_len; j++) {
+                    hkey = JS_AtomToString(tctx, tab[j].atom);
+                    hval = JS_GetProperty(tctx, v, tab[j].atom);
+
+                    kc = JS_ToCString(tctx, hkey);
+                    vc = JS_ToCString(tctx, hval);
+
+                    ok = (kc && vc && applied < 32);
+
+                    if (ok) {
+                        for (p = kc; *p; p++) {
+                            if (!((*p >= 'a' && *p <= 'z')
+                                  || (*p >= 'A' && *p <= 'Z')
+                                  || (*p >= '0' && *p <= '9')
+                                  || *p == '-' || *p == '_'))
+                            {
+                                ok = 0;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (ok) {
+                        for (p = vc; *p; p++) {
+                            if (*p == '\r' || *p == '\n') {
+                                ok = 0;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (ok
+                        && ngx_strcasecmp((u_char *) kc,
+                                          (u_char *) "content-type") == 0)
+                    {
+                        vlen2 = ngx_strlen(vc);
+                        r->headers_out.content_type.data =
+                            ngx_pnalloc(r->pool, vlen2 + 1);
+
+                        if (r->headers_out.content_type.data) {
+                            ngx_memcpy(r->headers_out.content_type.data,
+                                       vc, vlen2 + 1);
+                            r->headers_out.content_type.len = vlen2;
+                            r->headers_out.content_type_len = vlen2;
+                            applied++;
+                        }
+
+                    } else if (ok) {
+                        he = ngx_list_push(&r->headers_out.headers);
+
+                        if (he) {
+                            klen2 = ngx_strlen(kc);
+                            vlen2 = ngx_strlen(vc);
+
+                            he->key.data   = ngx_pnalloc(r->pool, klen2 + 1);
+                            he->value.data = ngx_pnalloc(r->pool, vlen2 + 1);
+
+                            if (he->key.data && he->value.data) {
+                                ngx_memcpy(he->key.data, kc, klen2 + 1);
+                                ngx_memcpy(he->value.data, vc, vlen2 + 1);
+                                he->key.len   = klen2;
+                                he->value.len = vlen2;
+                                he->hash      = 1;
+                                applied++;
+                            }
+                        }
+
+                    } else if (kc && vc) {
+                        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                                      "js_tenant_handler: invalid response "
+                                      "header dropped (name=\"%s\")", kc);
+                    }
+
+                    if (kc) { JS_FreeCString(tctx, kc); }
+                    if (vc) { JS_FreeCString(tctx, vc); }
+                    JS_FreeValue(tctx, hkey);
+                    JS_FreeValue(tctx, hval);
+                    JS_FreeAtom(tctx, tab[j].atom);
+                }
+
+                js_free(tctx, tab);
+            }
+        }
+
+        JS_FreeValue(tctx, v);
+
     } else {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "js_tenant_handler: handler must return a string or "
@@ -8548,8 +8694,10 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
     r->headers_out.status           = (ngx_uint_t) status;
     r->headers_out.content_length_n = (off_t) blen;
 
-    ngx_str_set(&r->headers_out.content_type, "text/plain");
-    r->headers_out.content_type_len = r->headers_out.content_type.len;
+    if (r->headers_out.content_type.len == 0) {   /* tenant may have set it */
+        ngx_str_set(&r->headers_out.content_type, "text/plain");
+        r->headers_out.content_type_len = r->headers_out.content_type.len;
+    }
 
     rc = ngx_http_send_header(r);
     if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
