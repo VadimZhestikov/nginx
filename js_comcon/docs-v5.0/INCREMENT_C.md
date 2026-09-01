@@ -199,7 +199,7 @@ build and a pilgrim build flavour. The `quickjs.c` glue is the ~3128 maxim-only 
 vendored.
 
 **Sub-steps (the multi-day construction, C1.1–C1.4):**
-- **C1.1 — DONE** (`../quickjs` branch `comcon-jit`, commit `f6a2646`). Vendored
+- **C1.1 — DONE** (now vendored at pilgrim `quickjs/`; originally `../quickjs` branch `comcon-jit` `f6a2646`). Vendored
   `quickjs-jit.{c,h}` + ported maxim's CONFIG_JIT Makefile stanza. Verified: JIT-off
   build byte-identical (archive has no `quickjs-jit.o`, no `js_jit_*`); JIT-on dry-run
   compiles it with the right defines. A JIT-on build won't *link* yet (needs C1.2 glue)
@@ -213,11 +213,14 @@ vendored.
 - **C1.4** — differential: a hot pilgrim/tenant function gets JIT-compiled and produces
   identical results (the erasure-soundness invariant, first live instance).
 
-**Where the merged engine lives (a decision to make):** the vendored `../quickjs` is
-its own git repo whose remote is *bellard upstream* — we cannot push there. C1's engine
-commits go on a local branch (`comcon-jit`). Before/at C1.3 the project must choose: (a)
-add our own quickjs fork remote and push `comcon-jit` to it, or (b) vendor `quickjs` into
-the pilgrim repo. Until then the merged engine is a local branch only.
+**Where the merged engine lives — DECIDED (b): vendored into pilgrim (2026-09-01).**
+`quickjs/` is now a subdirectory of the pilgrim repo (brought in with `git subtree
+--prefix=quickjs --squash` from the `comcon-jit` branch, so it carries the pilgrim
+patches + C1.1). Rationale: the engine and pilgrim's COMCON code co-evolve tightly
+(C4/C5 ABI), so atomic co-commits + a self-contained clone matter more than easy
+upstream rebases (this fork has diverged far anyway). nginx builds `-Iquickjs -Lquickjs`;
+all comcon_* + js_com tests pass against the vendored engine. Upstream pulls later via
+`git subtree pull`. The sibling `../quickjs` checkout is retained only as a rebase base.
 
 **Status: C1.0 (analysis) done, C1.1 (vendor + wiring) done; C1.2–C1.4 is the engine merge — the genuinely multi-day
 piece, now scoped and de-risked (same base, benign opcode divergence, additive

@@ -9,9 +9,18 @@ This workspace integrates [QuickJS](https://github.com/bellard/quickjs) (a light
 ## Repository Layout
 
 ```
-nginx/      # Official nginx source (upstream: nginx/nginx)
-quickjs/    # QuickJS JS engine (upstream: bellard/quickjs)
+src/, auto/, …   # the nginx source tree — the repo root IS the nginx tree
+src/js/          # the pilgrim JS/COM/COMCON module (--add-module)
+quickjs/         # the JS engine, VENDORED IN-TREE (2026-09-01)
 ```
+
+**quickjs is vendored into this repo** (subdir `quickjs/`), not a sibling checkout —
+so the engine (pilgrim patches + maxim's COMCON JIT) and its consumer co-evolve
+atomically and a clone is self-contained. It was brought in with `git subtree`
+(`--prefix=quickjs`, base = the bellard tree at VERSION 2025-09-13 + patches); to pull
+upstream later, `git subtree pull --prefix=quickjs <fork> <ref> --squash`. Build:
+`make -C quickjs libquickjs.a` then configure nginx with `-Iquickjs -Lquickjs -lquickjs`
+(see the project memory build recipe).
 
 ## Build Commands
 
