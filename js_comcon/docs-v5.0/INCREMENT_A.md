@@ -178,6 +178,8 @@ The vertical slice of §5 is **built, tested, and non-regressing** (each unit be
 | **A2.0** deny-by-default env | `33c4f0d52` | `js_tenant_source`: a reduced tenant context (no `nginx`, no module loader, granted names only) — *the primary control*, tested (`comcon_tenant_deny.t`) |
 | **A2.1** grants | `14f7a25b7` | `nginx.grantToTenant(name, sock)` (host-only); tenant holds + uses the socket, yet `.listener` is null cross-compartment — *the gate isolates by compartment, not by holding* (`comcon_tenant_grant.t`) |
 | **A4** denial log + audit loop | `0730ba201` | denial events at all seven gate sites; **TM-1 to spec** (exact per-code counters always; 100 full records then 1/100 sampling; quota-exceeded reported once — verified: 250 denials → 101 records, counters exactly 250); `js_tenant_mode audit\|enforce;` (audit = log-and-allow, the observe-then-enforce loop); `nginx.tenantDenials()` host report; the tenant runtime now carries the full COM class set (classes per-runtime, protos per-context, still no `nginx` global) so audit-allow can hand wrapped objects in (`comcon_denial_log.t`, `comcon_audit_mode.t`) |
+| **A3.1** request headers | `2d5a81877` | headers as DATA both ways — `req.headers` in (a copy), response headers out via the return value's `.headers`, with CRLF/non-token names dropped (showcase-4 guard); still zero-capability |
+| **dogfood** acceptance | `2d5a81877` | `js_com_demos/COMCON_dogfood/`: a caged mirror tenant (count+tag+echo, the M1 shape as untrusted code) on real 2-worker traffic; `test.sh` (12 checks) proves policy works + cage holds live + injection dropped + host reads `tenantDenials()` |
 | **A3.0** request path | `39a496cab` | persistent tenant runtime (COW into workers, torn down at the same four sites as the host runtime); granted `onRequest(fn)`; `js_tenant_handler;` location directive; deny-by-default + gates active **during live requests** (`comcon_tenant_request.t`) |
 
 **A design decision made in code, now recorded:** the A3.0 tenant handler receives
@@ -199,8 +201,11 @@ separate grant) is the later widening, not the starting point.
 - Reload semantics verified both ways for the tenant: idempotent config → new tenant
   runtime serves, old freed cleanly; throwing config → master survives.
 
-**Remaining for increment A:** the **dogfood demo** (a caged mirror-style tenant on
-real traffic — increment A's acceptance). Then beyond A: multi-tenant (N named
+**Increment A is COMPLETE** — accepted by the dogfood demo (a confined tenant serving
+real multi-worker traffic, cage proven on live requests, the audit→enforce loop closed
+by the host). Beyond A: **increment B** (onboarding — learning-mode harvest, generated
+docs, dependency workflow); and the deferred widenings — multi-tenant (N named
 compartments; the `{compartment, idx}` handler generalization is only needed then),
-request-facet grants, budgets/gas (S5), and per-member registry policy (the M2+S4
-schema walk supersedes today's hard-coded gate set).
+request-facet/capability grants (e.g. a cross-worker shared counter — the demo's honest
+gap), budgets/gas (S5), and per-member registry policy (the M2+S4 schema walk supersedes
+today's hard-coded gate set).

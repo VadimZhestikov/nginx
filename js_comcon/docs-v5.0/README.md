@@ -2,8 +2,8 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.7**, A4 done — denial log w/ TM-1 quotas, audit→enforce loop,
-> tenantDenials() report; v5.6, the COMCON-lite core BUILT + TESTED through the
+> (current: **v5.8**, INCREMENT A COMPLETE — A3.1 request headers + the dogfood
+> acceptance demo (js_com_demos/COMCON_dogfood); v5.7 A4 denial log + audit→enforce; v5.6, the COMCON-lite core BUILT + TESTED through the
 > request path; build log INCREMENT_A.md §6, status SPEC.md §13; before it
 > v5.5, SPEC.md + the ground-truthed INCREMENT_A.md build plan from the
 > nginx reality check; before it v5.4 convergence actions — THREATS.md, two-clocks pin,

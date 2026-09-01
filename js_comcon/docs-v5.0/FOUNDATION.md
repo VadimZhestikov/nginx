@@ -553,6 +553,16 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.8 (in place — increment A COMPLETE):** A3.1 puts headers on the confined request
+path as *data* (request headers in as a copy; response headers out via the return value,
+CRLF/non-token dropped — showcase-4 guard), and the **dogfood demo**
+(`js_com_demos/COMCON_dogfood/`) accepts increment A: a caged mirror tenant serving real
+2-worker traffic, the cage proven on live requests (nginx unnameable + a granted socket's
+`.listener` null cross-compartment), CRLF injection dropped, the audit→enforce loop
+closed by the host reading `tenantDenials()`. COMCON-lite is now a working, tested,
+demonstrated system. Next: increment B (onboarding). Honest gaps recorded (per-worker
+counting, single tenant, no budgets — all deferred widenings, INCREMENT_A.md §6).
+
 **v5.7 (in place — A4, the observability layer):** the denial log at all seven gate
 sites with **TM-1 implemented to spec** (exact counters always; 100 full records then
 1/100 sampling; quota-exceeded reported once — verified 250→101 records/250 counted);

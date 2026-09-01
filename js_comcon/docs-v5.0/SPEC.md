@@ -345,8 +345,9 @@ consistency C, threat model); the M1 perf spike measured the 28%/96% endpoints
 (`src/js/ngx_js_compartment.*` + integration; build log in `INCREMENT_A.md` §6): the
 compartment identity, the deny-by-default tenant environment, the host→tenant grant
 primitive, the reach-cycle registry gates, and a **confined tenant serving live HTTP
-requests** — each behind a `t/comcon_*` test that proves the confinement claim it
-implements. Everything else in this SPEC (typed profile, tiers, quotations, POM
+requests** (headers as data both ways) — each behind a `t/comcon_*` test, and
+**accepted end-to-end by a dogfood demo** (`js_com_demos/COMCON_dogfood/`: a caged
+mirror tenant on real multi-worker traffic). **Increment A is complete.** Everything else in this SPEC (typed profile, tiers, quotations, POM
 rewrite, config instance, adaptive) remains design. Delivery follows the increment
 re-cut (`ROADMAP.md` §13), confinement-first. This SPEC is normative for *what*; the
 design record (§14) holds *why* and *how we got here*.
