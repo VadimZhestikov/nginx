@@ -272,6 +272,21 @@ workers would not *activate* JIT even absent the hang. Real per-worker activatio
 worker-local thread post-fork + install wired into the event loop + benchmark) is C6.
 The prior partial note follows.
 
+**C6-lite JIT-activation spike (2026-09-01) — result: activation is real C6 work, not a
+quick win (throwaway probes reverted).** Wired a spike (`-DCOMCON_JIT_SPIKE`): per-worker
+`js_jit_init()` on first request, runtime `js_jit_set_threshold(3)`, `js_jit_install_
+results()` after each tenant `JS_Call`, + engine probes. Findings: (1) the worker-local
+JIT thread starts fine; (2) but the threshold trigger misbehaves for tenant functions —
+call counts don't accumulate (`cnt=1` every event) and the runtime threshold setter
+didn't reach the request path (`thr=100`), so no function is ever enqueued; (3) with the
+activation wiring, **single-process JIT nginx segfaults during tenant eval**; (4) the
+install path was never exercised (no compile happened / crash). Conclusion: real
+per-worker JIT **activation** — the trigger/count/threshold behaviour for functions
+invoked via C `JS_Call` from a separate tenant runtime, the crash, and the install
+wiring — is dedicated C6 engineering. The spike did its job: it de-risked by revealing
+activation is non-trivial *before* C2–C5 were built on the assumption it was easy. The
+interpreted tier (T1) is solid and unaffected.
+
 **C1.3 (prior partial note): the JIT-enabled engine builds + links into nginx, the
 background-compile thread needed nginx-lifecycle adaptation —** now done (above). `make CONFIG_JIT=y
 libquickjs.a` builds clean (has `js_jit_rt`); nginx relinks against it (+`-ldl -lpthread`)
