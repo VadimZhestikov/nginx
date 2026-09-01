@@ -17,10 +17,14 @@ input to C7 / M8 (= SR-2 faithfulness, "T2 refines T1"). Grounded in a categoriz
 > phase-35 cache-load path (cold+warm). The residual delta is small and **out-of-profile**:
 > (a) the biggest correctness bucket — non-strict callback `this`=undefined-vs-global — is
 > **sloppy-mode only**, and COMCON tenants are strict modules where the JIT's answer is
-> *correct*; (b) a residual crash in `filter/map` is a **cache-load-path** bug specific to
-> the exotic `speciesctor-destination-resizable` function (species constructor + resizable
-> ArrayBuffer + BigInt TA), which the cache-load path handles fine for all normal functions;
-> (c) a BigInt-callback-conversion edge. **Conclusion:** the COMCON-profile-scoped gate is
+> *correct*; (b) the residual `filter/map` crash is **NOW FIXED (maxim `3d52736`)** — it was
+> a cache-load-path bug where a JIT'd function emitting P10.3 direct JIT-to-JIT calls could
+> bind a direct call to a stale/wrong `__jit_f_` symbol left in the process-global RTLD
+> namespace by a freed runtime (warm cache only). Fixed by consistent callee hashing
+> (`jit_hash_function`) + correctness-safely skipping the cache-load fast path for direct-call
+> functions (recompile fresh; common functions still cache-load). Trade-off: direct-call
+> functions lose the cross-process `.so` cache; a per-callee-resolution fix is deferred.
+> (c) a BigInt-callback-conversion edge remains. **Conclusion:** the COMCON-profile-scoped gate is
 > met — in-profile T2 is correct (incl. server-AOT cache-load) — so **C5 lowering is
 > unblocked**. The three residual items go to a parallel maxim full-suite track (fix or
 > exclude), not the C5 critical path. Details: §5 (categories) updated by the run; the
