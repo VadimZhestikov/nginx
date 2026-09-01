@@ -2,7 +2,13 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.21**, maxim finalization go/no-go EXECUTED — Bucket-1 closure var_ref crash
+> (current: **v5.22**, C5 SCOPED (INCREMENT_C5.md) — lowering the compiled confined tier:
+> confinement is preserved by construction (it lives in the host boundary + gated callees,
+> not the handler bytecode), so the MVP compiles the handler via maxim server-AOT
+> (js_jit_compile_all→drain→install, no background thread → sidesteps C6-lite) + a
+> differential test asserting identical responses AND denial counters; gas + two-clocks
+> revocation deferred (no budget/epoch machinery exists yet, interpreted or compiled);
+> v5.21, maxim finalization go/no-go EXECUTED — Bucket-1 closure var_ref crash
 > FIXED (maxim b07ca5d) + T0 measurement harness built (73bba6d); with the fix the common
 > JIT surface is 0-new and an in-profile strict handler ran 200k clean incl. server-AOT
 > cache-load; residual delta is small + OUT-OF-PROFILE (sloppy-mode `this`, a species/
