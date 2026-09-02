@@ -116,6 +116,19 @@ the same `admit`; follows the program-fragment operators.
    into the host), and tear it down on the tenant/`comcon_ctx` teardown path — i.e. reuse the proven
    `ngx_js_eval_tenant_sources` model rather than compiling-from-host. Also: `mediate` membrane
    *enforcement* (via the reach gates) remains.
+   **2nd attempt (tenant-model, 2026-09-02) — again functionally PROVEN, again reverted for a
+   lifetime issue.** `comcon.include()` now held the fragment C-side (a `jcf->comcon_frags`
+   `JSValue[]`, off the compartment global) and invoked it *in* the compartment with **JSON
+   round-trip marshaling** in C (no object crosses the realm) — verified correct
+   (`{sees:"undefined", got:42}` from `f({a:21})`) and no cross-realm interrupt/abort. But teardown
+   still aborts `JS_FreeRuntime: list_empty(&rt->gc_obj_list)` (a leak), and it reproduces with
+   **include-only, no invoke** — so the leak is in *compartment-create + frag-hold*, not marshaling
+   or the frag↔global cycle. Freeing each frag before `JS_FreeContext(comcon_ctx)` did not clear it.
+   **Key insight for the next attempt:** the crash-free tenant compartment lives on its **own
+   runtime** (`tenant_rt`), whereas this shared it with the host runtime (`jcf->rt`) — two contexts
+   on one runtime is the likely culprit; give the include compartment its **own JSRuntime** (mirror
+   `tenant_rt` exactly: create at init, `JS_FreeRuntime` at teardown), or gdb the leaked object.
+   This needs a dedicated, gdb-assisted pass — it did not converge via incremental probing.
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.
