@@ -122,9 +122,47 @@ with the taming stubs frozen so a tenant cannot restore them.
   in req 1 was visible in req 2 (long-lived tenant runtime); now the write throws (frozen +
   strict) and never persists. Ordinary JS is unaffected (own-object mutation + built-in
   method calls still work). Test `t/comcon_freeze.t`; full comcon green on both builds
-  (21/180). **Noted extension:** the COM/Socket prototypes are installed *after* the lockdown
-  so this pass does not freeze them — their mutators are C-side-gated regardless; freezing
-  them too is a small follow-up (a second harden after `ngx_js_com_install_protos`).
+  (21/180). **Noted extension → scoped as M-SES-1b (2026-09-02), below.**
+
+### M-SES-1b — freeze the granted COM/Socket capability prototypes (scope)
+
+**The gap.** `ngx_js_com_install_protos(tctx)` (`ngx_js_module.c:1398`) installs the whole COM
+class-prototype set — ~24 protos (location/server/upstream/peer/proxy/ssl/headers/limitReq/
+limitConn/… ) plus Socket/listener/stream_listener — **after** `ngx_js_tenant_lockdown`'s
+freeze (`:1391`). The M-SES-1 harden roots never reach them (they are class protos set via
+`JS_SetClassProto`, not reachable from `globalThis`), so they are **unfrozen** in the tenant
+context. Same risk *class* as M-SES-1 but on the **capability** surface: cross-request /
+cross-tenant prototype pollution (shadowing a capability method, planting a property that
+persists in the long-lived tenant context). Authority itself is **not** bypassable — the COM
+mutators are C-side reach-gated.
+
+**Priority = defense-in-depth, NOT a live hole (empirically established).** The current
+confined profile is **data-in-data-out with no capability grant** (`ngx_js_http_module.c:8436`
+"No request capability object is granted"); the `grantedSock` chain is an SR-1 *threat-model
+comment*, not an active grant. A default tenant **cannot reach any COM proto**: no grant, the
+protos are off `globalThis`, the COM names (`nginx`/`createSocket`) are deny-listed at
+admission, and the sealed-Request's own proto is already frozen (verified `frozen=true`). The
+unfrozen protos become reachable only once a tenant is **granted** a capability object
+(`Object.getPrototypeOf(granted)`). So this is a **prerequisite to gate the grant model**, and
+MUST land before any capability object is handed to a tenant — but it closes no current hole.
+
+**Fix (small, ~1 function + 1 call site).** Add `ngx_js_com_freeze_protos(ctx)` in
+`ngx_js_com.c` mirroring the install list: for each class id, `JS_GetClassProto(ctx, id)` →
+freeze (transitively, matching M-SES-1's `harden`). Call it **only** from the tenant setup
+(right after `:1398`), **never** from `ngx_js_com_install_protos` itself — that function also
+runs for the **regular pilgrim JS context** (`ngx_js_com.c:2786`), which legitimately mutates
+COM for dynamic reconfig (addServer/addLocation/weight=/setHeader). Freezing there would break
+reconfig; freezing the *tenant* context's copy does not (method calls + getters survive
+freeze, as M-SES-1 proved). Confirm no install path adds proto properties per-request (protos
+are static `JS_SetPropertyFunctionList` tables — expected static).
+
+**Verification.** The reach path is untestable from a default tenant today (no grant), so:
+(a) a C/test hook asserting `JS_GetClassProto(tctx, id)` protos are `Object.isFrozen` after
+setup; (b) a full grant-path pollution test folds in when the grant model ships. Regression
+guard: the regular-context COM suites (`t/` COM tests + `t_stress/com_*`) must stay green —
+i.e., the freeze did **not** leak into the reconfig context. **Effort: small;** the only real
+risk is tenant-vs-shared-context scoping (covered by keeping the freeze at the tenant call
+site). Slots in before the grant model / any multi-tenant-shared-runtime capability work.
 - **M-SES-2 — portal taming + escape-probe gate (= SR-3). DONE (2026-09-01, v5.28).** The
   adversarial pentest of intrinsic/engine escape completeness. **Verdict: no sandbox
   escape** — every dynamic-code route stays tamed (error/bound-fn/`Symbol.species`
