@@ -138,7 +138,15 @@ one correctness bug:**
   `SameValue(undefined,[object global])` fails). One JIT-prologue fix (substitute global for
   undefined/null `this` in non-strict functions) clears the family. **Out of the confined
   COMCON profile** (tenants are strict modules) — which is exactly why C7/SR-2 passed
-  profile-scoped.
+  profile-scoped. ✅ **FIXED (F2, maxim `jit` 5885987, 2026-09-02):** `OP_push_this` now
+  emits the sloppy coercion via a `js_jit_this_sloppy()` runtime helper (object→as-is,
+  null/undefined→global, primitive→`JS_ToObject`), gated by a `js_jit_fb_is_strict()`
+  accessor; strict keeps the plain dup. **Subtlety the T0 sweep caught:** codegen now
+  depends on `js_mode`, which is *not* in the bytecode stream, so the strict bit had to be
+  folded into `jit_hash_function()` — else a strict/sloppy twin with identical bytecode
+  aliases to one JIT cache entry (the strict `Array.from`/`Map.forEach` variants regressed
+  until the hash included the mode bit). T0 delta over the affected families: **6 new → 0
+  new**; both tiers match the interpreter; CONFIG_JIT self-test green.
 - **BigInt typed-array callbacks — basic path CLEAN at HEAD** (repro: `BigInt64Array`
   `filter`/`forEach` match the interpreter). Any residue is a narrow edge case
   (during-iteration mutation / resizable buffers), triaged in T3.
