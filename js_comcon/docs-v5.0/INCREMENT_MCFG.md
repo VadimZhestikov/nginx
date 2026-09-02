@@ -80,7 +80,9 @@ the same `admit`; follows the program-fragment operators.
 ## Migration sequencing (each step keeps `comcon_*.t` green)
 
 1. **Design** the operator API shapes (contract, interceptor, attenuation/meet semantics) — a
-   design doc.
+   design doc. ✅ **DONE** — `OPERATOR_API.md` (grant/mediate/bind/admit + include/includeAt/
+   policy/realize, staging §6, the §8 decisions all resolved 2026-09-02: comcon-module surface,
+   root cap set, meter=timeoutMs-now, closure default, init-time-only v1, M2 schema w/ C3 interim).
 2. **Implement `admit()`** as the umbrella over the existing `init_conf` sequence, callable from
    host JS.
 3. **Add `grant`/`mediate`/`bind`**.

@@ -220,19 +220,47 @@ bound to ∅"** (Principle 9) — the propose-don't-hold policy that the operato
 *identical* gas, so the SR-2 faithfulness gate still holds. The thin-sugar migration
 (`INCREMENT_MCFG.md` step 4) proves directive-path ≡ operator-path.
 
-## 8. Open decisions (resolve before implementing)
+## 8. Decisions (resolved 2026-09-02)
 
-1. **Surface:** top-level `grant/mediate/bind/admit/include` (as in MANUAL root.js) vs on a host
-   object (`nginx.admit …`). MANUAL uses top-level; pilgrim namespaces under `nginx.*`. — *Lean:
-   a small imported module (`import {…} from "comcon"`) so the names are lexical, not ambient.*
-2. **What the root holds to grant *from*:** the COM API (`js_com.http` = `nginx.http`) is the
-   root's held capability set; `host.log` etc. Enumerate the root's initial caps.
-3. **`meter` units:** `meter({timeoutMs})` (wall-clock, now) vs `gas` units (S5-b, later).
-4. **Closure vs quotation default** for `include`: caps-carrying policy vs propose-only.
-5. **Handle exposure:** does the root get live POM handles (`h.root`, F-rights) or **init-time
-   `include` only** (L-rights)? — *Init-first; F/X are follow-ons.*
-6. **Contract schema source:** the M2 dual-role typed nginx-API schema (types of granted caps
-   *and* the config surface type system).
+1. **Surface → an imported `comcon` module; the operators are *granted capabilities*, not
+   ambient.** `import { env, grant, mediate, bind, admit, include, includeAt, policy } from
+   "comcon";`. The imported names resolve to capabilities **granted into the program's
+   deny-by-default environment** — *not* ambient globals (that would be ambient authority) and
+   *not* on `nginx.*` (that is the COM config API, a different capability). Because the operators
+   are themselves capabilities, a fragment holds only the ones its includer granted — e.g.
+   **withhold `admit`/`include` to forbid a fragment from admitting sub-fragments.** Pure JS (no
+   syntax); consistent with the tower (the kernel is grantable/attenuable like any authority).
+
+2. **Root's initial capability set (what it grants *from*).** The root script (`js_source`,
+   HOST_ROOT) holds: **`nginx`** — the COM config object (servers/locations/upstreams/…, the
+   dynamic-config authority, = `js_com`); the **`comcon` kernel operators**; **`nginx.log`**;
+   **`nginx.shared`**; **`pom`** — the program-tree handle (anchors/queries/`admit` targets); and
+   the host **determinism/IO caps** `clock`/`rng`/`net` (held by the root, **denied inside `admit`
+   tests**, and reaching a fragment only via explicit mediation). Everything a fragment receives
+   is a subset (attenuation) of this.
+
+3. **`meter` units → `timeoutMs` now, `gas` later.** `meter({ timeoutMs })` maps directly onto the
+   shipped deadline mechanism (the interrupt handler + JIT back-edge gas). The deterministic
+   instruction-count form `meter({ gas })` (S5-b) is an additive field later; the `meter` shape is
+   forward-compatible.
+
+4. **`include`/`includeAt` default → closure; quotation via `realize`.** An includer defining a
+   policy over a fragment **holds** the caps and grants them into the fragment's env — the closure
+   case (the default). The **propose-don't-hold** case (a party proposes a fragment/config it
+   cannot apply; the operator supplies the caps) is the **quotation** path, handled explicitly by
+   `realize(quotation)` (the M-CFG config-proposal / snapshot-rollback flow). Both exist; `include`
+   defaults to closure.
+
+5. **Scope → init-time `include`/`includeAt` only (L-rights) for v1.** Stage-0, pre-fork,
+   COW-inherited — this reuses today's model and *is* the M-CFG core. **Live** re-fill / rewrite /
+   epoch switch on running workers (F-rights) and revoke / remove (X-rights) are follow-ons (they
+   need per-worker fan-out coordination).
+
+6. **Contract schema → the M2 dual-role typed nginx-API schema.** `admit`'s typecheck is against
+   the **M2 typed nginx-API schema**, which does double duty: the types of the **granted caps**
+   *and* the **config surface** (M-CFG). **Dependency:** full type-checking waits on M2; **interim
+   (pre-M2)**, `admit` uses the existing C3 structural checks (free-name deny-list / no-dynamic-
+   code / sealed-Request-fields) as the schema, upgrading to M2 types when available.
 
 ## 9. Worked example — the whole fundament, end to end
 
