@@ -42,15 +42,15 @@ Three cases, by how much reconciliation is involved:
    history; produce one clean updated branch; then `git subtree pull --squash` **that
    branch** into pilgrim. Pilgrim only ever receives an already-merged result.
 
-**The single integration fork (STOOD UP 2026-09-01):** `../pilgrim-quickjs/` is the one
-clean lineage — remotes `bellard` + `maxim`, branch `jit` (= maxim/jit) and branch
-`pilgrim` (= `jit` + our COMCON/host delta, HEAD `97063cd`). Its `pilgrim`-tree engine
-source is byte-identical to the currently-vendored `quickjs/`, so the first cutover is an
-engine no-op. **Always `subtree pull` pilgrim from `../pilgrim-quickjs pilgrim` — never
-hand-sync maxim again.** Divergence analysis + the maxim-advance / bellard-CVE / gated
-first-cutover workflows are in `../pilgrim-quickjs/INTEGRATION.md`. Not yet pushed to a
-GitHub remote and the first `subtree pull` cutover is not yet done — both are gated on the
-usual SR-2 + full-regression pass (see the project memory).
+**The single integration fork (LIVE 2026-09-01):** `github.com/nginxinc/pilgrim-quickjs`
+(private; local checkout `../pilgrim-quickjs/`) is the one clean lineage — remotes
+`bellard` + `maxim`, branch `jit` (= maxim/jit) and default branch `pilgrim` (= `jit` +
+our COMCON/host delta). Pilgrim's `quickjs/` was cut over to it via `git subtree pull`
+(the `quickjs-fork` remote → the GitHub URL; squash anchor `34665804f`). **Always
+`git subtree pull --prefix=quickjs quickjs-fork pilgrim --squash` — never hand-sync maxim
+again;** gate every pull on SR-2 + full regression (see the project memory). Divergence
+analysis + the maxim-advance / bellard-CVE / cutover workflows are in the fork's
+`INTEGRATION.md`.
 
 ## Build Commands
 
