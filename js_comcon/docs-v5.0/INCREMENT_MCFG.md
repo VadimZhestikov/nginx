@@ -99,9 +99,23 @@ the same `admit`; follows the program-fragment operators.
    `meter`** — a C helper (`ngx_js_comcon_run_metered`) tightens the worker's gas deadline around
    the call (reuses the shipped interrupt handler + `request_deadline_ms`) and converts a
    meter-abort into a clean catchable error at the bind boundary. `t/comcon_operators.t` (comcon
-   24/203). **Next in bind:** SCOPE isolation — a confined compartment (the M-SES lockdown over the
-   env) so free names resolve only through it; and `mediate` membrane *enforcement* (via the reach
-   gates). This slice gives resource confinement; authority confinement follows.
+   24/203). This slice gives **resource** confinement (the meter).
+   **SCOPE isolation (authority) — attempted 2026-09-02, mechanism PROVEN, reverted for a clean
+   re-do.** `comcon.include(source, contract)` compiled a fragment in a shared confined compartment
+   (`ngx_js_tenant_context_new` + `ngx_js_tenant_lockdown`) with grants injected as **closure
+   params** (not per-fragment contexts). *Functionally correct* — verified a confined fragment
+   cannot reach host authority (`typeof nginx` → `undefined`), can use its granted caps + intrinsics,
+   and separate fragments are isolated. But it hit **two engine-lifetime crashes** that must be
+   solved first, both cross-realm (host ctx ↔ compartment ctx): (1) **metering a confined fragment**
+   — interrupting a cross-realm `JS_Call` aborts, even when calling with the compartment's own
+   context; (2) **teardown** — freeing the runtime while the compartment holds cross-realm grant
+   caps (host objects closed over by compartment fragments) aborts (no printed assertion). Reverted
+   (tree stays crash-free at the metered-bind state). **Fix path:** mirror the *tenant* compartment
+   lifecycle exactly (it works): create the include compartment at init like `tenant_ctx`, install
+   grants and call fragments entirely *within* the compartment context (avoid cross-realm value flow
+   into the host), and tear it down on the tenant/`comcon_ctx` teardown path — i.e. reuse the proven
+   `ngx_js_eval_tenant_sources` model rather than compiling-from-host. Also: `mediate` membrane
+   *enforcement* (via the reach gates) remains.
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.
