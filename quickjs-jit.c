@@ -1986,8 +1986,31 @@ void js_jit_schedule_warm_recompile(JSContext *ctx, JSFunctionBytecode *b)
     js_jit_queue_warm_gcc(ctx, b);
 }
 
+/*
+ * After fork(), only the calling thread is cloned — the background GCC worker
+ * thread does NOT exist in the child, but the child inherits jit_worker.started
+ * == 1 and a possibly-locked queue mutex. A child that then enqueues/drains
+ * would deadlock on a thread that isn't there. This atfork CHILD handler zeroes
+ * 'started' so every enqueue path (js_jit_queue_gcc / js_jit_queue_warm_gcc,
+ * both guarded by 'if (!jit_worker.started) return;') and js_jit_drain/free
+ * early-return: the child runs pure interpreter with no JIT. This makes a
+ * forking host (e.g. nginx: master starts the thread, workers fork) safe. Real
+ * per-worker JIT activation (start a worker-local thread + wire install) is a
+ * later step; here the goal is only "forked workers don't hang".
+ */
+static void jit_atfork_child(void)
+{
+    jit_worker.started = 0;
+}
+
 void js_jit_init(void)
 {
+    static int atfork_registered = 0;
+    if (!atfork_registered) {
+        pthread_atfork(NULL, NULL, jit_atfork_child);
+        atfork_registered = 1;
+    }
+
     if (jit_worker.started) {
         jit_worker.ref_count++;
         return;
@@ -2248,6 +2271,23 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
         if (js_jit_scan(b, &_sr_check) == 0) _cache_eligible = 1;
         scan_result_free(&_sr_check);
     }
+    /* Cache-load is unsafe for functions that emit P10.3 direct JIT-to-JIT
+     * calls: those calls resolve their __jit_f_<callee> targets against the
+     * process-global RTLD namespace, which accumulates stale symbols across
+     * freed test/tenant runtimes, so a cache hit can bind a direct call to a
+     * wrong or freed callee -> NULL var_refs / crash (repro:
+     * TypedArray filter/map BigInt speciesctor-destination-resizable). Recompile
+     * fresh instead — in-process symbol resolution is correct. Functions with no
+     * direct-call callees (the common case, incl. builtin-invoked callbacks and
+     * ordinary handlers) still cache-load. */
+    if (_cache_eligible && var_refs) {
+        int _dc_cvc = js_jit_fb_get_closure_var_count(b);
+        for (int _di = 0; _di < _dc_cvc; _di++) {
+            if (!var_refs[_di]) continue;
+            JSValue *_dv = js_jit_var_ref_value(var_refs[_di]);
+            if (_dv && js_jit_get_callee_fb(*_dv)) { goto do_compile; }
+        }
+    }
     char *cache_path = _cache_eligible ? jit_cache_get(bc_hash) : NULL;
     if (cache_path) {
         char fname[64];
@@ -2306,9 +2346,15 @@ do_compile:;
                 if (!_pv) continue;
                 JSFunctionBytecode *_cb = js_jit_get_callee_fb(*_pv);
                 if (!_cb) continue;
-                int _cl;
-                const uint8_t *_cc = js_jit_fb_get_bytecode(_cb, &_cl);
-                uint64_t _ch = jit_hash_bytecode(_cc, _cl);
+                /* Must match the callee's CACHE/SYMBOL hash (jit_hash_function,
+                 * which folds in inner-closure metadata), NOT the raw bytecode
+                 * hash: the emitted direct call references __jit_f_<callee>, and
+                 * that symbol is named by jit_hash_function at the install site.
+                 * Using the raw hash here made the direct-call symbol diverge
+                 * from the callee's real symbol whenever the callee contains
+                 * inner closures, so on a cache hit the call could bind to the
+                 * wrong function -> NULL var_refs -> crash. */
+                uint64_t _ch = jit_hash_function(_cb);
                 if (_ch != bc_hash)   /* skip self (P8.2 handles self) */
                     p103_hash[_pi] = _ch;
             }
@@ -2564,6 +2610,12 @@ static void gen_preamble(JSJITCodeBuf *cb, uint64_t bc_hash,
      * the 3-condition runtime guard in JIT_IC_CHECK (null check + pointer +
      * rt_gen).  Safe: the runtime never changes during a single invocation. */
     jit_buf_str(cb, "    JSRuntime *_rt=JS_GetRuntime(ctx);\n");
+    /* COMCON back-edge gas: an inline down-counter so the (indirect)
+     * poll_interrupts call fires only every JIT_GAS_INTERVAL loop iterations —
+     * the per-iteration cost is a cheap decrement, not a call. The real deadline
+     * check is further rate-limited inside poll_interrupts (every 10000 calls),
+     * so a runaway compiled loop is still stopped within a few ms of its budget. */
+    jit_buf_str(cb, "    int _jit_gas=256;\n");
     jit_buf_str(cb, "    (void)argc; (void)cpool; (void)var_refs;\n");
 
     /* P14: try/catch/finally support.
@@ -3473,18 +3525,18 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         "      if(!_sf_vrefs[%d]){\n"
                         "        _sf_vrefs[%d]=js_jit_make_var_ref(ctx,&_cap_buf[%d]);\n"
                         "        if(!_sf_vrefs[%d]){_sp=%d; goto _ex;}\n"
-                        "      } else { js_jit_var_ref_dup(_sf_vrefs[%d]); }\n"
-                        "      _vr_%d[%d]=_sf_vrefs[%d];\n",
-                        vri, vri, cv_vidx, vri, d, vri, pc, ci, vri);
+                        "      }\n"
+                        "      _vr_%d[%d]=js_jit_var_ref_dup(_sf_vrefs[%d]);\n",
+                        vri, vri, cv_vidx, vri, d, pc, ci, vri);
                 } else if (cv_type == JIT_CLOSURE_ARG) {
                     int vri = js_jit_fb_get_arg_var_ref_idx(b, cv_vidx);
                     jit_buf_printf(cb,
                         "      if(!_sf_vrefs[%d]){\n"
                         "        _sf_vrefs[%d]=js_jit_make_var_ref(ctx,&_arg_cap_buf[%d]);\n"
                         "        if(!_sf_vrefs[%d]){_sp=%d; goto _ex;}\n"
-                        "      } else { js_jit_var_ref_dup(_sf_vrefs[%d]); }\n"
-                        "      _vr_%d[%d]=_sf_vrefs[%d];\n",
-                        vri, vri, cv_vidx, vri, d, vri, pc, ci, vri);
+                        "      }\n"
+                        "      _vr_%d[%d]=js_jit_var_ref_dup(_sf_vrefs[%d]);\n",
+                        vri, vri, cv_vidx, vri, d, pc, ci, vri);
                 } else if (cv_type == JIT_CLOSURE_REF || cv_type == JIT_CLOSURE_GLOBAL_REF) {
                     /* Pass-through: increment ref on the existing var_ref */
                     jit_buf_printf(cb,
@@ -5778,6 +5830,12 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _borrowed_depth = -1; /* P38.1: borrow cannot survive a goto */
             /* P9.4: box typed surviving slots before goto — target label resets gen_st */
             { int _bx; for (_bx=0; _bx < gen_sp; _bx++) _P94_ENSURE(_bx); }
+            /* COMCON back-edge gas: a backward goto is a loop back-edge. Poll
+             * interrupts so a compiled loop honours the per-request deadline
+             * (poll_interrupts is rate-limited: cheap decrement, real check every
+             * 10000). Without this a compiled `while(true){}` runs uninterruptibly. */
+            if (tgt <= pc)
+                jit_buf_str(cb, "    if(--_jit_gas<=0){_jit_gas=256; if(_RT->poll_interrupts(ctx)) goto _ex;}\n");
             jit_buf_printf(cb, "    goto _L%d;\n", tgt);
             break;
         }
@@ -5822,6 +5880,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _borrowed_depth = -1; /* P38.1: borrow cannot survive a goto */
             /* P9.4: box typed surviving slots before goto */
             { int _bx; for (_bx=0; _bx < gen_sp; _bx++) _P94_ENSURE(_bx); }
+            if (tgt <= pc)   /* COMCON back-edge gas (see OP_goto) */
+                jit_buf_str(cb, "    if(--_jit_gas<=0){_jit_gas=256; if(_RT->poll_interrupts(ctx)) goto _ex;}\n");
             jit_buf_printf(cb, "    goto _L%d;\n", tgt);
             break;
         }
@@ -5830,6 +5890,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _borrowed_depth = -1; /* P38.1: borrow cannot survive a goto */
             /* P9.4: box typed surviving slots before goto */
             { int _bx; for (_bx=0; _bx < gen_sp; _bx++) _P94_ENSURE(_bx); }
+            if (tgt <= pc)   /* COMCON back-edge gas (see OP_goto) */
+                jit_buf_str(cb, "    if(--_jit_gas<=0){_jit_gas=256; if(_RT->poll_interrupts(ctx)) goto _ex;}\n");
             jit_buf_printf(cb, "    goto _L%d;\n", tgt);
             break;
         }

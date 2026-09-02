@@ -75,6 +75,9 @@ typedef sig_t sighandler_t;
 #include "cutils.h"
 #include "list.h"
 #include "quickjs-libc.h"
+#ifdef CONFIG_JIT
+#include "quickjs-jit.h"
+#endif
 
 #if !defined(PATH_MAX)
 #define PATH_MAX 4096
@@ -448,8 +451,28 @@ static JSValue js_loadScript(JSContext *ctx, JSValueConst this_val,
         JS_FreeCString(ctx, filename);
         return JS_EXCEPTION;
     }
-    ret = JS_Eval(ctx, (char *)buf, buf_len, filename,
-                  JS_EVAL_TYPE_GLOBAL);
+#ifdef CONFIG_JIT
+    if (js_jit_get_aot_mode()) {
+        /* --jit-aot / --jit-warmup: compile-only pass to discover all
+         * nested functions, pre-compile them with GCC, then execute.
+         * Mirrors eval_buf() in qjs.c so that load()'ed scripts get the
+         * same AOT treatment as the top-level script. */
+        ret = JS_Eval(ctx, (char *)buf, buf_len, filename,
+                      JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (!JS_IsException(ret)) {
+            js_jit_preload_combined();  /* P10.4: open combined.so before compile_all */
+            if (JS_VALUE_GET_TAG(ret) == JS_TAG_FUNCTION_BYTECODE)
+                js_jit_compile_all(ctx, JS_VALUE_GET_PTR(ret));
+            js_jit_drain();
+            js_jit_install_combined_if_exists();  /* P10.4 */
+            ret = JS_EvalFunction(ctx, ret);
+        }
+    } else
+#endif
+    {
+        ret = JS_Eval(ctx, (char *)buf, buf_len, filename,
+                      JS_EVAL_TYPE_GLOBAL);
+    }
     js_free(ctx, buf);
     JS_FreeCString(ctx, filename);
     return ret;
@@ -4023,6 +4046,20 @@ JSModuleDef *js_init_module_os(JSContext *ctx, const char *module_name)
 
 /**********************************************************/
 
+#ifdef CONFIG_JIT
+/* __jit_drain() — block until all pending GCC compilations have completed,
+ * then install the compiled functions into their live bytecodes.
+ * Useful in bench_runner.js warmup: call after triggering compilation to
+ * ensure the JIT-compiled version runs during the measurement phase. */
+static JSValue js_jit_drain_builtin(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    js_jit_drain();
+    js_jit_install_results();
+    return JS_UNDEFINED;
+}
+#endif
+
 static JSValue js_print(JSContext *ctx, JSValueConst this_val,
                         int argc, JSValueConst *argv)
 {
@@ -4089,6 +4126,11 @@ void js_std_add_helpers(JSContext *ctx, int argc, char **argv)
                       JS_NewCFunction(ctx, js_print, "print", 1));
     JS_SetPropertyStr(ctx, global_obj, "__loadScript",
                       JS_NewCFunction(ctx, js_loadScript, "__loadScript", 1));
+
+#ifdef CONFIG_JIT
+    JS_SetPropertyStr(ctx, global_obj, "__jit_drain",
+                      JS_NewCFunction(ctx, js_jit_drain_builtin, "__jit_drain", 0));
+#endif
 
     JS_FreeValue(ctx, global_obj);
 }

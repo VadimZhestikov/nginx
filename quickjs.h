@@ -831,6 +831,28 @@ JSValue JS_EvalThis(JSContext *ctx, JSValueConst this_obj,
                     const char *input, size_t input_len,
                     const char *filename, int eval_flags);
 JSValue JS_GetGlobalObject(JSContext *ctx);
+
+/* COMCON C3: collect the free-global names a compiled function (and its nested
+ * functions) references — its free-name manifest — for admission-time
+ * capability checking. `cb` is called once per referenced global name (a
+ * name may repeat). Returns 0 on success, -1 if `func` is not a bytecode
+ * function. Static: no fragment code runs. */
+int js_comcon_collect_free_globals(JSContext *ctx, JSValueConst func,
+                                   void (*cb)(void *, const char *), void *ud);
+
+/* COMCON C3: 1 if the function (or any nested function) uses direct eval or
+ * `with` — dynamic code that defeats the static free-name analysis. */
+int js_comcon_uses_dynamic_code(JSValueConst func);
+
+/* COMCON C3 (typed profile): 1 if the handler directly reads a field its
+ * sealed Request parameter (arg0) does not have; the offending name is copied
+ * into errbuf. Sound rejecter (direct arg0 access only). 0 if clean. */
+int js_comcon_check_request_fields(JSContext *ctx, JSValueConst func,
+                                   char *errbuf, size_t errlen);
+
+/* COMCON C5.0-b: server-AOT-compile a confined handler at load (CONFIG_JIT
+ * only). Returns 0 on success, -1 if func is not a bytecode function. */
+int js_comcon_aot_compile(JSContext *ctx, JSValueConst func);
 int JS_IsInstanceOf(JSContext *ctx, JSValueConst val, JSValueConst obj);
 int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,
                       JSAtom prop, JSValueConst val,

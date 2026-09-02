@@ -55,7 +55,7 @@ PREFIX?=/usr/local
 #CONFIG_UBSAN=y
 
 # TEST262 bootstrap config: commit id and shallow "since" parameter
-TEST262_COMMIT?=5c8206929d81b2d3d727ca6aac56c18358c8d790
+TEST262_COMMIT?=d0994d64b07cb6c164dd9f345c94ed797a53d69f
 TEST262_SINCE?=2025-09-01
 
 OBJDIR=.obj
@@ -245,20 +245,23 @@ all: $(OBJDIR) $(OBJDIR)/quickjs.check.o $(OBJDIR)/qjs.check.o $(PROGS)
 
 QJS_LIB_OBJS=$(OBJDIR)/quickjs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/quickjs-libc.o
 
-# COMCON C1 (M-UNIFY): maxim's GCC/TCC JIT, opt-in via CONFIG_JIT=y.
-# Ported verbatim from the maxim tree. When CONFIG_JIT is unset the JIT
-# sources are NOT compiled and this build is byte-identical to upstream —
-# quickjs-jit.{c,h} are inert files on disk. The quickjs.c-side glue (the
-# js_jit_* functions + the JS_CallInternal dispatch, all under #ifdef
-# CONFIG_JIT) lands in C1.2; until then a CONFIG_JIT=y build will not link.
+# JIT support (GCC tier background compilation)
 # Usage: make CONFIG_JIT=y [JIT_THRESHOLD_GCC=100]
 ifdef CONFIG_JIT
+  # JIT_INCLUDE_DIR: directory GCC passes via -I when compiling JIT'd functions.
+  # Defaults to the current (quickjs) source directory so generated C can
+  # #include "quickjs.h".
   JIT_INCLUDE_DIR ?= $(shell pwd)
   CFLAGS  += -DCONFIG_JIT
   CFLAGS  += -DJIT_THRESHOLD_GCC=$(or $(JIT_THRESHOLD_GCC),100)
   CFLAGS  += -DJIT_INCLUDE_DIR='"$(JIT_INCLUDE_DIR)"'
   QJS_LIB_OBJS += $(OBJDIR)/quickjs-jit.o
   EXTRA_LIBS += -lpthread -ldl
+  # Explicit header/source dependencies — ensure correct rebuilds when
+  # quickjs-jit.h or quickjs-jit.c changes, even when .d files are stale
+  # (e.g. generated from a non-CONFIG_JIT build).  These lines add
+  # prerequisites only; the pattern rule $(OBJDIR)/%.o: %.c still provides
+  # the recipe, so there is no "multiple rules with recipes" conflict.
   $(OBJDIR)/quickjs.o $(OBJDIR)/qjsc.o $(OBJDIR)/quickjs-jit.o: quickjs-jit.h
   $(OBJDIR)/quickjs-jit.o: quickjs-jit.c
 endif
@@ -340,7 +343,7 @@ libunicode-table.h: unicode_gen
 endif
 
 run-test262$(EXE): $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(LDFLAGS) $(LDEXPORT) -o $@ $^ $(LIBS)
 
 run-test262-debug: $(patsubst %.o, %.debug.o, $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS))
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
@@ -517,6 +520,12 @@ test2-default: run-test262
 
 test2: run-test262
 	time ./run-test262 -t -m -c test262.conf -a
+
+# T0: measure JIT-introduced test262 failures (delta vs the 72 interpreter
+# baseline) over the COMCON-relevant + previously-crashing families. Build the
+# JIT harness first: make CONFIG_JIT=y run-test262. Pass DIRS="a b" to scope.
+test262-jit-delta:
+	bash ./t0-measure-jit.sh $(DIRS)
 
 test2-update: run-test262
 	./run-test262 -t -u -c test262.conf -a
