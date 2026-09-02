@@ -118,15 +118,52 @@ control flow, arrow/function/call/new/this/arguments, `Function.prototype.call/a
 most `Array.prototype.*`, `String.prototype.*`, `Number`, `Proxy` get/set, class, try,
 tagged templates, optional chaining.
 
+### 5.1 Measured update (2026-09-02, at maxim `jit` 4927146 = fork/pilgrim engine)
+
+Re-measured with the T0 harness (`test262-jit-delta`) + targeted repros after the crash
+fixes landed (bucket-1 `b07ca5d` + cache-load `3d52736` + back-edge-gas, all now in maxim
+jit HEAD, the pilgrim-quickjs fork, and pilgrim). **The landscape collapsed to essentially
+one correctness bug:**
+
+- **Bucket 1 (refcount crashes) — RESOLVED.** `b07ca5d` fixed the `var_ref` over-release.
+  Verified: `TypedArray/prototype/map` (was SIGSEGV rc=139) and `filter` (was SIGABRT
+  rc=134) now **complete without crashing**; a 25-file individual sweep of
+  `DataView/prototype` under JIT had **0 hangs / 0 crashes**. No segfault/abort/hang was
+  found anywhere at HEAD.
+- **Bucket 2 (`this` marshaling) — CONFIRMED, now the dominant/only failure family.**
+  Minimal repro: a non-strict callback with no `thisArg` gets `this=undefined` under JIT but
+  the global object interpreted (strict correctly gives `undefined` in both). This is the
+  single root cause behind **every** JIT-new test failure the broad 20-family sweep surfaced
+  (`TypedArray.forEach/some/filter`, `Array.from`, `Map.forEach` — all the
+  `SameValue(undefined,[object global])` fails). One JIT-prologue fix (substitute global for
+  undefined/null `this` in non-strict functions) clears the family. **Out of the confined
+  COMCON profile** (tenants are strict modules) — which is exactly why C7/SR-2 passed
+  profile-scoped.
+- **BigInt typed-array callbacks — basic path CLEAN at HEAD** (repro: `BigInt64Array`
+  `filter`/`forEach` match the interpreter). Any residue is a narrow edge case
+  (during-iteration mutation / resizable buffers), triaged in T3.
+- **Measurement caveat (real):** `--jit-threshold-gcc=1` GCC-compiles every function, so
+  large families (`Object` = 3411 files, `String`/`RegExp`/`Promise`/`class`/…) hit the
+  per-dir `timeout` (`rc=124`) — that is **compile-everything slowness, not a crash or
+  hang** (a single mid-size DataView test JIT-compiles+runs in ~1.2s; `map`/`DataView` both
+  complete given enough wall-clock). This is a test-harness artifact, irrelevant to COMCON
+  (the JIT compiles a tenant's few functions once at load); it maps to Bucket 4, not
+  correctness. It does mean the exhaustive T0=0 confirmation (T4) is **wall-clock-bound**,
+  not fix-bound.
+
+**Net:** finalization is now essentially **one prologue fix (Bucket 2) + a compute-bound
+confirmation sweep + the re-gate** — no crash-debugging slog. Bucket 1's fix already flowed
+through the fork into pilgrim.
+
 ## 6. Plan of work
 
-1. **T0 — reproducible AOT measurement (§4).** Build the `--jit-link`→`--jit-aot` full sweep
-   into a make target; record `errors(JIT)` and the exact delta over the 72. This is the
-   scoreboard and the eventual M8 harness. *Also fix the `--jit-threshold-gcc=0`
-   no-op/confusion or document it.*
-2. **T1 — Bucket 1 (the refcount underflow).** Root-cause the JIT's over-release of
-   captured `var_ref`s on the builtin-callback path; one fix likely clears the bulk of the
-   crash count across TypedArray/Atomics/Promise/DataView/Map. Highest leverage.
+1. **T0 — reproducible measurement. ✅ DONE.** `t0-measure-jit.sh` + the `test262-jit-delta`
+   make target (per-dir JIT delta over the 72 baseline) exist and are now in the fork. The
+   exhaustive `--jit-aot` full-sweep variant (for the final T0=0 proof, T4) is wall-clock-
+   bound, not built into CI.
+2. **T1 — Bucket 1 (the refcount underflow). ✅ DONE (`b07ca5d`).** Fixed and verified at
+   HEAD (§5.1): no crashes/hangs remain. Already flowed through the pilgrim-quickjs fork
+   into pilgrim.
 3. **T2 — Bucket 2 (callback marshaling).** Fix `this`-coercion + positional/index arg
    passing for the `Array.from` and `Array.prototype.some` callback paths.
 4. **T3 — re-measure; triage the residue.** For each remaining failure, decide **fix vs.
@@ -142,12 +179,12 @@ tagged templates, optional chaining.
 ## 7. Where the work lives
 
 maxim (branch `jit`) is the finalization home — it has the test262 harness, `jit-docs/`,
-and history. Pilgrim already vendors this JIT (`quickjs/quickjs-jit.c`, from C1 M-UNIFY); it
-differs from maxim by only **23 lines** — the C1.3 `jit_atfork_child` fork-safety patch.
-Per CLAUDE.md's "Updating the vendored engine" case 3, finalize in maxim, then `subtree
-pull --squash` into pilgrim. **Decision to make:** upstream the atfork patch into maxim now
-so the two trees converge and future pulls are conflict-free (recommended), vs. re-applying
-it on each pull.
+and history. **The lineage is now consolidated (2026-09-01):** the single integration fork
+`github.com/nginxinc/pilgrim-quickjs` (branch `pilgrim` = `maxim/jit` + the COMCON/host
+delta) is what pilgrim subtree-pulls from. So finalization lands on `maxim/jit`, then
+`git fetch maxim && merge into the fork's pilgrim branch && git subtree pull` into pilgrim —
+no more re-applying the atfork patch per pull (it lives in the fork's `pilgrim` branch). See
+`../pilgrim-quickjs/INTEGRATION.md` and the [[pilgrim-quickjs-fork]] memory.
 
 ## 8. Effort shape, risks, open questions
 
