@@ -44,14 +44,25 @@ confinement.
 | **`js_tenant_timeout` (never built)** | `mediate(exec, meter({timeoutMs}))` |
 | `js_tenant_handler` | host **places** `fragment.onRequest` via COM |
 
-## Injection & recursion & lifecycle
+## The core mechanism: recursive policed inclusion
 
-- **Injection = host-JS + COM** (the dynamic-config role): the host places the fragment's
-  function wherever policy allows — `servers[i].locations['/t'].handler = frag.onRequest`, a
-  filter, a phase hook. Replaces `js_tenant_handler`.
-- **Recursion = free:** the fragment handle carries *attenuated* operators → it admits/governs
-  its own sub-fragments, **narrowing-only** (No-Amplification; widening needs an admin-class
-  handle it doesn't hold). One mechanism, every level.
+The primitive is a **policed, syntactic, per-includer inclusion** (FOUNDATION §2a's "policed
+include"). The including script **includes a fragment's text into itself** — at a syntactic
+position it chooses (a function, an inner block, a handler slot) — **under a policy it
+defines.** Realized as `admit` (gate: typecheck vs the includer's schema + contract tests,
+determinism caps denied) + `bind` (attach the includer-defined policy env over the included
+subtree — names resolve only through it, no ambient globals) + `grant`/`mediate` (populate/meter
+that env). **`bind` is the inclusion operator; `admit` is its gate.**
+
+- **Injection is one kind of "where":** placing `frag.onRequest` at a COM slot
+  (`servers[i].locations['/t'].handler = …`, a filter, a phase hook) is the request-path case
+  of the general "choose a syntactic position and bind a policy over it." Replaces
+  `js_tenant_handler` — but the model is broader than handler placement.
+- **Recursion = the same primitive, every level:** an included fragment holds only *attenuated*
+  operators over its own subtree, so it includes *its* fragments under *its* policies, and an
+  inner policy can only **narrow** what its includer granted (No-Amplification; widening needs
+  an admin handle it doesn't hold). `js_source → root script → fragment → sub-fragment → …`,
+  one mechanism throughout.
 - **Lifecycle:** host JS runs in `init_conf` (HOST_ROOT + COM, before fork) → `admit()` creates
   compartments there → COW-inherited by workers. Preserves today's model. **Init-time admission
   first;** admitting a fragment *after* fork / at request time (truly dynamic) is a harder
