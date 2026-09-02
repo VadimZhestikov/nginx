@@ -16136,10 +16136,14 @@ JSVarRef *js_jit_make_var_ref(JSContext *ctx, JSValue *slot) {
 void js_jit_close_caps(JSContext *ctx, JSVarRef **vrefs, int n) {
     JSRuntime *rt = JS_GetRuntime(ctx);
     for (int i = 0; i < n; i++) {
-        if (vrefs[i] && !vrefs[i]->is_detached) {
-            vrefs[i]->value  = JS_DupValueRT(rt, *vrefs[i]->pvalue);
-            vrefs[i]->pvalue = &vrefs[i]->value;
-            vrefs[i]->is_detached = TRUE;
+        if (vrefs[i]) {
+            if (!vrefs[i]->is_detached) {
+                vrefs[i]->value  = JS_DupValueRT(rt, *vrefs[i]->pvalue);
+                vrefs[i]->pvalue = &vrefs[i]->value;
+                vrefs[i]->is_detached = TRUE;
+            }
+            free_var_ref(rt, vrefs[i]);
+            vrefs[i] = NULL;
         }
     }
 }

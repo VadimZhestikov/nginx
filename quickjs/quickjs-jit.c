@@ -2271,6 +2271,23 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
         if (js_jit_scan(b, &_sr_check) == 0) _cache_eligible = 1;
         scan_result_free(&_sr_check);
     }
+    /* Cache-load is unsafe for functions that emit P10.3 direct JIT-to-JIT
+     * calls: those calls resolve their __jit_f_<callee> targets against the
+     * process-global RTLD namespace, which accumulates stale symbols across
+     * freed test/tenant runtimes, so a cache hit can bind a direct call to a
+     * wrong or freed callee -> NULL var_refs / crash (repro:
+     * TypedArray filter/map BigInt speciesctor-destination-resizable). Recompile
+     * fresh instead — in-process symbol resolution is correct. Functions with no
+     * direct-call callees (the common case, incl. builtin-invoked callbacks and
+     * ordinary handlers) still cache-load. */
+    if (_cache_eligible && var_refs) {
+        int _dc_cvc = js_jit_fb_get_closure_var_count(b);
+        for (int _di = 0; _di < _dc_cvc; _di++) {
+            if (!var_refs[_di]) continue;
+            JSValue *_dv = js_jit_var_ref_value(var_refs[_di]);
+            if (_dv && js_jit_get_callee_fb(*_dv)) { goto do_compile; }
+        }
+    }
     char *cache_path = _cache_eligible ? jit_cache_get(bc_hash) : NULL;
     if (cache_path) {
         char fname[64];
@@ -2329,9 +2346,15 @@ do_compile:;
                 if (!_pv) continue;
                 JSFunctionBytecode *_cb = js_jit_get_callee_fb(*_pv);
                 if (!_cb) continue;
-                int _cl;
-                const uint8_t *_cc = js_jit_fb_get_bytecode(_cb, &_cl);
-                uint64_t _ch = jit_hash_bytecode(_cc, _cl);
+                /* Must match the callee's CACHE/SYMBOL hash (jit_hash_function,
+                 * which folds in inner-closure metadata), NOT the raw bytecode
+                 * hash: the emitted direct call references __jit_f_<callee>, and
+                 * that symbol is named by jit_hash_function at the install site.
+                 * Using the raw hash here made the direct-call symbol diverge
+                 * from the callee's real symbol whenever the callee contains
+                 * inner closures, so on a cache hit the call could bind to the
+                 * wrong function -> NULL var_refs -> crash. */
+                uint64_t _ch = jit_hash_function(_cb);
                 if (_ch != bc_hash)   /* skip self (P8.2 handles self) */
                     p103_hash[_pi] = _ch;
             }
@@ -3502,18 +3525,18 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         "      if(!_sf_vrefs[%d]){\n"
                         "        _sf_vrefs[%d]=js_jit_make_var_ref(ctx,&_cap_buf[%d]);\n"
                         "        if(!_sf_vrefs[%d]){_sp=%d; goto _ex;}\n"
-                        "      } else { js_jit_var_ref_dup(_sf_vrefs[%d]); }\n"
-                        "      _vr_%d[%d]=_sf_vrefs[%d];\n",
-                        vri, vri, cv_vidx, vri, d, vri, pc, ci, vri);
+                        "      }\n"
+                        "      _vr_%d[%d]=js_jit_var_ref_dup(_sf_vrefs[%d]);\n",
+                        vri, vri, cv_vidx, vri, d, pc, ci, vri);
                 } else if (cv_type == JIT_CLOSURE_ARG) {
                     int vri = js_jit_fb_get_arg_var_ref_idx(b, cv_vidx);
                     jit_buf_printf(cb,
                         "      if(!_sf_vrefs[%d]){\n"
                         "        _sf_vrefs[%d]=js_jit_make_var_ref(ctx,&_arg_cap_buf[%d]);\n"
                         "        if(!_sf_vrefs[%d]){_sp=%d; goto _ex;}\n"
-                        "      } else { js_jit_var_ref_dup(_sf_vrefs[%d]); }\n"
-                        "      _vr_%d[%d]=_sf_vrefs[%d];\n",
-                        vri, vri, cv_vidx, vri, d, vri, pc, ci, vri);
+                        "      }\n"
+                        "      _vr_%d[%d]=js_jit_var_ref_dup(_sf_vrefs[%d]);\n",
+                        vri, vri, cv_vidx, vri, d, pc, ci, vri);
                 } else if (cv_type == JIT_CLOSURE_REF || cv_type == JIT_CLOSURE_GLOBAL_REF) {
                     /* Pass-through: increment ref on the existing var_ref */
                     jit_buf_printf(cb,
