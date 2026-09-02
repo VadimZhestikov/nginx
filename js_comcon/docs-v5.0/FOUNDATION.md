@@ -553,6 +553,23 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.27 (in place — gas: per-request execution budget, both tiers):** a confined tenant's
+CPU time is now bounded (memory already was, via `JS_SetMemoryLimit`). Previously a
+`while(true){}` handler hung the worker — deny-by-default caps + frozen intrinsics stop
+*authority* abuse, not *resource* abuse. Interpreted tier: the interrupt handler is wired
+onto the tenant runtime (it is a separate runtime and had none) with a host-imposed
+per-request deadline (`NGX_JS_TENANT_TIMEOUT_MS`, default 1 s) set around the tenant
+`JS_Call` and cleared at every compartment-leave (covering handler + microtasks + response
+getters). Compiled tier: **back-edge gas** — maxim polled interrupts only at call sites, so
+a compiled loop with no calls ran uninterruptibly; now a poll is emitted on backward gotos,
+gated by an inline per-function down-counter so the per-iteration cost is a decrement, not a
+call (the C6 compute throughput is unchanged, ~75K req/s). Verified: interpreted *and*
+AOT-compiled infinite loops are both interrupted at ~1 s, normal handlers unaffected
+(`t/comcon_gas.t`; comcon 22/184 both builds). This is the T11 availability control; the
+fuller metered budget model (per-op/per-fragment, fine memory attribution) + a configurable
+`js_tenant_timeout` directive remain S5. The back-edge-gas codegen change should be
+upstreamed to the maxim repo.
+
 **v5.26 (in place — M-SES-1: intrinsic freezing):** the tenant lockdown now transitively
 **hardens (Object.freeze) the intrinsic graph** — every constructor/prototype/method reachable
 off `globalThis` (plus the generator/async + array-iterator prototypes), leaving `globalThis`

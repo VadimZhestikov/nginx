@@ -109,6 +109,15 @@ walk; complete when the walk is.
 *Blocked by:* budgets/gas on both tiers (S5 + R4 + C3); bounded grammars (patterns);
 admission-time limits (R11); per-fragment blast radius; epoch machinery keeps rewrite
 windows non-blocking (never stop-the-world).
+*Implemented (v5.27):* **per-request execution-time gas on BOTH tiers.** A confined
+tenant `while(true){}` no longer hangs a worker — the interpreter's interrupt handler is
+wired onto the tenant runtime with a host-imposed per-request deadline
+(NGX_JS_TENANT_TIMEOUT_MS, default 1s), and the JIT emits **back-edge gas** (an interrupt
+poll on backward gotos, inline-counter-gated) so compiled loops honour it too. Verified
+both interpreted and AOT-compiled infinite loops are interrupted (`t/comcon_gas.t`). Memory
+is separately bounded (JS_SetMemoryLimit 64MB). *Still deferred (S5):* the fuller metered
+budget model (per-op/per-fragment metering, fine-grained memory attribution) and a
+configurable js_tenant_timeout directive.
 *Residual:* **TM-1 found here** (denial-log flooding, below); coarse per-runtime
 memory attribution (S5's honest deferral) until the substrate decision.
 
