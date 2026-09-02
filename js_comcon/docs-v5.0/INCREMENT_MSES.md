@@ -125,16 +125,30 @@ with the taming stubs frozen so a tenant cannot restore them.
   (21/180). **Noted extension:** the COM/Socket prototypes are installed *after* the lockdown
   so this pass does not freeze them — their mutators are C-side-gated regardless; freezing
   them too is a small follow-up (a second harden after `ngx_js_com_install_protos`).
-- **M-SES-2 — portal taming + escape-probe gate (= SR-3).** The full adversarial pentest
-  of intrinsic/engine escape completeness (memory safety, remaining reflective surface),
-  closing THREATS T8/T4/T9. This is the scheduled SR-3, after M-SES.
+- **M-SES-2 — portal taming + escape-probe gate (= SR-3). DONE (2026-09-01, v5.28).** The
+  adversarial pentest of intrinsic/engine escape completeness. **Verdict: no sandbox
+  escape** — every dynamic-code route stays tamed (error/bound-fn/`Symbol.species`
+  `.constructor.constructor` all throw), strict `this` is `undefined`, the core + iterator
+  + shared generator prototypes are frozen, unbounded recursion is caught. One MEDIUM
+  freeze-completeness gap found + fixed (**SR3-1**: the M-SES-1 value-walk missed the
+  sibling iterator instance-prototypes — `%String|Map|Set|RegExpStringIteratorPrototype%`,
+  reachable only by calling a method — so a tenant could pollute them across requests;
+  added as explicit harden roots) and one availability case contained by the existing gas
+  (**SR3-2**: Promise microtask loop, ~1 s, worker recovers). Re-audited clean on both
+  tiers; `t/comcon_freeze.t` +2 SR-3 cases. Full record in VERIFICATION.md (SR-3
+  escape-completeness audit). Memory-safety / full-test262-under-AOT for untrusted-native
+  production remains gated on maxim finalization (a separate compiler-conformance gate,
+  not a confinement gap).
 
 ## 6. Risks / open questions
 
-- **Completeness of the reflective surface.** The four evaluator prototypes + Reflect +
-  eval + Proxy are the known portals; SR-3 must adversarially confirm none remain (e.g.
-  `Symbol`-keyed reach, `%ThrowTypeError%`, error-stack getters). M-SES-0 closes the
-  *audited* vectors; M-SES-2/SR-3 certifies completeness.
+- **Completeness of the reflective surface. CERTIFIED (SR-3, v5.28).** The four evaluator
+  prototypes + Reflect + eval + Proxy are the known portals; SR-3 adversarially confirmed
+  none remain reachable (`Symbol.species`-keyed reach, error-constructor chains, bound-fn
+  all tamed). The one gap SR-3 surfaced was *freeze* completeness, not a portal (SR3-1
+  sibling iterator prototypes — cross-request pollution, now fixed), plus one gas-contained
+  availability case (SR3-2). M-SES-0 closed the *audited* dynamic-code vectors; SR-3
+  certified the rest.
 - **Curated-set breadth is a knob.** The table above is the recommended default; trimming
   RegExp/WeakRef/TypedArrays tightens the surface at the cost of tenant expressiveness —
   a per-profile decision, not a blocker.

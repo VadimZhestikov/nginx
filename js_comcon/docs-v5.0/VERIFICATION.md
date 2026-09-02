@@ -162,7 +162,7 @@ gate-reviews across the whole roadmap, and two already exist as milestones (M8, 
 |---|---|---|---|
 | **SR-1 conformance** | end of increment B → **before C** | the A/B capability logic vs `THREATS.md`, *within* the current TCB assumption (an unforgeable engine). Finds gaps between claimed and implemented confinement. Explicitly **not** engine escapes. | new (this doc) |
 | **SR-2 faithfulness** | **C7** | did compilation preserve the reach gates and not leak authority via the type/cap side-tables? T2 refines T1. | **= M8** — **PASSED profile-scoped 2026-09-01** (`t/comcon_faithfulness.t`: interp vs AOT-compiled over the confinement surface incl. A1 gated reach/mutator → identical responses + identical denials, 22/22). Scope = confined strict-module profile; full-test262-under-AOT + untrusted-native production still gated on M-SES + full maxim finalization. |
-| **SR-3 adversarial pentest** | after **M-SES** | engine escapes, eval/Function/Proxy sandbox completeness, memory safety — closes the accepted residuals (`THREATS.md` T8/T4/T9). The full red-team pass. | M-SES exit |
+| **SR-3 adversarial pentest** | after **M-SES** | engine escapes, eval/Function/Proxy sandbox completeness, memory safety — closes the accepted residuals (`THREATS.md` T8/T4/T9). The full red-team pass. | **PASSED 2026-09-01** — no sandbox escape (dynamic-code routes tamed, no global reach, core intrinsics frozen, recursion bounded); one MEDIUM freeze-completeness gap (SR3-1 sibling iterator prototypes) **found + fixed**, one availability case (SR3-2 microtask loop) **gas-contained**. Both tiers. See the SR-3 audit record below. Full-test262-under-AOT untrusted-native still gated on maxim finalization. |
 | **SR-4 assurance case** | before first untrusted-tenant **production** | assemble the whole claim→assumption→evidence tree; every leaf without evidence is a finding. | **= V15** |
 
 **Why SR-1 before C, specifically:** A/B *are* the entire confinement surface; C is a
@@ -223,3 +223,45 @@ not breaches:
 Regressions: `t/comcon_frontend_audit.t` pins the containment guarantee (dynamic code sees
 zero host authority) and the A2 fix. The escape-completeness of the intrinsics themselves
 remains **SR-3** (post-M-SES), as scheduled.
+
+### SR-3 escape-completeness audit (2026-09-01, after M-SES)
+
+The scheduled adversarial pentest of the **now-hardened** tenant context (curated
+intrinsics + M-SES-0 evaluator taming + M-SES-1 intrinsic freeze + execution gas),
+run empirically — escape fragments served through a live tenant handler, each attempting
+to reach dynamic code / host authority / a shared mutable intrinsic and reporting what it
+reached. **Verdict: no sandbox escape.** Every dynamic-code route stays tamed
+(`(new Error()).constructor.constructor(…)`, bound-function `.constructor.constructor`,
+`Array[Symbol.species].constructor.constructor` all throw `TypeError`); strict-mode
+`this` is `undefined` (no global object reach); the core intrinsic prototypes
+(`Object`/`Array`/`Function.prototype`, `%IteratorPrototype%`, the shared
+`%Generator|AsyncGeneratorPrototype%`) are frozen; unbounded recursion is caught
+(`InternalError`, stack-overflow guard at the call-site poll). Two findings, both
+completeness, neither an authority escape:
+
+- **SR3-1 (MEDIUM — freeze completeness gap, FIXED): sibling iterator instance-prototypes
+  were mutable.** M-SES-1's harden walks property *values* from `globalThis`, so it never
+  reaches a prototype that exists *only* as the result of *calling* a method —
+  `%StringIteratorPrototype%` (`""[Symbol.iterator]()`), `%Map|SetIteratorPrototype%`, and
+  `%RegExpStringIteratorPrototype%` (`"".matchAll(…)`). A tenant could write to them, and
+  the write **persisted into the next request** (verified cross-request). Not an escape
+  (no authority/Function reach), but the same class as the M-SES-1 threat: cross-request /
+  cross-tenant prototype pollution, incompletely covered. **Fixed** by adding those three
+  as explicit harden roots (`ngx_js_module.c` lockdown IIFE). Re-audit: all frozen, no
+  cross-request poison, on both tiers. The generator *instance* proto (`(function*(){})()`)
+  looked mutable but is the generator function's **own per-function `.prototype`** —
+  isolated (function `a`'s poison invisible to `b`'s instances) and chaining to the already
+  -frozen shared `%GeneratorPrototype%`, so it is left alone. Pinned by two new cases in
+  `t/comcon_freeze.t` (frozen + no cross-request pollution).
+- **SR3-2 (availability — CONTAINED, no fix): Promise microtask loop.** A handler that
+  self-reschedules `Promise.resolve().then(loop)` builds an unbounded microtask chain
+  drained (in C) after the handler returns. It does **not** hang the worker: the
+  per-request execution gas fires inside the running microtask at the deadline (~1.01s
+  measured, budget 1s), breaks the chain, and the worker keeps serving. Bounded by the
+  same budget as any other CPU path; no separate mechanism needed.
+
+Regressions: `t/comcon_freeze.t` (+2 SR-3 cases) pins the sibling-iterator freeze and its
+cross-request non-pollution, confirmed identical on the interpreter and JIT builds. With
+SR-3 clean, the confined tier's confinement is **adversarially validated**, not just
+argued — the last major assurance step before untrusted tenants (full maxim finalization
+remains the separate compiler-conformance gate).

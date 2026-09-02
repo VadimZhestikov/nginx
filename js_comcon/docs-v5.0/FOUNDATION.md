@@ -553,6 +553,23 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.28 (in place — SR-3 escape-completeness audit PASSED, one freeze gap fixed):** the
+scheduled adversarial pentest of the hardened tenant context (curated intrinsics +
+M-SES-0 taming + M-SES-1 freeze + gas) found **no sandbox escape** — every dynamic-code
+route stays tamed (`(new Error()).constructor.constructor`, bound-fn, `Symbol.species`
+all throw), strict `this` is `undefined`, the core + iterator + shared generator
+prototypes are frozen, unbounded recursion is caught. Two completeness findings, neither
+an authority escape: **SR3-1 (MEDIUM, FIXED)** — the M-SES-1 harden walks property
+*values*, so it missed the sibling iterator instance-prototypes reachable only by
+*calling* a method (`%String|Map|Set|RegExpStringIteratorPrototype%`); a tenant could
+pollute them across requests. Fixed by adding those as explicit harden roots (the
+generator function's own `.prototype` is per-function/isolated and left alone; the shared
+`%GeneratorPrototype%` was already frozen). **SR3-2 (CONTAINED)** — a Promise microtask
+loop is bounded by the existing per-request gas (~1 s, worker recovers), no new
+mechanism. Re-audited clean on both tiers; `t/comcon_freeze.t` +2 SR-3 cases (comcon
+22/187 both builds). The confined tier's confinement is now adversarially validated;
+full-test262-under-AOT untrusted-native remains gated on maxim finalization only.
+
 **v5.27 (in place — gas: per-request execution budget, both tiers):** a confined tenant's
 CPU time is now bounded (memory already was, via `JS_SetMemoryLimit`). Previously a
 `while(true){}` handler hung the worker — deny-by-default caps + frozen intrinsics stop
