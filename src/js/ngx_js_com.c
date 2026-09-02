@@ -2753,6 +2753,162 @@ ngx_js_tenant_learning(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 
+/*
+ * COMCON M-CFG step 2: comcon.admit(fn, contract) — the admission GATE.
+ *
+ * The host-JS realization of FOUNDATION §4 `admit`: the C3 static gate over a
+ * compiled fragment function, returning { certified, reject? }. This is the
+ * gate only — no compartment creation / bind / lowering (those are bind /
+ * include, later slices). Interim (pre-M2) schema per OPERATOR_API §8.6: the
+ * existing C3 structural checks — no dynamic code, and every free-global name
+ * must be in the contract's `imports` manifest (eval/Function/globalThis/…
+ * always denied). Static: no fragment code runs (js_comcon_* analyse bytecode).
+ */
+
+typedef struct {
+    JSContext    *ctx;
+    JSValueConst  imports;      /* array of allowed free-name strings, or undefined */
+    uint32_t      imports_len;
+    ngx_uint_t    bad;
+    char          badname[128];
+} ngx_js_admit_check_t;
+
+
+static ngx_uint_t
+ngx_js_admit_name_denied(const char *name)
+{
+    return ngx_strcmp(name, "eval") == 0
+        || ngx_strcmp(name, "Function") == 0
+        || ngx_strcmp(name, "globalThis") == 0
+        || ngx_strcmp(name, "global") == 0
+        || ngx_strcmp(name, "self") == 0;
+}
+
+
+static ngx_uint_t
+ngx_js_admit_in_imports(ngx_js_admit_check_t *c, const char *name)
+{
+    uint32_t     i;
+    JSValue      v;
+    const char  *s;
+    ngx_uint_t   match = 0;
+
+    for (i = 0; i < c->imports_len && !match; i++) {
+        v = JS_GetPropertyUint32(c->ctx, c->imports, i);
+        s = JS_ToCString(c->ctx, v);
+        if (s != NULL && ngx_strcmp(s, name) == 0) {
+            match = 1;
+        }
+        if (s != NULL) {
+            JS_FreeCString(c->ctx, s);
+        }
+        JS_FreeValue(c->ctx, v);
+    }
+
+    return match;
+}
+
+
+static void
+ngx_js_admit_free_cb(void *ud, const char *name)
+{
+    ngx_js_admit_check_t  *c = ud;
+
+    if (c->bad) {
+        return;
+    }
+
+    if (ngx_js_admit_name_denied(name) || !ngx_js_admit_in_imports(c, name)) {
+        c->bad = 1;
+        ngx_cpystrn((u_char *) c->badname, (u_char *) name, sizeof(c->badname));
+    }
+}
+
+
+static JSValue
+ngx_js_admit_verdict(JSContext *ctx, ngx_uint_t certified, const char *reject)
+{
+    JSValue  o;
+
+    o = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, o, "certified", JS_NewBool(ctx, certified ? 1 : 0));
+    if (!certified && reject != NULL) {
+        JS_SetPropertyStr(ctx, o, "reject", JS_NewString(ctx, reject));
+    }
+    return o;
+}
+
+
+static JSValue
+ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    JSValueConst          fn, contract;
+    JSValue               imports, len, cr;
+    ngx_js_admit_check_t  chk;
+    char                  reason[256];
+    char                  field[128];
+
+    fn = argc > 0 ? argv[0] : JS_UNDEFINED;
+    contract = argc > 1 ? argv[1] : JS_UNDEFINED;
+
+    if (!JS_IsFunction(ctx, fn)) {
+        return ngx_js_admit_verdict(ctx, 0, "admit: arg0 must be a function");
+    }
+
+    /* C3: no direct eval / with */
+    if (js_comcon_uses_dynamic_code(fn)) {
+        return ngx_js_admit_verdict(ctx, 0, "dynamic-code: eval or with");
+    }
+
+    /* C3: every free-global name must be in contract.imports (deny-by-default) */
+    imports = JS_IsObject(contract)
+              ? JS_GetPropertyStr(ctx, contract, "imports") : JS_UNDEFINED;
+
+    ngx_memzero(&chk, sizeof(ngx_js_admit_check_t));
+    chk.ctx = ctx;
+    chk.imports = imports;
+
+    if (JS_IsObject(imports)) {
+        len = JS_GetPropertyStr(ctx, imports, "length");
+        JS_ToUint32(ctx, &chk.imports_len, len);
+        JS_FreeValue(ctx, len);
+    }
+
+    if (js_comcon_collect_free_globals(ctx, fn, ngx_js_admit_free_cb, &chk)
+        != 0)
+    {
+        JS_FreeValue(ctx, imports);
+        return ngx_js_admit_verdict(ctx, 0,
+                                    "admit: arg0 not a bytecode function");
+    }
+    JS_FreeValue(ctx, imports);
+
+    if (chk.bad) {
+        ngx_snprintf((u_char *) reason, sizeof(reason),
+                     "free name not granted: %s%Z", chk.badname);
+        return ngx_js_admit_verdict(ctx, 0, reason);
+    }
+
+    /* optional C3: sealed-Request field check (contract.checkRequest) */
+    if (JS_IsObject(contract)) {
+        cr = JS_GetPropertyStr(ctx, contract, "checkRequest");
+        if (JS_ToBool(ctx, cr)) {
+            JS_FreeValue(ctx, cr);
+            if (js_comcon_check_request_fields(ctx, fn, field, sizeof(field))) {
+                ngx_snprintf((u_char *) reason, sizeof(reason),
+                             "request field not in sealed schema: %s%Z", field);
+                return ngx_js_admit_verdict(ctx, 0, reason);
+            }
+        } else {
+            JS_FreeValue(ctx, cr);
+        }
+    }
+
+    return ngx_js_admit_verdict(ctx, 1, NULL);
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -3009,6 +3165,19 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "plugins", JS_NewArray(ctx));
 
     JS_SetPropertyStr(ctx, global, "nginx", nginx_obj);
+
+    /*
+     * COMCON M-CFG: the host-JS kernel-operator surface. Step 2 exposes the
+     * `admit` gate; grant/mediate/bind/include/includeAt follow in later
+     * slices. Host context only (HOST_ROOT holds the root handle).
+     */
+    {
+        JSValue  comcon_obj = JS_NewObject(ctx);
+
+        JS_SetPropertyStr(ctx, comcon_obj, "admit",
+                          JS_NewCFunction(ctx, ngx_js_comcon_admit, "admit", 2));
+        JS_SetPropertyStr(ctx, global, "comcon", comcon_obj);
+    }
 
     /*
      * Global console object: debug/log/warn/error forwarded to nginx.log.

@@ -84,7 +84,14 @@ the same `admit`; follows the program-fragment operators.
    policy/realize, staging §6, the §8 decisions all resolved 2026-09-02: comcon-module surface,
    root cap set, meter=timeoutMs-now, closure default, init-time-only v1, M2 schema w/ C3 interim).
 2. **Implement `admit()`** as the umbrella over the existing `init_conf` sequence, callable from
-   host JS.
+   host JS. 🔨 **IN PROGRESS — first slice landed (2026-09-02):** `comcon.admit(fn, contract)` on
+   the host (HOST_ROOT) global — the C3 **gate** (`ngx_js_com.c`, `ngx_js_comcon_admit`): reuses
+   `js_comcon_uses_dynamic_code` + `js_comcon_collect_free_globals` (free names ⊆ `contract.imports`,
+   eval/Function/globalThis/… denied) + optional `js_comcon_check_request_fields`; returns
+   `{certified, reject?}`. `t/comcon_admit.t` (comcon 23/195). **Interim/next slices:**
+   `contract.imports` is the *full* manifest (intrinsics must be listed — auto-intrinsics come with
+   env-based checking); then `bind` (compartment creation + the M-SES lockdown) and C5 lowering, so
+   `admit`+`bind` reproduce the directive path's full admission.
 3. **Add `grant`/`mediate`/`bind`**.
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
