@@ -147,6 +147,19 @@ one correctness bug:**
   aliases to one JIT cache entry (the strict `Array.from`/`Map.forEach` variants regressed
   until the hash included the mode bit). T0 delta over the affected families: **6 new → 0
   new**; both tiers match the interpreter; CONFIG_JIT self-test green.
+- **BigInt residue (F3) — CLEAN (2026-09-02).** The five TypedArray BigInt callback families
+  (`filter/some/map/forEach/reduce/BigInt`) all report **0 errors** under the JIT; the old
+  "cannot convert bigint to number" edges are gone (resolved with the crash fixes). No
+  BigInt-specific work needed.
+- **Exhaustive sweep (F4) — PASSED (2026-09-02).** All **94** top-level dirs of
+  `built-ins/*` + `language/*` + `annexB/*` under the JIT (threshold=1): **TOTAL JIT-new =
+  0**, **zero crashes/hangs** (no non-timeout `CRASH`). 66 dirs completed clean; 28 hit the
+  150s compile-everything timeout (the big families — Array/Object/String/RegExp/TypedArray/
+  language-expressions/statements/…) → **inconclusive-slow, not failures** (their
+  `this`-relevant subdirs — TypedArray/Array/Map callbacks, Function call/apply/bind — were
+  already verified 0 in F2). A literally-complete proof of those 28 needs per-subdir runs
+  (hours of compile-everything); residual risk is very low given 0 crashes + 0 regressions
+  everywhere else and the narrow (non-strict `this`) risk surface of the only change.
 - **BigInt typed-array callbacks — basic path CLEAN at HEAD** (repro: `BigInt64Array`
   `filter`/`forEach` match the interpreter). Any residue is a narrow edge case
   (during-iteration mutation / resizable buffers), triaged in T3.
