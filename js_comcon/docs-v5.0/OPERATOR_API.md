@@ -108,7 +108,48 @@ A `policy` closure carries its caps; the **quotation** variant carries none (pro
   (multi-worker fan-out). **← truly dynamic post-fork admission; harder, deferred.**
 - **X — irreversible/guarded** — `remove()` without tombstone, **revoking an admission**.
 
-## 6. Pilgrim binding — each op wraps existing machinery (mostly rewiring)
+## 6. Staging & policy-as-program (stage-0, no new syntax)
+
+A policy **is a program**, and it runs at **compile time** — SEMANTICS §4: *"Policy units are
+themselves **stage-0 programs** bound under deny-by-default environments."* But this needs **no
+new JavaScript syntax** (no `comcon program { … }` construct); the design chose **anchors, not
+syntax — JS stays pure** (FOUNDATION: *"anchors (inert markers) + external policy units; policy
+text must not be trapped in strings"*). Staging is a phase property, not a keyword.
+
+**Two stages:**
+- **Stage-0 = admission / config-load (`init_conf`, pre-fork).** The root script and the policy
+  units run here: `env`/`grant`/`mediate`/`bind`/`admit`/`include` execute to *build* the
+  confinement structure, and each included fragment is admitted (C3/C4) and AOT-lowered
+  (C5/maxim). "Executed during compilation" = executed at stage-0.
+- **Stage-1 = request runtime.** The admitted, lowered fragment handlers run per-request inside
+  their frozen policy environments.
+- **Principle 8:** *soundness is stage-independent; staging is purely a performance property —
+  moving a check earlier never changes what is allowed.* (The erasure-soundness principle, at
+  the policy level.)
+
+**What marks a program as stage-0 policy — three anchors, all pure JS:**
+1. **It is an external *policy unit*** (a module, e.g. `*.policy.js`, or under the `comcon:`
+   namespace), consumed by `include`/`realize` — not inline, not a new grammar.
+2. **The operators are *granted into its deny-by-default env*, not ambient** (`// stage 0; host
+   granted {env, grant, mediate, bind, admit, …}`). That granting — not a keyword — is what
+   makes it a policy program; **every free identifier resolves in the bound env or is a stage-0
+   error** (compile-time enforcement, SEMANTICS §4).
+3. **In-source site marker = an inert *anchor* string directive** — `"use comcon: <site>";` —
+   which reads like a keyword but is pure JS (exactly like `"use strict"`). Use this where a
+   fragment's own source should visibly name the governed site.
+
+**`include = parse ∘ admit ∘ bind` is the compile-time boundary** — a function call, not syntax.
+Calling it at stage-0 parses the fragment, admits it (typecheck + tests, determinism caps
+denied), and binds the policy env, emitting the lowered structure.
+
+**Compile-through into native, proven faithful.** The stage-0 policy doesn't just gate at
+compile time — its mediations **lower into the tenant's compiled C**: SEMANTICS shows a
+prefix-check mediation becoming a `strncmp` guard in the C stub ("the membrane costs ~nothing").
+The **M8 / SR-2 faithfulness gate** (done) is exactly the guarantee that the lowered C simulates
+every mediation the stage-0 policy erased. And `quotation` mode (`A(q)=∅`) is **"data is code
+bound to ∅"** (Principle 9) — the propose-don't-hold policy that the operator `realize`s.
+
+## 7. Pilgrim binding — each op wraps existing machinery (mostly rewiring)
 
 | API | wraps (existing C) |
 |---|---|
@@ -125,7 +166,7 @@ A `policy` closure carries its caps; the **quotation** variant carries none (pro
 *identical* gas, so the SR-2 faithfulness gate still holds. The thin-sugar migration
 (`INCREMENT_MCFG.md` step 4) proves directive-path ≡ operator-path.
 
-## 7. Open decisions (resolve before implementing)
+## 8. Open decisions (resolve before implementing)
 
 1. **Surface:** top-level `grant/mediate/bind/admit/include` (as in MANUAL root.js) vs on a host
    object (`nginx.admit …`). MANUAL uses top-level; pilgrim namespaces under `nginx.*`. — *Lean:
@@ -139,7 +180,7 @@ A `policy` closure carries its caps; the **quotation** variant carries none (pro
 6. **Contract schema source:** the M2 dual-role typed nginx-API schema (types of granted caps
    *and* the config surface type system).
 
-## 8. Worked example — the whole fundament, end to end
+## 9. Worked example — the whole fundament, end to end
 
 `nginx.conf`: **only** `js_source root.js;` — nothing else.
 ```js
