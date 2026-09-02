@@ -92,7 +92,16 @@ the same `admit`; follows the program-fragment operators.
    `contract.imports` is the *full* manifest (intrinsics must be listed — auto-intrinsics come with
    env-based checking); then `bind` (compartment creation + the M-SES lockdown) and C5 lowering, so
    `admit`+`bind` reproduce the directive path's full admission.
-3. **Add `grant`/`mediate`/`bind`**.
+3. **Add `grant`/`mediate`/`bind`**. 🔨 **IN PROGRESS — capability layer + metered `bind` landed
+   (2026-09-02):** `comcon.{env,grant,mediate,meter,bind}` — `env()` a fresh deny-by-default
+   environment, `grant(env,name,cap)`, `meter({timeoutMs})`/`mediate(cap,interceptor)` build the
+   interceptor structure (JS bootstrap in `ngx_js_com_init`). **`bind(env,fn,{meter})` enforces the
+   `meter`** — a C helper (`ngx_js_comcon_run_metered`) tightens the worker's gas deadline around
+   the call (reuses the shipped interrupt handler + `request_deadline_ms`) and converts a
+   meter-abort into a clean catchable error at the bind boundary. `t/comcon_operators.t` (comcon
+   24/203). **Next in bind:** SCOPE isolation — a confined compartment (the M-SES lockdown over the
+   env) so free names resolve only through it; and `mediate` membrane *enforcement* (via the reach
+   gates). This slice gives resource confinement; authority confinement follows.
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.
