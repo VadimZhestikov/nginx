@@ -42,11 +42,15 @@ Three cases, by how much reconciliation is involved:
    history; produce one clean updated branch; then `git subtree pull --squash` **that
    branch** into pilgrim. Pilgrim only ever receives an already-merged result.
 
-**Recommendation for the first real upstream pull:** stand up a single `pilgrim-quickjs`
-fork repo that integrates bellard + maxim + our patches, and always `subtree pull`
-pilgrim from *that one repo* — juggling bellard and maxim as separate subtree sources
-makes the squash-diff bases confusing. That keeps daily work atomic (case 1) while
-giving upstream pulls a single clean lineage.
+**The single integration fork (STOOD UP 2026-09-01):** `../pilgrim-quickjs/` is the one
+clean lineage — remotes `bellard` + `maxim`, branch `jit` (= maxim/jit) and branch
+`pilgrim` (= `jit` + our COMCON/host delta, HEAD `97063cd`). Its `pilgrim`-tree engine
+source is byte-identical to the currently-vendored `quickjs/`, so the first cutover is an
+engine no-op. **Always `subtree pull` pilgrim from `../pilgrim-quickjs pilgrim` — never
+hand-sync maxim again.** Divergence analysis + the maxim-advance / bellard-CVE / gated
+first-cutover workflows are in `../pilgrim-quickjs/INTEGRATION.md`. Not yet pushed to a
+GitHub remote and the first `subtree pull` cutover is not yet done — both are gated on the
+usual SR-2 + full-regression pass (see the project memory).
 
 ## Build Commands
 
