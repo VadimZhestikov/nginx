@@ -82,6 +82,13 @@ typedef struct {
  * (drift is caught by t/comcon_schema_conformance.t). */
 #define NGX_JS_C4_SCHEMA_VERSION  "c2-tenant-env-1"
 
+/* COMCON gas: default per-request execution budget (ms) for a confined tenant
+ * handler. Enforced via the interrupt handler + request_deadline_ms around the
+ * tenant JS_Call — bounds CPU time so an untrusted `while(true){}` cannot hang
+ * the worker (memory is separately bounded by JS_SetMemoryLimit). A configurable
+ * js_tenant_timeout directive is a follow-up; this is the safe default. */
+#define NGX_JS_TENANT_TIMEOUT_MS  1000
+
 
 /*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).

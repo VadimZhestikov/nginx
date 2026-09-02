@@ -8457,6 +8457,7 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
     int32_t                status;
     ngx_js_conf_t         *jcf;
     ngx_js_compartment_t   prev;
+    ngx_js_worker_t       *w;
 
     jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
 
@@ -8527,6 +8528,22 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
 
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
 
+    /*
+     * COMCON gas: bound the tenant's CPU time for this request. The deadline
+     * covers the whole tenant-JS window — the handler call, its microtasks, and
+     * the response-value getters (which may be tenant JS; SR-1 HIGH-1) — so it
+     * is cleared only at each compartment_leave below. w may be NULL only before
+     * init_process (never on the request path).
+     */
+    w = jcf->worker;
+    if (w != NULL) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        w->request_deadline_ms = (uint64_t) ts.tv_sec * 1000
+                               + (uint64_t) ts.tv_nsec / 1000000
+                               + (uint64_t) NGX_JS_TENANT_TIMEOUT_MS;
+    }
+
     ret = JS_Call(tctx, jcf->tenant_request_handler, JS_UNDEFINED,
                   1, (JSValueConst *) &req);
 
@@ -8548,6 +8565,7 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
     if (JS_IsException(ret)) {
         ngx_js_log_exception(tctx, r->connection->log);
         JS_FreeValue(tctx, ret);
+        if (w != NULL) { w->request_deadline_ms = 0; }
         ngx_js_compartment_leave(prev);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -8718,6 +8736,7 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
                       "js_tenant_handler: handler must return a string or "
                       "{status, body} object");
         JS_FreeValue(tctx, ret);
+        if (w != NULL) { w->request_deadline_ms = 0; }
         ngx_js_compartment_leave(prev);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -8731,6 +8750,7 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
                       blen, (size_t) NGX_JS_TENANT_BODY_MAX);
         JS_FreeCString(tctx, bstr);
         JS_FreeValue(tctx, ret);
+        if (w != NULL) { w->request_deadline_ms = 0; }
         ngx_js_compartment_leave(prev);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -8741,6 +8761,7 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
         if (body == NULL) {
             JS_FreeCString(tctx, bstr);
             JS_FreeValue(tctx, ret);
+            if (w != NULL) { w->request_deadline_ms = 0; }
             ngx_js_compartment_leave(prev);
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
@@ -8754,7 +8775,9 @@ ngx_js_tenant_content_handler(ngx_http_request_t *r)
 
     JS_FreeValue(tctx, ret);
 
-    /* SR-1 HIGH-1: response is now inert C data — all tenant JS is done. */
+    /* SR-1 HIGH-1: response is now inert C data — all tenant JS is done.
+     * COMCON gas: clear the execution deadline (the tenant-JS window is over). */
+    if (w != NULL) { w->request_deadline_ms = 0; }
     ngx_js_compartment_leave(prev);
 
     r->headers_out.status           = (ngx_uint_t) status;

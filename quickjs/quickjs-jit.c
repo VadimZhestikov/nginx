@@ -2587,6 +2587,12 @@ static void gen_preamble(JSJITCodeBuf *cb, uint64_t bc_hash,
      * the 3-condition runtime guard in JIT_IC_CHECK (null check + pointer +
      * rt_gen).  Safe: the runtime never changes during a single invocation. */
     jit_buf_str(cb, "    JSRuntime *_rt=JS_GetRuntime(ctx);\n");
+    /* COMCON back-edge gas: an inline down-counter so the (indirect)
+     * poll_interrupts call fires only every JIT_GAS_INTERVAL loop iterations —
+     * the per-iteration cost is a cheap decrement, not a call. The real deadline
+     * check is further rate-limited inside poll_interrupts (every 10000 calls),
+     * so a runaway compiled loop is still stopped within a few ms of its budget. */
+    jit_buf_str(cb, "    int _jit_gas=256;\n");
     jit_buf_str(cb, "    (void)argc; (void)cpool; (void)var_refs;\n");
 
     /* P14: try/catch/finally support.
@@ -5801,6 +5807,12 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _borrowed_depth = -1; /* P38.1: borrow cannot survive a goto */
             /* P9.4: box typed surviving slots before goto — target label resets gen_st */
             { int _bx; for (_bx=0; _bx < gen_sp; _bx++) _P94_ENSURE(_bx); }
+            /* COMCON back-edge gas: a backward goto is a loop back-edge. Poll
+             * interrupts so a compiled loop honours the per-request deadline
+             * (poll_interrupts is rate-limited: cheap decrement, real check every
+             * 10000). Without this a compiled `while(true){}` runs uninterruptibly. */
+            if (tgt <= pc)
+                jit_buf_str(cb, "    if(--_jit_gas<=0){_jit_gas=256; if(_RT->poll_interrupts(ctx)) goto _ex;}\n");
             jit_buf_printf(cb, "    goto _L%d;\n", tgt);
             break;
         }
@@ -5845,6 +5857,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _borrowed_depth = -1; /* P38.1: borrow cannot survive a goto */
             /* P9.4: box typed surviving slots before goto */
             { int _bx; for (_bx=0; _bx < gen_sp; _bx++) _P94_ENSURE(_bx); }
+            if (tgt <= pc)   /* COMCON back-edge gas (see OP_goto) */
+                jit_buf_str(cb, "    if(--_jit_gas<=0){_jit_gas=256; if(_RT->poll_interrupts(ctx)) goto _ex;}\n");
             jit_buf_printf(cb, "    goto _L%d;\n", tgt);
             break;
         }
@@ -5853,6 +5867,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _borrowed_depth = -1; /* P38.1: borrow cannot survive a goto */
             /* P9.4: box typed surviving slots before goto */
             { int _bx; for (_bx=0; _bx < gen_sp; _bx++) _P94_ENSURE(_bx); }
+            if (tgt <= pc)   /* COMCON back-edge gas (see OP_goto) */
+                jit_buf_str(cb, "    if(--_jit_gas<=0){_jit_gas=256; if(_RT->poll_interrupts(ctx)) goto _ex;}\n");
             jit_buf_printf(cb, "    goto _L%d;\n", tgt);
             break;
         }

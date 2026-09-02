@@ -2414,6 +2414,18 @@ ngx_js_init_process(ngx_cycle_t *cycle)
     JS_SetInterruptHandler(w->rt, ngx_js_interrupt_handler, w);
 
     /*
+     * COMCON gas: the tenant runtime is a SEPARATE runtime, so it needs its own
+     * interrupt handler to enforce the per-request execution budget (an
+     * untrusted tenant `while(true){}` would otherwise hang the worker — memory
+     * is already bounded by JS_SetMemoryLimit, but CPU time was not). Shares the
+     * worker's request_deadline_ms, set around the tenant JS_Call in
+     * ngx_js_tenant_content_handler.
+     */
+    if (jcf->tenant_rt != NULL) {
+        JS_SetInterruptHandler(jcf->tenant_rt, ngx_js_interrupt_handler, w);
+    }
+
+    /*
      * Overwrite the context opaque (set to cycle in ngx_js_com_init) with
      * the worker pointer so that JS C functions (e.g. nginx.setTimeout) can
      * retrieve the worker via JS_GetContextOpaque(ctx).
