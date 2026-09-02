@@ -83,6 +83,60 @@ primitive throughout.
 the operator realizes a tenant's cap-free config **proposal**, restricting the realizer's grants
 to the quotation's manifest (the snapshot/rollback console; the M-CFG config-instance path).
 
+## 3a. `includeAt` — anchored inclusion (textual splice) & the stage-0 link
+
+`includeAt(anchor, source, policy)` is `include` **targeted at a named anchor site** — the
+fragment-**insertion** form (vs plain `include`'s standalone callable): the fragment's text fills
+a named hole in the host program. Used for mid-program / inner-loop splicing (`SHOWCASE51` §51c).
+
+**Signature.** `includeAt(anchorName, source, policy) → fragment` — splices the fragment at the
+site marked by the inert directive `"use comcon: <anchorName>";`. `policy = { env, expose, meter?,
+onViolation?, contract }`; `expose = { in: [names], out: [names] }` is the *only* enclosing
+bindings the spliced block may read / write.
+
+**Mechanism** (`include` + anchor-targeting):
+```
+includeAt = resolve(anchor) ∘ parse(source) ∘ admit(·, contract) ∘ bind(env ⊕ expose, ·) ∘ splice-at(site)
+```
+Steps 2–4 are `include`; 1 and 5 make it *at a site*. For a spliced block, `admit`'s syntactic
+predicates additionally require **control-flow hygiene** — no non-local `break`/`continue`/
+`return`/labeled jump out of the block (SHOWCASE51 §51c).
+
+**When — resolved by a stage-0 *link*, not by execution order.** The anchor lives in **dormant
+stage-1 code** (a handler body defined but not yet called at stage-0); it is discovered by
+**parsing** (static), never by running. Three stage-0 passes, like a linker:
+1. **Discover** — parse all units → collect every anchor (hole) + every `includeAt` registration.
+   Order-independent (the whole compilation unit).
+2. **Register** — stage-0 top-level runs; `grant`/`mediate` compute the env, and each `includeAt`
+   runs as a stage-0 statement that *registers a fill* for its anchor (its policy value computed
+   here).
+3. **Fill + lower** — at **end of stage-0**, the linker matches each fill to its anchor, does
+   `admit ∘ bind ∘ splice`, validates, and AOT-lowers the composed program; **then** fork.
+The fill lands on the not-yet-executed handler POM, so the anchor is filled **before the handler
+ever runs** (stage-1). **L-rights.** (Live re-fill on a running server = an **F-rights** epoch
+switch — deferred; removal = **X-rights**.)
+
+**Order-independence (the key property).** Because anchors are discovered by parse and filled at
+end-of-stage-0, `"use comcon: enrich";` and its `includeAt("enrich", …)` need **no** textual or
+execution ordering — either order, same file, or (the common case) a separate policy unit. The
+only requirement: `includeAt` runs *during* stage-0 (any top-level statement does). This is why
+the design must be a **link, not an imperative define-then-use** — a policy unit in another file
+is unorderable against the anchor by construction.
+
+**Error cases (all stage-0):**
+- anchor with **no** matching `includeAt` → dangling-hole error (design option: default to no-op);
+- `includeAt` targeting a **non-existent** anchor → error;
+- **more than one** fill for one insertion anchor → error (a hole takes exactly one fragment; an
+  *attachment* anchor over existing code is different — there binds compose by meet, §2 `bind`);
+- fragment references a free name ∉ (granted caps ∪ `expose`) → `admit` error;
+- non-local control transfer out of the spliced block → `admit` rejection.
+
+**Status.** A proposed *derived* form (introduced in `SHOWCASE51`). The anchor mechanism (inert
+`"use comcon:"` markers + external policy units — FOUNDATION §, SPEC:61 "policy attachment site")
+and `include = parse ∘ admit ∘ bind` (SEMANTICS) are established; the three-phase stage-0 link is
+the design resolution of the anchor↔fill ordering, to be formalized in `SEMANTICS.md` by the
+M-CFG track.
+
 ## 4. `policy()` — reified policy value
 
 ```js
