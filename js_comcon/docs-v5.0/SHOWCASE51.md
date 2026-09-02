@@ -58,10 +58,11 @@ nginx.http.servers[0].locations["/batch"].handler = function (req) {
 2. **Scope isolation is the point.** Although `normalize(item)` sits lexically inside the host's
    loop body, the fragment does **not** see `items`, `out`, `req`, or the surrounding scope —
    `bind` gave it its own deny-by-default env `e`, so it resolves **only** `lookup` plus what the
-   host **explicitly passes** (`item`); any other free name is a stage-0 error. It is a
-   **policy-bound callable you *call*, not raw text that shares your scope** — which is exactly
-   why splicing untrusted code into the middle of your control flow is safe. Needs a host value?
-   `grant` a cap or pass an argument; nothing leaks implicitly.
+   host **explicitly passes** (`item`); any other free name is a stage-0 error. Here it is a
+   policy-bound callable you *call* (§51c shows the inline-**text** form); **either way the
+   fragment resolves through its bound env, never the enclosing scope** — which is why splicing
+   untrusted code into the middle of your control flow is safe. Needs a host value? `grant` a cap
+   or pass an argument; nothing leaks implicitly.
 3. **Anchor, not syntax.** `"use comcon: normalize-site";` is an inert string directive (pure JS,
    like `"use strict"`) that *names* the site — for audit, redaction, and binding-set-drift
    ("what policy governs this site"). No grammar added.
@@ -93,3 +94,57 @@ So "a fragment in the middle of a loop" resolves cleanly either way: at **stage-
 N admitted fragments; at **stage-1** it *invokes* an admitted fragment per iteration. In both, the
 fragment is a policy-bound callable placed at the site — never raw text merged into the host's
 scope — and the untouched operator `nginx.conf` gained only `js_source`.
+
+---
+
+## 51c. Textual (hygienic-macro) inclusion — the fragment *is* the loop body
+
+51 called a policy-bound function. But the fragment's **text** can instead be **spliced
+directly into the loop body** at an anchor — a *textual include*. The host source carries only
+an inert anchor; the fragment lands there at compile time:
+
+```js
+// root.js — the host's inner loop; the fragment's TEXT is spliced at the anchor
+for (const item of items) {
+  "use comcon: enrich";          // ← inert anchor: the 3rd-party fragment is spliced HERE
+}
+```
+```js
+// stage-0 declaration (a policy unit) — binds a fragment to the anchor under a policy
+includeAt("enrich", "plugins/acme/enrich.js", {
+  env:     e,                              // granted caps (e.g. `lookup`)
+  expose:  { in: ["item"], out: ["item"] },// the ONLY enclosing bindings the block may see
+  meter:   meter({ timeoutMs: 2 }),
+  contract:{ schema: "enrich.d.ts", identity: "sha256-…", tests: "enrich.suite.js" },
+});
+```
+**Stage-0:** the fragment text is spliced at `enrich`, admitted, bound, and AOT-lowered — the
+compiled loop body *is* the confined fragment. **Stage-1:** the loop runs that inlined body.
+
+**Why a *textual* include is still confined (it is NOT a naive `#include`):**
+
+1. **Scope hygiene (`bind`).** Though the text sits inside the loop body, `bind` re-scopes it:
+   names resolve **only** through the policy env — the ambient `items` / `out` / `req` are
+   **invisible**; only `lookup` (granted) and `item` (exposed) resolve; any other free name is a
+   **stage-0 error**. Textual position is shared; *lexical scope is not* — bind overrides ambient
+   resolution for the spliced subtree. **This is the precise correction to 51's phrasing:** raw
+   text may be spliced, but its scope is the bound env, never the enclosing scope.
+2. **Control-flow hygiene (`admit`).** A spliced block could otherwise hijack the host loop
+   (`break` / `continue` / `return` / labeled jumps to host labels). `admit`'s syntactic
+   predicates require a **self-contained block** — non-local control transfer to the host's loop
+   or function is rejected at admission. The block communicates *only* through the exposed in/out
+   window.
+3. **Explicit in/out (`expose`).** The fragment's manifest is the exact list of enclosing
+   bindings it may read (`item` in) and write (`item` out); everything else in scope is
+   unreachable. The live loop binding is re-exposed each iteration.
+4. **Compile-through, and *faster* than the call.** The spliced block lowers **inline** into the
+   host's compiled loop — no per-iteration call boundary (so 51c can beat 51's callable form on a
+   hot inner loop); the `readonly`/`meter` mediations still lower to guards; **M8 / SR-2**
+   guarantees the inlined native simulates every erased mediation.
+
+**51 vs 51c.** Same confinement (both are `include = parse ∘ admit ∘ bind`, both re-scope via
+`bind`); the only difference is whether the bound subtree is a **called function** (51 — clean
+boundary, good for reuse across sites) or an **inlined block** (51c — no call cost, good for tight
+inner loops, at the price of the extra control-flow-hygiene obligation on `admit`). "Inject a
+fragment in the middle of my code" is exactly 51c: a hygienic, capability-scoped, stage-0 macro
+splice at an anchored site.
