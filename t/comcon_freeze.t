@@ -50,16 +50,25 @@ onRequest(function(req) {
     var frozen = Object.isFrozen(Object.prototype)
               && Object.isFrozen(Array.prototype)
               && Object.isFrozen(String.prototype);
+    // SR-3: shared iterator instance-prototypes reachable only by calling a
+    // method (string/map/set) must be frozen too, else a tenant pollutes them
+    // across requests.
+    var iters = Object.isFrozen(Object.getPrototypeOf(""[Symbol.iterator]()))
+             && Object.isFrozen(Object.getPrototypeOf(new Map()[Symbol.iterator]()))
+             && Object.isFrozen(Object.getPrototypeOf(new Set()[Symbol.iterator]()));
+    var itersPoison = ("evil" in Object.getPrototypeOf(""[Symbol.iterator]()));
+    try { Object.getPrototypeOf(""[Symbol.iterator]()).evil = "PWNED"; } catch (e) {}
     var threw = false;
     try { Object.prototype.evil = "PWNED"; } catch (e) { threw = true; }
     var o = {}; o.x = 1;                       // own-object mutation is fine
     var a = []; a.push("p"); a.push("q");      // own-array mutation is fine
     return "before=" + before + " frozen=" + frozen + " threw=" + threw
+         + " iters=" + iters + " itersPoison=" + itersPoison
          + " own=" + o.x + a.join("") + "\n";
 });
 JS
 
-$t->try_run('no js module')->plan(6);
+$t->try_run('no js module')->plan(9);
 
 # --- intrinsics are frozen, the pollution write throws ---
 my $r1 = http_get('/t');
@@ -67,12 +76,18 @@ like($r1, qr/frozen=true/,  'Object/Array/String prototypes are frozen');
 like($r1, qr/threw=true/,   'a prototype-pollution write throws (frozen intrinsic)');
 like($r1, qr/before=false/, 'first request sees a pristine Object.prototype');
 
+# --- SR-3: sibling iterator instance-prototypes are frozen too ---
+like($r1, qr/iters=true/,        'string/map/set iterator prototypes are frozen (SR-3)');
+like($r1, qr/itersPoison=false/, 'first request sees a pristine string-iterator prototype');
+
 # --- a tenant can still create and mutate its OWN objects/arrays ---
 like($r1, qr/own=1pq/, 'freezing intrinsics does not block own-object/array mutation');
 
 # --- no persistence: the failed write did not leak into a later request ---
 my $r2 = http_get('/t');
 like($r2, qr/before=false/, 'no cross-request pollution: still pristine on req 2');
+like($r2, qr/itersPoison=false/,
+    'no cross-request pollution of the iterator prototype either (SR-3)');
 
 my $dir = $t->testdir();
 my $bin = $ENV{TEST_NGINX_BINARY} || 'nginx';

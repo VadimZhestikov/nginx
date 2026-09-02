@@ -1297,6 +1297,17 @@ static const char  ngx_js_tenant_lockdown_js[] =
     "  harden(Object.getPrototypeOf(async function () {}));"
     "  harden(Object.getPrototypeOf(async function* () {}));"
     "  harden(Object.getPrototypeOf([][Symbol.iterator]()));"
+    /* SR-3: shared iterator instance-prototypes the value-walk never reaches (they
+       exist only as the result of calling a method, so no property path leads to
+       them). Without these a tenant can mutate the shared %StringIteratorProto% /
+       %Map|SetIteratorProto% / %RegExpStringIteratorProto% and pollute the next
+       request. (%Generator|AsyncGeneratorPrototype% are already frozen via the
+       %Generator|AsyncGenerator%.prototype value edge above; a generator function's
+       own .prototype is per-function and isolated, so it is left alone.) */
+    "  harden(Object.getPrototypeOf(''[Symbol.iterator]()));"
+    "  harden(Object.getPrototypeOf(new Map()[Symbol.iterator]()));"
+    "  harden(Object.getPrototypeOf(new Set()[Symbol.iterator]()));"
+    "  try { harden(Object.getPrototypeOf(''.matchAll(/(?:)/g))); } catch (e) {}"
     "})();";
 
 static ngx_int_t
