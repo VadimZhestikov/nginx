@@ -163,6 +163,13 @@ guard: the regular-context COM suites (`t/` COM tests + `t_stress/com_*`) must s
 i.e., the freeze did **not** leak into the reconfig context. **Effort: small;** the only real
 risk is tenant-vs-shared-context scoping (covered by keeping the freeze at the tenant call
 site). Slots in before the grant model / any multi-tenant-shared-runtime capability work.
+
+**Decision (2026-09-02): HELD as the gate on the grant model.** Not implemented now —
+since it is DiD with no live exposure and its reach path cannot be fully tested until a
+capability object is actually granted, it is deferred and made a **hard prerequisite of the
+grant-model increment**: the first change that hands a tenant any granted COM/Socket
+capability object MUST land `ngx_js_com_freeze_protos` (tenant-only) + the pollution test in
+the same increment.
 - **M-SES-2 — portal taming + escape-probe gate (= SR-3). DONE (2026-09-01, v5.28).** The
   adversarial pentest of intrinsic/engine escape completeness. **Verdict: no sandbox
   escape** — every dynamic-code route stays tamed (error/bound-fn/`Symbol.species`
