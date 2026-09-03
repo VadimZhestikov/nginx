@@ -112,11 +112,20 @@ compiled tier, and the request contract.
    (every dynamic-code escape route — `[].constructor.constructor`, `Object.constructor`, generator/
    async `.constructor` — stays tamed; curated std JS all works) and `t/comcon_include_freeze.t`
    (Object/Array/String + the call-only iterator instance-prototypes frozen, pollution writes throw,
-   own-object mutation unaffected). **Remaining:** `comcon_sr1_regression.t` — its reach/escape/close
-   probes (a granted socket's `.listener` in a getter, `socket.close()` denied) map via a live-cap
-   grant; only its **response-framing** probe (dropping a tenant-set `content-length`) is
-   response-contract-specific and folds in with the P2/serve response handling (partly the `req.respond`
-   CRLF fix). `schema_conformance` stays as noted (sealed-Request vs marshaled data).
+   own-object mutation unaffected). **`comcon_sr1_regression.t` — ✅ MIGRATED (2026-09-02),
+   surfacing TWO security fixes** (`t/comcon_include_sr1.t`): HIGH-1 (reach hidden in a return-value
+   getter) + MEDIUM-4 (`socket.close()` denied) + MEDIUM-2 (framing). **Fix 1 (HIGH — reach-gate
+   bypass):** the include invoke JSON-materialized the fragment's result *after*
+   `ngx_js_compartment_leave`, so a getter in the returned object
+   (`get status(){ return granted.listener === null ? 200 : 599 }`) fired as HOST_ROOT — bypassing
+   the A1 gate (leaked the listener → 599). Fixed by moving `compartment_leave` to *after*
+   `JS_JSONStringify`, so result materialization (incl. getters) runs under the TENANT compartment.
+   **Fix 2 (MEDIUM — response framing):** `req.respond` did not drop handler-set framing headers, so
+   a fragment-set `content-length: 999` was emitted *alongside* nginx's real `Content-Length` — a
+   duplicate-CL request-smuggling / desync vector. Added `ngx_js_header_is_framing` (content-length /
+   transfer-encoding / connection) to the `req.respond` drop guard (with the CRLF guard). Both fixes
+   are in the shared paths — they protect every include fragment and every `req.respond` caller.
+   `schema_conformance` stays as noted (sealed-Request vs marshaled data).
    Compiled-tier (`faithfulness`, `lowering`) stay for P5. **Net:** at P6 the M-SES lockdown code
    stays (used by include); its coverage moves to the `comcon_include_*` probes, and the tenant
    harness is deleted.

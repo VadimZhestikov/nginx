@@ -1994,12 +1994,6 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
        fragment legitimately holds the cap. */
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
     result = JS_Call(sctx, fn, JS_UNDEFINED, nargs, (JSValueConst *) &arg);
-    ngx_js_compartment_leave(prev);
-
-    if (metered) {
-        w->request_deadline_ms = old_deadline;
-    }
-    JS_FreeValue(sctx, arg);
 
     if (JS_IsException(result)) {
         exc = JS_GetException(sctx);
@@ -2009,17 +2003,30 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
             JS_FreeCString(sctx, s);
         }
         JS_FreeValue(sctx, exc);
-        return retv;
+
+    } else {
+        /* Materialize the result — INCLUDING any getters in the returned object
+           — while still UNDER THE TENANT COMPARTMENT, so a reach attempt hidden
+           in a return-value getter (SR-1 HIGH-1) is gated. Leaving the
+           compartment before JS_JSONStringify would run those getters as
+           HOST_ROOT and bypass the A1 gate. */
+        jstr = JS_JSONStringify(sctx, result, JS_UNDEFINED, JS_UNDEFINED);
+        JS_FreeValue(sctx, result);
+        s = JS_ToCStringLen(sctx, &len, jstr);
+        retv = (s != NULL) ? JS_ParseJSON(hctx, s, len, "<result>") : JS_UNDEFINED;
+        if (s != NULL) {
+            JS_FreeCString(sctx, s);
+        }
+        JS_FreeValue(sctx, jstr);
     }
 
-    jstr = JS_JSONStringify(sctx, result, JS_UNDEFINED, JS_UNDEFINED);
-    JS_FreeValue(sctx, result);
-    s = JS_ToCStringLen(sctx, &len, jstr);
-    retv = (s != NULL) ? JS_ParseJSON(hctx, s, len, "<result>") : JS_UNDEFINED;
-    if (s != NULL) {
-        JS_FreeCString(sctx, s);
+    ngx_js_compartment_leave(prev);
+
+    if (metered) {
+        w->request_deadline_ms = old_deadline;
     }
-    JS_FreeValue(sctx, jstr);
+    JS_FreeValue(sctx, arg);
+
     return retv;
 }
 

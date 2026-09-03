@@ -2842,6 +2842,20 @@ ngx_js_header_has_crlf(const char *s)
 }
 
 
+/* Framing-control headers are computed by nginx from the body/connection state;
+ * a handler-set value would DUPLICATE or contradict them (a second
+ * Content-Length is a request-smuggling / response-desync vector). Drop them —
+ * the same defense js_tenant_handler applies, here for every req.respond
+ * caller. */
+static ngx_int_t
+ngx_js_header_is_framing(const char *name)
+{
+    return ngx_strcasecmp((u_char *) name, (u_char *) "content-length") == 0
+        || ngx_strcasecmp((u_char *) name, (u_char *) "transfer-encoding") == 0
+        || ngx_strcasecmp((u_char *) name, (u_char *) "connection") == 0;
+}
+
+
 static JSValue
 ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
@@ -2903,11 +2917,12 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
 
             if (key_cstr && val_cstr
                 && (ngx_js_header_has_crlf(key_cstr)
-                    || ngx_js_header_has_crlf(val_cstr)))
+                    || ngx_js_header_has_crlf(val_cstr)
+                    || ngx_js_header_is_framing(key_cstr)))
             {
                 ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                              "js: response header with CR/LF dropped "
-                              "(name=\"%s\")", key_cstr);
+                              "js: response header dropped (name=\"%s\": "
+                              "CR/LF or framing-controlled)", key_cstr);
                 /* fall through to the frees below; header not applied */
 
             } else if (key_cstr && val_cstr) {
