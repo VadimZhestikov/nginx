@@ -1363,12 +1363,21 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
         jcf->comcon_rt = NULL;
         return NULL;
     }
+    /* cycle for COM getters that read the context opaque; mirror the tenant. */
+    JS_SetContextOpaque(sctx, (void *) (uintptr_t) ngx_cycle);
+
     if (ngx_js_tenant_lockdown(sctx, jcf->comcon_rt, ngx_cycle->log) != NGX_OK) {
         JS_FreeContext(sctx);
         JS_FreeRuntime(jcf->comcon_rt);
         jcf->comcon_rt = NULL;
         return NULL;
     }
+
+    /* Per-context prototypes for the whole COM class set, so a live-cap grant
+       (e.g. a re-wrapped socket) is usable in the compartment. Mirrors the
+       tenant compartment; installed AFTER lockdown, exactly as the tenant. */
+    (void) ngx_js_com_install_protos(sctx);
+
     jcf->comcon_ctx = sctx;
 
     /* gas interrupt handler: wire now if the worker exists (post-fork include);
@@ -1390,12 +1399,14 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
 {
     ngx_js_conf_t  *jcf;
     JSContext      *sctx;
-    JSValue         fn, thrown, exc;
-    const char     *source, *estr;
-    u_char         *buf;
+    JSValue         fn, outer, thrown, exc, name_v, av[16];
+    const char     *source, *estr, *name;
+    u_char         *buf, *p;
     void           *slot;
-    size_t          slen;
+    size_t          slen, nlen, total;
     ngx_uint_t      handle;
+    uint32_t        gi, gn;
+    int32_t         sh;
 
     jcf = ngx_js_comcon_jcf;
     if (jcf == NULL) {
@@ -1411,22 +1422,61 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    buf = ngx_alloc(slen + 3, ngx_cycle->log);
+    /* grant names -> the wrapper's parameter list; grant sockets -> its args,
+       each re-wrapped into the compartment (a fresh compartment-native cap
+       around the C handle — reach-gated, so it is HELD but its authority is
+       still denied by the A1 gate). */
+    gn = 0;
+    if (argc > 1 && JS_IsObject(argv[1])) {
+        name_v = JS_GetPropertyStr(hctx, argv[1], "length");
+        JS_ToUint32(hctx, &gn, name_v);
+        JS_FreeValue(hctx, name_v);
+    }
+    if (gn > 16) {
+        gn = 16;
+    }
+
+    /* build "(function(<names>){\"use strict\";return(<source>);})" */
+    total = sizeof("(function(){\"use strict\";return();})") + slen;
+    for (gi = 0; gi < gn; gi++) {
+        name_v = JS_GetPropertyUint32(hctx, argv[1], gi);
+        name = JS_ToCString(hctx, name_v);
+        total += (name ? ngx_strlen(name) : 0) + 1;
+        if (name) {
+            JS_FreeCString(hctx, name);
+        }
+        JS_FreeValue(hctx, name_v);
+    }
+
+    buf = ngx_alloc(total, ngx_cycle->log);
     if (buf == NULL) {
         JS_FreeCString(hctx, source);
         return JS_ThrowOutOfMemory(hctx);
     }
-    buf[0] = '(';
-    ngx_memcpy(buf + 1, source, slen);
-    buf[slen + 1] = ')';
-    buf[slen + 2] = '\0';
+    p = ngx_cpymem(buf, "(function(", sizeof("(function(") - 1);
+    for (gi = 0; gi < gn; gi++) {
+        name_v = JS_GetPropertyUint32(hctx, argv[1], gi);
+        name = JS_ToCStringLen(hctx, &nlen, name_v);
+        if (name != NULL) {
+            if (gi > 0) {
+                *p++ = ',';
+            }
+            p = ngx_cpymem(p, name, nlen);
+            JS_FreeCString(hctx, name);
+        }
+        JS_FreeValue(hctx, name_v);
+    }
+    p = ngx_cpymem(p, "){\"use strict\";return(",
+                   sizeof("){\"use strict\";return(") - 1);
+    p = ngx_cpymem(p, source, slen);
+    p = ngx_cpymem(p, ");})", sizeof(");})") - 1);
     JS_FreeCString(hctx, source);
 
-    fn = JS_Eval(sctx, (const char *) buf, slen + 2, "<comcon-fragment>",
-                 JS_EVAL_TYPE_GLOBAL);
+    outer = JS_Eval(sctx, (const char *) buf, p - buf, "<comcon-fragment>",
+                    JS_EVAL_TYPE_GLOBAL);
     ngx_free(buf);
 
-    if (JS_IsException(fn)) {
+    if (JS_IsException(outer)) {
         exc = JS_GetException(sctx);
         estr = JS_ToCString(sctx, exc);
         thrown = JS_ThrowSyntaxError(hctx, "comcon.include: %s",
@@ -1436,6 +1486,32 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         }
         JS_FreeValue(sctx, exc);
         return thrown;
+    }
+
+    /* re-wrap each granted socket into the compartment and apply the closure */
+    for (gi = 0; gi < gn; gi++) {
+        name_v = JS_GetPropertyUint32(hctx, argv[2], gi);   /* the host socket */
+        sh = ngx_js_socket_handle(name_v);
+        JS_FreeValue(hctx, name_v);
+        if (sh < 0) {
+            while (gi-- > 0) {
+                JS_FreeValue(sctx, av[gi]);
+            }
+            JS_FreeValue(sctx, outer);
+            return JS_ThrowTypeError(hctx,
+                       "comcon.include: grant is not a NginxSocket");
+        }
+        av[gi] = ngx_js_socket_wrap(sctx, (uint32_t) sh);
+    }
+
+    fn = JS_Call(sctx, outer, JS_UNDEFINED, (int) gn, (JSValueConst *) av);
+    for (gi = 0; gi < gn; gi++) {
+        JS_FreeValue(sctx, av[gi]);
+    }
+    JS_FreeValue(sctx, outer);
+
+    if (JS_IsException(fn)) {
+        return fn;
     }
     if (!JS_IsFunction(sctx, fn)) {
         JS_FreeValue(sctx, fn);
@@ -1483,6 +1559,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     uint64_t          old_deadline = 0, now_ms, newd;
     ngx_uint_t        metered = 0;
     struct timespec   ts;
+    ngx_js_compartment_t  prev;
 
     jcf = ngx_js_comcon_jcf;
     if (jcf == NULL || jcf->comcon_ctx == NULL || jcf->comcon_frags == NULL) {
@@ -1525,7 +1602,12 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         }
     }
 
+    /* run the fragment as a confined compartment: the A1 reach gate denies the
+       authority edges (e.g. a granted socket's .listener) even though the
+       fragment legitimately holds the cap. */
+    prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
     result = JS_Call(sctx, fn, JS_UNDEFINED, nargs, (JSValueConst *) &arg);
+    ngx_js_compartment_leave(prev);
 
     if (metered) {
         w->request_deadline_ms = old_deadline;

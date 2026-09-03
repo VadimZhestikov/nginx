@@ -139,8 +139,27 @@ the same `admit`; follows the program-fragment operators.
    invoked in the compartment, arg/result JSON-marshaled (strings cross, no object). **Verified:**
    authority isolation (`typeof nginx → "undefined"`), data-in/out (`x.a*2 → 42`), metered confined
    abort (`~100 ms`), **clean teardown** (`t/comcon_include.t`; comcon 25/209). Interrupt handler
-   wired on `comcon_rt` in `init_process` (gas). **Still follow-on:** live-**cap** grants (this
-   slice is data-in/data-out) and `mediate` membrane enforcement.
+   wired on `comcon_rt` in `init_process` (gas).
+   **✅ LIVE-CAP GRANTS — LANDED (2026-09-02).** `comcon.include(source, {grants:{name: cap}})`
+   now hands a fragment a **live host capability** (a `NginxSocket`), mirroring the tenant grant
+   mechanism exactly. `__includeConfined(source, names[], caps[])` wraps the fragment source in a
+   closure `(function(<names>){ "use strict"; return (<source>); })`, re-wraps each granted socket
+   **compartment-native** via `ngx_js_socket_wrap(comcon_ctx, handle)` (a fresh wrapper around the
+   same C handle — `ngx_js_socket_handle()` extracts it, as `grantToTenant` does), and applies the
+   closure so the fragment closes over the cap by name. No object crosses the realm — only the C
+   handle. Three fixes made it correct: (a) `ngx_js_com_install_protos(comcon_ctx)` after lockdown
+   (mirrors the tenant — without the socket/listener protos the wrapper had no getters, so
+   `.address`/`.listener` read `undefined`); (b) `JS_SetContextOpaque(comcon_ctx, ngx_cycle)`;
+   (c) the invoke's `JS_Call` runs inside `ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT)` /
+   `…leave()`, so the **A1 reach gate** confines the fragment (the compartment flag is a per-worker
+   static, not per-context). **Verified** (`t/comcon_include_grant.t`; comcon 26/215): host authority
+   unreachable (`typeof nginx → "undefined"`), the fragment **holds** the granted socket
+   (`typeof granted → "object"`), an ungated scalar read works (`granted.address` →
+   `"127.0.0.1:…"`), and the reach edge is gated (`granted.listener === null` cross-compartment,
+   while the host sees the listener). Clean teardown unchanged (own-runtime `JS_FreeRuntime`).
+   **Still follow-on:** `mediate` membrane enforcement (attenuate/transform/meter a granted cap's
+   methods via an interceptor) and grants of *other* cap kinds (COM nodes) — the socket is the
+   proven first cap.
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.

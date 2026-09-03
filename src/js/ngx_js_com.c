@@ -3030,11 +3030,16 @@ static const char  ngx_js_comcon_bootstrap[] =
     /* include(source, contract): compile the fragment in the confined
        compartment (own runtime) and hold it there; the returned callable
        marshals arg/result by JSON round-trip in C — no live object crosses.
-       AUTHORITY isolation (host unreachable) + RESOURCE (the meter). Grants
-       are a follow-on. */
+       AUTHORITY isolation (host unreachable) + RESOURCE (the meter).
+       contract.grants maps a name -> a live host capability (a NginxSocket);
+       each is re-wrapped compartment-native and injected as a closure binding
+       of that name (attenuation-only: the cap stays reach-gated). */
     "  C.include=function(source,contract){"
     "    contract=contract||{};"
-    "    var h=C.__includeConfined(String(source));"
+    "    var g=contract.grants||{},names=[],caps=[];"
+    "    for(var k in g){if(Object.prototype.hasOwnProperty.call(g,k)){"
+    "      names.push(String(k));caps.push(g[k]);}}"
+    "    var h=C.__includeConfined(String(source),names,caps);"
     "    var ms=(contract.meter&&contract.meter[METER]"
     "            &&contract.meter[METER].timeoutMs)|0;"
     "    var bound=function(arg){return C.__invokeConfined(h,arg,ms);};"
@@ -3315,7 +3320,7 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                                           "__runMetered", 4));
         JS_SetPropertyStr(ctx, comcon_obj, "__includeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_include_confined,
-                                          "__includeConfined", 1));
+                                          "__includeConfined", 3));
         JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
                                           "__invokeConfined", 3));
