@@ -2977,14 +2977,43 @@ static const char  ngx_js_comcon_bootstrap[] =
     /* routes(glob): attenuate a granted COM server to a route glob. The
        fragment receives a NginxComFacet (never the stateful server wrapper). */
     "  C.routes=function(glob){return {flavor:'routes',glob:String(glob)};};"
-    /* quote(source): an inert, cap-free DESCRIPTION of a policy/fragment — the
-       quotation half of closure-vs-quotation (FOUNDATION §6). Zero authority: a
-       source string structurally carries no capability, so the cap-free (stone)
-       rule holds trivially. Frozen + marked so realize() can tell a description
-       from a closure (a bound include() result is a closure and is refused).
-       Structured splices + POM-node quotations await POM nodes (increment D). */
-    "  C.quote=function(source){"
+    /* stone check (increment D3): a splice may carry only DEEP cap-free plain
+       data — primitives + frozen records/arrays; no functions, no capabilities
+       (facet/quote/confined), no getters/setters (a getter could mint a cap
+       lazily; TOCTOU-unsound). A violation is a stage-0 error at the PRODUCER.
+       Makes cap-freeness stable, so the closure/quotation split stays checkable
+       (SEMANTICS §4.4, rule QUOTE / the cap-free rule R2). */
+    "  function pomStone(v,name){var t=typeof v;"
+    "    if(v===null||t==='number'||t==='string'||t==='boolean')return;"
+    "    if(t!=='object')throw new TypeError("
+    "      'quote: splice '+name+' is not cap-free (stone) data');"
+    "    if(v[FACET]||v[QUOTE]||v.confined)throw new TypeError("
+    "      'quote: splice '+name+' carries a capability');"
+    "    var ks=Object.keys(v);"
+    "    for(var i=0;i<ks.length;i++){"
+    "      var d=Object.getOwnPropertyDescriptor(v,ks[i]);"
+    "      if(d.get||d.set)throw new TypeError("
+    "        'quote: splice '+name+' has an accessor (not stone)');"
+    "      pomStone(v[ks[i]],name);}"
+    "    Object.freeze(v);}"
+    /* quote(source, splices?): an inert, cap-free DESCRIPTION of a policy/
+       fragment — the quotation half of closure-vs-quotation (FOUNDATION §6).
+       Zero authority. Optional `splices` = producer data spliced into the
+       description; each is deep-checked STONE (cap-free) at quote time, so a
+       quotation is structurally immune to injecting a capability. Splices bind
+       at data positions (never as text — see realize), the same reason
+       parameterized SQL kills injection. Frozen + marked so realize() can tell a
+       description from a closure. Structured POM-node splices (splice into a
+       parsed subtree) await stmt/expr nodes (D5). */
+    "  C.quote=function(source,splices){"
     "    var q={source:String(source)};"
+    "    if(splices!==undefined&&splices!==null){"
+    "      if(typeof splices!=='object')throw new TypeError("
+    "        'quote: splices must be an object');"
+    "      var sk=Object.keys(splices),sp=Object.create(null);"
+    "      for(var i=0;i<sk.length;i++){pomStone(splices[sk[i]],sk[i]);"
+    "        sp[sk[i]]=splices[sk[i]];}"
+    "      q.splices=Object.freeze(sp);}"
     "    Object.defineProperty(q,QUOTE,{value:true});"
     "    return Object.freeze(q);};"
     /* realize(q, contract, realizerEnv): give a quotation force under the
@@ -3013,7 +3042,19 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(contract.tests)c.tests=contract.tests;"
     "    if(contract.identity)c.identity=contract.identity;"
     "    if(contract.checkRequest)c.checkRequest=contract.checkRequest;"
-    "    return C.include(q.source,c);};"
+    /* splices bind as DATA, never as text: each is emitted as a JSON literal
+       into an enclosing IIFE var, so the quoted code's reference to the splice
+       name resolves to escaped producer data — a spliced string cannot smuggle
+       code (JSON.stringify escaping = the parameterized-SQL defense), and the
+       names become bound closure vars (invisible to the admit free-name gate).
+       Stone was already enforced at quote() time. */
+    "    var src=q.source;"
+    "    if(q.splices){var sk=Object.keys(q.splices);"
+    "      if(sk.length){var pre='';"
+    "        for(var j=0;j<sk.length;j++)"
+    "          pre+=(j?',':'')+sk[j]+'='+JSON.stringify(q.splices[sk[j]]);"
+    "        src='(function(){var '+pre+';return('+q.source+');})()';}}"
+    "    return C.include(src,c);};"
     /* bind(env, source, opts): attach the env over a fragment — the real kernel
        bind, realized by COMPILING the source in the confined compartment under
        the env (you cannot re-bind an already-compiled host closure to a

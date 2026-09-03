@@ -1,8 +1,8 @@
 # INCREMENT — D: POM nodes (the reflective program tree) — scoping
 
-**Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.41). **D0 ✅** (substrate + p_symbol
-enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` selectors); D3–D5
-pending. Follows the operator kernel
+**Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.42). **D0 ✅** (substrate + p_symbol
+enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` selectors), **D3 ✅**
+(POM-node quotations + stone splices); D4–D5 pending. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -98,10 +98,20 @@ security-critical POM invariants (§4).
   coarse-intensional selection, live recompute. *(Finer selectors — `callsites(fetch)`, span/anchor
   predicates — extend the grammar at D5 when stmt/expr nodes exist.)*
 
-- **D3 — POM-node quotations + structured splices.** `quote(node)` of a parsed subtree; `${…}`
-  splices attached as **stone** (deep-frozen, cap-free) data leaves — structurally injection-immune
-  (SEMANTICS §4.4). Marries to shipped `realize`/`quote`; unlocks `includeAt` **anchor-splice**.
-  **Gate:** realize a spliced subtree; a spliced capability is a stage-0 error at the producer.
+- **D3 — POM-node quotations + stone splices.** ✅ DONE (2026-09-03). `comcon.quote(source,
+  splices?)` accepts producer **splices** — deep-checked **stone** (cap-free: no functions,
+  capabilities, or accessors; a violation is a stage-0 error at the producer). `realize` binds each
+  splice as a **JSON literal in an enclosing IIFE var**, so the quoted code resolves the splice name
+  to escaped *data* — a spliced string can never smuggle code (JSON.stringify escaping = the
+  parameterized-SQL defense), and the splice names become bound closure vars (invisible to the admit
+  free-name gate). This is the data-plane of §4.4's two-phase binding on the source substrate; the
+  structured POM-node splice (into a *parsed subtree*, preserving sub-node handles) awaits stmt/expr
+  nodes (D5). A POM node's own `quote()` (D1) is now **realizable** — `realize(node.quote(), K, env)`
+  compiles + runs a real subtree, marrying the POM to the operator kernel. Pure-JS, no engine change.
+  `t/comcon_pom_splice.t` (9). **Gate met:** realize a spliced quotation (scalar + record), injection
+  neutralized, a spliced capability/function/getter refused at the producer, realize over a
+  `node.quote()`. *(`includeAt` anchor-**splice** — inserting a fragment at a named anchor **site** —
+  is a tree MUTATION and lands with D4, not here; D3 delivers the splice-value machinery.)*
 
 - **D4 — mutations + epochs (class-F).** `replace/insert(Before|After)/remove/revive` + tombstones
   (carry the Track-L revive lesson); admitted-quotations-only writes; **epoch broadcast** over the

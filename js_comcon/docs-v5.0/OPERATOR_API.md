@@ -31,10 +31,12 @@
 >   proposal reviewed as "needs a,b,c" cannot touch anything else the operator's session holds
 >   (confused-deputy fix); the existing `admit` gate then enforces free-names ⊆ imports, charging
 >   refusal at the realizer. `realize` **refuses a closure** as arg0 (a bound `include()` result),
->   making the closure/quotation bit real. `t/comcon_realize.t`. **Structured `${…}` splices and
->   POM-node quotations** (`quote` of a *parsed subtree*, intensional splice sites) await POM nodes
->   (increment D) — on the source-string substrate a quotation is a whole source string, cap-free
->   by construction.
+>   making the closure/quotation bit real. `t/comcon_realize.t`. **Stone splices shipped (v5.42,
+>   D3):** `quote(source, splices)` takes producer data deep-checked cap-free (stone); `realize`
+>   binds each as a JSON literal (escaped data, never text — injection-immune) and a POM node's
+>   `quote()` is realizable (`t/comcon_pom_splice.t`). The **structured POM-node splice** (into a
+>   *parsed subtree*, preserving sub-node handles / intensional splice sites) still awaits stmt/expr
+>   nodes (D5).
 > - **`includeAt` — folded, not a standalone deliverable** ([[feedback-reuse-jscom-primitive]]).
 >   §3a below is retained as the design reference, but there is nothing left to build *called*
 >   `includeAt`: (i) over a *concrete* COM node, `includeAt(loc, src, K)` is exactly

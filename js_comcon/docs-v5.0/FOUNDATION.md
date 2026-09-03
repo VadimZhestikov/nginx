@@ -553,6 +553,20 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.42 (in place — increment D3: POM-node quotations + stone splices):** `comcon.quote(source,
+splices?)` now accepts producer **splices** — the data half of §6's closure-vs-quotation and §4.4's
+two-phase binding. Each splice is deep-checked **stone** (cap-free: no functions, capabilities, or
+accessors — a getter could mint a cap lazily, TOCTOU-unsound), a stage-0 error at the **producer**;
+this is the strengthened cap-free rule (R2) that keeps the closure/quotation distinction *checkable*.
+`realize` binds each splice as a **JSON literal in an enclosing IIFE var**, so the quoted code
+resolves the splice name to escaped *data*, never text — a spliced string cannot smuggle a `bind()`
+call (JSON.stringify escaping is the parameterized-SQL defense, scenario 3), and the names become
+bound closure vars invisible to the admit free-name gate. A POM node's own `quote()` (D1) is now
+**realizable** — `realize(node.quote(), K, env)` compiles + runs a real subtree, joining the
+reflective tree to the operator kernel. Pure-JS, no engine change. `t/comcon_pom_splice.t`.
+Structured POM-node splices (into a *parsed subtree*, preserving sub-node handles) and `includeAt`
+anchor-**site** insertion (a tree mutation) await D4/D5.
+
 **v5.41 (in place — increment D2: the POM selector language):** `node.query(sel)` — the target
 sub-language (POM.md §6 Q2) over the NodeView subtree, at coarse granularity: `selector := term
 ('within' term)*`, `term := factor+` (AND), `factor := module | function | * | name(glob)`, glob
