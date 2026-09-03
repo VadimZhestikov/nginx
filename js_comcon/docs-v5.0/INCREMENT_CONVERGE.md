@@ -1,9 +1,10 @@
 # INCREMENT — CONVERGE: one confined mechanism (`include`) — scoping
 
-**Status:** LIVE tracking doc (opened 2026-09-02). Phases P1–P4 LANDED; P5 scoped (§ P5 below);
-P6 started (deprecation). Follows the directive-retirement work in `INCREMENT_MCFG.md` (steps 4–6)
-and the Option-1 landing (`js_tenant_handler` retired via `location.handler`,
-`t/comcon_operator_handler.t`).
+**Status:** ✅ COMPLETE (2026-09-02). All phases P1–P6 done. There is now ONE confined-fragment
+mechanism — `comcon.include(...)` bound via `location.handler` — on both tiers (interpreted + AOT);
+the `js_tenant_*` directives and the tenant compartment subsystem are removed. Follows the
+directive-retirement work in `INCREMENT_MCFG.md` (steps 4–6) and the Option-1 landing
+(`js_tenant_handler` retired via `location.handler`, `t/comcon_operator_handler.t`).
 
 ## 1. Goal
 
@@ -139,7 +140,23 @@ compiled tier, and the request contract.
    denial counters across the confinement surface (string/JSON/object/compute, granted-socket scalar
    reads, A1 gated reach `.listener`, A1 gated mutator `close()`), with `all_compiled` non-vacuous.
    The full `comcon_*.t` suite is green on `objs_jit` too (45/335). Details in **§ P5 below.**
-6. **P6 — remove the directives. 🔨 STARTED (2026-09-02) — deprecation step.** Full removal is
+6. **P6 — remove the directives. ✅ DONE (2026-09-02).** The `js_tenant_*` directives are gone
+   (`js_tenant_source` is now "unknown directive") and the tenant compartment mechanism is deleted.
+   Sequence: **P6a** deleted 14 tenant tests with include siblings; **P6b** folded the last unique
+   tests onto include (`frontend_audit`→`include_admit`, `teardown`→`include_teardown`, new
+   `include_audit`, deleted `gas`/`onboard`); **P6c-1** removed the 5 directives + their setters + the
+   3 tenant-only operators (`comcon.tenant`/`dependency`/`artifact`; kept `comcon.mode`) +
+   `ngx_js_tenant_content_handler` + the deprecation test; **P6c-2** removed ~490 lines of dead
+   machinery (`ngx_js_eval_tenant_sources` + its `init_conf` call, `onRequest`, `report`,
+   `load_tenant_deps`, the C3 callback/struct). Shared functions
+   (`tenant_context_new`/`lockdown`/`learn_seed`/recorder/`com_install_protos`) + `comcon.mode` +
+   `tenant_mode` + `nginx.tenantDenials`/`tenantLearning` are kept — the include compartment uses
+   them. Residual dead-but-entangled bits (`nginx.grantToTenant`+`tenant_grants` read by the live
+   `tenantLearning`; `tenant_teardown` no-op) left as harmless no-ops. **Confined fragments are now
+   exclusively `comcon.include(...)` bound via `location.handler`, on both tiers.** Full regression
+   green (t/ 266/3412; comcon 21/159 include-only; t_stress 16/80). Commits 38ab240ca / b05cb6764 /
+   7d3270d4f / f0e6d6c97. *(the note below is the pre-removal record.)* Full removal was
+   **gated on P5**: the compiled tier (`#ifdef CONFIG_JIT`, `ngx_js_module.c` C5.0-b) still lowered
    **gated on P5**: the compiled tier (`#ifdef CONFIG_JIT`, `ngx_js_module.c` C5.0-b) still lowers
    the tenant `onRequest` handler on the `objs_jit` build, so `js_tenant_handler` + the
    `tenant_ctx`/`onRequest` machinery cannot be deleted until P5 retargets lowering to `include`
