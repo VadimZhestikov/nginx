@@ -553,6 +553,21 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.40 (in place — increment D1: the lazy NodeView surface):** `comcon.pom(fragment)` returns a
+reflective `NodeView` tree over a compiled fragment (module/function granularity) — the read half
+of `POM.md`'s node interface. Fields `kind/id/hash/span/childCount/name`, lazy `children`/`parent`
+getters, methods `text()/quote()/describe()`, a redacted `binding`; each node is **frozen**. The
+load-bearing property: **reads return quotations** — `text()`/`quote()` hand back v5.38
+`comcon.quote()` values (inert, frozen, cap-free), never raw source, so reflection cannot leak
+authority (SEMANTICS REFLECT); source visibility is exactly the presence of a read-capable handle.
+`describe()` lists the read ops with safety class `R` (describe ⊇ mutable — writes land in D4).
+Identity: creation-ordered `id`s (stable within a process, keyed by content hash + path) and
+content `hash` for pin-by-hash (R7). Backed by one GC-safe C accessor
+(`js_comcon_pom_node_at` — no held pointers; the root fragment is kept alive by the JS closure), so
+navigation is flat (`t_stress/com_pom_navigate.t`). `t/comcon_pom_nodeview.t`. Cross-restart id
+persistence, expression-granularity laziness, and `reach/ops` handle attenuation are deferred to
+their natural later phases (INCREMENT_D.md).
+
 **v5.39 (in place — increment D0: the POM substrate):** the reflective Program Object Model
 (§3, `POM.md`) gets its foundation. QuickJS keeps no AST, but each compiled fragment's
 `JSFunctionBytecode` already carries its own source slice, a pc→line table, and its nested

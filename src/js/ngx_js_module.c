@@ -1679,6 +1679,65 @@ ngx_js_comcon_pom_inspect(JSContext *ctx, JSValueConst this_val, int argc,
 
 
 /*
+ * COMCON increment D1 — backs the lazy NodeView. argv[0] is the root fragment,
+ * argv[1] a path (array of small non-negative ints). Reflects the single node
+ * at that path; the JS layer (comcon.pom) wraps it and returns reads as quote()
+ * values. Path capped at NGX_JS_POM_MAX_DEPTH (module/function nesting is small).
+ */
+#define NGX_JS_POM_MAX_DEPTH  64
+
+JSValue
+ngx_js_comcon_pom_node_at(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    int       path[NGX_JS_POM_MAX_DEPTH];
+    int       pathlen = 0;
+    uint32_t  len, i;
+    JSValue   lenv;
+
+    if (argc < 2) {
+        return JS_UNDEFINED;
+    }
+
+    /* argv[1] must be an array; read its length then each int element. */
+    lenv = JS_GetPropertyStr(ctx, argv[1], "length");
+    if (JS_IsException(lenv)) {
+        return JS_EXCEPTION;
+    }
+    if (JS_ToUint32(ctx, &len, lenv) < 0) {
+        JS_FreeValue(ctx, lenv);
+        return JS_EXCEPTION;
+    }
+    JS_FreeValue(ctx, lenv);
+
+    if (len > NGX_JS_POM_MAX_DEPTH) {
+        return JS_UNDEFINED;
+    }
+
+    for (i = 0; i < len; i++) {
+        JSValue  ev = JS_GetPropertyUint32(ctx, argv[1], i);
+        int32_t  idx;
+
+        if (JS_IsException(ev)) {
+            return JS_EXCEPTION;
+        }
+        if (JS_ToInt32(ctx, &idx, ev) < 0) {
+            JS_FreeValue(ctx, ev);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, ev);
+
+        if (idx < 0) {
+            return JS_UNDEFINED;
+        }
+        path[pathlen++] = idx;
+    }
+
+    return js_comcon_pom_node_at(ctx, argv[0], path, pathlen);
+}
+
+
+/*
  * COMCON step-4 (directive retirement): host-JS operators that configure the
  * tenant compartment from the single js_source root script, so the `js_tenant_*`
  * nginx.conf directives can be retired (the fundament: never add directives).

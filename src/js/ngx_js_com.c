@@ -3080,6 +3080,42 @@ static const char  ngx_js_comcon_bootstrap[] =
     "            &&contract.meter[METER].timeoutMs)|0;"
     "    var bound=function(arg){return C.__invokeConfined(h,arg,ms);};"
     "    bound.confined=true;bound.handle=h;bound.meterMs=ms;return bound;};"
+    /* pom(fragment): the reflective Program Object Model surface (increment D1).
+       A lazy NodeView tree over a compiled fragment (module/function granularity
+       — the bytecode tree; POM.md). Reads ALWAYS return quotations: text()/
+       quote() hand back C.quote() values (cap-free descriptions), never raw
+       source, so a read cannot leak authority (SEMANTICS REFLECT). children/
+       parent materialize lazily on access. `id` is creation-ordered + stable
+       within a process (keyed by content hash + path); `binding` is REDACTED by
+       default (epoch/profile only — names[] needs the inspect-binding op). The
+       node is frozen (immutable view). Backed by C.__pomNodeAt (single node at
+       a path); the root fragment is kept alive by this closure (GC-safe). */
+    "  var pomN=0, pomIds=Object.create(null);"
+    "  function pomId(hash,ps){var k=hash+'@'+ps;"
+    "    if(pomIds[k]===undefined)pomIds[k]=++pomN;return pomIds[k];}"
+    "  function pomView(rootFn,path){"
+    "    var raw=C.__pomNodeAt(rootFn,path);"
+    "    if(raw===undefined)return null;"
+    "    var ps=path.join('.'),v={};"
+    "    v.kind=raw.kind;v.name=raw.name;v.hash=raw.hash;"
+    "    v.line0=raw.line0;v.line1=raw.line1;v.childCount=raw.childCount;"
+    "    v.span={line0:raw.line0,line1:raw.line1};"
+    "    v.id=pomId(raw.hash,ps);"
+    "    v.binding={epoch:0,profile:'unbound'};"
+    "    v.text=function(){return C.quote(raw.source);};"
+    "    v.quote=function(){return C.quote(raw.source);};"
+    "    v.describe=function(){return {kind:v.kind,ops:["
+    "      {name:'text',op:'read',cls:'R'},{name:'quote',op:'read',cls:'R'},"
+    "      {name:'describe',op:'read',cls:'R'},"
+    "      {name:'children',op:'read',cls:'R'},"
+    "      {name:'parent',op:'read',cls:'R'}]};};"
+    "    Object.defineProperty(v,'parent',{enumerable:true,get:function(){"
+    "      return path.length?pomView(rootFn,path.slice(0,-1)):null;}});"
+    "    Object.defineProperty(v,'children',{enumerable:true,get:function(){"
+    "      var a=[];for(var i=0;i<raw.childCount;i++)"
+    "        a.push(pomView(rootFn,path.concat([i])));return a;}});"
+    "    return Object.freeze(v);};"
+    "  C.pom=function(rootFn){return pomView(rootFn,[]);};"
     "})();";
 
 
@@ -3370,6 +3406,11 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__pomInspect",
                           JS_NewCFunction(ctx, ngx_js_comcon_pom_inspect,
                                           "__pomInspect", 1));
+        /* increment D1 (lazy NodeView): single-node-at-path accessor backing
+           comcon.pom(). Internal; the NodeView surface is built in JS below. */
+        JS_SetPropertyStr(ctx, comcon_obj, "__pomNodeAt",
+                          JS_NewCFunction(ctx, ngx_js_comcon_pom_node_at,
+                                          "__pomNodeAt", 2));
         JS_SetPropertyStr(ctx, global, "comcon", comcon_obj);
 
         /* env/grant/mediate/meter/bind — the capability layer (JS) */

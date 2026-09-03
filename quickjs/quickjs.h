@@ -857,6 +857,13 @@ int js_comcon_check_request_fields(JSContext *ctx, JSValueConst func,
  * JS_UNDEFINED if func is not a bytecode fragment. */
 JSValue js_comcon_pom_inspect(JSContext *ctx, JSValueConst func);
 
+/* COMCON increment D1: the single node at `path` (indices among FUNCTION_BYTECODE
+ * cpool children) under root fragment `func` — scalar fields + the node's own
+ * `source` slice. Backs the lazy NodeView; GC-safe (holds no pointers). Returns
+ * JS_UNDEFINED if func is not a fragment or path does not resolve. */
+JSValue js_comcon_pom_node_at(JSContext *ctx, JSValueConst func,
+                              const int *path, int pathlen);
+
 /* COMCON C5.0-b: server-AOT-compile a confined handler at load (CONFIG_JIT
  * only). Returns 0 on success, -1 if func is not a bytecode function. */
 int js_comcon_aot_compile(JSContext *ctx, JSValueConst func);

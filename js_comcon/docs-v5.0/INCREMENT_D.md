@@ -1,7 +1,7 @@
 # INCREMENT — D: POM nodes (the reflective program tree) — scoping
 
-**Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.39). **D0 ✅ done** (substrate + p_symbol
-enumeration); D1–D5 pending. Follows the operator kernel
+**Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.40). **D0 ✅** (substrate + p_symbol
+enumeration), **D1 ✅** (lazy read-only NodeView); D2–D5 pending. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -70,14 +70,20 @@ security-critical POM invariants (§4).
   different), native-fn ⇒ undefined. **Gate met:** kinds enumerated, spans + hashes stable across
   rebuilds.
 
-- **D1 — coarse read-only POM.** Lazy `NodeView` wrappers (proto-per-call, mirroring COM):
-  `kind / id / hash / span / parent / children[] / name? / text() / quote() / describe()`. Built
-  at stage 0 in master, COW-shared. **Reads always return quotations** (cap-free; SEMANTICS
-  REFLECT) — `text()`/`quote()` reuse the v5.38 `quote` constructor. `describe()` extends the
-  `ngx_js_com_describe.c` registry with node-kind rows (describe ⊇ mutable). Identity: **creation-
-  ordered ids** persisted in the canonical config tree (R8), **content hashes** for pin-by-hash
-  (R7). Handle-scoped view: `reach(h)`/`ops(h)` gate visibility (redaction defaults on `binding`).
-  **Gate:** navigate a real fragment tree, `quote()` a real subtree, leak test flat.
+- **D1 — coarse read-only POM.** ✅ DONE (2026-09-03). `comcon.pom(fragment)` → a lazy `NodeView`
+  tree: `kind / id / hash / span / line0 / line1 / childCount / name`, lazy `children` / `parent`
+  getters, methods `text() / quote() / describe()`, redacted `binding`; the node is **frozen**
+  (immutable view). **Reads return quotations** — `text()`/`quote()` hand back v5.38 `comcon.quote()`
+  values (cap-free), never raw source (SEMANTICS REFLECT). `describe()` emits node-kind read-op rows
+  with safety class `R` (describe ⊇ mutable; mutations arrive in D4). Identity: **creation-ordered
+  ids**, stable within a process (keyed by content hash + path); **content hashes** for pin-by-hash
+  (R7). One new C accessor `js_comcon_pom_node_at` (single node at a path) backs it; **GC-safe** — it
+  holds no pointers and the root fragment is kept alive by the JS closure, so navigation is flat
+  (`t_stress/com_pom_navigate.t`, 5000×). `t/comcon_pom_nodeview.t` (16). **Gate met:** navigate a
+  real fragment tree, `quote()` a real subtree, leak flat. *(Deferred to later phases: cross-restart
+  id **persistence** in the canonical config tree — rides admission/config-tree integration; true
+  proto-per-call laziness for the millions of **expression** nodes — only needed at D5 granularity;
+  `reach(h)`/`ops(h)` handle attenuation — arrives with mediate-flavor redaction hooks.)
 
 - **D2 — `query(sel)` selectors.** The target sub-language (POM.md §6 Q2) at coarse granularity:
   by kind, name, module, anchor. One language for policy targeting *and* interactive/LSP use. Spec

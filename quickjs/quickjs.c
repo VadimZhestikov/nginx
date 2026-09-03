@@ -24493,20 +24493,24 @@ static uint64_t comcon_pom_hash_fb(JSFunctionBytecode *b)
     return h;
 }
 
-/* Build the POM node object for one FunctionBytecode, recursing into nested
- * functions (cpool FUNCTION_BYTECODE entries) as children. `is_module` marks
- * the tree root as a module vs an inner function. */
-static JSValue comcon_pom_node(JSContext *ctx, JSFunctionBytecode *b,
-                               int is_module)
+/* Number of nested FUNCTIONS (cpool FUNCTION_BYTECODE entries) = child count. */
+static int comcon_pom_child_count(JSFunctionBytecode *b)
 {
-    JSValue     node, children, child;
+    int i, n = 0;
+    for (i = 0; i < b->cpool_count; i++)
+        if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+            n++;
+    return n;
+}
+
+/* Fill the scalar POM fields (kind/name/line0/line1/sourceLen/hash/childCount)
+ * on `node` from `b`. Shared by the eager inspector and the path accessor. */
+static void comcon_pom_fill(JSContext *ctx, JSValue node, JSFunctionBytecode *b,
+                            int is_module)
+{
     char        namebuf[256];
     const char *name;
-    int         line0, line1, col, i, nchild;
-
-    node = JS_NewObject(ctx);
-    if (JS_IsException(node))
-        return node;
+    int         line0, line1, col, i;
 
     JS_SetPropertyStr(ctx, node, "kind",
         JS_NewInt32(ctx, is_module ? NGX_COMCON_POM_MODULE
@@ -24546,7 +24550,25 @@ static JSValue comcon_pom_node(JSContext *ctx, JSFunctionBytecode *b,
         JS_SetPropertyStr(ctx, node, "hash", JS_NewString(ctx, hbuf));
     }
 
-    /* children: nested FUNCTIONS (cpool FUNCTION_BYTECODE entries). */
+    JS_SetPropertyStr(ctx, node, "childCount",
+        JS_NewInt32(ctx, comcon_pom_child_count(b)));
+}
+
+/* Build the POM node object for one FunctionBytecode, recursing into nested
+ * functions (cpool FUNCTION_BYTECODE entries) as children. `is_module` marks
+ * the tree root as a module vs an inner function. */
+static JSValue comcon_pom_node(JSContext *ctx, JSFunctionBytecode *b,
+                               int is_module)
+{
+    JSValue node, children, child;
+    int     i, nchild;
+
+    node = JS_NewObject(ctx);
+    if (JS_IsException(node))
+        return node;
+
+    comcon_pom_fill(ctx, node, b, is_module);
+
     children = JS_NewArray(ctx);
     nchild = 0;
     for (i = 0; i < b->cpool_count; i++) {
@@ -24561,10 +24583,34 @@ static JSValue comcon_pom_node(JSContext *ctx, JSFunctionBytecode *b,
             JS_SetPropertyUint32(ctx, children, nchild++, child);
         }
     }
-    JS_SetPropertyStr(ctx, node, "childCount", JS_NewInt32(ctx, nchild));
     JS_SetPropertyStr(ctx, node, "children", children);
 
     return node;
+}
+
+/* Walk from root FB down `path` (each element = index among the FUNCTION_BYTECODE
+ * cpool children at that level). Returns the target FB, or NULL if invalid. */
+static JSFunctionBytecode *comcon_pom_walk(JSFunctionBytecode *b,
+                                           const int *path, int pathlen)
+{
+    int d, i, seen;
+
+    for (d = 0; d < pathlen; d++) {
+        JSFunctionBytecode *next = NULL;
+        seen = -1;
+        for (i = 0; i < b->cpool_count; i++) {
+            if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE) {
+                if (++seen == path[d]) {
+                    next = JS_VALUE_GET_PTR(b->cpool[i]);
+                    break;
+                }
+            }
+        }
+        if (!next)
+            return NULL;
+        b = next;
+    }
+    return b;
 }
 
 /* D0 diagnostic entry: reflect a compiled fragment as a POM node tree. Returns
@@ -24580,6 +24626,43 @@ JSValue js_comcon_pom_inspect(JSContext *ctx, JSValueConst func)
         return JS_UNDEFINED;
 
     return comcon_pom_node(ctx, p->u.func.function_bytecode, 1);
+}
+
+/* D1 (lazy NodeView backing): reflect the SINGLE node at `path` (indices among
+ * FUNCTION_BYTECODE cpool children) under root fragment `func`. Returns the
+ * scalar fields plus the node's own `source` slice (for text()/quote()); the JS
+ * layer wraps this in a lazy NodeView and returns reads as `quote()` values.
+ * JS_UNDEFINED if `func` is not a fragment or `path` does not resolve. */
+JSValue js_comcon_pom_node_at(JSContext *ctx, JSValueConst func,
+                              const int *path, int pathlen)
+{
+    JSObject           *p;
+    JSFunctionBytecode *b;
+    JSValue             node;
+    int                 slen;
+    const char         *src;
+
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
+        return JS_UNDEFINED;
+    p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+        return JS_UNDEFINED;
+
+    b = comcon_pom_walk(p->u.func.function_bytecode, path, pathlen);
+    if (!b)
+        return JS_UNDEFINED;
+
+    node = JS_NewObject(ctx);
+    if (JS_IsException(node))
+        return node;
+    comcon_pom_fill(ctx, node, b, pathlen == 0);
+
+    src = (b->has_debug && b->debug.source) ? b->debug.source : NULL;
+    slen = src ? b->debug.source_len : 0;
+    JS_SetPropertyStr(ctx, node, "source",
+        src ? JS_NewStringLen(ctx, src, slen) : JS_NewString(ctx, ""));
+
+    return node;
 }
 
 static __exception int next_token(JSParseState *s);

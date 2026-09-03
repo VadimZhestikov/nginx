@@ -433,6 +433,10 @@ JSValue ngx_js_comcon_op_mode(JSContext *ctx, JSValueConst this_val,
  * the lazy NodeView surface lands in D1. */
 JSValue ngx_js_comcon_pom_inspect(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
+/* COMCON increment D1: single POM node at a path — backs the lazy NodeView
+ * (comcon.pom()). argv[0] = root fragment, argv[1] = path (array of ints). */
+JSValue ngx_js_comcon_pom_node_at(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
 ngx_int_t ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn,
     JSValueConst imports, int check_request, char *reason, size_t reason_len);
 
