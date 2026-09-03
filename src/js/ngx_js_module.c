@@ -1406,6 +1406,13 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
     JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
     (void) ngx_js_com_register_classes(jcf->comcon_rt);  /* mirror tenant_rt setup */
 
+    /* learn mode: the recorder class must exist in the compartment runtime so
+       ngx_js_learn_seed() can seed the withheld host surface with recorders. */
+    if (ngx_js_recorder_class_id == 0) {
+        JS_NewClassID(&ngx_js_recorder_class_id);
+    }
+    JS_NewClass(jcf->comcon_rt, ngx_js_recorder_class_id, &ngx_js_recorder_class);
+
     sctx = ngx_js_tenant_context_new(jcf->comcon_rt);
     if (sctx == NULL) {
         JS_FreeRuntime(jcf->comcon_rt);
@@ -1431,6 +1438,18 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
        the lockdown freeze; without this a granted socket exposes a mutable
        shared proto — cross-fragment pollution). */
     ngx_js_comcon_harden_cap_protos(sctx);
+
+    /* learn mode: seed recorders for the withheld host surface so a confined
+       fragment's references to it are HARVESTED (the wishlist) instead of
+       failing — the same B0 discovery the tenant compartment provides. NB: the
+       compartment is built during the host eval, BEFORE ngx_js_compartment_
+       policy_init applies the mode to the process-global, so check jcf->
+       tenant_mode (set by comcon.mode()/the directive), not the global. */
+    if (jcf->tenant_mode == NGX_JS_TENANT_LEARN) {
+        JSValue  cglobal = JS_GetGlobalObject(sctx);
+        ngx_js_learn_seed(sctx, cglobal);
+        JS_FreeValue(sctx, cglobal);
+    }
 
     jcf->comcon_ctx = sctx;
 
@@ -1789,8 +1808,14 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     /* P1 (CONVERGE): compose C3 admission + optional identity pin when the
        contract asks (argv[4] = { imports, checkRequest?, identity? }). Runs on
        the compiled fragment IN the compartment (sctx), where grants are closure
-       var-refs (auto-excluded from the free-name check). */
-    if (argc > 4 && JS_IsObject(argv[4])) {
+       var-refs (auto-excluded from the free-name check). Learn mode is
+       non-enforcing DISCOVERY — skip admission so free names resolve to the
+       seeded recorders and are harvested rather than refused. (jcf->tenant_mode,
+       not the process-global, since this runs during the host eval — see the
+       compartment seed.) */
+    if (jcf->tenant_mode != NGX_JS_TENANT_LEARN
+        && argc > 4 && JS_IsObject(argv[4]))
+    {
         JSValue  imp_h, idv;
 
         imp_h = JS_GetPropertyStr(hctx, argv[4], "imports");

@@ -91,10 +91,16 @@ compiled tier, and the request contract.
    reach edge is log-and-allowed under `comcon.mode('audit')`); **restricted** is covered by P1
    admission (`t/comcon_include_admit.t` — eval/`Function`/`with` refused).
    **Two tenant tests do NOT map to a test rewrite — they need feature work or don't apply:**
-   (a) **learn mode** (`comcon_learn_mode.t`) depends on the tenant setup's `ngx_js_learn_seed`
-   (B0 recorder seeding of the withheld host surface) which the include compartment does not do —
-   migrating it means adding learn-mode seeding to `ngx_js_comcon_compartment`, a real feature, not
-   a rewrite; (b) **schema_conformance** (`comcon_schema_conformance.t`) tests the tenant's *sealed
+   (a) **learn mode** — ✅ **now CLOSED (2026-09-02).** Added the feature: the include compartment
+   registers the recorder class in `comcon_rt` and, in learn mode, seeds recorders for the withheld
+   host surface (`ngx_js_learn_seed`); `__includeConfined` skips admission in learn mode (relaxed,
+   non-enforcing discovery). Both compile-time checks read **`jcf->tenant_mode`**, not the process-
+   global — the compartment is built during the host eval, before `policy_init` applies the mode
+   (the P1 reorder). **Verified** (`t/comcon_include_learn.t`; comcon 40/309): a confined fragment
+   configured with `comcon.mode('learn')` runs to completion and its references to
+   `nginx.http.addServer` / `createSocket()` / `fetch()` are harvested into the wishlist
+   (`nginx.tenantLearning()`) and logged — the same B0 discovery as the tenant, via operators only.
+   (b) **schema_conformance** (`comcon_schema_conformance.t`) tests the tenant's *sealed
    Request object*, whereas include hands the fragment JSON-marshaled request *data* — a different
    (also-safe) shape, so its assertions don't transfer directly. **freeze/mses/sr1** test the M-SES
    lockdown, which is **shared code** (`ngx_js_tenant_lockdown` runs in both `tenant_ctx` and
