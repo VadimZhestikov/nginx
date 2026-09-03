@@ -434,6 +434,8 @@ JSValue ngx_js_comcon_op_dependency(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_op_artifact(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
+ngx_int_t ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn,
+    JSValueConst imports, int check_request, char *reason, size_t reason_len);
 
 
 /* COM initialisation — installs nginx.* into ctx's global object */

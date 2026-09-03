@@ -1631,6 +1631,101 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                    "comcon.include: source must be a function expression");
     }
 
+    /* P1 (CONVERGE): compose C3 admission + optional identity pin when the
+       contract asks (argv[4] = { imports, checkRequest?, identity? }). Runs on
+       the compiled fragment IN the compartment (sctx), where grants are closure
+       var-refs (auto-excluded from the free-name check). */
+    if (argc > 4 && JS_IsObject(argv[4])) {
+        JSValue  imp_h, idv;
+
+        imp_h = JS_GetPropertyStr(hctx, argv[4], "imports");
+        if (JS_IsObject(imp_h)) {
+            JSValue      imp_s, lv, e, cr;
+            uint32_t     ilen = 0, k;
+            const char  *iname;
+            int          check;
+            char         reason[256];
+            ngx_int_t    rc;
+
+            imp_s = JS_NewArray(sctx);
+            lv = JS_GetPropertyStr(hctx, imp_h, "length");
+            JS_ToUint32(hctx, &ilen, lv);
+            JS_FreeValue(hctx, lv);
+            for (k = 0; k < ilen; k++) {
+                e = JS_GetPropertyUint32(hctx, imp_h, k);
+                iname = JS_ToCString(hctx, e);
+                JS_SetPropertyUint32(sctx, imp_s, k,
+                                     JS_NewString(sctx, iname ? iname : ""));
+                if (iname != NULL) {
+                    JS_FreeCString(hctx, iname);
+                }
+                JS_FreeValue(hctx, e);
+            }
+
+            cr = JS_GetPropertyStr(hctx, argv[4], "checkRequest");
+            check = JS_ToBool(hctx, cr);
+            JS_FreeValue(hctx, cr);
+
+            rc = ngx_js_comcon_admit_check(sctx, fn, imp_s, check,
+                                           reason, sizeof(reason));
+            JS_FreeValue(sctx, imp_s);
+
+            if (rc != NGX_OK) {
+                JS_FreeValue(hctx, imp_h);
+                JS_FreeValue(sctx, fn);
+                return JS_ThrowTypeError(hctx,
+                    "comcon.include: admission refused: %s", reason);
+            }
+        }
+        JS_FreeValue(hctx, imp_h);
+
+        /* optional identity pin: H(H(source) ‖ schema-version) */
+        idv = JS_GetPropertyStr(hctx, argv[4], "identity");
+        if (JS_IsString(idv)) {
+            static const char  hx[] = "0123456789abcdef";
+            const char        *want, *isrc;
+            size_t             ilen2;
+            SHA256_CTX         ic;
+            u_char             chash[32], ident[32], hex[65];
+            ngx_uint_t         b;
+
+            isrc = JS_ToCStringLen(hctx, &ilen2, argv[0]);
+            if (isrc != NULL) {
+                SHA256_Init(&ic);
+                SHA256_Update(&ic, isrc, ilen2);
+                SHA256_Final(chash, &ic);
+                JS_FreeCString(hctx, isrc);
+
+                SHA256_Init(&ic);
+                SHA256_Update(&ic, chash, 32);
+                SHA256_Update(&ic, (const u_char *) NGX_JS_C4_SCHEMA_VERSION,
+                              ngx_strlen(NGX_JS_C4_SCHEMA_VERSION));
+                SHA256_Final(ident, &ic);
+
+                for (b = 0; b < 32; b++) {
+                    hex[b * 2]     = hx[ident[b] >> 4];
+                    hex[b * 2 + 1] = hx[ident[b] & 0xf];
+                }
+                hex[64] = '\0';
+
+                want = JS_ToCString(hctx, idv);
+                if (want == NULL
+                    || ngx_strcasecmp((u_char *) want, hex) != 0)
+                {
+                    if (want != NULL) {
+                        JS_FreeCString(hctx, want);
+                    }
+                    JS_FreeValue(hctx, idv);
+                    JS_FreeValue(sctx, fn);
+                    return JS_ThrowTypeError(hctx,
+                        "comcon.include: artifact identity mismatch");
+                }
+                JS_FreeCString(hctx, want);
+            }
+        }
+        JS_FreeValue(hctx, idv);
+    }
+
     if (jcf->comcon_frags == NULL) {
         jcf->comcon_frags = ngx_array_create(ngx_cycle->pool, 8, sizeof(JSValue));
         if (jcf->comcon_frags == NULL) {

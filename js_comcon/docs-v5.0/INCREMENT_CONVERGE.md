@@ -48,9 +48,17 @@ compiled tier, and the request contract.
 
 ## 4. Sequencing (phases)
 
-1. **P1 — admission into `include` (G1+G2).** `include` composes `admit` + optional `identity`.
-   New `t/`: an `include` fragment with a bad free-name / dynamic code / wrong identity is refused.
-   *After P1, `include` fragments have tenant-grade admission.*
+1. **P1 — admission into `include` (G1+G2). ✅ LANDED (2026-09-02).** The C3 gate was factored into
+   `ngx_js_comcon_admit_check(ctx, fn, imports, check_request, reason, len)` (non-static in
+   `ngx_js_com.c`), shared by the `admit` operator and `include`. `__includeConfined` now takes a
+   5th arg `{ imports, checkRequest?, identity? }` and, **when present** (opt-in, so un-admitted
+   `include` stays backward-compatible), runs `admit_check` on the compiled fragment **in the
+   compartment** (`sctx`) — where grants are closure var-refs, auto-excluded from the free-name
+   check — plus an optional identity pin `H(H(source) ‖ NGX_JS_C4_SCHEMA_VERSION)` compared to
+   `contract.identity`. **Verified** (`t/comcon_include_admit.t`; comcon 34/267): a clean fragment
+   is admitted, an ungranted free name (`nginx`) is refused (unless listed in `imports`), `eval` is
+   refused, a correct identity pin admits, a wrong one refuses. The `admit` operator + all existing
+   include tests stay green (the refactor preserved its exact reject messages).
 2. **P2 — the serve helper (G5).** `comcon.serve(h)` — the ergonomic `location.handler` wrapper
    with the `{status,headers,body}` + size-cap contract. Re-express `t/comcon_operator_handler.t`
    through it. *After P2, request serving is one line and contract-checked.*

@@ -2845,32 +2845,37 @@ ngx_js_admit_verdict(JSContext *ctx, ngx_uint_t certified, const char *reject)
 }
 
 
-static JSValue
-ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
-    JSValueConst *argv)
+/*
+ * The C3 admission gate, factored so both the `admit` operator and
+ * `comcon.include` (which composes admission on the fragment it compiles in the
+ * confined compartment) share ONE implementation. Runs entirely in `ctx`:
+ * `fn` and `imports` (a JS array, or JS_UNDEFINED) must belong to `ctx`.
+ * Returns NGX_OK (certified) or NGX_ERROR with `reason` filled. Grants are
+ * closure var-refs on `fn`, not free globals, so they are auto-excluded from
+ * the free-name check — only genuine global lookups must be in `imports`.
+ */
+ngx_int_t
+ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
+    int check_request, char *reason, size_t reason_len)
 {
-    JSValueConst          fn, contract;
-    JSValue               imports, len, cr;
+    JSValue               len;
     ngx_js_admit_check_t  chk;
-    char                  reason[256];
     char                  field[128];
 
-    fn = argc > 0 ? argv[0] : JS_UNDEFINED;
-    contract = argc > 1 ? argv[1] : JS_UNDEFINED;
-
     if (!JS_IsFunction(ctx, fn)) {
-        return ngx_js_admit_verdict(ctx, 0, "admit: arg0 must be a function");
+        ngx_snprintf((u_char *) reason, reason_len,
+                     "admit: arg0 must be a function%Z");
+        return NGX_ERROR;
     }
 
     /* C3: no direct eval / with */
     if (js_comcon_uses_dynamic_code(fn)) {
-        return ngx_js_admit_verdict(ctx, 0, "dynamic-code: eval or with");
+        ngx_snprintf((u_char *) reason, reason_len,
+                     "dynamic-code: eval or with%Z");
+        return NGX_ERROR;
     }
 
-    /* C3: every free-global name must be in contract.imports (deny-by-default) */
-    imports = JS_IsObject(contract)
-              ? JS_GetPropertyStr(ctx, contract, "imports") : JS_UNDEFINED;
-
+    /* C3: every free-global name must be in imports (deny-by-default) */
     ngx_memzero(&chk, sizeof(ngx_js_admit_check_t));
     chk.ctx = ctx;
     chk.imports = imports;
@@ -2884,34 +2889,57 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
     if (js_comcon_collect_free_globals(ctx, fn, ngx_js_admit_free_cb, &chk)
         != 0)
     {
-        JS_FreeValue(ctx, imports);
-        return ngx_js_admit_verdict(ctx, 0,
-                                    "admit: arg0 not a bytecode function");
+        ngx_snprintf((u_char *) reason, reason_len,
+                     "admit: arg0 not a bytecode function%Z");
+        return NGX_ERROR;
     }
-    JS_FreeValue(ctx, imports);
 
     if (chk.bad) {
-        ngx_snprintf((u_char *) reason, sizeof(reason),
+        ngx_snprintf((u_char *) reason, reason_len,
                      "free name not granted: %s%Z", chk.badname);
-        return ngx_js_admit_verdict(ctx, 0, reason);
+        return NGX_ERROR;
     }
 
-    /* optional C3: sealed-Request field check (contract.checkRequest) */
+    /* optional C3: sealed-Request field check */
+    if (check_request
+        && js_comcon_check_request_fields(ctx, fn, field, sizeof(field)))
+    {
+        ngx_snprintf((u_char *) reason, reason_len,
+                     "request field not in sealed schema: %s%Z", field);
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static JSValue
+ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    JSValueConst  fn, contract;
+    JSValue       imports, cr;
+    int           check_request = 0;
+    char          reason[256];
+    ngx_int_t     rc;
+
+    fn = argc > 0 ? argv[0] : JS_UNDEFINED;
+    contract = argc > 1 ? argv[1] : JS_UNDEFINED;
+
+    imports = JS_IsObject(contract)
+              ? JS_GetPropertyStr(ctx, contract, "imports") : JS_UNDEFINED;
+
     if (JS_IsObject(contract)) {
         cr = JS_GetPropertyStr(ctx, contract, "checkRequest");
-        if (JS_ToBool(ctx, cr)) {
-            JS_FreeValue(ctx, cr);
-            if (js_comcon_check_request_fields(ctx, fn, field, sizeof(field))) {
-                ngx_snprintf((u_char *) reason, sizeof(reason),
-                             "request field not in sealed schema: %s%Z", field);
-                return ngx_js_admit_verdict(ctx, 0, reason);
-            }
-        } else {
-            JS_FreeValue(ctx, cr);
-        }
+        check_request = JS_ToBool(ctx, cr);
+        JS_FreeValue(ctx, cr);
     }
 
-    return ngx_js_admit_verdict(ctx, 1, NULL);
+    rc = ngx_js_comcon_admit_check(ctx, fn, imports, check_request,
+                                   reason, sizeof(reason));
+    JS_FreeValue(ctx, imports);
+
+    return ngx_js_admit_verdict(ctx, rc == NGX_OK, rc == NGX_OK ? NULL : reason);
 }
 
 
@@ -3068,7 +3096,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        else if(it.flavor==='routes'){"
     "          pol={kind:1,glob:String(it.glob||'*')};}}"
     "      names.push(String(k));caps.push(cap);pols.push(pol);}}"
-    "    var h=C.__includeConfined(String(source),names,caps,pols);"
+    /* P1 (CONVERGE): opt-in C3 admission + identity pin — present iff the
+       contract asks (imports/identity/checkRequest). Absent => no admission
+       (backward compatible with un-admitted include fragments). */
+    "    var admit=null;"
+    "    if(contract.imports||contract.identity||contract.checkRequest){"
+    "      admit={imports:contract.imports||[],"
+    "             checkRequest:!!contract.checkRequest,"
+    "             identity:contract.identity};}"
+    "    var h=C.__includeConfined(String(source),names,caps,pols,admit);"
     "    var ms=(contract.meter&&contract.meter[METER]"
     "            &&contract.meter[METER].timeoutMs)|0;"
     "    var bound=function(arg){return C.__invokeConfined(h,arg,ms);};"
@@ -3349,7 +3385,7 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                                           "__runMetered", 4));
         JS_SetPropertyStr(ctx, comcon_obj, "__includeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_include_confined,
-                                          "__includeConfined", 4));
+                                          "__includeConfined", 5));
         JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
                                           "__invokeConfined", 3));
