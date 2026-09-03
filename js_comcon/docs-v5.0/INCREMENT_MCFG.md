@@ -237,9 +237,17 @@ the same `admit`; follows the program-fragment operators.
    + `comcon.mode('audit')` + `comcon.tenant('tenant.js')` — **no `js_tenant_*` directives** —
    runs confined (`typeof nginx → "undefined"`) with audit mode active (a granted socket's reach
    edge is log-and-allowed, not enforce-gated). The directives still work unchanged (they set
-   the same fields), so the whole existing tenant suite stays green. **Still to retire:**
-   `js_tenant_dependency` → `comcon.dependency(name,path,sha)`, `js_tenant_artifact`, and
-   `js_tenant_handler` (the per-request binding); then migrate `comcon_*.t` and remove.
+   the same fields), so the whole existing tenant suite stays green.
+   **`comcon.dependency(name, path, sha256hex)` landed (2026-09-02)** — retires
+   `js_tenant_dependency`. Same pin-by-hash pure-library dependency, registered from the root
+   script and pushed to `jcf->tenant_deps` (consumed by `ngx_js_load_tenant_deps` at tenant
+   eval); validates the 64-hex SHA-256, resolves the path against the conf prefix, binds the
+   library on the tenant global as `name`. **Verified** (`t/comcon_operator_dependency.t`; comcon
+   31/249): the pinned pure lib loads + is usable at tenant eval, and a hijacked update (hash
+   mismatch) refuses the config under `nginx -t` — same guarantee as the directive.
+   **Still to retire:** `js_tenant_artifact` (identity pin) and `js_tenant_handler` (the
+   per-request binding — an http `location`-scoped directive, the trickiest); then migrate
+   `comcon_*.t` and remove the directives.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.
 6. **Remove the directives.**
 

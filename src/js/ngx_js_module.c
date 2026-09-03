@@ -1838,6 +1838,114 @@ ngx_js_comcon_op_tenant(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 
+/* comcon.dependency(name, path, sha256hex) — retires js_tenant_dependency. A
+   pinned pure-library dependency, admitted only if its bytes hash to sha256. */
+JSValue
+ngx_js_comcon_op_dependency(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_conf_t        *jcf = ngx_js_comcon_jcf;
+    ngx_cycle_t          *cycle = JS_GetContextOpaque(ctx);
+    ngx_js_tenant_dep_t  *dep;
+    const char           *nm, *pt, *sh;
+    size_t                nlen, plen, slen;
+    ngx_uint_t            i;
+    u_char                hi, lo;
+
+    if (jcf == NULL || cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "comcon.dependency: no conf");
+    }
+
+    nm = JS_ToCStringLen(ctx, &nlen, argv[0]);
+    if (nm == NULL) {
+        return JS_EXCEPTION;
+    }
+    pt = JS_ToCStringLen(ctx, &plen, argv[1]);
+    if (pt == NULL) {
+        JS_FreeCString(ctx, nm);
+        return JS_EXCEPTION;
+    }
+    sh = JS_ToCStringLen(ctx, &slen, argv[2]);
+    if (sh == NULL) {
+        JS_FreeCString(ctx, nm);
+        JS_FreeCString(ctx, pt);
+        return JS_EXCEPTION;
+    }
+
+    if (slen != 64) {
+        JS_FreeCString(ctx, nm);
+        JS_FreeCString(ctx, pt);
+        JS_FreeCString(ctx, sh);
+        return JS_ThrowTypeError(ctx,
+            "comcon.dependency: sha256 must be 64 hex chars");
+    }
+
+    dep = ngx_array_push(&jcf->tenant_deps);
+    if (dep == NULL) {
+        JS_FreeCString(ctx, nm);
+        JS_FreeCString(ctx, pt);
+        JS_FreeCString(ctx, sh);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+
+    /* name — NUL-terminated for JS_SetPropertyStr at bind time */
+    dep->name.len = nlen;
+    dep->name.data = ngx_pnalloc(cycle->pool, nlen + 1);
+    if (dep->name.data == NULL) {
+        JS_FreeCString(ctx, nm);
+        JS_FreeCString(ctx, pt);
+        JS_FreeCString(ctx, sh);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(dep->name.data, nm, nlen);
+    dep->name.data[nlen] = '\0';
+
+    dep->path.len = plen;
+    dep->path.data = ngx_pnalloc(cycle->pool, plen + 1);
+    if (dep->path.data == NULL) {
+        JS_FreeCString(ctx, nm);
+        JS_FreeCString(ctx, pt);
+        JS_FreeCString(ctx, sh);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(dep->path.data, pt, plen);
+    dep->path.data[plen] = '\0';
+
+    for (i = 0; i < 32; i++) {
+        hi = (u_char) sh[i * 2];
+        lo = (u_char) sh[i * 2 + 1];
+
+        hi = (hi >= '0' && hi <= '9') ? hi - '0'
+           : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+           : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : 0xff;
+        lo = (lo >= '0' && lo <= '9') ? lo - '0'
+           : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+           : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : 0xff;
+
+        if (hi == 0xff || lo == 0xff) {
+            JS_FreeCString(ctx, nm);
+            JS_FreeCString(ctx, pt);
+            JS_FreeCString(ctx, sh);
+            return JS_ThrowTypeError(ctx,
+                "comcon.dependency: invalid hex in sha256");
+        }
+
+        dep->sha256[i] = (u_char) ((hi << 4) | lo);
+    }
+
+    JS_FreeCString(ctx, nm);
+    JS_FreeCString(ctx, pt);
+    JS_FreeCString(ctx, sh);
+
+    if (ngx_conf_full_name(cycle, &dep->path, 1) != NGX_OK) {
+        return JS_ThrowInternalError(ctx,
+            "comcon.dependency: cannot resolve path");
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static ngx_int_t
 ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 {
