@@ -1,8 +1,9 @@
 # INCREMENT — CONVERGE: one confined mechanism (`include`) — scoping
 
-**Status:** SCOPE (2026-09-02). Design/plan only; no code yet. Follows the directive-retirement
-work in `INCREMENT_MCFG.md` (steps 4–6) and the Option-1 landing (`js_tenant_handler` retired via
-`location.handler`, `t/comcon_operator_handler.t`).
+**Status:** LIVE tracking doc (opened 2026-09-02). Phases P1–P4 LANDED; P5 scoped (§ P5 below);
+P6 started (deprecation). Follows the directive-retirement work in `INCREMENT_MCFG.md` (steps 4–6)
+and the Option-1 landing (`js_tenant_handler` retired via `location.handler`,
+`t/comcon_operator_handler.t`).
 
 ## 1. Goal
 
@@ -129,9 +130,9 @@ compiled tier, and the request contract.
    Compiled-tier (`faithfulness`, `lowering`) stay for P5. **Net:** at P6 the M-SES lockdown code
    stays (used by include); its coverage moves to the `comcon_include_*` probes, and the tenant
    harness is deleted.
-5. **P5 — compiled tier (G6).** Retarget C5 lowering to `include` fragments. **Gated on SR-2
-   faithfulness** (compiled ≡ interpreted) exactly as the tenant path is. This is the crux; it may
-   warrant its own increment. Until P5 lands, the tenant path stays for compiled-tier tenants.
+5. **P5 — compiled tier (G6). SCOPE (2026-09-02).** Retarget C5 lowering to `include` fragments so
+   the compiled tier no longer depends on the tenant `onRequest` path — the last thing gating P6
+   removal. Full scope in **§ P5 below.**
 6. **P6 — remove the directives. 🔨 STARTED (2026-09-02) — deprecation step.** Full removal is
    **gated on P5**: the compiled tier (`#ifdef CONFIG_JIT`, `ngx_js_module.c` C5.0-b) still lowers
    the tenant `onRequest` handler on the `objs_jit` build, so `js_tenant_handler` + the
@@ -180,3 +181,58 @@ through `location.handler` (or another COM setter); the `js_tenant_*` directives
 `tenant_ctx`/`onRequest` subsystem are deleted; the full `comcon_*.t` suite runs on the one
 mechanism on both builds (interpreted + JIT); SR-2 faithfulness holds for the retargeted compiled
 tier.
+
+## § P5 — compiled-tier retarget to `include` (scope)
+
+**Status:** SCOPE (2026-09-02). The tall pole; the one thing gating P6 removal.
+
+### Goal
+Lower `include` fragments to native C on the `objs_jit` build at SR-2 faithfulness parity, so the
+compiled tier no longer depends on the tenant `onRequest` handler. Then P6 can delete the tenant
+subsystem, leaving one mechanism on both tiers.
+
+### Why the code change is small
+The engine already lowers **any** function: `int js_comcon_aot_compile(JSContext *ctx, JSValueConst
+func)` (quickjs.h:855). The tenant path calls it once at load on `jcf->tenant_request_handler`
+(`ngx_js_module.c` C5.0-b, `#ifdef CONFIG_JIT`); the interpreter then dispatches `JS_Call` to the
+installed `jit_func` transparently. So the retarget is: in `ngx_js_comcon_include_confined`, after
+the fragment `fn` is compiled + admitted, under `#ifdef CONFIG_JIT` call
+`js_comcon_aot_compile(sctx, fn)`. `ngx_js_comcon_invoke_confined`'s existing `JS_Call` then runs
+the compiled code. **Confinement is preserved by construction** — the compiled code calls the same
+gated host C functions under the same `ngx_js_compartment_enter(TENANT)` the invoke already sets,
+identical to the tenant lowering; the getter-materialize-under-TENANT fix (§SR-1) covers both tiers.
+
+### Phases
+- **P5.1 — lower.** The one `js_comcon_aot_compile(sctx, fn)` call in `__includeConfined` (JIT only).
+  Log a NOTICE on success (as the tenant does). Best-effort: on failure the fragment runs
+  interpreted (maxim skips-to-interpreter).
+- **P5.2 — SR-2 faithfulness for include.** `t/comcon_include_faithfulness.t` running BOTH builds
+  (`objs/nginx` interpreted, `objs_jit/nginx` compiled), asserting **identical responses AND denial
+  counters** across the confinement surface via `include + location.handler`: report/compute,
+  request reads, response shapes, granted-socket scalar reads, gated reach (`.listener`), gated
+  mutators (`close`), mediate field-masks + route facets, deps. Mirrors `comcon_faithfulness.t`.
+  Assert `all_compiled` (the gate is non-vacuous — every fragment actually lowered).
+- **P5.3 — dual-build regression.** The whole `comcon_*.t` (esp. the `comcon_include_*` suite) green
+  on `objs_jit` as well as `objs`; full `t/` green on both.
+
+### Risks
+- **R1 (closure lowering) — the main unknown.** An include fragment is a CLOSURE: the inner
+  `function(req){…}` is closed over the wrapper's grant/dep params
+  (`(function(<names>){"use strict";return(<src>);})`). Must confirm maxim's AOT lowers this shape
+  (closed-over `var_ref`s) rather than skipping-to-interpreter — else P5.2's `all_compiled` is
+  vacuous. Mitigations if it can't: lower grant-free fragments first; or hoist grants differently;
+  or accept interpreter fallback for cap-bearing fragments and scope the gate to what compiles.
+- **R2 (differential).** Compiled ≡ interpreted for grants/facets/deps/reach/gas — same C funcs, so
+  expected to hold; P5.2 proves it.
+- **R3 (marshaling boundary).** The compiled fragment returns a JSValue → `JS_JSONStringify` host-
+  side; faithfulness is on the marshaled output. Getters materialize under TENANT (already fixed).
+- **R4 (gas/back-edge).** Compiled code uses maxim back-edge gas under the same
+  `request_deadline_ms` meter; parity with the interpreted interrupt gas.
+
+### Gate & non-goals
+Gate: SR-2 (compiled ≡ interpreted responses + denials) on both builds, `all_compiled` non-vacuous.
+Non-goals: not removing the tenant lowering (that is P6 step ii); not changing the confinement model.
+
+### Effort
+Code: **small** (one call + a NOTICE). Validation: **medium** (dual-build differential suite).
+Risk: **medium–high**, concentrated in R1 (whether maxim lowers the cap-closure fragment shape).
