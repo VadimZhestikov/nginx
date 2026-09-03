@@ -7888,6 +7888,130 @@ ngx_js_com_facet_fn_allowed(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * Extract the bare path/pattern from a location spec by stripping leading
+ * whitespace and a location modifier ("= ", "^~ ", "~* ", "~ "; "@name" is
+ * kept whole). Used to glob-check a mutation target against the route policy.
+ */
+static void
+ngx_js_facet_spec_path(const u_char *spec, size_t spec_len,
+    const u_char **path, size_t *path_len)
+{
+    const u_char  *p = spec;
+    const u_char  *end = spec + spec_len;
+
+    while (p < end && *p == ' ') { p++; }
+
+    if (p < end && *p == '@') {
+        /* named location — keep the "@name" whole */
+    } else if (end - p >= 2 && p[0] == '=' && p[1] == ' ') {
+        p += 2;
+    } else if (end - p >= 3 && p[0] == '^' && p[1] == '~' && p[2] == ' ') {
+        p += 3;
+    } else if (end - p >= 3 && p[0] == '~' && p[1] == '*' && p[2] == ' ') {
+        p += 3;
+    } else if (end - p >= 2 && p[0] == '~' && p[1] == ' ') {
+        p += 2;
+    }
+
+    while (p < end && *p == ' ') { p++; }
+
+    *path = p;
+    *path_len = end - p;
+}
+
+
+/*
+ * Gate a mutation spec against the facet's route glob. Returns 1 if allowed,
+ * else 0 after throwing. Attenuation: a fragment may only add/remove locations
+ * inside its granted route.
+ */
+static ngx_int_t
+ngx_js_facet_gate_spec(JSContext *ctx, ngx_js_com_facet_opaque_t *fop,
+    JSValueConst spec_val)
+{
+    const char    *spec;
+    const u_char  *path;
+    size_t         slen, plen;
+    ngx_int_t      ok;
+
+    spec = JS_ToCStringLen(ctx, &slen, spec_val);
+    if (spec == NULL) {
+        return 0;
+    }
+
+    ngx_js_facet_spec_path((const u_char *) spec, slen, &path, &plen);
+    ok = ngx_js_route_match(fop->glob, fop->glob_len, path, plen);
+    JS_FreeCString(ctx, spec);
+
+    if (!ok) {
+        (void) JS_ThrowTypeError(ctx,
+            "NginxComFacet: location outside the granted route policy");
+    }
+
+    return ok;
+}
+
+
+/* facet.addLocation(spec, opts?) — gated on the route glob, routed to the ONE
+   canonical server op; the raw NginxLocation result is discarded so no ungated
+   mutation authority leaks into the fragment. */
+static JSValue
+ngx_js_com_facet_fn_add_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_com_facet_opaque_t  *fop;
+    JSValue                     r;
+
+    fop = JS_GetOpaque2(ctx, this_val, ngx_js_com_facet_class_id);
+    if (!fop) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "facet.addLocation: first argument must be a pattern string");
+    }
+
+    if (!ngx_js_facet_gate_spec(ctx, fop, argv[0])) {
+        return JS_EXCEPTION;
+    }
+
+    r = ngx_js_do_add_location(ctx, fop->srv_op, argc, argv);
+    if (JS_IsException(r)) {
+        return r;
+    }
+
+    JS_FreeValue(ctx, r);          /* drop the raw location cap — attenuation */
+    return JS_TRUE;
+}
+
+
+/* facet.removeLocation(spec) — gated on the route glob; returns bool. */
+static JSValue
+ngx_js_com_facet_fn_remove_location(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_com_facet_opaque_t  *fop;
+
+    fop = JS_GetOpaque2(ctx, this_val, ngx_js_com_facet_class_id);
+    if (!fop) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "facet.removeLocation: first argument must be a pattern string");
+    }
+
+    if (!ngx_js_facet_gate_spec(ctx, fop, argv[0])) {
+        return JS_EXCEPTION;
+    }
+
+    return ngx_js_do_remove_location(ctx, fop->srv_op, argc, argv);
+}
+
+
 /* facet.route -> the glob string (introspection) */
 static JSValue
 ngx_js_com_facet_get_route(JSContext *ctx, JSValueConst this_val)
@@ -7904,9 +8028,11 @@ ngx_js_com_facet_get_route(JSContext *ctx, JSValueConst this_val)
 
 
 static const JSCFunctionListEntry ngx_js_com_facet_proto_funcs[] = {
-    JS_CFUNC_DEF   ("paths",   0, ngx_js_com_facet_fn_paths),
-    JS_CFUNC_DEF   ("allowed", 1, ngx_js_com_facet_fn_allowed),
-    JS_CGETSET_DEF ("route",      ngx_js_com_facet_get_route, NULL),
+    JS_CFUNC_DEF   ("paths",          0, ngx_js_com_facet_fn_paths),
+    JS_CFUNC_DEF   ("allowed",        1, ngx_js_com_facet_fn_allowed),
+    JS_CFUNC_DEF   ("addLocation",    1, ngx_js_com_facet_fn_add_location),
+    JS_CFUNC_DEF   ("removeLocation", 1, ngx_js_com_facet_fn_remove_location),
+    JS_CGETSET_DEF ("route",             ngx_js_com_facet_get_route, NULL),
 };
 
 
@@ -7919,8 +8045,19 @@ static const JSCFunctionListEntry ngx_js_com_facet_proto_funcs[] = {
 ngx_int_t
 ngx_js_com_facet_register_class(JSRuntime *rt)
 {
-    return JS_NewClass(rt, ngx_js_com_facet_class_id, &ngx_js_com_facet_class)
-           < 0 ? NGX_ERROR : NGX_OK;
+    /*
+     * The facet class + the NginxLocation class both need to exist in the
+     * compartment runtime: a gated facet.addLocation() routes to the canonical
+     * op, whose ngx_js_do_add_location() wraps the new location as a
+     * NginxLocation (immediately discarded by the facet — never handed out).
+     */
+    if (JS_NewClass(rt, ngx_js_com_facet_class_id, &ngx_js_com_facet_class) < 0
+        || JS_NewClass(rt, ngx_js_location_class_id, &ngx_js_location_class) < 0)
+    {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
 }
 
 
@@ -10283,9 +10420,11 @@ ngx_js_http_fn_add_hook(JSContext *ctx, JSValueConst this_val,
 ngx_int_t
 ngx_js_http_register_classes(JSRuntime *rt)
 {
-    if (JS_NewClass(rt, ngx_js_server_class_id,   &ngx_js_server_class)   < 0
-     || JS_NewClass(rt, ngx_js_location_class_id, &ngx_js_location_class) < 0)
-    {
+    /* NginxLocation is registered in ngx_js_com_facet_register_class (called
+       from ngx_js_com_register_classes, for both the host and the compartment
+       runtime), so it is NOT registered here — that would double-register it in
+       the host runtime. */
+    if (JS_NewClass(rt, ngx_js_server_class_id, &ngx_js_server_class) < 0) {
         return NGX_ERROR;
     }
 

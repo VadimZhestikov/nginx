@@ -204,9 +204,24 @@ the same `admit`; follows the program-fragment operators.
    comcon 28/230): a fragment granted `routes('/acme/*')` sees only `/acme/*` paths (not
    `/other`), and `allowed()` gates. The facet class is registered in the compartment runtime
    (`ngx_js_com_facet_register_class` in `ngx_js_com_register_classes`) and its proto joins the
-   M-SES-1b harden set. **Still follow-on:** the facet **mutation** slice (gated
-   `addLocation`/`removeLocation` routed to the canonical op under the glob), and
-   `rateLimit`/`transform`/`audit` flavors.
+   M-SES-1b harden set.
+   **✅ COM-NODE `mediate` MUTATION SLICE — LANDED (2026-09-02).** `facet.addLocation(spec)` /
+   `facet.removeLocation(spec)` now mutate the live config, **gated on the route glob** and
+   routed to the ONE canonical op. The spec's bare path (leading `= `/`^~ `/`~ `/`~* ` stripped)
+   is glob-checked (`ngx_js_facet_gate_spec`); a target outside the route throws
+   (`"location outside the granted route policy"`). Inside the route, the facet calls the
+   already-factored `ngx_js_do_add_location(ctx, srv_op, …)` / `ngx_js_do_remove_location` on the
+   **borrowed canonical `srv_op`** — the same op the host uses, so there is no divergence and no
+   teardown UAF (the compartment owns no pool). `do_add_location` returns a raw `NginxLocation`;
+   the facet **discards** it and returns a boolean, so no *ungated* mutation cap leaks into the
+   fragment (the location class is registered in the compartment runtime only so the internal
+   wrap doesn't fault — never handed out). **Verified** (`t/comcon_com_facet_mutate.t`; comcon
+   29/240): a fragment granted `routes('/acme/*')` adds `/acme/new` (visible) but is denied
+   `/evil`; removes `/acme/a` but is denied removing `/other`; and — the canonical-op proof —
+   the **host** side (`nginx.http.servers[0].locations`) sees `/acme/new` and no longer sees
+   `/acme/a`, confirming the mutation went through the one op. Clean teardown (no alerts).
+   **Still follow-on:** `rateLimit`/`transform`/`audit` flavors, and facet caps for other COM
+   node kinds (upstreams/peers).
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.
