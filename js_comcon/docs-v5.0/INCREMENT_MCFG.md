@@ -250,9 +250,21 @@ the same `admit`; follows the program-fragment operators.
    `jcf->tenant_artifact_pin`, checked at admission. **Verified** (`t/comcon_operator_artifact.t`;
    comcon 32/254): a correctly-pinned tenant is admitted (identity + schema logged), a mismatched
    pin refuses the config under `nginx -t` — same content+schema-drift guarantee as the directive.
-   **Still to retire:** `js_tenant_handler` (the per-request binding — an http `location`-scoped
-   directive, the trickiest: it's a `location` field, not a global `jcf` field, so its operator
-   form needs a host-JS way to target a location); then migrate `comcon_*.t` and remove the
+   **`js_tenant_handler` needs NO operator (2026-09-02) — retired via existing js_com.** A
+   confined request handler is just a callable, and `comcon.include(source)` already returns one
+   (marshal arg in → run confined → marshal result out). The *existing* `location.handler` COM
+   setter carries it: the root script marshals the request to data, calls the confined fragment,
+   and responds with its data-only `{status, body}`. **Verified** (`t/comcon_operator_handler.t`;
+   comcon 33/259): a plain `location /t {}` (no `js_tenant_handler`) served by
+   `loc.handler = req => { var o = handle({method:req.method, uri:req.uri}); req.respond(o.status,
+   {…}, o.body); }` where `handle = comcon.include('function(req){ return {status:200, body:…}; }')`
+   — the fragment is confined (`typeof nginx === "undefined"`) and its `{status}` shapes the
+   response. This is the recursive-inclusion fundament: reuse the js_com primitive
+   (`location.handler`), don't add API for what js_com already does. **Design note:** this makes
+   `include + location.handler` *the* confined-handler mechanism, parallel to the older
+   `tenant_ctx`/`onRequest`/`js_tenant_handler` path. The convergence (fold `mode`/`dependency`/
+   `artifact` into `include`'s contract + retire the tenant `onRequest` path so there is ONE
+   confined mechanism) is scoped as the next step. Then migrate `comcon_*.t` and remove the
    directives (steps 5–6).
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.
 6. **Remove the directives.**
