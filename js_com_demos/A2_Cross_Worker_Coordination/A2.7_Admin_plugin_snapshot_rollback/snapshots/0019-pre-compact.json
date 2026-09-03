@@ -1,0 +1,10 @@
+{
+  "id": "0019-pre-compact",
+  "ts": 1782433503,
+  "ops": [
+    {
+      "shared": "canary.weight",
+      "value": "99"
+    }
+  ]
+}

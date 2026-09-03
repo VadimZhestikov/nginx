@@ -1,0 +1,18 @@
+{
+  "id": "0014-noisy",
+  "ts": 1782433503,
+  "ops": [
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:8091",
+        "property": "weight"
+      },
+      "value": 4
+    },
+    {
+      "shared": "canary.weight",
+      "value": "75"
+    }
+  ]
+}

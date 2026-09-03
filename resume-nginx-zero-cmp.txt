@@ -1,0 +1,1 @@
+claude --resume cfb6600c-3c77-47bb-bd1d-5476fdaaae26 --dangerously-skip-permissions

@@ -1,0 +1,10 @@
+{
+  "id": "0017-sq3",
+  "ts": 1782433503,
+  "ops": [
+    {
+      "shared": "canary.weight",
+      "value": "30"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "0008-tmp",
+  "ts": 1782433502,
+  "ops": [
+    {
+      "op": "removeLocation",
+      "serverName": "localhost",
+      "pattern": "/inserted/"
+    }
+  ]
+}

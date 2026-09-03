@@ -1,0 +1,11 @@
+{
+  "id": "0004-remove-dynamic",
+  "ts": 1782433501,
+  "ops": [
+    {
+      "op": "removeLocation",
+      "serverName": "localhost",
+      "pattern": "/dynamic/"
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+TEST_NGINX_BINARY=$(pwd)/objs/nginx prove -v t/ 2>&1
+
+
+
+
+
+claude --resume "fork_for_dynamic_reconf (Fork)"  --dangerously-skip-permissions
+
+
+
+//////////////////////////////
+
+
+❯ /branch
+  ⎿  Branched conversation. You are now in the branch.
+     To return to the original: /resume 08aa6aff-5cab-434a-9d49-4483a6b85e28
+     (or from a new terminal: claude -r 08aa6aff-5cab-434a-9d49-4483a6b85e28)
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Press Ctrl-D again to exit
+
+Resume this session with:
+claude --resume "lets implement early mentioned \"Approach A\" (Branch)" --dangerously-skip-permissions
+
+
+
+
+
+
+ /branch
+  ⎿  Branched conversation. You are now in the branch.
+     To return to the original: /resume 8031d7ea-53b7-4acd-8f73-bda974ebfcb4
+     (or from a new terminal: claude -r 8031d7ea-53b7-4acd-8f73-bda974ebfcb4)
+
+
+
+
+
+claude -r 8031d7ea-53b7-4acd-8f73-bda974ebfcb4 --dangerously-skip-permissions
+
+
+
+claude --dangerously-skip-permissions
+  /resume 8031d7ea-53b7-4acd-8f73-bda974ebfcb4
+
+
+
+
+
+claude --resume 17cf8238-419b-41c9-ac3d-a16c87fa2868 --dangerously-skip-permissions
+
+
+
+git push -u origin_pilgrim js_com --force

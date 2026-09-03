@@ -1,0 +1,11 @@
+{
+  "id": "0006-tmp",
+  "ts": 1782433502,
+  "ops": [
+    {
+      "op": "addLocation",
+      "serverName": "localhost",
+      "pattern": "/inserted/"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "0004-hide-srv",
+  "ts": 1782433525,
+  "ops": [
+    {
+      "op": "removeServer",
+      "name": "ghost.local"
+    }
+  ]
+}

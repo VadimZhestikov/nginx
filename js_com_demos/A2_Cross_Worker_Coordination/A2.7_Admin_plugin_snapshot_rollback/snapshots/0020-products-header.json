@@ -1,0 +1,25 @@
+{
+  "id": "0020-products-header",
+  "ts": 1782433503,
+  "ops": [
+    {
+      "shared": "routes.products",
+      "value": "1"
+    },
+    {
+      "prop": {
+        "server": "localhost",
+        "location": "/api/products/",
+        "subobject": "headers",
+        "property": "addHeaders"
+      },
+      "value": [
+        {
+          "key": "X-Demo",
+          "value": "snapshot-header",
+          "always": false
+        }
+      ]
+    }
+  ]
+}

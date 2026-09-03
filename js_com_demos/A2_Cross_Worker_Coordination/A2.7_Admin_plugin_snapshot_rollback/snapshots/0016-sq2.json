@@ -1,0 +1,14 @@
+{
+  "id": "0016-sq2",
+  "ts": 1782433503,
+  "ops": [
+    {
+      "shared": "canary.weight",
+      "value": "20"
+    },
+    {
+      "shared": "routes.premium",
+      "value": "1"
+    }
+  ]
+}

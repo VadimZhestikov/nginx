@@ -1,0 +1,10 @@
+{
+  "id": "0002-danger",
+  "ts": 1782433523,
+  "ops": [
+    {
+      "op": "addServer",
+      "name": "new.local"
+    }
+  ]
+}

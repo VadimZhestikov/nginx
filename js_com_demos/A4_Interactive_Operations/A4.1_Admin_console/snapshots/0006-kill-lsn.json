@@ -1,0 +1,11 @@
+{
+  "id": "0006-kill-lsn",
+  "ts": 1782433556,
+  "ops": [
+    {
+      "op": "removeListener",
+      "addr": "127.0.0.1:8136",
+      "hard": true
+    }
+  ]
+}

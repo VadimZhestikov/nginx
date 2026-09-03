@@ -1,0 +1,56 @@
+{
+  "id": "0011-auto-capture",
+  "ts": 1782433502,
+  "ops": [
+    {
+      "shared": "routes.products",
+      "value": "0"
+    },
+    {
+      "shared": "routes.premium",
+      "value": "0"
+    },
+    {
+      "shared": "canary.weight",
+      "value": "0"
+    },
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:8091",
+        "property": "weight",
+        "default": 5
+      },
+      "value": 9
+    },
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:8092",
+        "property": "weight",
+        "default": 3
+      },
+      "value": 3
+    },
+    {
+      "prop": {
+        "server": "localhost",
+        "location": "/api/products/",
+        "subobject": "headers",
+        "property": "addHeaders",
+        "default": []
+      },
+      "value": []
+    },
+    {
+      "prop": {
+        "server": "localhost",
+        "location": "/api/premium/",
+        "subobject": "headers",
+        "property": "addHeaders",
+        "default": []
+      },
+      "value": []
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "0018-merged",
+  "ts": 1782433503,
+  "ops": [
+    {
+      "shared": "routes.products",
+      "value": "1"
+    },
+    {
+      "shared": "routes.premium",
+      "value": "1"
+    },
+    {
+      "shared": "canary.weight",
+      "value": "30"
+    }
+  ]
+}

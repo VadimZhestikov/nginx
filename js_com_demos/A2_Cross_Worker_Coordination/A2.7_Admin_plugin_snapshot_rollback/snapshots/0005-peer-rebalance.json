@@ -1,0 +1,22 @@
+{
+  "id": "0005-peer-rebalance",
+  "ts": 1782433501,
+  "ops": [
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:8091",
+        "property": "weight"
+      },
+      "value": 2
+    },
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:8092",
+        "property": "weight"
+      },
+      "value": 7
+    }
+  ]
+}

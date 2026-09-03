@@ -1,0 +1,62 @@
+{
+  "id": "0021-auto-headers",
+  "ts": 1782433503,
+  "ops": [
+    {
+      "shared": "routes.products",
+      "value": "1"
+    },
+    {
+      "shared": "routes.premium",
+      "value": "0"
+    },
+    {
+      "shared": "canary.weight",
+      "value": "0"
+    },
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:8091",
+        "property": "weight",
+        "default": 5
+      },
+      "value": 5
+    },
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:8092",
+        "property": "weight",
+        "default": 3
+      },
+      "value": 3
+    },
+    {
+      "prop": {
+        "server": "localhost",
+        "location": "/api/products/",
+        "subobject": "headers",
+        "property": "addHeaders",
+        "default": []
+      },
+      "value": [
+        {
+          "key": "X-Demo",
+          "value": "snapshot-header",
+          "always": false
+        }
+      ]
+    },
+    {
+      "prop": {
+        "server": "localhost",
+        "location": "/api/premium/",
+        "subobject": "headers",
+        "property": "addHeaders",
+        "default": []
+      },
+      "value": []
+    }
+  ]
+}

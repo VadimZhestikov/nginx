@@ -1,0 +1,39 @@
+{
+  "id": "0001-mixed",
+  "ts": 1782433523,
+  "ops": [
+    {
+      "shared": "routes.products",
+      "value": "1"
+    },
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:9991",
+        "property": "weight"
+      },
+      "value": 9
+    },
+    {
+      "prop": {
+        "server": "localhost",
+        "location": "/api/",
+        "subobject": "headers",
+        "property": "addHeaders"
+      },
+      "value": [
+        {
+          "key": "X-Console",
+          "value": "on",
+          "always": false
+        }
+      ]
+    },
+    {
+      "op": "addLocation",
+      "serverName": "localhost",
+      "pattern": "/dynamic/",
+      "handler": "dynamicHandler"
+    }
+  ]
+}

@@ -3395,18 +3395,13 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
                                           "__invokeConfined", 3));
-        /* directive-retirement operators (retire js_tenant_mode/js_tenant_source) */
+        /* comcon.mode() — the confined-compartment policy mode (used by the
+           include compartment: learn seeding + the reach-gate mode). The former
+           comcon.tenant/dependency/artifact operators were retired with the
+           tenant path; the include contract ({deps,identity,imports}) carries
+           their per-fragment equivalents. */
         JS_SetPropertyStr(ctx, comcon_obj, "mode",
                           JS_NewCFunction(ctx, ngx_js_comcon_op_mode, "mode", 1));
-        JS_SetPropertyStr(ctx, comcon_obj, "tenant",
-                          JS_NewCFunction(ctx, ngx_js_comcon_op_tenant,
-                                          "tenant", 1));
-        JS_SetPropertyStr(ctx, comcon_obj, "dependency",
-                          JS_NewCFunction(ctx, ngx_js_comcon_op_dependency,
-                                          "dependency", 3));
-        JS_SetPropertyStr(ctx, comcon_obj, "artifact",
-                          JS_NewCFunction(ctx, ngx_js_comcon_op_artifact,
-                                          "artifact", 1));
         JS_SetPropertyStr(ctx, global, "comcon", comcon_obj);
 
         /* env/grant/mediate/meter/bind — the capability layer (JS) */

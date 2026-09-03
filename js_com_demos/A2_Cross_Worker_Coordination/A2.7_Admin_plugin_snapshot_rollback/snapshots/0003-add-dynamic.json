@@ -1,0 +1,12 @@
+{
+  "id": "0003-add-dynamic",
+  "ts": 1782433499,
+  "ops": [
+    {
+      "op": "addLocation",
+      "serverName": "localhost",
+      "pattern": "/dynamic/",
+      "handler": "dynamicHandler"
+    }
+  ]
+}

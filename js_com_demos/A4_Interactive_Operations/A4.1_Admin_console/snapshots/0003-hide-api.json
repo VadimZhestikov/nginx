@@ -1,0 +1,11 @@
+{
+  "id": "0003-hide-api",
+  "ts": 1782433524,
+  "ops": [
+    {
+      "op": "removeLocation",
+      "serverName": "localhost",
+      "pattern": "/api/"
+    }
+  ]
+}

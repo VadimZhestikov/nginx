@@ -1,0 +1,22 @@
+{
+  "id": "0007-tmp",
+  "ts": 1782433502,
+  "ops": [
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:8091",
+        "property": "weight"
+      },
+      "value": 5
+    },
+    {
+      "prop": {
+        "upstream": "demo_backend",
+        "peer": "127.0.0.1:8092",
+        "property": "weight"
+      },
+      "value": 3
+    }
+  ]
+}
