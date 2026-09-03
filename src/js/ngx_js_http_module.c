@@ -2823,6 +2823,25 @@ ngx_js_request_subrequest(JSContext *ctx, JSValueConst this_val,
  * Sends the complete response and finalizes the request.
  * The JS handler should return immediately after calling this.
  */
+
+/* A header name/value carrying CR or LF would smuggle extra response headers
+ * (CRLF injection). Reject the whole header — the same defense js_tenant_handler
+ * applies, here for every req.respond caller (host + confined). */
+static ngx_int_t
+ngx_js_header_has_crlf(const char *s)
+{
+    if (s == NULL) {
+        return 1;
+    }
+    for (; *s != '\0'; s++) {
+        if (*s == '\r' || *s == '\n') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
 static JSValue
 ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
@@ -2882,7 +2901,16 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
             key_cstr = JS_ToCString(ctx, hkey);
             val_cstr = JS_ToCString(ctx, hval);
 
-            if (key_cstr && val_cstr) {
+            if (key_cstr && val_cstr
+                && (ngx_js_header_has_crlf(key_cstr)
+                    || ngx_js_header_has_crlf(val_cstr)))
+            {
+                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                              "js: response header with CR/LF dropped "
+                              "(name=\"%s\")", key_cstr);
+                /* fall through to the frees below; header not applied */
+
+            } else if (key_cstr && val_cstr) {
 
                 if (ngx_strcasecmp((u_char *) key_cstr,
                                    (u_char *) "content-type") == 0)

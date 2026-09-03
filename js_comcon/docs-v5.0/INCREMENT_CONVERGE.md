@@ -73,8 +73,20 @@ compiled tier, and the request contract.
    (`t/comcon_include_deps.t`; comcon 35/271): a pinned lib (`lib.greet(...)`) is bound and usable
    in the fragment, and a hijacked update (hash mismatch) refuses the include. Since deps are
    closure params, admission (P1) auto-excludes them from the free-name check, exactly like grants.
-4. **P4 — migrate `comcon_*.t` (G7).** File-by-file, tenant form → `include + serve`. The old
-   directives/tenant path still work throughout (nothing removed yet).
+4. **P4 — migrate `comcon_*.t` (G7). 🔨 IN PROGRESS (2026-09-02).** Add include-based parity
+   siblings file-by-file (keeping the tenant tests until P6, so both paths stay green). Landed:
+   `t/comcon_include_request.t` (the core confined request handler — live-cap grant + A1 reach-gate
+   isolation + admission + host-unreachable + call-stability + host-locations-unaffected),
+   `t/comcon_include_headers.t` (data-in/out headers + CRLF drop), `t/comcon_include_deny.t`
+   (deny-by-default: `typeof nginx === "undefined"`, withheld `createSocket` unreachable). Together
+   with the earlier include tests (grant/admit/deps/handler/mediate/facet) this now covers the
+   interpreted tenant scenarios. **Security fix surfaced by P4:** `req.respond` did NOT drop
+   CR/LF-injected response headers (only `js_tenant_handler`'s C path did) — a response-header
+   CRLF-injection affecting *every* js_com handler. Added `ngx_js_header_has_crlf` +
+   a drop-with-warning guard in `ngx_js_request_respond` so the whole js_com response path is safe
+   (host + confined). **Still to add:** parity siblings for audit/learn mode, denial_log,
+   schema_conformance, restricted, freeze/mses/sr1 (confinement-property tests). The compiled-tier
+   tests (`faithfulness`, `lowering`) stay on the tenant path until P5.
 5. **P5 — compiled tier (G6).** Retarget C5 lowering to `include` fragments. **Gated on SR-2
    faithfulness** (compiled ≡ interpreted) exactly as the tenant path is. This is the crux; it may
    warrant its own increment. Until P5 lands, the tenant path stays for compiled-tier tenants.
