@@ -245,9 +245,15 @@ the same `admit`; follows the program-fragment operators.
    library on the tenant global as `name`. **Verified** (`t/comcon_operator_dependency.t`; comcon
    31/249): the pinned pure lib loads + is usable at tenant eval, and a hijacked update (hash
    mismatch) refuses the config under `nginx -t` — same guarantee as the directive.
-   **Still to retire:** `js_tenant_artifact` (identity pin) and `js_tenant_handler` (the
-   per-request binding — an http `location`-scoped directive, the trickiest); then migrate
-   `comcon_*.t` and remove the directives.
+   **`comcon.artifact(sha256hex)` landed (2026-09-02)** — retires `js_tenant_artifact`. Once-only
+   pin of the admitted fragment's content-addressed identity `H(H(source) ‖ schema)` into
+   `jcf->tenant_artifact_pin`, checked at admission. **Verified** (`t/comcon_operator_artifact.t`;
+   comcon 32/254): a correctly-pinned tenant is admitted (identity + schema logged), a mismatched
+   pin refuses the config under `nginx -t` — same content+schema-drift guarantee as the directive.
+   **Still to retire:** `js_tenant_handler` (the per-request binding — an http `location`-scoped
+   directive, the trickiest: it's a `location` field, not a global `jcf` field, so its operator
+   form needs a host-JS way to target a location); then migrate `comcon_*.t` and remove the
+   directives (steps 5–6).
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.
 6. **Remove the directives.**
 

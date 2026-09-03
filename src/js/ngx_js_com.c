@@ -3362,6 +3362,9 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "dependency",
                           JS_NewCFunction(ctx, ngx_js_comcon_op_dependency,
                                           "dependency", 3));
+        JS_SetPropertyStr(ctx, comcon_obj, "artifact",
+                          JS_NewCFunction(ctx, ngx_js_comcon_op_artifact,
+                                          "artifact", 1));
         JS_SetPropertyStr(ctx, global, "comcon", comcon_obj);
 
         /* env/grant/mediate/meter/bind — the capability layer (JS) */

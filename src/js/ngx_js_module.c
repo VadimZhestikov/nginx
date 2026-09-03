@@ -1946,6 +1946,63 @@ ngx_js_comcon_op_dependency(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 
+/* comcon.artifact(sha256hex) — retires js_tenant_artifact. Pin the admitted
+   fragment's content-addressed identity H(H(source) ‖ schema); the tenant is
+   admitted only if it matches (content + schema drift both refuse). Once-only. */
+JSValue
+ngx_js_comcon_op_artifact(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_conf_t  *jcf = ngx_js_comcon_jcf;
+    const char     *sh;
+    size_t          slen;
+    ngx_uint_t      i;
+    u_char          hi, lo;
+
+    if (jcf == NULL) {
+        return JS_ThrowInternalError(ctx, "comcon.artifact: no conf");
+    }
+    if (jcf->tenant_artifact_pinned) {
+        return JS_ThrowTypeError(ctx, "comcon.artifact: already pinned once");
+    }
+
+    sh = JS_ToCStringLen(ctx, &slen, argv[0]);
+    if (sh == NULL) {
+        return JS_EXCEPTION;
+    }
+    if (slen != 64) {
+        JS_FreeCString(ctx, sh);
+        return JS_ThrowTypeError(ctx,
+            "comcon.artifact: identity must be 64 hex chars");
+    }
+
+    for (i = 0; i < 32; i++) {
+        hi = (u_char) sh[i * 2];
+        lo = (u_char) sh[i * 2 + 1];
+
+        hi = (hi >= '0' && hi <= '9') ? hi - '0'
+           : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+           : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : 0xff;
+        lo = (lo >= '0' && lo <= '9') ? lo - '0'
+           : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+           : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : 0xff;
+
+        if (hi == 0xff || lo == 0xff) {
+            JS_FreeCString(ctx, sh);
+            return JS_ThrowTypeError(ctx,
+                "comcon.artifact: invalid hex in identity");
+        }
+
+        jcf->tenant_artifact_pin[i] = (u_char) ((hi << 4) | lo);
+    }
+
+    JS_FreeCString(ctx, sh);
+    jcf->tenant_artifact_pinned = 1;
+
+    return JS_UNDEFINED;
+}
+
+
 static ngx_int_t
 ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 {
