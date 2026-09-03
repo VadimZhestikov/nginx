@@ -84,9 +84,23 @@ compiled tier, and the request contract.
    CR/LF-injected response headers (only `js_tenant_handler`'s C path did) — a response-header
    CRLF-injection affecting *every* js_com handler. Added `ngx_js_header_has_crlf` +
    a drop-with-warning guard in `ngx_js_request_respond` so the whole js_com response path is safe
-   (host + confined). **Still to add:** parity siblings for audit/learn mode, denial_log,
-   schema_conformance, restricted, freeze/mses/sr1 (confinement-property tests). The compiled-tier
-   tests (`faithfulness`, `lowering`) stay on the tenant path until P5.
+   (host + confined). Added `t/comcon_include_denial_log.t` — a granted fragment hits the A1 gate
+   250× and the shared TM-1 denial machinery counts them exactly (100 full records + 1/100 sample);
+   `nginx.tenantDenials()` reports identically (the denial subsystem is shared, now exercised via
+   include). **Audit mode** is already covered by `t/comcon_operator_tenant.t` (a granted socket's
+   reach edge is log-and-allowed under `comcon.mode('audit')`); **restricted** is covered by P1
+   admission (`t/comcon_include_admit.t` — eval/`Function`/`with` refused).
+   **Two tenant tests do NOT map to a test rewrite — they need feature work or don't apply:**
+   (a) **learn mode** (`comcon_learn_mode.t`) depends on the tenant setup's `ngx_js_learn_seed`
+   (B0 recorder seeding of the withheld host surface) which the include compartment does not do —
+   migrating it means adding learn-mode seeding to `ngx_js_comcon_compartment`, a real feature, not
+   a rewrite; (b) **schema_conformance** (`comcon_schema_conformance.t`) tests the tenant's *sealed
+   Request object*, whereas include hands the fragment JSON-marshaled request *data* — a different
+   (also-safe) shape, so its assertions don't transfer directly. **freeze/mses/sr1** test the M-SES
+   lockdown, which is **shared code** (`ngx_js_tenant_lockdown` runs in both `tenant_ctx` and
+   `comcon_ctx`), so the property holds on include automatically; re-testing via include is bulk
+   probe-rewriting with little added assurance — a P6-gating decision (migrate, or keep a minimal
+   tenant harness for the lockdown probes). Compiled-tier (`faithfulness`, `lowering`) stay for P5.
 5. **P5 — compiled tier (G6).** Retarget C5 lowering to `include` fragments. **Gated on SR-2
    faithfulness** (compiled ≡ interpreted) exactly as the tenant path is. This is the crux; it may
    warrant its own increment. Until P5 lands, the tenant path stays for compiled-tier tenants.
