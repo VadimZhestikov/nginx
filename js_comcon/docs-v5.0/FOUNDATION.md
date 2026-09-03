@@ -553,6 +553,17 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.36 (in place — `admit`'s test-phase: behavioral admission):** `admit` gains its third phase
+(SPEC §4 `(Γ, φ, T)`): `include(source, {tests})` runs the contract's `tests` — a
+`function(fragment){…}` — against the compiled fragment IN the confined compartment, under the
+TENANT reach gate, and REFUSES admission if any test throws. Zero blast radius: the tests run with
+no host authority in scope and IO denied, so a host can admit an untrusted / AI-generated fragment
+by verifying its BEHAVIOR before granting it authority ("tests bound correctness, capabilities
+bound damage" — Principle 3, threat T3). `t/comcon_admit_tests.t` (pass admits; a failing/throwing
+test refuses with a reproducible reason; a test that reaches for the host is itself refused).
+Remaining refinement: swapping the clock/RNG for fixed doubles during the run (the reproducibility
+half of "determinism caps"; the security half — host authority + IO denied — already holds).
+
 **v5.35 (in place — the CONVERGENCE is complete; ONE confined mechanism):** the whole
 directive-driven "tenant" path is retired. The five `js_tenant_*` directives
 (source/mode/dependency/artifact/handler) and the tenant compartment subsystem

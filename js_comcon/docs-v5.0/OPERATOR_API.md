@@ -6,9 +6,12 @@
 > INCREMENT_CONVERGE.md).
 > - **Shipped:** `env`, `grant`, `mediate` (flavors `revoke`/`redact`/`allow` field-masks on
 >   sockets + `routes(glob)` on COM-node facets), `admit` (free-name ⊆ imports + dynamic-code
->   refusal + request-field check + optional identity pin — but NOT yet the test-phase under
->   determinism caps), `include` (`parse∘admit∘bind`, both interpreted + AOT tiers, with
->   `contract = {imports, identity, checkRequest, grants, deps, meter}`), `meter`, `comcon.mode`
+>   refusal + request-field check + optional identity pin + **the test-phase**: `contract.tests`
+>   runs against the compiled fragment IN the confined compartment — zero blast radius, host
+>   authority + IO denied — refusing admission if any test throws; the remaining refinement is
+>   swapping clock/RNG for fixed doubles during the run), `include` (`parse∘admit∘bind`, both
+>   interpreted + AOT tiers, with
+>   `contract = {imports, identity, checkRequest, tests, grants, deps, meter}`), `meter`, `comcon.mode`
 >   (the process policy mode). Handlers are bound via the existing `location.handler`, not a
 >   directive.
 > - **Partial / divergent:** `bind` is currently META-only (a metered call wrapper); the real

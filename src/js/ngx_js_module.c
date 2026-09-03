@@ -1072,6 +1072,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     uint32_t        gi, gn, dn, di, idx, mask;
     int32_t         sh;
     char            depreason[256];
+    ngx_js_compartment_t  tprev;
 
     jcf = ngx_js_comcon_jcf;
     if (jcf == NULL) {
@@ -1454,6 +1455,69 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             }
         }
         JS_FreeValue(hctx, idv);
+    }
+
+    /* admit phase (iii): run the contract's tests against the fragment IN the
+       compartment (under the TENANT reach gate), so its behavior is verified
+       with ZERO BLAST RADIUS — the compartment holds no host authority and IO
+       is denied. Any test that throws refuses admission. (Determinism caps —
+       swapping the clock/RNG for fixed doubles during the run — are a documented
+       follow-on; the security-relevant denial, host authority + IO, already
+       holds.) contract.tests is a function(fragment){…} source string. */
+    if (argc > 4 && JS_IsObject(argv[4])) {
+        JSValue  tv = JS_GetPropertyStr(hctx, argv[4], "tests");
+
+        if (JS_IsString(tv)) {
+            const char  *tsrc;
+            size_t       tlen;
+            u_char      *tbuf;
+            JSValue      testfn, tret;
+
+            tsrc = JS_ToCStringLen(hctx, &tlen, tv);
+            if (tsrc != NULL) {
+                tbuf = ngx_alloc(tlen + 3, ngx_cycle->log);
+                if (tbuf != NULL) {
+                    tbuf[0] = '(';
+                    ngx_memcpy(tbuf + 1, tsrc, tlen);
+                    tbuf[tlen + 1] = ')';
+                    tbuf[tlen + 2] = '\0';
+                    testfn = JS_Eval(sctx, (const char *) tbuf, tlen + 2,
+                                     "<comcon-tests>", JS_EVAL_TYPE_GLOBAL);
+                    ngx_free(tbuf);
+
+                    if (JS_IsFunction(sctx, testfn)) {
+                        tprev = ngx_js_compartment_enter(
+                                    NGX_JS_COMPARTMENT_TENANT);
+                        tret = JS_Call(sctx, testfn, JS_UNDEFINED, 1,
+                                       (JSValueConst *) &fn);
+                        ngx_js_compartment_leave(tprev);
+
+                        if (JS_IsException(tret)) {
+                            JSValue      exc2 = JS_GetException(sctx);
+                            const char  *es = JS_ToCString(sctx, exc2);
+
+                            JS_FreeValue(sctx, tret);
+                            JS_FreeValue(sctx, testfn);
+                            JS_FreeCString(hctx, tsrc);
+                            JS_FreeValue(hctx, tv);
+                            thrown = JS_ThrowTypeError(hctx,
+                                "comcon.include: admission refused: "
+                                "test failed: %s", es ? es : "threw");
+                            if (es != NULL) {
+                                JS_FreeCString(sctx, es);
+                            }
+                            JS_FreeValue(sctx, exc2);
+                            JS_FreeValue(sctx, fn);
+                            return thrown;
+                        }
+                        JS_FreeValue(sctx, tret);
+                    }
+                    JS_FreeValue(sctx, testfn);
+                }
+                JS_FreeCString(hctx, tsrc);
+            }
+        }
+        JS_FreeValue(hctx, tv);
     }
 
 #ifdef CONFIG_JIT

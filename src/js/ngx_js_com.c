@@ -3099,11 +3099,18 @@ static const char  ngx_js_comcon_bootstrap[] =
     /* P1 (CONVERGE): opt-in C3 admission + identity pin — present iff the
        contract asks (imports/identity/checkRequest). Absent => no admission
        (backward compatible with un-admitted include fragments). */
+    /* admit(node, contract): (i) free-names, (ii) syntactic predicates, and
+       (iii) run contract.tests in the compartment against the fragment (zero
+       blast radius — no host authority is in scope). A String tests fn refuses
+       admission if it throws. Present iff the contract asks. */
     "    var admit=null;"
-    "    if(contract.imports||contract.identity||contract.checkRequest){"
+    "    if(contract.imports||contract.identity||contract.checkRequest"
+    "       ||contract.tests){"
     "      admit={imports:contract.imports||[],"
     "             checkRequest:!!contract.checkRequest,"
-    "             identity:contract.identity};}"
+    "             identity:contract.identity,"
+    "             tests:(typeof contract.tests==='function'"
+    "                    ?String(contract.tests):contract.tests)};}"
     /* P3 (CONVERGE): pinned pure-library deps, bound as fragment closure
        params (per-fragment) — retires js_tenant_dependency onto include. */
     "    var deps=[];"
