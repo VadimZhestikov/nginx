@@ -8867,6 +8867,11 @@ ngx_js_tenant_handler_directive(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_core_loc_conf_t  *clcf;
 
+    ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+        "\"js_tenant_handler\" is deprecated (COMCON directive retirement); "
+        "set location.handler to a comcon.include(...) callable from the "
+        "js_source root script instead");
+
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_js_tenant_content_handler;
 

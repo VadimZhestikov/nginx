@@ -132,9 +132,22 @@ compiled tier, and the request contract.
 5. **P5 — compiled tier (G6).** Retarget C5 lowering to `include` fragments. **Gated on SR-2
    faithfulness** (compiled ≡ interpreted) exactly as the tenant path is. This is the crux; it may
    warrant its own increment. Until P5 lands, the tenant path stays for compiled-tier tenants.
-6. **P6 — remove the directives.** Once every `comcon_*.t` runs on `include` and the compiled tier
-   is retargeted, delete `js_tenant_source/mode/dependency/artifact/handler` + the now-dead
-   `tenant_ctx`/`onRequest`/`tenant_request_handler` machinery. This is the payoff: one mechanism.
+6. **P6 — remove the directives. 🔨 STARTED (2026-09-02) — deprecation step.** Full removal is
+   **gated on P5**: the compiled tier (`#ifdef CONFIG_JIT`, `ngx_js_module.c` C5.0-b) still lowers
+   the tenant `onRequest` handler on the `objs_jit` build, so `js_tenant_handler` + the
+   `tenant_ctx`/`onRequest` machinery cannot be deleted until P5 retargets lowering to `include`
+   fragments. The safe first step (no P5 needed, loses no coverage): all five `js_tenant_*` directive
+   setters now log a **config-time deprecation warning** pointing to the host-JS replacement
+   (`js_tenant_source`→`comcon.tenant`, `_mode`→`comcon.mode`, `_dependency`→`comcon.dependency`,
+   `_artifact`→`comcon.artifact`, `_handler`→`location.handler = comcon.include(...)`), while
+   staying fully functional (thin sugar over the same `jcf` fields). Safe because Test::Nginx's
+   "no alerts" only matches `[alert]`, not `[warn]` (verified — every tenant test stays green).
+   `t/comcon_deprecation.t` asserts the warnings fire and the directives still serve. **Removal
+   sequence (post-P5):** (i) migrate `faithfulness`/`lowering`/`schema_conformance`/remaining
+   originals off the directives onto `comcon.tenant()` (+ delete the redundant originals covered by
+   `comcon_include_*` siblings); (ii) once nothing but the (now include-lowered) compiled tier uses
+   them, delete the five directives + the `tenant_ctx`/`onRequest`/`tenant_request_handler`
+   machinery. This is the payoff: one mechanism.
 
 ## 5. Open decisions (with recommendations)
 

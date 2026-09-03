@@ -591,6 +591,10 @@ ngx_js_tenant_source(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_js_conf_t  *jcf = conf;
     ngx_str_t      *value, *path;
 
+    ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+        "\"js_tenant_source\" is deprecated (COMCON directive retirement); "
+        "call comcon.tenant(path) from the js_source root script instead");
+
     value = cf->args->elts;
 
     path = ngx_array_push(&jcf->tenant_sources);
@@ -614,6 +618,11 @@ ngx_js_tenant_mode(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_js_conf_t  *jcf = conf;
     ngx_str_t      *value;
+
+    ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+        "\"js_tenant_mode\" is deprecated (COMCON directive retirement); "
+        "call comcon.mode(\"enforce\"|\"audit\"|\"learn\") from the js_source "
+        "root script instead");
 
     value = cf->args->elts;
 
@@ -646,6 +655,11 @@ ngx_js_tenant_dependency(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_js_tenant_dep_t  *dep;
     ngx_uint_t            i;
     u_char                hi, lo;
+
+    ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+        "\"js_tenant_dependency\" is deprecated (COMCON directive retirement); "
+        "call comcon.dependency(name, path, sha256) from the js_source root "
+        "script instead");
 
     value = cf->args->elts;   /* [1]=name [2]=path [3]=sha256hex */
 
@@ -708,6 +722,10 @@ ngx_js_tenant_artifact(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_str_t      *value;
     ngx_uint_t      i;
     u_char          hi, lo;
+
+    ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+        "\"js_tenant_artifact\" is deprecated (COMCON directive retirement); "
+        "call comcon.artifact(sha256) from the js_source root script instead");
 
     value = cf->args->elts;   /* [1]=sha256hex of the artifact identity */
 
