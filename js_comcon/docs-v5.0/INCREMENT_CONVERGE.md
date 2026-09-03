@@ -104,9 +104,22 @@ compiled tier, and the request contract.
    Request object*, whereas include hands the fragment JSON-marshaled request *data* — a different
    (also-safe) shape, so its assertions don't transfer directly. **freeze/mses/sr1** test the M-SES
    lockdown, which is **shared code** (`ngx_js_tenant_lockdown` runs in both `tenant_ctx` and
-   `comcon_ctx`), so the property holds on include automatically; re-testing via include is bulk
-   probe-rewriting with little added assurance — a P6-gating decision (migrate, or keep a minimal
-   tenant harness for the lockdown probes). Compiled-tier (`faithfulness`, `lowering`) stay for P5.
+   `comcon_ctx`), so the property holds on include automatically.
+   **P6 lockdown-test strategy — DECIDED: migrate the probes to include (2026-09-02).** The
+   alternative (keep a minimal tenant harness just for these tests) keeps a parallel mechanism alive
+   and defeats "one mechanism", so it is rejected. Since the lockdown is shared, the probes transfer
+   with identical results — proven by migrating the two pure-lockdown suites: `t/comcon_include_mses.t`
+   (every dynamic-code escape route — `[].constructor.constructor`, `Object.constructor`, generator/
+   async `.constructor` — stays tamed; curated std JS all works) and `t/comcon_include_freeze.t`
+   (Object/Array/String + the call-only iterator instance-prototypes frozen, pollution writes throw,
+   own-object mutation unaffected). **Remaining:** `comcon_sr1_regression.t` — its reach/escape/close
+   probes (a granted socket's `.listener` in a getter, `socket.close()` denied) map via a live-cap
+   grant; only its **response-framing** probe (dropping a tenant-set `content-length`) is
+   response-contract-specific and folds in with the P2/serve response handling (partly the `req.respond`
+   CRLF fix). `schema_conformance` stays as noted (sealed-Request vs marshaled data).
+   Compiled-tier (`faithfulness`, `lowering`) stay for P5. **Net:** at P6 the M-SES lockdown code
+   stays (used by include); its coverage moves to the `comcon_include_*` probes, and the tenant
+   harness is deleted.
 5. **P5 — compiled tier (G6).** Retarget C5 lowering to `include` fragments. **Gated on SR-2
    faithfulness** (compiled ≡ interpreted) exactly as the tenant path is. This is the crux; it may
    warrant its own increment. Until P5 lands, the tenant path stays for compiled-tier tenants.
