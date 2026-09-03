@@ -275,7 +275,12 @@ A full ES parser is a large, error-prone build; that cost is the reason D5b is g
   expression granularity → `harden(node, "callsites(x)", wrapperQuotation)` rewrites matched sites at
   the source level and rebuilds via D4. This is the real M3 front-end and the only path to residuals
   1–4 above. Large; do not start without an explicit decision that the residual value justifies a
-  parser. Cross-file provenance (POM.md §6 Q3) lands here too.
+  parser. Cross-file provenance (POM.md §6 Q3) lands here too. **Also folded in here (2026-09-03):**
+  the one genuine platform hook the config-language pattern needs — a **sound declarative-profile
+  checker** (`syntax_allowed`: no loops/dynamic/computed access) + normalization to diffable
+  **descriptor tables** — so an operator can *soundly review/diff an untrusted config proposal*, not
+  just validate it at runtime. This is the only part of a config-DSL that is not userland-expressible
+  (see `PATTERN_config_language.md`); the CST built here is what makes it checkable.
 
 **Recommendation.** Increment D's **core is complete at D4b** — a reflective POM with selectors,
 quotations+splices, and coherent live rewrite across workers. **D5a** is a small, high-value add

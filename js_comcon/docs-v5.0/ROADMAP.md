@@ -39,6 +39,17 @@ fallback) → the event dispatcher calls the C function pointer directly.
 
 ## 2. Milestones
 
+- **Config languages — a USERLAND pattern, not a milestone (reframed 2026-09-03).** Briefly scoped
+  as "M-DSL / increment E," then retired on review: a config-DSL is fully expressible with shipped
+  primitives (the reduction principle), so it is **up to operators/devs** — the platform builds
+  nothing new. Operators mint a language by granting a vocabulary + `realize`ing sentences, and
+  handle untrusted config via **propose-don't-hold** (the confined sentence returns a cap-free
+  description; a trusted host apply loop validates + applies it). A `defineLanguage` operator would
+  duplicate `env`+`grant`+`realize` (same reason `includeAt`/`serve` were retired). The single
+  genuine platform hook — **sound declarative-profile review** (`syntax_allowed` + descriptor
+  tables) — folds into **increment D5b** (the CST front-end). Pattern + recipes in
+  **`PATTERN_config_language.md`**.
+
 - **M1 — Perf spike (hand-written C, no compiler). ✅ GATE PASSED 2026-08-16.**
   Hand-wrote the C a compiled "count + tag" policy would become (shm-atomic counter +
   request-header read + two response headers + body) as a static nginx module;
