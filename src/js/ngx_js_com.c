@@ -2957,7 +2957,7 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
 static const char  ngx_js_comcon_bootstrap[] =
     "(function(){"
     "  var C=comcon, ENV='__comconEnv__', METER='__comconMeter__',"
-    "      FACET='__comconFacet__';"
+    "      FACET='__comconFacet__', QUOTE='__comconQuote__';"
     "  C.env=function(){var e={grants:Object.create(null)};"
     "    Object.defineProperty(e,ENV,{value:true});return e;};"
     "  C.grant=function(env,name,cap){"
@@ -2977,6 +2977,43 @@ static const char  ngx_js_comcon_bootstrap[] =
     /* routes(glob): attenuate a granted COM server to a route glob. The
        fragment receives a NginxComFacet (never the stateful server wrapper). */
     "  C.routes=function(glob){return {flavor:'routes',glob:String(glob)};};"
+    /* quote(source): an inert, cap-free DESCRIPTION of a policy/fragment — the
+       quotation half of closure-vs-quotation (FOUNDATION §6). Zero authority: a
+       source string structurally carries no capability, so the cap-free (stone)
+       rule holds trivially. Frozen + marked so realize() can tell a description
+       from a closure (a bound include() result is a closure and is refused).
+       Structured splices + POM-node quotations await POM nodes (increment D). */
+    "  C.quote=function(source){"
+    "    var q={source:String(source)};"
+    "    Object.defineProperty(q,QUOTE,{value:true});"
+    "    return Object.freeze(q);};"
+    /* realize(q, contract, realizerEnv): give a quotation force under the
+       REALIZER's authority — the operator-realizes-a-tenant-proposal path
+       (showcases 46-47). Distinct from bind/include (which use the PRODUCER's
+       env, closure discipline). Least-authority realization (R6): the contract
+       is MANDATORY, and the realization environment is the realizer's grants
+       RESTRICTED to the quotation's declared free-name manifest (contract.
+       imports) — rho_R |^ manifest — so a proposal reviewed as "needs a,b,c"
+       cannot touch anything else the operator's session holds (confused-deputy
+       fix). The existing admit gate then enforces free-names subset of imports,
+       charging E_CAP_UNRESOLVED at the realizer for anything undeclared. */
+    "  C.realize=function(q,contract,renv){"
+    "    if(!q||!q[QUOTE])throw new TypeError("
+    "      'realize: arg0 must be a comcon.quote() description, not a closure');"
+    "    if(!contract||typeof contract!=='object')throw new TypeError("
+    "      'realize: a contract is mandatory (least-authority realization)');"
+    "    if(!renv||!renv[ENV])throw new TypeError("
+    "      'realize: arg2 must be the realizer comcon.env()');"
+    "    var manifest=contract.imports||[],rg=Object.create(null);"
+    "    for(var i=0;i<manifest.length;i++){var n=manifest[i];"
+    "      if(Object.prototype.hasOwnProperty.call(renv.grants,n))"
+    "        rg[n]=renv.grants[n];}"
+    "    var c={grants:rg,imports:manifest};"
+    "    if(contract.meter)c.meter=contract.meter;"
+    "    if(contract.tests)c.tests=contract.tests;"
+    "    if(contract.identity)c.identity=contract.identity;"
+    "    if(contract.checkRequest)c.checkRequest=contract.checkRequest;"
+    "    return C.include(q.source,c);};"
     /* bind(env, source, opts): attach the env over a fragment — the real kernel
        bind, realized by COMPILING the source in the confined compartment under
        the env (you cannot re-bind an already-compiled host closure to a

@@ -553,6 +553,24 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.38 (in place — `realize` + `quote` resolved: the quotation half made real):** the
+closure-vs-quotation split (§6) now has both sides shipped. `comcon.quote(source)` is an inert,
+frozen, **cap-free description** (zero authority — a source string carries no capability, so the
+stone rule holds trivially); `comcon.realize(q, contract, realizerEnv)` gives it force under the
+**realizer's** authority — the operator-realizes-a-tenant-proposal path (showcases 46–47), the
+inverse of `bind`/`include` (which use the *producer's* env, closure discipline). Least-authority
+realization (R6) is enforced: the contract is **mandatory**, and the realization environment is
+`ρ_R ↾ manifest` — the realizer's grants **restricted to the quotation's declared free-name
+manifest** (`contract.imports`) — so a proposal reviewed as "needs a,b,c" can never reach anything
+else the operator's session holds (the confused-deputy fix). `realize` **refuses a closure** as
+arg0 (a bound `include()` result), making the closure/quotation *bit* machine-real; the existing
+`admit` gate enforces free-names ⊆ manifest, charging refusal at the realizer. `t/comcon_realize.t`.
+**Deferred with the reuse-the-primitive fundament: `includeAt` is NOT built** — over a concrete COM
+node it is exactly `loc.handler = realize/include(src, K)` (already works), so a standalone operator
+would duplicate a js_com primitive; its only non-redundant form is query/selector targeting, which
+awaits the POM tree. **Structured `${…}` splices and POM-node quotations** (quote of a *parsed
+subtree*) likewise await POM nodes (increment D).
+
 **v5.37 (in place — `bind` resolved: the env-first spelling of `include`):** `bind` was a
 misnamed metered-closure wrapper (it did not confine — a host closure has already captured its
 env). It is now the real kernel bind: `bind(env, source, opts)` COMPILES the source in the
@@ -563,7 +581,8 @@ through the env's grants + intrinsics — `bind(grant(env(),"x",cap), src, {mete
 coherent and actually enforcing, and unifies it with `include` (the contract-first spelling). The
 dead `__runMetered` helper is removed. `t/comcon_operators.t` (bind compiles + threads args,
 meters a runaway loop, AND confines — the bound fragment cannot reach the host). A standalone
-`bind` over a *parsed POM node* awaits POM nodes (increment D).
+`bind` over a *parsed POM node* awaits POM nodes (increment D). *(v5.38: `realize`/`quote`
+now ship the quotation counterpart of this closure-first `bind` — see above.)*
 
 **v5.36 (in place — `admit`'s test-phase: behavioral admission):** `admit` gains its third phase
 (SPEC §4 `(Γ, φ, T)`): `include(source, {tests})` runs the contract's `tests` — a

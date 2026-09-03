@@ -21,10 +21,28 @@
 >   confinement requires compile-in-env). `bind(grant(env(),"x",cap), src, {meter})` ≡
 >   `include(src, {grants:{x:cap}, meter})`. A standalone `bind` over a *parsed POM node* (as
 >   opposed to source) still awaits POM nodes (increment D).
-> - **Still design (not built):** `includeAt` (§3a — anchors/expose/3-phase link), `realize` +
->   quotations, `policy({...})` as a reified value, and the `rateLimit`/`transform`/`audit`
->   mediate flavors. `meter`'s `gas` unit is forward-declared (only `timeoutMs` maps to the
->   shipped deadline).
+> - **`realize` + `quote` resolved (v5.38):** `comcon.quote(source)` is an inert, frozen,
+>   cap-free **description** (zero authority — the quotation half of closure-vs-quotation);
+>   `comcon.realize(q, contract, realizerEnv)` gives it force under the REALIZER's authority —
+>   the operator-realizes-a-tenant-proposal path (showcases 46–47), distinct from `bind`/`include`
+>   (which use the *producer's* env). Least-authority realization (R6) is enforced: the contract
+>   is **mandatory**, and the realization environment is the realizer's grants **restricted to the
+>   quotation's declared free-name manifest** (`contract.imports`) — `ρ_R ↾ manifest` — so a
+>   proposal reviewed as "needs a,b,c" cannot touch anything else the operator's session holds
+>   (confused-deputy fix); the existing `admit` gate then enforces free-names ⊆ imports, charging
+>   refusal at the realizer. `realize` **refuses a closure** as arg0 (a bound `include()` result),
+>   making the closure/quotation bit real. `t/comcon_realize.t`. **Structured `${…}` splices and
+>   POM-node quotations** (`quote` of a *parsed subtree*, intensional splice sites) await POM nodes
+>   (increment D) — on the source-string substrate a quotation is a whole source string, cap-free
+>   by construction.
+> - **Still design (not built):** `includeAt` (§3a — anchors/expose/3-phase link). **Deferred by
+>   the reuse-the-primitive fundament** ([[feedback-reuse-jscom-primitive]]): over a *concrete* COM
+>   node, `includeAt(loc, src, K)` is exactly `loc.handler = realize/include(src, K)` — which
+>   already works — so a standalone operator would duplicate a js_com primitive. Its only
+>   non-redundant form is **query/selector** targeting ("attach to every location matching a glob"),
+>   which is intensional POM targeting and awaits the POM tree (increment D/E). `policy({...})` as a
+>   reified value, and the `rateLimit`/`transform`/`audit` mediate flavors, remain design.
+>   `meter`'s `gas` unit is forward-declared (only `timeoutMs` maps to the shipped deadline).
 >
 > The rest of this document is retained as the design reference for the shapes.
 
