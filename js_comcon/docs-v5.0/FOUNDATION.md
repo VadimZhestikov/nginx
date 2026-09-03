@@ -553,6 +553,18 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.41 (in place — increment D2: the POM selector language):** `node.query(sel)` — the target
+sub-language (POM.md §6 Q2) over the NodeView subtree, at coarse granularity: `selector := term
+('within' term)*`, `term := factor+` (AND), `factor := module | function | * | name(glob)`, glob
+= exact/prefix/suffix/contains. `A within B` selects nodes matching A that have an ancestor matching
+B — the intensional composition ("functions within module X") that hardening requires. It is a
+value-level DSL interpreted under the handle (no new host grammar — §7's "one policy language"),
+results are NodeViews (a query result is itself quote()-able), and selection is **born-bound (R9)**:
+`query` is a pure function recomputed live on every call, never a snapshot, so when D4 calls it at
+admission a newly admitted node that matches enters already governed. Pure-JS, no engine change.
+`t/comcon_pom_query.t`. Finer selectors (`callsites(fetch)`, span/anchor predicates) extend the
+grammar at D5 when statement/expression nodes exist.
+
 **v5.40 (in place — increment D1: the lazy NodeView surface):** `comcon.pom(fragment)` returns a
 reflective `NodeView` tree over a compiled fragment (module/function granularity) — the read half
 of `POM.md`'s node interface. Fields `kind/id/hash/span/childCount/name`, lazy `children`/`parent`

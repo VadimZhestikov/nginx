@@ -156,8 +156,14 @@ until retired.
    is a lexical scope *inside* a function's bytecode, not a child bytecode object, so it is
    enumerated but synthesized later (from scope opcodes); statement/expression views await the
    full CST (D5). This is the lean answer, confirmed feasible on vendored QuickJS.
-2. **Selector-language grammar** — needs its spec note; same language as policy
-   targeting, also the LSP/query surface. *(D2.)*
+2. **Selector-language grammar** — *(resolved, increment D2, 2026-09-03)* a value-level DSL
+   over the NodeView subtree (interpreted by a library function under the handle — no new host
+   grammar): `selector := term ('within' term)*` · `term := factor+` (AND) · `factor := 'module'
+   | 'function' | '*' | 'name(' glob ')'` · `glob := exact | pre* | *suf | *mid* | *`. `A within
+   B` selects nodes matching A that have an ANCESTOR matching B (intensional composition — the
+   hardening pattern). Matches over self + descendants; recomputed live per call (born-bound, R9).
+   Same language for policy targeting and interactive/LSP use, as required. Finer selectors
+   (`callsites(fetch)`, span/anchor predicates) extend this grammar at D5 when stmt/expr nodes exist.
 3. **Cross-file provenance** — an `include`-spliced fragment gets a synthetic file
    origin; span mapping through includes needs a provenance hop. *(D5.)*
 4. **p_symbol enumeration** — *(resolved, increment D0)* schema **`comcon-pom-1`** (never

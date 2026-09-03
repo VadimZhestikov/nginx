@@ -1,7 +1,8 @@
 # INCREMENT — D: POM nodes (the reflective program tree) — scoping
 
-**Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.40). **D0 ✅** (substrate + p_symbol
-enumeration), **D1 ✅** (lazy read-only NodeView); D2–D5 pending. Follows the operator kernel
+**Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.41). **D0 ✅** (substrate + p_symbol
+enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` selectors); D3–D5
+pending. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -85,10 +86,17 @@ security-critical POM invariants (§4).
   proto-per-call laziness for the millions of **expression** nodes — only needed at D5 granularity;
   `reach(h)`/`ops(h)` handle attenuation — arrives with mediate-flavor redaction hooks.)
 
-- **D2 — `query(sel)` selectors.** The target sub-language (POM.md §6 Q2) at coarse granularity:
-  by kind, name, module, anchor. One language for policy targeting *and* interactive/LSP use. Spec
-  note for the selector grammar. **Gate:** extensional + coarse-intensional selection, born-bound
-  match-set recomputed at admission (R9).
+- **D2 — `query(sel)` selectors.** ✅ DONE (2026-09-03). `node.query(sel)` — a value-level DSL over
+  the NodeView subtree (interpreted under the handle; no new host grammar): `selector := term
+  ('within' term)*` · `term := factor+` (AND) · `factor := 'module' | 'function' | '*' | 'name('
+  glob ')'` · `glob := exact | pre* | *suf | *mid* | *`. `A within B` = nodes matching A with an
+  ANCESTOR matching B (intensional composition — the hardening pattern). Matches self + descendants;
+  results are NodeViews (directly `quote()`-able/navigable). **Born-bound (R9):** query is a pure
+  function recomputed live per call — never a snapshot; D4 will call it at admission time so newly
+  admitted nodes enter already governed. Malformed selectors throw. Pure-JS (bootstrap), no engine
+  change. `t/comcon_pom_query.t` (13). Spec: POM.md §6 Q2 resolved. **Gate met:** extensional +
+  coarse-intensional selection, live recompute. *(Finer selectors — `callsites(fetch)`, span/anchor
+  predicates — extend the grammar at D5 when stmt/expr nodes exist.)*
 
 - **D3 — POM-node quotations + structured splices.** `quote(node)` of a parsed subtree; `${…}`
   splices attached as **stone** (deep-frozen, cap-free) data leaves — structurally injection-immune
