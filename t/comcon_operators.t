@@ -47,7 +47,7 @@ for (var i = 0; i < locs.length; i++) {
         locs[i].handler = function(req) {
             var out = {};
 
-            // env() + grant()
+            // env() + grant(): build a deny-by-default env, place a cap in it
             var e = comcon.env();
             comcon.grant(e, "lookup", { tag: "cap" });
             out.granted = !!(e.grants.lookup && e.grants.lookup.tag === "cap");
@@ -56,18 +56,26 @@ for (var i = 0; i < locs.length; i++) {
             try { comcon.grant({}, "x", 1); out.nonEnvThrew = false; }
             catch (err) { out.nonEnvThrew = true; }
 
-            // bind without a meter runs normally, passing args through
-            var fast = comcon.bind(e, function(a) { return "fast:" + a; });
+            // bind(env, SOURCE) compiles the source in the confined compartment
+            // under the env (the real kernel bind = the env-first spelling of
+            // include, NOT a metered host closure). A fresh grant-free env here.
+            var be = comcon.env();
+            var fast = comcon.bind(be, "function(a){ return 'fast:' + a; }");
             out.fast = fast(7);
 
             // bind WITH a meter bounds a runaway loop (resource confinement)
-            var slow = comcon.bind(e,
-                function() { var x = 0; while (true) { x = (x + 1) | 0; } },
+            var slow = comcon.bind(be,
+                "function(){ var x = 0; while (true) { x = (x + 1) | 0; } }",
                 { meter: comcon.meter({ timeoutMs: 100 }) });
             var t0 = Date.now(), aborted = false;
             try { slow(); } catch (err) { aborted = true; }
             out.aborted = aborted;
             out.dt = Date.now() - t0;
+
+            // bind CONFINES (it is the env-first spelling of include, not a
+            // metered host closure): the bound fragment cannot reach the host.
+            var probe = comcon.bind(be, "function(){ return typeof nginx; }");
+            out.confined = probe({});
 
             req.respond(200, {'content-type': 'application/json'},
                         JSON.stringify(out));
@@ -76,14 +84,15 @@ for (var i = 0; i < locs.length; i++) {
 }
 JS
 
-$t->try_run('no js module')->plan(6);
+$t->try_run('no js module')->plan(7);
 
 my $body = http_get('/ops');
 
 like($body, qr/"granted":true/,        'env()/grant(): capability placed in the env');
 like($body, qr/"nonEnvThrew":true/,    'grant() rejects a non-env first arg');
-like($body, qr/"fast":"fast:7"/,       'bind() without a meter runs and threads args');
+like($body, qr/"fast":"fast:7"/,       'bind(env, source) compiles + threads args');
 like($body, qr/"aborted":true/,        'bind() with a meter aborts a runaway loop');
+like($body, qr/"confined":"undefined"/,'bind() CONFINES: the fragment cannot reach the host (nginx)');
 $body =~ /"dt":(\d+)/;
 my $dt = $1 // 0;
 cmp_ok($dt, '>=', 90, "meter fired at ~the budget (dt=${dt}ms, not early)");

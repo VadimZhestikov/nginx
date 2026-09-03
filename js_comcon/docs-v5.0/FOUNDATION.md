@@ -553,6 +553,18 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.37 (in place — `bind` resolved: the env-first spelling of `include`):** `bind` was a
+misnamed metered-closure wrapper (it did not confine — a host closure has already captured its
+env). It is now the real kernel bind: `bind(env, source, opts)` COMPILES the source in the
+confined compartment under the env (delegating to `include` with `grants` from
+`grant(env(), …)` + `imports`/`meter`/`tests`/`identity` from `opts`), so free names resolve only
+through the env's grants + intrinsics — `bind(grant(env(),"x",cap), src, {meter})` ≡
+`include(src, {grants:{x:cap}, meter})`. This makes the `env`/`grant`/`bind` capability layer
+coherent and actually enforcing, and unifies it with `include` (the contract-first spelling). The
+dead `__runMetered` helper is removed. `t/comcon_operators.t` (bind compiles + threads args,
+meters a runaway loop, AND confines — the bound fragment cannot reach the host). A standalone
+`bind` over a *parsed POM node* awaits POM nodes (increment D).
+
 **v5.36 (in place — `admit`'s test-phase: behavioral admission):** `admit` gains its third phase
 (SPEC §4 `(Γ, φ, T)`): `include(source, {tests})` runs the contract's `tests` — a
 `function(fragment){…}` — against the compiled fragment IN the confined compartment, under the

@@ -14,9 +14,13 @@
 >   `contract = {imports, identity, checkRequest, tests, grants, deps, meter}`), `meter`, `comcon.mode`
 >   (the process policy mode). Handlers are bound via the existing `location.handler`, not a
 >   directive.
-> - **Partial / divergent:** `bind` is currently META-only (a metered call wrapper); the real
->   env-freeze/Meet confinement is performed by `include` (compile-in-restricted-compartment),
->   which subsumes `bind`'s role for the request-handler case.
+> - **`bind` resolved (v5.37):** `bind(env, source, opts)` is now the **env-first spelling of
+>   `include`** — it compiles the source in the confined compartment under the env
+>   (`grants`/`imports`/`meter`/`tests`/`identity` sourced from `grant(env(), …)` + `opts`), the
+>   real kernel bind (you cannot re-bind an already-compiled host closure to a restricted env —
+>   confinement requires compile-in-env). `bind(grant(env(),"x",cap), src, {meter})` ≡
+>   `include(src, {grants:{x:cap}, meter})`. A standalone `bind` over a *parsed POM node* (as
+>   opposed to source) still awaits POM nodes (increment D).
 > - **Still design (not built):** `includeAt` (§3a — anchors/expose/3-phase link), `realize` +
 >   quotations, `policy({...})` as a reified value, and the `rateLimit`/`transform`/`audit`
 >   mediate flavors. `meter`'s `gas` unit is forward-declared (only `timeoutMs` maps to the

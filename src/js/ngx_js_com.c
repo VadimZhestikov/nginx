@@ -2943,103 +2943,16 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 
-/*
- * COMCON M-CFG step 2: comcon.__runMetered(fn, timeoutMs, thisArg, args) —
- * the enforcement primitive behind a bound fragment's `meter` mediation.
- * Runs fn with the worker's per-request deadline tightened to now+timeoutMs
- * for the duration of the call (min with any outer request budget; restored
- * after), so a bound fragment cannot exceed its metered CPU budget — reusing
- * the shipped gas (the interrupt handler + request_deadline_ms). Resource
- * confinement; scope isolation (a confined compartment via `bind`) is a later
- * slice. Called from the JS `bind` wrapper, not directly by fragments.
- */
-static JSValue
-ngx_js_comcon_run_metered(JSContext *ctx, JSValueConst this_val, int argc,
-    JSValueConst *argv)
-{
-    JSValueConst      fn, this_arg, args_arr;
-    JSValue           result, lenv, av[16];
-    ngx_js_conf_t    *jcf;
-    ngx_js_worker_t  *w = NULL;
-    uint32_t          n = 0, i, timeout = 0;
-    uint64_t          old_deadline = 0, now_ms, newd;
-    ngx_uint_t        metered = 0;
-    struct timespec   ts;
-
-    fn = argc > 0 ? argv[0] : JS_UNDEFINED;
-    if (argc > 1) {
-        JS_ToUint32(ctx, &timeout, argv[1]);
-    }
-    this_arg = argc > 2 ? argv[2] : JS_UNDEFINED;
-    args_arr = argc > 3 ? argv[3] : JS_UNDEFINED;
-
-    if (!JS_IsFunction(ctx, fn)) {
-        return JS_ThrowTypeError(ctx, "comcon.__runMetered: arg0 not a function");
-    }
-
-    if (JS_IsObject(args_arr)) {
-        lenv = JS_GetPropertyStr(ctx, args_arr, "length");
-        JS_ToUint32(ctx, &n, lenv);
-        JS_FreeValue(ctx, lenv);
-    }
-    if (n > 16) {
-        n = 16;   /* first slice: bound fragments take a handful of exposed args */
-    }
-    for (i = 0; i < n; i++) {
-        av[i] = JS_GetPropertyUint32(ctx, args_arr, i);
-    }
-
-    if (timeout > 0) {
-        jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
-        w = jcf ? jcf->worker : NULL;
-        if (w != NULL) {
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
-            newd = now_ms + timeout;
-            old_deadline = w->request_deadline_ms;
-            /* min(outer, meter): the tighter CPU budget wins (0 = no outer) */
-            w->request_deadline_ms =
-                (old_deadline != 0 && old_deadline < newd) ? old_deadline : newd;
-            metered = 1;
-        }
-    }
-
-    result = JS_Call(ctx, fn, this_arg, (int) n, (JSValueConst *) av);
-
-    if (metered) {
-        w->request_deadline_ms = old_deadline;    /* restore the outer budget */
-    }
-
-    for (i = 0; i < n; i++) {
-        JS_FreeValue(ctx, av[i]);
-    }
-
-    /*
-     * If the fragment was aborted by ITS meter (the deadline we set has now
-     * passed), convert the engine's interrupt into a clean, catchable error at
-     * the bind boundary — so the host handles a metered abort gracefully
-     * rather than propagating an uncatchable interrupt.
-     */
-    if (metered && JS_IsException(result)) {
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
-        if (now_ms >= newd) {
-            JS_FreeValue(ctx, JS_GetException(ctx));   /* consume the interrupt */
-            return JS_ThrowTypeError(ctx,
-                       "comcon: meter budget exceeded (%u ms)", timeout);
-        }
-    }
-
-    return result;
-}
 
 
 /*
- * COMCON M-CFG step 2: the capability layer — env/grant/mediate/meter/bind —
- * as JS on the `comcon` object. Pure structure + the meter binding to
- * __runMetered above. bind's SCOPE isolation (a confined compartment so free
- * names resolve only through the env) is the next slice; this slice binds the
- * env + enforces the `meter` (resource confinement).
+ * COMCON M-CFG: the capability layer — env/grant/mediate/bind/meter — as JS on
+ * the `comcon` object. `env()` a fresh deny-by-default environment; `grant`
+ * places a held cap into it; `mediate`/`meter` build attenuation membranes; and
+ * `bind(env, source)` is the real kernel bind — it COMPILES the source in the
+ * confined compartment under the env (delegating to `include`), so free names
+ * resolve only through the env's grants + intrinsics. bind is the env-first
+ * spelling of include.
  */
 static const char  ngx_js_comcon_bootstrap[] =
     "(function(){"
@@ -3064,14 +2977,22 @@ static const char  ngx_js_comcon_bootstrap[] =
     /* routes(glob): attenuate a granted COM server to a route glob. The
        fragment receives a NginxComFacet (never the stateful server wrapper). */
     "  C.routes=function(glob){return {flavor:'routes',glob:String(glob)};};"
-    "  C.bind=function(env,fn,opts){"
+    /* bind(env, source, opts): attach the env over a fragment — the real kernel
+       bind, realized by COMPILING the source in the confined compartment under
+       the env (you cannot re-bind an already-compiled host closure to a
+       restricted env; confinement requires compile-in-env). This is the
+       env-first spelling of include: `bind(grant(env(),"x",cap), src, {meter})`
+       ≡ `include(src, {grants:{x:cap}, meter})`. Returns the confined callable. */
+    "  C.bind=function(env,source,opts){"
     "    if(!env||!env[ENV])throw new TypeError('bind: arg0 must be comcon.env()');"
-    "    if(typeof fn!=='function')throw new TypeError('bind: arg1 must be a function');"
     "    opts=opts||{};"
-    "    var ms=(opts.meter&&opts.meter[METER]&&opts.meter[METER].timeoutMs)|0;"
-    "    var bound=function(){"
-    "      return C.__runMetered(fn,ms,this,Array.prototype.slice.call(arguments));};"
-    "    bound.env=env;bound.meterMs=ms;bound.fn=fn;return bound;};"
+    "    var contract={grants:env.grants};"
+    "    if(opts.imports)contract.imports=opts.imports;"
+    "    if(opts.meter)contract.meter=opts.meter;"
+    "    if(opts.tests)contract.tests=opts.tests;"
+    "    if(opts.identity)contract.identity=opts.identity;"
+    "    if(opts.checkRequest)contract.checkRequest=opts.checkRequest;"
+    "    return C.include(String(source),contract);};"
     /* include(source, contract): compile the fragment in the confined
        compartment (own runtime) and hold it there; the returned callable
        marshals arg/result by JSON round-trip in C — no live object crosses.
@@ -3393,9 +3314,6 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 
         JS_SetPropertyStr(ctx, comcon_obj, "admit",
                           JS_NewCFunction(ctx, ngx_js_comcon_admit, "admit", 2));
-        JS_SetPropertyStr(ctx, comcon_obj, "__runMetered",
-                          JS_NewCFunction(ctx, ngx_js_comcon_run_metered,
-                                          "__runMetered", 4));
         JS_SetPropertyStr(ctx, comcon_obj, "__includeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_include_confined,
                                           "__includeConfined", 6));
