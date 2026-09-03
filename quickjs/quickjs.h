@@ -850,6 +850,13 @@ int js_comcon_uses_dynamic_code(JSValueConst func);
 int js_comcon_check_request_fields(JSContext *ctx, JSValueConst func,
                                    char *errbuf, size_t errlen);
 
+/* COMCON increment D0: reflect a compiled fragment as a POM node tree
+ * {kind,name,line0,line1,sourceLen,hash,childCount,children[]} — module/
+ * function granularity from the bytecode tree (POM.md granularity floor).
+ * Diagnostic scaffolding; the lazy NodeView surface lands in D1. Returns
+ * JS_UNDEFINED if func is not a bytecode fragment. */
+JSValue js_comcon_pom_inspect(JSContext *ctx, JSValueConst func);
+
 /* COMCON C5.0-b: server-AOT-compile a confined handler at load (CONFIG_JIT
  * only). Returns 0 on success, -1 if func is not a bytecode function. */
 int js_comcon_aot_compile(JSContext *ctx, JSValueConst func);

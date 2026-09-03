@@ -3364,6 +3364,12 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
            their per-fragment equivalents. */
         JS_SetPropertyStr(ctx, comcon_obj, "mode",
                           JS_NewCFunction(ctx, ngx_js_comcon_op_mode, "mode", 1));
+        /* increment D0 (POM substrate): diagnostic reflector — module/function
+           node tree from a compiled fragment. Replaced by the lazy NodeView in
+           D1. Internal (double-underscore), like __includeConfined. */
+        JS_SetPropertyStr(ctx, comcon_obj, "__pomInspect",
+                          JS_NewCFunction(ctx, ngx_js_comcon_pom_inspect,
+                                          "__pomInspect", 1));
         JS_SetPropertyStr(ctx, global, "comcon", comcon_obj);
 
         /* env/grant/mediate/meter/bind — the capability layer (JS) */

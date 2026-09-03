@@ -1,6 +1,7 @@
 # INCREMENT — D: POM nodes (the reflective program tree) — scoping
 
-**Status:** 📐 SCOPE (2026-09-03, docs at v5.38). Not started. Follows the operator kernel
+**Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.39). **D0 ✅ done** (substrate + p_symbol
+enumeration); D1–D5 pending. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -56,12 +57,18 @@ phase (D5) that carries the marquee *intensional hardening* showcase (§38, "cal
 Each phase is independently shippable, gated on SR-2 + full regression, and preserves the
 security-critical POM invariants (§4).
 
-- **D0 — substrate + `p_symbol` enumeration (GATE).** Decide granularity floor (recommend
-  module/function/block); enumerate node kinds with **stable, versioned** names (FOUNDATION §3,
-  POM.md §6 Q4) so policies survive engine upgrades. Add the `js_comcon_pom_*` C helpers
-  (children, source, span, kind) beside the existing introspection helpers. Deliverable: a design
-  note + the C-side node accessor, no JS surface yet. **Gate:** kinds enumerated, spans stable
-  across a rebuild.
+- **D0 — substrate + `p_symbol` enumeration (GATE).** ✅ DONE (2026-09-03). Granularity floor
+  resolved: **module + function** materialized directly from the bytecode tree (no parser); block
+  is an intra-function scope (enumerated, synthesized later); stmt/expr await the CST (D5).
+  `p_symbol` enumeration resolved: schema **`comcon-pom-1`** (`module=1, function=2, block=3,
+  stmt=4, expr=5`; never renumber, only append) in `quickjs.c` (`NGX_COMCON_POM_*`). Added
+  `js_comcon_pom_inspect` (quickjs.c, beside the free-globals/dynamic-code helpers) — reflects a
+  compiled fragment as a node tree {kind,name,line0,line1,sourceLen,hash,childCount,children[]},
+  content hash = FNV-1a over the source slice (R7 pin). Diagnostic bridge `comcon.__pomInspect`
+  (host, internal); **no lazy NodeView surface yet** — that is D1. `t/comcon_pom_substrate.t`
+  (14): kinds, child tree, spans, hash stability (identical source ⇒ identical hash; changed ⇒
+  different), native-fn ⇒ undefined. **Gate met:** kinds enumerated, spans + hashes stable across
+  rebuilds.
 
 - **D1 — coarse read-only POM.** Lazy `NodeView` wrappers (proto-per-call, mirroring COM):
   `kind / id / hash / span / parent / children[] / name? / text() / quote() / describe()`. Built

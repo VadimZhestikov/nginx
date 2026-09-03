@@ -1660,6 +1660,25 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
 
 
 /*
+ * COMCON increment D0 — POM substrate (diagnostic bridge). Reflects a compiled
+ * fragment (argv[0], a host bytecode function) as a POM node tree at module/
+ * function granularity (POM.md granularity floor). Read-only, no fragment code
+ * runs. The lazy NodeView JS surface (text/quote/describe/query) lands in D1;
+ * this is the thin C bridge that lets the D0 gate assert kinds + span stability.
+ */
+JSValue
+ngx_js_comcon_pom_inspect(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+
+    return js_comcon_pom_inspect(ctx, argv[0]);
+}
+
+
+/*
  * COMCON step-4 (directive retirement): host-JS operators that configure the
  * tenant compartment from the single js_source root script, so the `js_tenant_*`
  * nginx.conf directives can be retired (the fundament: never add directives).

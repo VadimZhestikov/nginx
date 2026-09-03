@@ -150,12 +150,17 @@ until retired.
 
 ## 6. Open questions
 
-1. **Granularity floor** — materialize only module/function/block as first-class C-side
-   nodes; synthesize statement/expression views on demand from spans (lean answer;
-   confirm against selector needs).
+1. **Granularity floor** — *(resolved, increment D0, 2026-09-03)* materialize **module +
+   function** directly from the bytecode tree (each `JSFunctionBytecode` carries its own
+   `debug.source` slice, `pc2line`, and nested-function cpool constants — no parser); **block**
+   is a lexical scope *inside* a function's bytecode, not a child bytecode object, so it is
+   enumerated but synthesized later (from scope opcodes); statement/expression views await the
+   full CST (D5). This is the lean answer, confirmed feasible on vendored QuickJS.
 2. **Selector-language grammar** — needs its spec note; same language as policy
-   targeting, also the LSP/query surface.
+   targeting, also the LSP/query surface. *(D2.)*
 3. **Cross-file provenance** — an `include`-spliced fragment gets a synthetic file
-   origin; span mapping through includes needs a provenance hop.
-4. **p_symbol enumeration** — the stable, versioned naming of node kinds across engine
-   upgrades (carried from v2 §10.2; unchanged in importance).
+   origin; span mapping through includes needs a provenance hop. *(D5.)*
+4. **p_symbol enumeration** — *(resolved, increment D0)* schema **`comcon-pom-1`** (never
+   renumber, only append): `module=1, function=2, block=3, stmt=4, expr=5` (`quickjs.c`,
+   `NGX_COMCON_POM_*`). Kinds 1–2 are materialized in D0; 3–5 are reserved for later synthesis.
+   Stable, versioned naming of node kinds across engine upgrades (carried from v2 §10.2).

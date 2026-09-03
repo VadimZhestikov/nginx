@@ -553,6 +553,19 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.39 (in place — increment D0: the POM substrate):** the reflective Program Object Model
+(§3, `POM.md`) gets its foundation. QuickJS keeps no AST, but each compiled fragment's
+`JSFunctionBytecode` already carries its own source slice, a pc→line table, and its nested
+functions as cpool constants — so the **granularity floor** (module + function) is materialized
+directly from the bytecode tree with **no parser** (`js_comcon_pom_inspect`, `quickjs.c`, beside
+the existing free-globals/dynamic-code helpers). The `p_symbol` enumeration is fixed as schema
+**`comcon-pom-1`** (`module=1, function=2, block=3, stmt=4, expr=5`; never renumber, only append);
+block is an intra-function scope and stmt/expr need the full CST, so 3–5 are enumerated but
+synthesized in later phases (D5). Content identity is FNV-1a over the source slice (R7 pin-by-hash).
+A diagnostic bridge `comcon.__pomInspect` reflects a fragment as a node tree
+{kind,name,span,hash,children} — the lazy `NodeView` JS surface (`text/quote/describe/query`) is
+D1. `t/comcon_pom_substrate.t`. Scope + phases in `INCREMENT_D.md`.
+
 **v5.38 (in place — `realize` + `quote` resolved: the quotation half made real):** the
 closure-vs-quotation split (§6) now has both sides shipped. `comcon.quote(source)` is an inert,
 frozen, **cap-free description** (zero authority — a source string carries no capability, so the

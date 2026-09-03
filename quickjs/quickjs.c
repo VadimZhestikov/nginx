@@ -24451,6 +24451,137 @@ int js_comcon_check_request_fields(JSContext *ctx, JSValueConst func,
     return ret;
 }
 
+/*
+ * COMCON increment D0 — POM (Program Object Model) substrate.
+ *
+ * A reflective, 1:1-with-source tree over a compiled fragment (FOUNDATION §3,
+ * POM.md). QuickJS keeps no persistent AST, but each JSFunctionBytecode already
+ * carries its own source slice (debug.source), a pc->line table, and its nested
+ * FUNCTIONS as FUNCTION_BYTECODE constants in the cpool. So the granularity
+ * FLOOR (POM.md §6 Q1) — module / function — is materialized directly from the
+ * bytecode tree with no parser. BLOCK / STMT / EXPR kinds are enumerated below
+ * (stable, versioned p_symbol ids) but SYNTHESIZED in later phases (D5 needs the
+ * full CST). This D0 accessor is diagnostic scaffolding; the lazy NodeView JS
+ * surface + describe()/query()/quote() land in D1+.
+ *
+ * p_symbol enumeration (schema "comcon-pom-1"): kinds are versioned so a policy
+ * survives engine upgrades. Never renumber; only append.
+ */
+#define NGX_COMCON_POM_SCHEMA "comcon-pom-1"
+enum {
+    NGX_COMCON_POM_MODULE   = 1,  /* materialized in D0 (caller flag)         */
+    NGX_COMCON_POM_FUNCTION = 2,  /* materialized in D0 (FB node)             */
+    NGX_COMCON_POM_BLOCK    = 3,  /* enumerated; synthesized from scopes later */
+    NGX_COMCON_POM_STMT     = 4,  /* enumerated; needs the CST (D5)           */
+    NGX_COMCON_POM_EXPR     = 5   /* enumerated; needs the CST (D5)           */
+};
+
+/* Content hash of a fragment's own source slice (FNV-1a, 64-bit). Content-
+ * stable per R7: policies pin by hash so a silently edited fragment refuses to
+ * be governed by a policy written for the old hash. */
+static uint64_t comcon_pom_hash_fb(JSFunctionBytecode *b)
+{
+    uint64_t h = 1469598103934665603ULL; /* FNV offset basis */
+    int      i;
+
+    if (!b->has_debug || !b->debug.source)
+        return 0;
+    for (i = 0; i < b->debug.source_len; i++) {
+        h ^= (unsigned char) b->debug.source[i];
+        h *= 1099511628211ULL; /* FNV prime */
+    }
+    return h;
+}
+
+/* Build the POM node object for one FunctionBytecode, recursing into nested
+ * functions (cpool FUNCTION_BYTECODE entries) as children. `is_module` marks
+ * the tree root as a module vs an inner function. */
+static JSValue comcon_pom_node(JSContext *ctx, JSFunctionBytecode *b,
+                               int is_module)
+{
+    JSValue     node, children, child;
+    char        namebuf[256];
+    const char *name;
+    int         line0, line1, col, i, nchild;
+
+    node = JS_NewObject(ctx);
+    if (JS_IsException(node))
+        return node;
+
+    JS_SetPropertyStr(ctx, node, "kind",
+        JS_NewInt32(ctx, is_module ? NGX_COMCON_POM_MODULE
+                                   : NGX_COMCON_POM_FUNCTION));
+
+    if (b->func_name == JS_ATOM_NULL) {
+        name = "";
+    } else {
+        name = JS_AtomGetStr(ctx, namebuf, sizeof(namebuf), b->func_name);
+        if (!name)
+            name = "";
+    }
+    JS_SetPropertyStr(ctx, node, "name", JS_NewString(ctx, name));
+
+    /* span: start line/col from pc=0; end line = start + newlines in source. */
+    line0 = find_line_num(ctx, b, 0, &col);
+    if (line0 < 0)
+        line0 = 0;
+    line1 = line0;
+    if (b->has_debug && b->debug.source) {
+        for (i = 0; i < b->debug.source_len; i++)
+            if (b->debug.source[i] == '\n')
+                line1++;
+    }
+    JS_SetPropertyStr(ctx, node, "line0", JS_NewInt32(ctx, line0));
+    JS_SetPropertyStr(ctx, node, "line1", JS_NewInt32(ctx, line1));
+
+    JS_SetPropertyStr(ctx, node, "sourceLen",
+        JS_NewInt32(ctx, (b->has_debug && b->debug.source)
+                          ? b->debug.source_len : 0));
+
+    /* hash as a decimal string (fits any JS number range losslessly as text). */
+    {
+        char     hbuf[24];
+        uint64_t hv = comcon_pom_hash_fb(b);
+        snprintf(hbuf, sizeof(hbuf), "%llu", (unsigned long long) hv);
+        JS_SetPropertyStr(ctx, node, "hash", JS_NewString(ctx, hbuf));
+    }
+
+    /* children: nested FUNCTIONS (cpool FUNCTION_BYTECODE entries). */
+    children = JS_NewArray(ctx);
+    nchild = 0;
+    for (i = 0; i < b->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE) {
+            JSFunctionBytecode *cb = JS_VALUE_GET_PTR(b->cpool[i]);
+            child = comcon_pom_node(ctx, cb, 0);
+            if (JS_IsException(child)) {
+                JS_FreeValue(ctx, children);
+                JS_FreeValue(ctx, node);
+                return child;
+            }
+            JS_SetPropertyUint32(ctx, children, nchild++, child);
+        }
+    }
+    JS_SetPropertyStr(ctx, node, "childCount", JS_NewInt32(ctx, nchild));
+    JS_SetPropertyStr(ctx, node, "children", children);
+
+    return node;
+}
+
+/* D0 diagnostic entry: reflect a compiled fragment as a POM node tree. Returns
+ * JS_UNDEFINED for a non-fragment (e.g. a native function, no bytecode). */
+JSValue js_comcon_pom_inspect(JSContext *ctx, JSValueConst func)
+{
+    JSObject *p;
+
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
+        return JS_UNDEFINED;
+    p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+        return JS_UNDEFINED;
+
+    return comcon_pom_node(ctx, p->u.func.function_bytecode, 1);
+}
+
 static __exception int next_token(JSParseState *s);
 
 static void free_token(JSParseState *s, JSToken *token)
