@@ -55,11 +55,16 @@ var locs = nginx.http.servers[0].locations;
 for (var i = 0; i < locs.length; i++) {
     if (locs[i].path === "/inc") {
         var probe = comcon.include(
-            "function(){ return {" +
-            " nginx: typeof nginx," +
-            " held: typeof granted," +
-            " addr: (granted ? granted.address : 'MISSING')," +
-            " reach: (granted.listener === null ? 'null' : 'obj')" +
+            "function(){" +
+            " var planted = false;" +
+            " try { Object.getPrototypeOf(granted).__evil = 1;" +
+            "       planted = (granted.__evil === 1); } catch (e) {}" +
+            " return {" +
+            "  nginx: typeof nginx," +
+            "  held: typeof granted," +
+            "  addr: (granted ? granted.address : 'MISSING')," +
+            "  reach: (granted.listener === null ? 'null' : 'obj')," +
+            "  planted: planted" +
             " }; }",
             { grants: { granted: sock } });
 
@@ -71,7 +76,7 @@ for (var i = 0; i < locs.length; i++) {
 }
 JS
 
-$t->try_run('no js module')->plan(4);
+$t->try_run('no js module')->plan(5);
 
 my $body = http_get('/inc');
 
@@ -83,3 +88,5 @@ like($body, qr/"addr":"127\.0\.0\.1:/,
      'grant usable: an ungated scalar read (address) works in the fragment');
 like($body, qr/"reach":"null"/,
      'A1 gate isolates: sock.listener is null cross-compartment');
+like($body, qr/"planted":false/,
+     'M-SES-1b: the cap prototype is non-extensible (no cross-fragment pollution)');

@@ -1333,6 +1333,54 @@ ngx_js_tenant_lockdown(JSContext *tctx, JSRuntime *trt, ngx_log_t *log)
 
 
 /*
+ * COMCON M-SES-1b: freeze the capability prototypes a granted fragment/tenant
+ * can reach. ngx_js_com_install_protos() runs AFTER ngx_js_tenant_lockdown's
+ * M-SES-1 freeze and installs the COM/Socket class protos via JS_SetClassProto
+ * (off globalThis, so the M-SES-1 value-walk never reaches them) — they are
+ * unfrozen. A default confined profile cannot reach them (no grant), but a LIVE
+ * grant hands over a cap whose prototype is then reachable
+ * (Object.getPrototypeOf(granted)); without this, one fragment/tenant could
+ * pollute a shared cap prototype and poison another's cap. Grants today are
+ * sockets only (grantToTenant / include both reject non-sockets), so the
+ * reachable surface is the socket family (socket + its listener reach edge).
+ * MUST grow with any new grantable cap kind (COM nodes). NEVER call this for the
+ * regular pilgrim host context — it legitimately mutates COM protos for dynamic
+ * reconfig.
+ *
+ * The hardening is done via the C API — NOT `Object.freeze` in the compartment,
+ * which empirically corrupts the compartment's subsequent parser (a QuickJS
+ * interaction). Each cap proto is made NON-EXTENSIBLE (JS_PreventExtensions):
+ * a fragment cannot PLANT a new property on the shared cap prototype — the
+ * primary cross-fragment pollution vector (a property that persists and is seen
+ * by another fragment's cap). This is deliberately the extensibility subset:
+ * also locking the EXISTING getters non-configurable (to block SHADOWING them
+ * via redefinition) requires either the in-compartment Object.freeze (corrupts
+ * the parser) or a C-side JS_DefineProperty redefine (destabilizes the socket
+ * state — breaks the reach gate). Both are engine-level interactions; closing
+ * the shadowing residual is deferred to an engine-level getter-hardening pass.
+ * MUST grow with any new grantable cap kind. NEVER call this for the regular
+ * pilgrim host context — it legitimately mutates COM protos for reconfig.
+ */
+static void
+ngx_js_comcon_harden_cap_protos(JSContext *ctx)
+{
+    JSValue     proto;
+    ngx_uint_t  i;
+    JSClassID   ids[] = { ngx_js_socket_class_id,
+                          ngx_js_http_listener_class_id,
+                          ngx_js_stream_listener_class_id };
+
+    for (i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
+        proto = JS_GetClassProto(ctx, ids[i]);
+        if (JS_IsObject(proto)) {
+            (void) JS_PreventExtensions(ctx, proto);
+        }
+        JS_FreeValue(ctx, proto);
+    }
+}
+
+
+/*
  * COMCON M-CFG (scope isolation). The confined-fragment compartment mirrors the
  * tenant compartment, on its OWN runtime (jcf->comcon_rt) so JS_FreeRuntime
  * tears it down cleanly — a second context on the host runtime leaked
@@ -1377,6 +1425,11 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
        (e.g. a re-wrapped socket) is usable in the compartment. Mirrors the
        tenant compartment; installed AFTER lockdown, exactly as the tenant. */
     (void) ngx_js_com_install_protos(sctx);
+
+    /* M-SES-1b: freeze the grantable cap prototypes (install_protos runs after
+       the lockdown freeze; without this a granted socket exposes a mutable
+       shared proto — cross-fragment pollution). */
+    ngx_js_comcon_harden_cap_protos(sctx);
 
     jcf->comcon_ctx = sctx;
 
@@ -1706,6 +1759,11 @@ ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
     /* Per-context prototypes for the whole COM class set, so granted (or
      * audit-allowed) objects are usable in the tenant context. */
     (void) ngx_js_com_install_protos(tctx);
+
+    /* NB: M-SES-1b (cap-proto freeze) is applied to the comcon include
+     * compartment, the grant surface this increment adds. The js_tenant_*
+     * grant surface keeps its previously-held M-SES-1b posture (DiD, not a live
+     * hole) and is migrated when js_tenant_* folds into the operators. */
 
     global = JS_GetGlobalObject(tctx);
 

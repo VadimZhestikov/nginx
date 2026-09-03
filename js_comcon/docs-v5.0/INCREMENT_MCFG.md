@@ -157,6 +157,14 @@ the same `admit`; follows the program-fragment operators.
    (`typeof granted → "object"`), an ungated scalar read works (`granted.address` →
    `"127.0.0.1:…"`), and the reach edge is gated (`granted.listener === null` cross-compartment,
    while the host sees the listener). Clean teardown unchanged (own-runtime `JS_FreeRuntime`).
+   **M-SES-1b landed with it (the flagged prerequisite):** a live grant makes the (unfrozen)
+   cap prototype reachable via `Object.getPrototypeOf(granted)`, so
+   `ngx_js_comcon_harden_cap_protos(comcon_ctx)` runs after `install_protos` and makes the socket
+   family protos **non-extensible** — a fragment cannot plant a persistent property on a shared
+   cap proto (`t/comcon_include_grant.t` asserts `"planted":false`). Locking the existing getters
+   non-configurable (shadowing) is deferred to an engine-level getter-hardening pass — both the
+   in-compartment `Object.freeze` and a C `JS_DefineProperty` redefine destabilize the compartment
+   (parser corruption / reach-gate breakage). Detail in `INCREMENT_MSES.md` § M-SES-1b.
    **Still follow-on:** `mediate` membrane enforcement (attenuate/transform/meter a granted cap's
    methods via an interceptor) and grants of *other* cap kinds (COM nodes) — the socket is the
    proven first cap.

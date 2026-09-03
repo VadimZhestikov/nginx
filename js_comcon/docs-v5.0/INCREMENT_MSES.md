@@ -170,6 +170,24 @@ capability object is actually granted, it is deferred and made a **hard prerequi
 grant-model increment**: the first change that hands a tenant any granted COM/Socket
 capability object MUST land `ngx_js_com_freeze_protos` (tenant-only) + the pollution test in
 the same increment.
+
+**Update (2026-09-02): partially LANDED with the first grant surface (comcon `include`
+live-cap grants).** When `comcon.include(source, {grants:{name: sock}})` shipped (a fragment
+that HOLDS a live granted `NginxSocket`, so `Object.getPrototypeOf(granted)` is now reachable),
+`ngx_js_comcon_harden_cap_protos(comcon_ctx)` was added after `install_protos`, over the
+grantable socket family (socket + http/stream listener protos). It makes each cap proto
+**non-extensible** (`JS_PreventExtensions`) — a fragment cannot PLANT a persistent property on
+a shared cap prototype (the primary pollution vector). Verified: `t/comcon_include_grant.t`
+asserts `"planted":false` (a strict-mode `Object.getPrototypeOf(granted).__evil = 1` throws and
+does not stick). **Two things did NOT land and are now the engine-gated residual:** (a) locking
+the EXISTING getters non-configurable to block SHADOWING by redefinition — the in-compartment
+`Object.freeze` corrupts the compartment's parser, and a C-side `JS_DefineProperty` redefine
+destabilizes the socket state (breaks the A1 reach gate / crashes the tenant ctx), so both
+mechanisms are unusable as-is; (b) the **tenant** (`js_tenant_*`) grant surface — the same
+`JS_DefineProperty` freeze crashed the tenant context, so the tenant keeps its prior held
+posture and folds M-SES-1b in when it migrates onto the operators. **Follow-on:** an
+engine-level getter-hardening primitive (freeze a class proto's accessors without the parser /
+socket-state interaction) closes both the shadowing residual and the tenant surface.
 - **M-SES-2 — portal taming + escape-probe gate (= SR-3). DONE (2026-09-01, v5.28).** The
   adversarial pentest of intrinsic/engine escape completeness. **Verdict: no sandbox
   escape** — every dynamic-code route stays tamed (error/bound-fn/`Symbol.species`
