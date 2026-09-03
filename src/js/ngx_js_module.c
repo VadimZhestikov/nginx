@@ -1445,6 +1445,47 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
 }
 
 
+/* CONVERGE P3: load a pinned pure-library dependency into the compartment.
+ * Reads path, verifies its bytes hash to sha256, evaluates it as a bare-global
+ * script (a pure lib reaching for host authority throws — no capability is in
+ * scope), and returns its completion value in *out. Same pin-by-hash guarantee
+ * as ngx_js_load_tenant_deps, but the value is bound as a fragment closure param
+ * (per-fragment) instead of on a shared global. */
+static ngx_int_t
+ngx_js_comcon_eval_dep(JSContext *ctx, ngx_cycle_t *cycle, ngx_str_t *path,
+    const u_char *sha256, JSValue *out, char *reason, size_t rlen)
+{
+    u_char   *src, digest[32];
+    size_t    src_len;
+    JSValue   val;
+
+    src = ngx_js_read_file(cycle, path, &src_len);
+    if (src == NULL) {
+        ngx_snprintf((u_char *) reason, rlen, "cannot read dependency %V%Z",
+                     path);
+        return NGX_ERROR;
+    }
+
+    SHA256(src, src_len, digest);
+    if (ngx_memcmp(digest, sha256, 32) != 0) {
+        ngx_snprintf((u_char *) reason, rlen, "dependency hash mismatch%Z");
+        return NGX_ERROR;
+    }
+
+    val = JS_Eval(ctx, (const char *) src, src_len,
+                  (const char *) path->data, JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(val)) {
+        JS_FreeValue(ctx, val);
+        ngx_snprintf((u_char *) reason, rlen,
+                     "dependency is not a pure library%Z");
+        return NGX_ERROR;
+    }
+
+    *out = val;
+    return NGX_OK;
+}
+
+
 /* comcon.__includeConfined(source) -> handle: compile a fragment (function
  * expression) in the compartment; hold it C-side; return an integer handle. */
 JSValue
@@ -1459,8 +1500,9 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     void           *slot;
     size_t          slen, nlen, total;
     ngx_uint_t      handle;
-    uint32_t        gi, gn, mask;
+    uint32_t        gi, gn, dn, di, idx, mask;
     int32_t         sh;
+    char            depreason[256];
 
     jcf = ngx_js_comcon_jcf;
     if (jcf == NULL) {
@@ -1486,11 +1528,23 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         JS_ToUint32(hctx, &gn, name_v);
         JS_FreeValue(hctx, name_v);
     }
+    /* CONVERGE P3: argv[5] = pinned pure-library deps [{name,path,sha256}].
+       Their names join the wrapper's param list after the grants; their eval'd
+       values are appended to the closure args, so a dep is bound per-fragment. */
+    dn = 0;
+    if (argc > 5 && JS_IsObject(argv[5])) {
+        name_v = JS_GetPropertyStr(hctx, argv[5], "length");
+        JS_ToUint32(hctx, &dn, name_v);
+        JS_FreeValue(hctx, name_v);
+    }
     if (gn > 16) {
         gn = 16;
     }
+    if (gn + dn > 16) {
+        dn = 16 - gn;
+    }
 
-    /* build "(function(<names>){\"use strict\";return(<source>);})" */
+    /* build "(function(<grant names><dep names>){\"use strict\";return(...);})" */
     total = sizeof("(function(){\"use strict\";return();})") + slen;
     for (gi = 0; gi < gn; gi++) {
         name_v = JS_GetPropertyUint32(hctx, argv[1], gi);
@@ -1501,6 +1555,17 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         }
         JS_FreeValue(hctx, name_v);
     }
+    for (di = 0; di < dn; di++) {
+        JSValue dv = JS_GetPropertyUint32(hctx, argv[5], di);
+        name_v = JS_GetPropertyStr(hctx, dv, "name");
+        name = JS_ToCString(hctx, name_v);
+        total += (name ? ngx_strlen(name) : 0) + 1;
+        if (name) {
+            JS_FreeCString(hctx, name);
+        }
+        JS_FreeValue(hctx, name_v);
+        JS_FreeValue(hctx, dv);
+    }
 
     buf = ngx_alloc(total, ngx_cycle->log);
     if (buf == NULL) {
@@ -1508,17 +1573,34 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         return JS_ThrowOutOfMemory(hctx);
     }
     p = ngx_cpymem(buf, "(function(", sizeof("(function(") - 1);
+    idx = 0;
     for (gi = 0; gi < gn; gi++) {
         name_v = JS_GetPropertyUint32(hctx, argv[1], gi);
         name = JS_ToCStringLen(hctx, &nlen, name_v);
         if (name != NULL) {
-            if (gi > 0) {
+            if (idx > 0) {
                 *p++ = ',';
             }
             p = ngx_cpymem(p, name, nlen);
+            idx++;
             JS_FreeCString(hctx, name);
         }
         JS_FreeValue(hctx, name_v);
+    }
+    for (di = 0; di < dn; di++) {
+        JSValue dv = JS_GetPropertyUint32(hctx, argv[5], di);
+        name_v = JS_GetPropertyStr(hctx, dv, "name");
+        name = JS_ToCStringLen(hctx, &nlen, name_v);
+        if (name != NULL) {
+            if (idx > 0) {
+                *p++ = ',';
+            }
+            p = ngx_cpymem(p, name, nlen);
+            idx++;
+            JS_FreeCString(hctx, name);
+        }
+        JS_FreeValue(hctx, name_v);
+        JS_FreeValue(hctx, dv);
     }
     p = ngx_cpymem(p, "){\"use strict\";return(",
                    sizeof("){\"use strict\";return(") - 1);
@@ -1616,8 +1698,81 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                    "comcon.include: grant is not a NginxSocket or NginxServer");
     }
 
-    fn = JS_Call(sctx, outer, JS_UNDEFINED, (int) gn, (JSValueConst *) av);
-    for (gi = 0; gi < gn; gi++) {
+    /* eval each pinned dep in the compartment; append its value to the args */
+    for (di = 0; di < dn; di++) {
+        JSValue      dv, pv, sv;
+        const char  *ps, *ss;
+        size_t       ps_len, ss_len;
+        u_char       sha[32];
+        ngx_str_t    dpath;
+        ngx_uint_t   b;
+        u_char       hi, lo;
+        ngx_int_t    rc;
+
+        dv = JS_GetPropertyUint32(hctx, argv[5], di);
+        pv = JS_GetPropertyStr(hctx, dv, "path");
+        sv = JS_GetPropertyStr(hctx, dv, "sha256");
+        ps = JS_ToCStringLen(hctx, &ps_len, pv);
+        ss = JS_ToCStringLen(hctx, &ss_len, sv);
+
+        rc = NGX_ERROR;
+        depreason[0] = '\0';
+
+        if (ps == NULL || ss == NULL || ss_len != 64) {
+            ngx_snprintf((u_char *) depreason, sizeof(depreason),
+                         "dependency requires {path, sha256(64 hex)}%Z");
+        } else {
+            for (b = 0; b < 32; b++) {
+                hi = (u_char) ss[b * 2];
+                lo = (u_char) ss[b * 2 + 1];
+                hi = (hi >= '0' && hi <= '9') ? hi - '0'
+                   : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+                   : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : 0xff;
+                lo = (lo >= '0' && lo <= '9') ? lo - '0'
+                   : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+                   : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : 0xff;
+                if (hi == 0xff || lo == 0xff) {
+                    break;
+                }
+                sha[b] = (u_char) ((hi << 4) | lo);
+            }
+            if (b < 32) {
+                ngx_snprintf((u_char *) depreason, sizeof(depreason),
+                             "dependency sha256 has invalid hex%Z");
+            } else {
+                dpath.len = ps_len;
+                dpath.data = ngx_pnalloc(ngx_cycle->pool, ps_len + 1);
+                if (dpath.data != NULL) {
+                    ngx_memcpy(dpath.data, ps, ps_len);
+                    dpath.data[ps_len] = '\0';
+                    ngx_cycle_t *cyc = (ngx_cycle_t *) (uintptr_t) ngx_cycle;
+                    if (ngx_conf_full_name(cyc, &dpath, 1) == NGX_OK) {
+                        rc = ngx_js_comcon_eval_dep(sctx, cyc, &dpath, sha,
+                                 &av[gn + di], depreason, sizeof(depreason));
+                    }
+                }
+            }
+        }
+
+        if (ps != NULL) { JS_FreeCString(hctx, ps); }
+        if (ss != NULL) { JS_FreeCString(hctx, ss); }
+        JS_FreeValue(hctx, pv);
+        JS_FreeValue(hctx, sv);
+        JS_FreeValue(hctx, dv);
+
+        if (rc != NGX_OK) {
+            for (b = 0; b < gn + di; b++) {
+                JS_FreeValue(sctx, av[b]);
+            }
+            JS_FreeValue(sctx, outer);
+            return JS_ThrowTypeError(hctx, "comcon.include: %s",
+                                     depreason[0] ? depreason : "dependency load failed");
+        }
+    }
+
+    fn = JS_Call(sctx, outer, JS_UNDEFINED, (int) (gn + dn),
+                 (JSValueConst *) av);
+    for (gi = 0; gi < gn + dn; gi++) {
         JS_FreeValue(sctx, av[gi]);
     }
     JS_FreeValue(sctx, outer);

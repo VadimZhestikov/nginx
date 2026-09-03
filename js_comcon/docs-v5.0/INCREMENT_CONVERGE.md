@@ -42,7 +42,7 @@ compiled tier, and the request contract.
 | **G2** | Identity pin (`js_tenant_artifact`) | `contract.identity`: after admit, compute `H(H(source) ‖ schema)` and refuse on mismatch | S | low |
 | **G3** | Deps (`js_tenant_dependency`) | `contract.deps=[{name,path,sha}]`: load each pinned pure lib in a bare cage, verify hash, bind by name as a **closure param** (same mechanism as grants) | M | med — pure-cage eval in `comcon_rt` |
 | **G4** | Mode (`js_tenant_mode`) | keep `comcon.mode()` **global** (recommended) — the compartment is shared, per-fragment mode needs per-fragment policy state; revisit only if multi-tenant isolation demands it | XS | low |
-| **G5** | Request/response contract | a host-JS helper `comcon.serve(h)` → a `location.handler` function that marshals the request to data, calls `h`, and enforces `{status, headers, body}` + a size cap (moves `js_tenant_handler`'s C contract into host-JS, once) | S | low |
+| **G5** | Request/response contract | **NON-GAP — already js_com.** `location.handler` binds the handler; `req.respond`/`req.json`/`req.text`/`req.html` shape the response; the request→data marshal is a one-object field read. Proven in Option 1 (`t/comcon_operator_handler.t`). No kernel `comcon.serve` — baking it in would grow the kernel for what composition already gives. If the `{status,body}`+cap ergonomics are wanted, ship a **library** snippet (showcase docs), not a `comcon.*` primitive. Body cap is backstopped by the tenant runtime's 64 MB memory limit. | — | — |
 | **G6** | **Compiled tier (C5)** | lower an `include` fragment to native C like the tenant `onRequest` handler — the fragment is already a pure `req→{status,body}` function, the ideal lowering shape | **L** | **high** — the C5 entry is wired to `eval_tenant_sources`/`tenant_request_handler`; retargeting to `comcon_ctx` fragments is the hard part |
 | **G7** | Test migration | port the tenant-based `comcon_*.t` (source/handler/deps/artifact/admission/lowering/faithfulness) to `include + location.handler`; keep both green during the transition | L | med — many files; do file-by-file |
 
@@ -59,11 +59,20 @@ compiled tier, and the request contract.
    is admitted, an ungranted free name (`nginx`) is refused (unless listed in `imports`), `eval` is
    refused, a correct identity pin admits, a wrong one refuses. The `admit` operator + all existing
    include tests stay green (the refactor preserved its exact reject messages).
-2. **P2 — the serve helper (G5).** `comcon.serve(h)` — the ergonomic `location.handler` wrapper
-   with the `{status,headers,body}` + size-cap contract. Re-express `t/comcon_operator_handler.t`
-   through it. *After P2, request serving is one line and contract-checked.*
-3. **P3 — deps (G3).** `contract.deps` pinned pure libs as closure params. Port
-   `comcon_dependency` semantics onto `include`; keep `comcon.dependency()` as sugar.
+2. **P2 — serve helper (G5). ✅ RESOLVED as a NON-GAP (2026-09-02).** Request/response is already
+   js_com (`location.handler` + `req.respond`/`req.json`/…), proven in Option 1. No kernel
+   `comcon.serve` — reuse the existing primitive per the recursive-inclusion fundament
+   ([[feedback-reuse-jscom-primitive]]). An optional library snippet may ship in the showcase docs.
+3. **P3 — deps (G3). ✅ LANDED (2026-09-02).** `include`'s `contract.deps = [{name, path,
+   sha256}]` loads pinned pure libraries onto the include primitive.
+   `ngx_js_comcon_eval_dep(ctx, cycle, path, sha256, out, …)` reads the file, verifies its bytes
+   hash to the pin, evaluates it as a bare-global pure script (a lib reaching for host authority
+   throws), and its completion value is bound as a **per-fragment closure param** (the dep names
+   join the wrapper's param list after the grants; the eval'd values join the closure args) — not
+   on a shared global, so deps don't leak across fragments. **Verified**
+   (`t/comcon_include_deps.t`; comcon 35/271): a pinned lib (`lib.greet(...)`) is bound and usable
+   in the fragment, and a hijacked update (hash mismatch) refuses the include. Since deps are
+   closure params, admission (P1) auto-excludes them from the free-name check, exactly like grants.
 4. **P4 — migrate `comcon_*.t` (G7).** File-by-file, tenant form → `include + serve`. The old
    directives/tenant path still work throughout (nothing removed yet).
 5. **P5 — compiled tier (G6).** Retarget C5 lowering to `include` fragments. **Gated on SR-2

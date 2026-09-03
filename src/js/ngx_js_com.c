@@ -3104,7 +3104,13 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      admit={imports:contract.imports||[],"
     "             checkRequest:!!contract.checkRequest,"
     "             identity:contract.identity};}"
-    "    var h=C.__includeConfined(String(source),names,caps,pols,admit);"
+    /* P3 (CONVERGE): pinned pure-library deps, bound as fragment closure
+       params (per-fragment) — retires js_tenant_dependency onto include. */
+    "    var deps=[];"
+    "    if(contract.deps){for(var di=0;di<contract.deps.length;di++){"
+    "      var d=contract.deps[di];deps.push({name:String(d.name),"
+    "        path:String(d.path),sha256:String(d.sha256)});}}"
+    "    var h=C.__includeConfined(String(source),names,caps,pols,admit,deps);"
     "    var ms=(contract.meter&&contract.meter[METER]"
     "            &&contract.meter[METER].timeoutMs)|0;"
     "    var bound=function(arg){return C.__invokeConfined(h,arg,ms);};"
@@ -3385,7 +3391,7 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                                           "__runMetered", 4));
         JS_SetPropertyStr(ctx, comcon_obj, "__includeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_include_confined,
-                                          "__includeConfined", 5));
+                                          "__includeConfined", 6));
         JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
                                           "__invokeConfined", 3));
