@@ -3353,6 +3353,12 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
                                           "__invokeConfined", 3));
+        /* directive-retirement operators (retire js_tenant_mode/js_tenant_source) */
+        JS_SetPropertyStr(ctx, comcon_obj, "mode",
+                          JS_NewCFunction(ctx, ngx_js_comcon_op_mode, "mode", 1));
+        JS_SetPropertyStr(ctx, comcon_obj, "tenant",
+                          JS_NewCFunction(ctx, ngx_js_comcon_op_tenant,
+                                          "tenant", 1));
         JS_SetPropertyStr(ctx, global, "comcon", comcon_obj);
 
         /* env/grant/mediate/meter/bind — the capability layer (JS) */

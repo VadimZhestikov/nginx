@@ -1749,6 +1749,95 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
 }
 
 
+/*
+ * COMCON step-4 (directive retirement): host-JS operators that configure the
+ * tenant compartment from the single js_source root script, so the `js_tenant_*`
+ * nginx.conf directives can be retired (the fundament: never add directives).
+ * They run during host eval (init_conf), BEFORE ngx_js_eval_tenant_sources and
+ * (after the reorder) before ngx_js_compartment_policy_init, populating the same
+ * jcf fields the directives set — so behavior is identical.
+ */
+
+/* comcon.mode("enforce"|"audit"|"learn") — retires js_tenant_mode. */
+JSValue
+ngx_js_comcon_op_mode(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_conf_t  *jcf = ngx_js_comcon_jcf;
+    const char     *m;
+
+    if (jcf == NULL) {
+        return JS_ThrowInternalError(ctx, "comcon.mode: no conf");
+    }
+
+    m = JS_ToCString(ctx, argv[0]);
+    if (m == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_strcmp(m, "enforce") == 0) {
+        jcf->tenant_mode = NGX_JS_TENANT_ENFORCE;
+    } else if (ngx_strcmp(m, "audit") == 0) {
+        jcf->tenant_mode = NGX_JS_TENANT_AUDIT;
+    } else if (ngx_strcmp(m, "learn") == 0) {
+        jcf->tenant_mode = NGX_JS_TENANT_LEARN;
+    } else {
+        JS_FreeCString(ctx, m);
+        return JS_ThrowTypeError(ctx,
+            "comcon.mode: expected \"enforce\", \"audit\" or \"learn\"");
+    }
+
+    JS_FreeCString(ctx, m);
+    return JS_UNDEFINED;
+}
+
+
+/* comcon.tenant(path) — retires js_tenant_source. Registers a tenant source
+   file (resolved against the conf prefix, like the directive) for the tenant
+   eval that follows this host eval in init_conf. */
+JSValue
+ngx_js_comcon_op_tenant(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_conf_t  *jcf = ngx_js_comcon_jcf;
+    ngx_cycle_t    *cycle = JS_GetContextOpaque(ctx);
+    const char     *s;
+    size_t          len;
+    ngx_str_t      *path;
+    u_char         *data;
+
+    if (jcf == NULL || cycle == NULL) {
+        return JS_ThrowInternalError(ctx, "comcon.tenant: no conf");
+    }
+
+    s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (s == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    data = ngx_pnalloc(cycle->pool, len);
+    if (data == NULL) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memcpy(data, s, len);
+    JS_FreeCString(ctx, s);
+
+    path = ngx_array_push(&jcf->tenant_sources);
+    if (path == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    path->data = data;
+    path->len = len;
+
+    if (ngx_conf_full_name(cycle, path, 1) != NGX_OK) {
+        return JS_ThrowInternalError(ctx, "comcon.tenant: cannot resolve path");
+    }
+
+    return JS_UNDEFINED;
+}
+
+
 static ngx_int_t
 ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 {
@@ -2042,11 +2131,6 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
         return NGX_CONF_OK;    /* nothing to do — pure static config */
     }
 
-    /* COMCON A4: fresh denial counters + this cycle's audit/enforce mode
-     * (before any eval, so config-time gate events follow the mode too;
-     * workers inherit the post-init state by fork). */
-    ngx_js_compartment_policy_init((ngx_js_tenant_mode_e) jcf->tenant_mode);
-
     /* ---- Create the master QuickJS runtime ---- */
 
     jcf->rt = JS_NewRuntime();
@@ -2121,6 +2205,14 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
             goto failed_ctx;
         }
     }
+
+    /* COMCON A4: fresh denial counters + this cycle's audit/enforce mode.
+     * Runs AFTER the host eval (so comcon.mode() in the root script takes
+     * effect — directive retirement) but BEFORE any tenant eval, which is the
+     * only eval that gates. The host eval is HOST_ROOT and produces no gate
+     * events, so nothing is missed by deferring past it. Workers inherit the
+     * post-init state by fork. */
+    ngx_js_compartment_policy_init((ngx_js_tenant_mode_e) jcf->tenant_mode);
 
     /* COMCON A2.0: tenant scripts, in reduced deny-by-default compartments. */
     if (ngx_js_eval_tenant_sources(jcf, cycle) != NGX_OK) {

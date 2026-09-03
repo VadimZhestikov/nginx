@@ -224,6 +224,22 @@ the same `admit`; follows the program-fragment operators.
    node kinds (upstreams/peers).
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
+   **🔨 IN PROGRESS — the host-JS operator surface + parity landed (2026-09-02).** The retirement
+   mechanism is proven for the two core directives: `comcon.mode("enforce"|"audit"|"learn")`
+   (retires `js_tenant_mode`) and `comcon.tenant(path)` (retires `js_tenant_source`), both C
+   functions on the `comcon` object that run during the **host eval** and populate the *same*
+   `jcf` fields the directives set (`jcf->tenant_mode`, `jcf->tenant_sources`). Feasible because
+   `init_conf` order is host-sources eval → tenant eval: a root-script operator runs before the
+   tenant compartment is built. One reorder was needed — `ngx_js_compartment_policy_init` moved
+   from *before* host eval to *between* host eval and tenant eval, so `comcon.mode()` takes
+   effect (safe: the host eval is HOST_ROOT and emits no gate events). **Verified**
+   (`t/comcon_operator_tenant.t`; comcon 30/245): a tenant configured with **only** `js_source`
+   + `comcon.mode('audit')` + `comcon.tenant('tenant.js')` — **no `js_tenant_*` directives** —
+   runs confined (`typeof nginx → "undefined"`) with audit mode active (a granted socket's reach
+   edge is log-and-allowed, not enforce-gated). The directives still work unchanged (they set
+   the same fields), so the whole existing tenant suite stays green. **Still to retire:**
+   `js_tenant_dependency` → `comcon.dependency(name,path,sha)`, `js_tenant_artifact`, and
+   `js_tenant_handler` (the per-request binding); then migrate `comcon_*.t` and remove.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.
 6. **Remove the directives.**
 

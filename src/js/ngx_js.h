@@ -426,6 +426,10 @@ JSValue ngx_js_comcon_include_confined(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_invoke_confined(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
+JSValue ngx_js_comcon_op_mode(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
+JSValue ngx_js_comcon_op_tenant(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
 
 
 /* COM initialisation — installs nginx.* into ctx's global object */
