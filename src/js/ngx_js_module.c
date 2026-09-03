@@ -1458,7 +1458,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     void           *slot;
     size_t          slen, nlen, total;
     ngx_uint_t      handle;
-    uint32_t        gi, gn;
+    uint32_t        gi, gn, mask;
     int32_t         sh;
 
     jcf = ngx_js_comcon_jcf;
@@ -1523,6 +1523,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                    sizeof("){\"use strict\";return(") - 1);
     p = ngx_cpymem(p, source, slen);
     p = ngx_cpymem(p, ");})", sizeof(");})") - 1);
+    *p = '\0';                    /* JS_Eval requires a NUL-terminated buffer */
     JS_FreeCString(hctx, source);
 
     outer = JS_Eval(sctx, (const char *) buf, p - buf, "<comcon-fragment>",
@@ -1541,7 +1542,9 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         return thrown;
     }
 
-    /* re-wrap each granted socket into the compartment and apply the closure */
+    /* re-wrap each granted socket into the compartment and apply the closure.
+       argv[3] (optional) is a parallel array of mediate field masks: a clear
+       bit hides that field (redact/allow), realizing the membrane in C. */
     for (gi = 0; gi < gn; gi++) {
         name_v = JS_GetPropertyUint32(hctx, argv[2], gi);   /* the host socket */
         sh = ngx_js_socket_handle(name_v);
@@ -1554,7 +1557,15 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             return JS_ThrowTypeError(hctx,
                        "comcon.include: grant is not a NginxSocket");
         }
-        av[gi] = ngx_js_socket_wrap(sctx, (uint32_t) sh);
+
+        mask = NGX_JS_SOCKET_MASK_ALL;
+        if (argc > 3 && JS_IsObject(argv[3])) {
+            name_v = JS_GetPropertyUint32(hctx, argv[3], gi);
+            JS_ToUint32(hctx, &mask, name_v);
+            JS_FreeValue(hctx, name_v);
+        }
+
+        av[gi] = ngx_js_socket_wrap_masked(sctx, (uint32_t) sh, mask);
     }
 
     fn = JS_Call(sctx, outer, JS_UNDEFINED, (int) gn, (JSValueConst *) av);

@@ -58,6 +58,7 @@ ngx_js_socket_owner(uint32_t handle)
 
 typedef struct {
     uint32_t  handle;   /* index into ngx_js_socket_reg[] */
+    uint32_t  mask;     /* COMCON mediate: allowed fields, bit==magic (see get) */
 } ngx_js_socket_opaque_t;
 
 
@@ -107,6 +108,15 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
     op = JS_GetOpaque2(ctx, this_val, ngx_js_socket_class_id);
     if (!op) {
         return JS_EXCEPTION;
+    }
+
+    /*
+     * COMCON mediate: a redacted field (mask bit clear for this magic) reads as
+     * undefined — the membrane hides it. Attenuation-only: a mask can only
+     * remove authority a wrapper already had (A(cap′) ⊆ A(cap)).
+     */
+    if (magic >= 0 && magic < 32 && !(op->mask & (1u << magic))) {
+        return JS_UNDEFINED;
     }
 
     if (op->handle >= NGX_JS_SOCKET_REG_MAX
@@ -328,6 +338,18 @@ ngx_js_socket_install_proto(JSContext *ctx)
 JSValue
 ngx_js_socket_wrap(JSContext *ctx, uint32_t handle)
 {
+    return ngx_js_socket_wrap_masked(ctx, handle, NGX_JS_SOCKET_MASK_ALL);
+}
+
+
+/*
+ * COMCON mediate: wrap a socket with a field mask (bit index == getter magic:
+ * 0 address, 1 port, 2 fd, 3 listener). A clear bit hides that field
+ * (reads undefined). Attenuation-only — a membrane never adds authority.
+ */
+JSValue
+ngx_js_socket_wrap_masked(JSContext *ctx, uint32_t handle, uint32_t mask)
+{
     JSValue                  obj;
     ngx_js_socket_opaque_t  *op;
 
@@ -337,6 +359,7 @@ ngx_js_socket_wrap(JSContext *ctx, uint32_t handle)
     }
 
     op->handle = handle;
+    op->mask = mask;
 
     obj = JS_NewObjectClass(ctx, ngx_js_socket_class_id);
     if (JS_IsException(obj)) {

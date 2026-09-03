@@ -165,9 +165,27 @@ the same `admit`; follows the program-fragment operators.
    non-configurable (shadowing) is deferred to an engine-level getter-hardening pass — both the
    in-compartment `Object.freeze` and a C `JS_DefineProperty` redefine destabilize the compartment
    (parser corruption / reach-gate breakage). Detail in `INCREMENT_MSES.md` § M-SES-1b.
-   **Still follow-on:** `mediate` membrane enforcement (attenuate/transform/meter a granted cap's
-   methods via an interceptor) and grants of *other* cap kinds (COM nodes) — the socket is the
-   proven first cap.
+   **Still follow-on:** grants of *other* cap kinds (COM nodes) — the socket is the proven
+   first cap.
+   **✅ `mediate` MEMBRANE ENFORCEMENT — LANDED (2026-09-02).** `mediate(cap, interceptor)` is
+   now enforced for a granted socket as an **attenuation-only field membrane** (`A(cap′) ⊆
+   A(cap)`), realized in C — no cross-realm object. The socket wrapper carries a per-wrapper
+   field **mask** (`ngx_js_socket_opaque_t.mask`, bit index == getter magic:
+   0 address/1 port/2 fd/3 listener); a redacted field's getter returns `undefined`
+   (`ngx_js_socket_wrap_masked`; the default `ngx_js_socket_wrap` sets `MASK_ALL`, so every
+   existing socket is unchanged). Interceptor library in the bootstrap: `comcon.revoke()`
+   (narrow to zero — the grant is withheld, name `undefined` in the fragment), `comcon.redact
+   ([fields])` (hide the listed fields), `comcon.allow([fields])` (expose *only* the listed
+   fields). `include`'s grant loop unwraps a mediated grant (`v[FACET]`) into `(cap, mask)` and
+   passes a parallel `masks[]` to `__includeConfined(source, names, caps, masks)`, which wraps
+   each granted socket with its mask. **Verified** (`t/comcon_mediate.t`; comcon 27/223):
+   `allow(['port'])` → the fragment reads `port` but `s.address` is `undefined`; `redact
+   (['address'])` → `address` hidden, `port` still readable; `revoke()` → `typeof s ===
+   "undefined"`. Also fixed a **latent bug in the live-cap-grant wrapper**: the
+   `(function(<names>){…})` buffer was not NUL-terminated, which `JS_Eval` requires — short
+   fragments survived, longer ones hit a garbage byte (parse error). **Still follow-on:**
+   `mediate` for COM-node caps (method-level `routes`/`rateLimit`), and `transform`/`audit`
+   flavors.
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.

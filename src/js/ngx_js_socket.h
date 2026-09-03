@@ -96,5 +96,16 @@ uint32_t   ngx_js_socket_get_handle(JSValueConst sock);
  */
 JSValue    ngx_js_socket_wrap(JSContext *ctx, uint32_t handle);
 
+/* full authority over every field — the default for a non-mediated wrapper */
+#define NGX_JS_SOCKET_MASK_ALL  0xffffffffu
+
+/*
+ * COMCON mediate: wrap a socket with a field mask (bit index == getter magic:
+ * 0 address, 1 port, 2 fd, 3 listener). A clear bit hides that field (reads
+ * undefined) — an attenuation-only membrane over the granted cap.
+ */
+JSValue    ngx_js_socket_wrap_masked(JSContext *ctx, uint32_t handle,
+               uint32_t mask);
+
 
 #endif /* _NGX_JS_SOCKET_H_INCLUDED_ */

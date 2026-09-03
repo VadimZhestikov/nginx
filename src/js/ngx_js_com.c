@@ -3019,6 +3019,14 @@ static const char  ngx_js_comcon_bootstrap[] =
     "  C.meter=function(opts){var m={};m[METER]=opts||{};return m;};"
     "  C.mediate=function(cap,interceptor){var f={};"
     "    f[FACET]={cap:cap,interceptor:interceptor};return f;};"
+    /* interceptor library — attenuation-only membranes over a cap. For a
+       NginxSocket the fields are address/port/fd/listener; the membrane is
+       realized as a C-side field mask on the re-wrapped cap. */
+    "  C.revoke=function(){return {flavor:'revoke'};};"
+    "  C.redact=function(fields){"
+    "    return {flavor:'redact',fields:fields||[]};};"
+    "  C.allow=function(fields){"
+    "    return {flavor:'allow',fields:fields||[]};};"
     "  C.bind=function(env,fn,opts){"
     "    if(!env||!env[ENV])throw new TypeError('bind: arg0 must be comcon.env()');"
     "    if(typeof fn!=='function')throw new TypeError('bind: arg1 must be a function');"
@@ -3036,10 +3044,18 @@ static const char  ngx_js_comcon_bootstrap[] =
        of that name (attenuation-only: the cap stays reach-gated). */
     "  C.include=function(source,contract){"
     "    contract=contract||{};"
-    "    var g=contract.grants||{},names=[],caps=[];"
+    "    var FM={address:1,port:2,fd:4,listener:8},FULL=15;"
+    "    var g=contract.grants||{},names=[],caps=[],masks=[];"
     "    for(var k in g){if(Object.prototype.hasOwnProperty.call(g,k)){"
-    "      names.push(String(k));caps.push(g[k]);}}"
-    "    var h=C.__includeConfined(String(source),names,caps);"
+    "      var v=g[k],cap=v,mask=FULL;"
+    "      if(v&&v[FACET]){var it=v[FACET].interceptor||{};cap=v[FACET].cap;"
+    "        if(it.flavor==='revoke')continue;"       /* narrow to zero: withhold */
+    "        if(it.flavor==='allow'){mask=0;"
+    "          (it.fields||[]).forEach(function(f){mask|=(FM[f]||0);});}"
+    "        else if(it.flavor==='redact'){"
+    "          (it.fields||[]).forEach(function(f){mask&=~(FM[f]||0);});}}"
+    "      names.push(String(k));caps.push(cap);masks.push(mask>>>0);}}"
+    "    var h=C.__includeConfined(String(source),names,caps,masks);"
     "    var ms=(contract.meter&&contract.meter[METER]"
     "            &&contract.meter[METER].timeoutMs)|0;"
     "    var bound=function(arg){return C.__invokeConfined(h,arg,ms);};"
@@ -3320,7 +3336,7 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                                           "__runMetered", 4));
         JS_SetPropertyStr(ctx, comcon_obj, "__includeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_include_confined,
-                                          "__includeConfined", 3));
+                                          "__includeConfined", 4));
         JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
                                           "__invokeConfined", 3));
