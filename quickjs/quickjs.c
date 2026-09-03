@@ -24665,6 +24665,167 @@ JSValue js_comcon_pom_node_at(JSContext *ctx, JSValueConst func,
     return node;
 }
 
+/*
+ * COMCON increment D5a — call-site enumeration from bytecode (no parser).
+ *
+ * Scans a fragment's bytecode for REFERENCES to a named target and marks which
+ * are CALL sites, tracking the operand stack so a callee load is correlated
+ * exactly with its OP_call* (the callee sits below its args). Two reference
+ * kinds: a free name (OP_get_var_ref -> closure_var[idx].var_name) and a method
+ * name (OP_get_field/get_field2 atom). Locally-bound callees (OP_get_loc) are
+ * out of scope — they need the CST (D5b). Each record: {name, line, method,
+ * call}. Recurses into nested functions. This is the audit/query READ side of
+ * SHOWCASE §38; the ENFORCEMENT side is the capability kernel (mediate a grant).
+ */
+static void comcon_pom_scan_fb(JSContext *ctx, JSFunctionBytecode *b,
+                               const char *name, JSValue arr, uint32_t *n)
+{
+    const uint8_t *bc = b->byte_code_buf;
+    int            len = b->byte_code_len, pc = 0, i;
+    int            depth = 0, maxd = (int) b->stack_size + 8;
+    int           *slot;
+
+    slot = js_malloc_rt(JS_GetRuntime(ctx), sizeof(int) * (size_t) maxd);
+    if (slot == NULL) {
+        return;
+    }
+    for (i = 0; i < maxd; i++) {
+        slot[i] = -1;
+    }
+
+    while (pc < len) {
+        int      op = bc[pc];
+        int      sz = short_opcode_info(op).size;
+        int      npop, npush, extra = 0, is_call = 0, argc = 0;
+        JSAtom   at = JS_ATOM_NULL;
+        int      method = 0, k;
+
+        if (sz == 0) {
+            break;
+        }
+
+        /* classify calls (variadic argc via u16 operand, or fixed via opcode) */
+        switch (op) {
+        case OP_call: case OP_call_method:
+        case OP_tail_call: case OP_tail_call_method:
+            is_call = 1; argc = get_u16(bc + pc + 1); break;
+        case OP_call0: is_call = 1; argc = 0; break;
+        case OP_call1: is_call = 1; argc = 1; break;
+        case OP_call2: is_call = 1; argc = 2; break;
+        case OP_call3: is_call = 1; argc = 3; break;
+        default: break;
+        }
+
+        if (is_call) {
+            int cs = depth - argc - 1;    /* callee sits below its args */
+            if (cs >= 0 && cs < maxd && slot[cs] >= 0) {
+                JSValue rec = JS_GetPropertyUint32(ctx, arr, (uint32_t) slot[cs]);
+                JS_SetPropertyStr(ctx, rec, "call", JS_NewBool(ctx, 1));
+                JS_FreeValue(ctx, rec);
+            }
+        }
+
+        /* stack effect: pops (n_pop + variadic extra), then pushes */
+        npop  = short_opcode_info(op).n_pop;
+        npush = short_opcode_info(op).n_push;
+        switch (op) {
+        case OP_call: case OP_call_method:
+        case OP_tail_call: case OP_tail_call_method:
+        case OP_call_constructor: case OP_array_from:
+            extra = get_u16(bc + pc + 1); break;
+        case OP_call0: extra = 0; break;
+        case OP_call1: extra = 1; break;
+        case OP_call2: extra = 2; break;
+        case OP_call3: extra = 3; break;
+        default: break;
+        }
+
+        for (k = 0; k < npop + extra; k++) {
+            int s = depth - 1 - k;
+            if (s >= 0 && s < maxd) slot[s] = -1;
+        }
+        depth -= npop + extra;
+        if (depth < 0) depth = 0;
+
+        /* which named value (if any) does this op push? */
+        switch (op) {
+        case OP_get_var_ref:
+        case OP_get_var:                 /* free global — u16 closure_var index */
+        case OP_get_var_undef: {
+            uint32_t idx = get_u16(bc + pc + 1);
+            if (idx < (uint32_t) b->closure_var_count)
+                at = b->closure_var[idx].var_name;
+            break; }
+        case OP_get_var_ref0: case OP_get_var_ref1:
+        case OP_get_var_ref2: case OP_get_var_ref3: {
+            uint32_t idx = (uint32_t) (op - OP_get_var_ref0);
+            if (idx < (uint32_t) b->closure_var_count)
+                at = b->closure_var[idx].var_name;
+            break; }
+        case OP_get_field: case OP_get_field2:
+            at = get_u32(bc + pc + 1); method = 1; break;
+        default: break;
+        }
+
+        for (k = 0; k < npush; k++) {
+            int s = depth + k;
+            if (s >= 0 && s < maxd) slot[s] = -1;
+        }
+
+        if (at != JS_ATOM_NULL) {
+            const char *s = JS_AtomToCString(ctx, at);
+            if (s != NULL && strcmp(s, name) == 0) {
+                int     col, line = find_line_num(ctx, b, (uint32_t) pc, &col);
+                JSValue rec = JS_NewObject(ctx);
+                int     top = depth + npush - 1;
+
+                if (line < 0) line = 0;
+                JS_SetPropertyStr(ctx, rec, "name", JS_NewString(ctx, name));
+                JS_SetPropertyStr(ctx, rec, "line", JS_NewInt32(ctx, line));
+                JS_SetPropertyStr(ctx, rec, "method", JS_NewBool(ctx, method));
+                JS_SetPropertyStr(ctx, rec, "call", JS_NewBool(ctx, 0));
+                JS_SetPropertyUint32(ctx, arr, *n, rec);
+                if (top >= 0 && top < maxd) slot[top] = (int) *n;
+                (*n)++;
+            }
+            if (s != NULL) JS_FreeCString(ctx, s);
+        }
+
+        depth += npush;
+        pc += sz;
+    }
+
+    js_free_rt(JS_GetRuntime(ctx), slot);
+
+    for (i = 0; i < b->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+            comcon_pom_scan_fb(ctx, JS_VALUE_GET_PTR(b->cpool[i]), name, arr, n);
+    }
+}
+
+/* D5a entry: enumerate references/call-sites of `name` across a fragment (the
+ * whole subtree). Returns an array of {name, line, method, call} records, or
+ * JS_UNDEFINED if func is not a fragment. */
+JSValue js_comcon_pom_callsites(JSContext *ctx, JSValueConst func,
+                                const char *name)
+{
+    JSObject *p;
+    JSValue   arr;
+    uint32_t  n = 0;
+
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
+        return JS_UNDEFINED;
+    p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+        return JS_UNDEFINED;
+
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr))
+        return arr;
+    comcon_pom_scan_fb(ctx, p->u.func.function_bytecode, name, arr, &n);
+    return arr;
+}
+
 static __exception int next_token(JSParseState *s);
 
 static void free_token(JSParseState *s, JSToken *token)

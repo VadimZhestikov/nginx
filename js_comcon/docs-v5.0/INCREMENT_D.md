@@ -3,7 +3,8 @@
 **Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.43). **D0 ✅** (substrate + p_symbol
 enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` selectors), **D3 ✅**
 (POM-node quotations + stone splices), **D4a ✅** (epochs + admitted replace + rollback), **D4b ✅**
-(class-F multi-worker fan-out); D4c, D5 pending. Follows the operator kernel
+(class-F multi-worker fan-out), **D5a ✅** (call-site audit); D4c, D5b deferred. Follows the operator
+kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -255,14 +256,19 @@ A full ES parser is a large, error-prone build; that cost is the reason D5b is g
 
 **Stages.**
 
-- **D5a — call-site ENUMERATION from bytecode (no parser).** Extend the opcode scan (the
-  `comcon_check_request_fields` precedent) to enumerate call sites of a named target within a
-  fragment — `OP_get_var <name>` / `OP_get_field <name>` feeding an `OP_call*` — with `find_line_num`
-  locations. Surface as `node.query("callsites(name)")` → synthesized expr-kind location records
-  (kind=expr, name, line). This delivers the **intensional-query / audit READ side** of §38 ("where
-  is `fetch` called?") cheaply, reusing the existing scan, with no parser. Combined with the kernel's
-  mediated-grant enforcement it tells a complete "audit + enforce" story. **Gate:** enumerate the
-  call sites of a free-name and a method target with correct line numbers, born-bound.
+- **D5a — call-site ENUMERATION from bytecode (no parser).** ✅ DONE (2026-09-03).
+  `node.references(name)` enumerates every reference to a free name or method `name` in a fragment
+  (whole subtree) with line numbers; `node.callsites(name)` is the subset that are actual **call
+  sites**. Callee↔call correlation is **exact**: `js_comcon_pom_callsites` (quickjs.c) tracks the
+  operand stack (per-opcode `n_pop`/`n_push`, variadic argc for `call*`), so a nested-argument call
+  like `fetch(helper(2))` is still attributed to `fetch`. Two reference kinds: free name
+  (`OP_get_var`/`get_var_ref` → `closure_var[idx].var_name`) and method (`OP_get_field`/`get_field2`
+  atom); each record `{name, line, method, call}`. Locally-bound callees (`OP_get_loc`) are out of
+  scope — they need the CST (D5b). This is the intensional **audit READ side** of §38; the
+  **enforcement side is the capability kernel** (mediate a granted name), so "audit + enforce" is
+  complete without a parser. `t/comcon_pom_callsites.t` (11). **Gate met.** *(Gotcha: an engine-only
+  edit needs a forced relink — `rm objs/nginx` — since the nginx Makefile doesn't track
+  `libquickjs.a`; see [[build-and-test]].)*
 
 - **D5b — full CST front-end + source-rewrite hardening (SEPARATELY GATED; a milestone, not a bite).**
   A JS-side ES(-subset) parser producing stmt/expr nodes with column spans → `node.children` at

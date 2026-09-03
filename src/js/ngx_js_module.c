@@ -1796,6 +1796,33 @@ ngx_js_comcon_pom_node_at(JSContext *ctx, JSValueConst this_val, int argc,
 
 
 /*
+ * COMCON increment D5a — references/call-sites of a name in a fragment subtree.
+ * argv[0] = fragment, argv[1] = target name. Backs node.callsites()/references().
+ */
+JSValue
+ngx_js_comcon_pom_callsites(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    const char  *name;
+    JSValue      r;
+
+    if (argc < 2) {
+        return JS_UNDEFINED;
+    }
+
+    name = JS_ToCString(ctx, argv[1]);
+    if (name == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    r = js_comcon_pom_callsites(ctx, argv[0], name);
+    JS_FreeCString(ctx, name);
+
+    return r;
+}
+
+
+/*
  * COMCON step-4 (directive retirement): host-JS operators that configure the
  * tenant compartment from the single js_source root script, so the `js_tenant_*`
  * nginx.conf directives can be retired (the fundament: never add directives).

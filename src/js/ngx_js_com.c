@@ -3187,9 +3187,21 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    v.text=function(){return C.quote(raw.source);};"
     "    v.quote=function(){return C.quote(raw.source);};"
     "    v.query=function(sel){return pomQuery(v,sel);};"
+    /* references(name)/callsites(name): D5a call-site audit — every reference to
+       a free name or method `name` in this fragment (whole subtree), with line
+       numbers; callsites = the references that are the callee of a call. Read
+       (class R); the ENFORCEMENT side is the capability kernel (mediate a grant).
+       Locally-bound callees need the CST (D5b). */
+    "    v.references=function(nm){"
+    "      return C.__pomCallsites(rootFn,String(nm))||[];};"
+    "    v.callsites=function(nm){"
+    "      return (C.__pomCallsites(rootFn,String(nm))||[])"
+    "        .filter(function(r){return r.call;});};"
     "    v.describe=function(){return {kind:v.kind,ops:["
     "      {name:'text',op:'read',cls:'R'},{name:'quote',op:'read',cls:'R'},"
     "      {name:'query',op:'read',cls:'R'},"
+    "      {name:'references',op:'read',cls:'R'},"
+    "      {name:'callsites',op:'read',cls:'R'},"
     "      {name:'describe',op:'read',cls:'R'},"
     "      {name:'children',op:'read',cls:'R'},"
     "      {name:'parent',op:'read',cls:'R'}]};};"
@@ -3611,6 +3623,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__pomNodeAt",
                           JS_NewCFunction(ctx, ngx_js_comcon_pom_node_at,
                                           "__pomNodeAt", 2));
+        /* increment D5a: call-site / reference enumeration (bytecode scan). */
+        JS_SetPropertyStr(ctx, comcon_obj, "__pomCallsites",
+                          JS_NewCFunction(ctx, ngx_js_comcon_pom_callsites,
+                                          "__pomCallsites", 2));
         JS_SetPropertyStr(ctx, global, "comcon", comcon_obj);
 
         /* env/grant/mediate/meter/bind — the capability layer (JS) */

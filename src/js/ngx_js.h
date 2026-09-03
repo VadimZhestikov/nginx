@@ -445,6 +445,10 @@ JSValue ngx_js_comcon_pom_inspect(JSContext *ctx, JSValueConst this_val,
  * (comcon.pom()). argv[0] = root fragment, argv[1] = path (array of ints). */
 JSValue ngx_js_comcon_pom_node_at(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
+/* COMCON increment D5a: references/call-sites of a name in a fragment subtree.
+ * argv[0] = fragment, argv[1] = target name. */
+JSValue ngx_js_comcon_pom_callsites(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
 ngx_int_t ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn,
     JSValueConst imports, int check_request, char *reason, size_t reason_len);
 

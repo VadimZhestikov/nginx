@@ -553,6 +553,20 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.45 (in place — increment D5a: call-site enumeration / audit):** `node.references(name)` /
+`node.callsites(name)` enumerate every reference to a free name or method `name` in a fragment (with
+line numbers), and the subset that are actual call sites — the intensional **audit READ side** of
+SHOWCASE §38 ("where is `fetch` called?"). Built from a **bytecode scan, no parser**
+(`js_comcon_pom_callsites`, quickjs.c): the callee↔call correlation is exact because the operand
+stack is tracked, so a nested-argument call `fetch(helper(2))` is still attributed to `fetch`.
+Records `{name, line, method, call}`; free names via `OP_get_var`/`get_var_ref` →
+`closure_var[].var_name`, methods via `OP_get_field` atoms; locally-bound callees need the CST (D5b).
+Reframing that made this cheap: §38's **enforcement** is already the capability kernel's — a
+fragment's `fetch(...)` resolves `fetch` as a free name bound through the manifest, so "harden every
+use of `fetch`" is `grant(env,"fetch",mediate(cap,guard))`. D5a supplies the *audit* half; the two
+compose into "audit + enforce" with no parser. `t/comcon_pom_callsites.t`. Full-CST source-rewrite
+hardening (D5b) stays a separately-gated milestone.
+
 **v5.44 (in place — increment D4b: class-F multi-worker fan-out):** `comcon.bindShared(key,
 quotation, contract, onRequest)` is the multi-worker spelling of `bindAt` — the class-F ("fan-out
 required") mutation class made real (POM.md §3). The current `{epoch, source}` is the single source

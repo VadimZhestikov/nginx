@@ -864,6 +864,12 @@ JSValue js_comcon_pom_inspect(JSContext *ctx, JSValueConst func);
 JSValue js_comcon_pom_node_at(JSContext *ctx, JSValueConst func,
                               const int *path, int pathlen);
 
+/* COMCON increment D5a: enumerate references/call-sites of `name` across a
+ * fragment subtree. Array of {name, line, method, call}; JS_UNDEFINED if func
+ * is not a fragment. Bytecode scan (no parser), stack-tracked callee↔call. */
+JSValue js_comcon_pom_callsites(JSContext *ctx, JSValueConst func,
+                                const char *name);
+
 /* COMCON C5.0-b: server-AOT-compile a confined handler at load (CONFIG_JIT
  * only). Returns 0 on success, -1 if func is not a bytecode function. */
 int js_comcon_aot_compile(JSContext *ctx, JSValueConst func);
