@@ -226,3 +226,57 @@ epoch + history state; the actual live mutation rides the COM setter verbatim.
 **Invariants (from §4) that bite here:** admitted-quotations-only writes; tombstone never positional
 (R8); pin-by-hash refusal is **new-epoch-only**, a bound node is never unbound (R7); born-bound
 recompute at the change (R9); class-X guard on `remove` without tombstone.
+
+## 8. D5 sub-scope — statement/expression granularity (the CST frontier)
+
+**What D5 is for.** The one capability D0–D4 cannot reach: **intensional call-site hardening**
+(SHOWCASE §38) — attach a policy to *code you do not own* by query ("every `fetch` call site under
+`vendor/**`"), born-bound. This needs statement/expression nodes with column-precise spans, which
+need a real parser (QuickJS retains no AST; D0–D4 stop at function granularity from the bytecode
+tree).
+
+**Reuse finding (reframes D5's value — decide before building).** Most of §38's *enforcement* is
+**already delivered by the capability kernel**: a fragment's `fetch(...)` resolves `fetch` as a free
+name, bound at realization through the manifest — so "harden every use of `fetch`" is just
+`grant(env, "fetch", mediate(fetchCap, guard))` / a mediated import (v5.29 `mediate` + D3 realize).
+The fragment cannot reach an un-granted `fetch`, and a granted one is already attenuated. So the
+**common case is ours today, with zero new machinery.** D5's genuine residual is narrower:
+
+1. **positional / per-site** hardening (harden *some* call sites, not the name globally);
+2. **method-call** sites (`obj.fetch(...)` — a property call, not a free name);
+3. targets **bound locally** inside the fragment (not via the manifest);
+4. **source-level rewrite** of arbitrary full-language third-party code.
+
+These are advanced/rare relative to the free-name case the kernel already covers.
+
+**Substrate decision (unchanged from §2).** A CST requires a **JS-side parser** — the "M3
+front-end" as a policy-JS component — *not* engine surgery and *not* coupling to maxim's front-end.
+A full ES parser is a large, error-prone build; that cost is the reason D5b is gated separately.
+
+**Stages.**
+
+- **D5a — call-site ENUMERATION from bytecode (no parser).** Extend the opcode scan (the
+  `comcon_check_request_fields` precedent) to enumerate call sites of a named target within a
+  fragment — `OP_get_var <name>` / `OP_get_field <name>` feeding an `OP_call*` — with `find_line_num`
+  locations. Surface as `node.query("callsites(name)")` → synthesized expr-kind location records
+  (kind=expr, name, line). This delivers the **intensional-query / audit READ side** of §38 ("where
+  is `fetch` called?") cheaply, reusing the existing scan, with no parser. Combined with the kernel's
+  mediated-grant enforcement it tells a complete "audit + enforce" story. **Gate:** enumerate the
+  call sites of a free-name and a method target with correct line numbers, born-bound.
+
+- **D5b — full CST front-end + source-rewrite hardening (SEPARATELY GATED; a milestone, not a bite).**
+  A JS-side ES(-subset) parser producing stmt/expr nodes with column spans → `node.children` at
+  expression granularity → `harden(node, "callsites(x)", wrapperQuotation)` rewrites matched sites at
+  the source level and rebuilds via D4. This is the real M3 front-end and the only path to residuals
+  1–4 above. Large; do not start without an explicit decision that the residual value justifies a
+  parser. Cross-file provenance (POM.md §6 Q3) lands here too.
+
+**Recommendation.** Increment D's **core is complete at D4b** — a reflective POM with selectors,
+quotations+splices, and coherent live rewrite across workers. **D5a** is a small, high-value add
+(intensional audit). **D5b** is a genuinely separate milestone whose enforcement value is largely
+pre-empted by the capability kernel; schedule it only if positional/source-rewrite hardening becomes
+a concrete requirement. The other open branch is maxim → test262 (the untrusted-native gate),
+independent of the POM.
+
+**Decision (2026-09-03):** proceed with **D5a** (bytecode call-site enumeration / audit); D5b stays a
+separately-gated future milestone, D4c stays deferred.
