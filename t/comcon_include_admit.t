@@ -61,6 +61,12 @@ for (var i = 0; i < locs.length; i++) {
             r.nginxNo  = tri(function(){ comcon.include('function(q){ return nginx.version; }', {imports:[]}); });
             r.nginxYes = tri(function(){ comcon.include('function(q){ return typeof nginx; }', {imports:['nginx']}); });
             r.evalBad  = tri(function(){ comcon.include('function(q){ return eval("1"); }', {imports:[]}); });
+            // front-end soundness (was comcon_frontend_audit.t): the restricted
+            // profile refuses reflective globals + the Function constructor even
+            // if listed in imports, since they defeat the free-name manifest.
+            r.fnBad    = tri(function(){ comcon.include('function(q){ return Function("return 1"); }', {imports:['Function']}); });
+            r.globalTh = tri(function(){ comcon.include('function(q){ return globalThis; }', {imports:['globalThis']}); });
+            r.selfBad  = tri(function(){ comcon.include('function(q){ return self; }', {imports:['self']}); });
             r.idOk     = tri(function(){ comcon.include(SRC, {identity: GOOD}); });
             r.idBad    = tri(function(){ comcon.include(SRC, {identity: BAD}); });
             req.respond(200, {'content-type':'application/json'}, JSON.stringify(r));
@@ -69,7 +75,7 @@ for (var i = 0; i < locs.length; i++) {
 }
 JS
 
-$t->try_run('no js module')->plan(6);
+$t->try_run('no js module')->plan(9);
 
 my $body = http_get('/a');
 
@@ -85,3 +91,9 @@ like($body, qr/"idOk":"ok"/,
      'identity: the correct H(H(source)\N{U+2016}schema) pin is admitted');
 like($body, qr/"idBad":"[^"]*artifact identity mismatch/,
      'identity: a wrong pin is refused');
+like($body, qr/"fnBad":"[^"]*admission refused[^"]*free name not granted: Function/,
+     'restricted: the Function constructor is refused (deny-list) even if in imports');
+like($body, qr/"globalTh":"[^"]*admission refused[^"]*free name not granted: globalThis/,
+     'restricted: the reflective global globalThis is refused');
+like($body, qr/"selfBad":"[^"]*admission refused[^"]*free name not granted: self/,
+     'restricted: the reflective global self is refused');
