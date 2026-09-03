@@ -113,11 +113,12 @@ security-critical POM invariants (§4).
   `node.quote()`. *(`includeAt` anchor-**splice** — inserting a fragment at a named anchor **site** —
   is a tree MUTATION and lands with D4, not here; D3 delivers the splice-value machinery.)*
 
-- **D4 — mutations + epochs (class-F).** `replace/insert(Before|After)/remove/revive` + tombstones
-  (carry the Track-L revive lesson); admitted-quotations-only writes; **epoch broadcast** over the
-  A2.8 cfgbus transport; bytecode-fallback during propagation → re-AOT → coherent epoch switch;
-  rollback = prior epoch retained (A2.7). Class-X guards (`remove` w/o tombstone) require snapshot/
-  confirm. **Gate:** live rewrite is never stop-the-world; reload-leak + fan-out tests flat.
+- **D4 — mutations + epochs (class-F).** 📐 SCOPED (2026-09-03); see the detailed sub-scope in §7.
+  In one line: POM mutation is **rebuild-on-write** (recompile an admitted quotation, swap the live
+  binding site, new epoch) — *not* an in-place bytecode edit, which QuickJS does not allow — and the
+  transport/tombstone/fan-out/rollback machinery **already exists in js_com** (reuse fundament), so
+  D4 is a thin epoch+mutation-discipline layer, staged D4a (epochs + admitted replace + rollback),
+  D4b (class-F multi-worker fan-out over cfgbus), D4c (deferred: compiled-tier live re-AOT).
 
 - **D5 — full-CST front-end (SEPARATELY GATED, optional).** A real JS parser producing an
   ESTree-like CST with column-precise spans + trivia → statement/expression granularity →
@@ -148,3 +149,62 @@ design and are orthogonal to the POM.
 Start at **D0** (substrate + p_symbol enumeration) — it is the gate that de-risks everything after
 it, is small, and produces a decision note plus the C-side node accessor without committing to the
 JS surface. D1 follows directly on a green D0.
+
+## 7. D4 sub-scope — mutations + epochs (rebuild-on-write)
+
+**The model.** Our POM (D0–D3) reflects compiled `JSFunctionBytecode`; QuickJS bytecode is not
+editable in place, so a POM "mutation" cannot mean rewriting a function body. It means **rebuild-on-
+write**: `replace(quotation)` recompiles the admitted quotation (via `realize`/`include`) into a
+**new bound fragment** and swaps it into the live **binding site**, as a **new epoch**; the prior
+epoch is retained for rollback. This is exactly POM.md §4's lifecycle
+(`parsed→certified→bound(epoch e)→live`; `rewrite→dirty→re-AOT→live(e+1)`) and the "config is a
+program; a rewrite is a new bound version" thesis.
+
+**The binding site is the existing COM setter** ([[pilgrim-shell-fundament-principle]]): a bound
+POM fragment is one installed at `location.handler`. So a POM mutation = *recompile the quotation +
+reassign the handler + bump the epoch*.
+
+**Reuse finding (the load-bearing point).** Nearly every mechanism D4 needs already exists in
+js_com — D4 orchestrates them, it does not reinvent them:
+
+| D4 needs | Already in js_com | 
+|---|---|
+| install/replace a live fragment | `location.handler` setter (`__ngx_handlers__`, `handler_idx`) |
+| tombstone + revive (Track-L lesson) | `removeLocation`/`reviveLocation`, `removeServer`/`reviveServer` + tombstone arrays |
+| class-F multi-worker fan-out | cfgbus broadcast + SharedWorker channels (demos A2.2 / A2.6 / A2.8) |
+| snapshot / rollback (epochs) | admin snapshot/rollback (demo A2.7) |
+
+So D4's **genuine addition** is a thin layer: route writes through the **admitted-quotation**
+discipline, track **epochs** (monotonic per site) with **rollback history**, classify each op by
+**safety class (R/L/F/X)** in `describe()`, and recompute **born-bound** queries (R9) after a change.
+Likely **little or no new C** — a JS orchestration over `realize`/`include` + the COM setters.
+
+**Stages.**
+
+- **D4a — epochs + admitted replace + rollback (single-worker semantics).** A *bound-fragment*
+  handle over a site: `comcon.bindAt(site, quotation, contract)` → realize + install + record
+  `{epoch:0, quotation, prior:null}`. Ops: `replace(quotation, K)` (admit → realize → install →
+  epoch++, retain prior; class F), `rollback()` (restore prior epoch), `remove()` (install a
+  tombstone; class X — guarded), `revive()` (reinstall last live). `describe()` lists them with
+  classes. **Gate:** replace serves new behavior under a new epoch; rollback restores exactly;
+  remove tombstones and revive restores; leak-flat across many replace cycles (mirror
+  `sighup_handlers.t` / `com_handler_replace.t`).
+
+- **D4b — class-F multi-worker fan-out.** Route the epoch switch through the existing cfgbus
+  broadcast so every worker switches coherently (never half-propagated). Reuses the A2.8 transport
+  verbatim. **Gate:** a rebind propagates to all workers (multi-worker test); no stop-the-world.
+
+- **D4c — compiled-tier live re-AOT (DEFERRED / separately gated).** POM.md §3's class-F
+  "bytecode-fallback → re-AOT → coherent epoch switch" for an *AOT-compiled* fragment. JIT-tier;
+  rides the existing C5/C7 machinery. Not on the D4 critical path — the interpreted-tier epoch
+  switch (reassign the handler) is already coherent per worker.
+
+**D4a surface (RESOLVED 2026-09-03):** a **thin `comcon.bindAt(site, quotation, contract)` handle**
+— it returns an epoch handle carrying `replace`/`rollback`/`remove`/`revive` and the rollback
+history, but `install` is implemented as *exactly* `loc.handler = …` (the existing setter), so there
+is **no parallel install path** and the shell fundament holds. The handle is the natural home for
+epoch + history state; the actual live mutation rides the COM setter verbatim.
+
+**Invariants (from §4) that bite here:** admitted-quotations-only writes; tombstone never positional
+(R8); pin-by-hash refusal is **new-epoch-only**, a bound node is never unbound (R7); born-bound
+recompute at the change (R9); class-X guard on `remove` without tombstone.
