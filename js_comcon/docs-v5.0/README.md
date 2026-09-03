@@ -150,10 +150,12 @@ compartment subsystem have been removed** (Principle 11); a reader should ignore
 older `js_tenant_*` / `onRequest` / `comcon_load` / `comconctl` surfaces in the
 increment/manual docs — the live surface is `js_source root.js;` + the `comcon` operators
 + `location.handler` (`OPERATOR_API.md`, `INCREMENT_MCFG.md`, `INCREMENT_CONVERGE.md`).
-Design-only edges remain: `includeAt` (deferred by the reuse-the-primitive fundament —
-concrete-node `includeAt` = `loc.handler=include(...)`; only query-targeting is new, awaits
-POM), POM-node quotations + structured splices, POM live-ops (rewrite/epochs,
-increment D), `mediate` `rateLimit`/`transform`/`audit` flavors, `admit`'s test-phase
+Design-only edges remain: **POM nodes (increment D)** — parsed-subtree quotations,
+structured splices, `query()`/anchor targeting, and live rewrite/epochs. (`includeAt` is
+**not** a separate edge: a concrete-node `includeAt` is just `loc.handler=include(...)`, and
+its only non-redundant forms — anchor-splice and query-targeting — are exactly this POM
+targeting; there is nothing left to build *called* `includeAt`.) Also:
+`mediate` `rateLimit`/`transform`/`audit` flavors, `admit`'s test-phase
 under determinism caps, the full M2 typed schema, WASM ingestion, and adaptive profiles
 (M9). Tests `t/comcon_*` (interpreter default `objs`; JIT `objs_jit`). The M1 spike lives
 in `t_performance/maxim_m1/`. The showcase scenarios remain illustrative/hypothetical by

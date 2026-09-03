@@ -35,14 +35,18 @@
 >   POM-node quotations** (`quote` of a *parsed subtree*, intensional splice sites) await POM nodes
 >   (increment D) — on the source-string substrate a quotation is a whole source string, cap-free
 >   by construction.
-> - **Still design (not built):** `includeAt` (§3a — anchors/expose/3-phase link). **Deferred by
->   the reuse-the-primitive fundament** ([[feedback-reuse-jscom-primitive]]): over a *concrete* COM
->   node, `includeAt(loc, src, K)` is exactly `loc.handler = realize/include(src, K)` — which
->   already works — so a standalone operator would duplicate a js_com primitive. Its only
->   non-redundant form is **query/selector** targeting ("attach to every location matching a glob"),
->   which is intensional POM targeting and awaits the POM tree (increment D/E). `policy({...})` as a
->   reified value, and the `rateLimit`/`transform`/`audit` mediate flavors, remain design.
->   `meter`'s `gas` unit is forward-declared (only `timeoutMs` maps to the shipped deadline).
+> - **`includeAt` — folded, not a standalone deliverable** ([[feedback-reuse-jscom-primitive]]).
+>   §3a below is retained as the design reference, but there is nothing left to build *called*
+>   `includeAt`: (i) over a *concrete* COM node, `includeAt(loc, src, K)` is exactly
+>   `loc.handler = realize/include(src, K)` — already works, so a standalone operator would
+>   duplicate a js_com primitive; (ii) its only non-redundant forms — **anchor-splice** (§3a) and
+>   **query/selector** targeting ("attach to every location matching a glob") — are just uses of
+>   the POM tree, and fall out of `query()`/anchor-splice + `realize`/`include` once **POM nodes
+>   (increment D)** exist. So it is subsumed by increment D, not scheduled on its own.
+> - **Still design (not built):** POM nodes (increment D) — parsed-subtree quotations, structured
+>   splices, `query()`/anchor targeting, live rewrite/epochs. `policy({...})` as a reified value,
+>   and the `rateLimit`/`transform`/`audit` mediate flavors, remain design. `meter`'s `gas` unit is
+>   forward-declared (only `timeoutMs` maps to the shipped deadline).
 >
 > The rest of this document is retained as the design reference for the shapes.
 
@@ -130,6 +134,11 @@ the operator realizes a tenant's cap-free config **proposal**, restricting the r
 to the quotation's manifest (the snapshot/rollback console; the M-CFG config-instance path).
 
 ## 3a. `includeAt` — anchored inclusion (textual splice) & the stage-0 link
+
+> **Folded (v5.38):** `includeAt` is **not** a standalone deliverable — see the implementation-
+> status banner at the top. A concrete-node `includeAt` is just `loc.handler=include(...)`; the
+> anchor-splice form below and the query-targeting form are uses of the POM tree, subsumed by
+> **increment D**. This section is retained as the design reference for those POM-targeting shapes.
 
 `includeAt(anchor, source, policy)` is `include` **targeted at a named anchor site** — the
 fragment-**insertion** form (vs plain `include`'s standalone callable): the fragment's text fills
