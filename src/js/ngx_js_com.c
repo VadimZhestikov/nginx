@@ -3200,6 +3200,54 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        a.push(pomView(rootFn,path.concat([i])));return a;}});"
     "    return Object.freeze(v);};"
     "  C.pom=function(rootFn){return pomView(rootFn,[]);};"
+    /* bindAt(site, quotation, contract): install an admitted quotation at a live
+       binding SITE and return an epoch handle (increment D4a — POM mutation is
+       REBUILD-ON-WRITE: recompile the quotation, swap the site, new epoch). The
+       site is an install(callable, epoch) function — the caller wires it to the
+       existing COM setter (loc.handler = ...), so there is NO parallel install
+       path (the shell fundament). Ops: replace(q) (admit+realize a new epoch,
+       retain prior; class F), rollback() (restore the prior epoch), remove()
+       (tombstone — class X, guarded by the caller's site), revive(). Rollback
+       history is BOUNDED (BINDCAP): a superseded fragment beyond the window is
+       freed (C.__freeConfined) so live rewrite does not accumulate fragments. */
+    "  var BINDCAP=8;"
+    "  function pomFreeFrag(cb){if(cb&&cb.handle!==undefined&&cb.handle>=0)"
+    "    C.__freeConfined(cb.handle);}"
+    "  C.bindAt=function(site,quotation,contract){"
+    "    if(typeof site!=='function')throw new TypeError("
+    "      'bindAt: arg0 must be an install(callable,epoch) function');"
+    "    if(!quotation||!quotation[QUOTE])throw new TypeError("
+    "      'bindAt: arg1 must be a comcon.quote() description');"
+    "    contract=contract||{imports:[]};"
+    "    var renv=contract.env||C.env();"
+    "    function make(q){return C.realize(q,contract,renv);}"
+    "    var cur=make(quotation),epoch=0,tomb=false,hist=[];"
+    "    site(cur,epoch);"
+    "    var h={};"
+    "    h.epoch=function(){return epoch;};"
+    "    h.tombstoned=function(){return tomb;};"
+    "    h.call=function(arg){if(tomb)throw new Error('bindAt: tombstoned');"
+    "      return cur(arg);};"
+    "    h.replace=function(q2){"
+    "      if(!q2||!q2[QUOTE])throw new TypeError("
+    "        'replace: arg0 must be a comcon.quote() description');"
+    "      hist.push({epoch:epoch,callable:cur});"
+    "      while(hist.length>BINDCAP)pomFreeFrag(hist.shift().callable);"
+    "      cur=make(q2);epoch++;tomb=false;site(cur,epoch);return epoch;};"
+    "    h.rollback=function(){"
+    "      if(!hist.length)throw new Error('bindAt: nothing to roll back');"
+    "      var prev=hist.pop(),old=cur;"
+    "      cur=prev.callable;epoch=prev.epoch;tomb=false;site(cur,epoch);"
+    "      pomFreeFrag(old);return epoch;};"
+    "    h.remove=function(){tomb=true;site(null,epoch);return epoch;};"
+    "    h.revive=function(){if(tomb){tomb=false;site(cur,epoch);}return epoch;};"
+    "    h.describe=function(){return {ops:["
+    "      {name:'call',op:'invoke',cls:'R'},"
+    "      {name:'replace',op:'rewrite',cls:'F'},"
+    "      {name:'rollback',op:'rewrite',cls:'F'},"
+    "      {name:'remove',op:'remove',cls:'X'},"
+    "      {name:'revive',op:'revive',cls:'L'}]};};"
+    "    return Object.freeze(h);};"
     "})();";
 
 
@@ -3477,6 +3525,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
                                           "__invokeConfined", 3));
+        /* D4a: free a superseded fragment (bounded rollback window). */
+        JS_SetPropertyStr(ctx, comcon_obj, "__freeConfined",
+                          JS_NewCFunction(ctx, ngx_js_comcon_free_confined,
+                                          "__freeConfined", 1));
         /* comcon.mode() — the confined-compartment policy mode (used by the
            include compartment: learn seeding + the reach-gate mode). The former
            comcon.tenant/dependency/artifact operators were retired with the

@@ -1535,7 +1535,18 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
 #endif
 
     if (jcf->comcon_frags == NULL) {
-        jcf->comcon_frags = ngx_array_create(ngx_cycle->pool, 8, sizeof(JSValue));
+        /* Own the backing on a dedicated pool: this array grows at REQUEST time
+           (D4a rebuild-on-write), but the first include may run during host-JS
+           eval (config time) when ngx_cycle->pool is a transient config pool —
+           growing it later on that stale pool corrupts memory. A standalone pool
+           lives until teardown, independent of the cycle. */
+        jcf->comcon_frags_pool = ngx_create_pool(4096, ngx_cycle->log);
+        if (jcf->comcon_frags_pool == NULL) {
+            JS_FreeValue(sctx, fn);
+            return JS_ThrowOutOfMemory(hctx);
+        }
+        jcf->comcon_frags = ngx_array_create(jcf->comcon_frags_pool, 8,
+                                             sizeof(JSValue));
         if (jcf->comcon_frags == NULL) {
             JS_FreeValue(sctx, fn);
             return JS_ThrowOutOfMemory(hctx);
@@ -1591,6 +1602,12 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         return JS_ThrowTypeError(hctx, "comcon: bad fragment handle");
     }
     fn = ((JSValue *) jcf->comcon_frags->elts)[handle];   /* borrowed */
+
+    if (JS_IsUndefined(fn)) {
+        /* freed by __freeConfined (a superseded epoch beyond the rollback
+           window); invoking a stale handle is an error, not a crash. */
+        return JS_ThrowTypeError(hctx, "comcon: fragment was freed (stale epoch)");
+    }
 
     arg = JS_UNDEFINED;
     if (argc > 1 && !JS_IsUndefined(argv[1])) {
@@ -1656,6 +1673,47 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     JS_FreeValue(sctx, arg);
 
     return retv;
+}
+
+
+/*
+ * COMCON increment D4a — free a held confined fragment (rebuild-on-write). When
+ * `replace` supersedes an epoch that falls out of the bounded rollback window,
+ * its fragment is released so live rewrite does not accumulate compiled
+ * fragments. The slot is set to JS_UNDEFINED (invoking a freed handle then
+ * errors — see __invokeConfined). Idempotent; out-of-range is a no-op.
+ */
+JSValue
+ngx_js_comcon_free_confined(JSContext *hctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_conf_t  *jcf;
+    JSContext      *sctx;
+    JSValue        *frags;
+    int64_t         handle = 0;
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx == NULL || jcf->comcon_frags == NULL) {
+        return JS_UNDEFINED;
+    }
+    sctx = jcf->comcon_ctx;
+
+    if (argc < 1) {
+        return JS_UNDEFINED;
+    }
+    JS_ToInt64(hctx, &handle, argv[0]);
+
+    if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
+        return JS_UNDEFINED;
+    }
+
+    frags = (JSValue *) jcf->comcon_frags->elts;
+    if (!JS_IsUndefined(frags[handle])) {
+        JS_FreeValue(sctx, frags[handle]);
+        frags[handle] = JS_UNDEFINED;
+    }
+
+    return JS_UNDEFINED;
 }
 
 
@@ -1947,6 +2005,11 @@ failed_ctx:
                 JS_FreeValue(jcf->comcon_ctx, fv[fi]);
             }
             jcf->comcon_frags->nelts = 0;
+        }
+        if (jcf->comcon_frags_pool != NULL) {
+            ngx_destroy_pool(jcf->comcon_frags_pool);
+            jcf->comcon_frags_pool = NULL;
+            jcf->comcon_frags = NULL;
         }
         JS_FreeContext(jcf->comcon_ctx);
         jcf->comcon_ctx = NULL;
@@ -3082,6 +3145,11 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
                 JS_FreeValue(jcf->comcon_ctx, fv[fi]);
             }
             jcf->comcon_frags->nelts = 0;
+        }
+        if (jcf->comcon_frags_pool != NULL) {
+            ngx_destroy_pool(jcf->comcon_frags_pool);
+            jcf->comcon_frags_pool = NULL;
+            jcf->comcon_frags = NULL;
         }
         JS_FreeContext(jcf->comcon_ctx);
         jcf->comcon_ctx = NULL;

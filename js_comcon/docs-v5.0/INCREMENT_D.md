@@ -1,8 +1,9 @@
 # INCREMENT — D: POM nodes (the reflective program tree) — scoping
 
-**Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.42). **D0 ✅** (substrate + p_symbol
+**Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.43). **D0 ✅** (substrate + p_symbol
 enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` selectors), **D3 ✅**
-(POM-node quotations + stone splices); D4–D5 pending. Follows the operator kernel
+(POM-node quotations + stone splices), **D4a ✅** (epochs + admitted replace + rollback); D4b/D4c,
+D5 pending. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -181,14 +182,20 @@ Likely **little or no new C** — a JS orchestration over `realize`/`include` + 
 
 **Stages.**
 
-- **D4a — epochs + admitted replace + rollback (single-worker semantics).** A *bound-fragment*
-  handle over a site: `comcon.bindAt(site, quotation, contract)` → realize + install + record
-  `{epoch:0, quotation, prior:null}`. Ops: `replace(quotation, K)` (admit → realize → install →
-  epoch++, retain prior; class F), `rollback()` (restore prior epoch), `remove()` (install a
-  tombstone; class X — guarded), `revive()` (reinstall last live). `describe()` lists them with
-  classes. **Gate:** replace serves new behavior under a new epoch; rollback restores exactly;
-  remove tombstones and revive restores; leak-flat across many replace cycles (mirror
-  `sighup_handlers.t` / `com_handler_replace.t`).
+- **D4a — epochs + admitted replace + rollback (single-worker semantics).** ✅ DONE (2026-09-03).
+  `comcon.bindAt(site, quotation, contract)` → realize + install at the site + return a frozen epoch
+  handle. `site` is an `install(callable, epoch)` fn the caller wires to `loc.handler = …` (no
+  parallel install path — the shell fundament). Ops: `replace(q)` (admit → realize → install →
+  epoch++, retain prior; class F), `rollback()` (restore the prior epoch exactly), `remove()`
+  (tombstone via the caller's site; class X), `revive()`, `call(arg)`, `epoch()`; `describe()` lists
+  them with R/L/F/X classes. Rollback history is **bounded** (BINDCAP=8) and a superseded fragment
+  beyond the window is **freed** via a new `comcon.__freeConfined(handle)` C path (invoking a freed
+  handle then errors, no crash) — so live rewrite does **not** accumulate compiled fragments.
+  `t/comcon_pom_mutate.t` (12): live rewrite (v1→v2), exact rollback, tombstone+revive, describe
+  classes, and 500 replace cycles flat (<32 KB). **Fixed a pre-existing latent bug** the request-time
+  `replace` exposed: `comcon_frags` was created (lazily, first include) on the config-eval cycle pool
+  and grew at request time on that now-stale pool → SIGSEGV; it now owns a dedicated long-lived pool
+  (`comcon_frags_pool`, destroyed at teardown). **Gate met.**
 
 - **D4b — class-F multi-worker fan-out.** Route the epoch switch through the existing cfgbus
   broadcast so every worker switches coherently (never half-propagated). Reuses the A2.8 transport

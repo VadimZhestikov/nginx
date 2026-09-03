@@ -553,6 +553,21 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.43 (in place — increment D4a: POM mutation = rebuild-on-write + epochs):** `comcon.bindAt(site,
+quotation, contract)` installs an admitted quotation at a live binding **site** and returns a frozen
+**epoch handle**. POM mutation is **rebuild-on-write** (POM.md §4): `replace(q)` recompiles the
+admitted quotation (via `realize`) into a *new bound fragment* and swaps the site (new epoch,
+retaining the prior for `rollback`) — not an in-place bytecode edit, which QuickJS forbids. The site
+is an `install(callable, epoch)` fn the caller wires to the existing COM setter (`loc.handler = …`),
+so there is **no parallel install path** ([[pilgrim-shell-fundament-principle]]). `remove()`
+tombstones (class X), `revive()` restores; `describe()` classifies each op R/L/F/X (the COM safety
+taxonomy generalized to code, POM.md §3). Rollback history is bounded and superseded fragments are
+freed (`__freeConfined`), so live rewrite does not accumulate. `t/comcon_pom_mutate.t`. (Reuse
+finding: install / tombstone+revive / fan-out / snapshot-rollback already exist in js_com — D4 is a
+thin epoch layer over `realize` + the COM setters. A pre-existing pool-lifetime bug that request-time
+`replace` exposed — `comcon_frags` grown on a stale config-eval pool — was fixed with a dedicated
+long-lived pool.) Multi-worker class-F fan-out is D4b; compiled-tier live re-AOT is D4c.
+
 **v5.42 (in place — increment D3: POM-node quotations + stone splices):** `comcon.quote(source,
 splices?)` now accepts producer **splices** — the data half of §6's closure-vs-quotation and §4.4's
 two-phase binding. Each splice is deep-checked **stone** (cap-free: no functions, capabilities, or

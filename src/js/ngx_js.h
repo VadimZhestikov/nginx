@@ -124,6 +124,11 @@ typedef struct {
     ngx_array_t         *comcon_frags;    /* JSValue[] confined fragments, held
                                              C-side; index = handle. Freed before
                                              JS_FreeContext(comcon_ctx). */
+    ngx_pool_t          *comcon_frags_pool; /* dedicated long-lived pool backing
+                                             comcon_frags — D4a `replace` grows
+                                             the array at REQUEST time, so it must
+                                             not live on a config-eval cycle pool
+                                             that is stale by then. */
     JSValue              tenant_request_handler;
     ngx_uint_t           tenant_mode;     /* A4/B0: ngx_js_tenant_mode_e */
 
@@ -425,6 +430,9 @@ extern ngx_module_t  ngx_js_http_module;
 JSValue ngx_js_comcon_include_confined(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_invoke_confined(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
+/* COMCON D4a: free a superseded confined fragment (rebuild-on-write epochs). */
+JSValue ngx_js_comcon_free_confined(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_op_mode(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
