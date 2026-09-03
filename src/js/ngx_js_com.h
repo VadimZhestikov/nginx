@@ -23,6 +23,21 @@ extern JSClassID  ngx_js_cycle_class_id;
 extern JSClassID  ngx_js_http_class_id;
 extern JSClassID  ngx_js_server_class_id;
 extern JSClassID  ngx_js_location_class_id;
+extern JSClassID  ngx_js_com_facet_class_id;
+
+/*
+ * COMCON mediate: an attenuated COM capability. A facet does NOT re-wrap a
+ * stateful COM node (that would duplicate the per-wrapper dynamic-location
+ * state and diverge / UAF across runtimes). It is a thin, stateless cap that
+ * borrows the ONE canonical server opaque and routes every operation through a
+ * route-glob membrane. ngx_js_server_srv_op() extracts that canonical opaque
+ * (as void* — the struct is private to ngx_js_com_http.c) from a server value.
+ */
+void      *ngx_js_server_srv_op(JSValueConst val);
+JSValue    ngx_js_com_facet_wrap(JSContext *ctx, void *srv_op,
+               const char *glob, size_t glob_len);
+ngx_int_t  ngx_js_com_facet_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_com_facet_install_proto(JSContext *ctx);
 extern JSClassID  ngx_js_upstream_class_id;
 extern JSClassID  ngx_js_peer_class_id;     /* config-phase peer (Phase 1/2) */
 extern JSClassID  ngx_js_rr_peer_class_id;  /* runtime RR peer   (Phase 3)   */

@@ -1368,7 +1368,8 @@ ngx_js_comcon_harden_cap_protos(JSContext *ctx)
     ngx_uint_t  i;
     JSClassID   ids[] = { ngx_js_socket_class_id,
                           ngx_js_http_listener_class_id,
-                          ngx_js_stream_listener_class_id };
+                          ngx_js_stream_listener_class_id,
+                          ngx_js_com_facet_class_id };
 
     for (i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
         proto = JS_GetClassProto(ctx, ids[i]);
@@ -1542,30 +1543,77 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         return thrown;
     }
 
-    /* re-wrap each granted socket into the compartment and apply the closure.
-       argv[3] (optional) is a parallel array of mediate field masks: a clear
-       bit hides that field (redact/allow), realizing the membrane in C. */
+    /* re-wrap each granted cap compartment-native and apply the closure.
+       argv[3] is a parallel array of mediate policy descriptors:
+         { kind:0, mask }  -> a NginxSocket with a field-redaction mask
+         { kind:1, glob }  -> a NginxComFacet (attenuated COM cap) over a
+                              granted server, filtered to the route glob.
+       Only C-backed identities cross (a socket handle, or the canonical server
+       opaque pointer) — never a JSValue. */
     for (gi = 0; gi < gn; gi++) {
-        name_v = JS_GetPropertyUint32(hctx, argv[2], gi);   /* the host socket */
-        sh = ngx_js_socket_handle(name_v);
-        JS_FreeValue(hctx, name_v);
-        if (sh < 0) {
-            while (gi-- > 0) {
-                JS_FreeValue(sctx, av[gi]);
-            }
-            JS_FreeValue(sctx, outer);
-            return JS_ThrowTypeError(hctx,
-                       "comcon.include: grant is not a NginxSocket");
-        }
+        JSValue      cap_v, pol_v;
+        int32_t      kind = 0;
 
-        mask = NGX_JS_SOCKET_MASK_ALL;
+        cap_v = JS_GetPropertyUint32(hctx, argv[2], gi);
+
+        pol_v = JS_UNDEFINED;
         if (argc > 3 && JS_IsObject(argv[3])) {
-            name_v = JS_GetPropertyUint32(hctx, argv[3], gi);
-            JS_ToUint32(hctx, &mask, name_v);
-            JS_FreeValue(hctx, name_v);
+            pol_v = JS_GetPropertyUint32(hctx, argv[3], gi);
+            if (JS_IsObject(pol_v)) {
+                name_v = JS_GetPropertyStr(hctx, pol_v, "kind");
+                JS_ToInt32(hctx, &kind, name_v);
+                JS_FreeValue(hctx, name_v);
+            }
         }
 
-        av[gi] = ngx_js_socket_wrap_masked(sctx, (uint32_t) sh, mask);
+        if (kind == 1) {
+            /* route facet over a granted server */
+            void        *srv_op = ngx_js_server_srv_op(cap_v);
+            const char  *glob = NULL;
+            size_t       glen = 0;
+
+            if (srv_op == NULL) {
+                JS_FreeValue(hctx, pol_v);
+                JS_FreeValue(hctx, cap_v);
+                goto grant_bad;
+            }
+            name_v = JS_GetPropertyStr(hctx, pol_v, "glob");
+            glob = JS_ToCStringLen(hctx, &glen, name_v);
+            av[gi] = ngx_js_com_facet_wrap(sctx, srv_op, glob ? glob : "*",
+                                           glob ? glen : 1);
+            if (glob != NULL) {
+                JS_FreeCString(hctx, glob);
+            }
+            JS_FreeValue(hctx, name_v);
+
+        } else {
+            /* socket, optionally field-masked */
+            sh = ngx_js_socket_handle(cap_v);
+            if (sh < 0) {
+                JS_FreeValue(hctx, pol_v);
+                JS_FreeValue(hctx, cap_v);
+                goto grant_bad;
+            }
+            mask = NGX_JS_SOCKET_MASK_ALL;
+            if (JS_IsObject(pol_v)) {
+                name_v = JS_GetPropertyStr(hctx, pol_v, "mask");
+                JS_ToUint32(hctx, &mask, name_v);
+                JS_FreeValue(hctx, name_v);
+            }
+            av[gi] = ngx_js_socket_wrap_masked(sctx, (uint32_t) sh, mask);
+        }
+
+        JS_FreeValue(hctx, pol_v);
+        JS_FreeValue(hctx, cap_v);
+        continue;
+
+    grant_bad:
+        while (gi-- > 0) {
+            JS_FreeValue(sctx, av[gi]);
+        }
+        JS_FreeValue(sctx, outer);
+        return JS_ThrowTypeError(hctx,
+                   "comcon.include: grant is not a NginxSocket or NginxServer");
     }
 
     fn = JS_Call(sctx, outer, JS_UNDEFINED, (int) gn, (JSValueConst *) av);

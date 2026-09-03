@@ -31,6 +31,7 @@ JSClassID  ngx_js_cycle_class_id;
 JSClassID  ngx_js_http_class_id;
 JSClassID  ngx_js_server_class_id;
 JSClassID  ngx_js_location_class_id;
+JSClassID  ngx_js_com_facet_class_id;   /* COMCON mediate: attenuated COM cap */
 JSClassID  ngx_js_upstream_class_id;
 JSClassID  ngx_js_peer_class_id;
 JSClassID  ngx_js_rr_peer_class_id;
@@ -531,6 +532,7 @@ ngx_js_com_register_classes(JSRuntime *rt)
         JS_NewClassID(&ngx_js_http_class_id);
         JS_NewClassID(&ngx_js_server_class_id);
         JS_NewClassID(&ngx_js_location_class_id);
+        JS_NewClassID(&ngx_js_com_facet_class_id);
         JS_NewClassID(&ngx_js_upstream_class_id);
         JS_NewClassID(&ngx_js_peer_class_id);
         JS_NewClassID(&ngx_js_rr_peer_class_id);
@@ -599,6 +601,10 @@ ngx_js_com_register_classes(JSRuntime *rt)
     }
 
     if (ngx_js_socket_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_com_facet_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -3027,6 +3033,9 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    return {flavor:'redact',fields:fields||[]};};"
     "  C.allow=function(fields){"
     "    return {flavor:'allow',fields:fields||[]};};"
+    /* routes(glob): attenuate a granted COM server to a route glob. The
+       fragment receives a NginxComFacet (never the stateful server wrapper). */
+    "  C.routes=function(glob){return {flavor:'routes',glob:String(glob)};};"
     "  C.bind=function(env,fn,opts){"
     "    if(!env||!env[ENV])throw new TypeError('bind: arg0 must be comcon.env()');"
     "    if(typeof fn!=='function')throw new TypeError('bind: arg1 must be a function');"
@@ -3045,17 +3054,21 @@ static const char  ngx_js_comcon_bootstrap[] =
     "  C.include=function(source,contract){"
     "    contract=contract||{};"
     "    var FM={address:1,port:2,fd:4,listener:8},FULL=15;"
-    "    var g=contract.grants||{},names=[],caps=[],masks=[];"
+    "    var g=contract.grants||{},names=[],caps=[],pols=[];"
     "    for(var k in g){if(Object.prototype.hasOwnProperty.call(g,k)){"
-    "      var v=g[k],cap=v,mask=FULL;"
+    "      var v=g[k],cap=v,pol={kind:0,mask:FULL};"
     "      if(v&&v[FACET]){var it=v[FACET].interceptor||{};cap=v[FACET].cap;"
     "        if(it.flavor==='revoke')continue;"       /* narrow to zero: withhold */
-    "        if(it.flavor==='allow'){mask=0;"
-    "          (it.fields||[]).forEach(function(f){mask|=(FM[f]||0);});}"
-    "        else if(it.flavor==='redact'){"
-    "          (it.fields||[]).forEach(function(f){mask&=~(FM[f]||0);});}}"
-    "      names.push(String(k));caps.push(cap);masks.push(mask>>>0);}}"
-    "    var h=C.__includeConfined(String(source),names,caps,masks);"
+    "        else if(it.flavor==='allow'){var m=0;"
+    "          (it.fields||[]).forEach(function(f){m|=(FM[f]||0);});"
+    "          pol={kind:0,mask:m>>>0};}"
+    "        else if(it.flavor==='redact'){var r=FULL;"
+    "          (it.fields||[]).forEach(function(f){r&=~(FM[f]||0);});"
+    "          pol={kind:0,mask:r>>>0};}"
+    "        else if(it.flavor==='routes'){"
+    "          pol={kind:1,glob:String(it.glob||'*')};}}"
+    "      names.push(String(k));caps.push(cap);pols.push(pol);}}"
+    "    var h=C.__includeConfined(String(source),names,caps,pols);"
     "    var ms=(contract.meter&&contract.meter[METER]"
     "            &&contract.meter[METER].timeoutMs)|0;"
     "    var bound=function(arg){return C.__invokeConfined(h,arg,ms);};"
@@ -3444,6 +3457,7 @@ ngx_js_com_install_protos(JSContext *ctx)
     if (ngx_js_cycle_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_location_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_server_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_com_facet_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_upstream_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_peer_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_rr_peer_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }

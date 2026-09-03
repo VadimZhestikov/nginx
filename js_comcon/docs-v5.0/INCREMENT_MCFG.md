@@ -183,9 +183,30 @@ the same `admit`; follows the program-fragment operators.
    (['address'])` → `address` hidden, `port` still readable; `revoke()` → `typeof s ===
    "undefined"`. Also fixed a **latent bug in the live-cap-grant wrapper**: the
    `(function(<names>){…})` buffer was not NUL-terminated, which `JS_Eval` requires — short
-   fragments survived, longer ones hit a garbage byte (parse error). **Still follow-on:**
-   `mediate` for COM-node caps (method-level `routes`/`rateLimit`), and `transform`/`audit`
-   flavors.
+   fragments survived, longer ones hit a garbage byte (parse error).
+   **✅ COM-NODE `mediate` — LANDED (2026-09-02, read slice).** `mediate(nginx.http.servers[i],
+   routes(glob))` grants an attenuated COM cap. **Why not the socket pattern:** a COM server is
+   a *stateful* node — `ngx_js_server_opaque_s` carries per-wrapper dynamic-location state
+   (`prefix_locs`/`dyn_pool`/`tree_pool`) and `addLocation` repoints the *single live*
+   `cscf->static_locations` from its own `prefix_locs`. Re-wrapping a server into the confined
+   compartment's separate runtime gives a second op that (a) clobbers the live tree
+   (last-writer-wins over the host op) and (b) UAFs at compartment teardown (its `dyn_pool`
+   frees `clcf` structs still in the live tree). The host avoids this by keeping exactly ONE
+   canonical op per server (`nginx.http.servers` is a stored array, not a rebuilding getter).
+   **The fix — `NginxComFacet`:** a thin, stateless C cap that *borrows* the canonical `srv_op`
+   (never re-wraps it) and routes reads through a route-glob membrane. `ngx_js_server_srv_op
+   (val)` extracts the canonical opaque (as `void*`); `ngx_js_com_facet_wrap(ctx, srv_op, glob)`
+   builds the facet in the compartment; `comcon.routes(glob)` is the interceptor. `include`'s
+   grant loop now passes a per-grant **policy descriptor** (`{kind:0,mask}` socket /
+   `{kind:1,glob}` route) to `__includeConfined(source, names, caps, pols)`, dispatching:
+   socket → masked wrap, server → facet. Facet API (read slice): `facet.paths()` (glob-filtered
+   location paths), `facet.allowed(path)`, `facet.route`. **Verified** (`t/comcon_com_facet.t`;
+   comcon 28/230): a fragment granted `routes('/acme/*')` sees only `/acme/*` paths (not
+   `/other`), and `allowed()` gates. The facet class is registered in the compartment runtime
+   (`ngx_js_com_facet_register_class` in `ngx_js_com_register_classes`) and its proto joins the
+   M-SES-1b harden set. **Still follow-on:** the facet **mutation** slice (gated
+   `addLocation`/`removeLocation` routed to the canonical op under the glob), and
+   `rateLimit`/`transform`/`audit` flavors.
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.

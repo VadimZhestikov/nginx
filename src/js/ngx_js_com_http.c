@@ -7728,6 +7728,257 @@ ngx_js_server_install_proto(JSContext *ctx)
 }
 
 
+/* ------------------------------------------------------------------ */
+/* COMCON mediate: NginxComFacet — an attenuated COM capability         */
+/* ------------------------------------------------------------------ */
+/*
+ * A facet borrows the ONE canonical server opaque (never re-wraps it — that
+ * would duplicate the per-wrapper prefix_locs/dyn_pool/tree_pool and diverge:
+ * two ops rebuilding cscf->static_locations clobber each other, and the confined
+ * runtime's finalizer would free dyn_pool clcf structs still in the live tree).
+ * The facet holds only (borrowed srv_op, route glob) and routes reads through a
+ * glob membrane. Attenuation-only: it can never reach a location outside glob.
+ */
+
+typedef struct {
+    ngx_js_server_opaque_t  *srv_op;      /* borrowed — the host keeps it alive */
+    size_t                   glob_len;
+    u_char                   glob[128];
+} ngx_js_com_facet_opaque_t;
+
+
+static void
+ngx_js_com_facet_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_com_facet_opaque_t  *fop;
+
+    fop = JS_GetOpaque(val, ngx_js_com_facet_class_id);
+    if (fop) {
+        js_free_rt(rt, fop);          /* srv_op is borrowed — do not free it */
+    }
+}
+
+
+static JSClassDef ngx_js_com_facet_class = {
+    "NginxComFacet",
+    .finalizer = ngx_js_com_facet_finalizer
+};
+
+
+/*
+ * Route glob match. A trailing star is a prefix wildcard (glob "/acme/" plus a
+ * star matches any path beginning "/acme/"); a lone star matches everything;
+ * otherwise the match is exact.
+ */
+static ngx_int_t
+ngx_js_route_match(const u_char *glob, size_t glob_len,
+    const u_char *path, size_t path_len)
+{
+    size_t  p;
+
+    if (glob_len == 1 && glob[0] == '*') {
+        return 1;
+    }
+
+    if (glob_len > 0 && glob[glob_len - 1] == '*') {
+        p = glob_len - 1;
+        return path_len >= p && ngx_strncmp(path, glob, p) == 0;
+    }
+
+    return path_len == glob_len && ngx_strncmp(path, glob, glob_len) == 0;
+}
+
+
+static void
+ngx_js_facet_collect_paths(JSContext *ctx, JSValue arr,
+    ngx_http_location_tree_node_t *node, uint32_t *idx,
+    const u_char *glob, size_t glob_len)
+{
+    ngx_http_core_loc_conf_t  *c;
+
+    if (node == NULL) {
+        return;
+    }
+
+    ngx_js_facet_collect_paths(ctx, arr, node->left, idx, glob, glob_len);
+
+    c = node->exact ? node->exact : node->inclusive;
+    if (c != NULL
+        && ngx_js_route_match(glob, glob_len, c->name.data, c->name.len))
+    {
+        JS_SetPropertyUint32(ctx, arr, (*idx)++,
+            JS_NewStringLen(ctx, (const char *) c->name.data, c->name.len));
+    }
+
+    ngx_js_facet_collect_paths(ctx, arr, node->tree, idx, glob, glob_len);
+    ngx_js_facet_collect_paths(ctx, arr, node->right, idx, glob, glob_len);
+}
+
+
+/* facet.paths() -> array of the location paths visible through the membrane */
+static JSValue
+ngx_js_com_facet_fn_paths(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_com_facet_opaque_t  *fop;
+    ngx_http_core_loc_conf_t   *root;
+    JSValue                     arr;
+    uint32_t                    idx;
+
+    fop = JS_GetOpaque2(ctx, this_val, ngx_js_com_facet_class_id);
+    if (!fop) {
+        return JS_EXCEPTION;
+    }
+
+    root = fop->srv_op->cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
+
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) {
+        return arr;
+    }
+
+    idx = 0;
+    ngx_js_facet_collect_paths(ctx, arr, root->static_locations, &idx,
+                               fop->glob, fop->glob_len);
+
+#if (NGX_PCRE)
+    if (root->regex_locations) {
+        ngx_http_core_loc_conf_t  **r;
+
+        for (r = root->regex_locations; *r; r++) {
+            if (ngx_js_route_match(fop->glob, fop->glob_len,
+                                   (*r)->name.data, (*r)->name.len))
+            {
+                JS_SetPropertyUint32(ctx, arr, idx++,
+                    JS_NewStringLen(ctx, (const char *) (*r)->name.data,
+                                    (*r)->name.len));
+            }
+        }
+    }
+#endif
+
+    return arr;
+}
+
+
+/* facet.allowed(path) -> whether the membrane admits this path */
+static JSValue
+ngx_js_com_facet_fn_allowed(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_com_facet_opaque_t  *fop;
+    const char                 *p;
+    size_t                      plen;
+    ngx_int_t                   ok;
+
+    fop = JS_GetOpaque2(ctx, this_val, ngx_js_com_facet_class_id);
+    if (!fop) {
+        return JS_EXCEPTION;
+    }
+
+    p = JS_ToCStringLen(ctx, &plen, argv[0]);
+    if (p == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    ok = ngx_js_route_match(fop->glob, fop->glob_len, (const u_char *) p, plen);
+    JS_FreeCString(ctx, p);
+
+    return JS_NewBool(ctx, ok);
+}
+
+
+/* facet.route -> the glob string (introspection) */
+static JSValue
+ngx_js_com_facet_get_route(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_com_facet_opaque_t  *fop;
+
+    fop = JS_GetOpaque2(ctx, this_val, ngx_js_com_facet_class_id);
+    if (!fop) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_NewStringLen(ctx, (const char *) fop->glob, fop->glob_len);
+}
+
+
+static const JSCFunctionListEntry ngx_js_com_facet_proto_funcs[] = {
+    JS_CFUNC_DEF   ("paths",   0, ngx_js_com_facet_fn_paths),
+    JS_CFUNC_DEF   ("allowed", 1, ngx_js_com_facet_fn_allowed),
+    JS_CGETSET_DEF ("route",      ngx_js_com_facet_get_route, NULL),
+};
+
+
+/*
+ * Register the NginxComFacet class in a runtime. Called from
+ * ngx_js_com_register_classes() so BOTH the host and the confined include
+ * compartment (comcon_rt) can instantiate a facet — the compartment is the
+ * common case (a mediated COM grant flows into a confined fragment).
+ */
+ngx_int_t
+ngx_js_com_facet_register_class(JSRuntime *rt)
+{
+    return JS_NewClass(rt, ngx_js_com_facet_class_id, &ngx_js_com_facet_class)
+           < 0 ? NGX_ERROR : NGX_OK;
+}
+
+
+ngx_int_t
+ngx_js_com_facet_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(ctx, proto, ngx_js_com_facet_proto_funcs,
+                               countof(ngx_js_com_facet_proto_funcs));
+
+    JS_SetClassProto(ctx, ngx_js_com_facet_class_id, proto);
+    return NGX_OK;
+}
+
+
+void *
+ngx_js_server_srv_op(JSValueConst val)
+{
+    return JS_GetOpaque(val, ngx_js_server_class_id);
+}
+
+
+JSValue
+ngx_js_com_facet_wrap(JSContext *ctx, void *srv_op, const char *glob,
+    size_t glob_len)
+{
+    JSValue                     obj;
+    ngx_js_com_facet_opaque_t  *fop;
+
+    fop = js_mallocz(ctx, sizeof(ngx_js_com_facet_opaque_t));
+    if (!fop) {
+        return JS_EXCEPTION;
+    }
+
+    fop->srv_op = srv_op;
+    if (glob_len > sizeof(fop->glob) - 1) {
+        glob_len = sizeof(fop->glob) - 1;
+    }
+    ngx_memcpy(fop->glob, glob, glob_len);
+    fop->glob_len = glob_len;
+
+    obj = JS_NewObjectClass(ctx, ngx_js_com_facet_class_id);
+    if (JS_IsException(obj)) {
+        js_free(ctx, fop);
+        return JS_EXCEPTION;
+    }
+
+    JS_SetOpaque(obj, fop);
+    return obj;
+}
+
+
 JSValue
 ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
     ngx_cycle_t *cycle)
