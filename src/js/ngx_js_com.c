@@ -3248,6 +3248,70 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      {name:'remove',op:'remove',cls:'X'},"
     "      {name:'revive',op:'revive',cls:'L'}]};};"
     "    return Object.freeze(h);};"
+    /* bindShared(key, quotation, contract, onRequest): the class-F, MULTI-WORKER
+       spelling of bindAt (increment D4b). The current {epoch, source} is the
+       single source of truth in nginx.shared (lock-free, instantly visible to
+       every worker), and each worker's request handler RECONCILES lazily:
+       on each request it reads the shared epoch and, if newer than its locally
+       compiled one, recompiles the shared source in ITS OWN compartment and
+       swaps (rebuild-on-write, per worker). So a replace() in any one worker
+       fans out coherently — no worker ever serves a torn state, and only the
+       source string crosses (never a JSValue). Reuses nginx.shared as the
+       transport (no new broadcast mechanism — the shell fundament). The old
+       local fragment is freed on each reconcile, so no per-worker accumulation.
+       h.handler(req) is installed at loc.handler; onRequest(req, callable,
+       epoch) does the app response shaping (callable === null when removed). */
+    "  C.bindShared=function(key,quotation,contract,onRequest){"
+    "    if(typeof key!=='string')throw new TypeError("
+    "      'bindShared: arg0 must be a string key');"
+    "    if(!quotation||!quotation[QUOTE])throw new TypeError("
+    "      'bindShared: arg1 must be a comcon.quote() description');"
+    "    if(typeof onRequest!=='function')throw new TypeError("
+    "      'bindShared: arg3 must be onRequest(req,callable,epoch)');"
+    "    contract=contract||{imports:[]};"
+    "    var renv=contract.env||C.env(),SK='__comconBind__:'+key;"
+    "    var localEpoch=-1,cur=null,tomb=false;"
+    /* nginx.shared is NOT available at config-eval time (only once workers run),
+       so ALL shared access is deferred to request time: reconcile() seeds the
+       shared state lazily on first touch (idempotent across workers) and runs
+       from the per-request handler. The constructor touches nothing shared. */
+    "    function reconcile(){"
+    "      var raw=nginx.shared.get(SK);"
+    "      if(raw===undefined){"
+    "        nginx.shared.set(SK,"
+    "          JSON.stringify({epoch:0,source:quotation.source}));"
+    "        raw=nginx.shared.get(SK);if(raw===undefined)return;}"
+    "      var st=JSON.parse(raw);if(st.epoch===localEpoch)return;"
+    "      var old=cur;"
+    "      if(st.removed){tomb=true;cur=null;}"
+    "      else{tomb=false;cur=C.realize(C.quote(st.source),contract,renv);}"
+    "      localEpoch=st.epoch;"
+    "      if(old&&old.handle!==undefined&&old.handle>=0)"
+    "        C.__freeConfined(old.handle);}"
+    "    function bump(obj){"
+    "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
+    "      obj.epoch=(st.epoch|0)+1;"
+    "      nginx.shared.set(SK,JSON.stringify(obj));reconcile();return obj.epoch;}"
+    "    var h={};"
+    "    h.epoch=function(){reconcile();return localEpoch;};"
+    "    h.handler=function(req){reconcile();"
+    "      onRequest(req,tomb?null:cur,localEpoch);};"
+    "    h.replace=function(q2){"
+    "      if(!q2||!q2[QUOTE])throw new TypeError("
+    "        'replace: arg0 must be a comcon.quote() description');"
+    "      return bump({source:q2.source});};"
+    "    h.remove=function(){"
+    "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
+    "      return bump({removed:true,source:st.source||''});};"
+    "    h.revive=function(){"
+    "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
+    "      return bump({source:st.source||''});};"
+    "    h.describe=function(){return {shared:true,ops:["
+    "      {name:'handler',op:'invoke',cls:'R'},"
+    "      {name:'replace',op:'rewrite',cls:'F'},"
+    "      {name:'remove',op:'remove',cls:'X'},"
+    "      {name:'revive',op:'revive',cls:'L'}]};};"
+    "    return Object.freeze(h);};"
     "})();";
 
 

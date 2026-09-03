@@ -2,8 +2,8 @@
 
 **Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.43). **D0 ✅** (substrate + p_symbol
 enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` selectors), **D3 ✅**
-(POM-node quotations + stone splices), **D4a ✅** (epochs + admitted replace + rollback); D4b/D4c,
-D5 pending. Follows the operator kernel
+(POM-node quotations + stone splices), **D4a ✅** (epochs + admitted replace + rollback), **D4b ✅**
+(class-F multi-worker fan-out); D4c, D5 pending. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -197,9 +197,20 @@ Likely **little or no new C** — a JS orchestration over `realize`/`include` + 
   and grew at request time on that now-stale pool → SIGSEGV; it now owns a dedicated long-lived pool
   (`comcon_frags_pool`, destroyed at teardown). **Gate met.**
 
-- **D4b — class-F multi-worker fan-out.** Route the epoch switch through the existing cfgbus
-  broadcast so every worker switches coherently (never half-propagated). Reuses the A2.8 transport
-  verbatim. **Gate:** a rebind propagates to all workers (multi-worker test); no stop-the-world.
+- **D4b — class-F multi-worker fan-out.** ✅ DONE (2026-09-03). `comcon.bindShared(key, quotation,
+  contract, onRequest)` — the multi-worker spelling of `bindAt`. The current `{epoch, source}` is the
+  single source of truth in **`nginx.shared`** (lock-free, instantly visible to every worker), and
+  each worker's `h.handler(req)` **reconciles lazily**: on each request it reads the shared epoch
+  and, if newer than its locally compiled one, recompiles the shared source **in its own
+  compartment** and swaps (rebuild-on-write per worker), freeing the old fragment. So a `replace()`
+  in any one worker fans out to **all** of them coherently — no worker ever serves a torn state, and
+  only the source string crosses (never a JSValue). Chose **lazy pull** (shared KV as truth +
+  per-request reconcile) over eager push: strictly coherent, simpler, and pays a recompile only on
+  the first request of a new epoch per worker. Reuses `nginx.shared` as the transport — **no new
+  broadcast mechanism** (the shell fundament). `t/comcon_pom_fanout.t` (4 workers): before replace
+  every worker serves v1; after ONE replace every worker serves v2 at epoch 1. **Gotcha fixed:**
+  `nginx.shared` is unavailable at config-eval time, so all shared access is deferred to request time
+  (lazy seed in `reconcile`). **Gate met:** rebind propagates to all workers; no stop-the-world.
 
 - **D4c — compiled-tier live re-AOT (DEFERRED / separately gated).** POM.md §3's class-F
   "bytecode-fallback → re-AOT → coherent epoch switch" for an *AOT-compiled* fragment. JIT-tier;

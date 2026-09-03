@@ -553,6 +553,19 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.44 (in place — increment D4b: class-F multi-worker fan-out):** `comcon.bindShared(key,
+quotation, contract, onRequest)` is the multi-worker spelling of `bindAt` — the class-F ("fan-out
+required") mutation class made real (POM.md §3). The current `{epoch, source}` is the single source
+of truth in `nginx.shared` (lock-free, instantly visible to every worker); each worker's handler
+**reconciles lazily** on each request — reads the shared epoch and, if newer, recompiles the shared
+source **in its own compartment** and swaps (rebuild-on-write per worker), freeing the old fragment.
+So a `replace()` in any one worker fans out to all of them coherently: no worker serves a torn state,
+and only the source string crosses realms (never a JSValue). Lazy-pull (shared KV as truth +
+per-request reconcile) was chosen over eager push — strictly coherent and simpler. Reuses
+`nginx.shared` as the transport (no new broadcast mechanism — [[pilgrim-shell-fundament-principle]]).
+`t/comcon_pom_fanout.t` (4 workers: all-v1 before, all-v2 at epoch 1 after one replace). Compiled-tier
+live re-AOT (D4c) and the full-CST front-end (D5) remain.
+
 **v5.43 (in place — increment D4a: POM mutation = rebuild-on-write + epochs):** `comcon.bindAt(site,
 quotation, contract)` installs an admitted quotation at a live binding **site** and returns a frozen
 **epoch handle**. POM mutation is **rebuild-on-write** (POM.md §4): `replace(q)` recompiles the
