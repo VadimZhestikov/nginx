@@ -1,4 +1,25 @@
-# COMCON — operator API design (the host-JS kernel surface)
+# COMCON — operator API (the host-JS kernel surface)
+
+> **IMPLEMENTATION STATUS (v5.35).** This is no longer design-only — the kernel operators are
+> BUILT and shipped as the `comcon` object on the host js_source context, and they are now the
+> ONLY confined-fragment mechanism (the `js_tenant_*` directives are removed; see
+> INCREMENT_CONVERGE.md).
+> - **Shipped:** `env`, `grant`, `mediate` (flavors `revoke`/`redact`/`allow` field-masks on
+>   sockets + `routes(glob)` on COM-node facets), `admit` (free-name ⊆ imports + dynamic-code
+>   refusal + request-field check + optional identity pin — but NOT yet the test-phase under
+>   determinism caps), `include` (`parse∘admit∘bind`, both interpreted + AOT tiers, with
+>   `contract = {imports, identity, checkRequest, grants, deps, meter}`), `meter`, `comcon.mode`
+>   (the process policy mode). Handlers are bound via the existing `location.handler`, not a
+>   directive.
+> - **Partial / divergent:** `bind` is currently META-only (a metered call wrapper); the real
+>   env-freeze/Meet confinement is performed by `include` (compile-in-restricted-compartment),
+>   which subsumes `bind`'s role for the request-handler case.
+> - **Still design (not built):** `includeAt` (§3a — anchors/expose/3-phase link), `realize` +
+>   quotations, `policy({...})` as a reified value, and the `rateLimit`/`transform`/`audit`
+>   mediate flavors. `meter`'s `gas` unit is forward-declared (only `timeoutMs` maps to the
+>   shipped deadline).
+>
+> The rest of this document is retained as the design reference for the shapes.
 
 Step 1 of the M-CFG kernel-operator track (`INCREMENT_MCFG.md`): the concrete host-JS shapes
 for FOUNDATION §4's `grant`/`mediate`/`bind`/`admit` + the derived `include`/`policy`/`realize`,

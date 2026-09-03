@@ -1,5 +1,18 @@
 # COMCON — The Verification Track (V1–V15, v5.0)
 
+> **UPDATE (v5.35).** The confinement was carried onto the `comcon.include` mechanism (the
+> convergence), which re-exercised the audits: (a) **SR-2 faithfulness now holds for include** —
+> `t/comcon_include_faithfulness.t` proves T2-refines-T1 over the confinement surface on both
+> builds for confined include fragments; (b) **SR-1's HIGH-1 (getter-reach-leak) and MEDIUM-2
+> (framing) were re-fixed in the SHARED response path** — they had been fixed only inside the old
+> tenant content handler; migrating confined handlers onto `req.respond`/`location.handler`
+> exposed that the general path lacked them (plus a CRLF-injection), now all three fixed in
+> `ngx_js_request_respond` + the include invoke, protecting every js_com handler; (c) **TM-1
+> denial-log quotas + sampling is IMPLEMENTED** and tested (`comcon_include_denial_log.t`: 100
+> full records + 1/100 sampling, exact counters) — previously "specified, not implemented." SR-3
+> (escape completeness) and M-SES-0/1/1b are unchanged. The standing open gate remains **SR-4**
+> (assurance case) and **maxim finalization** (full test262 for untrusted-native).
+
 *Companion to `ROADMAP.md` §12. The R-review (ROADMAP §11) hunted design bugs; this
 track answers a different question: for every claim the design makes, **what would
 convince a skeptic it is true** — and where is that machinery missing? Two items

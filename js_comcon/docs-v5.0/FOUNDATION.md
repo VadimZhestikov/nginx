@@ -553,6 +553,91 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.35 (in place — the CONVERGENCE is complete; ONE confined mechanism):** the whole
+directive-driven "tenant" path is retired. The five `js_tenant_*` directives
+(source/mode/dependency/artifact/handler) and the tenant compartment subsystem
+(`eval_tenant_sources`, `onRequest`/`tenant_request_handler`, `js_tenant_handler`'s content
+handler, `grantToTenant`, the tenant `_ctx`/`_rt`) are DELETED. Every confined fragment —
+request handler or config fragment — is now `comcon.include(source, contract)` bound through
+the EXISTING `location.handler` (or another COM setter). This is **Principle 11 realized**:
+"extend by granting, never by syntax" — the confined mechanism is a *granted operator* over
+the one COM, not a directive. Shared functions (`ngx_js_tenant_context_new`,
+`ngx_js_tenant_lockdown`, `ngx_js_learn_seed`, the recorder, `ngx_js_com_install_protos`,
+`ngx_js_compartment_*`, `comcon.mode`, `jcf->tenant_mode`, `nginx.tenantDenials/tenantLearning`)
+are kept — the include compartment uses them. Full track in INCREMENT_CONVERGE.md (P1–P6).
+comcon 21/159 (include-only), t/ 266/3412, t_stress 16/80, both builds.
+
+**v5.34 (in place — the compiled tier follows include; SR-2 holds for include):** one call
+(`js_comcon_aot_compile(comcon_ctx, fn)`, `#ifdef CONFIG_JIT`) lowers an include fragment to
+native C; the invoke's `JS_Call` dispatches to the compiled `jit_func`. The open risk — does
+maxim's AOT lower the CAP-CLOSURE shape (a fragment closed over granted-socket/dep params)? —
+resolved POSITIVELY. `t/comcon_include_faithfulness.t` runs interpreter-vs-AOT over the
+confinement surface and asserts identical responses AND denial counters (T2 refines T1 for
+include), `all_compiled` non-vacuous. The compiled tier no longer depends on the tenant
+`onRequest` handler — which is what unblocked v5.35's removal.
+
+**v5.33 (in place — include reaches interpreted parity with the tenant path):** `include`
+composes the C3 gate — factored into `ngx_js_comcon_admit_check` shared with the `admit`
+operator — when `contract.imports` is present (opt-in), plus an optional identity pin
+`H(H(source)‖schema)` via `contract.identity`; `contract.deps=[{name,path,sha256}]` loads
+pinned pure libraries as per-fragment CLOSURE PARAMS (`ngx_js_comcon_eval_dep`, hash-verified,
+bare-global eval); learn-mode recorder seeding added to the include compartment (keyed on
+`jcf->tenant_mode`, since the compartment is built during host eval *before* `policy_init`
+applies the mode). The request/response "serve" helper was scoped and then **resolved as a
+NON-GAP** — `location.handler` + `req.respond`/`req.json` already suffice, so no kernel
+`comcon.serve` (reuse the js_com primitive; the recursive-inclusion fundament). The tenant
+scenario tests migrated to `comcon_include_*` siblings.
+
+**v5.32 (in place — `mediate()` is an enforced membrane, on sockets and COM nodes):**
+`mediate(cap, interceptor)` realizes `A(cap′)⊆A(cap)` in C, no cross-realm object. A socket
+carries a per-wrapper FIELD MASK (`comcon.revoke/redact/allow` → bit per getter magic;
+`ngx_js_socket_wrap_masked`; a masked field reads `undefined`). A COM node is mediated by a
+`NginxComFacet` (`comcon.routes(glob)`): a thin, STATELESS cap that *borrows* the ONE canonical
+server op and routes `paths()`/`allowed()`/gated `addLocation`/`removeLocation` through a route
+glob. The facet is required because a COM server node is STATEFUL (per-wrapper
+`prefix_locs`/`dyn_pool`/`tree_pool`); re-wrapping it into the separate compartment runtime
+(the socket pattern) would diverge the live location tree and UAF at teardown — so it is never
+re-wrapped, only borrowed.
+
+**v5.31 (in place — live-cap grants + M-SES-1b + three response-path security fixes):**
+`include(src,{grants:{name:sock}})` re-wraps a granted socket compartment-native (a fresh
+wrapper around the same C handle, reach-gated) and binds it as a closure param; the invoke runs
+under `ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT)` so the A1 gate confines it.
+**M-SES-1b** makes the grantable cap prototypes non-extensible in the confined compartment
+(`ngx_js_comcon_harden_cap_protos`) — the flagged prerequisite of the grant model (a live grant
+makes the cap proto reachable via `getPrototypeOf`). **Three vulnerabilities were surfaced by
+routing confined handlers through the shared `req.respond`/invoke paths — and fixed there, so
+they now protect EVERY js_com handler (host and confined):** (1) response-header **CRLF
+injection** (`ngx_js_header_has_crlf` drop); (2) response-**framing smuggling** — a handler-set
+`content-length`/`transfer-encoding`/`connection` emitted a duplicate framing header
+(`ngx_js_header_is_framing` drop); (3) **HIGH — a reach attempt hidden in a return-value getter
+ran as HOST_ROOT** because the include invoke JSON-materialized the result *after*
+`compartment_leave`; fixed by materializing under TENANT. (SR-1's HIGH-1/MEDIUM-2 were fixed for
+the tenant path earlier; they had not been ported to the general response path — this closes
+that.) TM-1 denial-log quotas+sampling is IMPLEMENTED (`comcon_include_denial_log.t`).
+
+**v5.30 (in place — `comcon.include`: scope-isolated confined fragments):** a fragment is
+compiled in its OWN runtime compartment (`jcf->comcon_rt`, mirroring the tenant compartment:
+curated intrinsics + `ngx_js_tenant_lockdown` + the COM protos), held C-side
+(`jcf->comcon_frags`), and invoked IN the compartment with arg/result JSON-marshaled — only
+strings cross, so no JSValue crosses the realm/runtime. Own runtime after two reverted attempts
+(a cross-realm crash, then a shared-runtime leak); `jcf` is cached in a module-static because
+`ngx_cycle` is not the current cycle during `init_conf`. Gives authority isolation
+(`typeof nginx → "undefined"`), a metered abort, and clean own-runtime teardown.
+
+**v5.29 (in place — the M-CFG kernel operators + the shell fundament):** FOUNDATION §4's four
+operators are realized as GRANTED NAMES on the host `comcon` object —
+`comcon.{env,grant,mediate,bind,admit,include,meter}` — with `include = parse∘admit∘bind`.
+`admit` reuses the C3 gate; `bind`/`meter` tighten the worker gas deadline around a call. The
+governing principle, recorded from user direction: **pilgrim/js_com is a non-invasive SHELL
+around an EXISTING nginx; its role is DYNAMIC configuration** (modify/shrink/extend the *live*
+config via the COM); the operator's `nginx.conf` FILE is untouched except the single `js_source`
+directive; **NEVER add nginx directives for confinement** — the `js_tenant_*` directives violate
+this and are retired for host-JS operators; a per-request timeout is `meter` mediation, not a
+directive. OPERATOR_API §8 decisions resolved (imported `comcon` module; root cap set; meter
+units timeoutMs-now/gas-later; closure default; L-rights init-time scope). Full track in
+INCREMENT_MCFG.md.
+
 **v5.28 (in place — SR-3 escape-completeness audit PASSED, one freeze gap fixed):** the
 scheduled adversarial pentest of the hardened tenant context (curated intrinsics +
 M-SES-0 taming + M-SES-1 freeze + gas) found **no sandbox escape** — every dynamic-code

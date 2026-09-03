@@ -1,11 +1,16 @@
 # The COMCON User's Manual — DRAFT
 
-> **Status: working-backwards artifact.** This manual is written *as if COMCON shipped*,
-> to test the design from the user's chair — the same way the showcases tested it
-> scenario-by-scenario. Nothing here is implemented; syntax is hypothetical; every
-> place the design genuinely hasn't decided something is marked **[TBD]** and harvested
-> in Appendix B. Design: `FOUNDATION.md` · guarantees: `SEMANTICS.md` · numbers:
-> `PERFORMANCE.md`.
+> **Status: working-backwards artifact — NOT the shipped surface (v5.35).** This manual is
+> written *as if COMCON shipped*, to test the design from the user's chair. Its concrete
+> surface — `comcon_load`, the `comconctl` CLI verbs, and the tenant framing — is
+> **hypothetical and does not match the build.** What actually ships: `nginx.conf` gains only
+> `js_source root.js;`; the root script drives everything through the `comcon` operators
+> (`env`/`grant`/`mediate`/`admit`/`include`/`mode`) over the live COM (`nginx.*`), and binds a
+> confined handler with `location.handler = req => {…}`. The `js_tenant_*` directives this manual
+> and the older increment docs assume have been **removed** (INCREMENT_CONVERGE.md). Read this
+> for design *feel*; read `OPERATOR_API.md` + `INCREMENT_MCFG.md` + `INCREMENT_CONVERGE.md` for
+> the real API. Every genuinely-undecided item is marked **[TBD]** (Appendix B). Design:
+> `FOUNDATION.md` · guarantees: `SEMANTICS.md` · numbers: `PERFORMANCE.md`.
 
 COMCON is used by people wearing three different hats. This manual is organized by hat:
 

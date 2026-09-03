@@ -1,5 +1,16 @@
 # COMCON — Threat Model (v5.4)
 
+> **UPDATE (v5.35).** Mitigation status changes since this model was written: **TM-1**
+> (denial-log flooding) is now IMPLEMENTED — per-fragment quotas with 1/N sampling above quota,
+> exact counters (`comcon_include_denial_log.t`) — previously "specified, not implemented."
+> **T11** (availability) — per-request execution gas on both tiers is in place. **T10**
+> (request-level injection) — the response-side guards (CRLF-injection drop, framing/hop-by-hop
+> `content-length` drop, size caps) now live in the shared `req.respond` path, so they apply to
+> **every** js_com handler, not just the (removed) tenant content handler. The named residuals
+> are unchanged: **T8** engine memory safety (gated on maxim finalization for untrusted-native),
+> **T4/T9** IFC/side-channels (post-M9), **T6** availability-within-reach, **TM-2** session→env
+> mapping (still open/unowned).
+
 *The security-completeness check the four review passes structurally couldn't do: not
 "is this mechanism right?" but "against a structured adversary list, is the set of
 mitigations complete?" Each cell cites the mechanism that closes it (Principles, R/V/E/C

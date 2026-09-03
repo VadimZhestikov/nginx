@@ -347,10 +347,17 @@ compartment identity, the deny-by-default tenant environment, the host→tenant 
 primitive, the reach-cycle registry gates, and a **confined tenant serving live HTTP
 requests** (headers as data both ways) — each behind a `t/comcon_*` test, and
 **accepted end-to-end by a dogfood demo** (`js_com_demos/COMCON_dogfood/`: a caged
-mirror tenant on real multi-worker traffic). **Increment A is complete.** Everything else in this SPEC (typed profile, tiers, quotations, POM
-rewrite, config instance, adaptive) remains design. Delivery follows the increment
-re-cut (`ROADMAP.md` §13), confinement-first. This SPEC is normative for *what*; the
-design record (§14) holds *why* and *how we got here*.
+mirror tenant on real multi-worker traffic). **UPDATE (v5.35):** Increments **A, B, and C**
+(the typed admission front-end + the compiled tier T1/T2 through the SR-2 faithfulness gate)
+are complete, the confined tier is adversarially validated (SR-1/SR-2/SR-3), and increment
+**E (config instance / M-CFG)** is substantially built — the four kernel operators are shipped
+as the granted `comcon.*` names and the confined mechanism has **converged onto one primitive**,
+`comcon.include(...)` bound via `location.handler`, on both tiers, with the `js_tenant_*`
+directives removed (FOUNDATION §12 v5.29–v5.35; INCREMENT_CONVERGE.md). Still design: **quotations
++ `realize`/`includeAt`, POM rewrite / live ops (increment D, F/X rights), `admit`'s test-phase
+under determinism caps, the full M2 typed schema, WASM ingestion, and adaptive profiles (M9).**
+Delivery follows the increment re-cut (`ROADMAP.md` §13), confinement-first. This SPEC is
+normative for *what*; the design record (§14) holds *why* and *how we got here*.
 
 ---
 

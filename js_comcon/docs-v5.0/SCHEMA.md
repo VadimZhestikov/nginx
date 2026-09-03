@@ -1,5 +1,17 @@
 # COMCON — The Typed Schema (C2)
 
+> **STATUS NOTE (v5.35).** The `report` / `onRequest` / sealed `Request` / `Response` "tenant
+> environment" described below was the surface of the **removed** tenant path (see
+> INCREMENT_CONVERGE.md). A confined fragment is now a `comcon.include(...)` callable: it
+> receives whatever request DATA the host `location.handler` wrapper marshals to it (plain
+> `{method, uri, args, headers, …}`, JSON-crossed, no capability) and returns a value the wrapper
+> maps to the response (`req.respond(status, headers, body)` — the same `Response` shape, now
+> shaped host-side). The SR-1 output guards it describes (CRLF/framing/size) are now enforced in
+> `req.respond` itself, for every handler. The typed-schema *concept* (a contract's Γ / erasure
+> oracle) still stands and remains the target for `admit`'s type-phase (M2); the concrete
+> `Request`/`Response`/`onRequest` names below are historical. `schema/tenant-env.schema.json`
+> is likewise the old tenant-env shape.
+
 *The machine-readable type surface a policy is written against — the input to the typed
 profile (C3, the front-end type-checks fragments against it) and the erasure oracle for
 lowering (C5). This document is the normative description; the machine-readable form is

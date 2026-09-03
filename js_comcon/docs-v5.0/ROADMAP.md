@@ -1,5 +1,17 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
+> **POSITION (v5.35).** Increments **A / B / C are done** (COMCON-lite core; typed admission
+> front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed). **M-SES-0/1/1b** are
+> in place and the confined tier is adversarially validated (**SR-1/SR-2/SR-3 passed**).
+> Increment **E (M-CFG / config instance)** is now **substantially built**: the kernel-operator
+> surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
+> **CONVERGENCE (INCREMENT_CONVERGE.md) is complete** — one confined mechanism
+> (`comcon.include` + `location.handler`) on both tiers, with the `js_tenant_*` directives
+> removed. Increment **D (live POM ops — rewrite/epochs, F/X rights)** is **not started**. The
+> standing gate before untrusted-native production is **maxim finalization (full test262)**.
+> Entries below that describe `js_tenant_*` / `comcon_load` / a separate tenant path as the plan
+> are superseded by the operator kernel; see FOUNDATION §12 (v5.29–v5.35) for the delta.
+
 *Merges v2 §8 (staging) and §11 (first slice) with the typed-policy→maxim milestone
 plan and the M1 gate results. Ordering is de-risked: validate the payoff before
 building the compiler; two hard gates (M1 performance, M8 safety) plus the hardening
