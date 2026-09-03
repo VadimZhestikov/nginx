@@ -264,8 +264,9 @@ the same `admit`; follows the program-fragment operators.
    `include + location.handler` *the* confined-handler mechanism, parallel to the older
    `tenant_ctx`/`onRequest`/`js_tenant_handler` path. The convergence (fold `mode`/`dependency`/
    `artifact` into `include`'s contract + retire the tenant `onRequest` path so there is ONE
-   confined mechanism) is scoped as the next step. Then migrate `comcon_*.t` and remove the
-   directives (steps 5–6).
+   confined mechanism) is scoped in **`INCREMENT_CONVERGE.md`** (the parity map G1–G7 + phases
+   P1–P6; the compiled tier G6/P5 is the tall pole, kept as a separate gated increment). Then
+   migrate `comcon_*.t` and remove the directives (steps 5–6).
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.
 6. **Remove the directives.**
 
