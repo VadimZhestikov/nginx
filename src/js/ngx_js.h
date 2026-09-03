@@ -115,6 +115,15 @@ typedef struct {
      */
     JSRuntime           *tenant_rt;
     JSContext           *tenant_ctx;
+    JSRuntime           *comcon_rt;       /* M-CFG: OWN runtime for the include
+                                             compartment (mirrors tenant_rt — a
+                                             dedicated runtime, so JS_FreeRuntime
+                                             tears it down cleanly, unlike a 2nd
+                                             context on the host runtime). */
+    JSContext           *comcon_ctx;      /* confined compartment on comcon_rt */
+    ngx_array_t         *comcon_frags;    /* JSValue[] confined fragments, held
+                                             C-side; index = handle. Freed before
+                                             JS_FreeContext(comcon_ctx). */
     JSValue              tenant_request_handler;
     ngx_uint_t           tenant_mode;     /* A4/B0: ngx_js_tenant_mode_e */
 
@@ -407,6 +416,16 @@ typedef struct {
 
 extern ngx_module_t  ngx_js_module;
 extern ngx_module_t  ngx_js_http_module;
+
+/* COMCON M-CFG (scope isolation, dedicated-runtime model): compile a fragment
+ * in the confined compartment (own runtime) and hold it there (return an int
+ * handle); invoke by handle with JSON data marshaled across the boundary (C
+ * strings only — works even across runtimes). Defined in ngx_js_module.c,
+ * registered on `comcon` in ngx_js_com.c. */
+JSValue ngx_js_comcon_include_confined(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
+JSValue ngx_js_comcon_invoke_confined(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
 
 
 /* COM initialisation — installs nginx.* into ctx's global object */

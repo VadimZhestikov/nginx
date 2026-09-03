@@ -129,6 +129,18 @@ the same `admit`; follows the program-fragment operators.
    on one runtime is the likely culprit; give the include compartment its **own JSRuntime** (mirror
    `tenant_rt` exactly: create at init, `JS_FreeRuntime` at teardown), or gdb the leaked object.
    This needs a dedicated, gdb-assisted pass — it did not converge via incremental probing.
+   **✅ 3rd attempt — LANDED (2026-09-02).** `comcon.include(source, contract)` now works and
+   teardown is clean. Two fixes over attempt 2: (a) the compartment gets its **own runtime**
+   (`jcf->comcon_rt` — mirror `tenant_rt`: `JS_NewRuntime` + `ngx_js_com_register_classes` +
+   context + lockdown; `JS_FreeRuntime` at teardown), so its objects are freed by *its* runtime
+   teardown rather than leaking on the host runtime; (b) `jcf` is cached in a module-static at
+   `init_conf` (gdb showed the init-time crash was `ngx_get_conf(ngx_cycle->conf_ctx, …)` — during
+   `init_conf` `ngx_cycle` is not yet the current cycle). Fragments held C-side (`comcon_frags`),
+   invoked in the compartment, arg/result JSON-marshaled (strings cross, no object). **Verified:**
+   authority isolation (`typeof nginx → "undefined"`), data-in/out (`x.a*2 → 42`), metered confined
+   abort (`~100 ms`), **clean teardown** (`t/comcon_include.t`; comcon 25/209). Interrupt handler
+   wired on `comcon_rt` in `init_process` (gas). **Still follow-on:** live-**cap** grants (this
+   slice is data-in/data-out) and `mediate` membrane enforcement.
 4. **Reimplement `js_tenant_*` as thin *deprecated sugar*** that internally calls the operators
    — behavior identical, the whole existing suite stays green, migrate file-by-file.
 5. **Migrate `comcon_*.t`** to the host-JS `admit` form.

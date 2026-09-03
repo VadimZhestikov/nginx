@@ -3027,6 +3027,18 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var bound=function(){"
     "      return C.__runMetered(fn,ms,this,Array.prototype.slice.call(arguments));};"
     "    bound.env=env;bound.meterMs=ms;bound.fn=fn;return bound;};"
+    /* include(source, contract): compile the fragment in the confined
+       compartment (own runtime) and hold it there; the returned callable
+       marshals arg/result by JSON round-trip in C — no live object crosses.
+       AUTHORITY isolation (host unreachable) + RESOURCE (the meter). Grants
+       are a follow-on. */
+    "  C.include=function(source,contract){"
+    "    contract=contract||{};"
+    "    var h=C.__includeConfined(String(source));"
+    "    var ms=(contract.meter&&contract.meter[METER]"
+    "            &&contract.meter[METER].timeoutMs)|0;"
+    "    var bound=function(arg){return C.__invokeConfined(h,arg,ms);};"
+    "    bound.confined=true;bound.handle=h;bound.meterMs=ms;return bound;};"
     "})();";
 
 
@@ -3301,6 +3313,12 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__runMetered",
                           JS_NewCFunction(ctx, ngx_js_comcon_run_metered,
                                           "__runMetered", 4));
+        JS_SetPropertyStr(ctx, comcon_obj, "__includeConfined",
+                          JS_NewCFunction(ctx, ngx_js_comcon_include_confined,
+                                          "__includeConfined", 1));
+        JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
+                          JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
+                                          "__invokeConfined", 3));
         JS_SetPropertyStr(ctx, global, "comcon", comcon_obj);
 
         /* env/grant/mediate/meter/bind — the capability layer (JS) */

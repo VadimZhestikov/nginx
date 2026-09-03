@@ -350,6 +350,11 @@ const JSSharedArrayBufferFunctions  ngx_js_sab_funcs = {
 static void *ngx_js_create_conf(ngx_cycle_t *cycle);
 static char *ngx_js_init_conf(ngx_cycle_t *cycle, void *conf);
 
+/* M-CFG: the active jcf, cached at init_conf so comcon.include()/invoke() reach
+ * it without ngx_cycle (which is not yet the current cycle during init_conf —
+ * ngx_cycle->conf_ctx would be stale/NULL). COW-inherited by workers. */
+static ngx_js_conf_t  *ngx_js_comcon_jcf;
+
 static int       ngx_js_interrupt_handler(JSRuntime *rt, void *opaque);
 static ngx_int_t ngx_js_init_module(ngx_cycle_t *cycle);
 static ngx_int_t ngx_js_init_process(ngx_cycle_t *cycle);
@@ -1327,6 +1332,229 @@ ngx_js_tenant_lockdown(JSContext *tctx, JSRuntime *trt, ngx_log_t *log)
 }
 
 
+/*
+ * COMCON M-CFG (scope isolation). The confined-fragment compartment mirrors the
+ * tenant compartment, on its OWN runtime (jcf->comcon_rt) so JS_FreeRuntime
+ * tears it down cleanly — a second context on the host runtime leaked
+ * (list_empty(gc_obj_list) at the host JS_FreeRuntime). Fragments are held
+ * C-side (jcf->comcon_frags) and invoked IN the compartment; only JSON strings
+ * cross the boundary (runtime-agnostic), so no JSValue crosses realms/runtimes.
+ */
+static JSContext *
+ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
+{
+    JSContext        *sctx;
+    ngx_js_worker_t  *w;
+
+    if (jcf->comcon_ctx != NULL) {
+        return jcf->comcon_ctx;
+    }
+
+    jcf->comcon_rt = JS_NewRuntime();
+    if (jcf->comcon_rt == NULL) {
+        return NULL;
+    }
+    JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
+    (void) ngx_js_com_register_classes(jcf->comcon_rt);  /* mirror tenant_rt setup */
+
+    sctx = ngx_js_tenant_context_new(jcf->comcon_rt);
+    if (sctx == NULL) {
+        JS_FreeRuntime(jcf->comcon_rt);
+        jcf->comcon_rt = NULL;
+        return NULL;
+    }
+    if (ngx_js_tenant_lockdown(sctx, jcf->comcon_rt, ngx_cycle->log) != NGX_OK) {
+        JS_FreeContext(sctx);
+        JS_FreeRuntime(jcf->comcon_rt);
+        jcf->comcon_rt = NULL;
+        return NULL;
+    }
+    jcf->comcon_ctx = sctx;
+
+    /* gas interrupt handler: wire now if the worker exists (post-fork include);
+       init-time includes are (re)wired in init_process alongside tenant_rt. */
+    w = jcf->worker;
+    if (w != NULL) {
+        JS_SetInterruptHandler(jcf->comcon_rt, ngx_js_interrupt_handler, w);
+    }
+
+    return sctx;
+}
+
+
+/* comcon.__includeConfined(source) -> handle: compile a fragment (function
+ * expression) in the compartment; hold it C-side; return an integer handle. */
+JSValue
+ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_conf_t  *jcf;
+    JSContext      *sctx;
+    JSValue         fn, thrown, exc;
+    const char     *source, *estr;
+    u_char         *buf;
+    void           *slot;
+    size_t          slen;
+    ngx_uint_t      handle;
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL) {
+        return JS_ThrowInternalError(hctx, "comcon.include: no conf");
+    }
+    sctx = ngx_js_comcon_compartment(jcf);
+    if (sctx == NULL) {
+        return JS_ThrowInternalError(hctx, "comcon.include: compartment failed");
+    }
+
+    source = JS_ToCStringLen(hctx, &slen, argv[0]);
+    if (source == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    buf = ngx_alloc(slen + 3, ngx_cycle->log);
+    if (buf == NULL) {
+        JS_FreeCString(hctx, source);
+        return JS_ThrowOutOfMemory(hctx);
+    }
+    buf[0] = '(';
+    ngx_memcpy(buf + 1, source, slen);
+    buf[slen + 1] = ')';
+    buf[slen + 2] = '\0';
+    JS_FreeCString(hctx, source);
+
+    fn = JS_Eval(sctx, (const char *) buf, slen + 2, "<comcon-fragment>",
+                 JS_EVAL_TYPE_GLOBAL);
+    ngx_free(buf);
+
+    if (JS_IsException(fn)) {
+        exc = JS_GetException(sctx);
+        estr = JS_ToCString(sctx, exc);
+        thrown = JS_ThrowSyntaxError(hctx, "comcon.include: %s",
+                                     estr ? estr : "compile error");
+        if (estr != NULL) {
+            JS_FreeCString(sctx, estr);
+        }
+        JS_FreeValue(sctx, exc);
+        return thrown;
+    }
+    if (!JS_IsFunction(sctx, fn)) {
+        JS_FreeValue(sctx, fn);
+        return JS_ThrowTypeError(hctx,
+                   "comcon.include: source must be a function expression");
+    }
+
+    if (jcf->comcon_frags == NULL) {
+        jcf->comcon_frags = ngx_array_create(ngx_cycle->pool, 8, sizeof(JSValue));
+        if (jcf->comcon_frags == NULL) {
+            JS_FreeValue(sctx, fn);
+            return JS_ThrowOutOfMemory(hctx);
+        }
+    }
+    slot = ngx_array_push(jcf->comcon_frags);
+    if (slot == NULL) {
+        JS_FreeValue(sctx, fn);
+        return JS_ThrowOutOfMemory(hctx);
+    }
+    *(JSValue *) slot = fn;                          /* the array owns fn */
+    handle = jcf->comcon_frags->nelts - 1;
+
+    return JS_NewInt64(hctx, (int64_t) handle);
+}
+
+
+/* comcon.__invokeConfined(handle, arg, timeoutMs) -> result: invoke the held
+ * fragment in the compartment; `arg`/result marshaled by JSON round-trip in C
+ * (only strings cross). Metered via the worker deadline (compartment runtime
+ * has the same interrupt handler). */
+JSValue
+ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_conf_t    *jcf;
+    JSContext        *sctx;
+    ngx_js_worker_t  *w = NULL;
+    JSValueConst      fn;
+    JSValue           arg, result, jstr, retv, exc;
+    const char       *s;
+    size_t            len;
+    int64_t           handle = 0;
+    int               nargs = 0;
+    uint32_t          timeout = 0;
+    uint64_t          old_deadline = 0, now_ms, newd;
+    ngx_uint_t        metered = 0;
+    struct timespec   ts;
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx == NULL || jcf->comcon_frags == NULL) {
+        return JS_ThrowInternalError(hctx, "comcon: no compartment");
+    }
+    sctx = jcf->comcon_ctx;
+
+    JS_ToInt64(hctx, &handle, argv[0]);
+    if (argc > 2) {
+        JS_ToUint32(hctx, &timeout, argv[2]);
+    }
+
+    if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
+        return JS_ThrowTypeError(hctx, "comcon: bad fragment handle");
+    }
+    fn = ((JSValue *) jcf->comcon_frags->elts)[handle];   /* borrowed */
+
+    arg = JS_UNDEFINED;
+    if (argc > 1 && !JS_IsUndefined(argv[1])) {
+        jstr = JS_JSONStringify(hctx, argv[1], JS_UNDEFINED, JS_UNDEFINED);
+        s = JS_ToCStringLen(hctx, &len, jstr);
+        if (s != NULL) {
+            arg = JS_ParseJSON(sctx, s, len, "<arg>");
+            JS_FreeCString(hctx, s);
+            nargs = 1;
+        }
+        JS_FreeValue(hctx, jstr);
+    }
+
+    if (timeout > 0) {
+        w = jcf->worker;
+        if (w != NULL) {
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
+            newd = now_ms + timeout;
+            old_deadline = w->request_deadline_ms;
+            w->request_deadline_ms =
+                (old_deadline != 0 && old_deadline < newd) ? old_deadline : newd;
+            metered = 1;
+        }
+    }
+
+    result = JS_Call(sctx, fn, JS_UNDEFINED, nargs, (JSValueConst *) &arg);
+
+    if (metered) {
+        w->request_deadline_ms = old_deadline;
+    }
+    JS_FreeValue(sctx, arg);
+
+    if (JS_IsException(result)) {
+        exc = JS_GetException(sctx);
+        s = JS_ToCString(sctx, exc);
+        retv = JS_ThrowTypeError(hctx, "comcon: fragment: %s", s ? s : "error");
+        if (s != NULL) {
+            JS_FreeCString(sctx, s);
+        }
+        JS_FreeValue(sctx, exc);
+        return retv;
+    }
+
+    jstr = JS_JSONStringify(sctx, result, JS_UNDEFINED, JS_UNDEFINED);
+    JS_FreeValue(sctx, result);
+    s = JS_ToCStringLen(sctx, &len, jstr);
+    retv = (s != NULL) ? JS_ParseJSON(hctx, s, len, "<result>") : JS_UNDEFINED;
+    if (s != NULL) {
+        JS_FreeCString(sctx, s);
+    }
+    JS_FreeValue(sctx, jstr);
+    return retv;
+}
+
+
 static ngx_int_t
 ngx_js_eval_tenant_sources(ngx_js_conf_t *jcf, ngx_cycle_t *cycle)
 {
@@ -1609,6 +1837,8 @@ ngx_js_init_conf(ngx_cycle_t *cycle, void *conf)
     u_char         *src;
     size_t          src_len;
 
+    ngx_js_comcon_jcf = jcf;    /* M-CFG: reachable from comcon.include CFunctions */
+
     if (jcf->sources.nelts == 0 && jcf->tenant_sources.nelts == 0) {
         return NGX_CONF_OK;    /* nothing to do — pure static config */
     }
@@ -1746,6 +1976,23 @@ failed_ctx:
 
     JS_FreeContext(jcf->ctx);
     jcf->ctx = NULL;
+
+    if (jcf->comcon_ctx != NULL) {   /* M-CFG: free frags, context, then its runtime */
+        if (jcf->comcon_frags != NULL) {
+            ngx_uint_t  fi;
+            JSValue    *fv = jcf->comcon_frags->elts;
+            for (fi = 0; fi < jcf->comcon_frags->nelts; fi++) {
+                JS_FreeValue(jcf->comcon_ctx, fv[fi]);
+            }
+            jcf->comcon_frags->nelts = 0;
+        }
+        JS_FreeContext(jcf->comcon_ctx);
+        jcf->comcon_ctx = NULL;
+    }
+    if (jcf->comcon_rt != NULL) {
+        JS_FreeRuntime(jcf->comcon_rt);
+        jcf->comcon_rt = NULL;
+    }
 
 failed_rt:
     js_std_free_handlers(jcf->rt);
@@ -2436,6 +2683,10 @@ ngx_js_init_process(ngx_cycle_t *cycle)
         JS_SetInterruptHandler(jcf->tenant_rt, ngx_js_interrupt_handler, w);
     }
 
+    if (jcf->comcon_rt != NULL) {   /* M-CFG: gas for init-time include fragments */
+        JS_SetInterruptHandler(jcf->comcon_rt, ngx_js_interrupt_handler, w);
+    }
+
     /*
      * Overwrite the context opaque (set to cycle in ngx_js_com_init) with
      * the worker pointer so that JS C functions (e.g. nginx.setTimeout) can
@@ -2859,6 +3110,23 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
         }
         JS_FreeContext(jcf->ctx);
         jcf->ctx = NULL;
+    }
+
+    if (jcf->comcon_ctx != NULL) {   /* M-CFG: free frags, context, then its runtime */
+        if (jcf->comcon_frags != NULL) {
+            ngx_uint_t  fi;
+            JSValue    *fv = jcf->comcon_frags->elts;
+            for (fi = 0; fi < jcf->comcon_frags->nelts; fi++) {
+                JS_FreeValue(jcf->comcon_ctx, fv[fi]);
+            }
+            jcf->comcon_frags->nelts = 0;
+        }
+        JS_FreeContext(jcf->comcon_ctx);
+        jcf->comcon_ctx = NULL;
+    }
+    if (jcf->comcon_rt != NULL) {
+        JS_FreeRuntime(jcf->comcon_rt);
+        jcf->comcon_rt = NULL;
     }
 
     if (jcf->rt) {
