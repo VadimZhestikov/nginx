@@ -1924,6 +1924,20 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         JS_FreeValue(hctx, idv);
     }
 
+#ifdef CONFIG_JIT
+    /* CONVERGE P5: lower the admitted fragment to native C (server-AOT). The
+       invoke's JS_Call then dispatches to the compiled jit_func. Confinement is
+       preserved by construction — the compiled code calls the same gated host
+       functions under the same host-set compartment (the invoke enters TENANT,
+       and getters materialize under it). Best-effort: on failure the fragment
+       runs interpreted (maxim skips-to-interpreter). */
+    if (js_comcon_aot_compile(sctx, fn) == 0) {
+        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                      "js comcon: include fragment lowered to native C "
+                      "(COMCON C5 server-AOT)");
+    }
+#endif
+
     if (jcf->comcon_frags == NULL) {
         jcf->comcon_frags = ngx_array_create(ngx_cycle->pool, 8, sizeof(JSValue));
         if (jcf->comcon_frags == NULL) {

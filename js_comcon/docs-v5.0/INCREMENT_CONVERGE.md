@@ -130,9 +130,15 @@ compiled tier, and the request contract.
    Compiled-tier (`faithfulness`, `lowering`) stay for P5. **Net:** at P6 the M-SES lockdown code
    stays (used by include); its coverage moves to the `comcon_include_*` probes, and the tenant
    harness is deleted.
-5. **P5 — compiled tier (G6). SCOPE (2026-09-02).** Retarget C5 lowering to `include` fragments so
-   the compiled tier no longer depends on the tenant `onRequest` path — the last thing gating P6
-   removal. Full scope in **§ P5 below.**
+5. **P5 — compiled tier (G6). ✅ LANDED (2026-09-02).** `include` fragments now lower to native C on
+   `objs_jit`, so the compiled tier no longer depends on the tenant `onRequest` path. One
+   `js_comcon_aot_compile(sctx, fn)` call in `__includeConfined` (`#ifdef CONFIG_JIT`). **R1 — the
+   main risk (does maxim lower the cap-closure shape?) — resolved POSITIVELY:** a fragment closed
+   over a granted socket AOT-compiles (verified by probe + the `all_compiled` gate). **SR-2 gate
+   green:** `t/comcon_include_faithfulness.t` runs both builds and asserts identical responses AND
+   denial counters across the confinement surface (string/JSON/object/compute, granted-socket scalar
+   reads, A1 gated reach `.listener`, A1 gated mutator `close()`), with `all_compiled` non-vacuous.
+   The full `comcon_*.t` suite is green on `objs_jit` too (45/335). Details in **§ P5 below.**
 6. **P6 — remove the directives. 🔨 STARTED (2026-09-02) — deprecation step.** Full removal is
    **gated on P5**: the compiled tier (`#ifdef CONFIG_JIT`, `ngx_js_module.c` C5.0-b) still lowers
    the tenant `onRequest` handler on the `objs_jit` build, so `js_tenant_handler` + the
@@ -184,7 +190,10 @@ tier.
 
 ## § P5 — compiled-tier retarget to `include` (scope)
 
-**Status:** SCOPE (2026-09-02). The tall pole; the one thing gating P6 removal.
+**Status:** ✅ LANDED (2026-09-02). The tall pole is cleared. P5.1 = the one `aot_compile` call;
+P5.2 = `t/comcon_include_faithfulness.t` (22 tests, both builds); P5.3 = `comcon_*.t` green on
+`objs_jit` (45/335). **R1 (cap-closure lowering) resolved positively** — granted fragments compile.
+The scope below is retained as the record.
 
 ### Goal
 Lower `include` fragments to native C on the `objs_jit` build at SR-2 faithfulness parity, so the
