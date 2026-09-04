@@ -3,8 +3,8 @@
 **Status:** 🚧 IN PROGRESS (2026-09-03, docs at v5.43). **D0 ✅** (substrate + p_symbol
 enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` selectors), **D3 ✅**
 (POM-node quotations + stone splices), **D4a ✅** (epochs + admitted replace + rollback), **D4b ✅**
-(class-F multi-worker fan-out), **D5a ✅** (call-site audit); D4c, D5b deferred. Follows the operator
-kernel
+(class-F multi-worker fan-out), **D5a ✅** (call-site audit), **D5b-1 ✅** (declarative-profile
+checker); D4c, D5b-2/3/4 deferred. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -291,3 +291,75 @@ independent of the POM.
 
 **Decision (2026-09-03):** proceed with **D5a** (bytecode call-site enumeration / audit); D5b stays a
 separately-gated future milestone, D4c stays deferred.
+
+## 9. D5b detailed sub-scope — the CST front-end (2026-09-04)
+
+D5a delivered call-site **audit** from bytecode (no parser); D5b is the parser-backed remainder.
+It carries four things, of very different size and value — scoped and staged accordingly.
+
+### What D5b delivers
+1. **Declarative-profile checker** (`syntax_allowed` + descriptor-table normal form) — soundly review
+   an untrusted config/policy proposal (prove it stays in the loop-free / no-dynamic / no-computed
+   subset; normalize to diffable descriptor tables). This is the one platform hook the config-language
+   pattern needs (`PATTERN_config_language.md`).
+2. **Expression-granularity POM** — a real CST (stmt/expr nodes, column-precise spans, trivia), so
+   `node.children` descends below function granularity and `hash`/`id` reach expressions.
+3. **Finer selectors** — extend the D2 grammar with `callsites(x)` (as real nodes, not bytecode
+   records), method-call sites, span/anchor predicates.
+4. **Source-rewrite hardening** — `harden(node, "callsites(x)", wrapperQuotation)` rewrites the matched
+   sites at the source level and rebuilds via D4 (rebuild-on-write). The only path to the residuals
+   D5a/the kernel cannot reach: positional/per-site hardening, method calls, locally-bound targets,
+   and full-language third-party code.
+5. **Cross-file provenance** — span mapping through `include`-spliced fragments (POM.md §6 Q3).
+
+### Reuse framing (what is *already* covered — decide before building the big parser)
+- **Enforcement of free-name hardening is the capability kernel's** (`grant(env,"fetch",mediate(…))`).
+- **Audit ("where is X called") is D5a** (bytecode scan).
+So D5b's *unique* value is (1) declarative-proposal analyzability and (4) source-rewrite of the
+residual cases. If neither positional/source-rewrite hardening nor full-language third-party hardening
+is a concrete requirement, the kernel + D5a already cover the practical surface — build (1) and stop.
+
+### The crux — the parser
+A CST needs a JS parser (QuickJS keeps none; engine-patching it is single-pass surgery + couples to
+internals; maxim's front-end couples the interpreted tier to the JIT — both rejected as in §2). The
+real choice is **build vs vendor** a JS-side parser:
+- **Hand-roll a full ES parser** — thousands of lines, subtle-bug-prone; and the parser is
+  **security-relevant TCB** (a mis-parse that admits something it shouldn't is a soundness hole), so
+  bug-proneness is a *security* cost, not just effort.
+- **Vendor a proven parser** (acorn-class, MIT, pure JS → runs host-side as trusted analysis) and map
+  its ESTree output to POM nodes. Larger trusted surface, but *proven-ness beats hand-rolled* for a
+  TCB soundness component — the doctrine's "verify the finite TCB" favours the battle-tested artifact.
+- **The declarative subset (item 1) is tiny** — a small hand-rolled recursive-descent parser for the
+  straight-line `syntax_allowed` grammar is low-risk and needs no full parser.
+
+**Recommendation:** small hand-rolled parser for the declarative subset (D5b-1); **vendor** a proven
+ES parser for the full CST (D5b-2) rather than hand-roll one.
+
+### Stages
+- **D5b-1 — declarative-profile checker + descriptor tables.** ✅ DONE (2026-09-04).
+  `comcon.reviewDeclarative(source)` — a small hand-rolled recursive-descent parser (pure JS, in the
+  comcon bootstrap; no engine change) for the `syntax_allowed` subset: a straight-line sequence of
+  fluent call-chains over dotted name paths, with literal / nested-chain / free-name-ref / obj / arr
+  arguments — NO loops, conditionals, operators, assignments, computed access, or functions. A
+  **sound rejecter** (parses only that grammar, throws on anything else), returning diffable
+  **descriptor tables** (`{declarative:true, statements:[[{op,args}…]…]}`). `realize(q, {profile:
+  'declarative'})` runs it before admission and refuses a non-declarative proposal (charged at the
+  realizer). This is the config-language pattern's one platform hook (`PATTERN_config_language.md`):
+  an untrusted proposal is now *soundly reviewable*, not merely runtime-validated. `t/comcon_declarative.t`
+  (16). Independent of the full parser.
+- **D5b-2 — full CST + expression-granularity POM + finer selectors.** Vendor the ES parser; map
+  ESTree → POM stmt/expr nodes with spans; extend `query` with `callsites(x)`/method/span predicates.
+  **Large; the real M3 front-end.** Gate on a concrete need for expression-level targeting.
+- **D5b-3 — source-rewrite hardening.** `harden(node, query, wrapperQuotation)` → rewrite matched
+  sites → rebuild via D4. Depends on D5b-2 + D4. The brownfield-hardening showcase (§38) in full.
+- **D5b-4 — cross-file provenance.** Span mapping through `include` splices (POM.md §6 Q3). Depends
+  on D5b-2.
+
+### Invariants
+- Reads still return quotations; a query result is a quote()-able node.
+- The parser is TCB — prefer a proven artifact; a mis-parse must fail **closed** (reject), never admit.
+- Rewrites go through `admit` + rebuild-on-write (D4), never edit a running fragment in place.
+
+**Recommended entry: D5b-1** (declarative-profile checker) — it is small, unlocks sound config-proposal
+review (the config-language pattern), and needs no full parser. Treat D5b-2/3/4 as a separately-gated
+milestone, justified only by a concrete positional/source-rewrite/third-party-hardening requirement.

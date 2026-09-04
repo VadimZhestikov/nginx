@@ -60,7 +60,16 @@ mechanism. (Live COM only reaches class-1/2; the class-3 wall is nginx's.)
   (allowed ops only, class-checked) before touching the COM. Soundly *reviewing/diffing* that
   proposal is where the platform helps (below).
 
-## The one genuine platform hook → D5b
+## The one genuine platform hook → D5b-1 (✅ shipped 2026-09-04)
+
+**Update:** the declarative-profile checker now exists — `comcon.reviewDeclarative(source)` (increment
+D5b-1). It soundly accepts only the `syntax_allowed` subset (straight-line fluent call-chains, literal
+/ ref / obj / arr args; no loops/dynamic/computed/functions) and returns diffable **descriptor
+tables**; `realize(q, {profile:'declarative'})` refuses a non-declarative proposal. So an operator can
+now *soundly review/diff* an untrusted config sentence, not just runtime-validate it. The remainder
+below (full CST / source-rewrite) is still D5b-2+.
+
+
 
 Making a proposal's review **sound** — proving a sentence stays in a declarative subset (no loops /
 dynamic / computed access) and normalizing it to diffable **descriptor tables** — needs a static

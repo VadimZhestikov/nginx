@@ -3016,6 +3016,80 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      q.splices=Object.freeze(sp);}"
     "    Object.defineProperty(q,QUOTE,{value:true});"
     "    return Object.freeze(q);};"
+    /* reviewDeclarative(source) — increment D5b-1: the syntax_allowed declarative
+       profile checker + descriptor-table normal form (SEMANTICS §4.4, FOUNDATION
+       §8). A config/policy SENTENCE is declarative iff it is a straight-line
+       sequence of fluent call-chains over dotted name paths, with literal /
+       nested-chain / free-name-ref arguments — NO loops, conditionals, operators,
+       assignments, computed access, or functions. A SOUND rejecter: it parses ONLY
+       that grammar and throws on anything else, so what it accepts is exactly what
+       reduces to the returned descriptor tables (diffable JSON — the review
+       artifact). This is the one platform hook the config-language pattern needs
+       (PATTERN_config_language.md): an untrusted proposal becomes soundly
+       reviewable, not merely runtime-validated. Full CST / source-rewrite is D5b-2+. */
+    "  C.reviewDeclarative=function(source){"
+    "    var s=String(source),i=0,N=s.length;"
+    "    function isIdS(c){return !!c&&(c>='a'&&c<='z'||c>='A'&&c<='Z'||c==='_'||c==='$');}"
+    "    function isId(c){return isIdS(c)||c>='0'&&c<='9';}"
+    "    function isD(c){return c>='0'&&c<='9';}"
+    "    var KW={'for':1,'while':1,'do':1,'if':1,'else':1,'switch':1,'function':1,"
+    "      'return':1,'var':1,'let':1,'const':1,'new':1,'throw':1,'try':1,'catch':1,"
+    "      'with':1,'class':1,'yield':1,'await':1,'typeof':1,'delete':1,'void':1,"
+    "      'in':1,'instanceof':1,'this':1,'super':1};"
+    "    function fail(m){throw new TypeError('not declarative: '+m+' (@'+i+')');}"
+    "    function ws(){for(;;){var c=s[i];"
+    "      if(c===' '||c==='\\t'||c==='\\n'||c==='\\r'){i++;continue;}"
+    "      if(c==='/'&&s[i+1]==='/'){while(i<N&&s[i]!=='\\n')i++;continue;}"
+    "      break;}}"
+    "    function ident(){ws();var st=i;if(!isIdS(s[i]))fail('expected name');"
+    "      while(i<N&&isId(s[i]))i++;var w=s.slice(st,i);"
+    "      if(KW[w])fail(\"keyword '\"+w+\"'\");return w;}"
+    "    function path(){var p=[ident()];for(;;){ws();"
+    "      if(s[i]==='.'){var sv=i;i++;ws();"
+    "        if(isIdS(s[i]))p.push(ident());else{i=sv;break;}}else break;}"
+    "      return p.join('.');}"
+    "    function str(){var q=s[i++],o='';"
+    "      while(i<N&&s[i]!==q){if(s[i]==='\\\\'){o+='\\\\'+s[i+1];i+=2;}else o+=s[i++];}"
+    "      if(s[i]!==q)fail('unterminated string');i++;"
+    "      try{return JSON.parse('\"'+o+'\"');}catch(e){return o;}}"
+    "    function num(){var st=i;if(s[i]==='-')i++;while(i<N&&isD(s[i]))i++;"
+    "      if(s[i]==='.'){i++;while(i<N&&isD(s[i]))i++;}"
+    "      if(s[i]==='e'||s[i]==='E'){i++;if(s[i]==='+'||s[i]==='-')i++;"
+    "        while(i<N&&isD(s[i]))i++;}return Number(s.slice(st,i));}"
+    "    function obj(){i++;var o={};ws();if(s[i]==='}'){i++;return o;}"
+    "      for(;;){ws();var k=(s[i]==='\"'||s[i]===\"'\")?str():ident();ws();"
+    "        if(s[i]!==':')fail(\"expected ':'\");i++;o[k]=value();ws();"
+    "        if(s[i]===','){i++;continue;}if(s[i]!=='}')fail(\"expected '}'\");i++;break;}"
+    "      return o;}"
+    "    function arr(){i++;var a=[];ws();if(s[i]===']'){i++;return a;}"
+    "      for(;;){a.push(value());ws();if(s[i]===','){i++;continue;}"
+    "        if(s[i]!==']')fail(\"expected ']'\");i++;break;}return a;}"
+    "    function args(){var a=[];ws();if(s[i]===')')return a;"
+    "      for(;;){a.push(value());ws();if(s[i]===','){i++;continue;}break;}return a;}"
+    "    function chain(){var steps=[],p=path();ws();"
+    "      if(s[i]!=='(')fail(\"expected '(' after '\"+p+\"'\");i++;"
+    "      steps.push({op:p,args:args()});ws();"
+    "      if(s[i]!==')')fail(\"expected ')'\");i++;"
+    "      for(;;){ws();if(s[i]==='.'){var sv=i;i++;ws();"
+    "        if(!isIdS(s[i])){i=sv;break;}var p2=path();ws();"
+    "        if(s[i]!=='(')fail(\"chain step '\"+p2+\"' is not a call\");i++;"
+    "        steps.push({op:p2,args:args()});ws();"
+    "        if(s[i]!==')')fail(\"expected ')'\");i++;continue;}break;}"
+    "      return steps;}"
+    "    function value(){ws();var c=s[i];"
+    "      if(c==='\"'||c===\"'\")return str();"
+    "      if(c==='-'||isD(c))return num();"
+    "      if(c==='{')return obj();"
+    "      if(c==='[')return arr();"
+    "      if(isIdS(c)){var sv=i,p=path();ws();"
+    "        if(s[i]==='('){i=sv;return {chain:chain()};}"
+    "        return {ref:p};}"
+    "      fail(\"unexpected '\"+(c||'<eof>')+\"'\");}"
+    "    var out=[];ws();"
+    "    while(i<N){var sv=i;path();ws();"
+    "      if(s[i]!=='(')fail('statement must be a call');i=sv;"
+    "      out.push(chain());ws();if(s[i]===';'){i++;ws();}}"
+    "    return {declarative:true,statements:out};};"
     /* realize(q, contract, realizerEnv): give a quotation force under the
        REALIZER's authority — the operator-realizes-a-tenant-proposal path
        (showcases 46-47). Distinct from bind/include (which use the PRODUCER's
@@ -3038,6 +3112,13 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      if(Object.prototype.hasOwnProperty.call(renv.grants,n))"
     "        rg[n]=renv.grants[n];}"
     "    var c={grants:rg,imports:manifest};"
+    /* D5b-1: an operator can require the proposal be in the declarative profile —
+       soundly reviewable (reduces to descriptor tables), no loops/dynamic. The
+       check runs on the ORIGINAL source before any splice wrapping; refusal is
+       charged as admission at the realizer. */
+    "    if(contract.profile==='declarative'){"
+    "      try{C.reviewDeclarative(q.source);}"
+    "      catch(e){throw new Error('admission refused: '+e.message);}}"
     "    if(contract.meter)c.meter=contract.meter;"
     "    if(contract.tests)c.tests=contract.tests;"
     "    if(contract.identity)c.identity=contract.identity;"

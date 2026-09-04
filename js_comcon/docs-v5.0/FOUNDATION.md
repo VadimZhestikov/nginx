@@ -553,6 +553,18 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.46 (in place — increment D5b-1: the declarative-profile checker):**
+`comcon.reviewDeclarative(source)` implements the `syntax_allowed` declarative profile (§8 /
+SEMANTICS §4.4): a small pure-JS recursive-descent parser that accepts only a straight-line sequence
+of fluent call-chains over dotted name paths (literal / nested-chain / free-name-ref / obj / arr
+args) — no loops, conditionals, operators, assignments, computed access, or functions — and returns
+diffable **descriptor tables**. It is a **sound rejecter**: what it accepts is exactly what reduces
+to the tables, so an untrusted config/policy proposal becomes *soundly reviewable*, not merely
+runtime-validated. `realize(q, {profile:'declarative'})` refuses a non-declarative proposal at
+admission. This is the one platform hook the config-language pattern needs
+([[PATTERN_config_language.md]] / config-DSL is otherwise userland); the full CST + source-rewrite
+(D5b-2+) stays a separately-gated milestone. `t/comcon_declarative.t`.
+
 **v5.45 (in place — increment D5a: call-site enumeration / audit):** `node.references(name)` /
 `node.callsites(name)` enumerate every reference to a free name or method `name` in a fragment (with
 line numbers), and the subset that are actual call sites — the intensional **audit READ side** of
