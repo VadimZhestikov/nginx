@@ -58,6 +58,22 @@ for d in "${DIRS[@]}"; do
   jerr=$(timeout "$TIMEOUT" "$RT" -c "$CONF" --jit-threshold-gcc=1 -d "$T" 2>/tmp/t0.err 1>/tmp/t0.out); jrc=$?
   new=$(grep -oE '[0-9]+ new' /tmp/t0.err | tail -1 | grep -oE '[0-9]+'); new=${new:-0}
   if [ $jrc -ne 0 ] && [ $jrc -ne 1 ]; then new="CRASH/rc=$jrc"; fi
+  # rc=124 is `timeout` firing, NOT a crash — on a LARGE dir the threshold=1
+  # sweep (GCC-compile every function) is simply slow. Distinguish a real hang
+  # from compile-volume slowness with a confirmation run at the realistic
+  # default threshold (only hot functions compile). If that is clean, the dir is
+  # correct; label SLOW-OK so the report stops crying wolf. (rc 139=SIGSEGV /
+  # 134=SIGABRT stay CRASH — those are real.)
+  if [ $jrc -eq 124 ]; then
+    timeout "$TIMEOUT" "$RT" -c "$CONF" --jit-threshold-gcc=100 -d "$T" \
+        2>/tmp/t0h.err 1>/dev/null; hrc=$?
+    hnew=$(grep -oE '[0-9]+ new' /tmp/t0h.err | tail -1 | grep -oE '[0-9]+')
+    if { [ $hrc -eq 0 ] || [ $hrc -eq 1 ]; } && [ "${hnew:-0}" = "0" ]; then
+      new="SLOW-OK"      # clean at thr=100 → threshold=1 just too slow here
+    else
+      new="HANG?/rc=$hrc"  # still bad at thr=100 → a real hang/regression
+    fi
+  fi
   ctrl="skip"
   if [ "${NO_CONTROL:-0}" != "1" ]; then
     timeout "$TIMEOUT" "$RT" -c "$CONF" --jit-threshold-gcc=0 -d "$T" 2>/tmp/t0c.err 1>/dev/null

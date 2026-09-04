@@ -809,10 +809,28 @@ static uint8_t *jit_infer_types(const uint8_t *bc, int bc_len,
     /* Optimistic start: assume all locals are INT (most specific type) */
     memset(lt, JIT_T_INT, var_count);
 
-    /* No TDZ pre-pass: set_loc_uninitialized is a no-op for type inference.
-     * Locals accessed via get_loc_check (might be in TDZ) are forced to JSVAL
-     * in the main pass below, which is the only case where the NUMBER→double
-     * optimization would break TDZ correctness. */
+    /* TDZ pre-pass: a local that is marked uninitialized (set_loc_uninitialized)
+     * or read/reassigned through a _check opcode must be JSVAL so it can hold
+     * JS_UNINITIALIZED and be TDZ-checked at runtime.  A NUMBER/INT local cannot
+     * represent the TDZ state — returning 0/0.0 instead of throwing a
+     * ReferenceError would be wrong.  Forcing to JSVAL (the least-specific type)
+     * is always safe; the passes below only downgrade, never upgrade, so these
+     * stay JSVAL. */
+    {
+        int tpc = 0;
+        while (tpc < bc_len) {
+            int top = bc[tpc], tsz;
+            if (top >= op_sz_count || (tsz = op_sz[top]) == 0)
+                break;
+            if (top == OP_set_loc_uninitialized || top == OP_get_loc_check ||
+                top == OP_get_loc_checkthis || top == OP_put_loc_check) {
+                int li = bc_u16(&bc[tpc + 1]);
+                if (li >= 0 && li < var_count)
+                    lt[li] = JIT_T_JSVAL;
+            }
+            tpc += tsz;
+        }
+    }
 
     /* Multi-pass forward walk until fixpoint */
     for (int pass = 0; pass < 3; pass++) {
@@ -3897,8 +3915,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
 
         /* P38.1 (was P37.3): get_loc variants use GEN_GET_LOC_BORROW when next
          * opcode is get_field, or 2-opcode look-ahead for arr[i] pattern. */
-        case OP_get_loc:  case OP_get_loc_check:
-        case OP_get_loc_checkthis:
+        case OP_get_loc:
         {
             int _loc_idx = (int)bc_u16(&bc[pc+1]);
             if (_NEXT_IS_GET_FIELD(pc + sz)) {
@@ -3923,11 +3940,75 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             }
             break;
         }
-        case OP_put_loc:  case OP_put_loc_check:
+        /* TDZ-checked reads: the local is forced JSVAL (see jit_infer_types), so
+         * it can hold JS_UNINITIALIZED.  Throw ReferenceError if still in the
+         * Temporal Dead Zone (let/const before init, or derived-ctor `this`
+         * before super()).  No borrow optimization — these reads are rare. */
+        case OP_get_loc_check:
+        case OP_get_loc_checkthis:
+        {
+            int _loc_idx = (int)bc_u16(&bc[pc+1]);
+            /* The TDZ sentinel lives in the same slot GEN_GET_LOC reads: for a
+             * captured local that is _cap_buf[idx] (the var-ref cell), not the
+             * _jsv_<name> shadow — which set_loc_uninitialized left at
+             * JS_UNINITIALIZED and never updates for captured locals. Testing
+             * _jsv there would throw a spurious ReferenceError. */
+            if (_CAP_LOC(_loc_idx))
+                jit_buf_printf(cb,
+                    "    if(JS_IsUninitialized(_cap_buf[%d])){"
+                    " js_jit_throw_uninitialized(ctx); _sp=%d; goto _ex; }\n",
+                    _loc_idx, d);
+            else
+                jit_buf_printf(cb,
+                    "    if(JS_IsUninitialized(_jsv_%s)){"
+                    " js_jit_throw_uninitialized(ctx); _sp=%d; goto _ex; }\n",
+                    LNAME(_loc_idx), d);
+            GEN_GET_LOC(_loc_idx);
+            _borrowed_depth = -1;
+            break;
+        }
+        case OP_put_loc:
         case OP_put_loc_check_init: GEN_PUT_LOC((int)bc_u16(&bc[pc+1])); _borrowed_depth = -1; break;
+        /* TDZ-checked reassignment: must throw if the binding is still in TDZ.
+         * The stack top (the value being assigned) is live at depth d-1; set
+         * _sp=d before the throw so _ex frees it. */
+        case OP_put_loc_check:
+        {
+            int _loc_idx = (int)bc_u16(&bc[pc+1]);
+            /* Test the same slot GEN_PUT_LOC writes: _cap_buf[idx] for captured
+             * locals, _jsv_<name> otherwise (see OP_get_loc_check above). */
+            if (_CAP_LOC(_loc_idx))
+                jit_buf_printf(cb,
+                    "    if(JS_IsUninitialized(_cap_buf[%d])){"
+                    " js_jit_throw_uninitialized(ctx); _sp=%d; goto _ex; }\n",
+                    _loc_idx, d);
+            else
+                jit_buf_printf(cb,
+                    "    if(JS_IsUninitialized(_jsv_%s)){"
+                    " js_jit_throw_uninitialized(ctx); _sp=%d; goto _ex; }\n",
+                    LNAME(_loc_idx), d);
+            GEN_PUT_LOC(_loc_idx);
+            _borrowed_depth = -1;
+            break;
+        }
         case OP_set_loc:  GEN_SET_LOC((int)bc_u16(&bc[pc+1])); _borrowed_depth = -1; break;
-        /* TDZ init: mark local as uninitialized — skip in JIT (no TDZ checking) */
-        case OP_set_loc_uninitialized: break;
+        /* TDZ init: mark the local uninitialized so a subsequent get_loc_check /
+         * put_loc_check throws.  The local is forced JSVAL by jit_infer_types. */
+        case OP_set_loc_uninitialized:
+        {
+            int _li = (int)bc_u16(&bc[pc+1]);
+            /* Mark the slot that GEN_GET_LOC/GEN_PUT_LOC and the _check reads
+             * consult: _cap_buf[idx] for captured locals, else _jsv_<name>. */
+            if (_CAP_LOC(_li))
+                jit_buf_printf(cb,
+                    "    _FREE(_cap_buf[%d]); _cap_buf[%d]=JS_UNINITIALIZED;\n",
+                    _li, _li);
+            else
+                jit_buf_printf(cb,
+                    "    _FREE(_jsv_%s); _jsv_%s=JS_UNINITIALIZED;\n",
+                    LNAME(_li), LNAME(_li));
+            break;
+        }
         case OP_get_loc8:
         {
             int _loc8 = (int)bc[pc+1];

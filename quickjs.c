@@ -18419,6 +18419,17 @@ int js_jit_for_in_start(JSContext *ctx, JSValue *pobj)
     return JS_IsException(*pobj) ? -1 : 0;
 }
 
+/* JIT TDZ: throw ReferenceError for access to an uninitialized (Temporal Dead
+ * Zone) lexical binding — a `let`/`const` read before its declaration, or a
+ * derived-class-constructor `this` used before super().  Emitted by
+ * get_loc_check / get_loc_checkthis / put_loc_check when the local is
+ * JS_UNINITIALIZED. The generated code then `goto _ex`. */
+int js_jit_throw_uninitialized(JSContext *ctx)
+{
+    JS_ThrowReferenceError(ctx, "cannot access lexical binding before initialization");
+    return -1;
+}
+
 /* for_in_next: produce next key+done from iter (iter is NOT consumed).
  * On done: *pkey = JS_UNDEFINED, *pdone = JS_TRUE.
  * Returns -1 on exception, 0 on success. */
@@ -19619,10 +19630,17 @@ JSValue js_jit_special_object(JSContext *ctx, int kind, int argc, JSValue *argv)
          * when fewer args are supplied. */
         return js_build_arguments(ctx, rt->jit_actual_argc, (JSValueConst *)argv);
     case OP_SPECIAL_OBJECT_MAPPED_ARGUMENTS:
-        /* Non-strict mapped arguments: ideally would alias parameters, but the
-         * JIT copies captured args into shadow buffers, breaking the aliasing
-         * invariant.  Use the simple (unmapped) builder — a known JIT limitation. */
-        return js_build_arguments(ctx, rt->jit_actual_argc, (JSValueConst *)argv);
+        /* Non-strict (sloppy) arguments. Full live parameter aliasing is punted
+         * in the JIT (params live in C locals, not sf->arg_buf), but the object
+         * must still be a proper MAPPED_ARGUMENTS with a real `callee` (= the
+         * function) — the unmapped builder poison-pills callee, which breaks
+         * sloppy `arguments.callee` (TypeError "invalid property access").
+         * Build with arg_count=0 so every element is a fresh copy of argv[i]
+         * (no frame-aliased var_refs → no lifetime hazard with the JIT's freed
+         * arg_buf), while callee / length / Symbol.iterator are correct. */
+        return js_build_mapped_arguments(ctx, rt->jit_actual_argc,
+                                         (JSValueConst *)argv,
+                                         rt->current_stack_frame, 0);
     case OP_SPECIAL_OBJECT_THIS_FUNC:
         return JS_DupValue(ctx, rt->jit_callee_func);
     case OP_SPECIAL_OBJECT_NEW_TARGET:
@@ -19793,7 +19811,8 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
      *
      * Not set (and not needed):
      *   arg_buf / var_buf — JIT uses its own C locals (_jsv_* / _jsi_*)
-     *   js_mode           — JIT ignores it; only the interpreter switch uses it
+     *   js_mode           — MUST be set: runtime helpers called from JIT code
+     *                       consult is_strict_mode(ctx) (reads sf->js_mode)
      *   var_refs[]        — no OP_define_class / js_closure2 runs in NORMAL+var_ref_count==0 */
     {
         JSJITFunc _jf41 = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
@@ -19810,6 +19829,13 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             sf->arg_count   = argc;
             sf->cur_pc      = b->byte_code_buf; /* start of bytecode for backtrace */
             sf->var_refs    = NULL;              /* var_ref_count==0: never accessed */
+            /* Must set js_mode: JIT'd code calls runtime helpers that consult
+             * is_strict_mode(ctx) (= current_stack_frame->js_mode & STRICT) —
+             * e.g. JS_DeleteProperty(JS_PROP_THROW_STRICT) must throw on a failed
+             * strict delete. Without this the frame's js_mode is stale and a
+             * strict function silently behaves as sloppy (the TypedArray
+             * [[Delete]]-strict failures). The standard hot-path below sets it. */
+            sf->js_mode     = b->js_mode;
             rt->current_stack_frame = sf;
             ctx = b->realm;                      /* must switch to callee's realm */
             /* Variadic functions (arg_count==0) use arguments object built from
@@ -19844,13 +19870,20 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
     if (unlikely(argc < b->arg_count || (flags & JS_CALL_FLAG_COPY_ARGV))) {
         arg_allocated_size = b->arg_count;
 #ifdef CONFIG_JIT
-        /* P33: for complex-param JIT functions (rest/default/destructuring),
-         * arg_buf must cover ALL argc slots so that OP_rest can read
-         * argv[arg_count..argc].  JS_Call always sets COPY_ARGV, which would
-         * otherwise truncate arg_buf to just arg_count slots while the JIT
-         * still receives the original argc — causing a buffer overread.
-         * We only need the extension when argc > arg_count. */
-        if (!b->has_simple_parameter_list && argc > b->arg_count)
+        /* arg_buf must cover ALL argc slots whenever more args were supplied
+         * than declared. Two consumers need this, JS_Call always sets COPY_ARGV
+         * (which would otherwise truncate arg_buf to arg_count), and:
+         *   - complex params (rest/default/destructuring): OP_rest reads
+         *     argv[arg_count..argc];
+         *   - simple params that materialize `arguments`: js_jit_special_object
+         *     builds it via js_build_arguments(ctx, rt->jit_actual_argc=argc,
+         *     arg_buf), reading argv[0..argc). Without the extension a
+         *     simple-param callee reading arguments[i] for i >= arg_count gets
+         *     undefined (length correct, values overread) — the bug behind the
+         *     TypedArray reduce/reduceRight/some callbackfn-arguments failures.
+         * Only needed when argc > arg_count; sf->arg_count stays b->arg_count
+         * for simple params below, so GEN_PUT_ARG gating is unaffected. */
+        if (argc > b->arg_count)
             arg_allocated_size = argc;
 #endif
     } else {
