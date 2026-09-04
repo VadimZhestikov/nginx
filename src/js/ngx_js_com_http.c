@@ -5196,18 +5196,20 @@ ngx_js_snapshot_bst(ngx_js_server_opaque_t *op,
     if (node->exact) {
         e = ngx_array_push(&op->prefix_locs);
         if (e) {
-            e->clcf     = node->exact;
-            e->is_exact = 1;
-            e->dynamic  = 0;
+            e->clcf      = node->exact;
+            e->is_exact  = 1;
+            e->dynamic   = 0;
+            e->tombstone = 0;   /* ngx_array_push does not zero memory */
         }
     }
 
     if (node->inclusive) {
         e = ngx_array_push(&op->prefix_locs);
         if (e) {
-            e->clcf     = node->inclusive;
-            e->is_exact = 0;
-            e->dynamic  = 0;
+            e->clcf      = node->inclusive;
+            e->is_exact  = 0;
+            e->dynamic   = 0;
+            e->tombstone = 0;   /* ngx_array_push does not zero memory */
         }
     }
 
@@ -8244,9 +8246,10 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
                     js_free(ctx, op);
                     return JS_EXCEPTION;
                 }
-                re->clcf     = *rloc;
-                re->caseless = 0;   /* can't determine from compiled handle */
-                re->dynamic  = 0;
+                re->clcf      = *rloc;
+                re->caseless  = 0;  /* can't determine from compiled handle */
+                re->dynamic   = 0;
+                re->tombstone = 0;  /* ngx_array_push does not zero memory */
             }
         }
 #endif
@@ -8260,9 +8263,10 @@ ngx_js_wrap_server(JSContext *ctx, ngx_http_core_srv_conf_t *cscf,
                     js_free(ctx, op);
                     return JS_EXCEPTION;
                 }
-                ne->clcf     = *nloc;
-                ne->is_exact = 0;
-                ne->dynamic  = 0;
+                ne->clcf      = *nloc;
+                ne->is_exact  = 0;
+                ne->dynamic   = 0;
+                ne->tombstone = 0;  /* ngx_array_push does not zero memory */
             }
         }
 
@@ -8427,19 +8431,35 @@ ngx_js_http_rebuild_vhost_dispatch(JSContext *ctx, JSValueConst this_val,
     ngx_hash_init_t             hash;
     ngx_hash_keys_arrays_t      ha;
     ngx_pool_t                 *temp_pool;
+    ngx_cycle_t                *cycle;
     ngx_int_t                   rc;
+
+    /*
+     * The persistent vhost structures (virtual_names, the server-name hash,
+     * the regex array) must live in the *new* cycle's pool so they survive
+     * into the workers.  During init_conf the global ngx_cycle still points
+     * to the OLD cycle, whose pool is destroyed at the tail of
+     * ngx_init_cycle() (ngx_cycle.c: ngx_destroy_pool(old_cycle->pool)) —
+     * allocating here on ngx_cycle->pool is a use-after-free that only
+     * surfaces once some other config-phase allocation reuses the freed
+     * region (routing then silently falls through to the default server).
+     * ngx_js_http_cycle is the cycle captured at http-com install time; it
+     * is the new cycle at config time and the live cycle at request time,
+     * so it is correct in both phases.  (add_server() takes the same care.)
+     */
+    cycle = ngx_js_http_cycle ? ngx_js_http_cycle : (ngx_cycle_t *) ngx_cycle;
 
     for (i = 0; i < ngx_js_vhost_nentries; i++) {
         entry = &ngx_js_vhost_entries[i];
 
-        temp_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, ngx_cycle->log);
+        temp_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, cycle->log);
         if (temp_pool == NULL) {
             return JS_ThrowOutOfMemory(ctx);
         }
 
         ngx_memzero(&ha, sizeof(ngx_hash_keys_arrays_t));
         ha.temp_pool = temp_pool;
-        ha.pool      = ngx_cycle->pool;
+        ha.pool      = cycle->pool;
 
         if (ngx_hash_keys_array_init(&ha, NGX_HASH_LARGE) != NGX_OK) {
             ngx_destroy_pool(temp_pool);
@@ -8473,7 +8493,7 @@ ngx_js_http_rebuild_vhost_dispatch(JSContext *ctx, JSValueConst this_val,
 
                 /* NGX_BUSY means a duplicate — warn but continue */
                 if (rc == NGX_BUSY) {
-                    ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                    ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
                                   "JS rebuildVhostDispatch: duplicate "
                                   "server name \"%V\", ignored",
                                   &sn[n].name);
@@ -8482,7 +8502,7 @@ ngx_js_http_rebuild_vhost_dispatch(JSContext *ctx, JSValueConst this_val,
         }
 
         /* Allocate the new virtual_names in the cycle pool */
-        vn = ngx_pcalloc(ngx_cycle->pool, sizeof(ngx_http_virtual_names_t));
+        vn = ngx_pcalloc(cycle->pool, sizeof(ngx_http_virtual_names_t));
         if (vn == NULL) {
             ngx_destroy_pool(temp_pool);
             return JS_ThrowOutOfMemory(ctx);
@@ -8493,7 +8513,7 @@ ngx_js_http_rebuild_vhost_dispatch(JSContext *ctx, JSValueConst this_val,
         hash.max_size    = ngx_js_vhost_hash_max_size;
         hash.bucket_size = ngx_js_vhost_hash_bucket_size;
         hash.name        = "server_names_hash";
-        hash.pool        = ngx_cycle->pool;
+        hash.pool        = cycle->pool;
 
         if (ha.keys.nelts) {
             hash.hash      = &vn->names.hash;
@@ -8559,7 +8579,7 @@ ngx_js_http_rebuild_vhost_dispatch(JSContext *ctx, JSValueConst this_val,
 
             if (nregex) {
                 vn->nregex = nregex;
-                vn->regex  = ngx_palloc(ngx_cycle->pool,
+                vn->regex  = ngx_palloc(cycle->pool,
                                         nregex * sizeof(ngx_http_server_name_t));
                 if (vn->regex == NULL) {
                     ngx_destroy_pool(temp_pool);
