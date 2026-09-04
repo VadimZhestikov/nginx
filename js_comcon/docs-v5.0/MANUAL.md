@@ -26,6 +26,14 @@ caged actor with its own grants.
 
 ---
 
+## 0. Why confinement (read `DOCTRINE.md`)
+
+Before the how, the *why*: "is this untrusted code safe?" is undecidable (Rice's theorem), so
+scanning-and-patching is an endless treadmill. COMCON instead **confines** — it changes the question
+from the undecidable "will it do harm?" to the decidable "what authority does it hold and what can it
+express?" — and concentrates correctness on the finite TCB. The full doctrine (four pillars, honest
+residuals, the finite-effort win) is `DOCTRINE.md`; this manual is the *how* that serves it.
+
 ## 1. The five-minute mental model
 
 Four ideas, in dependency order:

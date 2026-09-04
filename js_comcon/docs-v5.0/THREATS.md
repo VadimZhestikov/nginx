@@ -1,5 +1,10 @@
 # COMCON — Threat Model (v5.4)
 
+> **Read `DOCTRINE.md` first.** This model enumerates adversaries × assets × mitigations; the
+> doctrine states *why* those mitigations take the shape they do — detection is undecidable (Rice),
+> so COMCON confines instead of chases, concentrating correctness on the finite TCB. The three
+> residuals below (§"Reading the residuals honestly") are the doctrine's Pillar D.
+
 > **UPDATE (v5.35).** Mitigation status changes since this model was written: **TM-1**
 > (denial-log flooding) is now IMPLEMENTED — per-fragment quotas with 1/N sampling above quota,
 > exact counters (`comcon_include_denial_log.t`) — previously "specified, not implemented."
