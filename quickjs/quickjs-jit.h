@@ -425,6 +425,7 @@ JSValue        js_jit_call_fb(JSContext *ctx, JSFunctionBytecode *b,
 /* P15: iterator helpers */
 JSValue js_jit_special_object(JSContext *ctx, int kind, int argc, JSValue *argv);
 int js_jit_for_in_start(JSContext *ctx, JSValue *pobj);
+int js_jit_throw_uninitialized(JSContext *ctx);
 int js_jit_for_in_next(JSContext *ctx, JSValue iter,
                        JSValue *pkey, JSValue *pdone);
 int js_jit_for_of_start(JSContext *ctx,
