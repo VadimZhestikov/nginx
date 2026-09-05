@@ -3123,7 +3123,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
         else \
             jit_buf_printf(cb, \
                 "    { double _dv=_tsd%d; " \
-                "_tsv%d=((double)(int32_t)_dv==_dv)?JS_NewInt32(ctx,(int32_t)_dv)" \
+                "_tsv%d=((double)(int32_t)_dv==_dv&&!(_dv==0.0&&signbit(_dv)))" \
+                "?JS_NewInt32(ctx,(int32_t)_dv)" \
                 ":JS_NewFloat64(ctx,_dv); }\n", (slot), (slot)); \
     } \
 } while(0)
@@ -6656,6 +6657,13 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 jit_buf_printf(cb, "    { JSValue _f=_tsv%d;\n", fslot);
                 /* Build args array */
                 if (nargs > 0) {
+                    /* Box any typed (INT/NUMBER) arg slot into _tsv{slot} first:
+                     * a slot that transitioned JSVAL->typed (e.g. via .length)
+                     * leaves _tsv{slot} holding a STALE (possibly freed) JSValue.
+                     * Emitting it raw here caused a use-after-free / double-free
+                     * of the prior object (crash in find_own_property). */
+                    for (int _aj = 0; _aj < nargs; _aj++)
+                        _P94_ENSURE(d-nargs+_aj);
                     jit_buf_printf(cb, "      JSValue _ca%d[%d]={", pc, nargs);
                     for (int _aj = 0; _aj < nargs; _aj++) {
                         if (_aj) jit_buf_str(cb, ",");
@@ -6805,6 +6813,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                     "      JSValue _t=_tsv%d;\n",
                     fslot, tslot);
                 if (nargs > 0) {
+                    /* Box typed (INT/NUMBER) arg slots before use — see OP_call. */
+                    for (int _aj = 0; _aj < nargs; _aj++)
+                        _P94_ENSURE(d-nargs+_aj);
                     jit_buf_printf(cb, "      JSValue _ca%d[%d]={", pc, nargs);
                     for (int _aj = 0; _aj < nargs; _aj++) {
                         if (_aj) jit_buf_str(cb, ",");
@@ -6950,6 +6961,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                     _P94_ENSURE(d-nargs+_aj);
                 jit_buf_printf(cb, "    { JSValue _f=_tsv%d;\n", fslot);
                 if (nargs > 0) {
+                    /* Box typed (INT/NUMBER) arg slots before use — see OP_call. */
+                    for (int _aj = 0; _aj < nargs; _aj++)
+                        _P94_ENSURE(d-nargs+_aj);
                     jit_buf_printf(cb, "      JSValue _ca%d[%d]={", pc, nargs);
                     for (int _aj = 0; _aj < nargs; _aj++) {
                         if (_aj) jit_buf_str(cb, ",");
@@ -8671,6 +8685,12 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             case OP_put_super_value: _gs_drop=4; break;
             case OP_define_method: _gs_drop=1; break;
             case OP_define_method_computed: _gs_drop=2; break;
+            /* object-literal property definition: pop the value, keep the object
+             * (net -1).  Was missing here (present in jit_infer + gen_body), so
+             * the codegen-time gen_st/gen_sp desynced across a descriptor build,
+             * making _P94_ENSURE miss a typed arg slot at a following call ->
+             * stale/freed _tsv passed as an argument (UAF crash). */
+            case OP_define_field: _gs_drop=1; break;
 
             /* --- P26: constructor / class-definition --- */
             case OP_check_ctor: break;                  /* net 0 */
