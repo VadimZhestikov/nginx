@@ -4832,10 +4832,14 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                     "      int _ta=JS_VALUE_GET_TAG(_a),_tb=JS_VALUE_GET_TAG(_b);\n"
                     "      if(_ta==JS_TAG_INT&&_tb==JS_TAG_INT){\n"
                     "        int32_t ia=JS_VALUE_GET_INT(_a),ib=JS_VALUE_GET_INT(_b);\n"
-                    /* -0: 0/negative is -0.0, not the integer 0 that the exact-
-                     * division shortcut would box; route ia==0&&ib<0 to the float
-                     * path (which preserves the sign). */
-                    "        _tsv%d=(ib&&ia%%ib==0&&!(ia==0&&ib<0))?JS_NewInt32(ctx,ia/ib)\n"
+                    /* Integer div shortcut, guarded (each guard precedes the op it
+                     * protects, so short-circuit avoids the UB):
+                     *  - ia==INT32_MIN&&ib==-1: quotient 2^31 overflows int32 AND
+                     *    ia%ib itself is UB -> take the float path FIRST;
+                     *  - ia==0&&ib<0: 0/negative is -0.0, not the integer 0 the
+                     *    shortcut would box -> float path preserves the sign. */
+                    "        _tsv%d=(ib&&!(ia==INT32_MIN&&ib==-1)&&ia%%ib==0&&!(ia==0&&ib<0))\n"
+                    "                              ?JS_NewInt32(ctx,ia/ib)\n"
                     "                              :JS_NewFloat64(ctx,(double)ia/(double)ib); _sp=%d;\n"
                     "      } else if((_ta==JS_TAG_INT||_ta==JS_TAG_FLOAT64)&&"
                              "(_tb==JS_TAG_INT||_tb==JS_TAG_FLOAT64)){\n"
