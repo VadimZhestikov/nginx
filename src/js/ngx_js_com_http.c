@@ -255,6 +255,19 @@ ngx_js_srv_tombstone_remove(ngx_http_core_srv_conf_t *cscf)
  */
 static ngx_cycle_t                *ngx_js_http_cycle;
 
+
+/*
+ * The cycle whose pool config-phase COM allocations must use (see the header
+ * comment on ngx_js_conf_cycle).  ngx_js_http_cycle is captured at http-com
+ * install time; fall back to ngx_cycle before install (and at runtime, where
+ * they are the same live cycle).
+ */
+ngx_cycle_t *
+ngx_js_conf_cycle(void)
+{
+    return ngx_js_http_cycle ? ngx_js_http_cycle : (ngx_cycle_t *) ngx_cycle;
+}
+
 /*
  * Synthetic template server conf built when nginx.conf has an http{} block
  * but no server{} blocks inside.  Used as the copy-source by addServer()
@@ -1325,7 +1338,7 @@ ngx_js_location_set_error_page(JSContext *ctx, JSValueConst this_val,
         return JS_UNDEFINED;
     }
 
-    arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+    arr = ngx_array_create(ngx_js_conf_cycle()->pool, (ngx_uint_t) len,
                            sizeof(ngx_http_err_page_t));
     if (!arr) {
         return JS_EXCEPTION;
@@ -1368,7 +1381,7 @@ ngx_js_location_set_error_page(JSContext *ctx, JSValueConst this_val,
             return JS_EXCEPTION;
         }
 
-        p = ngx_pnalloc(ngx_cycle->pool, uri_len);
+        p = ngx_pnalloc(ngx_js_conf_cycle()->pool, uri_len);
         if (!p) {
             JS_FreeCString(ctx, uri);
             return JS_EXCEPTION;
@@ -1423,7 +1436,7 @@ ngx_js_location_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
         }
 
         len  = ngx_strlen(cstr);
-        data = ngx_pnalloc(ngx_cycle->pool, len + 1);
+        data = ngx_pnalloc(ngx_js_conf_cycle()->pool, len + 1);
         if (data == NULL) {
             JS_FreeCString(ctx, cstr);
             return JS_ThrowOutOfMemory(ctx);
@@ -1449,7 +1462,7 @@ ngx_js_location_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
         }
 
         len  = ngx_strlen(cstr);
-        data = ngx_pnalloc(ngx_cycle->pool, len + 1);
+        data = ngx_pnalloc(ngx_js_conf_cycle()->pool, len + 1);
         if (data == NULL) {
             JS_FreeCString(ctx, cstr);
             return JS_ThrowOutOfMemory(ctx);
@@ -1557,7 +1570,7 @@ ngx_js_location_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
     case 13: /* defaultType — ngx_str_t (dup to pool) */
         cstr = JS_ToCStringLen(ctx, &len, val);
         if (!cstr) { return JS_EXCEPTION; }
-        data = ngx_pnalloc(ngx_cycle->pool, len);
+        data = ngx_pnalloc(ngx_js_conf_cycle()->pool, len);
         if (data == NULL) {
             JS_FreeCString(ctx, cstr);
             return JS_ThrowOutOfMemory(ctx);
@@ -6937,7 +6950,7 @@ ngx_js_server_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
         }
 
         len  = ngx_strlen(cstr);
-        data = ngx_pnalloc(ngx_cycle->pool, len + 1);
+        data = ngx_pnalloc(ngx_js_conf_cycle()->pool, len + 1);
         if (data == NULL) {
             JS_FreeCString(ctx, cstr);
             return JS_ThrowOutOfMemory(ctx);
@@ -7126,7 +7139,7 @@ ngx_js_server_set_names(JSContext *ctx, JSValueConst this_val,
 
     /* Allocate the new COM-visible names array */
     if (len > 0) {
-        names = ngx_palloc(ngx_cycle->pool, len * sizeof(ngx_str_t));
+        names = ngx_palloc(ngx_js_conf_cycle()->pool, len * sizeof(ngx_str_t));
         if (names == NULL) {
             return JS_ThrowOutOfMemory(ctx);
         }
@@ -7135,7 +7148,7 @@ ngx_js_server_set_names(JSContext *ctx, JSValueConst this_val,
     }
 
     /* Allocate the new cscf->server_names elts array for Stage 5b */
-    if (ngx_array_init(&cscf->server_names, ngx_cycle->pool,
+    if (ngx_array_init(&cscf->server_names, ngx_js_conf_cycle()->pool,
                        len ? len : 1,
                        sizeof(ngx_http_server_name_t)) != NGX_OK)
     {
@@ -7150,7 +7163,7 @@ ngx_js_server_set_names(JSContext *ctx, JSValueConst this_val,
         JS_FreeValue(ctx, elem);
         if (!s) { return JS_EXCEPTION; }
 
-        p = ngx_pnalloc(ngx_cycle->pool, slen + 1);
+        p = ngx_pnalloc(ngx_js_conf_cycle()->pool, slen + 1);
         if (p == NULL) {
             JS_FreeCString(ctx, s);
             return JS_ThrowOutOfMemory(ctx);

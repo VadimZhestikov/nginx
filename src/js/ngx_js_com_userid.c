@@ -184,7 +184,7 @@ ngx_js_userid_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     case 1: /* name */
         s = JS_ToCStringLen(ctx, &slen, val);
         if (!s) { return JS_EXCEPTION; }
-        p = ngx_pnalloc(ngx_cycle->pool, slen + 1);
+        p = ngx_pnalloc(ngx_js_conf_cycle()->pool, slen + 1);
         if (!p) { JS_FreeCString(ctx, s); return JS_EXCEPTION; }
         ngx_memcpy(p, s, slen);
         p[slen] = '\0';
@@ -200,7 +200,7 @@ ngx_js_userid_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 
         s = JS_ToCStringLen(ctx, &slen, val);
         if (!s) { return JS_EXCEPTION; }
-        p = ngx_pnalloc(ngx_cycle->pool, plen + slen);
+        p = ngx_pnalloc(ngx_js_conf_cycle()->pool, plen + slen);
         if (!p) { JS_FreeCString(ctx, s); return JS_EXCEPTION; }
         ngx_memcpy(p, prefix, plen);
         ngx_memcpy(p + plen, s, slen);
@@ -217,7 +217,7 @@ ngx_js_userid_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 
         s = JS_ToCStringLen(ctx, &slen, val);
         if (!s) { return JS_EXCEPTION; }
-        p = ngx_pnalloc(ngx_cycle->pool, plen + slen);
+        p = ngx_pnalloc(ngx_js_conf_cycle()->pool, plen + slen);
         if (!p) { JS_FreeCString(ctx, s); return JS_EXCEPTION; }
         ngx_memcpy(p, prefix, plen);
         ngx_memcpy(p + plen, s, slen);
@@ -230,7 +230,7 @@ ngx_js_userid_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     case 4: /* p3p */
         s = JS_ToCStringLen(ctx, &slen, val);
         if (!s) { return JS_EXCEPTION; }
-        p = ngx_pnalloc(ngx_cycle->pool, slen + 1);
+        p = ngx_pnalloc(ngx_js_conf_cycle()->pool, slen + 1);
         if (!p) { JS_FreeCString(ctx, s); return JS_EXCEPTION; }
         ngx_memcpy(p, s, slen);
         p[slen] = '\0';

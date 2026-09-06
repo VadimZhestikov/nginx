@@ -50,6 +50,19 @@ JSClassID  ngx_js_stream_proxy_class_id;
  * addServer() can reach the cycle without a conf pointer. */
 static ngx_cycle_t  *ngx_js_stream_cycle;
 
+
+/*
+ * Stream counterpart of ngx_js_conf_cycle() (see ngx_js_com.h): the cycle whose
+ * pool config-phase stream-COM allocations must use.  ngx_js_stream_cycle is
+ * captured at stream-install time; fall back to ngx_cycle before install and at
+ * runtime (same live cycle).
+ */
+ngx_cycle_t *
+ngx_js_stream_conf_cycle(void)
+{
+    return ngx_js_stream_cycle ? ngx_js_stream_cycle : (ngx_cycle_t *) ngx_cycle;
+}
+
 ngx_js_stream_listener_state_t
     *ngx_js_stream_listener_reg[NGX_JS_STREAM_LISTENER_REG_MAX];
 

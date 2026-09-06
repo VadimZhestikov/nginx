@@ -462,4 +462,21 @@ ngx_int_t  ngx_js_stream_rr_peer_is_zoned(JSValueConst obj);
 JSValue  ngx_js_wrap_events(JSContext *ctx, void *ecf);
 
 
+/*
+ * Config-phase pool selection.  At config phase the global ngx_cycle still
+ * points to the OLD cycle, whose pool is destroyed at the tail of
+ * ngx_init_cycle() (ngx_destroy_pool(old_cycle->pool)) — so a config-persistent
+ * COM allocation on ngx_cycle->pool is a use-after-free that reads back as NUL
+ * or empty once the freed region is reused.  These return the cycle captured at
+ * COM install time: the NEW cycle at config time and the LIVE cycle at request
+ * time, so they are correct in both phases.  Any COM mutation whose allocation
+ * must outlive the current call must use <ctx>_conf_cycle()->pool, never
+ * ngx_cycle->pool directly.
+ *   ngx_js_conf_cycle()        — HTTP context   (defined in ngx_js_com_http.c)
+ *   ngx_js_stream_conf_cycle() — stream context (defined in ngx_js_stream_listener.c)
+ */
+ngx_cycle_t  *ngx_js_conf_cycle(void);
+ngx_cycle_t  *ngx_js_stream_conf_cycle(void);
+
+
 #endif /* _NGX_JS_COM_H_INCLUDED_ */

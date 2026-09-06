@@ -70,7 +70,7 @@ ngx_js_secure_link_set(JSContext *ctx, JSValueConst this_val,
             return JS_EXCEPTION;
         }
 
-        p = ngx_pnalloc(ngx_cycle->pool, len + 1);
+        p = ngx_pnalloc(ngx_js_conf_cycle()->pool, len + 1);
         if (p == NULL) {
             JS_FreeCString(ctx, s);
             JS_ThrowOutOfMemory(ctx);

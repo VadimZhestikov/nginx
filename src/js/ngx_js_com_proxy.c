@@ -170,7 +170,7 @@ ngx_js_proxy_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
                 && ngx_strncasecmp(uscfp[i]->host.data,
                                    (u_char *) name, nlen) == 0)
             {
-                data = ngx_pnalloc(ngx_cycle->pool, slen + 1);
+                data = ngx_pnalloc(ngx_js_conf_cycle()->pool, slen + 1);
                 if (data == NULL) {
                     JS_FreeCString(ctx, cstr);
                     return JS_ThrowOutOfMemory(ctx);

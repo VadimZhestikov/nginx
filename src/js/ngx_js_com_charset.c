@@ -161,7 +161,7 @@ ngx_js_charset_resolve(JSContext *ctx,
     }
 
     /* Not found — add a new entry to mcf->charsets */
-    p = ngx_pnalloc(ngx_cycle->pool, len + 1);
+    p = ngx_pnalloc(ngx_js_conf_cycle()->pool, len + 1);
     if (p == NULL) {
         JS_FreeCString(ctx, s);
         JS_ThrowOutOfMemory(ctx);

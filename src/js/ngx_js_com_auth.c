@@ -114,13 +114,13 @@ ngx_js_auth_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
     s = JS_ToCStringLen(ctx, &len, val);
     if (!s) { return JS_EXCEPTION; }
 
-    cv = ngx_pcalloc(ngx_cycle->pool, sizeof(ngx_http_complex_value_t));
+    cv = ngx_pcalloc(ngx_js_conf_cycle()->pool, sizeof(ngx_http_complex_value_t));
     if (cv == NULL) {
         JS_FreeCString(ctx, s);
         return JS_ThrowOutOfMemory(ctx);
     }
 
-    p = ngx_pnalloc(ngx_cycle->pool, len);
+    p = ngx_pnalloc(ngx_js_conf_cycle()->pool, len);
     if (p == NULL) {
         JS_FreeCString(ctx, s);
         return JS_ThrowOutOfMemory(ctx);

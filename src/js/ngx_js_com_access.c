@@ -349,7 +349,7 @@ ngx_js_access_set_rules(JSContext *ctx, JSValueConst this_val, JSValue val)
         return JS_UNDEFINED;
     }
 
-    arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+    arr = ngx_array_create(ngx_js_conf_cycle()->pool, (ngx_uint_t) len,
                            sizeof(ngx_http_access_rule_t));
     if (!arr) {
         return JS_EXCEPTION;
@@ -501,7 +501,7 @@ ngx_js_access_set_rules6(JSContext *ctx, JSValueConst this_val, JSValue val)
         return JS_UNDEFINED;
     }
 
-    arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+    arr = ngx_array_create(ngx_js_conf_cycle()->pool, (ngx_uint_t) len,
                            sizeof(ngx_http_access_rule6_t));
     if (!arr) {
         return JS_EXCEPTION;
@@ -589,7 +589,7 @@ ngx_js_access_set_rules_unix(JSContext *ctx, JSValueConst this_val, JSValue val)
         return JS_UNDEFINED;
     }
 
-    arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+    arr = ngx_array_create(ngx_js_conf_cycle()->pool, (ngx_uint_t) len,
                            sizeof(ngx_http_access_rule_un_t));
     if (!arr) {
         return JS_EXCEPTION;
@@ -810,7 +810,7 @@ ngx_js_stream_access_set_rules(JSContext *ctx, JSValueConst this_val,
         return JS_UNDEFINED;
     }
 
-    arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+    arr = ngx_array_create(ngx_js_conf_cycle()->pool, (ngx_uint_t) len,
                            sizeof(ngx_stream_access_rule_t));
     if (!arr) {
         return JS_ThrowOutOfMemory(ctx);
@@ -967,7 +967,7 @@ ngx_js_stream_access_set_rules6(JSContext *ctx, JSValueConst this_val,
             return JS_UNDEFINED;
         }
 
-        arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+        arr = ngx_array_create(ngx_js_conf_cycle()->pool, (ngx_uint_t) len,
                                sizeof(ngx_stream_access_rule6_t));
         if (!arr) {
             return JS_ThrowOutOfMemory(ctx);
@@ -1092,7 +1092,7 @@ ngx_js_stream_access_set_rules_unix(JSContext *ctx, JSValueConst this_val,
             return JS_UNDEFINED;
         }
 
-        arr = ngx_array_create(ngx_cycle->pool, (ngx_uint_t) len,
+        arr = ngx_array_create(ngx_js_conf_cycle()->pool, (ngx_uint_t) len,
                                sizeof(ngx_stream_access_rule_un_t));
         if (!arr) {
             return JS_ThrowOutOfMemory(ctx);

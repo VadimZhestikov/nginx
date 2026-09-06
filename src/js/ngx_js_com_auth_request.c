@@ -85,7 +85,7 @@ ngx_js_auth_request_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     s = JS_ToCStringLen(ctx, &len, val);
     if (!s) { return JS_EXCEPTION; }
 
-    p = ngx_pnalloc(ngx_cycle->pool, len);
+    p = ngx_pnalloc(ngx_js_conf_cycle()->pool, len);
     if (p == NULL) {
         JS_FreeCString(ctx, s);
         return JS_ThrowOutOfMemory(ctx);

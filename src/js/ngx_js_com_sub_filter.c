@@ -195,7 +195,7 @@ ngx_js_sub_filter_set_pairs(JSContext *ctx, JSValueConst this_val,
         JS_FreeValue(ctx, lv);
     }
 
-    pairs = ngx_array_create(ngx_cycle->pool, len ? len : 1,
+    pairs = ngx_array_create(ngx_js_conf_cycle()->pool, len ? len : 1,
                              sizeof(ngx_http_sub_pair_t));
     if (pairs == NULL) {
         return JS_ThrowOutOfMemory(ctx);
@@ -220,8 +220,8 @@ ngx_js_sub_filter_set_pairs(JSContext *ctx, JSValueConst this_val,
             return JS_EXCEPTION;
         }
 
-        mp = ngx_pnalloc(ngx_cycle->pool, mlen);
-        vp = ngx_pnalloc(ngx_cycle->pool, vlen);
+        mp = ngx_pnalloc(ngx_js_conf_cycle()->pool, mlen);
+        vp = ngx_pnalloc(ngx_js_conf_cycle()->pool, vlen);
 
         if (mp == NULL || vp == NULL) {
             JS_FreeCString(ctx, ms);

@@ -534,8 +534,8 @@ ngx_js_ssl_set_certificate(JSContext *ctx, JSValueConst this_val,
     }
 
     /* Update COM-visible path arrays (replace with single-element arrays) */
-    cp = ngx_pnalloc(ngx_cycle->pool, cert_len + 1);
-    kp = ngx_pnalloc(ngx_cycle->pool, key_len + 1);
+    cp = ngx_pnalloc(ngx_js_conf_cycle()->pool, cert_len + 1);
+    kp = ngx_pnalloc(ngx_js_conf_cycle()->pool, key_len + 1);
 
     if (cp == NULL || kp == NULL) {
         JS_FreeCString(ctx, cert_s);
@@ -549,8 +549,8 @@ ngx_js_ssl_set_certificate(JSContext *ctx, JSValueConst this_val,
     JS_FreeCString(ctx, cert_s);
     JS_FreeCString(ctx, key_s);
 
-    certs = ngx_array_create(ngx_cycle->pool, 1, sizeof(ngx_str_t));
-    keys  = ngx_array_create(ngx_cycle->pool, 1, sizeof(ngx_str_t));
+    certs = ngx_array_create(ngx_js_conf_cycle()->pool, 1, sizeof(ngx_str_t));
+    keys  = ngx_array_create(ngx_js_conf_cycle()->pool, 1, sizeof(ngx_str_t));
 
     if (certs == NULL || keys == NULL) {
         return JS_ThrowOutOfMemory(ctx);
@@ -618,7 +618,7 @@ ngx_js_ssl_set_ciphers(JSContext *ctx, JSValueConst this_val,
     }
 
     /* Update the COM-visible conf string for the ciphers getter */
-    p = ngx_pnalloc(ngx_cycle->pool, len);
+    p = ngx_pnalloc(ngx_js_conf_cycle()->pool, len);
     if (p == NULL) {
         JS_FreeCString(ctx, s);
         return JS_ThrowOutOfMemory(ctx);
@@ -1444,7 +1444,7 @@ ngx_js_stream_ssl_set_ciphers(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowInternalError(ctx, "setCiphers: no valid ciphers in list");
     }
 
-    p = ngx_pnalloc(ngx_cycle->pool, len);
+    p = ngx_pnalloc(ngx_js_conf_cycle()->pool, len);
     if (p == NULL) {
         JS_FreeCString(ctx, s);
         return JS_ThrowOutOfMemory(ctx);
@@ -1523,8 +1523,8 @@ ngx_js_stream_ssl_set_certificate(JSContext *ctx, JSValueConst this_val,
                                      " certificate");
     }
 
-    cp = ngx_pnalloc(ngx_cycle->pool, cert_len + 1);
-    kp = ngx_pnalloc(ngx_cycle->pool, key_len + 1);
+    cp = ngx_pnalloc(ngx_js_conf_cycle()->pool, cert_len + 1);
+    kp = ngx_pnalloc(ngx_js_conf_cycle()->pool, key_len + 1);
 
     if (cp == NULL || kp == NULL) {
         JS_FreeCString(ctx, cert_s);
@@ -1538,8 +1538,8 @@ ngx_js_stream_ssl_set_certificate(JSContext *ctx, JSValueConst this_val,
     JS_FreeCString(ctx, cert_s);
     JS_FreeCString(ctx, key_s);
 
-    certs = ngx_array_create(ngx_cycle->pool, 1, sizeof(ngx_str_t));
-    keys  = ngx_array_create(ngx_cycle->pool, 1, sizeof(ngx_str_t));
+    certs = ngx_array_create(ngx_js_conf_cycle()->pool, 1, sizeof(ngx_str_t));
+    keys  = ngx_array_create(ngx_js_conf_cycle()->pool, 1, sizeof(ngx_str_t));
 
     if (certs == NULL || keys == NULL) {
         return JS_ThrowOutOfMemory(ctx);

@@ -563,7 +563,7 @@ ngx_js_stream_upstream_add_peer(JSContext *ctx, JSValueConst this_val,
     u.url.len    = ngx_strlen(addr_cstr);
     u.no_resolve = 1;
 
-    if (ngx_parse_url(ngx_cycle->pool, &u) != NGX_OK || u.naddrs == 0) {
+    if (ngx_parse_url(ngx_js_stream_conf_cycle()->pool, &u) != NGX_OK || u.naddrs == 0) {
         JS_FreeCString(ctx, addr_cstr);
         return JS_ThrowTypeError(ctx, "addPeer: invalid address");
     }
@@ -627,7 +627,7 @@ ngx_js_stream_upstream_add_peer(JSContext *ctx, JSValueConst this_val,
     if (is_backup) {
         if (peers->next == NULL) {
             /* Create backup group on demand */
-            peers->next = ngx_pcalloc(ngx_cycle->pool,
+            peers->next = ngx_pcalloc(ngx_js_stream_conf_cycle()->pool,
                                       sizeof(ngx_stream_upstream_rr_peers_t));
             if (peers->next == NULL) {
                 return JS_ThrowOutOfMemory(ctx);
@@ -637,13 +637,13 @@ ngx_js_stream_upstream_add_peer(JSContext *ctx, JSValueConst this_val,
         peers = peers->next;
     }
 
-    peer = ngx_pcalloc(ngx_cycle->pool,
+    peer = ngx_pcalloc(ngx_js_stream_conf_cycle()->pool,
                        sizeof(ngx_stream_upstream_rr_peer_t));
     if (peer == NULL) {
         return JS_ThrowOutOfMemory(ctx);
     }
 
-    peer->sockaddr = ngx_pcalloc(ngx_cycle->pool, u.addrs[0].socklen);
+    peer->sockaddr = ngx_pcalloc(ngx_js_stream_conf_cycle()->pool, u.addrs[0].socklen);
     if (peer->sockaddr == NULL) {
         return JS_ThrowOutOfMemory(ctx);
     }

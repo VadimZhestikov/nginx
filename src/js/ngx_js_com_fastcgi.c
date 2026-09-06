@@ -220,7 +220,7 @@ ngx_js_fastcgi_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 
         s = JS_ToCStringLen(ctx, &slen, val);
         if (!s) { return JS_EXCEPTION; }
-        p = ngx_pnalloc(ngx_cycle->pool, slen + 1);
+        p = ngx_pnalloc(ngx_js_conf_cycle()->pool, slen + 1);
         if (!p) { JS_FreeCString(ctx, s); return JS_EXCEPTION; }
         ngx_memcpy(p, s, slen);
         p[slen] = '\0';
