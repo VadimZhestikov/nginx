@@ -938,7 +938,13 @@ static uint8_t *jit_infer_types(const uint8_t *bc, int bc_len,
             case OP_pow: _TI_DROPN(2); _TI_PUSH(JIT_T_JSVAL); break;
 
             /* ---- Unary numeric ---- */
-            case OP_neg: case OP_plus: case OP_inc: case OP_dec: {
+            /* -0: neg of an INT can yield -0.0, so its result is NUMBER, never
+             * INT (see OP_neg codegen).  plus/inc/dec preserve INT. */
+            case OP_neg: {
+                uint8_t a = _TI_POP();
+                _TI_PUSH(a >= JIT_T_NUMBER ? JIT_T_NUMBER : JIT_T_JSVAL); break;
+            }
+            case OP_plus: case OP_inc: case OP_dec: {
                 uint8_t a = _TI_POP();
                 _TI_PUSH(a >= JIT_T_NUMBER ? a : JIT_T_JSVAL); break;
             }
@@ -4826,7 +4832,10 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                     "      int _ta=JS_VALUE_GET_TAG(_a),_tb=JS_VALUE_GET_TAG(_b);\n"
                     "      if(_ta==JS_TAG_INT&&_tb==JS_TAG_INT){\n"
                     "        int32_t ia=JS_VALUE_GET_INT(_a),ib=JS_VALUE_GET_INT(_b);\n"
-                    "        _tsv%d=(ib&&ia%%ib==0)?JS_NewInt32(ctx,ia/ib)\n"
+                    /* -0: 0/negative is -0.0, not the integer 0 that the exact-
+                     * division shortcut would box; route ia==0&&ib<0 to the float
+                     * path (which preserves the sign). */
+                    "        _tsv%d=(ib&&ia%%ib==0&&!(ia==0&&ib<0))?JS_NewInt32(ctx,ia/ib)\n"
                     "                              :JS_NewFloat64(ctx,(double)ia/(double)ib); _sp=%d;\n"
                     "      } else if((_ta==JS_TAG_INT||_ta==JS_TAG_FLOAT64)&&"
                              "(_tb==JS_TAG_INT||_tb==JS_TAG_FLOAT64)){\n"
@@ -5053,9 +5062,15 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
         /* ---- Arithmetic (unary) with int fast paths ----
          * P9.2: unary ops: pop 1 (_tsv{d-1}), push 1 back at _tsv{d-1}, depth unchanged */
         case OP_neg:
-            /* P11.6: INT uses _ti; NUMBER uses _tsd */
+            /* P11.6: INT uses _ti; NUMBER uses _tsd.
+             * -0 CORRECTNESS: negating integer 0 yields -0.0, which is NOT an
+             * integer — so an INT-typed operand must produce a NUMBER (double)
+             * result (its slot type is promoted to NUMBER by both inference
+             * passes: jit_infer + the gen_st secondary switch).  `-(double)_ti`
+             * gives -0.0 for _ti==0 and the exact negation otherwise (incl.
+             * INT32_MIN, which is representable as a double). */
             if (gen_sp > 0 && gen_st[gen_sp-1] == JIT_T_INT) {
-                jit_buf_printf(cb, "    _ti%d=-_ti%d; _sp=%d;\n", d-1, d-1, d);
+                jit_buf_printf(cb, "    _tsd%d=-(double)_ti%d; _sp=%d;\n", d-1, d-1, d);
             } else if (gen_sp > 0 && gen_st[gen_sp-1] == JIT_T_NUMBER) {
                 jit_buf_printf(cb, "    _tsd%d=-_tsd%d; _sp=%d;\n", d-1, d-1, d);
             } else {
@@ -5063,8 +5078,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                     "    { JSValue _a=_tsv%d; int _ta=JS_VALUE_GET_TAG(_a);\n"
                     "      if(_ta==JS_TAG_INT){\n"
                     "        int32_t ia=JS_VALUE_GET_INT(_a);\n"
-                    "        _tsv%d=(ia==INT32_MIN)?JS_NewFloat64(ctx,-(double)ia)\n"
-                    "                             :JS_NewInt32(ctx,-ia);\n"
+                    "        _tsv%d=(ia==0)?JS_NewFloat64(ctx,-0.0)\n"
+                    "               :(ia==INT32_MIN)?JS_NewFloat64(ctx,-(double)ia)\n"
+                    "               :JS_NewInt32(ctx,-ia);\n"
                     "      } else if(_ta==JS_TAG_FLOAT64)\n"
                     "        _tsv%d=JS_NewFloat64(ctx,-JS_VALUE_GET_FLOAT64(_a));\n"
                     "      else { _sp=%d; JSValue _r=_RT->neg(ctx,_a); _CHK(_r); _tsv%d=_r; } }\n"
@@ -8316,7 +8332,13 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             }
 
             /* --- Unary numeric: INT/NUMBER if operand was numeric, else JSVAL --- */
-            case OP_neg: case OP_plus: case OP_inc: case OP_dec:
+            /* -0: neg promotes INT->NUMBER (negating int 0 yields -0.0, not an
+             * int); plus/inc/dec keep the operand type. */
+            case OP_neg:
+                { uint8_t _t=_GS_TOP();
+                  _gs_drop=1;
+                  _gs_push=(_t>=JIT_T_NUMBER)?JIT_T_NUMBER:JIT_T_JSVAL; break; }
+            case OP_plus: case OP_inc: case OP_dec:
                 { uint8_t _t=_GS_TOP();
                   _gs_drop=1;
                   _gs_push=(_t>=JIT_T_NUMBER)?_t:JIT_T_JSVAL; break; }
