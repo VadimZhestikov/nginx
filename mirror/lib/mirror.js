@@ -209,10 +209,25 @@ EVENT_PROTO.cookie = function (name) {
     return cookieValue(c, name);
 };
 // ---- flow-control / control verbs ----
+// NOTE on `stopped`: the ACTUAL short-circuit is r.respond() itself — location
+// .addHook()'s contract is "call req.respond() to cancel; return without
+// responding to continue", so nginx stops the chain in C. `stopped` is an
+// ADVISORY flag for handler code (a transpiled rule with statements after
+// HTTP::respond can check `if (ev.stopped) return;`); nothing in mirror
+// consumes it. Both respond() and redirect() set it, so it is consistent.
 EVENT_PROTO.respond = function (code, headers, body) {
     cap(this.event, 'respond');
     this._o.r.respond(code, headers || {}, body || '');
-    this.stopped = true;                         // short-circuit signal
+    this.stopped = true;                         // advisory short-circuit signal
+};
+// ev.redirect(url [, code]) — iRules HTTP::redirect. Was listed in CAPS and
+// emitted by the transpiler but never implemented, so every transpiled rule
+// using HTTP::redirect threw a TypeError. A redirect is just a respond with a
+// Location header; iRules defaults to 302.
+EVENT_PROTO.redirect = function (url, code) {
+    cap(this.event, 'redirect');
+    this._o.r.respond(code || 302, { Location: String(url) }, '');
+    this.stopped = true;                         // advisory short-circuit signal
 };
 EVENT_PROTO.setResponseHeader = function (name, val) {
     cap(this.event, 'setResponseHeader');
