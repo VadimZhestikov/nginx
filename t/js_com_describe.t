@@ -278,9 +278,23 @@ check('sig_server_addLocation_typed',
       srvAL.params && srvAL.params.length === 1,
       srvAL && JSON.stringify(srvAL));
 
+/* M2d: further tranches — params derived from the implementations */
+var ahdr = nginx.describe('http.servers[0].locations[0].headers', 'addHeader');
+check('sig_addHeader_two_params',
+      ahdr && ahdr.params && ahdr.params.length === 2 &&
+      ahdr.params[0].name === 'name' && ahdr.params[1].name === 'value' &&
+      ahdr.returns === 'void',
+      ahdr && JSON.stringify(ahdr));
+
+var apeer = nginx.describe('http.upstreams[0]', 'addPeer');
+check('sig_addPeer_record',
+      apeer && apeer.params && apeer.params.length === 1 &&
+      apeer.params[0].type === 'record' && apeer.returns === 'void',
+      apeer && JSON.stringify(apeer));
+
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(55);
+$t->try_run('no js module or upstream_zone')->plan(57);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -352,3 +366,5 @@ like($log, qr/JSTEST PASS sig_removeLocation_returns_bool/, 'removeLocation: ret
 like($log, qr/JSTEST PASS sig_mem_borrowed/,            'string ownership ABI recorded (mem:borrowed)');
 like($log, qr/JSTEST PASS sig_untyped_unchanged/,       'untyped member keeps the original 8-key Descriptor');
 like($log, qr/JSTEST PASS sig_server_addLocation_typed/, 'server.addLocation shares the location signature');
+like($log, qr/JSTEST PASS sig_addHeader_two_params/, 'headers.addHeader typed (2 params, void)');
+like($log, qr/JSTEST PASS sig_addPeer_record/, 'upstream.addPeer typed (record param)');
