@@ -415,5 +415,27 @@ ok('showcase: response sets X-Frame-Options', resp.respHeaders['X-Frame-Options'
 ok('showcase: response sets HSTS',
    resp.respHeaders['Strict-Transport-Security'] === 'max-age=31536000');
 
+// ---- `reject` is event-scoped ----------------------------------------------
+// Regression: `reject`/`TCP::close` used to emit ev.reject() in EVERY event.
+// mirror only exposes reject where the event carries a connection (the L4
+// accept/data events); in an HTTP event the emitted call threw at request time
+// ("command 'reject' is not valid in event 'onRequestHeaders'"). The transpiler
+// must now warn and drop it instead of emitting a guaranteed runtime failure.
+var rj1 = T('when HTTP_REQUEST { reject }');
+ok('reject in HTTP event: not emitted',   !has(rj1.handlers, 'ev.reject()'));
+ok('reject in HTTP event: warned',        rj1.warnings.length >= 1 &&
+   has(rj1.warnings.join('|'), 'not available in onRequestHeaders'));
+
+var rj2 = T('when CLIENT_ACCEPTED { reject }');
+ok('reject in L4 accept: still emitted',  has(rj2.handlers, 'ev.reject()'));
+ok('reject in L4 accept: no warning',     rj2.warnings.length === 0);
+
+var rj3 = T('when CLIENT_DATA { TCP::close }');
+ok('TCP::close in L4 data: still emitted', has(rj3.handlers, 'ev.reject()'));
+
+// a rule that is otherwise valid must still transpile around a dropped reject
+var rj4 = T('when HTTP_REQUEST { table incr hits\n reject }');
+ok('reject dropped but rest of rule survives', has(rj4.handlers, 'ev.table.incr('));
+
 print('\nResults: ' + PASS + ' passed, ' + FAIL + ' failed');
 if (FAIL > 0) { throw new Error(FAIL + ' transpiler test(s) failed'); }

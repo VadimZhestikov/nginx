@@ -35,6 +35,22 @@
     };
     var STREAM_EVENTS = { onClientData: true };
 
+    // Which mirror events actually expose `reject` (see CAPS in lib/mirror.js).
+    // Rejecting means dropping the CONNECTION, so it only exists where the event
+    // carries one: the L4 accept/data events. There is no request-level close in
+    // the nginx COM surface, so `reject` is genuinely unavailable in HTTP events —
+    // emitting `ev.reject()` there produced a guaranteed runtime throw.
+    // NOTE: this duplicates a slice of mirror.js's CAPS. It is the same hand-sync
+    // that M2 (typed API schema) exists to remove — once the schema lands, both
+    // this table and CAPS should be derived from it.
+    var REJECT_EVENTS = { onClientAccept: true, onClientData: true };
+
+    // Mirror event currently being transpiled. Set by transpile() around each
+    // when-block so statement() can reject commands that are invalid for the
+    // event without threading a parameter through block/dispatch/statement and
+    // the three nested block callers (if/switch/foreach).
+    var CUR_EVENT = null;
+
     function quote(s) { return JSON.stringify(String(s)); }
 
     // ---- TCL scanning --------------------------------------------------------
@@ -394,6 +410,16 @@
             break;
         case 'reject':
         case 'TCP::close':
+            // Only emit the call where the event actually has a connection to
+            // drop. In an HTTP event this used to emit ev.reject(), which always
+            // threw at request time ("command 'reject' is not valid in event
+            // 'onRequestHeaders'"). Warn at transpile time and emit nothing, so a
+            // rule that is otherwise fine still runs.
+            if (!REJECT_EVENTS[CUR_EVENT]) {
+                warnings.push('line ' + lineNo + ": '" + cmd + "' is not available in " +
+                              CUR_EVENT + ' (no request-level connection close); dropped');
+                return '';
+            }
             return 'ev.reject();';
         case 'return':
             // end the current event early (e.g. after HTTP::respond)
@@ -579,7 +605,9 @@
             if (events.indexOf(mEvent) < 0) { events.push(mEvent); }
 
             var baseLine = lineOf(tcl, tclEvent);
+            CUR_EVENT = mEvent;
             var body = block(w[2].text, warnings, baseLine, '        ');
+            CUR_EVENT = null;
 
             handlers.push('    ' + mEvent + ': function (ev) {\n' +
                           body + '\n    }');
