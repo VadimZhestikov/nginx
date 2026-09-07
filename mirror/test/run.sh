@@ -14,6 +14,10 @@ if [ ! -x "$QJS" ]; then
     exit 2
 fi
 
-# ev.test.js is a module: it std.loadFile()s mirror.js from the path passed in
-# scriptArgs, so there is a single canonical copy.
+# The tests are modules: they std.loadFile() mirror.js / schema.js from the
+# paths passed in scriptArgs, so there is a single canonical copy of each.
+echo "--- ev.* runtime ---"
 "$QJS" "$DIR/ev.test.js" "$DIR/../lib/mirror.js"
+echo
+echo "--- typed API schema (drift) ---"
+"$QJS" "$DIR/schema.test.js" "$DIR/../lib/mirror.js" "$DIR/../lib/schema.js"
