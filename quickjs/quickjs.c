@@ -16279,6 +16279,18 @@ JSValue js_jit_call(JSContext *ctx, JSValue func, JSValue this_val,
         if (p->class_id == JS_CLASS_BYTECODE_FUNCTION) {
             JSFunctionBytecode *b = p->u.func.function_bytecode;
             JSJITFunc jf = __atomic_load_n(&b->jit_func, __ATOMIC_ACQUIRE);
+            if (jf && b->var_ref_count > 0) {
+                /* The callee promotes some of its own locals into sf->var_refs[]
+                 * because inner closures capture them (e.g. OP_define_class: the
+                 * class constructor captures the enclosing function's locals via
+                 * js_closure2 -> get_var_ref).  The in-place frame reuse below
+                 * keeps the CALLER's frame, so get_var_ref would resolve against
+                 * the caller's bytecode/var_refs and read out of bounds (crash on
+                 * the cache-load path once the callee is JIT-compiled).  Route
+                 * through a fully framed call so the callee gets its own frame —
+                 * mirrors the var_ref_count==0 guard on the early JIT fast-path. */
+                return JS_Call(ctx, func, this_val, argc, (JSValueConst *)argv);
+            }
             if (jf) {
                 if (js_jit_poll_interrupts(ctx))
                     return JS_EXCEPTION;
@@ -16409,6 +16421,17 @@ JSValue js_jit_ic_direct_call(
      * We do NOT touch sf->cur_func because that belongs to the outer frame
      * and is used by get_var_ref to look up var_ref_idx from the outer
      * function's bytecode when js_closure2 captures outer locals. */
+    /* If the callee promotes locals into sf->var_refs[] (var_ref_count > 0,
+     * e.g. it contains OP_define_class whose class ctor captures the callee's
+     * locals via get_var_ref), the frame-eliding direct call below provides no
+     * frame for the callee, so get_var_ref would read the caller's frame ->
+     * out-of-bounds crash on the cache-load path.  Route through a fully framed
+     * call instead (mirrors js_jit_call and the early JIT fast-path guard). */
+    if (ic->expected_bc->var_ref_count > 0) {
+        JSValue fn = JS_MKPTR(JS_TAG_OBJECT, ic->expected_func);
+        return JS_Call(ctx, fn, this_val, nargs, (JSValueConst *)argv);
+    }
+
     JSRuntime *rt = ctx->rt;
     JSValue saved_jit_callee    = rt->jit_callee_func;
     JSValue saved_jit_new_target = rt->jit_new_target;
@@ -16503,6 +16526,13 @@ static uint8_t js_jit_ic_compute_fast(JSFunctionBytecode *b)
 JSValue js_jit_ic_fast_call(JSContext *ctx, JSValue this_val,
                              JSJITCallICEntry *ic)
 {
+    /* Callee with promoted locals (var_ref_count > 0, e.g. OP_define_class)
+     * needs its own frame for get_var_ref; the frame-eliding direct call does
+     * not provide one.  Route through a framed call (see js_jit_ic_direct_call). */
+    if (ic->expected_bc->var_ref_count > 0) {
+        JSValue fn = JS_MKPTR(JS_TAG_OBJECT, ic->expected_func);
+        return JS_Call(ctx, fn, this_val, 0, NULL);
+    }
     return ic->direct_jit(ctx, this_val, 0, NULL,
                           ic->expected_bc->cpool, NULL);
 }
