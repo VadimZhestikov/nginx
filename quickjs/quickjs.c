@@ -18600,8 +18600,14 @@ int js_jit_for_of_next(JSContext *ctx, JSValue *piter, JSValue next,
     stk[3] = JS_UNDEFINED;  /* sp[0]  = value out */
     stk[4] = JS_UNDEFINED;  /* sp[1]  = done out */
     sp = &stk[3];
-    if (js_for_of_next(ctx, sp, -3) < 0) return -1;
-    *piter  = stk[0];   /* may be JS_UNDEFINED now if done */
+    int rc = js_for_of_next(ctx, sp, -3);
+    /* On exception (and on normal completion) js_for_of_next frees the iterator
+     * (stk[0]) and sets it to JS_UNDEFINED.  Propagate that back to *piter in
+     * BOTH cases — the error path used to skip this, leaving the caller's slot
+     * pointing at the freed iterator, so the JIT exception-unwind then freed it
+     * again (double-free / UAF; only reachable once this function is JIT'd). */
+    *piter = stk[0];   /* may be JS_UNDEFINED now if done or on error */
+    if (rc < 0) return -1;
     *pvalue = stk[3];
     *pdone  = stk[4];
     return 0;
