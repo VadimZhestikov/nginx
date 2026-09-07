@@ -385,6 +385,48 @@ typedef struct ngx_js_member_class_s  ngx_js_member_class_t;
 typedef ngx_js_propagation_e (*ngx_js_prop_refine_pt)(JSContext *ctx,
     JSValueConst obj, const ngx_js_member_class_t *m);
 
+/*
+ * M2b — typed signatures.
+ *
+ * The `type` column above is a single coarse JS type per member: enough to
+ * DESCRIBE a member, but not to bind a typed AST against it (M4) or lower it to
+ * unboxed C (M5), both of which need every expression's type to be concrete.
+ * For a method it says only "function" — no parameters, no arity, no return.
+ * Anything more (e.g. the {hard:true} options object) lived in English in `note`.
+ *
+ * The vocabulary here is shared VERBATIM with mirror/lib/schema.js (the M2 ev.*
+ * schema) so both registries speak one language:
+ *
+ *   i64 f64 bool void str  |  T? (optional)  |  record  |  array<T>
+ *   handle<Name>           |  any  = escape hatch: forces the boxed/interpreted
+ *                             path; a signature containing `any` is visibly
+ *                             NOT lowerable.
+ *   A|B                    |  union.  Needed because several COM methods accept
+ *                             either a key or the object it names (see
+ *                             ngx_js_coerce_key_arg): removeLocation("/x") and
+ *                             removeLocation(loc) are both legal.  A union is
+ *                             lowerable only by branching on the runtime tag,
+ *                             so it is weaker than a single type but far more
+ *                             honest than `any`.
+ *
+ * `mem` records the string ownership ABI that unboxed lowering needs in order to
+ * avoid refcount churn: "borrowed" points into nginx-owned memory valid for the
+ * current call/request only; "owned" is freshly allocated and caller-owned.
+ */
+typedef struct {
+    const char  *name;          /* parameter name; NULL terminates the list */
+    const char  *type;          /* vocabulary above */
+    uint8_t      optional;      /* 1 = may be omitted */
+    const char  *mem;           /* "borrowed"|"owned" for str, else NULL */
+} ngx_js_param_t;
+
+typedef struct {
+    const ngx_js_param_t  *params;   /* NULL-name terminated; NULL = takes none */
+    const char            *returns;  /* vocabulary above; "void" when none */
+    const char            *ret_mem;  /* "borrowed"|"owned"|NULL */
+    const char            *effects;  /* comma-separated effect tags, or NULL */
+} ngx_js_sig_t;
+
 struct ngx_js_member_class_s {
     const char  *name;          /* member name; NULL terminates a table */
     const char  *type;          /* "number"|"boolean"|"string"|"string[]"|
@@ -393,6 +435,14 @@ struct ngx_js_member_class_s {
     uint8_t      flags;         /* NGX_JS_MF_* */
     uint8_t      propagation;   /* ngx_js_propagation_e (static default) */
     const char  *note;          /* short human note, may be NULL */
+    /*
+     * Optional typed signature (M2b).  TRAILING and optional on purpose: the
+     * ~55 existing tables use positional initialisers with six elements, so C
+     * zero-initialises this to NULL and every existing row keeps compiling
+     * untouched.  Signatures can therefore be added one method at a time.
+     * NULL => describe() emits the original 8-key Descriptor unchanged.
+     */
+    const ngx_js_sig_t  *sig;
 };
 
 /*

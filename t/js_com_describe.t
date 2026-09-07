@@ -234,9 +234,46 @@ probe.handler = function (r) {
     r.respond(200, {'Content-Type': 'application/json'},
         JSON.stringify({ zoned: z.propagation, plain: nz.propagation }) + '\n');
 };
+/* --- M2b: typed signatures ------------------------------------------- */
+/* addHook / addResponseHook were previously ABSENT from the location table,
+ * so describe() did not report them at all. */
+var ah2 = nginx.describe(locPath, 'addHook');
+check('sig_addHook_described', ah2 !== null && ah2 !== undefined, ah2);
+check('sig_addHook_params',
+      ah2 && ah2.params && ah2.params.length === 1 &&
+      ah2.params[0].name === 'fn' &&
+      ah2.params[0].type === 'handle<Function>' &&
+      ah2.params[0].optional === false,
+      ah2 && JSON.stringify(ah2.params));
+check('sig_addHook_returns', ah2 && ah2.returns === 'void', ah2 && ah2.returns);
+check('sig_addHook_effects',
+      ah2 && ah2.effects && ah2.effects[0] === 'register.hook.precontent',
+      ah2 && JSON.stringify(ah2.effects));
+
+var arh = nginx.describe(locPath, 'addResponseHook');
+check('sig_addResponseHook_described', arh !== null && arh !== undefined, arh);
+
+/* optional param + union type + bool return */
+var rl = nginx.describe(locPath, 'removeLocation');
+check('sig_removeLocation_optional',
+      rl && rl.params && rl.params.length === 2 && rl.params[1].optional === true,
+      rl && JSON.stringify(rl.params));
+check('sig_removeLocation_union',
+      rl && rl.params[0].type.indexOf('str|handle<') === 0, rl && rl.params[0].type);
+check('sig_removeLocation_returns_bool', rl && rl.returns === 'bool', rl && rl.returns);
+
+/* string ownership ABI is recorded */
+check('sig_mem_borrowed', rl && rl.params[0].mem === 'borrowed', rl && rl.params[0].mem);
+
+/* ADDITIVE: an untyped member must be byte-for-byte the old 8-key Descriptor */
+check('sig_untyped_unchanged',
+      root.params === undefined && root.returns === undefined &&
+      root.effects === undefined,
+      JSON.stringify(Object.keys(root)));
+
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(44);
+$t->try_run('no js module or upstream_zone')->plan(54);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -295,3 +332,15 @@ like($log, qr/JSTEST PASS settable_excludes_readonly/,  'settable() excludes rea
 my $r = http_get('/probe/');
 like($r, qr/"zoned":"zoned-shared".*"plain":"worker-local"/,
      'zoned peer → zoned-shared, plain peer → worker-local (post-fork)');
+
+# --- M2b: typed signatures ---
+like($log, qr/JSTEST PASS sig_addHook_described/,      'addHook is now classified (was missing from the table)');
+like($log, qr/JSTEST PASS sig_addHook_params/,         'addHook signature: params typed');
+like($log, qr/JSTEST PASS sig_addHook_returns/,        'addHook signature: returns void');
+like($log, qr/JSTEST PASS sig_addHook_effects/,        'addHook signature: effects recorded');
+like($log, qr/JSTEST PASS sig_addResponseHook_described/, 'addResponseHook is now classified');
+like($log, qr/JSTEST PASS sig_removeLocation_optional/, 'removeLocation: optional opts param');
+like($log, qr/JSTEST PASS sig_removeLocation_union/,    'removeLocation: union key type (str|handle)');
+like($log, qr/JSTEST PASS sig_removeLocation_returns_bool/, 'removeLocation: returns bool');
+like($log, qr/JSTEST PASS sig_mem_borrowed/,            'string ownership ABI recorded (mem:borrowed)');
+like($log, qr/JSTEST PASS sig_untyped_unchanged/,       'untyped member keeps the original 8-key Descriptor');

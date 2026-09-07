@@ -45,6 +45,78 @@
  * what these tables list.
  */
 
+/* ------------------------------------------------------------------ *
+ * M2b — typed signatures (first tranche: NginxLocation methods)        *
+ * ------------------------------------------------------------------ *
+ * Vocabulary is shared verbatim with mirror/lib/schema.js (see the
+ * ngx_js_sig_t comment in ngx_js_com.h).  Signatures are optional and
+ * trailing, so untyped rows are unaffected; describe() emits params[],
+ * returns, returnsMem and effects[] only for members that have one.
+ *
+ * Return types below were read off the implementations, not assumed:
+ * addHook/addResponseHook/clearHandler return JS_UNDEFINED (void);
+ * remove/restoreLocation return JS_TRUE/JS_FALSE (bool); addLocation
+ * returns a wrapped location (handle<NginxLocation>).
+ */
+
+/* Several structural ops accept either the key or the object it names
+ * (ngx_js_coerce_key_arg) — expressed as a union rather than `any`. */
+static const ngx_js_param_t  ngx_js_sig_p_lockey[] = {
+    { "key", "str|handle<NginxLocation>", 0, "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+
+static const ngx_js_param_t  ngx_js_sig_p_lockey_opts[] = {
+    { "key",  "str|handle<NginxLocation>", 0, "borrowed" },
+    { "opts", "record",                    1, NULL },
+    { NULL, NULL, 0, NULL }
+};
+
+static const ngx_js_param_t  ngx_js_sig_p_fn[] = {
+    { "fn", "handle<Function>", 0, NULL },
+    { NULL, NULL, 0, NULL }
+};
+
+static const ngx_js_param_t  ngx_js_sig_p_locspec[] = {
+    { "spec", "record", 0, NULL },
+    { NULL, NULL, 0, NULL }
+};
+
+static const ngx_js_sig_t  ngx_js_sig_add_location = {
+    ngx_js_sig_p_locspec, "handle<NginxLocation>", NULL, "mutate.location.tree"
+};
+static const ngx_js_sig_t  ngx_js_sig_remove_location = {
+    ngx_js_sig_p_lockey_opts, "bool", NULL, "mutate.location.tree"
+};
+static const ngx_js_sig_t  ngx_js_sig_restore_location = {
+    ngx_js_sig_p_lockey, "bool", NULL, "mutate.location.tree"
+};
+static const ngx_js_sig_t  ngx_js_sig_clear_handler = {
+    NULL, "void", NULL, "restore.handler"
+};
+static const ngx_js_sig_t  ngx_js_sig_add_hook = {
+    ngx_js_sig_p_fn, "void", NULL, "register.hook.precontent"
+};
+static const ngx_js_sig_t  ngx_js_sig_add_response_hook = {
+    ngx_js_sig_p_fn, "void", NULL, "register.hook.response"
+};
+
+
+/*
+ * `sig` (M2b) is a DELIBERATELY optional trailing field: a member without a
+ * typed signature simply omits it and describe() emits the original 8-key
+ * Descriptor.  nginx builds with -W -Werror, and -Wmissing-field-initializers
+ * would otherwise reject all ~450 existing six-column rows.  Suppress just that
+ * one diagnostic, scoped to the table block (pop'd after the last table) rather
+ * than file-wide, so every other -Werror check still applies here.
+ *
+ * The alternative — a parallel name-keyed signature registry — was rejected: it
+ * can silently disagree with the tables, which is exactly the drift this
+ * typing work exists to remove.
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+
 /* NginxLocation — core loc_conf scalars are all safe + request-scoped;
  * handler rewires dispatch (guarded, always-global); structural ops live
  * on the methods below. */
@@ -97,15 +169,33 @@ static const ngx_js_member_class_t  ngx_js_loc_members[] = {
     { "directioAlignment",        "number",  SAFE, REV|RQS, WL, NULL },
     { "errorPage",                "object[]",SAFE, REV|RQS, WL, NULL },
     { "addLocation",              "function",GRD, REV|METH,     WL,
-      "Rebuilds live location BST; reverse with removeLocation" },
+      "Rebuilds live location BST; reverse with removeLocation",
+      &ngx_js_sig_add_location },
     { "removeLocation",           "function",GRD, REV|METH,     WL,
       "Tombstone (reversible via restoreLocation); in-flight 404s not undone; "
-      "{hard:true} for irreversible splice" },
+      "{hard:true} for irreversible splice",
+      &ngx_js_sig_remove_location },
     { "restoreLocation",          "function",GRD, REV|METH,     WL,
-      "Clears a removeLocation tombstone; brings the route back" },
+      "Clears a removeLocation tombstone; brings the route back",
+      &ngx_js_sig_restore_location },
     { "clearHandler",             "function",SAFE, REV|METH,    WL,
-      "Restores the location's original (pre-JS) handler" },
-    { NULL, NULL, 0, 0, 0, NULL }
+      "Restores the location's original (pre-JS) handler",
+      &ngx_js_sig_clear_handler },
+    /*
+     * addHook/addResponseHook were MISSING from this table even though both are
+     * on NginxLocation's prototype, so describe() did not report them at all:
+     * ngx_js_describe_append_readonly() only appends getter-only properties, and
+     * a method absent from the table is invisible.  mirror's whole HTTP surface
+     * is built on addHook, so this was a real hole in the classification.
+     */
+    { "addHook",                  "function",GRD, REV|METH,     WL,
+      "Registers a pre-content hook (fn(r)); call r.respond() in it to cancel "
+      "the chain. Rewires the location to the JS content handler",
+      &ngx_js_sig_add_hook },
+    { "addResponseHook",          "function",GRD, REV|METH,     WL,
+      "Registers a response hook (fn(r)) run before headers are serialized",
+      &ngx_js_sig_add_response_hook },
+    { NULL, NULL, 0, 0, 0, NULL, NULL }
 };
 
 /* NginxProxy — all request-scoped; pass changes upstream selection (guarded) */
@@ -582,6 +672,9 @@ static const ngx_js_member_class_t  ngx_js_stream_upstream_members[] = {
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
+/* end of the classification tables — restore -Wmissing-field-initializers */
+#pragma GCC diagnostic pop
+
 
 /* ------------------------------------------------------------------ *
  * Propagation refine hooks                                            *
@@ -869,6 +962,64 @@ ngx_js_propagation_name(ngx_uint_t prop)
 }
 
 
+/*
+ * M2b: attach the typed signature keys to a Descriptor.
+ *
+ *   params      [ { name, type, optional, mem } ]   (mem null unless a string)
+ *   returns     string                              ("void" when none)
+ *   returnsMem  string | null
+ *   effects     [ string ]                          (split on ',')
+ */
+static void
+ngx_js_describe_attach_sig(JSContext *ctx, JSValue d, const ngx_js_sig_t *sig)
+{
+    JSValue               arr, p, eff;
+    const ngx_js_param_t *pm;
+    const char           *s, *comma;
+    uint32_t              i;
+
+    arr = JS_NewArray(ctx);
+    i = 0;
+
+    if (sig->params != NULL) {
+        for (pm = sig->params; pm->name != NULL; pm++) {
+            p = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, p, "name", JS_NewString(ctx, pm->name));
+            JS_SetPropertyStr(ctx, p, "type",
+                              JS_NewString(ctx, pm->type ? pm->type : "any"));
+            JS_SetPropertyStr(ctx, p, "optional", JS_NewBool(ctx, pm->optional));
+            JS_SetPropertyStr(ctx, p, "mem",
+                              pm->mem ? JS_NewString(ctx, pm->mem) : JS_NULL);
+            JS_SetPropertyUint32(ctx, arr, i++, p);
+        }
+    }
+
+    JS_SetPropertyStr(ctx, d, "params", arr);
+    JS_SetPropertyStr(ctx, d, "returns",
+                      JS_NewString(ctx, sig->returns ? sig->returns : "void"));
+    JS_SetPropertyStr(ctx, d, "returnsMem",
+                      sig->ret_mem ? JS_NewString(ctx, sig->ret_mem) : JS_NULL);
+
+    eff = JS_NewArray(ctx);
+    i = 0;
+
+    for (s = sig->effects; s != NULL && *s != '\0'; ) {
+        comma = strchr(s, ',');
+
+        if (comma == NULL) {
+            JS_SetPropertyUint32(ctx, eff, i++, JS_NewString(ctx, s));
+            break;
+        }
+
+        JS_SetPropertyUint32(ctx, eff, i++,
+                             JS_NewStringLen(ctx, s, (size_t) (comma - s)));
+        s = comma + 1;
+    }
+
+    JS_SetPropertyStr(ctx, d, "effects", eff);
+}
+
+
 /* Build one Descriptor object for member m on obj (refine applied if present). */
 static JSValue
 ngx_js_describe_one(JSContext *ctx, JSValueConst obj,
@@ -904,6 +1055,16 @@ ngx_js_describe_one(JSContext *ctx, JSValueConst obj,
                                  (m->flags & NGX_JS_MF_REQUEST_SCOPED) != 0));
     JS_SetPropertyStr(ctx, d, "note",
                       m->note ? JS_NewString(ctx, m->note) : JS_NULL);
+
+    /*
+     * M2b: typed signature.  Purely ADDITIVE — a member with no signature emits
+     * exactly the original 8 keys, so existing consumers (and the .adoc spec)
+     * are unaffected.  Typed members gain: params[], returns, returnsMem,
+     * effects[].
+     */
+    if (m->sig != NULL) {
+        ngx_js_describe_attach_sig(ctx, d, m->sig);
+    }
 
     return d;
 }
