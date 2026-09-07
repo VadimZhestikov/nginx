@@ -7266,6 +7266,20 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
              * Emits: yield_setup(JS_UNDEFINED, resume_idx=0) → return FUNC_RET_INITIAL_YIELD
              * Then _Lresume_0: — entered by dispatch table on next .next() call.
              * The first .next(v) argument is ignored per spec; we consume and free it. */
+            int j;
+            /* The value stack is empty here, but LOCALS are NOT: QuickJS
+             * materializes entry-time locals (notably `arguments`) BEFORE
+             * OP_initial_yield.  The `return` below destroys this C frame, so
+             * owned locals must be transferred into saved_lv[] exactly as
+             * OP_yield does.  Without this the reference is dropped (leaked
+             * Arguments objects) AND the resume path restores JS_UNDEFINED
+             * from the never-written slot, silently turning such a local into
+             * undefined — a wrong-value miscompile, not just a leak. */
+            for (j = 0; j < var_count; j++) {
+                jit_buf_printf(cb,
+                    "    _gf->saved_lv[%d]=_jsv_%s; _jsv_%s=JS_UNDEFINED;\n",
+                    j, LNAME(j), LNAME(j));
+            }
             jit_buf_str(cb,
                 "    js_jit_gen_yield_setup(ctx,JS_UNDEFINED,0,_gf);\n"
                 "    return JS_NewInt32(ctx,3);\n" /* FUNC_RET_INITIAL_YIELD */
