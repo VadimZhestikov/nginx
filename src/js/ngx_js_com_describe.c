@@ -629,16 +629,25 @@ static const ngx_js_member_class_t  ngx_js_server_members[] = {
     { "requestPoolSize",        "number",  SAFE, REV, WL, NULL },
     { "setNames",               "function",GRD, REV|METH, WL,
       "Takes effect only after rebuildVhostDispatch()" },
+    /*
+     * NginxServer's structural ops delegate to the same ngx_js_do_* helpers as
+     * NginxLocation's (ngx_js_server_fn_add_location -> ngx_js_do_add_location,
+     * etc.), so they share the signatures verbatim rather than restating them.
+     */
     { "addLocation",            "function",GRD, REV|METH, WL,
-      "Rebuilds live BST; reverse with removeLocation" },
+      "Rebuilds live BST; reverse with removeLocation",
+      &ngx_js_sig_add_location },
     { "removeLocation",         "function",GRD, REV|METH, WL,
       "Tombstone (reversible via restoreLocation); in-flight 404s not undone; "
-      "{hard:true} for irreversible splice" },
+      "{hard:true} for irreversible splice",
+      &ngx_js_sig_remove_location },
     { "restoreLocation",        "function",GRD, REV|METH, WL,
-      "Clears a removeLocation tombstone" },
+      "Clears a removeLocation tombstone",
+      &ngx_js_sig_restore_location },
     { "clone",                  "function",SAFE, REV|METH, WL,
       "Produces a detached config object; no live effect until added" },
-    { "addHook",                "function",GRD, REV|METH, WL, NULL },
+    { "addHook",                "function",GRD, REV|METH, WL, NULL,
+      &ngx_js_sig_add_hook },
     { "on",                     "function",GRD, REV|METH, WL, NULL },
     { "addL4Filter",            "function",GRD, REV|METH, WL, NULL },
     { "addL4SendFilter",        "function",GRD, REV|METH, WL, NULL },

@@ -271,9 +271,16 @@ check('sig_untyped_unchanged',
       root.effects === undefined,
       JSON.stringify(Object.keys(root)));
 
+/* server methods reuse the location signatures (same ngx_js_do_* helpers) */
+var srvAL = nginx.describe('http.servers[0]', 'addLocation');
+check('sig_server_addLocation_typed',
+      srvAL && srvAL.returns === 'handle<NginxLocation>' &&
+      srvAL.params && srvAL.params.length === 1,
+      srvAL && JSON.stringify(srvAL));
+
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(54);
+$t->try_run('no js module or upstream_zone')->plan(55);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -344,3 +351,4 @@ like($log, qr/JSTEST PASS sig_removeLocation_union/,    'removeLocation: union k
 like($log, qr/JSTEST PASS sig_removeLocation_returns_bool/, 'removeLocation: returns bool');
 like($log, qr/JSTEST PASS sig_mem_borrowed/,            'string ownership ABI recorded (mem:borrowed)');
 like($log, qr/JSTEST PASS sig_untyped_unchanged/,       'untyped member keeps the original 8-key Descriptor');
+like($log, qr/JSTEST PASS sig_server_addLocation_typed/, 'server.addLocation shares the location signature');
