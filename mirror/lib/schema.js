@@ -125,11 +125,100 @@
                       note: 'resolved by proxy_pass http://$mirror_upstream' }
     };
 
+    // ---- shared descriptors -------------------------------------------------
+    // Reused verbatim where the member is identical across events. Members that
+    // DIFFER by event are spelled out per event — see clientPort below.
+    var M_FLOW  = { kind: 'getter', returns: 'any', klass: 'safe', capability: 'flow',
+                    note: 'connection-scoped store; survives keepalive' };
+    var M_CTX   = { kind: 'getter', returns: 'any', klass: 'safe', capability: 'ctx',
+                    note: 'request-scoped store (r.ctx)' };
+    var M_TABLE = { kind: 'namespace', members: TABLE_MEMBERS, klass: 'safe',
+                    capability: 'table', note: 'cross-worker store' };
+    var M_ADDR  = { kind: 'getter', returns: 'str', mem: 'borrowed', klass: 'readonly',
+                    capability: 'clientAddr' };
+    var M_HEADER = { kind: 'method', params: [{ name: 'name', type: 'str', mem: 'borrowed' }],
+                     returns: 'str?', mem: 'borrowed', klass: 'readonly',
+                     capability: 'header', note: 'case-insensitive' };
+    var M_COOKIE = { kind: 'method', params: [{ name: 'name', type: 'str', mem: 'borrowed' }],
+                     returns: 'str?', mem: 'owned', klass: 'readonly',
+                     capability: 'cookie' };
+    // Rejecting drops the CONNECTION, so it exists only where the event has one.
+    var M_REJECT = { kind: 'method', params: [], returns: 'void', klass: 'guarded',
+                     capability: 'reject', effects: ['finalize.connection'] };
+
+    // ---- the remaining events ----------------------------------------------
+    var ON_CLIENT_HELLO = {
+        flow:        M_FLOW,
+        clientHello: { kind: 'getter', returns: 'handle<ClientHello>', klass: 'readonly',
+                       capability: 'clientHello',
+                       note: 'pre-handshake; flow set here reaches the response' },
+        table:       M_TABLE
+    };
+
+    var ON_CLIENT_ACCEPT = {
+        clientAddr: M_ADDR,
+        // i64 here, NOT str: at accept this is conn.remotePort (numeric), while
+        // the request/response events read r.variable("remote_port") (a string).
+        // The per-event schema is what makes that difference expressible.
+        clientPort: { kind: 'getter', returns: 'i64', klass: 'readonly',
+                      capability: 'clientPort', note: 'numeric here (conn.remotePort)' },
+        flow:       M_FLOW,
+        table:      M_TABLE,
+        reject:     M_REJECT
+    };
+
+    var ON_RESPONSE_HEADERS = {
+        clientAddr: M_ADDR,
+        clientPort: { kind: 'getter', returns: 'str', mem: 'borrowed', klass: 'readonly',
+                      capability: 'clientPort', note: 'string here (r.variable)' },
+        flow:  M_FLOW,
+        ctx:   M_CTX,
+        table: M_TABLE,
+        header: M_HEADER,
+        cookie: M_COOKIE,
+        setResponseHeader: { kind: 'method',
+            params: [{ name: 'name', type: 'str', mem: 'borrowed' },
+                     { name: 'value', type: 'str', mem: 'borrowed' }],
+            returns: 'void', klass: 'safe', capability: 'setResponseHeader',
+            effects: ['set.response.header'], note: 'value is String()-coerced' }
+    };
+
+    var ON_CLIENT_CLOSE = {
+        flow:  M_FLOW,
+        table: M_TABLE
+    };
+
+    // L4 / stream. A separate prototype (STREAM_EVENT_PROTO) with its own shape.
+    var ON_CLIENT_DATA = {
+        data:       { kind: 'getter', returns: 'str', mem: 'borrowed', klass: 'readonly',
+                      capability: 'data', note: 'preread bytes (session.data)' },
+        clientAddr: { kind: 'getter', returns: 'str', mem: 'borrowed', klass: 'readonly',
+                      capability: 'clientAddr', note: 'session.remoteAddress' },
+        table:      M_TABLE,
+        finalize:   { kind: 'method',
+                      params: [{ name: 'code', type: 'i64', optional: true, dflt: 200 }],
+                      returns: 'void', klass: 'guarded', capability: 'finalize',
+                      effects: ['finalize.session'] },
+        // NOTE: on the stream path reject is finalize(403), not a silent drop.
+        reject:     { kind: 'method', params: [], returns: 'void', klass: 'guarded',
+                      capability: 'reject', effects: ['finalize.session'],
+                      note: 'implemented as finalize(403)' }
+    };
+
     var SCHEMA = {
         schemaVersion: SCHEMA_VERSION,
         events: {
-            onRequestHeaders: ON_REQUEST_HEADERS
+            onClientHello:     ON_CLIENT_HELLO,
+            onClientAccept:    ON_CLIENT_ACCEPT,
+            onRequestHeaders:  ON_REQUEST_HEADERS,
+            onResponseHeaders: ON_RESPONSE_HEADERS,
+            onClientClose:     ON_CLIENT_CLOSE,
+            onClientData:      ON_CLIENT_DATA
         },
+
+        // Events whose ev object comes from STREAM_EVENT_PROTO rather than
+        // EVENT_PROTO (different shape, different attach path).
+        streamEvents: { onClientData: true },
 
         // Convenience: the capability names this schema declares for an event.
         // The drift test asserts this equals CAPS[event] exactly.
@@ -139,6 +228,14 @@
             return Object.keys(m).map(function (k) {
                 return m[k].capability || k;
             }).sort();
+        },
+
+        // Is `capability` available in `event`? The authoritative answer for any
+        // consumer that needs to know whether a command is legal in an event —
+        // e.g. the TCL transpiler, which must not emit a call that would throw.
+        // Replaces per-consumer copies of the capability lists.
+        allows: function (event, capability) {
+            return SCHEMA.capabilitiesOf(event).indexOf(capability) >= 0;
         },
 
         // Arity a conforming implementation must expose (fn.length): the count

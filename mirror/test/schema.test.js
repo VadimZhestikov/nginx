@@ -31,24 +31,54 @@ ok('schema is published on mirror', !!S && typeof S.capabilitiesOf === 'function
 ok('schema declares a version',     typeof S.schemaVersion === 'number' && S.schemaVersion >= 1);
 
 // ---- obtain a live ev for the event under test ------------------------------
+// Each event reaches its handler by a DIFFERENT route in attach()/attachStream()
+// (ssl.onClientHello, server.on('accept'), conn.onClose, location.addHook,
+// location.addResponseHook, streamServer.handler), and the L4 data event uses a
+// separate prototype entirely. Drive the real route for each so the check tests
+// the object handlers actually receive.
 function liveEvent(event) {
-    var captured = null;
-    var location = {
-        addHook:         function (fn) { captured = fn; },
-        addResponseHook: function (fn) { captured = fn; }
-    };
-    var server = { on: function () {}, ssl: { onClientHello: function () {} } };
+    var ev = null;
     var handlers = {};
-    handlers[event] = function (ev) { captured = ev; };
+    handlers[event] = function (e) { ev = e; };
+
+    if (event === 'onClientData') {
+        var ss = {};
+        M.attachStream(ss, handlers);
+        ss.handler({ data: 'preread', remoteAddress: '1.2.3.4',
+                     finalize: function () {} });
+        return ev;
+    }
+
+    var h = {};
+    var server = {
+        on:  function (name, fn) { h.accept = fn; },
+        ssl: { onClientHello: function (fn) { h.hello = fn; } }
+    };
+    var location = {
+        addHook:         function (fn) { h.req = fn; },
+        addResponseHook: function (fn) { h.resp = fn; }
+    };
     M.attach(server, location, handlers);
-    var hook = captured;                       // the registered hook fn
+
     var r = {
         headers: {}, method: 'GET', uri: '/', ctx: {}, connCtx: {},
         respond: function () {}, setHeader: function () {},
         setVariable: function () {}, variable: function () { return ''; }
     };
-    hook(r);                                   // handler stores ev into captured
-    return captured;
+    var conn = {
+        remoteAddr: '1.2.3.4', remotePort: 1234, ctx: {},
+        onClose: function (fn) { h.close = fn; }, reject: function () {}
+    };
+
+    switch (event) {
+    case 'onClientHello':     h.hello({}, {}); break;
+    case 'onClientAccept':    h.accept(conn); break;
+    case 'onClientClose':     h.accept(conn); h.close({}); break;
+    case 'onRequestHeaders':  h.req(r); break;
+    case 'onResponseHeaders': h.resp(r); break;
+    default: throw new Error('no harness for event ' + event);
+    }
+    return ev;
 }
 
 var EVENTS_UNDER_TEST = Object.keys(S.events);

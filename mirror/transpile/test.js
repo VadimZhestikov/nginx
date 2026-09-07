@@ -4,8 +4,16 @@
 // No nginx required. Any failure throws (nonzero exit).
 import * as std from "std";
 
-(0, eval)(std.loadFile(scriptArgs[1]));      // defines globalThis.mirrorTranspile
-var SHOWCASE_TCL = std.loadFile(scriptArgs[2]);
+// M2c: the transpiler asks the typed schema whether a command is legal in the
+// event being transpiled, so the test loads the real mirror + schema rather
+// than letting it fall back. mirror.js touches `nginx` only lazily, so a
+// minimal stub is enough.
+globalThis.nginx = { log: function () {} };
+
+(0, eval)(std.loadFile(scriptArgs[1]));      // mirror.js    -> globalThis.mirror
+(0, eval)(std.loadFile(scriptArgs[2]));      // schema.js    -> mirror.schema
+(0, eval)(std.loadFile(scriptArgs[3]));      // transpile.js -> globalThis.mirrorTranspile
+var SHOWCASE_TCL = std.loadFile(scriptArgs[4]);
 
 var PASS = 0, FAIL = 0;
 function ok(desc, cond) {
@@ -313,17 +321,20 @@ function dgCmp(s, op, e) {
     if (op === 'contains') { return s.indexOf(e) >= 0; }
     return s === e;
 }
-globalThis.mirror = {
-    classMatch: function (name, op, subj) {
-        var g = DG[name]; if (!g) { return false; }
-        var items = Array.isArray(g) ? g : Object.keys(g);
-        for (var i = 0; i < items.length; i++) { if (dgCmp(subj, op, items[i])) { return true; } }
-        return false;
-    },
-    classLookup: function (name, key) {
-        var g = DG[name]; if (!g) { return undefined; }
-        return Array.isArray(g) ? (g.indexOf(key) >= 0 ? key : undefined) : g[key];
-    }
+// AUGMENT the loaded mirror, do not replace it: the transpiler now asks
+// mirror.schema whether a command is legal in an event (M2c), so clobbering
+// globalThis.mirror here would strip caps/schema and silently make every
+// capability look permitted.
+globalThis.mirror = globalThis.mirror || {};
+globalThis.mirror.classMatch = function (name, op, subj) {
+    var g = DG[name]; if (!g) { return false; }
+    var items = Array.isArray(g) ? g : Object.keys(g);
+    for (var i = 0; i < items.length; i++) { if (dgCmp(subj, op, items[i])) { return true; } }
+    return false;
+};
+globalThis.mirror.classLookup = function (name, key) {
+    var g = DG[name]; if (!g) { return undefined; }
+    return Array.isArray(g) ? (g.indexOf(key) >= 0 ? key : undefined) : g[key];
 };
 
 var dgRule = [

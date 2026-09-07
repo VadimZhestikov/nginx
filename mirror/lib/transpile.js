@@ -35,15 +35,27 @@
     };
     var STREAM_EVENTS = { onClientData: true };
 
-    // Which mirror events actually expose `reject` (see CAPS in lib/mirror.js).
-    // Rejecting means dropping the CONNECTION, so it only exists where the event
-    // carries one: the L4 accept/data events. There is no request-level close in
-    // the nginx COM surface, so `reject` is genuinely unavailable in HTTP events —
-    // emitting `ev.reject()` there produced a guaranteed runtime throw.
-    // NOTE: this duplicates a slice of mirror.js's CAPS. It is the same hand-sync
-    // that M2 (typed API schema) exists to remove — once the schema lands, both
-    // this table and CAPS should be derived from it.
-    var REJECT_EVENTS = { onClientAccept: true, onClientData: true };
+    // Is a command available in the event currently being transpiled?
+    //
+    // M2c: this used to be a hard-coded REJECT_EVENTS table duplicating a slice
+    // of mirror.js's CAPS — a third copy of the same facts, free to drift. It
+    // now asks the typed schema (lib/schema.js), which is the single source of
+    // truth, falling back to mirror.caps when only mirror.js is loaded.
+    //
+    // If NEITHER is loaded (transpiler used completely standalone) we cannot
+    // know, so we allow the command through rather than silently dropping it:
+    // a wrong runtime throw is easier to diagnose than a rule that quietly
+    // lost a statement.
+    function eventAllows(event, capability) {
+        var m = (typeof globalThis !== 'undefined') ? globalThis.mirror : null;
+        if (m && m.schema && typeof m.schema.allows === 'function') {
+            return m.schema.allows(event, capability);
+        }
+        if (m && m.caps && m.caps[event]) {
+            return m.caps[event].indexOf(capability) >= 0;
+        }
+        return true;
+    }
 
     // Mirror event currently being transpiled. Set by transpile() around each
     // when-block so statement() can reject commands that are invalid for the
@@ -415,7 +427,7 @@
             // threw at request time ("command 'reject' is not valid in event
             // 'onRequestHeaders'"). Warn at transpile time and emit nothing, so a
             // rule that is otherwise fine still runs.
-            if (!REJECT_EVENTS[CUR_EVENT]) {
+            if (!eventAllows(CUR_EVENT, 'reject')) {
                 warnings.push('line ' + lineNo + ": '" + cmd + "' is not available in " +
                               CUR_EVENT + ' (no request-level connection close); dropped');
                 return '';

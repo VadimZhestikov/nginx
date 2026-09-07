@@ -13,6 +13,10 @@ if [ ! -x "$QJS" ]; then
     exit 2
 fi
 
-# test.js is a module: it std.loadFile()s the transpiler and the showcase iRule
-# from the paths passed as scriptArgs, so there is a single canonical copy of each.
-"$QJS" "$DIR/test.js" "$DIR/../lib/transpile.js" "$DIR/showcase.tcl"
+# test.js is a module: it std.loadFile()s mirror, the schema, the transpiler and
+# the showcase iRule from the paths passed as scriptArgs, so there is a single
+# canonical copy of each. mirror + schema are loaded because the transpiler now
+# derives command availability from the typed schema (M2c) instead of keeping
+# its own copy of the capability lists.
+"$QJS" "$DIR/test.js" "$DIR/../lib/mirror.js" "$DIR/../lib/schema.js" \
+       "$DIR/../lib/transpile.js" "$DIR/showcase.tcl"
