@@ -57,6 +57,20 @@ for (var i = 0; i < locs.length; i++) {
             " try { acme.removeLocation('/acme/a'); r.rmOk=true; } catch(e){}" +
             " try { acme.removeLocation('/other'); } catch(e){ r.rmDenied=true; }" +
             " r.paths = acme.paths();" +
+            /* S4 (M-SES COM facet audit): ATTENUATION. facet.addLocation()
+             * routes to the canonical ngx_js_do_add_location but must DROP the
+             * NginxLocation cap it returns (JS_FreeValue + return JS_TRUE) --
+             * otherwise a mediated fragment would receive a full location
+             * object and could widen its authority straight back out of the
+             * glob membrane. Pin the observable shape of every facet member so
+             * nobody can 'helpfully' start returning the cap later. */
+            " r.addRet = typeof acme.addLocation('/acme/att');" +
+            " r.rmRet  = typeof acme.removeLocation('/acme/att');" +
+            " r.routeT = typeof acme.route;" +
+            " r.pathsAllStr = acme.paths().every(function(p){return typeof p==='string';});" +
+            " r.noObj = ['paths','allowed','addLocation','removeLocation','route']" +
+            "   .every(function(k){var v=acme[k];" +
+            "     return typeof v==='function'||typeof v!=='object'||v===null;});" +
             " return r; }",
             { grants: { acme: comcon.mediate(srv, comcon.routes('/acme/*')) } });
 
@@ -75,7 +89,7 @@ for (var i = 0; i < locs.length; i++) {
 }
 JS
 
-$t->try_run('no js module')->plan(8);
+$t->try_run('no js module')->plan(13);
 
 my $body = http_get('/probe');
 
@@ -97,3 +111,15 @@ like($body, qr{"hostPaths":\[[^\]]*"/acme/new"},
      'canonical op: the HOST sees the added location (routed to the one op)');
 like($body, qr{"hostPaths":\[(?:(?!/acme/a").)*\]},
      'canonical op: the HOST no longer sees the removed /acme/a');
+
+# --- S4: facet attenuation (the membrane must not hand back COM caps) ---
+like($body, qr/"addRet":"boolean"/,
+     'facet.addLocation returns a boolean, not a location capability');
+like($body, qr/"rmRet":"boolean"/,
+     'facet.removeLocation returns a boolean, not a capability');
+like($body, qr/"routeT":"string"/,
+     'facet.route is a plain string (the glob), not a COM node');
+like($body, qr/"pathsAllStr":true/,
+     'facet.paths() yields strings only -- no location objects cross the membrane');
+like($body, qr/"noObj":true/,
+     'no facet member exposes a COM object');
