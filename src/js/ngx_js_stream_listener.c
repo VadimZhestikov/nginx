@@ -1095,7 +1095,10 @@ ngx_js_stream_listener_server_by_name(JSContext *ctx, JSValueConst this_val,
         return JS_NULL;
     }
 
-    return ngx_js_wrap_stream_server(ctx, cscf, (ngx_cycle_t *) ngx_cycle);
+    /* ngx_js_stream_conf_cycle(), not ngx_cycle: the wrap retains the cycle and
+     * allocates from its pool, and at config phase ngx_cycle is the old cycle
+     * whose pool is freed when init_conf returns (see the http twin). */
+    return ngx_js_wrap_stream_server(ctx, cscf, ngx_js_stream_conf_cycle());
 }
 
 

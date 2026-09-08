@@ -2521,8 +2521,15 @@ ngx_js_listener_server_by_name(JSContext *ctx, JSValueConst this_val,
     lc[qlen] = '\0';
     JS_FreeCString(ctx, query);
 
-    /* We need cycle for ngx_js_wrap_server — use ngx_cycle global */
-    cycle = (ngx_cycle_t *) ngx_cycle;
+    /*
+     * ngx_js_wrap_server keeps this cycle (op->cycle) AND allocates op->names
+     * from cycle->pool, so handing it the bare ngx_cycle bakes the OLD cycle
+     * into a live COM handle during ngx_js_init_conf and allocates out of a
+     * pool that is freed when init_conf returns -- a use-after-free, the same
+     * class as the location.charset fault. ngx_js_conf_cycle() is the captured
+     * http cycle at config time and ngx_cycle at runtime.
+     */
+    cycle = ngx_js_conf_cycle();
 
     cscf  = NULL;
     found = 0;

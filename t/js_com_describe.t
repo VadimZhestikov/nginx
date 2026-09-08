@@ -347,6 +347,18 @@ check('server_clone_irreversible',
  */
 function protoMethods(o) {
     var out = [], seen = {}, p;
+    /* OWN function-valued properties count too: several COM nodes (nginx.http,
+     * the cycle socket entries) are plain objects with their methods attached
+     * directly, so a prototype-only scan silently misses them. */
+    var ons;
+    try { ons = Object.getOwnPropertyNames(o); } catch (e) { ons = []; }
+    for (var oi = 0; oi < ons.length; oi++) {
+        var on = ons[oi];
+        if (seen[on]) continue;
+        var od;
+        try { od = Object.getOwnPropertyDescriptor(o, on); } catch (e) { continue; }
+        if (od && typeof od.value === 'function') { seen[on] = 1; out.push(on); }
+    }
     try { p = Object.getPrototypeOf(o); } catch (e) { return out; }
     while (p && p !== Object.prototype) {
         var ns;
@@ -434,8 +446,9 @@ check('walk_every_callable_typed', noSig.length === 0, noSig.sort().join(' '));
 var expectNoRow = [
     'addBodyFilter', 'addHeaderFilter', 'addUpstreamFilter',
     'addUpstreamRequestFilter', 'findLocation', 'getBodyFilter',
-    'getHeaderFilter', 'getProperty', 'onSelectPeer', 'removeBodyFilter',
-    'removeHeaderFilter', 'setProperty', 'setReadMode', 'setWriteMode',
+    'getHeaderFilter', 'getProperty', 'match', 'onSelectPeer',
+    'rebuildVhostDispatch', 'removeBodyFilter', 'removeHeaderFilter',
+    'serverByName', 'setProperty', 'setReadMode', 'setWriteMode',
     'snapshot'
 ].join(' ');
 check('walk_unclassified_method_ratchet',
