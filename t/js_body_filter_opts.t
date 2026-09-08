@@ -56,6 +56,7 @@ http {
 
         location /opts/  { }
         location /cycle/ { }
+        location /churn/ { }
     }
 }
 EOF
@@ -113,6 +114,34 @@ $t->write_file('init.js', <<'JS');
         if (chunk) { r.sendBuffer(String(chunk).replace(/a/g, 'A')); }
     }, { name: 'after' });
 
+    /* ---- 3. add/remove churn must not grow the registry -------------- */
+    var K = by['/churn/'];
+    var reg0 = globalThis.__ngx_filters__ ? globalThis.__ngx_filters__.length : -1;
+
+    for (var n = 0; n < 200; n++) {
+        K.addHeaderFilter(function (r) {}, { name: 'churn' + n });
+        K.removeHeaderFilter('churn' + n);
+    }
+
+    var reg1 = globalThis.__ngx_filters__ ? globalThis.__ngx_filters__.length : -1;
+
+    /* One filter left registered afterwards, to prove reuse did not corrupt
+     * the mapping: the surviving entry must still resolve to ITS function. */
+    K.addHeaderFilter(function (r) { r.setHeader('x-churn', 'live'); },
+                      { name: 'survivor' });
+
+    K.handler = function (r) {
+        var got = K.getBodyFilter('survivor');   /* wrong list on purpose */
+        var hdr = K.getHeaderFilter('survivor');
+        r.respond(200, {
+            'X-Reg-Before': String(reg0),
+            'X-Reg-After':  String(reg1),
+            'X-Reg-Growth': String(reg1 - reg0),
+            'X-Survivor':   String(hdr ? hdr.name : 'null'),
+            'X-Wrong-List': String(got === null ? 'null' : 'found'),
+        }, 'ok');
+    };
+
     C.handler = function (r) {
         r.respond(200, {
             'X-After-Add':    String(afterAdd),
@@ -125,7 +154,7 @@ $t->write_file('init.js', <<'JS');
 })();
 JS
 
-$t->run()->plan(11);
+$t->run()->plan(15);
 
 ###############################################################################
 
@@ -158,3 +187,20 @@ is(hdr($r2, 'X-Now'), '1',          'a filter re-added after removal registers')
 is(hdr($r2, 'X-Now-Name'), 'after', 'and it is the new one');
 like($r2, qr/bAnAnA/,
      'the streaming filter added after the whole-body one still transforms');
+
+# 3 — the filter registry must not grow without bound.
+#
+# __ngx_filters__ is a process-lifetime global that roots every registered
+# filter function. Registration used to append at length while removal only
+# nulled the slot, so 200 add/remove cycles grew it by 200 and it never shrank
+# -- an unbounded growth an untrusted tenant can drive in a loop.
+my $r3 = http_get('/churn/');
+like($r3, qr/200 OK/,               'churn: 200');
+my ($growth) = $r3 =~ /X-Reg-Growth:\s*(-?\d+)/i;
+diag("registry growth over 200 add/remove cycles: " . (defined $growth ? $growth : 'n/a'));
+cmp_ok($growth, '<=', 4,
+       "filter registry does not grow with add/remove churn (grew $growth over 200)");
+like($r3, qr/X-Survivor:\s*survivor/i,
+     'a filter registered after the churn still resolves to its own entry');
+like($r3, qr/X-Wrong-List:\s*null/i,
+     'and it is not visible on the other filter list');

@@ -995,6 +995,28 @@ ngx_js_make_accept_ctrl_promise(JSContext *ctx, uint32_t cmd_type)
  *   await nginx.suspendAllWorkers();
  *   // all workers suspended; make batch COM mutations here
  *   await nginx.resumeAllWorkers();
+ *
+ * The promise resolves with { ok, unacked }.  `unacked` is the number of
+ * workers that did not ack inside the manager's window; those workers have
+ * NOT suspended yet and are still accepting, so `ok === false` means the
+ * batch was not actually atomic.  Check it if that matters.  (It used to
+ * resolve with undefined and report success unconditionally.)
+ *
+ * RESUME MUST TRAVEL THE SAME CHANNEL AS THE SUSPEND.
+ *
+ * suspendAllWorkers/resumeAllWorkers both go through the manager, which sends
+ * on a per-worker STREAM socket, so delivery is ordered: a worker that acked
+ * late still receives its SUSPEND and then the RESUME queued behind it, and
+ * ends up accepting.  nginx.withSuspendedAcceptance() is built on that pair
+ * and additionally resumes from a `finally`, so it is safe.
+ *
+ * Resuming by some OTHER route -- a SharedWorker broadcast that calls
+ * nginx.resumeAcceptance() in each worker, say -- travels a different
+ * descriptor, and nothing orders the two against each other.  A SUSPEND
+ * delayed past that resume then arrives with nothing left to undo it, and the
+ * worker stops accepting for good.  If every worker is hit, the process stops
+ * accepting entirely.  Prefer resumeAllWorkers(); if a cross-channel pattern
+ * is unavoidable, make the resume idempotent and re-issue it.
  */
 static JSValue
 ngx_js_suspend_all_workers(JSContext *ctx, JSValueConst this_val,

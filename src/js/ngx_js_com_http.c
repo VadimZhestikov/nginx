@@ -2269,17 +2269,70 @@ ngx_js_get_filter_registry(JSContext *ctx)
 }
 
 
-/* Append fn to __ngx_filters__, return its index. */
+/*
+ * Return __ngx_filters_free__, a stack of registry indices freed by
+ * removeHeaderFilter/removeBodyFilter and available for reuse.  Created on
+ * demand.  Caller must JS_FreeValue the returned value.
+ */
+static JSValue
+ngx_js_get_filter_freelist(JSContext *ctx)
+{
+    JSValue  global, freelist;
+
+    global   = JS_GetGlobalObject(ctx);
+    freelist = JS_GetPropertyStr(ctx, global, "__ngx_filters_free__");
+
+    if (!JS_IsArray(ctx, freelist)) {
+        JS_FreeValue(ctx, freelist);
+        freelist = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, global, "__ngx_filters_free__",
+                          JS_DupValue(ctx, freelist));
+    }
+
+    JS_FreeValue(ctx, global);
+    return freelist;
+}
+
+
+/*
+ * Put fn in __ngx_filters__ and return its index.
+ *
+ * This used to append at length unconditionally while unregister only nulled
+ * the slot, so __ngx_filters__ grew by one on every add/remove cycle and never
+ * shrank -- unbounded growth for the process lifetime, driven by an operation
+ * a confined tenant can perform in a loop.  The freed closure itself was
+ * released (nulling the slot drops the GC root); it was the slot that leaked.
+ *
+ * Reuse a freed index when one is available.  Indices must stay stable while a
+ * filter is registered, since ngx_js_filter_entry_t stores fn_idx, so this is
+ * a free list rather than any kind of compaction.
+ */
 static uint32_t
 ngx_js_filter_register_fn(JSContext *ctx, JSValue fn)
 {
-    JSValue   registry, len_val;
-    uint32_t  idx;
+    JSValue   registry, freelist, len_val, idx_val;
+    uint32_t  idx, flen;
 
     registry = ngx_js_get_filter_registry(ctx);
-    len_val  = JS_GetPropertyStr(ctx, registry, "length");
-    JS_ToUint32(ctx, &idx, len_val);
+    freelist = ngx_js_get_filter_freelist(ctx);
+
+    len_val = JS_GetPropertyStr(ctx, freelist, "length");
+    JS_ToUint32(ctx, &flen, len_val);
     JS_FreeValue(ctx, len_val);
+
+    if (flen > 0) {
+        idx_val = JS_GetPropertyUint32(ctx, freelist, flen - 1);
+        JS_ToUint32(ctx, &idx, idx_val);
+        JS_FreeValue(ctx, idx_val);
+        JS_SetPropertyStr(ctx, freelist, "length", JS_NewUint32(ctx, flen - 1));
+
+    } else {
+        len_val = JS_GetPropertyStr(ctx, registry, "length");
+        JS_ToUint32(ctx, &idx, len_val);
+        JS_FreeValue(ctx, len_val);
+    }
+
+    JS_FreeValue(ctx, freelist);
     JS_SetPropertyUint32(ctx, registry, idx, JS_DupValue(ctx, fn));
     JS_FreeValue(ctx, registry);
     return idx;
@@ -2299,15 +2352,38 @@ ngx_js_filter_get_fn(JSContext *ctx, uint32_t fn_idx)
 }
 
 
-/* Set __ngx_filters__[fn_idx] = null (releases the GC root for that slot). */
+/*
+ * Set __ngx_filters__[fn_idx] = null (releasing the GC root for that slot) and
+ * offer the index back for reuse.
+ */
 static void
 ngx_js_filter_unregister_fn(JSContext *ctx, uint32_t fn_idx)
 {
-    JSValue  registry;
+    JSValue   registry, freelist, old, len_val;
+    uint32_t  flen;
 
     registry = ngx_js_get_filter_registry(ctx);
+
+    /* Only recycle a slot that was actually occupied: pushing the same index
+     * twice would hand it to two filters at once. */
+    old = JS_GetPropertyUint32(ctx, registry, fn_idx);
+
+    if (JS_IsNull(old) || JS_IsUndefined(old)) {
+        JS_FreeValue(ctx, old);
+        JS_FreeValue(ctx, registry);
+        return;
+    }
+
+    JS_FreeValue(ctx, old);
     JS_SetPropertyUint32(ctx, registry, fn_idx, JS_NULL);
     JS_FreeValue(ctx, registry);
+
+    freelist = ngx_js_get_filter_freelist(ctx);
+    len_val  = JS_GetPropertyStr(ctx, freelist, "length");
+    JS_ToUint32(ctx, &flen, len_val);
+    JS_FreeValue(ctx, len_val);
+    JS_SetPropertyUint32(ctx, freelist, flen, JS_NewUint32(ctx, fn_idx));
+    JS_FreeValue(ctx, freelist);
 }
 
 
