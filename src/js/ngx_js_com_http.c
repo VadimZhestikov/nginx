@@ -9371,6 +9371,7 @@ ngx_js_server_fn_find_location(JSContext *ctx, JSValueConst this_val,
 #endif
     ngx_js_loc_entry_t        *pe;
     ngx_uint_t                 i;
+    ngx_http_core_loc_conf_t  *found;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_server_class_id);
     if (op == NULL) {
@@ -9427,7 +9428,18 @@ ngx_js_server_fn_find_location(JSContext *ctx, JSValueConst this_val,
     name.data = p;
     name.len  = ngx_strlen(p);
 
-    JS_FreeCString(ctx, pat_str);
+    /*
+     * pat_str MUST stay alive until every comparison below is done: name.data
+     * points INTO it (p walks the same buffer past the modifier prefix).
+     * Freeing here and then running ngx_memcmp against name.data is a
+     * use-after-free read -- latent for a Latin-1 argument, where
+     * JS_ToCString hands back a pointer the caller's own JSValue still holds a
+     * reference to, but a genuine read of freed memory as soon as the pattern
+     * is a wide string, for which JS_ToCString allocates a fresh UTF-8 buffer
+     * that JS_FreeCString releases outright. Single exit so the free happens
+     * exactly once, after the scans.
+     */
+    found = NULL;
 
 #if (NGX_PCRE)
     /* Scan regex_locs[] (tombstoned = removed → not findable) */
@@ -9441,10 +9453,11 @@ ngx_js_server_fn_find_location(JSContext *ctx, JSValueConst this_val,
             if (clcf->name.len == name.len
                 && ngx_memcmp(clcf->name.data, name.data, name.len) == 0)
             {
-                return ngx_js_wrap_location_ex(ctx, clcf, op);
+                found = clcf;
+                break;
             }
         }
-        return JS_NULL;
+        goto done;
     }
 #endif
 
@@ -9459,10 +9472,11 @@ ngx_js_server_fn_find_location(JSContext *ctx, JSValueConst this_val,
             if (clcf->name.len == name.len
                 && ngx_memcmp(clcf->name.data, name.data, name.len) == 0)
             {
-                return ngx_js_wrap_location_ex(ctx, clcf, op);
+                found = clcf;
+                break;
             }
         }
-        return JS_NULL;
+        goto done;
     }
 
     /* Scan prefix_locs[] (exact, noregex, and plain prefix) */
@@ -9486,10 +9500,19 @@ ngx_js_server_fn_find_location(JSContext *ctx, JSValueConst this_val,
             continue;
         }
 
-        return ngx_js_wrap_location_ex(ctx, clcf, op);
+        found = clcf;
+        break;
     }
 
-    return JS_NULL;
+done:
+
+    JS_FreeCString(ctx, pat_str);
+
+    if (found == NULL) {
+        return JS_NULL;
+    }
+
+    return ngx_js_wrap_location_ex(ctx, found, op);
 }
 
 

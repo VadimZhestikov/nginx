@@ -24,7 +24,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http rewrite/)->plan(18);
+my $t = Test::Nginx->new()->has(qw/http rewrite/)->plan(22);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -55,6 +55,8 @@ http {
         location /check_ci      { }
         location /check_named   { }
         location /check_miss    { }
+        location /check_wide    { }
+        location /check_wide2   { }
         location /check_dyn_add { }
         location /check_dyn_rm  { }
     }
@@ -84,6 +86,15 @@ $t->write_file('find_location.js', <<'JS');
     probe('/check_ci',     '~* /ci');
     probe('/check_named',  '@named');
     probe('/check_miss',   '/no-such-location');
+
+    /* A WIDE (non-Latin-1) pattern. This is the case where the old
+     * JS_FreeCString-before-compare was a real use-after-free rather than a
+     * latent one: for a Latin-1 argument JS_ToCString returns a pointer the
+     * caller's own JSValue still references, but for a wide string it
+     * allocates a fresh UTF-8 buffer that the free releases outright, so
+     * every ngx_memcmp afterwards read freed memory. */
+    probe('/check_wide',   '/\u00e4\u00f6\u00fc-no-such-location');
+    probe('/check_wide2',  '= /\u4e2d\u6587');
 
     /* Dynamic add then find */
     findLoc(alpha, '/check_dyn_add').handler = function(r) {
@@ -146,5 +157,14 @@ like(vhost('alpha.local', '/check_dyn_add'), qr{/dynloc}, 'dyn_add: found');
 # 9. Removed location returns null
 like(vhost('alpha.local', '/check_dyn_rm'), qr/200 OK/, 'dyn_rm: 200');
 like(vhost('alpha.local', '/check_dyn_rm'), qr/null/, 'dyn_rm: null');
+
+# 10. Wide-string patterns: must not fault and must miss cleanly.
+#     Native "no crash" does NOT prove the UAF is gone -- freed pool/heap
+#     memory usually stays mapped -- so this pins behaviour and exercises the
+#     path; ASAN is what actually proves it.
+like(vhost('alpha.local', '/check_wide'),  qr/200 OK/,  'wide pattern: 200');
+like(vhost('alpha.local', '/check_wide'),  qr/null/,    'wide pattern: null');
+like(vhost('alpha.local', '/check_wide2'), qr/200 OK/,  'wide exact pattern: 200');
+like(vhost('alpha.local', '/check_wide2'), qr/null/,    'wide exact pattern: null');
 
 $t->stop();
