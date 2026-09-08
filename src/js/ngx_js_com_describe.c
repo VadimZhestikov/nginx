@@ -567,9 +567,8 @@ static const ngx_js_member_class_t  ngx_js_loc_members[] = {
       "removeHeaderFilter",
       &ngx_js_sig_add_header_filter },
     { "addBodyFilter",            "function",GRD, REV|METH,     WL,
-      "Registers a body filter, either (asyncGenFn) or (mode, fn [, opts]). "
-      "removeBodyFilter takes the entry back out but does NOT clear the "
-      "internal whole-body-buffering flag, so that stays armed for good",
+      "Registers a body filter, either (asyncGenFn [, opts]) or "
+      "(mode, fn [, opts]); reverse with removeBodyFilter",
       &ngx_js_sig_add_body_filter },
     /*
      * IRREVERSIBLE, and this is the point of classifying them: there is no
@@ -592,8 +591,8 @@ static const ngx_js_member_class_t  ngx_js_loc_members[] = {
       "INHERITED filter first materialises a private copy of the parent list",
       &ngx_js_sig_remove_header_filter },
     { "removeBodyFilter",         "function",GRD, REV|METH,     WL,
-      "Removes a body filter by name or function identity; same silent "
-      "no-op-vs-removed ambiguity, and leaves the whole-body flag set",
+      "Removes a body filter by name or function identity; returns nothing, "
+      "so 'removed' and 'no such filter' are indistinguishable",
       &ngx_js_sig_remove_body_filter },
     { "getHeaderFilter",          "function",RO,  METH,         WL,
       "Looks up a header filter; yields {name, priority, fn} or null",

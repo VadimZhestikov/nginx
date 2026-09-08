@@ -3068,7 +3068,15 @@ ngx_js_location_fn_add_body_filter(JSContext *ctx, JSValueConst this_val,
 
         mode     = NGX_JS_FILTER_GENERATOR;
         fn_arg   = argv[0];
-        opts_arg = JS_UNDEFINED;
+        /*
+         * addBodyFilter(fn, opts) used to land here with opts SILENTLY
+         * DROPPED: the branch is taken whenever argv[0] is a function, so the
+         * two-argument generator form fell into the one-argument case and
+         * hard-coded JS_UNDEFINED.  A caller naming a filter, or ordering it
+         * with before/after, got no error and no effect -- and the sibling
+         * addHeaderFilter(fn, opts) does honour them.
+         */
+        opts_arg = (argc > 1) ? argv[1] : JS_UNDEFINED;
 
     } else {
         /* Two-argument (or three-argument) form: addBodyFilter(mode, fn[, opts]) */
@@ -3278,6 +3286,37 @@ ngx_js_filter_remove_impl(JSContext *ctx, ngx_http_core_loc_conf_t *clcf,
     idx = ngx_js_filter_find(ctx, *listp, ref);
     if (idx >= 0) {
         ngx_js_filter_remove_at(ctx, *listp, (ngx_uint_t) idx);
+    }
+
+    /*
+     * Recompute body_filter_has_wb.  Adding a whole-body/generator filter sets
+     * it, but removal used to leave it set forever, so the whole-body
+     * BUFFERING path stayed armed after the last such filter was gone --
+     * every response through this location kept being accumulated in memory
+     * for a filter that no longer existed.  The flag is a summary of the list,
+     * so derive it from the list rather than tracking it incrementally.
+     */
+    if (is_body) {
+        ngx_js_filter_entry_t  *fe;
+        ngx_uint_t              i, has_wb;
+
+        has_wb = 0;
+
+        if (*listp != NULL) {
+            fe = (*listp)->elts;
+
+            for (i = 0; i < (*listp)->nelts; i++) {
+                if (fe[i].mode == NGX_JS_FILTER_WB_SYNC
+                    || fe[i].mode == NGX_JS_FILTER_WB_ASYNC
+                    || fe[i].mode == NGX_JS_FILTER_GENERATOR)
+                {
+                    has_wb = 1;
+                    break;
+                }
+            }
+        }
+
+        jlcf->body_filter_has_wb = has_wb;
     }
 
     return JS_UNDEFINED;
