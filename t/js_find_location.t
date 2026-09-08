@@ -24,7 +24,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http rewrite/)->plan(22);
+my $t = Test::Nginx->new()->has(qw/http rewrite/)->plan(23);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -57,6 +57,7 @@ http {
         location /check_miss    { }
         location /check_wide    { }
         location /check_wide2   { }
+        location /check_wide3   { }
         location /check_dyn_add { }
         location /check_dyn_rm  { }
     }
@@ -95,6 +96,11 @@ $t->write_file('find_location.js', <<'JS');
      * every ngx_memcmp afterwards read freed memory. */
     probe('/check_wide',   '/\u00e4\u00f6\u00fc-no-such-location');
     probe('/check_wide2',  '= /\u4e2d\u6587');
+    /* CRITICAL: the scan compares lengths BEFORE memcmp, and the length was
+     * computed before the free -- so a wide pattern only reads the freed
+     * buffer if its UTF-8 byte length MATCHES a real location. '/中文' is
+     * 7 bytes, exactly like '/prefix', which forces the ngx_memcmp. */
+    probe('/check_wide3',  '/\u4e2d\u6587');
 
     /* Dynamic add then find */
     findLoc(alpha, '/check_dyn_add').handler = function(r) {
@@ -166,5 +172,7 @@ like(vhost('alpha.local', '/check_wide'),  qr/200 OK/,  'wide pattern: 200');
 like(vhost('alpha.local', '/check_wide'),  qr/null/,    'wide pattern: null');
 like(vhost('alpha.local', '/check_wide2'), qr/200 OK/,  'wide exact pattern: 200');
 like(vhost('alpha.local', '/check_wide2'), qr/null/,    'wide exact pattern: null');
+
+like(vhost('alpha.local', '/check_wide3'), qr/200 OK/, 'wide len-matched pattern: 200');
 
 $t->stop();
