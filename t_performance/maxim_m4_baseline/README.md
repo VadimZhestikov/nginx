@@ -67,25 +67,49 @@ the result away.
    a 16-CPU box is ~6% by that measure, which sails past a 25% threshold while
    being more than enough to move throughput.
 
-## Preliminary observation — CONTAMINATED, not a result
-
-Before guard 3 was tightened, a run completed on a box with a test262 sweep
-occupying a core:
+## Measured 2026-09-08 on an idle box — AND THE `jit` ARM IS MISLABELLED
 
 ```
-floor        1,073,404 req/s   100%
-directives   1,016,366 req/s    95%
-jit            447,715 req/s    42%     → 2.40× headroom to the ceiling
+floor        1,190,964 req/s   100%
+directives   1,138,510 req/s    96%
+jit            468,693 req/s    39%     -> 2.54x "headroom"
 ```
 
-**Do not cite this.** It was taken on a loaded box, on WSL2 loopback, with one
-policy shape, and the absolute figures are implausibly high for real traffic
-(short keepalive responses over loopback flatter everything). It is recorded
-only so it is not rediscovered and mistaken for a measurement.
+**This does NOT answer the C5-baseline question, because the JIT never engaged.**
 
-If it survives a clean run, the direction it points is that meaningful headroom
-remains above the JIT and M1's conclusion still stands — but that is a
-hypothesis to test, not a finding.
+Checked after the fact, with `QJS_JIT_KEEP_C=1` so every JIT compilation leaves
+its generated C behind:
+
+| | new `/tmp/qjs_jit_*.c` |
+|---|---|
+| standalone `qjs`, hot loop | 1 |
+| standalone `qjs -m` (module mode, as nginx loads host JS) | 1 |
+| **nginx, ~4.8M handler invocations at 480k req/s** | **0** |
+
+So the mechanism works, and nginx is the difference. The engine's automatic
+path (`JS_CallInternal` -> `js_jit_fb_inc_count` -> threshold 100 ->
+`js_jit_queue_gcc`) only ENQUEUES; `quickjs-jit.h` documents that
+`js_jit_drain()` must be awaited and an install step called from the main
+thread afterwards — and **nothing in `src/js` ever calls `js_jit_drain()` or
+any `js_jit_*` install function**. `jit_no_compile` is set on enqueue, so a
+function is never retried either.
+
+COMCON C5's server-AOT (`js_comcon_aot_compile`) is invoked for admitted
+`comcon.include` fragments ONLY. Host JS loaded via `js_source` — all of
+mirror, every `location.handler` — is not covered.
+
+**Consequence for the gate:** the number above is headroom above the
+INTERPRETER, which is what M1 already measured. Treat it as a rough
+corroboration of M1 (2.54x here vs 3.09x on M1's loopback setup, different box
+and generator), NOT as the C5 baseline.
+
+Whether the C5 baseline question is even well-posed for host-JS policies is
+now open: if host JS never runs JIT-compiled, M1's figure is not stale for that
+path at all.
+
+Not yet established: whether the queued jobs are compiled-but-never-installed
+or never compiled. Zero `.c` files points at the latter, but that was not
+chased down.
 
 ## When the box is free
 
