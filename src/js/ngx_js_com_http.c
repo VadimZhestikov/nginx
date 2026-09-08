@@ -668,12 +668,20 @@ ngx_js_location_get(JSContext *ctx, JSValueConst this_val, int magic)
         }
 
         /*
-         * Use ngx_cycle (the global pointer) rather than the context
-         * opaque: at request time the opaque is ngx_js_worker_t*, not
-         * ngx_cycle_t*, so dereferencing it as a cycle would crash.
+         * Not the context opaque: at request time that is ngx_js_worker_t*,
+         * not ngx_cycle_t*, so dereferencing it as a cycle would crash.
+         *
+         * But NOT the bare ngx_cycle either.  During ngx_js_init_conf the
+         * global still points at the OLD cycle, whose conf_ctx has no
+         * http main conf on a fresh start — reading the charset main conf
+         * off it SIGSEGVs.  This is the same config-phase cycle confusion
+         * already fixed across the mutators; it survived here because
+         * nothing reached this getter at config time until the COM tree was
+         * walked exhaustively.  ngx_js_conf_cycle() is correct in both
+         * phases (captured http cycle at config time, ngx_cycle at runtime).
          */
         (void) cycle;
-        csmcf = ngx_http_cycle_get_module_main_conf(ngx_cycle,
+        csmcf = ngx_http_cycle_get_module_main_conf(ngx_js_conf_cycle(),
                                                ngx_http_charset_filter_module);
 
         return ngx_js_wrap_charset(ctx, cslcf, csmcf);

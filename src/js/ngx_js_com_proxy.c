@@ -160,7 +160,16 @@ ngx_js_proxy_set_core(JSContext *ctx, JSValueConst this_val, JSValue val,
         /* Strip trailing slash */
         while (nlen > 0 && name[nlen - 1] == '/') { nlen--; }
 
-        http_ctx = (ngx_http_conf_ctx_t *) ngx_cycle->conf_ctx[ngx_http_module.index];
+        /* ngx_js_conf_cycle(), not ngx_cycle: during init_conf the global
+         * still points at the old cycle, which has no http conf_ctx on a
+         * fresh start.  (The allocation below already got this right.) */
+        http_ctx = (ngx_http_conf_ctx_t *)
+                       ngx_js_conf_cycle()->conf_ctx[ngx_http_module.index];
+        if (http_ctx == NULL) {
+            JS_FreeCString(ctx, cstr);
+            return JS_NULL;
+        }
+
         umcf     = http_ctx->main_conf[ngx_http_upstream_module.ctx_index];
         uscfp    = umcf->upstreams.elts;
 
