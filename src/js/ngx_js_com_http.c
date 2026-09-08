@@ -9940,6 +9940,10 @@ ngx_js_http_socket_entries(JSContext *ctx, JSValue arr,
         JS_FreeValue(ctx, name_map);
         JS_SetPropertyStr(ctx, entry, "serverByName", fn);
 
+        /* Plain object, so describe() cannot key off a JSClassID — stamp the
+         * hidden tag that resolves it to ngx_js_socket_entry_members. */
+        ngx_js_describe_tag(ctx, entry, NGX_JS_DTAG_SOCKET);
+
         JS_SetPropertyUint32(ctx, arr, (*idx)++, entry);
     }
 }

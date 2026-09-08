@@ -468,7 +468,8 @@ JSValue  ngx_js_describe_catalog(JSContext *ctx);
  * hidden, non-enumerable marker on such an object so describe() can still
  * resolve it to a classification table.  Defined in ngx_js_com_describe.c.
  */
-#define NGX_JS_DTAG_HTTP  1
+#define NGX_JS_DTAG_HTTP    1
+#define NGX_JS_DTAG_SOCKET  2   /* nginx.cycle.sockets[] entry */
 void  ngx_js_describe_tag(JSContext *ctx, JSValueConst obj, int tag);
 
 /*

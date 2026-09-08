@@ -312,6 +312,127 @@ static const ngx_js_sig_t  ngx_js_sig_set_charset = {
 
 
 /*
+ * M2f — the methods that had NO row at all.
+ *
+ * `settable() subset describe()` only ever constrained PROPERTIES, and the
+ * read-only discovery pass only finds prototype GETTERS, so a method was
+ * invisible to both: neither in a table nor discoverable.  Walking the live
+ * COM tree found 15 of these, and scanning own-property methods (not just the
+ * prototype chain) found three more.
+ *
+ * Three of them are IRREVERSIBLE, which is the finding that matters here.
+ * addUpstreamFilter, addUpstreamRequestFilter and onSelectPeer have NO inverse
+ * anywhere in the tree -- there is no removeUpstreamFilter and no
+ * offSelectPeer.  onSelectPeer additionally overwrites uscf->peer.init, the
+ * upstream's load-balancer entry point, for the lifetime of the process, and
+ * claims a slot in a fixed 64-entry static table that is never released.  An
+ * operator reading the traffic light needs that to be red.
+ *
+ * The reads are classified RO, the first use of that class in these tables:
+ * they are genuinely read-only members, but they are METHODS, so nothing
+ * classified them before.
+ */
+static const ngx_js_param_t  ngx_js_sig_p_mode[] = {
+    { "mode", "str", 0, "borrowed" },     /* "global" | "local" | "both" */
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_name_value_mode[] = {
+    { "name",  "str", 0, "borrowed" },
+    { "value", "any", 0, NULL },          /* whatever the target setter takes */
+    { "mode",  "str", 1, "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_name_mode[] = {
+    { "name", "str", 0, "borrowed" },
+    { "mode", "str", 1, "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_fn_opts[] = {
+    { "fn",   "handle<Function>", 0, NULL },
+    { "opts", "record",           1, NULL },  /* {name,priority,index,before,after} */
+    { NULL, NULL, 0, NULL }
+};
+/* addBodyFilter has two shapes: (asyncGenFn) or (mode, fn [, opts]). */
+static const ngx_js_param_t  ngx_js_sig_p_body_filter[] = {
+    { "modeOrFn", "str|handle<Function>",      0, "borrowed" },
+    { "fnOrOpts", "handle<Function>|record",   1, NULL },
+    { "opts",     "record",                    1, NULL },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_filter_ref[] = {
+    { "filter", "str|handle<Function>", 0, "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_pattern[] = {
+    { "pattern", "str", 0, "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_uri_server[] = {
+    { "uri",        "str", 0, "borrowed" },
+    { "serverName", "str", 1, "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+
+static const ngx_js_sig_t  ngx_js_sig_set_write_mode = {
+    ngx_js_sig_p_mode, "void", NULL, "set.write_mode"
+};
+static const ngx_js_sig_t  ngx_js_sig_set_read_mode = {
+    ngx_js_sig_p_mode, "void", NULL, "set.read_mode"
+};
+static const ngx_js_sig_t  ngx_js_sig_set_property = {
+    ngx_js_sig_p_name_value_mode, "void", NULL, "mutate.dynamic"
+};
+static const ngx_js_sig_t  ngx_js_sig_get_property = {
+    ngx_js_sig_p_name_mode, "any", NULL, NULL
+};
+static const ngx_js_sig_t  ngx_js_sig_snapshot = {
+    NULL, "handle<NginxSnapshot>", NULL, NULL
+};
+static const ngx_js_sig_t  ngx_js_sig_add_header_filter = {
+    ngx_js_sig_p_fn_opts, "void", NULL, "register.filter.header"
+};
+static const ngx_js_sig_t  ngx_js_sig_add_body_filter = {
+    ngx_js_sig_p_body_filter, "void", NULL, "register.filter.body"
+};
+static const ngx_js_sig_t  ngx_js_sig_add_upstream_filter = {
+    ngx_js_sig_p_fn, "void", NULL, "register.filter.upstream"
+};
+static const ngx_js_sig_t  ngx_js_sig_add_upstream_req_filter = {
+    ngx_js_sig_p_fn, "void", NULL, "register.filter.upstream.request"
+};
+static const ngx_js_sig_t  ngx_js_sig_remove_header_filter = {
+    ngx_js_sig_p_filter_ref, "void", NULL, "register.filter.header"
+};
+static const ngx_js_sig_t  ngx_js_sig_remove_body_filter = {
+    ngx_js_sig_p_filter_ref, "void", NULL, "register.filter.body"
+};
+static const ngx_js_sig_t  ngx_js_sig_get_header_filter = {
+    ngx_js_sig_p_filter_ref, "record?", NULL, NULL
+};
+static const ngx_js_sig_t  ngx_js_sig_get_body_filter = {
+    ngx_js_sig_p_filter_ref, "record?", NULL, NULL
+};
+static const ngx_js_sig_t  ngx_js_sig_find_location = {
+    ngx_js_sig_p_pattern, "handle<NginxLocation>?", NULL, NULL
+};
+static const ngx_js_sig_t  ngx_js_sig_http_match = {
+    ngx_js_sig_p_uri_server, "handle<NginxLocation>?", NULL, NULL
+};
+static const ngx_js_sig_t  ngx_js_sig_rebuild_vhost = {
+    NULL, "void", NULL, "mutate.server.names"
+};
+static const ngx_js_sig_t  ngx_js_sig_server_by_name = {
+    ngx_js_sig_p_newname, "handle<NginxServer>?", NULL, NULL
+};
+static const ngx_js_sig_t  ngx_js_sig_stream_server_by_name = {
+    ngx_js_sig_p_newname, "handle<NginxStreamServer>?", NULL, NULL
+};
+static const ngx_js_sig_t  ngx_js_sig_on_select_peer = {
+    ngx_js_sig_p_fn, "void", NULL, "mutate.upstream.balancer"
+};
+
+
+/*
  * `sig` (M2b) is a DELIBERATELY optional trailing field: a member without a
  * typed signature simply omits it and describe() emits the original 8-key
  * Descriptor.  nginx builds with -W -Werror, and -Wmissing-field-initializers
@@ -413,6 +534,74 @@ static const ngx_js_member_class_t  ngx_js_loc_members[] = {
     { "addResponseHook",          "function",GRD, REV|METH,     WL,
       "Registers a response hook (fn(r)) run before headers are serialized",
       &ngx_js_sig_add_response_hook },
+
+    /* --- M2f: read/write mode + generic property access ------------------ */
+    { "setWriteMode",             "function",SAFE, REV|METH,    WL,
+      "Selects where writes land: 'global' (shared loc_conf), 'local' "
+      "(per-request copy in r->pool), or 'both'. Set on THIS wrapper, not the "
+      "location — a second findLocation() of the same path starts at 'global'",
+      &ngx_js_sig_set_write_mode },
+    { "setReadMode",              "function",SAFE, REV|METH,    WL,
+      "Selects where reads come from; 'both' is accepted but behaves as "
+      "'local'. Default is 'global' for both modes",
+      &ngx_js_sig_set_read_mode },
+    { "setProperty",              "function",GRD, REV|METH|RQS, WL,
+      "Generic setter (name, value [, mode]); dispatches to the named "
+      "property, so its REAL safety class is that property's, not this row's. "
+      "The mode override reaches this location only, not sub-object setters",
+      &ngx_js_sig_set_property },
+    { "getProperty",              "function",RO,  METH,         WL,
+      "Generic getter (name [, mode]); return type is whatever the named "
+      "property yields, so a caller cannot type the result statically",
+      &ngx_js_sig_get_property },
+    { "snapshot",                 "function",RO,  METH,         WL,
+      "Captures the location's scalars plus proxy/gzip/headers/rewrite. Reads "
+      "only — but the result is NOT detached: it holds live COM wrappers, and "
+      "its restore() is the mutating half. Restore is best-effort, not exact",
+      &ngx_js_sig_snapshot },
+
+    /* --- M2f: filter registration ---------------------------------------- */
+    { "addHeaderFilter",          "function",GRD, REV|METH,     WL,
+      "Registers a header filter in the SHARED loc conf (never per-request, "
+      "so a call during a request affects all later ones); reverse with "
+      "removeHeaderFilter",
+      &ngx_js_sig_add_header_filter },
+    { "addBodyFilter",            "function",GRD, REV|METH,     WL,
+      "Registers a body filter, either (asyncGenFn) or (mode, fn [, opts]). "
+      "removeBodyFilter takes the entry back out but does NOT clear the "
+      "internal whole-body-buffering flag, so that stays armed for good",
+      &ngx_js_sig_add_body_filter },
+    /*
+     * IRREVERSIBLE, and this is the point of classifying them: there is no
+     * removeUpstreamFilter and no removeUpstreamRequestFilter anywhere in the
+     * tree.  Once registered, an upstream filter runs for the process
+     * lifetime.  They are also append-only (the priority field is stored but
+     * never consulted on this path).
+     */
+    { "addUpstreamFilter",        "function",IRR, METH,         WL,
+      "Registers an upstream response filter (async generator only). NO "
+      "inverse exists — cannot be removed or replaced (irreversible)",
+      &ngx_js_sig_add_upstream_filter },
+    { "addUpstreamRequestFilter", "function",IRR, METH,         WL,
+      "Registers an upstream request filter (async generator only). NO "
+      "inverse exists — cannot be removed or replaced (irreversible)",
+      &ngx_js_sig_add_upstream_req_filter },
+    { "removeHeaderFilter",       "function",GRD, REV|METH,     WL,
+      "Removes a header filter by name or function identity; returns nothing, "
+      "so 'removed' and 'no such filter' are indistinguishable. Removing an "
+      "INHERITED filter first materialises a private copy of the parent list",
+      &ngx_js_sig_remove_header_filter },
+    { "removeBodyFilter",         "function",GRD, REV|METH,     WL,
+      "Removes a body filter by name or function identity; same silent "
+      "no-op-vs-removed ambiguity, and leaves the whole-body flag set",
+      &ngx_js_sig_remove_body_filter },
+    { "getHeaderFilter",          "function",RO,  METH,         WL,
+      "Looks up a header filter; yields {name, priority, fn} or null",
+      &ngx_js_sig_get_header_filter },
+    { "getBodyFilter",            "function",RO,  METH,         WL,
+      "Looks up a body filter; yields {name, priority, fn} or null — note the "
+      "filter's MODE is not among them, so the result cannot round-trip a re-add",
+      &ngx_js_sig_get_body_filter },
     { NULL, NULL, 0, 0, 0, NULL, NULL }
 };
 
@@ -473,6 +662,13 @@ static const ngx_js_member_class_t  ngx_js_peer_members[] = {
     { "down",        "boolean", SAFE, REV, ZS, "Adjusts peers->tries" },
     { "failTimeout", "number",  SAFE, REV, ZS, NULL },
     { "maxConns",    "number",  SAFE, REV, ZS, NULL },
+    { "snapshot",    "function", RO, METH, ZS,
+      "Captures this peer's weight/maxFails/down/failTimeout/maxConns. Reads "
+      "only — but NOT detached: it pins the live peer wrapper and restore() "
+      "writes back through the setters. On a zoned RR peer that write goes to "
+      "SHARED memory under the rr_peers wlock, visible to every worker, and "
+      "nothing pins the peer against a concurrent removePeer",
+      &ngx_js_sig_snapshot },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -758,6 +954,15 @@ static const ngx_js_member_class_t  ngx_js_http_members[] = {
     { "addHook",         "function", GRD, REV|METH, WL,
       "Registers a global access-phase hook; reverse by clearing it",
       &ngx_js_sig_http_add_hook },
+    { "match",           "function", RO,  METH,     WL,
+      "Simulates nginx location matching for a URI on a server and yields the "
+      "location that would handle it, or null; changes nothing",
+      &ngx_js_sig_http_match },
+    { "rebuildVhostDispatch", "function", GRD, REV|METH, WL,
+      "Recomputes the virtual-server hash from the current server set — "
+      "idempotent in effect, but each call allocates a fresh hash in "
+      "cycle->pool that is never reclaimed, so repeated runtime calls grow it",
+      &ngx_js_sig_rebuild_vhost },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -769,6 +974,16 @@ static const ngx_js_member_class_t  ngx_js_upstream_members[] = {
       &ngx_js_sig_add_peer },
     { "removePeer", "function", GRD, REV|METH, ZS, "Reverse with addPeer()",
       &ngx_js_sig_remove_peer },
+    { "onSelectPeer", "function", IRR, METH, WL,
+      "Replaces the upstream's load balancer (uscf->peer.init) with a JS hook "
+      "for the lifetime of the process. NO inverse exists, and the hook claims "
+      "one of 64 fixed static slots that is never released (irreversible)",
+      &ngx_js_sig_on_select_peer },
+    { "snapshot",   "function", RO,  METH, ZS,
+      "Captures every peer's five tunables, one node per peer. Reads only, but "
+      "materialises and pins a wrapper per peer; restore() reconciles nothing "
+      "if peers were added or removed in between",
+      &ngx_js_sig_snapshot },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -794,6 +1009,10 @@ static const ngx_js_member_class_t  ngx_js_http_listener_members[] = {
     { "addVirtualServer", "function", IRR, METH,   WL,
       "Rebuilds virtual_names host routing; committed (irreversible)",
       &ngx_js_sig_listener_add_vserver },
+    { "serverByName",     "function", RO,  METH,   WL,
+      "Resolves a server name on this listener (case-insensitive) to its "
+      "NginxServer, or null; changes nothing",
+      &ngx_js_sig_server_by_name },
     { "on",               "function", GRD, REV|METH, WL,
       "Registers an accept hook",
       &ngx_js_sig_on_event },
@@ -848,6 +1067,10 @@ static const ngx_js_member_class_t  ngx_js_stream_listener_members[] = {
     { "addVirtualServer", "function", IRR, METH, WL,
       "Rebuilds stream virtual_names routing; committed (irreversible)",
       &ngx_js_sig_stream_listener_add_vserver },
+    { "serverByName",     "function", RO,  METH, WL,
+      "Resolves a server name on this stream listener to its "
+      "NginxStreamServer, or null; changes nothing",
+      &ngx_js_sig_stream_server_by_name },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -903,6 +1126,12 @@ static const ngx_js_member_class_t  ngx_js_server_members[] = {
      * on a permanent, immediately-routable server commit is the failure this
      * layer exists to prevent.  Reclassified to match addServer.
      */
+    { "findLocation",           "function",RO,  METH,     WL,
+      "Looks up a location by pattern (with its nginx modifier: '= ', '^~ ', "
+      "'~ ', '~* ', '@'); the modifier needs its trailing space. Tombstoned "
+      "(removed) locations are deliberately not findable. Returns a FRESH "
+      "wrapper each call, so read/write modes set on one result do not carry",
+      &ngx_js_sig_find_location },
     { "clone",                  "function",IRR, METH,     WL,
       "Clones this server under a new name; the new cscf is committed in "
       "cycle->pool and spliced into every vhost dispatch entry — live and "
@@ -1059,6 +1288,45 @@ static const ngx_js_member_registry_t  ngx_js_member_registry[] = {
     { NULL, NULL, NULL }
 };
 
+
+/*
+ * NginxSocketEntry — an element of nginx.cycle.sockets[] / nginx.http.sockets[].
+ * A plain JS object (own data properties, no prototype getters), so NOTHING
+ * described it before M2f: the tables only listed settable members, and the
+ * read-only discovery pass only finds prototype getters.  describe() on a
+ * socket entry returned an empty array.
+ *
+ * Every data member is a read-only fact about a listening socket.  The single
+ * method resolves a server name against this listener.
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+
+static const ngx_js_member_class_t  ngx_js_socket_entry_members[] = {
+    { "address",      "string",   RO, 0,    WL,
+      "Listening address, host:port form" },
+    { "fd",           "number",   RO, 0,    WL, "Underlying socket descriptor" },
+    { "type",         "string",   RO, 0,    WL, "'http' or 'stream'" },
+    { "open",         "boolean",  RO, 0,    WL,
+      "False after a {hard:true} removeListener closed the socket" },
+    { "reuseport",    "boolean",  RO, 0,    WL, NULL },
+    { "wildcard",     "boolean",  RO, 0,    WL, NULL },
+    { "protocol",     "string",   RO, 0,    WL, NULL },
+    { "jsCreated",    "boolean",  RO, 0,    WL,
+      "True when this socket came from nginx.createSocket() + attach()" },
+    { "jsHandle",     "number",   RO, 0,    WL,
+      "createSocket() handle, or null for a socket from nginx.conf" },
+    { "serverNames",  "string[]", RO, 0,    WL,
+      "Every server_name routed by this listener" },
+    { "serverByName", "function", RO, METH, WL,
+      "Resolves a server name on this listener (case-insensitive) to its "
+      "NginxServer / NginxStreamServer, or null; changes nothing",
+      &ngx_js_sig_server_by_name },
+    { NULL, NULL, 0, 0, 0, NULL, NULL }
+};
+
+#pragma GCC diagnostic pop
+
 /* ------------------------------------------------------------------ *
  * Tag registry — for plain JS objects that are not class instances    *
  * (nginx.http).  describe() falls back to a hidden NGX_JS_DTAG_* tag   *
@@ -1073,7 +1341,8 @@ typedef struct {
 } ngx_js_member_tag_registry_t;
 
 static const ngx_js_member_tag_registry_t  ngx_js_member_tag_registry[] = {
-    { NGX_JS_DTAG_HTTP, ngx_js_http_members, NULL },
+    { NGX_JS_DTAG_HTTP,   ngx_js_http_members,         NULL },
+    { NGX_JS_DTAG_SOCKET, ngx_js_socket_entry_members, NULL },
     { 0, NULL, NULL }
 };
 
@@ -1098,6 +1367,7 @@ static const struct {
     { "NginxRrPeer",             ngx_js_peer_members },
     { "NginxUpstream",           ngx_js_upstream_members },
     { "NginxSocket",             ngx_js_socket_members },
+    { "NginxSocketEntry",        ngx_js_socket_entry_members },
     { "NginxHttpListener",       ngx_js_http_listener_members },
     { "NginxCycle",              ngx_js_cycle_members },
     { "NginxSSL",                ngx_js_ssl_members },

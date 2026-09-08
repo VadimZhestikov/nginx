@@ -436,24 +436,18 @@ check('walk_reached_tree', walked > 100, 'walked=' + walked);
  * is what stops the next method row from landing untyped. */
 check('walk_every_callable_typed', noSig.length === 0, noSig.sort().join(' '));
 
-/* GUARD 2 — RATCHET on the methods that have no describe row at all.
- * `settable() subset describe()` only ever covered PROPERTIES, so unclassified
- * METHODS were invisible; walking found 15.  Seven of them mutate live
- * behaviour (the filter registrations, onSelectPeer) and want a real safety
- * class; the rest are reads or COM meta-operations.  Pinned exactly, so
- * classifying one OR adding a new unclassified method both fail here and
- * force this list to be updated deliberately.  Backlog, tracked as M2f. */
-var expectNoRow = [
-    'addBodyFilter', 'addHeaderFilter', 'addUpstreamFilter',
-    'addUpstreamRequestFilter', 'findLocation', 'getBodyFilter',
-    'getHeaderFilter', 'getProperty', 'match', 'onSelectPeer',
-    'rebuildVhostDispatch', 'removeBodyFilter', 'removeHeaderFilter',
-    'serverByName', 'setProperty', 'setReadMode', 'setWriteMode',
-    'snapshot'
-].join(' ');
-check('walk_unclassified_method_ratchet',
-      Object.keys(noRow).sort().join(' ') === expectNoRow,
-      Object.keys(noRow).sort().join(' '));
+/* GUARD 2 — every COM method is classified.  Was a ratchet over a pinned
+ * backlog of 18 names; M2f classified all of them, so this is now the
+ * absolute invariant: describe() knows about every callable COM member.
+ *
+ * SCOPE: this walks the COM CONFIGURATION tree.  The request object, the L4
+ * connection object and the Worker/SharedWorker ports are deliberately NOT
+ * classified -- describe()'s axes (how a change reaches other workers,
+ * reversibility, request-scoping) are meaningless for req.respond(), so they
+ * are not COM members and the walk never reaches them. */
+check('walk_every_method_classified',
+      Object.keys(noRow).length === 0,
+      Object.keys(noRow).sort().join(' '))
 
 JS
 
@@ -554,5 +548,5 @@ like($log, qr/JSTEST PASS walk_reached_tree/,
      'COM tree walk reaches the tree (and no longer SIGSEGVs on charset)');
 like($log, qr/JSTEST PASS walk_every_callable_typed/,
      'every classified method carries a signature');
-like($log, qr/JSTEST PASS walk_unclassified_method_ratchet/,
-     'the set of unclassified COM methods is exactly the pinned M2f backlog');
+like($log, qr/JSTEST PASS walk_every_method_classified/,
+     'every COM method is classified (M2f closed the last 18)');
