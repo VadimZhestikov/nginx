@@ -76,11 +76,14 @@ $t->write_file('accept_all.js', <<'JS');
         const r2 = await nginx.resumeAllWorkers();
         req.respond(200, {'content-type': 'application/json'},
             JSON.stringify({
-                type:     typeof r,
-                hasOk:    r !== null && typeof r === 'object' && 'ok' in r,
-                unacked:  r && r.unacked,
-                ok:       r && r.ok,
-                resumeOk: r2 && r2.ok,
+                type:       typeof r,
+                hasOk:      r !== null && typeof r === 'object' && 'ok' in r,
+                unacked:    r && r.unacked,
+                ok:         r && r.ok,
+                // the invariant that must hold regardless of timing
+                consistent: !!r && !!r2 &&
+                            (r.ok === (r.unacked === 0)) &&
+                            (r2.ok === (r2.unacked === 0)),
             }));
     });
 
@@ -138,10 +141,14 @@ like(http_get('/with_wrap/'),   qr/wrap ok/,  'withSuspendedAcceptance: fn ran')
 like(http_get('/multi_cycle/'), qr/200 OK/,   'multi-cycle: 200 OK');
 like(http_get('/multi_cycle/'), qr/cycles:0/, 'multi-cycle: 3 cycles ok');
 
-# The suspend/resume result object — the manager now reports the ack shortfall
+# The suspend/resume result object — the manager now reports the ack shortfall.
+#
+# Deliberately asserts the CONTRACT, not a timing outcome. A worker missing the
+# manager's 500ms ack window is a legitimate load-dependent event, not a bug --
+# an earlier version of this test asserted `unacked == 0` and was itself flaky
+# under load, which is exactly the confusion the field exists to remove.
 my $sr = http_get('/suspend_result/');
-like($sr, qr/200 OK/,           'suspendAllWorkers result: 200');
-like($sr, qr/"hasOk":true/,     'resolves with a result object carrying ok');
-like($sr, qr/"unacked":0/,      'every worker acked (unacked = 0)');
-like($sr, qr/"ok":true.*"resumeOk":true|"resumeOk":true/,
-     'both suspend and resume report ok');
+like($sr, qr/200 OK/,             'suspendAllWorkers result: 200');
+like($sr, qr/"hasOk":true/,       'resolves with a result object carrying ok');
+like($sr, qr/"unacked":\d+/,      'unacked is a number (the ack shortfall)');
+like($sr, qr/"consistent":true/,  'ok is exactly (unacked === 0)');

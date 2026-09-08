@@ -870,10 +870,29 @@ ngx_js_accept_ctrl_reply_handler(ngx_event_t *ev)
     ngx_js_sf_async_check(actx->w);
     ngx_js_l4_async_check(actx->w);
 
-    /* Clean up the reply fd connection */
-    ngx_del_event(conn->read, NGX_READ_EVENT, NGX_CLOSE_EVENT);
-    ngx_free_connection(conn);
-    conn->fd = (ngx_socket_t) -1;
+    /*
+     * Clean up the reply fd connection.
+     *
+     * This used to del the event with NGX_CLOSE_EVENT, free the connection and
+     * set fd = -1 -- but never close() the fd.  NGX_CLOSE_EVENT tells the
+     * epoll module to SKIP epoll_ctl(DEL) precisely because the fd is about to
+     * be closed and closing drops it from the set implicitly.  With no close()
+     * the descriptor leaked AND stayed registered in the worker's epoll set,
+     * while ngx_free_connection() handed its ngx_connection_t back to the free
+     * list.  Two consequences, both bad:
+     *
+     *   - the manager closes its end, so the worker's end sits permanently
+     *     readable-at-EOF; epoll_wait then returns immediately forever and the
+     *     worker spins (observed: both workers in state R at 60%+ CPU, the
+     *     listen queue backing up, no requests served);
+     *   - the stale epoll entry still carries the freed connection pointer, so
+     *     once that slot is recycled for a real request the event fires
+     *     against the WRONG connection.
+     *
+     * ngx_close_connection() is the canonical teardown: it removes the event,
+     * frees the connection and closes the descriptor, in that order.
+     */
+    ngx_close_connection(conn);
 
     ngx_free(actx);
 }

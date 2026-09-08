@@ -3960,10 +3960,15 @@ ngx_js_socket_mgr_broadcast(uint32_t handle, const char *addr_str,
  *
  * Broadcasts a 1-byte control message (bcast_type) to every worker via
  * bcast_fds[wi][0], then waits (with a 500ms timeout) for a 1-byte ack
- * from each worker.  Workers that do not ack within the window (e.g.
- * because their bcast event handler has not been activated yet) are
- * skipped — they will process the message when they eventually activate.
- * Finally, sends a 1-byte success reply on reply_fd and closes it.
+ * from each worker.
+ *
+ * A worker that does not ack within the window has NOT ignored the message:
+ * it will process it whenever its bcast event handler next runs.  For a
+ * SUSPEND that means it disables acceptance at some arbitrary later point,
+ * which the caller needs to know about -- hence the un-acked count in the
+ * reply rather than the unconditional success byte this used to send.
+ *
+ * Finally, sends the un-acked count on reply_fd and closes it.
  */
 static void
 ngx_js_mgr_bcast_ctrl(uint8_t bcast_type, int reply_fd)
