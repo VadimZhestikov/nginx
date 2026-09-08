@@ -3090,6 +3090,47 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      if(s[i]!=='(')fail('statement must be a call');i=sv;"
     "      out.push(chain());ws();if(s[i]===';'){i++;ws();}}"
     "    return {declarative:true,statements:out};};"
+    /* reviewCalls(source, grants) — the admission-time CALL check.
+       reviewDeclarative() proves a proposal has the declarative SHAPE, but its
+       descriptor table was discarded by the admit path, so nothing ever verified
+       that the calls inside it are real: a typo'd member or a wrong-arity call
+       was admitted and only failed later, at request time, inside the tenant.
+       This walks the table and validates every call whose receiver it can
+       resolve statically against the typed describe() registry — unknown member
+       or wrong arity is refused HERE, at admission, where the refusal can be
+       charged to the realizer and reported with the offending call path.
+       SOUNDNESS: it never guesses. A receiver it cannot resolve (a chained step,
+       whose type needs the return-type binding of M4; a non-COM grant; an
+       un-granted root, which is the free-name gate's job) is reported in
+       `unchecked` rather than rejected, so this can only turn runtime failures
+       into admission failures, never reject a valid proposal. Arity is checked
+       as the RANGE required..declared, matching how describe() records optional
+       parameters. */
+    "  C.reviewCalls=function(source,grants){"
+    "    var r=C.reviewDeclarative(source),checked=[],unchecked=[];"
+    "    function fail(m){throw new TypeError('admission refused: '+m);}"
+    "    var st=r.statements;"
+    "    for(var si=0;si<st.length;si++){var ch=st[si];"
+    "      for(var k=0;k<ch.length;k++){var step=ch[k];"
+    "        var segs=String(step.op).split('.');"
+    "        var mem=segs[segs.length-1];"
+    "        if(k>0||!grants||segs.length<2){unchecked.push(step.op);continue;}"
+    "        var root=segs[0];"
+    "        if(!Object.prototype.hasOwnProperty.call(grants,root)){"
+    "          unchecked.push(step.op);continue;}"
+    "        var recv=grants[root];"
+    "        for(var j=1;j<segs.length-1&&recv;j++)recv=recv[segs[j]];"
+    "        if(!recv||typeof recv!=='object'){unchecked.push(step.op);continue;}"
+    "        var d=null;try{d=nginx.describe(recv,mem);}catch(e){d=null;}"
+    "        if(d===null||d===undefined)"
+    "          fail(\"unknown member '\"+mem+\"' in call '\"+step.op+\"'\");"
+    "        if(d.params){var lo=0,hi=d.params.length;"
+    "          for(var p=0;p<hi;p++){if(d.params[p].optional)break;lo++;}"
+    "          var n=step.args.length;"
+    "          if(n<lo||n>hi)"
+    "            fail(\"'\"+step.op+\"' expects \"+lo+\"..\"+hi+\" argument(s), got \"+n);}"
+    "        checked.push(step.op);}}"
+    "    return {ok:true,checked:checked,unchecked:unchecked};};"
     /* realize(q, contract, realizerEnv): give a quotation force under the
        REALIZER's authority — the operator-realizes-a-tenant-proposal path
        (showcases 46-47). Distinct from bind/include (which use the PRODUCER's
@@ -3119,6 +3160,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(contract.profile==='declarative'){"
     "      try{C.reviewDeclarative(q.source);}"
     "      catch(e){throw new Error('admission refused: '+e.message);}}"
+    /* contract.checkCalls: OPT-IN so this cannot reject a proposal that admitted
+       before. Requires the declarative profile (reviewCalls parses with it). The
+       receiver set is the RESTRICTED grants rg, so the check sees exactly the
+       authority the fragment will actually run with. */
+    "    if(contract.checkCalls){"
+    "      if(contract.profile!=='declarative')"
+    "        throw new Error('admission refused: checkCalls requires "
+    "profile:\\'declarative\\'');"
+    "      C.reviewCalls(q.source,rg);}"
     "    if(contract.meter)c.meter=contract.meter;"
     "    if(contract.tests)c.tests=contract.tests;"
     "    if(contract.identity)c.identity=contract.identity;"
