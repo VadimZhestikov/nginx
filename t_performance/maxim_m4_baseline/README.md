@@ -140,12 +140,41 @@ That `true` is not a lie so much as a weak claim: `js_comcon_aot_compile()`
 returns 0 as soon as the argument is a bytecode function, so it means
 "eligible", never "compiled".
 
-**Open, and important:** if the AOT path is inert in workers, what does COMCON
-C5's server-AOT actually do at runtime, and where did C6's ~13.5x compute
-figure come from? `js_comcon_aot_compile` is called from `ngx_js_module.c` for
-admitted fragments and logs success on the same weak condition. Not tested
-here — a confined fragment was never driven under load. Worth settling before
-C5/C6 numbers are quoted again.
+### C5 was the open question — and C5 is REAL. Tested 2026-09-08.
+
+The worry was that if the AOT path is inert in workers, COMCON C5's server-AOT
+might be doing nothing either, and C6's ~13.5x compute figure with it. It is
+not. C5 works, and the difference is exactly WHEN the compile happens:
+
+`comcon.include` runs at config load (stage-0) in the master, **before** the
+daemon and worker forks, while the GCC thread is still alive. The resulting
+`.so` is `dlopen`ed and `jit_func` installed there, and both survive the forks.
+Host JS gets no such call, and the automatic per-call path is inert in workers.
+
+Verified two independent ways with a compute-bearing fragment
+(`comcon.include` of a 2000-iteration loop, invoked per request):
+
+1. **It compiles.** One new generated C file at load, and the log line
+   `js comcon: include fragment lowered to native C (COMCON C5 server-AOT)`.
+2. **It is measurably faster.** Same config, same fragment, the only difference
+   being that `objs` is built without `-DCONFIG_JIT` so the AOT call is
+   preprocessed out:
+
+   | build | AOT log lines | req/s |
+   |---|--:|--:|
+   | `objs_jit` (AOT active) | 2 | **183,016** |
+   | `objs` (AOT compiled out) | 0 | 127,115 |
+
+   **1.44x end-to-end.** Not 13.5x, and not in tension with it: C6 measured
+   COMPUTE, whereas this is whole-request throughput where nginx's own HTTP
+   path dominates and the fragment is a small slice.
+
+So the picture is clean, and the gap is specific:
+
+| path | compiled? |
+|---|---|
+| `comcon.include` fragments (the confined tier) | **yes**, AOT at load |
+| host JS via `js_source` — mirror, every `location.handler` | **no** |
 
 The `jit-aot` arm is kept as the reproduction: if per-worker JIT activation
 lands, it should diverge from `jit`. Today it does not.
