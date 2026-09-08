@@ -107,9 +107,48 @@ Whether the C5 baseline question is even well-posed for host-JS policies is
 now open: if host JS never runs JIT-compiled, M1's figure is not stale for that
 path at all.
 
-Not yet established: whether the queued jobs are compiled-but-never-installed
-or never compiled. Zero `.c` files points at the latter, but that was not
-chased down.
+**ROOT CAUSE, established 2026-09-08: the JIT is inert in nginx workers by
+design, and the engine says so.**
+
+`js_jit_init()` starts the GCC worker thread, but a pthread does not survive
+`fork()`. So `jit_atfork_child()` zeroes `jit_worker.started` in the child, and
+every enqueue/drain path is guarded by `if (!jit_worker.started) return;`.
+nginx's master creates the JS runtime and workers fork from it, so no worker
+can compile anything. From `quickjs-jit.c`:
+
+> the child runs pure interpreter with no JIT. This makes a forking host (e.g.
+> nginx: master starts the thread, workers fork) safe. **Real per-worker JIT
+> activation (start a worker-local thread + wire install) is a later step**;
+> here the goal is only "forked workers don't hang".
+
+This is not a defect discovered here — it is a known unfinished step in the
+JIT integration.
+
+Confirmed by experiment. `nginx.jitCompile(fn)` was added to invoke exactly the
+C5 path (`js_jit_compile_all` + `js_jit_drain` + `js_jit_install_results`)
+on host-JS functions at load, and an `app_aot.js` / `jit-aot` arm added:
+
+```
+floor        1,189,296 req/s   100%
+directives   1,146,772 req/s    96%
+jit            464,108 req/s    39%
+jit-aot        456,190 req/s    38%    <- AOT invoked; indistinguishable
+```
+
+`jitCompile` returned `true` for all three functions and generated **zero** C.
+That `true` is not a lie so much as a weak claim: `js_comcon_aot_compile()`
+returns 0 as soon as the argument is a bytecode function, so it means
+"eligible", never "compiled".
+
+**Open, and important:** if the AOT path is inert in workers, what does COMCON
+C5's server-AOT actually do at runtime, and where did C6's ~13.5x compute
+figure come from? `js_comcon_aot_compile` is called from `ngx_js_module.c` for
+admitted fragments and logs success on the same weak condition. Not tested
+here — a confined fragment was never driven under load. Worth settling before
+C5/C6 numbers are quoted again.
+
+The `jit-aot` arm is kept as the reproduction: if per-worker JIT activation
+lands, it should diverge from `jit`. Today it does not.
 
 ## When the box is free
 

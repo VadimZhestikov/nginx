@@ -702,6 +702,64 @@ ngx_js_broadcast(JSContext *ctx, JSValueConst this_val,
 
 
 /* ------------------------------------------------------------------ */
+/*
+ * nginx.jitCompile(fn) -> bool   [EXPERIMENT, opt-in]
+ *
+ * Lower a host-JS function (and its nested functions) to native C at LOAD
+ * time, the same way COMCON C5 does for an admitted comcon.include fragment:
+ * js_jit_compile_all + js_jit_drain + js_jit_install_results, synchronously.
+ *
+ * Why this exists: host JS loaded via js_source is NOT compiled today. C5's
+ * server-AOT covers admitted fragments only, and the engine's automatic path
+ * merely ENQUEUES via js_jit_queue_gcc -- nothing here ever calls
+ * js_jit_drain(), so a queued function is never compiled or installed and
+ * every location.handler and mirror rule runs interpreted. Measured: zero
+ * generated C over ~4.8M handler invocations, against 1 for the same hot code
+ * under standalone qjs.
+ *
+ * This is deliberately the LOAD-TIME model, not the request-time one: no gcc
+ * on the request path, no per-worker compile thread, cost paid once. It is
+ * opt-in so nothing changes unless a script asks, and it exists to MEASURE
+ * what compilation is worth for host JS.
+ *
+ * MEASURED RESULT (2026-09-08): IT IS CURRENTLY A NO-OP IN NGINX, and the
+ * return value CANNOT tell you that. js_comcon_aot_compile() returns 0 as soon
+ * as the argument is a bytecode function -- success means "eligible", not
+ * "compiled". Calling it on the mirror policy produced ZERO generated C and a
+ * throughput indistinguishable from not calling it (456k vs 464k req/s).
+ *
+ * The reason is in quickjs-jit.c and is by design: js_jit_init() starts the
+ * GCC worker thread, but a pthread does not survive fork(), so jit_atfork_child()
+ * zeroes jit_worker.started in the child and every enqueue/drain path is guarded
+ * by `if (!jit_worker.started) return;`. nginx's master creates the JS runtime
+ * and workers fork from it, so THE JIT IS INERT IN EVERY WORKER. The engine
+ * comment says so outright: "the child runs pure interpreter with no JIT ...
+ * real per-worker JIT activation (start a worker-local thread + wire install)
+ * is a later step".
+ *
+ * So this hook is kept as the REPRODUCTION, not as a working feature: if
+ * per-worker JIT activation ever lands, the jit-aot arm in
+ * t_performance/maxim_m4_baseline/ should diverge from the jit arm. Today it
+ * does not, and that is the finding.
+ */
+static JSValue
+ngx_js_jit_compile(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx, "jitCompile(fn): function required");
+    }
+
+#ifdef CONFIG_JIT
+    return JS_NewBool(ctx, js_comcon_aot_compile(ctx, argv[0]) == 0);
+#else
+    /* Built without -DCONFIG_JIT: report honestly rather than silently
+     * pretending, so a benchmark arm cannot be mislabelled. */
+    return JS_FALSE;
+#endif
+}
+
+
 /* nginx.suspendAcceptance() / nginx.resumeAcceptance()                */
 /* Phase 1: per-worker connection acceptance control.                   */
 /* ------------------------------------------------------------------ */
@@ -3602,6 +3660,13 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "setTimeout",
                       JS_NewCFunction(ctx, ngx_js_nginx_set_timeout,
                                       "setTimeout", 1));
+
+    /* nginx.jitCompile(fn) — opt-in load-time AOT (experiment; see the
+       function comment). Present in every build; returns false when nginx was
+       built without -DCONFIG_JIT. */
+    JS_SetPropertyStr(ctx, nginx_obj, "jitCompile",
+                      JS_NewCFunction(ctx, ngx_js_jit_compile,
+                                      "jitCompile", 1));
 
     /* nginx.suspendAcceptance() / nginx.resumeAcceptance() — Phase 1 */
     JS_SetPropertyStr(ctx, nginx_obj, "suspendAcceptance",

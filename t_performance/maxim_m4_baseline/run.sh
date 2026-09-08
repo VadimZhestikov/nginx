@@ -162,6 +162,7 @@ fi
 rm -rf "$WORK"; mkdir -p "$WORK/logs"
 cp "$ROOT/mirror/lib/mirror.js" "$WORK/mirror.js"
 cp "$HERE/../maxim_m1/maxim_mirror_app.js" "$WORK/app.js"
+cp "$HERE/app_aot.js" "$WORK/app_aot.js"
 
 skeleton() {  # $1 = extra top-level lines, $2 = location body
     cat <<CONF
@@ -188,6 +189,8 @@ skeleton "" 'add_header x-tenant-seen $tenant_seen always; return 200 "ok\n";' \
                                                                   > "$WORK/directives.conf"
 skeleton "js_source $WORK/mirror.js;
 js_source $WORK/app.js;" ""                                       > "$WORK/js.conf"
+skeleton "js_source $WORK/mirror.js;
+js_source $WORK/app_aot.js;" ""                                   > "$WORK/js_aot.conf"
 
 # ── run one arm ──────────────────────────────────────────────────────────────
 # run_arm NAME BIN CONF EXPECT
@@ -256,6 +259,7 @@ echo "=== arms ($([ "$DRY_RUN" = 1 ] && echo 'dry run — no load' || echo "${RU
 run_arm "floor"      "$JIT_BIN"    "$WORK/floor.conf"       ""
 run_arm "directives" "$JIT_BIN"    "$WORK/directives.conf"  "x-tenant-seen: acme"
 run_arm "jit"        "$JIT_BIN"    "$WORK/js.conf"          "x-count:.*|x-tenant-seen: acme"
+run_arm "jit-aot"    "$JIT_BIN"    "$WORK/js_aot.conf"    "x-count:.*|x-tenant-seen: acme"
 [ -n "$INTERP_BIN" ] && run_arm "interp" "$INTERP_BIN" "$WORK/js.conf" "x-count:"
 [ -n "$HANDC_BIN" ]  && run_arm "handc"  "$HANDC_BIN"  "$WORK/directives.conf" "x-count:"
 
