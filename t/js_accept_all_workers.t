@@ -22,7 +22,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(8);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(12);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -40,6 +40,7 @@ http {
         listen       127.0.0.1:8080;
         server_name  localhost;
 
+        location /suspend_result/ { }
         location /suspend_all/  { }
         location /resume_all/   { }
         location /with_wrap/    { }
@@ -65,6 +66,22 @@ $t->write_file('accept_all.js', <<'JS');
         await nginx.suspendAllWorkers();
         await nginx.resumeAllWorkers();
         req.respond(200, {'content-type': 'text/plain'}, 'ok');
+    });
+
+    // The resolved value reports whether every worker actually acked.
+    // It used to resolve with undefined and report success unconditionally,
+    // even when the manager's ack wait timed out.
+    set('/suspend_result/', async (req) => {
+        const r = await nginx.suspendAllWorkers();
+        const r2 = await nginx.resumeAllWorkers();
+        req.respond(200, {'content-type': 'application/json'},
+            JSON.stringify({
+                type:     typeof r,
+                hasOk:    r !== null && typeof r === 'object' && 'ok' in r,
+                unacked:  r && r.unacked,
+                ok:       r && r.ok,
+                resumeOk: r2 && r2.ok,
+            }));
     });
 
     // suspend_all only (for incremental test)
@@ -120,3 +137,11 @@ like(http_get('/with_wrap/'),   qr/wrap ok/,  'withSuspendedAcceptance: fn ran')
 # Multiple cycles
 like(http_get('/multi_cycle/'), qr/200 OK/,   'multi-cycle: 200 OK');
 like(http_get('/multi_cycle/'), qr/cycles:0/, 'multi-cycle: 3 cycles ok');
+
+# The suspend/resume result object — the manager now reports the ack shortfall
+my $sr = http_get('/suspend_result/');
+like($sr, qr/200 OK/,           'suspendAllWorkers result: 200');
+like($sr, qr/"hasOk":true/,     'resolves with a result object carrying ok');
+like($sr, qr/"unacked":0/,      'every worker acked (unacked = 0)');
+like($sr, qr/"ok":true.*"resumeOk":true|"resumeOk":true/,
+     'both suspend and resume report ok');

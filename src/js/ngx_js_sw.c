@@ -4038,8 +4038,18 @@ ngx_js_mgr_bcast_ctrl(uint8_t bcast_type, int reply_fd)
         }
     }
 
-    /* Reply success to requesting worker */
-    status = 0;
+    /*
+     * Reply to the requesting worker.  The status byte carries the number of
+     * workers that never acked, NOT a constant 0.
+     *
+     * This used to be hard-coded to success even when the select() above
+     * broke out on timeout, so suspendAllWorkers() resolved as though every
+     * worker had suspended when some had not. A caller could not tell, and
+     * the late SUSPEND then landed after whatever was meant to resume it --
+     * leaving that worker with its accept events off and nothing left to turn
+     * them back on. Report the shortfall so callers can retry or refuse.
+     */
+    status = (uint8_t) (pending > 255 ? 255 : pending);
     iov.iov_base = &status;
     iov.iov_len  = 1;
 

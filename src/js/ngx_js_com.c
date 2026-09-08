@@ -836,10 +836,30 @@ ngx_js_accept_ctrl_reply_handler(ngx_event_t *ev)
     conn = ev->data;
     actx = conn->data;
 
-    (void) recv(conn->fd, &ack, 1, MSG_DONTWAIT);
+    ack = 0;
 
-    /* Resolve the Promise — async handler body resumes as a microtask */
-    ret = JS_Call(actx->ctx, actx->resolve, JS_UNDEFINED, 0, NULL);
+    if (recv(conn->fd, &ack, 1, MSG_DONTWAIT) != 1) {
+        ack = 0;
+    }
+
+    /*
+     * The status byte is the number of workers that did NOT ack within the
+     * manager's timeout.  Resolve with it so `await nginx.suspendAllWorkers()`
+     * can be checked: 0 means every worker really did suspend.  Resolving
+     * with a value rather than rejecting keeps existing callers -- which
+     * ignore the result -- working unchanged.
+     */
+    {
+        JSValue  res = JS_NewObject(actx->ctx);
+
+        JS_SetPropertyStr(actx->ctx, res, "unacked",
+                          JS_NewInt32(actx->ctx, (int32_t) ack));
+        JS_SetPropertyStr(actx->ctx, res, "ok",
+                          JS_NewBool(actx->ctx, ack == 0));
+
+        ret = JS_Call(actx->ctx, actx->resolve, JS_UNDEFINED, 1, &res);
+        JS_FreeValue(actx->ctx, res);
+    }
     JS_FreeValue(actx->ctx, ret);
     JS_FreeValue(actx->ctx, actx->resolve);
     JS_FreeValue(actx->ctx, actx->reject);
