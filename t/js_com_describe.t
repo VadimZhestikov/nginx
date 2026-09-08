@@ -292,9 +292,159 @@ check('sig_addPeer_record',
       apeer.params[0].type === 'record' && apeer.returns === 'void',
       apeer && JSON.stringify(apeer));
 
+/* --- `callable`: method vs assignable slot --------------------------------
+ * type:"function" alone cannot tell addHook() (call it) from handler (assign
+ * to it); the registry knows, so describe() now says so. */
+check('callable_method_true',  ah2 && ah2.callable === true,  ah2 && ah2.callable);
+check('callable_slot_false',   h.callable === false,          h.callable);
+var roDesc = nginx.describe(locPath, 'path');
+check('callable_readonly_false',
+      roDesc && roDesc.callable === false, roDesc && roDesc.callable);
+
+/* --- M2e: the structural operators on nginx.http --------------------------- */
+var has = nginx.describe('http', 'addServer');
+check('sig_http_addServer_typed',
+      has && has.params && has.params.length === 2 &&
+      has.params[0].type === 'str' && has.params[1].optional === true &&
+      has.returns === 'handle<NginxServer>',
+      has && JSON.stringify(has));
+
+var hat = nginx.describe('http', 'attach');
+check('sig_http_attach_returns_listener',
+      hat && hat.returns === 'handle<NginxHttpListener>' &&
+      hat.params.length === 1 &&
+      hat.params[0].type === 'handle<NginxSocket>',
+      hat && JSON.stringify(hat));
+
+/* restoreServer is typed 1..1 even though the wrapper forwards a 2-slot argv
+ * and silently swallows a second argument — the contract, not the tolerance. */
+var hrs = nginx.describe('http', 'restoreServer');
+check('sig_restoreServer_strict_arity',
+      hrs && hrs.params && hrs.params.length === 1, hrs && JSON.stringify(hrs));
+
+/* location.clone() had NO row at all until M2e */
+var lclone = nginx.describe(locPath, 'clone');
+check('location_clone_classified',
+      lclone && lclone.callable === true && lclone.class === 'guarded' &&
+      lclone.returns === 'handle<NginxLocation>',
+      lclone && JSON.stringify(lclone));
+
+/* server.clone() was SAFE + reversible, but it commits a cscf into cycle->pool
+ * AND splices it into every vhost dispatch entry — live, routable, permanent. */
+var sclone = nginx.describe('http.servers[0]', 'clone');
+check('server_clone_irreversible',
+      sclone && sclone.class === 'irreversible' && sclone.reversible === false,
+      sclone && JSON.stringify(sclone));
+
+/* --- coverage guards: walk the live COM tree ------------------------------
+ * Completeness comes from WALKING, not from a hand-written class list — a new
+ * class reachable from nginx is covered the day it is added.  COM wrappers are
+ * rebuilt per access, so identity-based cycle detection does not work; the walk
+ * is bounded by depth and node count instead.
+ *
+ * This walk is also what found the config-phase SIGSEGV in location.charset:
+ * nothing else had ever touched every getter at config time.
+ */
+function protoMethods(o) {
+    var out = [], seen = {}, p;
+    try { p = Object.getPrototypeOf(o); } catch (e) { return out; }
+    while (p && p !== Object.prototype) {
+        var ns;
+        try { ns = Object.getOwnPropertyNames(p); } catch (e) { break; }
+        for (var i = 0; i < ns.length; i++) {
+            var n = ns[i];
+            if (n === 'constructor' || seen[n]) continue;
+            seen[n] = 1;
+            var pd;
+            try { pd = Object.getOwnPropertyDescriptor(p, n); } catch (e) { continue; }
+            if (pd && typeof pd.value === 'function') out.push(n);
+        }
+        p = Object.getPrototypeOf(p);
+    }
+    return out;
+}
+
+var noSig = [], noRow = {}, walked = 0;
+
+function walkCom(obj, path, depth) {
+    if (depth > 6 || walked > 300 || !obj || typeof obj !== 'object') return;
+    walked++;
+
+    var ds;
+    try { ds = nginx.describe(obj); } catch (e) { return; }
+    if (!ds || typeof ds.length !== 'number') return;
+
+    var byName = {}, k;
+    for (k = 0; k < ds.length; k++) {
+        byName[ds[k].name] = 1;
+        if (ds[k].callable === true && ds[k].params === undefined) {
+            noSig.push(path + '.' + ds[k].name);
+        }
+    }
+
+    /* Plain Arrays returned by COM getters carry all of Array.prototype and
+     * are not COM classes — skip, or the signal drowns in map/filter/at. */
+    if (!Array.isArray(obj)) {
+        var ms = protoMethods(obj);
+        for (k = 0; k < ms.length; k++) {
+            if (!byName[ms[k]]) noRow[ms[k]] = 1;
+        }
+    }
+
+    /* describe() reports classified members plus prototype getters only, so
+     * plain-object nodes (nginx.http) hide their children from it. */
+    var names = {};
+    for (k = 0; k < ds.length; k++)
+        if (ds[k].callable !== true) names[ds[k].name] = 1;
+    var own;
+    try { own = Object.keys(obj); } catch (e) { own = []; }
+    for (k = 0; k < own.length; k++) names[own[k]] = 1;
+
+    for (var nm in names) {
+        var v;
+        try { v = obj[nm]; } catch (e) { continue; }
+        if (!v || typeof v !== 'object') continue;
+        if (typeof v.length === 'number' && v.length > 0
+            && typeof v[0] === 'object')
+        {
+            for (var j = 0; j < v.length && j < 2; j++)
+                walkCom(v[j], path + '.' + nm + '[' + j + ']', depth + 1);
+        } else {
+            walkCom(v, path + '.' + nm, depth + 1);
+        }
+    }
+}
+
+walkCom(nginx.http, 'http', 0);
+try { walkCom(nginx.cycle, 'cycle', 0); } catch (e) { }
+
+check('walk_reached_tree', walked > 100, 'walked=' + walked);
+
+/* GUARD 1 — every classified method carries a signature.  Holds today; this
+ * is what stops the next method row from landing untyped. */
+check('walk_every_callable_typed', noSig.length === 0, noSig.sort().join(' '));
+
+/* GUARD 2 — RATCHET on the methods that have no describe row at all.
+ * `settable() subset describe()` only ever covered PROPERTIES, so unclassified
+ * METHODS were invisible; walking found 15.  Seven of them mutate live
+ * behaviour (the filter registrations, onSelectPeer) and want a real safety
+ * class; the rest are reads or COM meta-operations.  Pinned exactly, so
+ * classifying one OR adding a new unclassified method both fail here and
+ * force this list to be updated deliberately.  Backlog, tracked as M2f. */
+var expectNoRow = [
+    'addBodyFilter', 'addHeaderFilter', 'addUpstreamFilter',
+    'addUpstreamRequestFilter', 'findLocation', 'getBodyFilter',
+    'getHeaderFilter', 'getProperty', 'onSelectPeer', 'removeBodyFilter',
+    'removeHeaderFilter', 'setProperty', 'setReadMode', 'setWriteMode',
+    'snapshot'
+].join(' ');
+check('walk_unclassified_method_ratchet',
+      Object.keys(noRow).sort().join(' ') === expectNoRow,
+      Object.keys(noRow).sort().join(' '));
+
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(57);
+$t->try_run('no js module or upstream_zone')->plan(68);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -368,3 +518,28 @@ like($log, qr/JSTEST PASS sig_untyped_unchanged/,       'untyped member keeps th
 like($log, qr/JSTEST PASS sig_server_addLocation_typed/, 'server.addLocation shares the location signature');
 like($log, qr/JSTEST PASS sig_addHeader_two_params/, 'headers.addHeader typed (2 params, void)');
 like($log, qr/JSTEST PASS sig_addPeer_record/, 'upstream.addPeer typed (record param)');
+
+# --- `callable`: a method you call vs a slot you assign ---
+like($log, qr/JSTEST PASS callable_method_true/,   'addHook is callable:true');
+like($log, qr/JSTEST PASS callable_slot_false/,    'handler is a slot, callable:false');
+like($log, qr/JSTEST PASS callable_readonly_false/,'read-only descriptor carries callable:false');
+
+# --- M2e: the structural operators ---
+like($log, qr/JSTEST PASS sig_http_addServer_typed/,
+     'http.addServer typed (str + optional record → handle<NginxServer>)');
+like($log, qr/JSTEST PASS sig_http_attach_returns_listener/,
+     'http.attach typed (socket handle → listener handle)');
+like($log, qr/JSTEST PASS sig_restoreServer_strict_arity/,
+     'restoreServer typed to its contract (1..1), not its tolerance');
+like($log, qr/JSTEST PASS location_clone_classified/,
+     'location.clone() is classified at all (had no row before M2e)');
+like($log, qr/JSTEST PASS server_clone_irreversible/,
+     'server.clone() reclassified SAFE → irreversible (commits a routable cscf)');
+
+# --- coverage guards over a live walk of the COM tree ---
+like($log, qr/JSTEST PASS walk_reached_tree/,
+     'COM tree walk reaches the tree (and no longer SIGSEGVs on charset)');
+like($log, qr/JSTEST PASS walk_every_callable_typed/,
+     'every classified method carries a signature');
+like($log, qr/JSTEST PASS walk_unclassified_method_ratchet/,
+     'the set of unclassified COM methods is exactly the pinned M2f backlog');

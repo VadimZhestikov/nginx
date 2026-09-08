@@ -50,6 +50,11 @@ Three orthogonal axes:
 `reversible` is carried explicitly too (derived from `class`) so consumers
 don't have to hard-code the mapping.
 
+`callable` is carried for the same reason: `type: "function"` covers both a
+method you call (`addHook()`) and a slot you assign a function to
+(`location.handler = fn`), and only the registry knows which — it is the same
+distinction that decides whether a member appears in `settable()`.
+
 == Axis 1 — `class` (traffic light)
 
 [cols="1,3,1", options="header"]
@@ -122,6 +127,7 @@ What `nginx.describe(path)` returns, one object per member:
 {
   "name": "weight",
   "type": "number",            // number | boolean | string | string[] | object | object[] | function
+  "callable": false,           // true = a method you CALL; false = a slot you ASSIGN
   "access": "read-write",      // read-only | read-write
   "class": "safe",             // safe | guarded | irreversible | readonly
   "reversible": true,

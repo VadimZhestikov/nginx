@@ -182,6 +182,136 @@ static const ngx_js_sig_t  ngx_js_sig_noargs_void = {
 
 
 /*
+ * M2e — the last untyped tranche: the structural operators on nginx.http, on
+ * the two listener classes, plus location.clone() and charset.setCharset().
+ * These are the highest-authority methods in the registry (they commit
+ * listeners and servers into cycle->pool irreversibly), and until now they
+ * were exactly the ones reviewCalls() had to report as `unchecked`.
+ *
+ * As before, every type below was read off the implementation, never off the
+ * `note` prose — which was wrong at least once (see setCharset).
+ *
+ * Two deliberate decisions worth recording:
+ *
+ * 1. restoreServer/restoreListener are typed 1..1 even though their wrappers
+ *    forward a 2-slot argv and therefore SWALLOW a second argument. Typing the
+ *    tolerated arity instead of the real contract would bless
+ *    `restoreServer(name, {hard:true})` — a call whose author plainly expects
+ *    the option to do something, and for which nothing happens. Refusing it at
+ *    admission is the entire point of the check. This is safe to do without
+ *    grandfathering because contract.checkCalls is opt-in, so no proposal that
+ *    admits today can start failing.
+ *
+ * 2. removeServer/removeListener take a duck-typed key: ngx_js_coerce_key_arg
+ *    accepts ANY object carrying the right property (.name / .address), not a
+ *    class-id-checked handle. The union says `str|handle<...>` because that is
+ *    the intended contract, but note the runtime check is weaker than the type.
+ */
+static const ngx_js_param_t  ngx_js_sig_p_srvname_opts[] = {
+    { "name", "str",    0, "borrowed" },
+    { "opts", "record", 1, NULL },        /* { template: str } */
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_srvkey[] = {
+    { "name", "str|handle<NginxServer>", 0, "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_srvkey_opts[] = {
+    { "name", "str|handle<NginxServer>", 0, "borrowed" },
+    { "opts", "record",                  1, NULL },   /* { hard: bool } */
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_socket[] = {
+    { "socket", "handle<NginxSocket>", 0, NULL },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_addrkey[] = {
+    { "address", "str|handle<NginxSocket>|handle<NginxListener>", 0,
+      "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_addrkey_opts[] = {
+    { "address", "str|handle<NginxSocket>|handle<NginxListener>", 0,
+      "borrowed" },
+    { "opts",    "record",                                        1, NULL },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_server[] = {
+    { "server", "handle<NginxServer>", 0, NULL },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_stream_server[] = {
+    { "server", "handle<NginxStreamServer>", 0, NULL },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_pattern_opts[] = {
+    { "pattern", "str",    0, "borrowed" },
+    { "opts",    "record", 1, NULL },     /* { depth: f64 } */
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_param_t  ngx_js_sig_p_charset[] = {
+    { "charset", "str", 0, "borrowed" },
+    { "source",  "str", 0, "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+
+static const ngx_js_sig_t  ngx_js_sig_http_add_server = {
+    ngx_js_sig_p_srvname_opts, "handle<NginxServer>", NULL, "mutate.server.tree"
+};
+static const ngx_js_sig_t  ngx_js_sig_http_remove_server = {
+    ngx_js_sig_p_srvkey_opts, "bool", NULL, "mutate.server.tree"
+};
+static const ngx_js_sig_t  ngx_js_sig_http_restore_server = {
+    ngx_js_sig_p_srvkey, "bool", NULL, "mutate.server.tree"
+};
+static const ngx_js_sig_t  ngx_js_sig_http_attach = {
+    ngx_js_sig_p_socket, "handle<NginxHttpListener>", NULL, "mutate.listeners"
+};
+static const ngx_js_sig_t  ngx_js_sig_http_remove_listener = {
+    ngx_js_sig_p_addrkey_opts, "bool", NULL, "mutate.listeners"
+};
+static const ngx_js_sig_t  ngx_js_sig_http_restore_listener = {
+    ngx_js_sig_p_addrkey, "bool", NULL, "mutate.listeners"
+};
+/* Both return JS_DupValue(argv[0]) — the SAME server back, for chaining. */
+static const ngx_js_sig_t  ngx_js_sig_listener_add_server = {
+    ngx_js_sig_p_server, "handle<NginxServer>", NULL, "mutate.listeners"
+};
+static const ngx_js_sig_t  ngx_js_sig_listener_add_vserver = {
+    ngx_js_sig_p_server, "handle<NginxServer>", NULL, "mutate.server.names"
+};
+static const ngx_js_sig_t  ngx_js_sig_stream_listener_add_server = {
+    ngx_js_sig_p_stream_server, "handle<NginxStreamServer>", NULL,
+    "mutate.listeners"
+};
+static const ngx_js_sig_t  ngx_js_sig_stream_listener_add_vserver = {
+    ngx_js_sig_p_stream_server, "handle<NginxStreamServer>", NULL,
+    "mutate.server.names"
+};
+static const ngx_js_sig_t  ngx_js_sig_location_clone = {
+    ngx_js_sig_p_pattern_opts, "handle<NginxLocation>", NULL,
+    "mutate.location.tree"
+};
+/* server.clone(name) is a DIFFERENT function from location.clone(pattern) —
+ * ngx_js_server_fn_clone vs ngx_js_location_fn_clone, same spelling, different
+ * arity and different blast radius.  Two rows, two signatures. */
+static const ngx_js_param_t  ngx_js_sig_p_newname[] = {
+    { "name", "str", 0, "borrowed" },
+    { NULL, NULL, 0, NULL }
+};
+static const ngx_js_sig_t  ngx_js_sig_server_clone = {
+    ngx_js_sig_p_newname, "handle<NginxServer>", NULL,
+    "mutate.server.tree,mutate.server.names"
+};
+static const ngx_js_sig_t  ngx_js_sig_http_add_hook = {
+    ngx_js_sig_p_fn, "void", NULL, "register.hook.access"
+};
+static const ngx_js_sig_t  ngx_js_sig_set_charset = {
+    ngx_js_sig_p_charset, "void", NULL, "mutate.charset"
+};
+
+
+/*
  * `sig` (M2b) is a DELIBERATELY optional trailing field: a member without a
  * typed signature simply omits it and describe() emits the original 8-key
  * Descriptor.  nginx builds with -W -Werror, and -Wmissing-field-initializers
@@ -257,6 +387,15 @@ static const ngx_js_member_class_t  ngx_js_loc_members[] = {
     { "restoreLocation",          "function",GRD, REV|METH,     WL,
       "Clears a removeLocation tombstone; brings the route back",
       &ngx_js_sig_restore_location },
+    /* Was ENTIRELY ABSENT from this table — registered as a method on
+     * NginxLocation (ngx_js_com_http.c) but never classified, so describe()
+     * reported nothing for it and reviewCalls() could not check it.  It
+     * rebuilds the live location BST, same blast radius as addLocation. */
+    { "clone",                    "function",GRD, REV|METH,     WL,
+      "Clones matching locations under a new prefix and rebuilds the live "
+      "location BST; idempotent (returns the existing location on a repeat); "
+      "reverse with removeLocation",
+      &ngx_js_sig_location_clone },
     { "clearHandler",             "function",SAFE, REV|METH,    WL,
       "Restores the location's original (pre-JS) handler",
       &ngx_js_sig_clear_handler },
@@ -430,7 +569,8 @@ static const ngx_js_member_class_t  ngx_js_realip_members[] = {
 static const ngx_js_member_class_t  ngx_js_charset_members[] = {
     { "overrideCharset", "boolean", SAFE, REV, WL, NULL },
     { "setCharset",      "function",SAFE, REV|METH, WL,
-      "Sets source + destination charset" },
+      "Sets source + destination charset; both arguments are required",
+      &ngx_js_sig_set_charset },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -595,22 +735,29 @@ static const ngx_js_member_class_t  ngx_js_events_members[] = {
 static const ngx_js_member_class_t  ngx_js_http_members[] = {
     { "addServer",       "function", IRR, METH,   WL,
       "Adds a server; its cscf is committed in cycle->pool and never reclaimed "
-      "for the process lifetime (irreversible)" },
+      "for the process lifetime (irreversible)",
+      &ngx_js_sig_http_add_server },
     { "removeServer",    "function", GRD, REV|METH, WL,
       "Tombstone (reversible via restoreServer); {hard:true} for irreversible "
-      "splice" },
+      "splice",
+      &ngx_js_sig_http_remove_server },
     { "restoreServer",   "function", GRD, REV|METH, WL,
-      "Clears a removeServer tombstone; brings the virtual server back" },
+      "Clears a removeServer tombstone; brings the virtual server back",
+      &ngx_js_sig_http_restore_server },
     { "attach",          "function", IRR, METH,   WL,
       "Binds a createSocket() fd into cycle->listening; a committed resource, "
-      "never reclaimed at runtime (irreversible)" },
+      "never reclaimed at runtime (irreversible)",
+      &ngx_js_sig_http_attach },
     { "removeListener",  "function", GRD, REV|METH, WL,
       "Soft pause (reversible via restoreListener); {hard:true} closes the "
-      "socket — connections refused, port freed (irreversible)" },
+      "socket — connections refused, port freed (irreversible)",
+      &ngx_js_sig_http_remove_listener },
     { "restoreListener", "function", GRD, REV|METH, WL,
-      "Re-arms a soft-paused listener; returns false after a {hard:true} close" },
+      "Re-arms a soft-paused listener; returns false after a {hard:true} close",
+      &ngx_js_sig_http_restore_listener },
     { "addHook",         "function", GRD, REV|METH, WL,
-      "Registers a global access-phase hook; reverse by clearing it" },
+      "Registers a global access-phase hook; reverse by clearing it",
+      &ngx_js_sig_http_add_hook },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -642,9 +789,11 @@ static const ngx_js_member_class_t  ngx_js_socket_members[] = {
  * guarded and reversible. */
 static const ngx_js_member_class_t  ngx_js_http_listener_members[] = {
     { "addServer",        "function", IRR, METH,   WL,
-      "Activates the listener (cycle->listening); committed (irreversible)" },
+      "Activates the listener (cycle->listening); committed (irreversible)",
+      &ngx_js_sig_listener_add_server },
     { "addVirtualServer", "function", IRR, METH,   WL,
-      "Rebuilds virtual_names host routing; committed (irreversible)" },
+      "Rebuilds virtual_names host routing; committed (irreversible)",
+      &ngx_js_sig_listener_add_vserver },
     { "on",               "function", GRD, REV|METH, WL,
       "Registers an accept hook",
       &ngx_js_sig_on_event },
@@ -694,9 +843,11 @@ static const ngx_js_member_class_t  ngx_js_stream_proxy_members[] = {
 /* NginxStreamListener — stream.attach() handle; activation is irreversible. */
 static const ngx_js_member_class_t  ngx_js_stream_listener_members[] = {
     { "addServer",        "function", IRR, METH, WL,
-      "Activates the listener (cycle->listening); committed (irreversible)" },
+      "Activates the listener (cycle->listening); committed (irreversible)",
+      &ngx_js_sig_stream_listener_add_server },
     { "addVirtualServer", "function", IRR, METH, WL,
-      "Rebuilds stream virtual_names routing; committed (irreversible)" },
+      "Rebuilds stream virtual_names routing; committed (irreversible)",
+      &ngx_js_sig_stream_listener_add_vserver },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
@@ -738,8 +889,25 @@ static const ngx_js_member_class_t  ngx_js_server_members[] = {
     { "restoreLocation",        "function",GRD, REV|METH, WL,
       "Clears a removeLocation tombstone",
       &ngx_js_sig_restore_location },
-    { "clone",                  "function",SAFE, REV|METH, WL,
-      "Produces a detached config object; no live effect until added" },
+    /*
+     * MISCLASSIFIED until M2e: this was SAFE + reversible, noted as "produces a
+     * detached config object; no live effect until added".  It is neither.
+     * ngx_js_server_fn_clone allocates the new cscf and its whole conf_ctx from
+     * cycle->pool (never reclaimed for the process lifetime) and then splices
+     * new_cscf into EVERY vhost dispatch entry, so the cloned server is live and
+     * routable by Host the moment clone() returns.  That is strictly more than
+     * addServer() does, and addServer is IRR on exactly this rationale.
+     *
+     * The whole point of the safety-class layer is that an operator — or a
+     * mediated tenant consulting the traffic light — can trust it; a green light
+     * on a permanent, immediately-routable server commit is the failure this
+     * layer exists to prevent.  Reclassified to match addServer.
+     */
+    { "clone",                  "function",IRR, METH,     WL,
+      "Clones this server under a new name; the new cscf is committed in "
+      "cycle->pool and spliced into every vhost dispatch entry — live and "
+      "routable immediately, never reclaimed (irreversible)",
+      &ngx_js_sig_server_clone },
     { "addHook",                "function",GRD, REV|METH, WL, NULL,
       &ngx_js_sig_add_hook },
     { "on",                     "function",GRD, REV|METH, WL, NULL,
@@ -1149,6 +1317,19 @@ ngx_js_describe_one(JSContext *ctx, JSValueConst obj,
     JS_SetPropertyStr(ctx, d, "name", JS_NewString(ctx, m->name));
     JS_SetPropertyStr(ctx, d, "type",
                       JS_NewString(ctx, m->type ? m->type : "unknown"));
+
+    /*
+     * `type` alone conflates two different things under "function": a callable
+     * method (addHook(), removeLocation()) and an assignable slot that happens
+     * to hold a function (location.handler = fn).  The registry already knows
+     * which is which — settable() is defined by it — so carry it out rather
+     * than making every consumer re-derive it.  `callable` is also what makes a
+     * signature MANDATORY: a callable member with no params[] is a hole in the
+     * M3 call check, and t/js_com_describe.t enforces exactly that implication.
+     */
+    JS_SetPropertyStr(ctx, d, "callable",
+                      JS_NewBool(ctx, (m->flags & NGX_JS_MF_METHOD) != 0));
+
     JS_SetPropertyStr(ctx, d, "access",
                       JS_NewString(ctx, m->klass == NGX_JS_CLS_READONLY
                                         ? "read-only" : "read-write"));
@@ -1274,6 +1455,10 @@ ngx_js_describe_readonly_one(JSContext *ctx, JSValueConst obj, const char *name)
 
     JS_SetPropertyStr(ctx, d, "name",   JS_NewString(ctx, name));
     JS_SetPropertyStr(ctx, d, "type",   JS_NewString(ctx, type ? type : "getter"));
+    /* This path fires only for a getter with no setter, so never a method.
+     * Emitted anyway so `callable` is present on EVERY Descriptor — a consumer
+     * testing d.callable must not get `undefined` from the read-only shape. */
+    JS_SetPropertyStr(ctx, d, "callable", JS_NewBool(ctx, 0));
     JS_SetPropertyStr(ctx, d, "access", JS_NewString(ctx, "read-only"));
     JS_SetPropertyStr(ctx, d, "class",  JS_NewString(ctx, "readonly"));
     JS_SetPropertyStr(ctx, d, "reversible",    JS_NewBool(ctx, 0));
