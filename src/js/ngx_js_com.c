@@ -967,6 +967,13 @@ ngx_js_make_accept_ctrl_promise(JSContext *ctx, uint32_t cmd_type)
     if (ngx_add_event(conn->read, NGX_READ_EVENT, 0) != NGX_OK) {
         ngx_free_connection(conn);
         conn->fd = (ngx_socket_t) -1;
+        /* The three failure paths above this one all close reply_fd; this one
+         * did not, leaking one socketpair descriptor per failed
+         * suspendAllWorkers()/resumeAllWorkers().  Nothing else can close it
+         * afterwards: actx is freed just below and conn->fd has been cleared,
+         * so the number is lost.  (No epoll entry to worry about here -- the
+         * add_event we are handling the failure of never registered one.) */
+        close(reply_fd);
         ngx_free(actx);
         JS_FreeValue(ctx, resolving[0]);
         JS_FreeValue(ctx, resolving[1]);

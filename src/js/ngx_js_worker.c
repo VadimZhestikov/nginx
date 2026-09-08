@@ -1438,6 +1438,7 @@ ngx_js_worker_ctor(JSContext *ctx, JSValueConst new_target,
 
     if (ngx_add_event(conn->read, NGX_READ_EVENT, 0) != NGX_OK) {
         ngx_free_connection(conn);
+        conn->fd = (ngx_socket_t) -1;
         ngx_free(opaque);
         pipe_destroy(&state->from_worker);
         pipe_destroy(&state->to_worker);
@@ -1466,6 +1467,7 @@ ngx_js_worker_ctor(JSContext *ctx, JSValueConst new_target,
         if (rc != 0) {
             ngx_del_event(conn->read, NGX_READ_EVENT, 0);
             ngx_free_connection(conn);
+            conn->fd = (ngx_socket_t) -1;
             ngx_free(opaque);
             pipe_destroy(&state->from_worker);
             pipe_destroy(&state->to_worker);
@@ -1485,6 +1487,7 @@ ngx_js_worker_ctor(JSContext *ctx, JSValueConst new_target,
         pthread_join(state->tid, NULL);
         ngx_del_event(conn->read, NGX_READ_EVENT, 0);
         ngx_free_connection(conn);
+        conn->fd = (ngx_socket_t) -1;
         ngx_free(opaque);
         pipe_destroy(&state->from_worker);
         pipe_destroy(&state->to_worker);

@@ -2550,6 +2550,17 @@ ngx_js_sw_exit_process(ngx_cycle_t *cycle, ngx_js_conf_t *jcf)
             ws->conn     = NULL;
             ngx_free(recv_ctx);
         }
+
+        /* Close the channel fd, as the dynamic loop below does for its own.
+         * Harmless either way here because the process is exiting, but the
+         * asymmetry read as an oversight and channel_destroy() is not on this
+         * path -- it runs only from retire_threads and the manager side. The
+         * >= 0 guard plus clearing to -1 keeps a later channel_destroy() from
+         * double-closing. */
+        if (sw->channels[wi].worker_fd >= 0) {
+            close(sw->channels[wi].worker_fd);
+            sw->channels[wi].worker_fd = -1;
+        }
     }
 
     /* Clean up dynamic (worker-local) SharedWorker stubs */
