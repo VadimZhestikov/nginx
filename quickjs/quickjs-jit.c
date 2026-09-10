@@ -452,6 +452,10 @@ static void jit_buf_str(JSJITCodeBuf *cb, const char *s)
  * Functions with more branches are rejected (extremely rare in practice). */
 #define JIT_MAX_LABELS 4096
 
+/* Capacity of JSJITScanResult.yield_below[]. A function with MORE yield/await
+ * sites than this cannot be compiled: see the bail-out in js_jit_gen_c(). */
+#define JIT_MAX_YIELD_SITES 64
+
 typedef struct JSJITScanResult {
     int      *targets;    /* sorted array of branch-target offsets */
     int       ntargets;   /* number of entries in targets[]         */
@@ -474,7 +478,7 @@ typedef struct JSJITScanResult {
     /* Stack slots live BELOW the yielded/awaited value at each yield site.
      * yield_below[0] = for _Lresume_0 (initial_yield → always 0)
      * yield_below[k] = for _Lresume_k (k=1..yield_count), value = (stack_depth-1) */
-    int       yield_below[64]; /* saved stack slot count per resume label */
+    int       yield_below[JIT_MAX_YIELD_SITES]; /* saved stack slot count per resume label */
     int       max_below_yield; /* max of yield_below[] — extra saved_lv slots needed */
 } JSJITScanResult;
 
@@ -2888,7 +2892,8 @@ static void gen_preamble(JSJITCodeBuf *cb, uint64_t bc_hash,
              * For generators/async-generators: yield_below[0]=initial_yield, yield_below[k]=resume_k.
              * For pure async functions (no OP_initial_yield): yield_below[k-1]=resume_k. */
             int yi_k = (sr->func_kind == JS_JIT_FUNC_ASYNC) ? k - 1 : k;
-            int below = (yi_k >= 0 && yi_k < 64) ? sr->yield_below[yi_k] : 0;
+            int below = (yi_k >= 0 && yi_k < JIT_MAX_YIELD_SITES)
+                        ? sr->yield_below[yi_k] : 0;
             if (below > 0) {
                 jit_buf_printf(cb, "        case %d: {\n", k);
                 for (j = 0; j < below; j++) {
@@ -8868,9 +8873,38 @@ static int js_jit_gen_c(JSFunctionBytecode *b, JSJITCodeBuf *cb,
         const uint16_t *sdt = js_jit_fb_get_stack_depth_tab(b);
         int yi = 0;
         int pc2 = 0;
+
+        /*
+         * yield_below[] has room for JIT_MAX_YIELD_SITES entries, one per
+         * resume label. This scan USED to stop at the cap and the emitter
+         * treated any index past it as "0 live stack slots below the yielded
+         * value", i.e. SPILL NOTHING -- silently. A function with more
+         * yield/await sites than the cap therefore dropped whatever was live
+         * on the stack at sites past it.
+         *
+         * Observed on test262
+         * language/module-code/top-level-await/syntax/for-await-await-expr-nested.js
+         * (93 resume labels): the for-await iterator and its `next` method were
+         * live across an await at a site past the cap, were never spilled into
+         * saved_lv[], and so were neither restored nor freed -- OP_iterator_close
+         * then closed JS_UNDEFINED and the two objects leaked, tripping
+         * `assert(list_empty(&rt->gc_obj_list))` in JS_FreeRuntime. Verified by
+         * probe: the generator frame WAS freed correctly and saved_lv held
+         * nothing (live=0), so the values had been dropped, not mislaid.
+         *
+         * Silently generating wrong code is not an acceptable response to
+         * exceeding a fixed table, so refuse the function instead; the
+         * interpreter runs it correctly.
+         */
+        if (sr.yield_count + 1 > JIT_MAX_YIELD_SITES) {
+            scan_result_free(&sr);
+            *unsupported = 1;
+            return -1;
+        }
+
         memset(sr.yield_below, 0, sizeof(sr.yield_below));
         sr.max_below_yield = 0;
-        while (pc2 < bc_len && yi < 64) {
+        while (pc2 < bc_len && yi < JIT_MAX_YIELD_SITES) {
             int op2 = bc[pc2];
             if (op2 == OP_initial_yield) {
                 /* resume label 0: no locals below */
