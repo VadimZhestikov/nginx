@@ -1013,7 +1013,7 @@ int  js_jit_get_threshold(void);
  *         11=get_var_ref_check TDZ fix: emits UNINITIALIZED check (generated C changes).
  *         12=P51: OP_add warm vt_hints + speculative INT add (array layout change).
  *         13=P52: put/set_var_ref* old-value INT hint: skip JS_VALUE_HAS_REF_COUNT. */
-#define JIT_CODEGEN_VERSION 14u  /* OP_initial_yield spills locals into saved_lv */
+#define JIT_CODEGEN_VERSION 15u  /* dynamic atoms are no longer disk-cached (cross-runtime atom UAF) */
 void js_jit_set_max_bc_len(int n);
 int  js_jit_get_max_bc_len(void);
 

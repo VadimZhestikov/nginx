@@ -1787,8 +1787,52 @@ static char *jit_write_tmp(const char *src, const char *suffix)
 }
 
 /* Execute one GCC job: compile C to .so, dlopen, install jit_func. */
+/*
+ * Does the generated C bake a RUNTIME-SPECIFIC atom?
+ *
+ * Codegen emits atoms as raw integer literals, `(JSAtom)1234u`. A JSAtom is an
+ * index into rt->atom_array and is only meaningful in the runtime that created
+ * it. Predefined atoms (< JS_ATOM__COUNT) have the same index in every runtime
+ * and are safe; anything above that is allocated dynamically per runtime.
+ *
+ * A .so written to the DISK CACHE outlives its runtime. Loaded into a later
+ * runtime, a baked dynamic atom names a freed or unrelated slot:
+ *
+ *   __jit_f_<hash>  ->  js_jit_op_throw_error(ctx, atom, JS_THROW_VAR_UNINITIALIZED)
+ *                    ->  JS_ThrowReferenceErrorUninitialized(ctx, atom)
+ *                     ->  JS_AtomGetStrRT  ->  assert(!atom_is_free(p))  FAILS
+ *
+ * (Reproduced by test262 file 27947,
+ * language/expressions/class/constructor-this-tdz-during-initializers.js, on a
+ * warm cache; a fresh cache in one process is clean.) With NDEBUG the assert
+ * is gone and the code formats whatever occupies the slot -- silent memory
+ * unsafety on a persistent, cross-runtime cache.
+ *
+ * Scanning the emitted C is deliberate: it covers all ~25 emission sites at
+ * once and cannot be missed by a future one, whereas tagging each site by hand
+ * would rot. In-process compiles are unaffected -- the atom is correct for the
+ * runtime that just produced it.
+ */
+static int jit_c_has_dynamic_atom(const char *src)
+{
+    const char *p = src;
+
+    if (!p) return 0;
+
+    while ((p = strstr(p, "(JSAtom)")) != NULL) {
+        p += 8;
+        if (*p >= '0' && *p <= '9') {
+            unsigned long v = strtoul(p, NULL, 10);
+            if (v >= (unsigned long)JS_ATOM__COUNT) return 1;
+        }
+    }
+    return 0;
+}
+
 static void jit_compile_gcc_job(JITGCCJob *job)
 {
+    /* Must be computed before c_src is released below. */
+    int _dyn_atom = jit_c_has_dynamic_atom(job->c_src);
     char *c_path = jit_write_tmp(job->c_src, ".c");
     free(job->c_src);
     job->c_src = NULL;
@@ -1826,14 +1870,15 @@ static void jit_compile_gcc_job(JITGCCJob *job)
     int gcc_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
     /* P10.1: cache .c source before unlinking the temp file.
      * P45b: skip disk-cache writes for warm-recompile jobs (hints are run-specific). */
-    if (gcc_ok && !job->is_warm) jit_cache_put_c_src(c_path, job->bc_hash);
+    if (gcc_ok && !job->is_warm && !_dyn_atom)
+        jit_cache_put_c_src(c_path, job->bc_hash);
     if (!getenv("QJS_JIT_KEEP_C")) unlink(c_path);
     free(c_path);
     if (!gcc_ok) { unlink(so_path); goto fail; }
 
     /* Cache the compiled .so before unlinking (Phase 7.3).
      * P45b: warm recompile results are not cached — they're observation-specific. */
-    if (!job->is_warm) jit_cache_put(so_path, job->bc_hash);
+    if (!job->is_warm && !_dyn_atom) jit_cache_put(so_path, job->bc_hash);
 
     /* Load the compiled .so; unlink immediately (kernel keeps it mapped).
      * RTLD_GLOBAL: exports this function's symbol (__jit_f_HASH) into the
