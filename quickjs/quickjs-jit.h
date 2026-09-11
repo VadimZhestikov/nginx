@@ -379,7 +379,10 @@ const char *js_jit_atom_get_str(JSRuntime *rt, char *buf, int buf_size, JSAtom a
 
 /* Atom classification for the fixup table (see quickjs.c for the rationale). */
 int js_jit_atom_needs_fixup(JSAtom a);
-int js_jit_atom_is_string(JSRuntime *rt, JSAtom a);
+/* Codegen gate: string, ASCII, and short enough to survive the name table. */
+int js_jit_atom_name_ok(JSRuntime *rt, JSAtom a, int buf_size);
+/* Loader: rebuild an atom from a name table WITHOUT a JSContext. */
+JSAtom js_jit_atom_new_rt(JSRuntime *rt, const char *str);
 /* P9.1: JS identifier atoms for locals and arguments */
 JSAtom         js_jit_fb_get_local_atom(JSFunctionBytecode *b, int local_idx);
 JSAtom         js_jit_fb_get_arg_atom  (JSFunctionBytecode *b, int arg_idx);
@@ -389,7 +392,8 @@ const uint8_t *js_jit_get_opcode_size_table(int *count);
 /* Atom fixup table accessors (see the JSFunctionBytecode field comment). */
 JSAtom  *js_jit_fb_get_atoms(JSFunctionBytecode *b);
 uint32_t js_jit_fb_get_atom_count(JSFunctionBytecode *b);
-void     js_jit_fb_set_atoms(JSFunctionBytecode *b, JSAtom *atoms, uint32_t n);
+void     js_jit_fb_set_atoms(JSRuntime *rt, JSFunctionBytecode *b,
+                             JSAtom *atoms, uint32_t n);
 /* Function name as a C string (static buf — for debug/logging only) */
 const char    *js_jit_fb_get_func_name(JSRuntime *rt, JSFunctionBytecode *b);
 const char    *js_jit_fb_get_source(JSFunctionBytecode *b, int *len_out);

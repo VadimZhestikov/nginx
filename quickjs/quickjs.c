@@ -15762,8 +15762,26 @@ void     js_jit_fb_clear_handles(JSFunctionBytecode *b) {
  * ownership of `atoms` and of one reference to each atom in it. */
 JSAtom  *js_jit_fb_get_atoms(JSFunctionBytecode *b) { return b->jit_atoms; }
 uint32_t js_jit_fb_get_atom_count(JSFunctionBytecode *b) { return b->jit_atom_count; }
-void     js_jit_fb_set_atoms(JSFunctionBytecode *b, JSAtom *atoms, uint32_t n)
+
+/* Takes ownership of `atoms` and of one reference on each entry, releasing any
+ * table already present.
+ *
+ * Replacing the table is only sound where replacing jit_func is: the generated
+ * code indexes _atoms[] by ITS OWN table order, so a function still reachable
+ * with a table it was not compiled against reads the wrong property names.
+ * The install paths that call this also drop the previous .so, so the previous
+ * code is not reachable.  A WARM recompile is different -- it leaves the cold
+ * function reachable, and P10.3 direct calls bind the cold symbol -- so the
+ * warm path must not call this at all (see jit_atoms_match). */
+void js_jit_fb_set_atoms(JSRuntime *rt, JSFunctionBytecode *b,
+                         JSAtom *atoms, uint32_t n)
 {
+    if (b->jit_atoms) {
+        uint32_t ai;
+        for (ai = 0; ai < b->jit_atom_count; ai++)
+            JS_FreeAtomRT(rt, b->jit_atoms[ai]);
+        js_free_rt(rt, b->jit_atoms);
+    }
     b->jit_atoms      = atoms;
     b->jit_atom_count = n;
 }
@@ -15777,17 +15795,48 @@ void     js_jit_fb_set_atoms(JSFunctionBytecode *b, JSAtom *atoms, uint32_t n)
  * YES for everything else: those index rt->atom_array and are runtime-specific. */
 int js_jit_atom_needs_fixup(JSAtom a) { return !__JS_AtomIsConst(a); }
 
-/* Can this atom be reconstructed in another runtime from its name? Symbols
- * cannot, so a function referencing one must not be compiled to a cacheable
- * .so. */
-int js_jit_atom_is_string(JSRuntime *rt, JSAtom a)
+/* Stricter test used by codegen: can this atom go in a .so's name table AND
+ * come back unchanged?
+ *
+ * Two ways the round-trip silently produces a DIFFERENT atom, both of which
+ * would be a miscompile rather than a crash:
+ *
+ *   - JS_AtomGetStrRT() truncates at buf_size without saying so, so a long
+ *     property name would rebuild as its prefix;
+ *   - the loader runs without a JSContext and so rebuilds names with
+ *     __JS_NewAtomInit(), which copies bytes and does not decode UTF-8.
+ *
+ * Hence: string atoms only, ASCII only, and only if the whole name fits.
+ * Anything else means the function is not compiled. */
+int js_jit_atom_name_ok(JSRuntime *rt, JSAtom a, int buf_size)
 {
     JSAtomStruct *p;
-    if (__JS_AtomIsConst(a)) return 1;
+    uint32_t i;
+
+    if (__JS_AtomIsConst(a)) return 1;   /* never enters the table */
     if (a >= rt->atom_size) return 0;
     p = rt->atom_array[a];
     if (atom_is_free(p)) return 0;
-    return p->atom_type == JS_ATOM_TYPE_STRING;
+    if (p->atom_type != JS_ATOM_TYPE_STRING) return 0;
+    if (p->is_wide_char) return 0;       /* UTF-16: not plain ASCII bytes */
+    for (i = 0; i < p->len; i++)
+        if (p->u.str8[i] >= 0x80)
+            return 0;
+    return buf_size > 0 && p->len + 1 <= (uint32_t)buf_size;
+}
+
+/* Rebuild an atom from a .so name table.  Runtime-level on purpose: the
+ * fresh-compile install runs from js_jit_install_results(), which has no
+ * JSContext.  ASCII-only, which js_jit_atom_name_ok() guarantees at codegen.
+ *
+ * Numeric names need no special case here: JS_NewAtomStr() already folds any
+ * array-index string into a tagged int, and a tagged int is const, so it never
+ * reaches a name table in the first place. */
+JSAtom js_jit_atom_new_rt(JSRuntime *rt, const char *str)
+{
+    size_t len = strlen(str);
+    if (len > JS_STRING_LEN_MAX) return JS_ATOM_NULL;
+    return __JS_NewAtomInit(rt, str, (int)len, JS_ATOM_TYPE_STRING);
 }
 
 uint8_t  js_jit_fb_func_kind(JSFunctionBytecode *b) { return b->func_kind; }
@@ -39225,6 +39274,18 @@ static void free_function_bytecode(JSRuntime *rt, JSFunctionBytecode *b)
     b->cf_annotations = NULL;
     /* P45b: js_jit_free_bytecode handles freeing jit_vt_hints and jit_warm_handle. */
     js_jit_free_bytecode(b);  /* closes jit_handle, jit_warm_handle, frees jit_vt_hints */
+    /* Release the atom fixup table: jit_bind_atoms() took one reference per
+     * slot, so exactly one release each is owed here.  Done here rather than
+     * in js_jit_free_bytecode() because that helper has no runtime handle and
+     * JS_FreeAtomRT needs one. */
+    if (b->jit_atoms) {
+        uint32_t ai;
+        for (ai = 0; ai < b->jit_atom_count; ai++)
+            JS_FreeAtomRT(rt, b->jit_atoms[ai]);
+        js_free_rt(rt, b->jit_atoms);
+        b->jit_atoms = NULL;
+        b->jit_atom_count = 0;
+    }
 #endif
     if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES && b->header.ref_count != 0) {
         list_add_tail(&b->header.link, &rt->gc_zero_ref_count_list);

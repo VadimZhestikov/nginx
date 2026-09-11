@@ -360,6 +360,17 @@ typedef struct JSJITCodeBuf {
     size_t len;    /* bytes written (excluding the NUL)          */
     size_t cap;    /* allocated capacity including the NUL slot  */
     int    error;  /* set to 1 on OOM; all subsequent ops no-op */
+
+    /* Atom fixup table accumulated while generating this function.
+     * Runtime-specific atoms cannot be baked into the C as integers (a JSAtom
+     * indexes rt->atom_array, so a cached .so would read a freed slot in any
+     * later runtime). They are collected here in emission order, deduped, and
+     * emitted as a NAME table that the loader resolves per runtime; the body
+     * refers to them as _atoms[i], the 7th parameter. */
+    uint32_t *atoms;      /* JSAtom values needing fixup, in slot order */
+    int       n_atoms;
+    int       cap_atoms;
+    int       atom_unsupported; /* 1 = an atom cannot be rebuilt from a name */
 } JSJITCodeBuf;
 
 static int jit_buf_init(JSJITCodeBuf *cb)
@@ -370,11 +381,76 @@ static int jit_buf_init(JSJITCodeBuf *cb)
     cb->len    = 0;
     cb->cap    = JIT_BUF_INIT_CAP;
     cb->error  = 0;
+    cb->atoms  = NULL;
+    cb->n_atoms = 0;
+    cb->cap_atoms = 0;
+    cb->atom_unsupported = 0;
     return 0;
+}
+
+/* Longest atom name the emitted table can carry, escapes excluded. */
+#define JIT_ATOM_NAME_BUF 256
+
+/*
+ * Slot index for `atom` in this function's fixup table, appending if new.
+ * Returns -1 on OOM (cb->error is set, like every other jit_buf_* helper).
+ * Linear scan: tables are tiny (median 3 atoms per function, measured).
+ */
+static int jit_atom_slot(JSJITCodeBuf *cb, uint32_t atom)
+{
+    int i;
+
+    for (i = 0; i < cb->n_atoms; i++)
+        if (cb->atoms[i] == atom)
+            return i;
+
+    if (cb->n_atoms == cb->cap_atoms) {
+        int nc = cb->cap_atoms ? cb->cap_atoms * 2 : 8;
+        uint32_t *na = realloc(cb->atoms, (size_t)nc * sizeof(*na));
+        if (!na) { cb->error = 1; return -1; }
+        cb->atoms = na;
+        cb->cap_atoms = nc;
+    }
+    cb->atoms[cb->n_atoms] = atom;
+    return cb->n_atoms++;
+}
+
+/*
+ * Render a reference to `atom` for the generated C.
+ *
+ * Predefined atoms and tagged integers are identical in every runtime, so they
+ * stay as literals — no indirection on the hot property-access paths. Anything
+ * that indexes rt->atom_array becomes _atoms[i].
+ *
+ * The result lives in a small rotating buffer so several references can appear
+ * in one jit_buf_printf() call (the inline-cache sites use the atom twice).
+ * Codegen is single-threaded, which is what makes that safe.
+ */
+static const char *jit_aref(JSJITCodeBuf *cb, uint32_t atom)
+{
+    static char  bufs[8][32];
+    static int   turn;
+    char        *out = bufs[turn++ & 7];
+    int          slot;
+
+    if (!js_jit_atom_needs_fixup((JSAtom)atom)) {
+        snprintf(out, sizeof(bufs[0]), "(JSAtom)%uu", atom);
+        return out;
+    }
+    slot = jit_atom_slot(cb, atom);
+    if (slot < 0) {
+        snprintf(out, sizeof(bufs[0]), "(JSAtom)%uu", atom); /* OOM: cb->error set */
+        return out;
+    }
+    snprintf(out, sizeof(bufs[0]), "_atoms[%d]", slot);
+    return out;
 }
 
 static void jit_buf_free(JSJITCodeBuf *cb)
 {
+    free(cb->atoms);
+    cb->atoms = NULL;
+    cb->n_atoms = cb->cap_atoms = 0;
     free(cb->buf);
     cb->buf = NULL;
 }
@@ -1583,11 +1659,44 @@ void js_jit_set_save_sources(int active)  { jit_save_sources = active; }
 static int                  jit_link_mode;
 static uint64_t            *jit_link_hashes;
 static JSFunctionBytecode **jit_link_bytecodes;  /* P10.4: parallel to hashes */
+static JSRuntime          **jit_link_rts;        /* owning runtime, parallel too */
 static int                  jit_link_hash_count;
 static int                  jit_link_hash_cap;
 static void                *jit_combined_handle;    /* P10.4: dlopen handle for combined.so */
 static JSJITManifestEntry  *jit_combined_manifest;  /* P10.4: manifest array inside combined.so */
 static int                  jit_combined_count;     /* P10.4: manifest entry count */
+
+/* How many functions were actually installed from combined.so.
+ *
+ * An AOT run that installs NOTHING is indistinguishable from a working one by
+ * its test results — it just silently interprets. QJS_JIT_STATS=1 prints the
+ * count once at exit so "the AOT arm engaged" is a measurement rather than an
+ * assumption. */
+static unsigned long        jit_combined_installs;
+
+/* QJS_JIT_TRACE=1: per-function tracing of the combined.so decision.  Answers
+ * "is this hash in the manifest at all?", which is the question a run that
+ * quietly compiles nothing raises.  Note that bc_hash folds in __DATE__
+ * __TIME__, so a rebuild between the --jit-link and --jit-aot passes makes
+ * EVERY hash miss. */
+static int jit_trace(void)
+{
+    static int cached = -1;
+    if (cached < 0) cached = getenv("QJS_JIT_TRACE") != NULL;
+    return cached;
+}
+
+static void jit_stats_dump(void)
+{
+    fprintf(stderr, "[JIT] installs from combined.so: %lu\n",
+            jit_combined_installs);
+}
+
+static void jit_count_combined_install(void)
+{
+    if (jit_combined_installs++ == 0 && getenv("QJS_JIT_STATS"))
+        atexit(jit_stats_dump);
+}
 
 /* -----------------------------------------------------------------------
  * Session map — per-test hash→bytecode table used to install GCC results
@@ -1609,11 +1718,16 @@ static int                  jit_combined_count;     /* P10.4: manifest entry cou
 static struct {
     uint64_t            *hashes;
     JSFunctionBytecode **bytecodes;
+    /* The runtime each bytecode belongs to, recorded next to it because a
+     * JSFunctionBytecode does not point back at its runtime and the atom
+     * fixup table has to be built in the right one.  Rebuilding atoms in a
+     * runtime that does not own the bytecode would corrupt both. */
+    JSRuntime          **rts;
     int count, cap;
 } jit_session_map;
 
 /* Register a bytecode in the session map when a GCC job is queued. */
-static void jit_session_add(uint64_t hash, JSFunctionBytecode *b)
+static void jit_session_add(uint64_t hash, JSFunctionBytecode *b, JSRuntime *rt)
 {
     if (jit_session_map.count == jit_session_map.cap) {
         int new_cap = jit_session_map.cap ? jit_session_map.cap * 2 : 64;
@@ -1621,13 +1735,17 @@ static void jit_session_add(uint64_t hash, JSFunctionBytecode *b)
                                (size_t)new_cap * sizeof(*ha));
         JSFunctionBytecode **ba = realloc(jit_session_map.bytecodes,
                                           (size_t)new_cap * sizeof(*ba));
-        if (!ha || !ba) return;   /* alloc failure: entry not added */
+        JSRuntime **ra = realloc(jit_session_map.rts,
+                                 (size_t)new_cap * sizeof(*ra));
+        if (!ha || !ba || !ra) return;   /* alloc failure: entry not added */
         jit_session_map.hashes    = ha;
         jit_session_map.bytecodes = ba;
+        jit_session_map.rts       = ra;
         jit_session_map.cap       = new_cap;
     }
     jit_session_map.hashes[jit_session_map.count]    = hash;
     jit_session_map.bytecodes[jit_session_map.count] = b;
+    jit_session_map.rts[jit_session_map.count]       = rt;
     jit_session_map.count++;
 }
 
@@ -1645,14 +1763,17 @@ static void jit_session_remove(JSFunctionBytecode *b)
     }
 }
 
-static JSFunctionBytecode *jit_session_lookup(uint64_t hash)
+static JSFunctionBytecode *jit_session_lookup(uint64_t hash, JSRuntime **rt_out)
 {
     /* Return the LAST matching live entry (most recently queued wins). */
     for (int i = jit_session_map.count - 1; i >= 0; i--) {
         if (jit_session_map.hashes[i] == hash &&
-            jit_session_map.bytecodes[i] != NULL)
+            jit_session_map.bytecodes[i] != NULL) {
+            if (rt_out) *rt_out = jit_session_map.rts[i];
             return jit_session_map.bytecodes[i];
+        }
     }
+    if (rt_out) *rt_out = NULL;
     return NULL;
 }
 
@@ -1660,8 +1781,10 @@ static void jit_session_clear(void)
 {
     free(jit_session_map.hashes);
     free(jit_session_map.bytecodes);
+    free(jit_session_map.rts);
     jit_session_map.hashes    = NULL;
     jit_session_map.bytecodes = NULL;
+    jit_session_map.rts       = NULL;
     jit_session_map.count     = 0;
     jit_session_map.cap       = 0;
 }
@@ -1706,6 +1829,12 @@ static void jit_result_add(uint64_t bc_hash, const char *fname,
     pthread_mutex_unlock(&jit_pending_results.lock);
 }
 
+/* Defined below, with the rest of the .so loader. */
+static int jit_bind_atoms(JSRuntime *rt, JSFunctionBytecode *b,
+                          void *handle, uint64_t bc_hash);
+static int jit_atoms_match(JSRuntime *rt, JSFunctionBytecode *b,
+                           void *handle, uint64_t bc_hash);
+
 /* Called from main thread after js_jit_drain().
  * Installs compiled GCC results into live bytecodes; skips and dlclose()s
  * results for bytecodes that were freed during execution.
@@ -1723,7 +1852,20 @@ void js_jit_install_results(void)
 
     for (int i = 0; i < n; i++) {
         JITGCCResult *r = &items[i];
-        JSFunctionBytecode *b = jit_session_lookup(r->bc_hash);
+        JSRuntime *rt = NULL;
+        JSFunctionBytecode *b = jit_session_lookup(r->bc_hash, &rt);
+        /* The generated code takes its atoms as a parameter read from the
+         * bytecode, so the table must be in place BEFORE the function can be
+         * reached.  A cold result brings its own; a warm one has to accept the
+         * table the still-reachable cold code is using.  Either way, if it
+         * cannot be satisfied the .so is unusable. */
+        if (b && !rt)
+            b = NULL;
+        if (b && r->is_warm && !jit_atoms_match(rt, b, r->handle, r->bc_hash))
+            b = NULL;
+        if (b && !r->is_warm &&
+            jit_bind_atoms(rt, b, r->handle, r->bc_hash) < 0)
+            b = NULL;
         if (b) {
             if (r->is_warm) {
                 /* P45b: warm-IC recompile — replace jit_func but keep cold .so loaded.
@@ -1743,7 +1885,8 @@ void js_jit_install_results(void)
                 jit_registry_add((uintptr_t)r->func, r->bc_hash, r->js_name);
             }
         } else {
-            /* Bytecode was freed during execution — discard the .so. */
+            /* Bytecode was freed during execution, or the atom table could not
+             * be bound — discard the .so. */
             if (r->handle)
                 dlclose(r->handle);
         }
@@ -1757,7 +1900,7 @@ void js_jit_install_results(void)
 void js_jit_set_link_mode(int active) { jit_link_mode = active; }
 
 /* Record hash+bytecode unconditionally (both needed for P10.4 manifest install). */
-static void jit_link_record(uint64_t hash, JSFunctionBytecode *b)
+static void jit_link_record(uint64_t hash, JSFunctionBytecode *b, JSRuntime *rt)
 {
     if (jit_link_hash_count >= jit_link_hash_cap) {
         int new_cap = jit_link_hash_cap ? jit_link_hash_cap * 2 : 128;
@@ -1769,10 +1912,15 @@ static void jit_link_record(uint64_t hash, JSFunctionBytecode *b)
                                            (size_t)new_cap * sizeof(*brr));
         if (!brr) return;  /* hash array updated; bytecodes stays one version behind */
         jit_link_bytecodes = brr;
+        JSRuntime **rrr = realloc(jit_link_rts,
+                                  (size_t)new_cap * sizeof(*rrr));
+        if (!rrr) return;  /* same: the entry is simply not added */
+        jit_link_rts = rrr;
         jit_link_hash_cap = new_cap;
     }
     jit_link_hashes[jit_link_hash_count] = hash;
     jit_link_bytecodes[jit_link_hash_count] = b;
+    jit_link_rts[jit_link_hash_count] = rt;
     jit_link_hash_count++;
 }
 
@@ -1792,15 +1940,12 @@ static char *jit_write_tmp(const char *src, const char *suffix)
 
 /* Execute one GCC job: compile C to .so, dlopen, install jit_func. */
 /*
- * Does the generated C bake a RUNTIME-SPECIFIC atom?
+ * BACKSTOP: does the generated C still bake a RUNTIME-SPECIFIC atom?
  *
- * Codegen emits atoms as raw integer literals, `(JSAtom)1234u`. A JSAtom is an
- * index into rt->atom_array and is only meaningful in the runtime that created
- * it. Predefined atoms (< JS_ATOM__COUNT) have the same index in every runtime
- * and are safe; anything above that is allocated dynamically per runtime.
- *
- * A .so written to the DISK CACHE outlives its runtime. Loaded into a later
- * runtime, a baked dynamic atom names a freed or unrelated slot:
+ * A JSAtom is an index into rt->atom_array and is only meaningful in the
+ * runtime that created it. A .so in the DISK CACHE outlives its runtime, so a
+ * baked dynamic atom loaded into a later runtime names a freed or unrelated
+ * slot:
  *
  *   __jit_f_<hash>  ->  js_jit_op_throw_error(ctx, atom, JS_THROW_VAR_UNINITIALIZED)
  *                    ->  JS_ThrowReferenceErrorUninitialized(ctx, atom)
@@ -1812,10 +1957,16 @@ static char *jit_write_tmp(const char *src, const char *suffix)
  * is gone and the code formats whatever occupies the slot -- silent memory
  * unsafety on a persistent, cross-runtime cache.
  *
- * Scanning the emitted C is deliberate: it covers all ~25 emission sites at
- * once and cannot be missed by a future one, whereas tagging each site by hand
- * would rot. In-process compiles are unaffected -- the atom is correct for the
- * runtime that just produced it.
+ * This used to be the FIX: any such .so was simply not cached, which is why
+ * most of the cache stayed empty. The fix is now the atom fixup table --
+ * jit_aref() emits runtime-specific atoms as _atoms[i] and jit_bind_atoms()
+ * rebuilds them per runtime from the name table in the .so -- so this scan
+ * should never fire again.
+ *
+ * It is kept because it is cheap next to a gcc fork and because it cannot rot:
+ * it watches all ~25 emission sites at once, so a future site that forgets
+ * jit_aref() is caught here rather than in a crash on someone's warm cache.
+ * If it fires, that is a codegen bug; QJS_JIT_ATOM_WARN=1 makes it say so.
  */
 static int jit_c_has_dynamic_atom(const char *src)
 {
@@ -1840,10 +1991,124 @@ static int jit_c_has_dynamic_atom(const char *src)
     return 0;
 }
 
+/*
+ * The .so exports the atom NAMES, never JSAtom values: a JSAtom indexes
+ * rt->atom_array and must not cross a runtime boundary. Each name is interned
+ * per runtime below (one owned reference per slot, released in
+ * free_function_bytecode).
+ */
+
+/* Locate a .so's name table for one function.
+ * Returns the entry count (0 = this function has no runtime-specific atoms),
+ * or -1 if the two symbols disagree, which means the .so is not usable. */
+static int jit_atom_names(void *handle, uint64_t bc_hash,
+                          const char *const **names_out)
+{
+    char            sym[80];
+    const uint32_t *pn;
+
+    snprintf(sym, sizeof(sym), "__jit_anc_%016llx", (unsigned long long)bc_hash);
+    pn = (const uint32_t *)(uintptr_t)dlsym(handle, sym);
+    if (!pn || *pn == 0)
+        return 0;
+
+    snprintf(sym, sizeof(sym), "__jit_an_%016llx", (unsigned long long)bc_hash);
+    *names_out = (const char *const *)(uintptr_t)dlsym(handle, sym);
+    if (!*names_out)
+        return -1;                     /* a count with no names */
+    return (int)*pn;
+}
+
+/* Rebuild this .so's runtime-specific atoms in `rt` and hand the table to `b`.
+ *
+ * Returns 0 on success (including "this .so has no such atoms"), -1 if the
+ * caller must not install the function.  The generated code indexes _atoms[]
+ * blindly, so installing without the matching table would not fault, it would
+ * silently use the wrong property names.
+ *
+ * Only for installs that also retire the previous code (fresh compile, cache
+ * load, combined.so).  For a warm recompile, which leaves the cold function
+ * reachable, use jit_atoms_match(). */
+static int jit_bind_atoms(JSRuntime *rt, JSFunctionBytecode *b,
+                          void *handle, uint64_t bc_hash)
+{
+    const char *const *names;
+    JSAtom            *tab;
+    int                n;
+    uint32_t           i;
+
+    n = jit_atom_names(handle, bc_hash, &names);
+    if (n <= 0)
+        return n;                      /* 0 = nothing to do, -1 = refuse */
+
+    tab = js_malloc_rt(rt, (size_t)n * sizeof(*tab));
+    if (!tab)
+        return -1;
+
+    for (i = 0; i < (uint32_t)n; i++) {
+        tab[i] = js_jit_atom_new_rt(rt, names[i]);
+        if (tab[i] == JS_ATOM_NULL) {
+            while (i > 0)
+                JS_FreeAtomRT(rt, tab[--i]);
+            js_free_rt(rt, tab);
+            return -1;
+        }
+    }
+    js_jit_fb_set_atoms(rt, b, tab, (uint32_t)n);
+    return 0;
+}
+
+/* Would this .so's atoms be IDENTICAL to the table `b` already carries?
+ *
+ * A warm recompile (P45b) installs a second function while the cold one stays
+ * reachable -- P10.3 direct calls bind the cold `__jit_f_<hash>` symbol
+ * straight into other .so files -- and both are handed b->jit_atoms.  One
+ * table, two code objects, so the warm .so may only be installed if it indexes
+ * that table exactly as the cold one does.  Warm codegen sees specialised
+ * inline caches and can drop or reorder atom references, so this is a real
+ * possibility and not a formality; a mismatch simply forgoes the recompile.
+ *
+ * Atoms are interned, so creating a name that is already in the table yields
+ * the same JSAtom; each probe is released immediately and only the table's own
+ * references remain. */
+static int jit_atoms_match(JSRuntime *rt, JSFunctionBytecode *b,
+                           void *handle, uint64_t bc_hash)
+{
+    const char *const *names;
+    const JSAtom      *have;
+    int                n, ok = 1;
+    uint32_t           i;
+
+    n = jit_atom_names(handle, bc_hash, &names);
+    if (n < 0)
+        return 0;
+    if ((uint32_t)n != js_jit_fb_get_atom_count(b))
+        return 0;
+    if (n == 0)
+        return 1;
+
+    have = js_jit_fb_get_atoms(b);
+    if (!have)
+        return 0;
+    for (i = 0; i < (uint32_t)n; i++) {
+        JSAtom a = js_jit_atom_new_rt(rt, names[i]);
+        if (a == JS_ATOM_NULL)
+            return 0;
+        if (a != have[i])
+            ok = 0;
+        JS_FreeAtomRT(rt, a);
+    }
+    return ok;
+}
+
 static void jit_compile_gcc_job(JITGCCJob *job)
 {
     /* Must be computed before c_src is released below. */
     int _dyn_atom = jit_c_has_dynamic_atom(job->c_src);
+    if (_dyn_atom && getenv("QJS_JIT_ATOM_WARN"))
+        fprintf(stderr, "qjs jit: codegen bug: %016llx bakes a "
+                        "runtime-specific atom; not cached\n",
+                (unsigned long long)job->bc_hash);
     char *c_path = jit_write_tmp(job->c_src, ".c");
     free(job->c_src);
     job->c_src = NULL;
@@ -2011,7 +2276,7 @@ static void js_jit_queue_warm_gcc(JSContext *ctx, JSFunctionBytecode *b)
     job->next    = NULL;
 
     /* Session map: warm result lookup uses original bc_hash */
-    jit_session_add(bc_hash, b);
+    jit_session_add(bc_hash, b, JS_GetRuntime(ctx));
 
     pthread_mutex_lock(&jit_worker.lock);
     if (jit_worker.tail) jit_worker.tail->next = job;
@@ -2312,7 +2577,7 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
      * become stale after JS_FreeRuntime(); recording them would leave dangling
      * pointers in jit_link_bytecodes[] that corrupt jit_find_bytecode_by_hash. */
     if (!jit_combined_handle)
-        jit_link_record(bc_hash, b);
+        jit_link_record(bc_hash, b, JS_GetRuntime(ctx));
 
     /* Skip marker: function had an unsupported opcode in a previous run.
      * Avoids re-running code generation and printing noisy messages. */
@@ -2326,14 +2591,28 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
      * (e.g. it had unsupported opcodes during the --jit-warmup run) and we
      * should not spawn a background GCC process during a production --jit-aot
      * run.  The function will be interpreted as usual. */
+    if (jit_trace())
+        fprintf(stderr, "[JIT] queue_gcc %016llx combined=%p manifest=%p n=%d\n",
+                (unsigned long long)bc_hash, jit_combined_handle,
+                (void *)jit_combined_manifest, jit_combined_count);
     if (jit_combined_handle && jit_combined_manifest) {
         for (int _mi = 0; _mi < jit_combined_count; _mi++) {
             if (jit_combined_manifest[_mi].bc_hash == bc_hash) {
+                /* combined.so carries each function's name table under the
+                 * same per-hash symbols an individual .so uses. */
+                if (jit_bind_atoms(JS_GetRuntime(ctx), b, jit_combined_handle,
+                                   bc_hash) < 0) {
+                    if (jit_trace())
+                        fprintf(stderr, "[JIT]   atom bind REFUSED %016llx\n",
+                                (unsigned long long)bc_hash);
+                    return;    /* no usable atom table — stay interpreted */
+                }
                 js_jit_fb_set_bc_hash(b, bc_hash);
                 /* P10.3: combined.so is always freshly compiled with current
                  * codegen, so mutated_arg_mask protection is guaranteed. */
                 js_jit_fb_set_p103_safe(b, 1);
                 js_jit_fb_set_func(b, jit_combined_manifest[_mi].func_ptr, NULL, 2);
+                jit_count_combined_install();
                 /* P36.1: register address for sampling profiler (combined.so path) */
                 jit_registry_add((uintptr_t)jit_combined_manifest[_mi].func_ptr,
                                  bc_hash, js_name);
@@ -2398,6 +2677,12 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
                 const uint32_t *cv = (const uint32_t *)(uintptr_t)dlsym(handle, cv_sym);
                 if (!cv || *cv != JIT_CODEGEN_VERSION) {
                     /* Stale cache entry — close and fall through to recompile */
+                    dlclose(handle);
+                    goto do_compile;
+                }
+                /* Atoms first: jit_func must not be reachable before the
+                 * table it depends on is in place. */
+                if (jit_bind_atoms(JS_GetRuntime(ctx), b, handle, bc_hash) < 0) {
                     dlclose(handle);
                     goto do_compile;
                 }
@@ -2480,7 +2765,7 @@ do_compile:;
      * can find the live bytecode after drain without using job->b directly.
      * If the bytecode is freed before install time, js_jit_free_bytecode()
      * marks the entry dead (NULL) and install_results discards the result. */
-    jit_session_add(bc_hash, b);
+    jit_session_add(bc_hash, b, JS_GetRuntime(ctx));
 
     job->c_src   = cb.buf;   /* transfer buffer ownership to job */
     cb.buf       = NULL;     /* prevent double-free if jit_buf_free is called */
@@ -3594,9 +3879,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             /* Push the string representation of an interned atom */
             uint32_t atom = bc_u32(&bc[pc+1]);
             jit_buf_printf(cb,
-                "    { JSValue _v=JS_AtomToValue(ctx,(JSAtom)%uu);"
+                "    { JSValue _v=JS_AtomToValue(ctx,%s);"
                 " _sp=%d; _CHK(_v); _tsv%d=_v; _sp=%d; }\n",
-                atom, d, d, d+1);
+                jit_aref(cb, atom), d, d, d+1);
             break;
         }
         /* ---- P13: OP_fclosure / OP_fclosure8 — closure creation via shadow arrays ---- */
@@ -4355,14 +4640,14 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             jit_buf_printf(cb,
                 "    { JSValue _rv%d=*_vrp%d;\n"
                 "      if(js_unlikely(JS_VALUE_GET_TAG(_rv%d)==JS_TAG_UNINITIALIZED)){\n"
-                "        _RT->throw_error(ctx,(JSAtom)%uu,2); goto _ex;\n"
+                "        _RT->throw_error(ctx,%s,2); goto _ex;\n"
                 "      }\n"
                 "      __jit_vt_%016llx[%d]=(uint8_t)JS_VALUE_GET_TAG(_rv%d);\n"
                 "      _tsv%d=_DUP(_rv%d); _sp=%d;\n"
                 "    }\n",
                 pc, idx,
                 pc,
-                (unsigned)cv_atom,
+                jit_aref(cb, cv_atom),
                 (unsigned long long)bc_hash, n_gf + n_ae + n_pf + vr_idx, pc,
                 d, pc, d+1);
             break;
@@ -6112,8 +6397,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         "          JSValue *_pp=(JSValue*)*(void**)((char*)JS_VALUE_GET_PTR(_o)+JIT_OBJ_PROP_OFF);\n"
                         "          _r=_pp[_ic%d.slot];\n"
                         "          _ti%d=(int64_t)JS_VALUE_GET_INT(_r); _sp=%d; }\n"
-                        "      else { _r=_RT->get_prop(ctx,_o,(JSAtom)%uu);\n"
-                        "             js_jit_ic_fill_get(ctx,_o,(JSAtom)%uu,&_ic%d);\n"
+                        "      else { _r=_RT->get_prop(ctx,_o,%s);\n"
+                        "             js_jit_ic_fill_get(ctx,_o,%s,&_ic%d);\n"
                         "             __jit_vt_%016llx[%d]=_ic%d.val_tag;\n"
                         "             _sp=%d; _CHK(_r);\n"
                         "             _ti%d=(int64_t)(JS_VALUE_GET_TAG(_r)==JS_TAG_INT\n"
@@ -6124,7 +6409,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         pc,                             /* JIT_IC_CHECK_FAST */
                         pc,                             /* ic.slot */
                         d-1, d,                         /* _ti%d; _sp=%d */
-                        atom, atom, pc,                 /* miss get_prop + fill */
+                        jit_aref(cb, atom), jit_aref(cb, atom), pc,                 /* miss get_prop + fill */
                         (unsigned long long)bc_hash, gf_idx, pc, /* VT update */
                         d-1,                            /* _sp=d-1 before CHK */
                         d-1,                            /* _ti%d extract */
@@ -6137,8 +6422,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         "          JSValue *_pp=(JSValue*)*(void**)((char*)JS_VALUE_GET_PTR(_o)+JIT_OBJ_PROP_OFF);\n"
                         "          _r=_pp[_ic%d.slot];\n"
                         "          _ti%d=(int64_t)JS_VALUE_GET_INT(_r); _FREE(_o); _sp=%d; }\n"
-                        "      else { _r=_RT->get_prop(ctx,_o,(JSAtom)%uu);\n"
-                        "             js_jit_ic_fill_get(ctx,_o,(JSAtom)%uu,&_ic%d);\n"
+                        "      else { _r=_RT->get_prop(ctx,_o,%s);\n"
+                        "             js_jit_ic_fill_get(ctx,_o,%s,&_ic%d);\n"
                         "             __jit_vt_%016llx[%d]=_ic%d.val_tag;\n"
                         "             _FREE(_o); _sp=%d; _CHK(_r);\n"
                         "             _ti%d=(int64_t)(JS_VALUE_GET_TAG(_r)==JS_TAG_INT\n"
@@ -6149,7 +6434,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         pc,                             /* JIT_IC_CHECK_FAST */
                         pc,                             /* ic.slot */
                         d-1, d,                         /* _ti%d; _FREE(_o); _sp=%d */
-                        atom, atom, pc,                 /* miss get_prop + fill */
+                        jit_aref(cb, atom), jit_aref(cb, atom), pc,                 /* miss get_prop + fill */
                         (unsigned long long)bc_hash, gf_idx, pc, /* VT update */
                         d-1,                            /* _FREE(_o); _sp=d-1 */
                         d-1,                            /* _ti%d extract */
@@ -6179,8 +6464,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         "          JSValue *_pp=(JSValue*)*(void**)((char*)JS_VALUE_GET_PTR(_o)+JIT_OBJ_PROP_OFF);\n"
                         "          _r=_pp[_ic%d.e[3].slot]; " _GF_DUP_OR_SKIP
                         "          _tsv%d=_r; _sp=%d; }\n"
-                        "      else { _r=_RT->get_prop(ctx,_o,(JSAtom)%uu);\n"
-                        "             js_jit_ic2_fill_get(ctx,_o,(JSAtom)%uu,&_ic%d);\n"
+                        "      else { _r=_RT->get_prop(ctx,_o,%s);\n"
+                        "             js_jit_ic2_fill_get(ctx,_o,%s,&_ic%d);\n"
                         _GF_VT_UPDATE
                         "             _sp=%d; _CHK(_r); _tsv%d=_r; _sp=%d; } }\n",
                         pc,         /* _ic%d static */
@@ -6197,7 +6482,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         pc, pc,     /* n>=4 && e[3] */
                         pc,         /* e[3].slot */
                         d-1, d,     /* _tsv%d=_r; _sp=%d */
-                        atom, atom, pc, /* miss path */
+                        jit_aref(cb, atom), jit_aref(cb, atom), pc, /* miss path */
                         (unsigned long long)bc_hash, gf_idx, pc, /* VT update */
                         d-1, d-1, d);   /* _sp=%d; _CHK; _tsv%d=_r; _sp=%d */
                 } else {
@@ -6220,8 +6505,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         "          JSValue *_pp=(JSValue*)*(void**)((char*)JS_VALUE_GET_PTR(_o)+JIT_OBJ_PROP_OFF);\n"
                         "          _r=_pp[_ic%d.e[3].slot]; " _GF_DUP_OR_SKIP
                         "          _FREE(_o); _tsv%d=_r; _sp=%d; }\n"
-                        "      else { _r=_RT->get_prop(ctx,_o,(JSAtom)%uu);\n"
-                        "             js_jit_ic2_fill_get(ctx,_o,(JSAtom)%uu,&_ic%d);\n"
+                        "      else { _r=_RT->get_prop(ctx,_o,%s);\n"
+                        "             js_jit_ic2_fill_get(ctx,_o,%s,&_ic%d);\n"
                         _GF_VT_UPDATE
                         "             _FREE(_o); _sp=%d; _CHK(_r); _tsv%d=_r; _sp=%d; } }\n",
                         pc,         /* _ic%d static */
@@ -6238,7 +6523,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         pc, pc,     /* n>=4 && e[3] */
                         pc,         /* e[3].slot */
                         d-1, d,     /* _FREE(_o); _tsv%d=_r; _sp=%d */
-                        atom, atom, pc, /* miss path */
+                        jit_aref(cb, atom), jit_aref(cb, atom), pc, /* miss path */
                         (unsigned long long)bc_hash, gf_idx, pc, /* VT update */
                         d-1, d-1, d);   /* _FREE; _sp=%d; _CHK; _tsv%d=_r; _sp=%d */
                 }
@@ -6274,8 +6559,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 "          JSValue *_pp=(JSValue*)*(void**)((char*)JS_VALUE_GET_PTR(_tsv%d)+JIT_OBJ_PROP_OFF);\n"
                 "          _r=_pp[_ic%d.e[3].slot]; JS_DupValue(ctx,_r);\n"
                 "          _tsv%d=_r; _sp=%d; }\n"
-                "      else { _r=_RT->get_prop(ctx,_tsv%d,(JSAtom)%uu);\n"
-                "             js_jit_ic2_fill_get(ctx,_tsv%d,(JSAtom)%uu,&_ic%d);\n"
+                "      else { _r=_RT->get_prop(ctx,_tsv%d,%s);\n"
+                "             js_jit_ic2_fill_get(ctx,_tsv%d,%s,&_ic%d);\n"
                 "             _sp=%d; _CHK(_r); _tsv%d=_r; _sp=%d; } }\n",
                 pc,          /* _ic%d */
                 d-1, pc,     /* _tsv%d (IC check), e[0] */
@@ -6294,8 +6579,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 d-1,         /* _tsv%d (prop_arr read) */
                 pc,          /* e[3].slot */
                 d, d+1,      /* _tsv%d=_r; _sp=%d */
-                d-1, atom,   /* miss get_prop(_tsv%d, atom) */
-                d-1, atom, pc, /* ic2_fill_get */
+                d-1, jit_aref(cb, atom),   /* miss get_prop(_tsv%d, atom) */
+                d-1, jit_aref(cb, atom), pc, /* ic2_fill_get */
                 d, d, d+1);    /* _sp=%d; _CHK; _tsv%d=_r; _sp=%d */
             break;
         }
@@ -6353,8 +6638,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 "          JSValue *_pp=(JSValue*)*(void**)((char*)JS_VALUE_GET_PTR(_o)+JIT_OBJ_PROP_OFF);\n"
                 "          JSValue _old=_pp[_ic%d.e[3].slot]; _pp[_ic%d.e[3].slot]=_v;\n"
                 "          JS_FreeValue(ctx,_old); _ret=0;}\n"
-                "      else { _ret=_RT->set_prop(ctx,_o,(JSAtom)%uu,_v);\n"
-                "             js_jit_ic2_fill_put(ctx,_o,(JSAtom)%uu,&_ic%d); }\n",
+                "      else { _ret=_RT->set_prop(ctx,_o,%s,_v);\n"
+                "             js_jit_ic2_fill_put(ctx,_o,%s,&_ic%d); }\n",
                 pc,            /* JIT_IC_CHECK_FAST e[0] */
                 pc, pc,        /* e[0].slot (old), e[0].slot (new) */
                 pc, pc,        /* n>=2 && e[1] */
@@ -6363,7 +6648,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 pc, pc,        /* e[2].slot (old), e[2].slot (new) */
                 pc, pc,        /* n>=4 && e[3] */
                 pc, pc,        /* e[3].slot (old), e[3].slot (new) */
-                atom, atom, pc); /* miss path */
+                jit_aref(cb, atom), jit_aref(cb, atom), pc); /* miss path */
             /* Emit closing: obj free (non-borrowed only) + error check. */
             if (_pf_borrowed)
                 jit_buf_str(cb, "      if(_ret<0) goto _ex; }\n"); /* no _FREE(_o) — borrowed */
@@ -6664,7 +6949,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 "                 ?(int64_t)(uint32_t)JS_VALUE_GET_INT(_lpp[0])\n"
                 "                 :(int64_t)JS_VALUE_GET_FLOAT64(_lpp[0]); }\n"
                 "          _FREE(_o); _sp=%d; goto _lenok%d; }}\n"
-                "      { JSValue _r=_RT->get_prop(ctx,_o,(JSAtom)%uu);\n"
+                "      { JSValue _r=_RT->get_prop(ctx,_o,%s);\n"
                 "        _sp=%d; _CHK(_r); _FREE(_o);\n"
                 "        _ti%d=(JS_VALUE_GET_TAG(_r)==JS_TAG_INT)\n"
                 "             ?(int64_t)JS_VALUE_GET_INT(_r)\n"
@@ -6674,7 +6959,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 d-1,                          /* _o=_tsv{d-1} */
                 d-1,                          /* _ti{d-1} = length from prop[0] (fast path) */
                 d, pc,                        /* _sp after fast; goto label */
-                (unsigned)JS_ATOM_length,     /* atom for slow path */
+                jit_aref(cb, JS_ATOM_length), /* atom for slow path */
                 d-1,                          /* _sp before _CHK */
                 d-1,                          /* _ti{d-1} (slow path) */
                 pc, d);                       /* label; _sp after slow path */
@@ -7214,11 +7499,11 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _P94_ENSURE(d-1); /* ensure top is a boxed JSValue */
             jit_buf_printf(cb,
                 "    if(JS_IsObject(_tsv%d)) {\n"
-                "      int _r=JS_DefinePropertyValue(ctx,_tsv%d,(JSAtom)%uu,"
-                "JS_AtomToString(ctx,(JSAtom)%uu),JS_PROP_CONFIGURABLE);\n"
+                "      int _r=JS_DefinePropertyValue(ctx,_tsv%d,%s,"
+                "JS_AtomToString(ctx,%s),JS_PROP_CONFIGURABLE);\n"
                 "      if(_r<0) goto _ex;\n"
                 "    }\n",
-                d-1, d-1, (unsigned)JS_ATOM_name, _atom);
+                d-1, d-1, jit_aref(cb, JS_ATOM_name), jit_aref(cb, _atom));
             break;
         }
         /* OP_define_field: obj(_tsv{d-2}) val(_tsv{d-1}) -> obj stays at _tsv{d-2}; depth d -> d-1 */
@@ -7227,10 +7512,10 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _P94_ENSURE(d-1); /* P9.4: box typed val slot before use as JSValue */
             jit_buf_printf(cb,
                 "    { JSValue _v=_tsv%d; _sp=%d;\n"
-                "      int _r=JS_DefinePropertyValue(ctx,_tsv%d,(JSAtom)%uu,_v,"
+                "      int _r=JS_DefinePropertyValue(ctx,_tsv%d,%s,_v,"
                 "JS_PROP_C_W_E|JS_PROP_THROW);\n"
                 "      if(_r<0) goto _ex; }\n",
-                d-1, d-1, d-2, atom);
+                d-1, d-1, d-2, jit_aref(cb, atom));
             break;
         }
         /* P9.2: array_from N: pop N items, push array; result at _tsv{d-N}, depth d -> d-N+1 */
@@ -7274,10 +7559,10 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
         case OP_delete_var: {
             uint32_t atom = bc_u32(&bc[pc+1]);
             jit_buf_printf(cb,
-                "    { int _ret=_RT->delete_global_var(ctx,(JSAtom)%uu);\n"
+                "    { int _ret=_RT->delete_global_var(ctx,%s);\n"
                 "      if(_ret<0) goto _ex;\n"
                 "      _tsv%d=JS_NewBool(ctx,_ret); _sp=%d; }\n",
-                atom, d, d+1);
+                jit_aref(cb, atom), d, d+1);
             break;
         }
 
@@ -7606,8 +7891,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             uint32_t atom = bc_u32(&bc[pc+1]);
             int type = (int)bc[pc+5];
             jit_buf_printf(cb,
-                "    _RT->throw_error(ctx,(JSAtom)%uu,%d); goto _ex;\n",
-                (unsigned)atom, type);
+                "    _RT->throw_error(ctx,%s,%d); goto _ex;\n",
+                jit_aref(cb, atom), type);
             break;
         }
 
@@ -7767,9 +8052,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             }
             jit_buf_printf(cb,
                 "    { JSValue _obj, _atv;\n"
-                "      if(_RT->make_ref_pair(ctx,_sf_vrefs[%d],(JSAtom)%uu,&_obj,&_atv)<0) goto _ex;\n"
+                "      if(_RT->make_ref_pair(ctx,_sf_vrefs[%d],%s,&_obj,&_atv)<0) goto _ex;\n"
                 "      _sp=%d; _tsv%d=_obj; _sp=%d; _tsv%d=_atv; _sp=%d; }\n",
-                vri, (unsigned)atom, d, d, d+1, d+1, d+2);
+                vri, jit_aref(cb, atom), d, d, d+1, d+1, d+2);
             break;
         }
 
@@ -7780,9 +8065,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             int idx = (int)bc_u16(&bc[pc+5]);
             jit_buf_printf(cb,
                 "    { JSValue _obj, _atv;\n"
-                "      if(_RT->make_ref_pair(ctx,var_refs[%d],(JSAtom)%uu,&_obj,&_atv)<0) goto _ex;\n"
+                "      if(_RT->make_ref_pair(ctx,var_refs[%d],%s,&_obj,&_atv)<0) goto _ex;\n"
                 "      _sp=%d; _tsv%d=_obj; _sp=%d; _tsv%d=_atv; _sp=%d; }\n",
-                idx, (unsigned)atom, d, d, d+1, d+1, d+2);
+                idx, jit_aref(cb, atom), d, d, d+1, d+1, d+2);
             break;
         }
 
@@ -7792,9 +8077,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             uint32_t atom = bc_u32(&bc[pc+1]);
             jit_buf_printf(cb,
                 "    { JSValue _obj, _atv;\n"
-                "      if(_RT->make_var_ref(ctx,(JSAtom)%uu,&_obj,&_atv)<0) goto _ex;\n"
+                "      if(_RT->make_var_ref(ctx,%s,&_obj,&_atv)<0) goto _ex;\n"
                 "      _sp=%d; _tsv%d=_obj; _sp=%d; _tsv%d=_atv; _sp=%d; }\n",
-                (unsigned)atom, d, d, d+1, d+1, d+2);
+                jit_aref(cb, atom), d, d, d+1, d+1, d+2);
             break;
         }
 
@@ -7871,9 +8156,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
         case OP_private_symbol: {
             uint32_t atom = bc_u32(&bc[pc+1]);
             jit_buf_printf(cb,
-                "    { JSValue _r=_RT->private_symbol(ctx,(JSAtom)%uu);\n"
+                "    { JSValue _r=_RT->private_symbol(ctx,%s);\n"
                 "      _sp=%d; _CHK(_r); _tsv%d=_r; _sp=%d; }\n",
-                (unsigned)atom, d, d, d+1);
+                jit_aref(cb, atom), d, d, d+1);
             break;
         }
 
@@ -8020,9 +8305,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _P94_ENSURE(d-2);
             jit_buf_printf(cb,
                 "    { JSValue _func=_tsv%d; _sp=%d;\n"
-                "      if(_RT->define_method(ctx,_tsv%d,_func,(JSAtom)%uu,%d)<0) goto _ex;\n"
+                "      if(_RT->define_method(ctx,_tsv%d,_func,%s,%d)<0) goto _ex;\n"
                 "      _sp=%d; }\n",
-                d-1, d-1, d-2, (unsigned)atom, op_flags, d-1);
+                d-1, d-1, d-2, jit_aref(cb, atom), op_flags, d-1);
             break;
         }
 
@@ -9032,6 +9317,65 @@ static int js_jit_gen_c(JSFunctionBytecode *b, JSJITCodeBuf *cb,
 
     gen_footer(cb, var_count, arg_count, varnames, stack_size, &sr, var_ref_count);
 
+    /*
+     * Atom fixup table. jit_aref() collected every runtime-specific atom this
+     * function references; emit them as NAMES so the loader can rebuild them in
+     * whatever runtime binds the .so, and hand the result in as the `_atoms`
+     * parameter. Emitted after the body because the set is only complete now —
+     * the generated code reads the parameter, not this table, so position does
+     * not matter; only the loader reads these symbols, via dlsym.
+     *
+     * A symbol atom cannot be rebuilt from a name, so a function referencing one
+     * is refused rather than miscompiled.
+     */
+    if (!cb->error && cb->n_atoms > 0) {
+        int ai;
+
+        for (ai = 0; ai < cb->n_atoms; ai++) {
+            if (!js_jit_atom_name_ok(rt, (JSAtom)cb->atoms[ai],
+                                     JIT_ATOM_NAME_BUF)) {
+                cb->atom_unsupported = 1;
+                break;
+            }
+        }
+        if (cb->atom_unsupported) {
+            scan_result_free(&sr);
+            free(local_type);
+            jit_free_varnames(varnames, arg_count + var_count);
+            jit_buf_free(cb);
+            if (unsupported) *unsupported = 1;
+            return -1;
+        }
+
+        jit_buf_printf(cb, "const uint32_t __jit_anc_%016llx=%du;\n",
+                       (unsigned long long)bc_hash, cb->n_atoms);
+        jit_buf_printf(cb, "const char *const __jit_an_%016llx[%d]={",
+                       (unsigned long long)bc_hash, cb->n_atoms);
+        for (ai = 0; ai < cb->n_atoms; ai++) {
+            char  abuf[JIT_ATOM_NAME_BUF];
+            const char *nm = js_jit_atom_get_str(rt, abuf, sizeof(abuf),
+                                                 (JSAtom)cb->atoms[ai]);
+            const char *q;
+
+            jit_buf_str(cb, ai ? ",\"" : "\"");
+            for (q = nm ? nm : ""; *q; q++) {       /* C-escape the name */
+                if (*q == '"' || *q == '\\') {
+                    char e[3]; e[0] = '\\'; e[1] = *q; e[2] = 0;
+                    jit_buf_str(cb, e);
+                } else if ((unsigned char)*q < 0x20 || (unsigned char)*q >= 0x7f) {
+                    char e[8];
+                    snprintf(e, sizeof(e), "\\%03o", (unsigned char)*q);
+                    jit_buf_str(cb, e);
+                } else {
+                    char e[2]; e[0] = *q; e[1] = 0;
+                    jit_buf_str(cb, e);
+                }
+            }
+            jit_buf_str(cb, "\"");
+        }
+        jit_buf_str(cb, "};\n");
+    }
+
     scan_result_free(&sr);
     free(local_type);
     jit_free_varnames(varnames, arg_count + var_count);
@@ -9321,12 +9665,16 @@ fail:
  * skip bytecodes whose handle already equals jit_combined_handle.
  * ----------------------------------------------------------------------- */
 
-static JSFunctionBytecode *jit_find_bytecode_by_hash(uint64_t hash)
+static JSFunctionBytecode *jit_find_bytecode_by_hash(uint64_t hash,
+                                                     JSRuntime **rt_out)
 {
     for (int i = 0; i < jit_link_hash_count; i++) {
-        if (jit_link_hashes[i] == hash)
+        if (jit_link_hashes[i] == hash) {
+            if (rt_out) *rt_out = jit_link_rts ? jit_link_rts[i] : NULL;
             return jit_link_bytecodes ? jit_link_bytecodes[i] : NULL;
+        }
     }
+    if (rt_out) *rt_out = NULL;
     return NULL;
 }
 
@@ -9336,16 +9684,22 @@ static int jit_install_combined_pass(void)
 {
     int installed = 0;
     for (int i = 0; i < jit_combined_count; i++) {
-        JSFunctionBytecode *b = jit_find_bytecode_by_hash(jit_combined_manifest[i].bc_hash);
-        if (!b) continue;
+        JSRuntime *rt = NULL;
+        JSFunctionBytecode *b =
+            jit_find_bytecode_by_hash(jit_combined_manifest[i].bc_hash, &rt);
+        if (!b || !rt) continue;
         void *old_handle = js_jit_fb_get_handle(b);
         if (old_handle == jit_combined_handle) continue;  /* already patched */
+        if (jit_bind_atoms(rt, b, jit_combined_handle,
+                           jit_combined_manifest[i].bc_hash) < 0)
+            continue;          /* no usable atom table — leave it as it was */
         uint8_t old_tier = js_jit_fb_get_tier(b);
         /* Install with handle=NULL so js_jit_free_bytecode skips it */
         js_jit_fb_set_bc_hash(b, jit_combined_manifest[i].bc_hash);
         /* P10.3: combined.so is always freshly compiled with current codegen */
         js_jit_fb_set_p103_safe(b, 1);
         js_jit_fb_set_func(b, jit_combined_manifest[i].func_ptr, NULL, 2);
+        jit_count_combined_install();
         /* P36.1: register address for sampling profiler (combined-pass path) */
         jit_registry_add((uintptr_t)jit_combined_manifest[i].func_ptr,
                          jit_combined_manifest[i].bc_hash, "");
