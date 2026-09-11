@@ -371,6 +371,12 @@ typedef struct JSJITCodeBuf {
     int       n_atoms;
     int       cap_atoms;
     int       atom_unsupported; /* 1 = an atom cannot be rebuilt from a name */
+    /* 1 = this function emits P10.3 direct JIT-to-JIT calls.  Such code names
+     * its callees by __jit_f_<hash> symbol, so it is only valid in the process
+     * that generated it; a SHARED .so (disk cache or combined.so) must refuse
+     * it. Exported as __jit_dc_<hash> so a loader can tell without the
+     * caller's var_refs, which the AOT pre-pass does not have. */
+    int       has_direct_call;
 } JSJITCodeBuf;
 
 static int jit_buf_init(JSJITCodeBuf *cb)
@@ -385,6 +391,7 @@ static int jit_buf_init(JSJITCodeBuf *cb)
     cb->n_atoms = 0;
     cb->cap_atoms = 0;
     cb->atom_unsupported = 0;
+    cb->has_direct_call = 0;
     return 0;
 }
 
@@ -2071,6 +2078,27 @@ static int jit_c_has_dynamic_atom(const char *src)
  * free_function_bytecode).
  */
 
+/* Does this .so's code for bc_hash contain P10.3 direct JIT-to-JIT calls?
+ *
+ * Such code names its callees by __jit_f_<hash> symbol and resolves them
+ * against the process-global RTLD namespace, so it is only valid in the
+ * process that generated it.  Any SHARED .so -- a disk-cache hit in a later
+ * runtime, or combined.so, which is deliberately shared by all of them --
+ * must refuse it and let the function recompile in-process.
+ *
+ * The pre-existing check for this walks the caller's var_refs, which the AOT
+ * pre-pass (js_jit_compile_all) does not have: it passes var_refs = NULL, so
+ * that check silently never fires in --jit-aot.  Reading the marker off the
+ * .so works on every path. */
+static int jit_so_has_direct_calls(void *handle, uint64_t bc_hash)
+{
+    char sym[80];
+    const uint32_t *dc;
+    snprintf(sym, sizeof(sym), "__jit_dc_%016llx", (unsigned long long)bc_hash);
+    dc = (const uint32_t *)(uintptr_t)dlsym(handle, sym);
+    return dc && *dc;
+}
+
 /* Locate a .so's name table for one function.
  * Returns the entry count (0 = this function has no runtime-specific atoms),
  * or -1 if the two symbols disagree, which means the .so is not usable. */
@@ -2697,6 +2725,11 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
       if (_cacheable) {
         for (int _mi = 0; _mi < jit_combined_count; _mi++) {
             if (jit_combined_manifest[_mi].bc_hash == bc_hash) {
+                /* combined.so is shared by every runtime in the process, so
+                 * direct-call code in it would bind callees for a runtime that
+                 * is not this one. */
+                if (jit_so_has_direct_calls(jit_combined_handle, bc_hash))
+                    return;                 /* stay interpreted */
                 /* combined.so carries each function's name table under the
                  * same per-hash symbols an individual .so uses. */
                 if (jit_bind_atoms(JS_GetRuntime(ctx), b, jit_combined_handle,
@@ -2778,6 +2811,13 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
                 const uint32_t *cv = (const uint32_t *)(uintptr_t)dlsym(handle, cv_sym);
                 if (!cv || *cv != JIT_CODEGEN_VERSION) {
                     /* Stale cache entry — close and fall through to recompile */
+                    dlclose(handle);
+                    goto do_compile;
+                }
+                /* A cached .so outlives the process that generated it, so its
+                 * direct-call targets are meaningless here.  (The var_refs walk
+                 * above catches this too, but only when var_refs is available.) */
+                if (jit_so_has_direct_calls(handle, bc_hash)) {
                     dlclose(handle);
                     goto do_compile;
                 }
@@ -7114,8 +7154,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                     if (!p103_cae_declared) {
                         jit_buf_str(cb,
                             "extern int js_jit_check_and_extract"
-                            "(JSValue,JSJITFunc,JSValue**,JSVarRef***);\n");
+                            "(JSValue,JSJITFunc,JSValue**,JSVarRef***,JSAtom**);\n");
                         p103_cae_declared = 1;
+                        cb->has_direct_call = 1;
                     }
                 }
                 jit_buf_printf(cb, "    { JSValue _f=_tsv%d;\n", fslot);
@@ -7178,8 +7219,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                     if (!p103_cae_declared) {
                         jit_buf_str(cb,
                             "extern int js_jit_check_and_extract"
-                            "(JSValue,JSJITFunc,JSValue**,JSVarRef***);\n");
+                            "(JSValue,JSJITFunc,JSValue**,JSVarRef***,JSAtom**);\n");
                         p103_cae_declared = 1;
+                        cb->has_direct_call = 1;
                     }
                     jit_buf_str(cb,
                         "extern JSValue js_jit_ic_direct_call"
@@ -9430,6 +9472,11 @@ static int js_jit_gen_c(JSFunctionBytecode *b, JSJITCodeBuf *cb,
      * A symbol atom cannot be rebuilt from a name, so a function referencing one
      * is refused rather than miscompiled.
      */
+    if (!cb->error && cb->has_direct_call) {
+        jit_buf_printf(cb, "const uint32_t __jit_dc_%016llx=1u;\n",
+                       (unsigned long long)bc_hash);
+    }
+
     if (!cb->error && cb->n_atoms > 0) {
         int ai;
 
