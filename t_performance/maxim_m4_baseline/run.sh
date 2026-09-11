@@ -230,26 +230,26 @@ run_arm() {
     else
         "$WRK" -t"$THREADS" -c"$CONNS" -d"${WARMUP}s" -H 'x-tenant: acme' \
                "http://127.0.0.1:$PORT/" >/dev/null 2>&1 || true
-        local best=0 i rps out lat_us
+        local best=0 i rps out
         for i in $(seq 1 "$RUNS"); do
             out=$("$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}s" -H 'x-tenant: acme' \
                   "http://127.0.0.1:$PORT/" 2>/dev/null)
             rps=$(printf '%s' "$out" | awk '/Requests\/sec/{print int($2)}')
             rps=${rps:-0}
-            if [ "$rps" -gt "$best" ]; then
-                best=$rps
-                # wrk prints "Latency  840.53us" / "1.23ms" / "1.02s"
-                lat_us=$(printf '%s' "$out" | awk '/^ *Latency/{
-                    v=$2
-                    if (v ~ /us$/)      { sub(/us$/,"",v); print int(v) }
-                    else if (v ~ /ms$/) { sub(/ms$/,"",v); print int(v*1000) }
-                    else if (v ~ /s$/)  { sub(/s$/,"",v);  print int(v*1000000) }
-                }')
-            fi
+            [ "$rps" -gt "$best" ] && best=$rps
             sleep 2
         done
-        printf '  %-11s %10d req/s\n' "$name" "$best"
-        echo "$name $best ${lat_us:-0}" >> "$WORK/results.txt"
+        # Service time DERIVED from the rate (Little's law: conns / rate),
+        # not parsed from wrk's "Latency Avg".  A single stalled run poisons
+        # that average -- observed: floor reported 25.16ms while its own rate
+        # of 1,047,236 req/s implies 95us, and every other arm's parsed value
+        # matched its derived one.  The derived figure cannot be skewed by an
+        # outlier, needs no unit parsing, and is what the guard below wants:
+        # per-request cost at a fixed concurrency.
+        local svc_us=0
+        [ "$best" -gt 0 ] && svc_us=$(( CONNS * 1000000 / best ))
+        printf '  %-11s %10d req/s  (%d us/req at c=%d)\n' "$name" "$best" "$svc_us" "$CONNS"
+        echo "$name $best $svc_us" >> "$WORK/results.txt"
     fi
 
     [ -f "$WORK/nginx.pid" ] && kill -QUIT "$(cat "$WORK/nginx.pid")" 2>/dev/null
@@ -294,12 +294,13 @@ run_arm "jit-aot"    "$JIT_BIN"    "$WORK/js_aot.conf"    "x-count:.*|x-tenant-s
 # millisecond means the request is not spending its time in nginx.
 FLOOR_LAT_MAX_US="${FLOOR_LAT_MAX_US:-250}"
 if [ "$DRY_RUN" = "0" ] && [ -s "$WORK/results.txt" ]; then
-    floor_lat=$(awk '$1=="floor"{print $3}' "$WORK/results.txt")
+    floor_lat=$(awk '$1=="floor"{print $3}' "$WORK/results.txt")   # derived, see run_arm
     if [ -n "${floor_lat:-}" ] && [ "${floor_lat:-0}" -gt "$FLOOR_LAT_MAX_US" ]; then
         echo
         echo "REFUSING TO REPORT: the server is not the bottleneck."
         echo
-        printf '  floor latency : %s us   (max %s us)\n' "$floor_lat" "$FLOOR_LAT_MAX_US"
+        printf '  floor cost    : %s us/req at c=%s   (max %s us)\n' \
+               "$floor_lat" "$CONNS" "$FLOOR_LAT_MAX_US"
         printf '  floor rate    : %s req/s\n' "$(awk '$1=="floor"{print $2}' "$WORK/results.txt")"
         echo
         echo "Loopback should be tens of microseconds. At this latency nginx is not"
@@ -313,7 +314,7 @@ if [ "$DRY_RUN" = "0" ] && [ -s "$WORK/results.txt" ]; then
         echo "Switch to NAT mode, 'wsl --shutdown', and re-run."
         echo
         echo "Raw per-arm numbers (NOT a result, do not quote):"
-        awk '{printf "    %-11s %10d req/s  %6d us\n", $1, $2, $3}' "$WORK/results.txt"
+        awk '{printf "    %-11s %10d req/s  %6d us/req\n", $1, $2, $3}' "$WORK/results.txt"
         exit 3
     fi
 fi

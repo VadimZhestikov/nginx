@@ -80,6 +80,60 @@ decision, and it would have been drawn from a network setting.
 re-run. The harness now refuses until floor latency is under 250us
 (`FLOOR_LAT_MAX_US` to override).
 
+## MEASURED 2026-09-11, NAT mode, idle box — THE M4 GATE NUMBER
+
+`.wslconfig` switched to NAT (`wsl --shutdown`), which restored the CPU-bound
+regime: floor 1,184,827 req/s at 84us/req, matching the 1,190,964 of
+2026-09-08. Guard 4 passes.
+
+```
+  arm              req/s   % floor
+  floor          1184827      100%
+  directives     1152700       97%
+  jit-aot         477438       40%
+  jit             460281       39%
+
+  headroom above the JIT, to the machine ceiling: 2.57x
+```
+
+**M4 GATE: the number holds.** 2.57x, against 2.54x on 2026-09-08 and M1's
+3.09-3.44x. M1's conclusion stands and M4/M5 keep their justification.
+
+### AOT-A on this policy: NO measurable gain
+
+Four independent passes of `jit-aot` vs `jit`: **1.037, 0.979, 0.981, 1.055** —
+straddling 1.0. The first pass's +3.7% was noise. The arm genuinely engaged
+(`installed:11`, including `mirror.attach`'s 7-function tree with the
+per-request dispatcher), so this is a real answer, not a dead arm.
+
+### ...but AOT-A is worth 5.79x when the policy actually COMPUTES
+
+Same binary, same nginx, one handler running a 4000-iteration loop, with a
+negative control on the `.so` mappings in the worker:
+
+| | req/s | qjs_jit maps in worker |
+|---|--:|--:|
+| `jitCompile` off | 97,273 | 0 |
+| `jitCompile` on | **563,415** | 5 |
+
+**5.79x.** So the mechanism is sound and dispatch reaches compiled code in
+forked workers. The 1.0x above is a property of M1's POLICY SHAPE, not of
+AOT-A: "increment a counter, read a header, set two headers" is almost entirely
+host C calls, and compiling the JS glue around them removes nothing.
+
+### What that implies for M4/M5 — it SHARPENS the case
+
+M1 measured hand-written C at **90-96% of floor for this same policy**, so the
+2.57x gap IS reclaimable. But AOT-A — the same JS, compiled — reclaims ~0 of
+it. The gap therefore is not interpreter dispatch; it is the boxed host-call /
+COM boundary. Removing that is precisely M4/M5's thesis (typed API -> direct
+typed C stubs, no JSValue boxing, no shape walk), and precisely what compiling
+the JS as-is cannot do.
+
+It also answers the roadmap's open question of whether AOT-B might COMPETE with
+M4/M5: on host-call-dominated policies it cannot, because there is no
+interpretation left to remove.
+
 ## Four deliberate guards
 
 1. **Engine verification.** It reports what each binary actually contains
