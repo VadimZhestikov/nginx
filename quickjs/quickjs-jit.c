@@ -2689,7 +2689,12 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
         fprintf(stderr, "[JIT] queue_gcc %016llx combined=%p manifest=%p n=%d\n",
                 (unsigned long long)bc_hash, jit_combined_handle,
                 (void *)jit_combined_manifest, jit_combined_count);
-    if (jit_combined_handle && jit_combined_manifest && _cacheable) {
+    if (jit_combined_handle && jit_combined_manifest) {
+      /* An uncacheable function cannot be looked up here (its hash is not a
+       * unique key), but it must NOT fall through to codegen either: the whole
+       * point of --jit-aot is that no gcc runs.  It stays interpreted, like any
+       * other function absent from the manifest. */
+      if (_cacheable) {
         for (int _mi = 0; _mi < jit_combined_count; _mi++) {
             if (jit_combined_manifest[_mi].bc_hash == bc_hash) {
                 /* combined.so carries each function's name table under the
@@ -2713,6 +2718,7 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
                 return;
             }
         }
+      }
         /* Not in combined.so — do not invoke GCC; fall back to interpreter. */
         return;
     }
