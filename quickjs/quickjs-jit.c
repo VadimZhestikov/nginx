@@ -1827,7 +1827,14 @@ static int jit_c_has_dynamic_atom(const char *src)
         p += 8;
         if (*p >= '0' && *p <= '9') {
             unsigned long v = strtoul(p, NULL, 10);
-            if (v >= (unsigned long)JS_ATOM__COUNT) return 1;
+            /* js_jit_atom_needs_fixup(): predefined atoms AND tagged integers
+             * (array indices like a[0], which encode their value in the atom and
+             * never enter rt->atom_array) are identical in every runtime and are
+             * safe to bake. Only true atom_array indices are runtime-specific.
+             * An earlier version tested `v >= JS_ATOM__COUNT`, which classified
+             * every tagged int as dynamic and needlessly blocked caching for the
+             * very common case of indexed access. */
+            if (js_jit_atom_needs_fixup((JSAtom)v)) return 1;
         }
     }
     return 0;

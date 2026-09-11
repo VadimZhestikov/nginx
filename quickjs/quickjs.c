@@ -15768,6 +15768,28 @@ void     js_jit_fb_set_atoms(JSFunctionBytecode *b, JSAtom *atoms, uint32_t n)
     b->jit_atom_count = n;
 }
 
+/* Does this atom need the per-runtime fixup table?
+ *
+ * NO for predefined atoms (< JS_ATOM_END: identical index in every runtime) and
+ * NO for TAGGED INTEGERS (array indices such as a[0]) — those encode the value
+ * in the atom itself and never enter rt->atom_array. __JS_AtomIsConst() covers
+ * both, because a tagged int has the high bit set and so is negative as int32.
+ * YES for everything else: those index rt->atom_array and are runtime-specific. */
+int js_jit_atom_needs_fixup(JSAtom a) { return !__JS_AtomIsConst(a); }
+
+/* Can this atom be reconstructed in another runtime from its name? Symbols
+ * cannot, so a function referencing one must not be compiled to a cacheable
+ * .so. */
+int js_jit_atom_is_string(JSRuntime *rt, JSAtom a)
+{
+    JSAtomStruct *p;
+    if (__JS_AtomIsConst(a)) return 1;
+    if (a >= rt->atom_size) return 0;
+    p = rt->atom_array[a];
+    if (atom_is_free(p)) return 0;
+    return p->atom_type == JS_ATOM_TYPE_STRING;
+}
+
 uint8_t  js_jit_fb_func_kind(JSFunctionBytecode *b) { return b->func_kind; }
 uint8_t  js_jit_fb_has_simple_params(JSFunctionBytecode *b) { return b->has_simple_parameter_list; }
 uint8_t  js_jit_fb_need_home_object(JSFunctionBytecode *b) { return b->need_home_object; }

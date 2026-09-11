@@ -376,6 +376,10 @@ typedef struct {
 const JSJITCFAnnotation *js_jit_fb_cf_annotations(JSFunctionBytecode *b, int *count_out);
 /* P9.1: atom → C string helper (wraps JS_AtomGetStrRT) */
 const char *js_jit_atom_get_str(JSRuntime *rt, char *buf, int buf_size, JSAtom atom);
+
+/* Atom classification for the fixup table (see quickjs.c for the rationale). */
+int js_jit_atom_needs_fixup(JSAtom a);
+int js_jit_atom_is_string(JSRuntime *rt, JSAtom a);
 /* P9.1: JS identifier atoms for locals and arguments */
 JSAtom         js_jit_fb_get_local_atom(JSFunctionBytecode *b, int local_idx);
 JSAtom         js_jit_fb_get_arg_atom  (JSFunctionBytecode *b, int arg_idx);
