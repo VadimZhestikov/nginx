@@ -1394,6 +1394,7 @@ typedef struct JITGCCJob {
     char                js_name[80]; /* JS function name for registry/profile */
     uint64_t            bc_hash;   /* FNV-1a hash of bytecode + build stamp */
     int                 is_warm;   /* P45b: 1 = warm-IC recompile job       */
+    int                 cacheable; /* 0 = no source, so no unique cache key */
     struct JITGCCJob   *next;
 } JITGCCJob;
 
@@ -1497,6 +1498,31 @@ static uint64_t jit_hash_function(JSFunctionBytecode *b)
      * alias to the same cache entry and get the wrong `this` handling. */
     uint8_t strict = js_jit_fb_is_strict(b);
     h = jit_fnv1a_64(&strict, sizeof(strict), h);
+
+    /* Fold in the SOURCE TEXT.
+     *
+     * Bytecode carries ATOM OPERANDS, and a JSAtom is an index into
+     * rt->atom_array -- so `a.foo` compiled in one runtime and `a.bar` in
+     * another can be byte-identical and hash to the same cache entry.  The
+     * second runtime then loads the first one's .so and reads the wrong
+     * property: not a crash, a silently wrong value.
+     *
+     * Same class as the strict/sloppy twin above, and invisible until the
+     * atom fixup table made these functions cacheable at all -- the old
+     * don't-cache-dynamic-atoms guard had been hiding it.  Caught by
+     * built-ins/Object/defineProperty/15.2.3.6-4-230.js and 15 siblings.
+     *
+     * Source text is the right discriminator because the generated C now
+     * names atoms and globals rather than indexing them, so identical source
+     * + identical closure metadata + identical strict bit means identical
+     * code.  It is whitespace-sensitive, which costs cache hits and never
+     * correctness.  Functions WITHOUT source do not get a discriminator at
+     * all, which is why they are kept out of the disk cache entirely --
+     * see _cacheable in js_jit_queue_gcc(). */
+    int src_len = 0;
+    const char *src = js_jit_fb_get_source(b, &src_len);
+    if (src && src_len > 0)
+        h = jit_fnv1a_64(src, (size_t)src_len, h);
     return h;
 }
 
@@ -1656,6 +1682,22 @@ void js_jit_set_save_sources(int active)  { jit_save_sources = active; }
  * by hash when patching jit_func pointers from the manifest.
  * js_jit_link() additionally uses jit_link_hashes to collect .c files.
  * ======================================================================= */
+/* One lock for every process-global JIT registry below (the link registry, the
+ * session map and the profiler registry).
+ *
+ * These were written as if only the main thread ever reached them.  It is not
+ * so: a host can run several JSRuntimes on several threads at once —
+ * run-test262's $262.agent.start() does exactly that, and every agent thread
+ * executes JS, so js_jit_queue_gcc() is genuinely concurrent.  Two threads then
+ * realloc() the same array and the heap is corrupted ("corrupted size vs.
+ * prev_size", aborting inside realloc under js_jit_queue_gcc, at
+ * built-ins/Atomics/notify/notify-all-on-loc.js).
+ *
+ * Held only across the individual registry operations, never across a compile
+ * or an enqueue, so it never nests with jit_worker.lock or
+ * jit_pending_results.lock and cannot deadlock against them. */
+static pthread_mutex_t      jit_reg_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static int                  jit_link_mode;
 static uint64_t            *jit_link_hashes;
 static JSFunctionBytecode **jit_link_bytecodes;  /* P10.4: parallel to hashes */
@@ -1686,16 +1728,32 @@ static int jit_trace(void)
     return cached;
 }
 
+static unsigned long        jit_queued_total;
+static unsigned long        jit_nosource_skips;
+
 static void jit_stats_dump(void)
 {
     fprintf(stderr, "[JIT] installs from combined.so: %lu\n",
             jit_combined_installs);
+    fprintf(stderr, "[JIT] queue_gcc calls: %lu, of which no-source (uncacheable): %lu\n",
+            jit_queued_total, jit_nosource_skips);
+}
+
+/* QJS_JIT_STATS=1: one summary line at exit.  Counters are always maintained
+ * (two increments); only the atexit hook is conditional, and the env is read
+ * once rather than on every compile. */
+static void jit_stats_arm(void)
+{
+    static int state = -1;          /* -1 = unknown, 0 = off, 1 = armed */
+    if (state >= 0) return;
+    state = getenv("QJS_JIT_STATS") != NULL;
+    if (state) atexit(jit_stats_dump);
 }
 
 static void jit_count_combined_install(void)
 {
-    if (jit_combined_installs++ == 0 && getenv("QJS_JIT_STATS"))
-        atexit(jit_stats_dump);
+    jit_combined_installs++;
+    jit_stats_arm();
 }
 
 /* -----------------------------------------------------------------------
@@ -1729,6 +1787,7 @@ static struct {
 /* Register a bytecode in the session map when a GCC job is queued. */
 static void jit_session_add(uint64_t hash, JSFunctionBytecode *b, JSRuntime *rt)
 {
+    pthread_mutex_lock(&jit_reg_lock);
     if (jit_session_map.count == jit_session_map.cap) {
         int new_cap = jit_session_map.cap ? jit_session_map.cap * 2 : 64;
         uint64_t *ha = realloc(jit_session_map.hashes,
@@ -1737,7 +1796,10 @@ static void jit_session_add(uint64_t hash, JSFunctionBytecode *b, JSRuntime *rt)
                                           (size_t)new_cap * sizeof(*ba));
         JSRuntime **ra = realloc(jit_session_map.rts,
                                  (size_t)new_cap * sizeof(*ra));
-        if (!ha || !ba || !ra) return;   /* alloc failure: entry not added */
+        if (!ha || !ba || !ra) {         /* alloc failure: entry not added */
+            pthread_mutex_unlock(&jit_reg_lock);
+            return;
+        }
         jit_session_map.hashes    = ha;
         jit_session_map.bytecodes = ba;
         jit_session_map.rts       = ra;
@@ -1747,6 +1809,7 @@ static void jit_session_add(uint64_t hash, JSFunctionBytecode *b, JSRuntime *rt)
     jit_session_map.bytecodes[jit_session_map.count] = b;
     jit_session_map.rts[jit_session_map.count]       = rt;
     jit_session_map.count++;
+    pthread_mutex_unlock(&jit_reg_lock);
 }
 
 /* Called by js_jit_free_bytecode() when a bytecode is freed.
@@ -1754,31 +1817,38 @@ static void jit_session_add(uint64_t hash, JSFunctionBytecode *b, JSRuntime *rt)
  * Only called from main thread (inside free_function_bytecode). */
 static void jit_session_remove(JSFunctionBytecode *b)
 {
+    pthread_mutex_lock(&jit_reg_lock);
     for (int i = 0; i < jit_session_map.count; i++) {
         if (jit_session_map.bytecodes[i] == b) {
             jit_session_map.bytecodes[i] = NULL;   /* mark dead */
             /* keep hash for deduplication; doesn't matter if bytecode freed */
-            return;
+            break;
         }
     }
+    pthread_mutex_unlock(&jit_reg_lock);
 }
 
 static JSFunctionBytecode *jit_session_lookup(uint64_t hash, JSRuntime **rt_out)
 {
+    JSFunctionBytecode *found = NULL;
+    if (rt_out) *rt_out = NULL;
+    pthread_mutex_lock(&jit_reg_lock);
     /* Return the LAST matching live entry (most recently queued wins). */
     for (int i = jit_session_map.count - 1; i >= 0; i--) {
         if (jit_session_map.hashes[i] == hash &&
             jit_session_map.bytecodes[i] != NULL) {
             if (rt_out) *rt_out = jit_session_map.rts[i];
-            return jit_session_map.bytecodes[i];
+            found = jit_session_map.bytecodes[i];
+            break;
         }
     }
-    if (rt_out) *rt_out = NULL;
-    return NULL;
+    pthread_mutex_unlock(&jit_reg_lock);
+    return found;
 }
 
 static void jit_session_clear(void)
 {
+    pthread_mutex_lock(&jit_reg_lock);
     free(jit_session_map.hashes);
     free(jit_session_map.bytecodes);
     free(jit_session_map.rts);
@@ -1787,6 +1857,7 @@ static void jit_session_clear(void)
     jit_session_map.rts       = NULL;
     jit_session_map.count     = 0;
     jit_session_map.cap       = 0;
+    pthread_mutex_unlock(&jit_reg_lock);
 }
 
 /* GCC results produced by the worker — consumed by js_jit_install_results(). */
@@ -1902,19 +1973,20 @@ void js_jit_set_link_mode(int active) { jit_link_mode = active; }
 /* Record hash+bytecode unconditionally (both needed for P10.4 manifest install). */
 static void jit_link_record(uint64_t hash, JSFunctionBytecode *b, JSRuntime *rt)
 {
+    pthread_mutex_lock(&jit_reg_lock);
     if (jit_link_hash_count >= jit_link_hash_cap) {
         int new_cap = jit_link_hash_cap ? jit_link_hash_cap * 2 : 128;
         uint64_t *arr = realloc(jit_link_hashes,
                                 (size_t)new_cap * sizeof(*arr));
-        if (!arr) return;
+        if (!arr) { pthread_mutex_unlock(&jit_reg_lock); return; }
         jit_link_hashes = arr;
         JSFunctionBytecode **brr = realloc(jit_link_bytecodes,
                                            (size_t)new_cap * sizeof(*brr));
-        if (!brr) return;  /* hash array updated; bytecodes stays one version behind */
+        if (!brr) { pthread_mutex_unlock(&jit_reg_lock); return; }
         jit_link_bytecodes = brr;
         JSRuntime **rrr = realloc(jit_link_rts,
                                   (size_t)new_cap * sizeof(*rrr));
-        if (!rrr) return;  /* same: the entry is simply not added */
+        if (!rrr) { pthread_mutex_unlock(&jit_reg_lock); return; }
         jit_link_rts = rrr;
         jit_link_hash_cap = new_cap;
     }
@@ -1922,6 +1994,7 @@ static void jit_link_record(uint64_t hash, JSFunctionBytecode *b, JSRuntime *rt)
     jit_link_bytecodes[jit_link_hash_count] = b;
     jit_link_rts[jit_link_hash_count] = rt;
     jit_link_hash_count++;
+    pthread_mutex_unlock(&jit_reg_lock);
 }
 
 /* Write src to a temp file with the given suffix; return malloc'd path. */
@@ -2146,7 +2219,7 @@ static void jit_compile_gcc_job(JITGCCJob *job)
     int gcc_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
     /* P10.1: cache .c source before unlinking the temp file.
      * P45b: skip disk-cache writes for warm-recompile jobs (hints are run-specific). */
-    if (gcc_ok && !job->is_warm && !_dyn_atom)
+    if (gcc_ok && !job->is_warm && !_dyn_atom && job->cacheable)
         jit_cache_put_c_src(c_path, job->bc_hash);
     if (!getenv("QJS_JIT_KEEP_C")) unlink(c_path);
     free(c_path);
@@ -2154,7 +2227,8 @@ static void jit_compile_gcc_job(JITGCCJob *job)
 
     /* Cache the compiled .so before unlinking (Phase 7.3).
      * P45b: warm recompile results are not cached — they're observation-specific. */
-    if (!job->is_warm && !_dyn_atom) jit_cache_put(so_path, job->bc_hash);
+    if (!job->is_warm && !_dyn_atom && job->cacheable)
+        jit_cache_put(so_path, job->bc_hash);
 
     /* Load the compiled .so; unlink immediately (kernel keeps it mapped).
      * RTLD_GLOBAL: exports this function's symbol (__jit_f_HASH) into the
@@ -2273,6 +2347,7 @@ static void js_jit_queue_warm_gcc(JSContext *ctx, JSFunctionBytecode *b)
     strncpy(job->js_name, js_name ? js_name : "", sizeof(job->js_name) - 1);
     job->js_name[sizeof(job->js_name) - 1] = '\0';
     job->is_warm = 1;
+    job->cacheable = 0;      /* warm results are never disk-cached */
     job->next    = NULL;
 
     /* Session map: warm result lookup uses original bc_hash */
@@ -2569,6 +2644,25 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
      * or cv types get distinct hashes (avoiding stale-cache collisions). */
     uint64_t bc_hash = jit_hash_function(b);
 
+    /* Is this function's hash a UNIQUE key, i.e. safe to share a .so under?
+     *
+     * Only if it has source text to fold in (see jit_hash_function).  With
+     * debug info stripped the key degenerates to bytecode bytes, whose atom
+     * operands are runtime-specific — so such a function must never read from
+     * or write to the disk cache, nor be installed from combined.so, which is
+     * built out of it.  It still compiles IN-PROCESS, where its atoms are by
+     * construction the ones it was compiled against. */
+    int _src_len_k = 0;
+    int _cacheable = js_jit_fb_get_source(b, &_src_len_k) != NULL && _src_len_k > 0;
+    jit_queued_total++;
+    if (!_cacheable) {
+        jit_nosource_skips++;
+        if (jit_trace())
+            fprintf(stderr, "[JIT] no-source: %s\n",
+                    js_jit_fb_get_func_name(JS_GetRuntime(ctx), b));
+    }
+    jit_stats_arm();
+
     /* P36.4: get JS function name early — needed for registry entries on all paths. */
     const char *js_name = js_jit_fb_get_func_name(JS_GetRuntime(ctx), b);
 
@@ -2595,7 +2689,7 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
         fprintf(stderr, "[JIT] queue_gcc %016llx combined=%p manifest=%p n=%d\n",
                 (unsigned long long)bc_hash, jit_combined_handle,
                 (void *)jit_combined_manifest, jit_combined_count);
-    if (jit_combined_handle && jit_combined_manifest) {
+    if (jit_combined_handle && jit_combined_manifest && _cacheable) {
         for (int _mi = 0; _mi < jit_combined_count; _mi++) {
             if (jit_combined_manifest[_mi].bc_hash == bc_hash) {
                 /* combined.so carries each function's name table under the
@@ -2626,13 +2720,14 @@ void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs
     /* Phase 7.4: cache hit — load pre-compiled .so without running GCC.
      *
      * Guard: run the scan first to confirm this function is eligible.
-     * bc_hash is computed from raw bytecode bytes only; two functions can share
-     * a hash if they have identical opcodes but different closure-variable
-     * metadata (e.g. one inner OP_fclosure8 captures a LOCAL, another captures
-     * a GLOBAL).  Installing a .so compiled for function A into function B would
-     * corrupt the JIT code (unhandled closure types leave _vr_PC[] uninitialised,
-     * producing NULL var_refs entries that crash on OP_get_var). */
+     * Installing a .so compiled for function A into function B corrupts the
+     * JIT code (unhandled closure types leave _vr_PC[] uninitialised, producing
+     * NULL var_refs entries that crash on OP_get_var), so the hash has to
+     * separate them.  jit_hash_function() folds in inner-function
+     * closure-variable metadata and the source text for exactly that reason —
+     * raw bytecode bytes alone conflate both. */
     int _cache_eligible = 0;
+    if (!_cacheable) goto do_compile;   /* no unique key → never share a .so */
     {
         JSJITScanResult _sr_check;
         if (js_jit_scan(b, &_sr_check) == 0) _cache_eligible = 1;
@@ -2771,6 +2866,7 @@ do_compile:;
     cb.buf       = NULL;     /* prevent double-free if jit_buf_free is called */
     job->bc_hash = bc_hash;
     job->is_warm = 0;        /* P45b: must be explicit — malloc does not zero-init */
+    job->cacheable = _cacheable;
     memcpy(job->fname, fname, sizeof(job->fname));
     strncpy(job->js_name, js_name ? js_name : "", sizeof(job->js_name) - 1);
     job->js_name[sizeof(job->js_name) - 1] = '\0';
@@ -9470,10 +9566,13 @@ int js_jit_link(void)
     for (int i = 0; i < jit_link_hash_count; i++) {
         for (int j = i + 1; j < jit_link_hash_count; j++) {
             if (jit_link_hashes[j] == jit_link_hashes[i]) {
-                /* Remove j by swapping with last; keep bytecodes in sync */
+                /* Remove j by swapping with last; ALL parallel arrays must
+                 * move together or a bytecode ends up paired with another
+                 * entry's runtime. */
                 --jit_link_hash_count;
                 jit_link_hashes[j]    = jit_link_hashes[jit_link_hash_count];
                 jit_link_bytecodes[j] = jit_link_bytecodes[jit_link_hash_count];
+                jit_link_rts[j]       = jit_link_rts[jit_link_hash_count];
                 j--;
             }
         }
@@ -9803,9 +9902,16 @@ static inline int jit_seqlock_retry(uint32_t s)
  * Called from js_jit_install_results() (main thread only). */
 void jit_registry_add(uintptr_t func_ptr, uint64_t bc_hash, const char *name)
 {
-    int cnt = jit_addr_count;
+    int cnt;
+
+    /* The seqlock makes READERS (the sampling profiler) safe against a writer;
+     * it does not make two WRITERS safe against each other, and installs do
+     * happen on several threads at once (see jit_reg_lock). */
+    pthread_mutex_lock(&jit_reg_lock);
+    cnt = jit_addr_count;
     if (cnt >= JIT_ADDR_REGISTRY_MAX) {
         /* Registry full — this function will not be sampled. */
+        pthread_mutex_unlock(&jit_reg_lock);
         return;
     }
 
@@ -9826,12 +9932,14 @@ void jit_registry_add(uintptr_t func_ptr, uint64_t bc_hash, const char *name)
     jit_addr_count = cnt + 1;
 
     jit_seqlock_write_end();
+    pthread_mutex_unlock(&jit_reg_lock);
 }
 
 /* Remove a JIT function from the registry (called before dlclose).
  * Called from js_jit_free_bytecode() (main thread only). */
 void jit_registry_remove(uintptr_t func_ptr)
 {
+    pthread_mutex_lock(&jit_reg_lock);   /* single-writer, as in _add */
     jit_seqlock_write_begin();
 
     int cnt = jit_addr_count;
@@ -9845,6 +9953,7 @@ void jit_registry_remove(uintptr_t func_ptr)
     }
 
     jit_seqlock_write_end();
+    pthread_mutex_unlock(&jit_reg_lock);
 }
 
 /* Look up sample count for a bc_hash.
