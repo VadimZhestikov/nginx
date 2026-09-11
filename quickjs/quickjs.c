@@ -17715,6 +17715,110 @@ int js_jit_array_set(JSContext *ctx, JSValue obj, uint32_t idx, JSValue val)
 /* Recursively enqueue all eligible bytecode functions for GCC compilation.
  * Walks the cpool tree to find nested function definitions.
  * Called from --jit-aot mode after parsing, before execution. */
+/* AOT-A: see the JSJITCompileReport comment in quickjs.h.
+ *
+ * Deliberately NOT js_jit_compile_all() with counters bolted on: that one
+ * enqueues the entire tree and drains once, so a budget could only be checked
+ * after all the work had already happened. This walks iteratively, drains in
+ * chunks, and can stop. */
+#define JIT_TREE_CHUNK 16
+
+static double jit_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+int js_jit_compile_tree(JSContext *ctx, JSValueConst func,
+                        int max_funcs, double max_ms,
+                        JSJITCompileReport *rep)
+{
+    JSFunctionBytecode *root, **stack = NULL, **done = NULL;
+    int sp = 0, scap = 0, nd = 0, dcap = 0, chunk = 0, i, ret = -1;
+    double t0;
+
+    if (rep) memset(rep, 0, sizeof(*rep));
+    root = js_jit_get_callee_fb(func);
+    if (!root)
+        return -1;
+
+    t0 = jit_now_ms();
+
+    scap = 64;
+    stack = js_malloc(ctx, sizeof(*stack) * scap);
+    if (!stack) goto done;
+    dcap = 64;
+    done = js_malloc(ctx, sizeof(*done) * dcap);
+    if (!done) goto done;
+
+    stack[sp++] = root;
+    while (sp > 0) {
+        JSFunctionBytecode *b = stack[--sp];
+
+        if (rep) rep->walked++;
+
+        /* Push nested functions first so the whole tree is walked even if the
+         * budget stops the compiling below. */
+        for (i = 0; i < b->cpool_count; i++) {
+            if (JS_VALUE_GET_TAG(b->cpool[i]) != JS_TAG_FUNCTION_BYTECODE)
+                continue;
+            if (sp == scap) {
+                int ncap = scap * 2;
+                JSFunctionBytecode **ns = js_realloc(ctx, stack,
+                                                     sizeof(*ns) * ncap);
+                if (!ns) goto done;
+                stack = ns; scap = ncap;
+            }
+            stack[sp++] = JS_VALUE_GET_PTR(b->cpool[i]);
+        }
+
+        if (js_jit_fb_get_func(b) != NULL || js_jit_fb_jit_no_compile(b)) {
+            if (rep) rep->skipped++;      /* already compiled, or refused before */
+            continue;
+        }
+        if ((max_funcs > 0 && rep && rep->attempted >= max_funcs) ||
+            (max_ms > 0 && jit_now_ms() - t0 >= max_ms)) {
+            if (rep) { rep->budget_hit = 1; rep->skipped++; }
+            continue;                      /* keep walking, stop compiling */
+        }
+
+        js_jit_queue_gcc(ctx, b, NULL);    /* no var_refs in an AOT pre-pass */
+        if (rep) rep->attempted++;
+
+        if (nd == dcap) {
+            int ncap = dcap * 2;
+            JSFunctionBytecode **ndp = js_realloc(ctx, done,
+                                                  sizeof(*ndp) * ncap);
+            if (!ndp) goto done;
+            done = ndp; dcap = ncap;
+        }
+        done[nd++] = b;
+
+        if (++chunk == JIT_TREE_CHUNK) {   /* drain so max_ms means something */
+            js_jit_drain();
+            js_jit_install_results();
+            chunk = 0;
+        }
+    }
+
+    js_jit_drain();
+    js_jit_install_results();
+
+    /* The only honest measure: did a jit_func actually appear? */
+    if (rep)
+        for (i = 0; i < nd; i++)
+            if (js_jit_fb_get_func(done[i]) != NULL)
+                rep->installed++;
+    ret = 0;
+
+done:
+    js_free(ctx, stack);
+    js_free(ctx, done);
+    if (rep) rep->ms = jit_now_ms() - t0;
+    return ret;
+}
+
 void js_jit_compile_all(JSContext *ctx, JSFunctionBytecode *b)
 {
     int i;

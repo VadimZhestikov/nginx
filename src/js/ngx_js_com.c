@@ -703,59 +703,106 @@ ngx_js_broadcast(JSContext *ctx, JSValueConst this_val,
 
 /* ------------------------------------------------------------------ */
 /*
- * nginx.jitCompile(fn) -> bool   [EXPERIMENT, opt-in]
+ * nginx.jitCompile(fn[, opts]) -> report   [AOT-A, opt-in]
  *
- * Lower a host-JS function (and its nested functions) to native C at LOAD
- * time, the same way COMCON C5 does for an admitted comcon.include fragment:
- * js_jit_compile_all + js_jit_drain + js_jit_install_results, synchronously.
+ * Lower a host-JS function AND its nested functions to native C at LOAD time,
+ * the same way COMCON C5 does for an admitted comcon.include fragment.
  *
- * Why this exists: host JS loaded via js_source is NOT compiled today. C5's
+ * Why it exists: host JS loaded via js_source is not compiled otherwise. C5's
  * server-AOT covers admitted fragments only, and the engine's automatic path
- * merely ENQUEUES via js_jit_queue_gcc -- nothing here ever calls
- * js_jit_drain(), so a queued function is never compiled or installed and
- * every location.handler and mirror rule runs interpreted. Measured: zero
- * generated C over ~4.8M handler invocations, against 1 for the same hot code
- * under standalone qjs.
+ * merely ENQUEUES -- nothing in src/js ever drains it -- so every
+ * location.handler and mirror rule runs interpreted.
  *
- * This is deliberately the LOAD-TIME model, not the request-time one: no gcc
- * on the request path, no per-worker compile thread, cost paid once. It is
- * opt-in so nothing changes unless a script asks, and it exists to MEASURE
- * what compilation is worth for host JS.
+ * WHY LOAD TIME, AND WHY IT MUST BE: the gcc worker is a pthread, and a pthread
+ * does not survive fork(). jit_atfork_child() zeroes jit_worker.started, so
+ * every enqueue path is inert in a WORKER. nginx creates the JS runtime in the
+ * master at init_conf and workers fork from it, so compiling here -- pre-fork,
+ * in the master -- is the only thing that works, and the resulting .so mapping
+ * and jit_func pointers are inherited by every worker through COW. That is
+ * exactly why C5 works.
  *
- * MEASURED RESULT (2026-09-08): IT IS CURRENTLY A NO-OP IN NGINX, and the
- * return value CANNOT tell you that. js_comcon_aot_compile() returns 0 as soon
- * as the argument is a bytecode function -- success means "eligible", not
- * "compiled". Calling it on the mirror policy produced ZERO generated C and a
- * throughput indistinguishable from not calling it (456k vs 464k req/s).
+ * OPT-IN, and not a directive: pilgrim wraps an existing nginx and adds no
+ * nginx configuration (see the project's foundational principle). The policy
+ * decides, in JS, at load.
  *
- * The reason is in quickjs-jit.c and is by design: js_jit_init() starts the
- * GCC worker thread, but a pthread does not survive fork(), so jit_atfork_child()
- * zeroes jit_worker.started in the child and every enqueue/drain path is guarded
- * by `if (!jit_worker.started) return;`. nginx's master creates the JS runtime
- * and workers fork from it, so THE JIT IS INERT IN EVERY WORKER. The engine
- * comment says so outright: "the child runs pure interpreter with no JIT ...
- * real per-worker JIT activation (start a worker-local thread + wire install)
- * is a later step".
+ * BUDGET: compiling costs wall-clock on the config-load path, so
+ *   opts.maxFunctions  cap on functions enqueued  (default: unbounded)
+ *   opts.maxMillis     stop once this much elapsed (default: unbounded)
+ * The engine drains in chunks, so maxMillis bounds the whole call.
  *
- * So this hook is kept as the REPRODUCTION, not as a working feature: if
- * per-worker JIT activation ever lands, the jit-aot arm in
- * t_performance/maxim_m4_baseline/ should diverge from the jit arm. Today it
- * does not, and that is the finding.
+ * RETURNS A REPORT, NOT A BOOLEAN, deliberately:
+ *   { walked, attempted, installed, skipped, budgetHit, ms }
+ * `installed` is the only field that means compiled code exists. The previous
+ * version of this function returned js_comcon_aot_compile() == 0, which is true
+ * as soon as the argument is a bytecode function -- and that hid a real bug for
+ * a month: codegen emitted a stale extern, gcc rejected every direct-call
+ * function, and this still reported success. A compiler that falls back
+ * silently must report counts, not success.
  */
 static JSValue
 ngx_js_jit_compile(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
+#ifdef CONFIG_JIT
+    JSJITCompileReport  rep;
+    JSValue             out, v;
+    int32_t             max_funcs = 0;
+    double              max_ms = 0;
+#endif
+
     if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
-        return JS_ThrowTypeError(ctx, "jitCompile(fn): function required");
+        return JS_ThrowTypeError(ctx, "jitCompile(fn[, opts]): function required");
     }
 
 #ifdef CONFIG_JIT
-    return JS_NewBool(ctx, js_comcon_aot_compile(ctx, argv[0]) == 0);
+    if (argc > 1 && JS_IsObject(argv[1])) {
+        v = JS_GetPropertyStr(ctx, argv[1], "maxFunctions");
+        if (!JS_IsUndefined(v) && JS_ToInt32(ctx, &max_funcs, v) < 0) {
+            JS_FreeValue(ctx, v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, v);
+
+        v = JS_GetPropertyStr(ctx, argv[1], "maxMillis");
+        if (!JS_IsUndefined(v) && JS_ToFloat64(ctx, &max_ms, v) < 0) {
+            JS_FreeValue(ctx, v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    if (js_jit_compile_tree(ctx, argv[0], (int) max_funcs, max_ms, &rep) < 0) {
+        return JS_ThrowTypeError(ctx,
+                                 "jitCompile(fn): not a bytecode function");
+    }
+
+    out = JS_NewObject(ctx);
+    if (JS_IsException(out)) {
+        return out;
+    }
+    JS_SetPropertyStr(ctx, out, "walked",    JS_NewInt32(ctx, rep.walked));
+    JS_SetPropertyStr(ctx, out, "attempted", JS_NewInt32(ctx, rep.attempted));
+    JS_SetPropertyStr(ctx, out, "installed", JS_NewInt32(ctx, rep.installed));
+    JS_SetPropertyStr(ctx, out, "skipped",   JS_NewInt32(ctx, rep.skipped));
+    JS_SetPropertyStr(ctx, out, "budgetHit", JS_NewBool(ctx, rep.budget_hit));
+    JS_SetPropertyStr(ctx, out, "ms",        JS_NewFloat64(ctx, rep.ms));
+    return out;
 #else
-    /* Built without -DCONFIG_JIT: report honestly rather than silently
+    /* Built without -DCONFIG_JIT. Report honestly rather than silently
      * pretending, so a benchmark arm cannot be mislabelled. */
-    return JS_FALSE;
+    {
+        JSValue out = JS_NewObject(ctx);
+        if (JS_IsException(out)) {
+            return out;
+        }
+        JS_SetPropertyStr(ctx, out, "walked",    JS_NewInt32(ctx, 0));
+        JS_SetPropertyStr(ctx, out, "attempted", JS_NewInt32(ctx, 0));
+        JS_SetPropertyStr(ctx, out, "installed", JS_NewInt32(ctx, 0));
+        JS_SetPropertyStr(ctx, out, "skipped",   JS_NewInt32(ctx, 0));
+        JS_SetPropertyStr(ctx, out, "budgetHit", JS_FALSE);
+        JS_SetPropertyStr(ctx, out, "ms",        JS_NewFloat64(ctx, 0));
+        return out;
+    }
 #endif
 }
 
@@ -3661,12 +3708,12 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                       JS_NewCFunction(ctx, ngx_js_nginx_set_timeout,
                                       "setTimeout", 1));
 
-    /* nginx.jitCompile(fn) — opt-in load-time AOT (experiment; see the
-       function comment). Present in every build; returns false when nginx was
-       built without -DCONFIG_JIT. */
+    /* nginx.jitCompile(fn[, opts]) — AOT-A: opt-in load-time compilation of
+       host JS (see the function comment). Present in every build; reports
+       installed:0 when nginx was built without -DCONFIG_JIT. */
     JS_SetPropertyStr(ctx, nginx_obj, "jitCompile",
                       JS_NewCFunction(ctx, ngx_js_jit_compile,
-                                      "jitCompile", 1));
+                                      "jitCompile", 2));
 
     /* nginx.suspendAcceptance() / nginx.resumeAcceptance() — Phase 1 */
     JS_SetPropertyStr(ctx, nginx_obj, "suspendAcceptance",

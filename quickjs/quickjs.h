@@ -873,6 +873,34 @@ JSValue js_comcon_pom_callsites(JSContext *ctx, JSValueConst func,
 /* COMCON C5.0-b: server-AOT-compile a confined handler at load (CONFIG_JIT
  * only). Returns 0 on success, -1 if func is not a bytecode function. */
 int js_comcon_aot_compile(JSContext *ctx, JSValueConst func);
+
+/* AOT-A: budgeted load-time compilation of a function AND its nested functions.
+ *
+ * What js_comcon_aot_compile() cannot tell you is whether anything was actually
+ * compiled -- it returns 0 as soon as the argument is a bytecode function, so
+ * "success" means eligible, never compiled. That is not a nit: a stale extern
+ * in codegen once made gcc reject every direct-call function while this call
+ * still reported success. So this reports counts, and `installed` is the only
+ * one that means compiled code exists.
+ *
+ * Budget, because compiling is not free and this runs during config load:
+ *   max_funcs > 0  stop after enqueueing that many functions
+ *   max_ms   > 0   stop enqueueing once that much wall-clock has elapsed
+ * Either <= 0 means unbounded. The walk drains in chunks, so max_ms bounds the
+ * whole operation rather than only the enqueue loop. A budget that runs out is
+ * reported (budget_hit), never silently obeyed. */
+typedef struct JSJITCompileReport {
+    int    walked;      /* bytecode functions seen in the tree            */
+    int    attempted;   /* enqueued for compilation                       */
+    int    installed;   /* have a jit_func afterwards = REALLY compiled   */
+    int    skipped;     /* already compiled, ineligible, or failed before */
+    int    budget_hit;  /* 1 = stopped early on max_funcs / max_ms        */
+    double ms;          /* wall-clock spent                               */
+} JSJITCompileReport;
+
+int js_jit_compile_tree(JSContext *ctx, JSValueConst func,
+                        int max_funcs, double max_ms,
+                        JSJITCompileReport *rep);
 int JS_IsInstanceOf(JSContext *ctx, JSValueConst val, JSValueConst obj);
 int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,
                       JSAtom prop, JSValueConst val,
