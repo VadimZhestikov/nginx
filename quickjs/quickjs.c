@@ -700,6 +700,17 @@ typedef struct JSFunctionBytecode {
     JSJITFunc         jit_func;       /* NULL → interpreter, else JIT entry  */
     void             *jit_handle;     /* dlopen handle for compiled .so      */
     uint64_t          jit_bc_hash;    /* P11.3: stable bc identity for call IC ABA guard */
+    /* Atom fixup table. Codegen used to bake atoms into the generated C as raw
+     * integers, but a JSAtom indexes rt->atom_array and is only valid in the
+     * runtime that made it — so a cached or shared .so read a freed slot in any
+     * later runtime. Resolved per BYTECODE at bind time and passed to the
+     * compiled function, which makes it per-runtime by construction.
+     * MUST stay AFTER jit_bc_hash: generated code reads jit_func and
+     * jit_bc_hash by RAW BYTE OFFSET (JIT_BC_JIT_FUNC_OFF / JIT_BC_BCHASH_OFF),
+     * so inserting anything before them shifts those offsets. The _Static_asserts
+     * near the JIT offset table catch it. */
+    JSAtom           *jit_atoms;      /* [jit_atom_count], owned refs, or NULL */
+    uint32_t          jit_atom_count;
     uint16_t         *stack_depth_tab; /* [byte_code_len] stack depth before each opcode; P9.0 */
     JSJITCFAnnotation *cf_annotations;  /* loop CF annotations; P9.3 */
     int                cf_annotation_count;
@@ -15747,6 +15758,16 @@ void     js_jit_fb_clear_handles(JSFunctionBytecode *b) {
     b->jit_func   = NULL;
 }
 
+/* Atom fixup table (see the JSFunctionBytecode field comment). set_atoms takes
+ * ownership of `atoms` and of one reference to each atom in it. */
+JSAtom  *js_jit_fb_get_atoms(JSFunctionBytecode *b) { return b->jit_atoms; }
+uint32_t js_jit_fb_get_atom_count(JSFunctionBytecode *b) { return b->jit_atom_count; }
+void     js_jit_fb_set_atoms(JSFunctionBytecode *b, JSAtom *atoms, uint32_t n)
+{
+    b->jit_atoms      = atoms;
+    b->jit_atom_count = n;
+}
+
 uint8_t  js_jit_fb_func_kind(JSFunctionBytecode *b) { return b->func_kind; }
 uint8_t  js_jit_fb_has_simple_params(JSFunctionBytecode *b) { return b->has_simple_parameter_list; }
 uint8_t  js_jit_fb_need_home_object(JSFunctionBytecode *b) { return b->need_home_object; }
@@ -15877,7 +15898,8 @@ int js_comcon_aot_compile(JSContext *ctx, JSValueConst func)
 /* P10.3: guard check + cpool/var_refs extraction for generated direct calls.
  * Returns 1 if func is the expected JIT function and fills *cpool_out and *var_refs_out. */
 int js_jit_check_and_extract(JSValue func, JSJITFunc expected,
-                              JSValue **cpool_out, JSVarRef ***var_refs_out)
+                              JSValue **cpool_out, JSVarRef ***var_refs_out,
+                              JSAtom **atoms_out)
 {
     if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT) return 0;
     JSObject *p = JS_VALUE_GET_OBJ(func);
@@ -15892,6 +15914,9 @@ int js_jit_check_and_extract(JSValue func, JSJITFunc expected,
     if (jf != expected) return 0;
     *cpool_out    = b->cpool;
     *var_refs_out = p->u.func.var_refs;
+    /* The CALLEE's atom table, read live from its bytecode — never a cached
+     * copy, for the same reason the call IC uses the live cpool. */
+    *atoms_out    = b->jit_atoms;
     return 1;
 }
 
@@ -16343,7 +16368,8 @@ JSValue js_jit_call(JSContext *ctx, JSValue func, JSValue this_val,
                         /* Variadic (arg_count=0): pass actual args; callee DUPs
                          * them via js_build_arguments, never _FREE()s argv. */
                         ret = jf(ctx, this_val, argc, argv,
-                                 b->cpool, p->u.func.var_refs);
+                                 b->cpool, p->u.func.var_refs,
+                                 b->jit_atoms);
                     } else if (!b->has_simple_parameter_list) {
                         /* P33: complex params (rest/defaults/destructuring).
                          * Must pass REAL argc so OP_rest sees extras beyond
@@ -16360,7 +16386,8 @@ JSValue js_jit_call(JSContext *ctx, JSValue func, JSValue this_val,
                         for (; i < total; i++)
                             padded[i] = JS_UNDEFINED;
                         ret = jf(ctx, this_val, argc, padded,
-                                 b->cpool, p->u.func.var_refs);
+                                 b->cpool, p->u.func.var_refs,
+                                 b->jit_atoms);
                         for (i = 0; i < total; i++)
                             JS_FreeValue(ctx, padded[i]);
                     } else {
@@ -16372,7 +16399,8 @@ JSValue js_jit_call(JSContext *ctx, JSValue func, JSValue this_val,
                         for (; i < n; i++)
                             padded[i] = JS_UNDEFINED;
                         ret = jf(ctx, this_val, n, padded,
-                                 b->cpool, p->u.func.var_refs);
+                                 b->cpool, p->u.func.var_refs,
+                                 b->jit_atoms);
                         for (i = 0; i < n; i++)
                             JS_FreeValue(ctx, padded[i]);
                     }
@@ -16399,7 +16427,7 @@ JSValue js_jit_call_fb(JSContext *ctx, JSFunctionBytecode *b,
         return JS_ThrowTypeError(ctx, "js_jit_call_fb: function not JIT-compiled");
     if (js_jit_poll_interrupts(ctx))
         return JS_EXCEPTION;
-    return fn(ctx, this_val, argc, argv, b->cpool, NULL);
+    return fn(ctx, this_val, argc, argv, b->cpool, NULL, b->jit_atoms);
 }
 
 /* P11.3: Direct JIT call with argument padding.
@@ -16452,7 +16480,8 @@ JSValue js_jit_ic_direct_call(
     if (n == 0) {
         /* Variadic callee (arg_count == 0): pass actual args directly. */
         ret = ic->direct_jit(ctx, this_val, nargs, argv,
-                             live_cpool, var_refs);
+                             live_cpool, var_refs,
+                             ic->expected_bc->jit_atoms);
     } else if (!ic->expected_bc->has_simple_parameter_list) {
         /* P33: complex params — pass real nargs and all args. */
         int total = nargs > n ? nargs : n;
@@ -16463,7 +16492,8 @@ JSValue js_jit_ic_direct_call(
         for (; i < total; i++)
             padded[i] = JS_UNDEFINED;
         ret = ic->direct_jit(ctx, this_val, nargs, padded,
-                             live_cpool, var_refs);
+                             live_cpool, var_refs,
+                             ic->expected_bc->jit_atoms);
         for (i = 0; i < total; i++)
             JS_FreeValue(ctx, padded[i]);
     } else {
@@ -16475,7 +16505,8 @@ JSValue js_jit_ic_direct_call(
         for (; i < n; i++)
             padded[i] = JS_UNDEFINED;
         ret = ic->direct_jit(ctx, this_val, n, padded,
-                             live_cpool, var_refs);
+                             live_cpool, var_refs,
+                             ic->expected_bc->jit_atoms);
         for (i = 0; i < n; i++)
             JS_FreeValue(ctx, padded[i]);
     }
@@ -16534,7 +16565,8 @@ JSValue js_jit_ic_fast_call(JSContext *ctx, JSValue this_val,
         return JS_Call(ctx, fn, this_val, 0, NULL);
     }
     return ic->direct_jit(ctx, this_val, 0, NULL,
-                          ic->expected_bc->cpool, NULL);
+                          ic->expected_bc->cpool, NULL,
+                          ic->expected_bc->jit_atoms);
 }
 
 void js_jit_callIC_fill(JSContext *ctx, JSValue func, JSJITCallICEntry *ic)
@@ -19769,7 +19801,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                     rt->jit_new_target   = JS_UNDEFINED;
                     rt->jit_actual_argc  = s->argc;
                     ret2 = jf(ctx, s->this_val, s->argc, sf->arg_buf,
-                              b->cpool, var_refs);
+                              b->cpool, var_refs, b->jit_atoms);
                     rt->jit_callee_func = _sv_as_callee;
                     rt->jit_new_target  = _sv_as_nt;
                     rt->jit_actual_argc = _sv_as_aargc;
@@ -19887,7 +19919,8 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             rt->jit_new_target   = (JSValue)new_target;
             rt->jit_actual_argc  = argc; /* actual call-site argc for arguments.length */
             JSValue _ret41 = _jf41(ctx, (JSValue)this_obj, _argc41,
-                                   argv, b->cpool, p->u.func.var_refs);
+                                   argv, b->cpool, p->u.func.var_refs,
+                                   b->jit_atoms);
             rt->jit_callee_func = _sv41_callee;
             rt->jit_new_target  = _sv41_nt;
             rt->jit_actual_argc = _sv41_aargc;
@@ -20022,7 +20055,8 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             rt->jit_new_target   = (JSValue)new_target;
             rt->jit_actual_argc  = argc; /* actual call-site argc for arguments.length */
             JSValue jit_ret = jf(ctx, (JSValue)this_obj, jit_argc,
-                                 arg_buf, b->cpool, var_refs);
+                                 arg_buf, b->cpool, var_refs,
+                                 b->jit_atoms);
             rt->jit_callee_func = _sv_hot_callee;
             rt->jit_new_target  = _sv_hot_nt;
             rt->jit_actual_argc = _sv_hot_aargc;

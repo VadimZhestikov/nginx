@@ -56,7 +56,8 @@ typedef JSValue (*JSJITFunc)(JSContext    *ctx,
                              int           argc,
                              JSValue      *argv,
                              JSValue      *cpool,
-                             JSVarRef    **var_refs);
+                             JSVarRef    **var_refs,
+                             JSAtom       *atoms);
 
 /*
  * JSJITRuntime — vtable of QuickJS runtime helpers callable from JIT code.
@@ -380,6 +381,11 @@ JSAtom         js_jit_fb_get_local_atom(JSFunctionBytecode *b, int local_idx);
 JSAtom         js_jit_fb_get_arg_atom  (JSFunctionBytecode *b, int arg_idx);
 /* Opcode size table: opcode_size[opcode] = instruction length in bytes */
 const uint8_t *js_jit_get_opcode_size_table(int *count);
+
+/* Atom fixup table accessors (see the JSFunctionBytecode field comment). */
+JSAtom  *js_jit_fb_get_atoms(JSFunctionBytecode *b);
+uint32_t js_jit_fb_get_atom_count(JSFunctionBytecode *b);
+void     js_jit_fb_set_atoms(JSFunctionBytecode *b, JSAtom *atoms, uint32_t n);
 /* Function name as a C string (static buf — for debug/logging only) */
 const char    *js_jit_fb_get_func_name(JSRuntime *rt, JSFunctionBytecode *b);
 const char    *js_jit_fb_get_source(JSFunctionBytecode *b, int *len_out);
@@ -1013,7 +1019,7 @@ int  js_jit_get_threshold(void);
  *         11=get_var_ref_check TDZ fix: emits UNINITIALIZED check (generated C changes).
  *         12=P51: OP_add warm vt_hints + speculative INT add (array layout change).
  *         13=P52: put/set_var_ref* old-value INT hint: skip JS_VALUE_HAS_REF_COUNT. */
-#define JIT_CODEGEN_VERSION 15u  /* dynamic atoms are no longer disk-cached (cross-runtime atom UAF) */
+#define JIT_CODEGEN_VERSION 16u  /* JIT fns take a 7th arg: the per-bytecode atom table */
 void js_jit_set_max_bc_len(int n);
 int  js_jit_get_max_bc_len(void);
 
@@ -1198,7 +1204,8 @@ JSFunctionBytecode *js_jit_get_callee_fb(JSValue func);
  * Returns 0 if the guard fails (callee must fall back to _RT->call).
  */
 int js_jit_check_and_extract(JSValue func, JSJITFunc expected,
-                              JSValue **cpool_out, JSVarRef ***var_refs_out);
+                              JSValue **cpool_out, JSVarRef ***var_refs_out,
+                              JSAtom **atoms_out);
 
 /*
  * P36.1: JIT address range registry — public accessors for jit-tests.

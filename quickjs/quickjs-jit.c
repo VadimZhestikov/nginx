@@ -2657,7 +2657,7 @@ static void gen_preamble(JSJITCodeBuf *cb, uint64_t bc_hash,
         "JSValue %s(\n"
         "    JSContext *ctx, JSValue this_val,\n"
         "    int argc, JSValue *argv,\n"
-        "    JSValue *cpool, JSVarRef **var_refs)\n"
+        "    JSValue *cpool, JSVarRef **var_refs, JSAtom *_atoms)\n"
         "{\n",
         fname_out);
 
@@ -6713,7 +6713,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                     if (!_p103_already && p103_nexterns < 16) {
                         jit_buf_printf(cb,
                             "extern JSValue __jit_f_%016llx"
-                            "(JSContext*,JSValue,int,JSValue*,JSValue*,JSVarRef**);\n",
+                            "(JSContext*,JSValue,int,JSValue*,JSValue*,JSVarRef**,JSAtom*);\n",
                             (unsigned long long)jit_callee_hash);
                         p103_externs[p103_nexterns++] = jit_callee_hash;
                     }
@@ -6753,21 +6753,21 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                             "      JSValue _r=%s(ctx,JS_UNDEFINED,0,NULL,cpool,var_refs);\n",
                             self_jit_sym);
                 } else if (is_jit) {
-                    jit_buf_str(cb, "      JSValue *_dc; JSVarRef **_dv; JSValue _r;\n");
+                    jit_buf_str(cb, "      JSValue *_dc; JSVarRef **_dv; JSAtom *_da; JSValue _r;\n");
                     jit_buf_printf(cb,
-                        "      if(js_jit_check_and_extract(_f,(JSJITFunc)__jit_f_%016llx,&_dc,&_dv)){\n"
+                        "      if(js_jit_check_and_extract(_f,(JSJITFunc)__jit_f_%016llx,&_dc,&_dv,&_da)){\n"
                         "        if(_RT->poll_interrupts(ctx)) goto _ex;\n",
                         (unsigned long long)jit_callee_hash);
                     if (nargs > 0)
                         jit_buf_printf(cb,
-                            "        _r=__jit_f_%016llx(ctx,JS_UNDEFINED,%d,_ca%d,_dc,_dv);\n"
+                            "        _r=__jit_f_%016llx(ctx,JS_UNDEFINED,%d,_ca%d,_dc,_dv,_da);\n"
                             "      } else {\n"
                             "        _r=_RT->call(ctx,_f,JS_UNDEFINED,%d,_ca%d);\n      }\n",
                             (unsigned long long)jit_callee_hash, nargs, pc,
                             nargs, pc);
                     else
                         jit_buf_printf(cb,
-                            "        _r=__jit_f_%016llx(ctx,JS_UNDEFINED,0,NULL,_dc,_dv);\n"
+                            "        _r=__jit_f_%016llx(ctx,JS_UNDEFINED,0,NULL,_dc,_dv,_da);\n"
                             "      } else {\n"
                             "        _r=_RT->call(ctx,_f,JS_UNDEFINED,0,NULL);\n      }\n",
                             (unsigned long long)jit_callee_hash);
