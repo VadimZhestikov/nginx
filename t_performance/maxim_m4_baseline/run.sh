@@ -230,17 +230,26 @@ run_arm() {
     else
         "$WRK" -t"$THREADS" -c"$CONNS" -d"${WARMUP}s" -H 'x-tenant: acme' \
                "http://127.0.0.1:$PORT/" >/dev/null 2>&1 || true
-        local best=0 i rps
+        local best=0 i rps out lat_us
         for i in $(seq 1 "$RUNS"); do
-            rps=$("$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}s" -H 'x-tenant: acme' \
-                  "http://127.0.0.1:$PORT/" 2>/dev/null \
-                  | awk '/Requests\/sec/{print int($2)}')
+            out=$("$WRK" -t"$THREADS" -c"$CONNS" -d"${DURATION}s" -H 'x-tenant: acme' \
+                  "http://127.0.0.1:$PORT/" 2>/dev/null)
+            rps=$(printf '%s' "$out" | awk '/Requests\/sec/{print int($2)}')
             rps=${rps:-0}
-            [ "$rps" -gt "$best" ] && best=$rps
+            if [ "$rps" -gt "$best" ]; then
+                best=$rps
+                # wrk prints "Latency  840.53us" / "1.23ms" / "1.02s"
+                lat_us=$(printf '%s' "$out" | awk '/^ *Latency/{
+                    v=$2
+                    if (v ~ /us$/)      { sub(/us$/,"",v); print int(v) }
+                    else if (v ~ /ms$/) { sub(/ms$/,"",v); print int(v*1000) }
+                    else if (v ~ /s$/)  { sub(/s$/,"",v);  print int(v*1000000) }
+                }')
+            fi
             sleep 2
         done
         printf '  %-11s %10d req/s\n' "$name" "$best"
-        echo "$name $best" >> "$WORK/results.txt"
+        echo "$name $best ${lat_us:-0}" >> "$WORK/results.txt"
     fi
 
     [ -f "$WORK/nginx.pid" ] && kill -QUIT "$(cat "$WORK/nginx.pid")" 2>/dev/null
@@ -262,6 +271,52 @@ run_arm "jit"        "$JIT_BIN"    "$WORK/js.conf"          "x-count:.*|x-tenant
 run_arm "jit-aot"    "$JIT_BIN"    "$WORK/js_aot.conf"    "x-count:.*|x-tenant-seen: acme"
 [ -n "$INTERP_BIN" ] && run_arm "interp" "$INTERP_BIN" "$WORK/js.conf" "x-count:"
 [ -n "$HANDC_BIN" ]  && run_arm "handc"  "$HANDC_BIN"  "$WORK/directives.conf" "x-count:"
+
+# ── GUARD 4: is the SERVER the bottleneck? ───────────────────────────────────
+#
+# The three guards above (right engine, arm doing its work, idle box) all pass
+# happily while the machine is in a regime where these numbers mean nothing.
+#
+# Comparing arms only says something about the policy if nginx is what limits
+# throughput. If a fixed per-request cost outside nginx dominates -- a firewall
+# in the loopback path is the one that bites here -- then every arm pays it,
+# nginx never saturates, and ALL RATIOS COMPRESS TOWARD 1.0. The harness then
+# reports "little headroom, M4/M5 hard to justify", which is a multi-week
+# decision drawn from a network setting.
+#
+# Caught 2026-09-11: floor 111k req/s at 840us latency with workers at ~50% CPU,
+# against 1,190,964 req/s from the same harness on the same box three days
+# earlier. Cause was .wslconfig networkingMode=mirrored + firewall=true, the
+# pitfall already documented in CLAUDE.md -- documented, and still missed,
+# because nothing checked.
+#
+# Loopback on an unencumbered box is tens of microseconds. Anything near a
+# millisecond means the request is not spending its time in nginx.
+FLOOR_LAT_MAX_US="${FLOOR_LAT_MAX_US:-250}"
+if [ "$DRY_RUN" = "0" ] && [ -s "$WORK/results.txt" ]; then
+    floor_lat=$(awk '$1=="floor"{print $3}' "$WORK/results.txt")
+    if [ -n "${floor_lat:-}" ] && [ "${floor_lat:-0}" -gt "$FLOOR_LAT_MAX_US" ]; then
+        echo
+        echo "REFUSING TO REPORT: the server is not the bottleneck."
+        echo
+        printf '  floor latency : %s us   (max %s us)\n' "$floor_lat" "$FLOOR_LAT_MAX_US"
+        printf '  floor rate    : %s req/s\n' "$(awk '$1=="floor"{print $2}' "$WORK/results.txt")"
+        echo
+        echo "Loopback should be tens of microseconds. At this latency nginx is not"
+        echo "saturated, every arm pays the same large fixed cost, and the RATIOS"
+        echo "BETWEEN ARMS COMPRESS TOWARD 1.0 -- so a small measured headroom would"
+        echo "be an artifact of the network path, not a fact about the JIT."
+        echo
+        echo "On WSL2 this is almost always .wslconfig:"
+        echo "    networkingMode=mirrored + firewall=true  routes loopback through"
+        echo "    Windows Defender Firewall (~7-10x throughput drop)."
+        echo "Switch to NAT mode, 'wsl --shutdown', and re-run."
+        echo
+        echo "Raw per-arm numbers (NOT a result, do not quote):"
+        awk '{printf "    %-11s %10d req/s  %6d us\n", $1, $2, $3}' "$WORK/results.txt"
+        exit 3
+    fi
+fi
 
 # ── verdict ──────────────────────────────────────────────────────────────────
 if [ "$DRY_RUN" = "0" ] && [ -s "$WORK/results.txt" ]; then

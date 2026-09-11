@@ -50,7 +50,37 @@ It **refuses to measure unless the box is idle** (absolute load ≤ 0.5, no
 process over 50% CPU). Override with `--force-busy` only if you intend to throw
 the result away.
 
-## Three deliberate guards
+## ATTEMPTED 2026-09-11 — REFUSED, and the refusal is the finding
+
+AOT-A landed ([[aot-a-host-js-load-time-compile]]), so the `jit-aot` arm finally
+compiles for real: `app_aot.js` now compiles `mirror.attach` (7 functions,
+including the per-request dispatcher `attach` hands to `location.addHook`), the
+table method and the three policy handlers — **11 walked, 11 installed, 1.7s**,
+logged per-root so the arm cannot post a number having compiled nothing.
+
+The run was then **refused by a new fourth guard**, and correctly:
+
+```
+floor 111-118k req/s at ~840us latency, nginx workers ~50% CPU (205% of 400%)
+vs   1,190,964 req/s from this same harness on this same box on 2026-09-08
+```
+
+The box is **latency-bound, not CPU-bound** — nginx has half its capacity idle.
+Cause: `.wslconfig` `networkingMode=mirrored` + `firewall=true`, which routes
+loopback through Windows Defender Firewall. That pitfall is documented in
+CLAUDE.md, and was still missed, because nothing checked.
+
+Why it matters more than "the numbers are smaller": when a large fixed
+per-request cost sits outside nginx, every arm pays it and **all ratios compress
+toward 1.0**. The harness duly printed `headroom 1.18x` and
+`READS AS: little left to reclaim — M4/M5 hard to justify`. That is a multi-week
+decision, and it would have been drawn from a network setting.
+
+**To get the real number:** set `.wslconfig` to NAT mode, `wsl --shutdown`,
+re-run. The harness now refuses until floor latency is under 250us
+(`FLOOR_LAT_MAX_US` to override).
+
+## Four deliberate guards
 
 1. **Engine verification.** It reports what each binary actually contains
    (`nm | grep ' T js_jit_'`) rather than trusting the builddir name. `objs/nginx`
@@ -66,6 +96,12 @@ the result away.
    wrong instrument and this harness had it wrong first: one saturated core on
    a 16-CPU box is ~6% by that measure, which sails past a 25% threshold while
    being more than enough to move throughput.
+4. **Bottleneck verification** (added 2026-09-11). Comparing arms says something
+   about the policy only if NGINX is what limits throughput. The floor arm's
+   latency is checked against 250us; loopback on an unencumbered box is tens of
+   microseconds. Guards 1-3 all passed while the box was in a regime that makes
+   every ratio meaningless — being right about the engine, the work and the
+   idleness is not the same as measuring the right thing.
 
 ## Measured 2026-09-08 on an idle box — AND THE `jit` ARM IS MISLABELLED
 
