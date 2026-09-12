@@ -1,7 +1,7 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.46 — corrected 2026-09-12; the previous block was stamped v5.35 and was
-> wrong about D and about the standing gate).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.46 — corrected 2026-09-12, twice: the block was stamped v5.35 and wrong
+> about D and the standing gate; then the audit was signed the same day).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -22,16 +22,27 @@
 > failing files — all 55 in the known-errors baseline, 0 new, 0 crashes**. So "full test262"
 > is no longer what stands between here and untrusted-native.
 >
-> **What actually stands open.** (1) **A human signature on `AUDIT_M-SES.md` §5** — M-SES
-> S1–S6 are built, SR-1/SR-2/SR-3 passed, the S6 *standing* escape gate landed 2026-09-11
-> (`t/comcon_mses_gate.t`, ASAN+UBSAN via `t/run_sanitizers.sh`), and the audit checklist is
-> assembled but deliberately **unsigned** — an audit attested by the party that wrote the code
-> certifies nothing. Do **not** add findings before it is signed: each round adds rows a
-> reviewer must re-check and re-stales the date the audit certifies. (2) The compiler track
-> (M5 →) is **parked by decision 2026-09-11, not by capability** — M5's value is the typed
-> nginx stubs, not lowering JS control flow, so the typed IR is not to be built without a
-> commitment to M5 (see M4 below and `AOT-A` in `INCREMENT_C5.md` for the measurement that
-> settled it). (3) Finishing D (D4c, D5b-2/3/4) is the other forward track.
+> **M-SES is closed out.** S1–S6 built, SR-1/SR-2/SR-3 passed, the S6 *standing* escape gate
+> landed 2026-09-11 (`t/comcon_mses_gate.t`, ASAN+UBSAN via `t/run_sanitizers.sh`), and
+> **`AUDIT_M-SES.md` §5 was SIGNED 2026-09-12** after a full §4 re-run on a rebuilt tree.
+> Read the caveats in that file before relying on the signature: **both rows carry the same
+> signer**, so it is one attestation rather than two with no second pair of eyes, and the
+> security row **accepts §3's five gaps as residual risk rather than closing them**
+> (per-fragment memory attribution · cross-compartment identity · `guarded`/`irreversible`
+> COM members · compiled tier under the escape probes · host JS unbounded by default).
+>
+> **So the two forward tracks are now genuinely open, and nothing is blocking either.**
+> (1) **Finish increment D** — `D4c` (compiled-tier live re-AOT, separately gated) and
+> `D5b-2/3/4` (full CST via a vendored ES parser → source-rewrite hardening → cross-file
+> provenance; 3 and 4 both depend on 2). This is the last standing frontier on the
+> confinement track. (2) **The compiler track (M5 →)** remains **parked by decision
+> 2026-09-11, not by capability** — M5's value is the typed nginx stubs, not lowering JS
+> control flow, so the typed IR is not to be built without a commitment to M5 (see M4 below
+> and `AOT-A` in `INCREMENT_C5.md` for the measurement that settled it).
+>
+> One standing instruction survives the signature: **adding findings re-stales the date the
+> audit certifies**, so a new hardening round should be a deliberate choice to re-sign, not a
+> drive-by.
 >
 > Entries below that describe `js_tenant_*` / `comcon_load` / a separate tenant path as the plan
 > are superseded by the operator kernel; see FOUNDATION §12 (v5.29–v5.35) for the delta.
@@ -337,9 +348,9 @@ fallback) → the event dispatcher calls the C function pointer directly.
 lowering NOT started — banked 2026-09-11) → M5 → [M-SES gate — S1–S6 built, audit unsigned]
 → M6 → M7 → M8 gate → M9.
 
-> The chain is no longer blocked on capability anywhere before M5. It is blocked on two
-> decisions: whether to commit to M5 (which is what makes the typed IR worth building), and
-> who signs `AUDIT_M-SES.md` §5.
+> The chain is no longer blocked on capability anywhere before M5, and the M-SES gate is
+> signed off. It is blocked on ONE decision: whether to commit to M5, which is what makes
+> the typed IR worth building.
 
 ---
 
