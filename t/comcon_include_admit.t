@@ -81,7 +81,7 @@ my $body = http_get('/a');
 
 like($body, qr/"clean":"ok"/,
      'admission: a fragment with no free names + imports:[] is admitted');
-like($body, qr/"nginxNo":"[^"]*admission refused[^"]*free name not granted: nginx/,
+like($body, qr/"nginxNo":"[^"]*admission refused[^"]*free name not declared in imports: nginx/,
      'admission: an ungranted free name (nginx) is refused');
 like($body, qr/"nginxYes":"ok"/,
      'admission: the same name listed in imports is admitted');
@@ -91,9 +91,9 @@ like($body, qr/"idOk":"ok"/,
      'identity: the correct H(H(source)\N{U+2016}schema) pin is admitted');
 like($body, qr/"idBad":"[^"]*artifact identity mismatch/,
      'identity: a wrong pin is refused');
-like($body, qr/"fnBad":"[^"]*admission refused[^"]*free name not granted: Function/,
+like($body, qr/"fnBad":"[^"]*admission refused[^"]*free name not declared in imports: Function/,
      'restricted: the Function constructor is refused (deny-list) even if in imports');
-like($body, qr/"globalTh":"[^"]*admission refused[^"]*free name not granted: globalThis/,
+like($body, qr/"globalTh":"[^"]*admission refused[^"]*free name not declared in imports: globalThis/,
      'restricted: the reflective global globalThis is refused');
-like($body, qr/"selfBad":"[^"]*admission refused[^"]*free name not granted: self/,
+like($body, qr/"selfBad":"[^"]*admission refused[^"]*free name not declared in imports: self/,
      'restricted: the reflective global self is refused');

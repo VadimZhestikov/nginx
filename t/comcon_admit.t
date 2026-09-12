@@ -69,7 +69,7 @@ my $body = http_get('/admit');
 
 like($body, qr/"clean":\{"certified":true\}/,
      'admit: a fragment with no free names is certified');
-like($body, qr/"nginxNo":\{"certified":false,"reject":"free name not granted: nginx"\}/,
+like($body, qr/"nginxNo":\{"certified":false,"reject":"free name not declared in imports: nginx"\}/,
      'admit: an ungranted free name (nginx) is rejected');
 like($body, qr/"nginxYes":\{"certified":true\}/,
      'admit: the same name granted via imports is certified');

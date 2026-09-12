@@ -3172,8 +3172,20 @@ ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
     }
 
     if (chk.bad) {
+        /*
+         * "not granted" sent a reader looking for a missing grant, when what is
+         * missing is a DECLARATION: this gate checks the free-name manifest, and
+         * `imports` is a whitelist of names, not a set of capabilities. There is
+         * no intrinsics allowance either, so an ordinary `x !== undefined`
+         * refuses unless `undefined` is declared -- found by the V3 oracle
+         * (t/comcon_v3_oracle.t), which modelled the rule as stated and
+         * disagreed with the rule as implemented. The wording now says which of
+         * the two things to fix; whether intrinsics should be allowed without
+         * declaration is a policy question recorded in VERIFICATION.md V3, not
+         * something to widen silently.
+         */
         ngx_snprintf((u_char *) reason, reason_len,
-                     "free name not granted: %s%Z", chk.badname);
+                     "free name not declared in imports: %s%Z", chk.badname);
         return NGX_ERROR;
     }
 
@@ -3253,6 +3265,22 @@ static const char  ngx_js_comcon_bootstrap[] =
        Adding a vocabulary word therefore means adding it in BOTH places -- the
        point of a closed set is that the two cannot drift silently. */
     "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1};"
+    /* One definition of the socket field lattice, used by the meet here and by
+       include()'s translation below -- two copies of a bitmask mapping is how a
+       "narrower" membrane ends up wider than the one it attenuates. */
+    "  var FMASK={address:1,port:2,fd:4,listener:8},FMASK_FULL=15;"
+    "  function jsMask(it){var m,i,fs=it.fields||[];"
+    "    if(it.flavor==='allow'){m=0;"
+    "      for(i=0;i<fs.length;i++)m|=(FMASK[fs[i]]||0);}"
+    "    else if(it.flavor==='redact'){m=FMASK_FULL;"
+    "      for(i=0;i<fs.length;i++)m&=~(FMASK[fs[i]]||0);}"
+    "    else if(it.flavor==='revoke')m=0;"
+    "    else m=FMASK_FULL;"
+    "    return m>>>0;}"
+    "  function maskFields(m){var out=[],k;"
+    "    for(k in FMASK)if(Object.prototype.hasOwnProperty.call(FMASK,k))"
+    "      if(m&FMASK[k])out.push(k);"
+    "    return out;}"
     "  C.mediate=function(cap,interceptor){var f={};"
     "    if(!interceptor||typeof interceptor!=='object')throw new TypeError("
     "      'mediate: arg1 must be an interceptor descriptor "
@@ -3274,6 +3302,36 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(interceptor.fields!==undefined)"
     "      snap.fields=Array.prototype.slice.call(interceptor.fields);"
     "    if(interceptor.glob!==undefined)snap.glob=String(interceptor.glob);"
+    /* V4 — ATTENUATION MEET, and the lattice inclusion asserted rather than
+       argued.  Re-mediating an already-mediated capability used to fail with
+       "grant is not a NginxSocket", because the translation unwraps one facet
+       level and found another: fail-closed, but by accident and with a message
+       about the wrong thing.
+
+       The rule is A(cap'') = A(cap') MEET A(cap) -- an outer membrane may only
+       NARROW what an inner one already allows, never restore a field it hid.
+       Field masks form a lattice, so the meet is an AND and the inclusion is
+       checkable; the assertion below is V4's point: a future logic bug here
+       becomes a loud failure instead of a silent widening.  Globs do not form a
+       computable meet, so a routes facet is re-mediated only by an identical
+       glob and otherwise REFUSED -- guessing would be the widening this exists
+       to prevent. */
+    "    if(cap&&cap[FACET]){"
+    "      var ii=cap[FACET].interceptor,oi=snap;"
+    "      if(ii.flavor==='revoke'||oi.flavor==='revoke'){"
+    "        snap=Object.freeze({flavor:'revoke'});}"
+    "      else if(ii.flavor==='routes'||oi.flavor==='routes'){"
+    "        if(ii.flavor!==oi.flavor||ii.glob!==oi.glob)throw new TypeError("
+    "          'mediate: cannot re-mediate a routes facet with a different "
+                 "glob -- a glob meet is not computable, and guessing would "
+                 "widen');"
+    "        snap=Object.freeze({flavor:'routes',glob:ii.glob});}"
+    "      else{"
+    "        var mi=jsMask(ii),mo=jsMask(oi),mm=(mi&mo)>>>0;"
+    "        if((mm&~mi)!==0||(mm&~mo)!==0)throw new Error("
+    "          'mediate: attenuation meet widened authority (V4)');"
+    "        snap=Object.freeze({flavor:'allow',fields:maskFields(mm)});}"
+    "      cap=cap[FACET].cap;}"
     "    f[FACET]={cap:cap,interceptor:Object.freeze(snap)};return f;};"
     /* interceptor library — attenuation-only membranes over a cap. For a
        NginxSocket the fields are address/port/fd/listener; the membrane is
@@ -3545,6 +3603,19 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    for(var i=0;i<manifest.length;i++){var n=manifest[i];"
     "      if(Object.prototype.hasOwnProperty.call(renv.grants,n))"
     "        rg[n]=renv.grants[n];}"
+    /* V4 — the lattice inclusion, ASSERTED at admission rather than argued.
+       A*(child) SUBSET-OF A*(parent): the restricted environment a fragment is
+       realized under may only ever be a sub-map of the REALIZER's, name by name
+       and value by value.  It is true by construction two lines above, which is
+       exactly why it is worth checking: the theorem holds given an unforgeable
+       TCB, and a TCB bug here -- a substituted cap, an extra name -- would
+       otherwise fail silently and confer authority nobody granted.  Cheap
+       (environments are finite), and it converts that class into a loud one. */
+    "    for(var rn in rg)if(Object.prototype.hasOwnProperty.call(rg,rn)){"
+    "      if(!Object.prototype.hasOwnProperty.call(renv.grants,rn)"
+    "         ||rg[rn]!==renv.grants[rn])throw new Error("
+    "        'realize: restricted env is not a sub-map of the realizer (V4): '"
+    "        +rn);}"
     "    var c={grants:rg,imports:manifest};"
     /* D5b-1: an operator can require the proposal be in the declarative profile —
        soundly reviewable (reduces to descriptor tables), no loops/dynamic. The
@@ -3604,18 +3675,16 @@ static const char  ngx_js_comcon_bootstrap[] =
        of that name (attenuation-only: the cap stays reach-gated). */
     "  C.include=function(source,contract){"
     "    contract=contract||{};"
-    "    var FM={address:1,port:2,fd:4,listener:8},FULL=15;"
     "    var g=contract.grants||{},names=[],caps=[],pols=[];"
     "    for(var k in g){if(Object.prototype.hasOwnProperty.call(g,k)){"
-    "      var v=g[k],cap=v,pol={kind:0,mask:FULL};"
+    "      var v=g[k],cap=v,pol={kind:0,mask:FMASK_FULL};"
     "      if(v&&v[FACET]){var it=v[FACET].interceptor||{};cap=v[FACET].cap;"
     "        if(it.flavor==='revoke')continue;"       /* narrow to zero: withhold */
-    "        else if(it.flavor==='allow'){var m=0;"
-    "          (it.fields||[]).forEach(function(f){m|=(FM[f]||0);});"
-    "          pol={kind:0,mask:m>>>0};}"
-    "        else if(it.flavor==='redact'){var r=FULL;"
-    "          (it.fields||[]).forEach(function(f){r&=~(FM[f]||0);});"
-    "          pol={kind:0,mask:r>>>0};}"
+    /* ONE mask definition (jsMask), shared with mediate()'s attenuation meet:
+       two copies of a bitmask mapping is how a "narrower" membrane ends up
+       wider than the one it attenuates. */
+    "        else if(it.flavor==='allow'||it.flavor==='redact'){"
+    "          pol={kind:0,mask:jsMask(it)};}"
     "        else if(it.flavor==='routes'){"
     "          pol={kind:1,glob:String(it.glob||'*')};}"
     /* No fall-through to the FULL default.  NOTE it is not reachable through the
@@ -4135,6 +4204,9 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    mode:{doc:'audit/enforce/learn switch',host:'comcon.mode()'},"
     "    bindings:{doc:'binding/epoch store',"
     "              host:'the session\\'s own record of bindAt handles'},"
+    "    snapshot:{doc:'snapshot store',"
+    "              host:'the binding store\\'s quotation record "
+                        "(snapshot = quote)'},"
     "    broadcast:{doc:'class-F broadcast channel',"
     "               host:'nginx.shared (via bindShared)'},"
     "    provenance:{doc:'grant-chain registry',host:null},"
@@ -4144,6 +4216,11 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var have={},k;"
     "    for(k in OPS_RES)if(Object.prototype.hasOwnProperty.call(OPS_RES,k))"
     "      have[k]=(res[k]!==undefined&&res[k]!==null&&res[k]!==false);"
+    /* The snapshot store is not a separate host object: it IS the binding
+       store's quotation record, so holding one is holding the other.  Written
+       as an implication rather than by merging the two names, because §8a
+       enumerates them separately and the enumeration is the checkable thing. */
+    "    if(have.bindings)have.snapshot=true;"
     /* The session's own binding/epoch store. It holds bindAt handles the
        operator registered, plus the quotation each epoch was built from --
        which IS the snapshot store: "snapshot = quote" (§8a). */
@@ -4186,7 +4263,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        snapshots:b.hist.length};});});"
     /* snapshot = quote: the quotation the live epoch was built from. Inert,
        cap-free, and exactly what rollback/rebind consume. */
-    "    verb('snapshot','bindings',function(name){return need(name).q;});"
+    "    verb('snapshot','snapshot',function(name){return need(name).q;});"
     "    verb('rebind','bindings',function(name,q){var b=need(name);"
     "      if(!q||!q[QUOTE])throw new TypeError("
     "        'ops.rebind: arg1 must be a comcon.quote() description');"

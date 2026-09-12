@@ -439,7 +439,11 @@ pilgrim, the existing admin-shell/`nginx.repl` machinery).
 resources previously implicit in "the tool" must be first-class capabilities: the
 denial/observation log · the binding/epoch store · the provenance/grant-chain registry
 · the class-F broadcast channel · the snapshot store · the signing key · the
-learning-recorder switch. This joins the per-instance grammar enumerations and the
+learning-recorder switch · **the audit/enforce/learn mode switch** *(added v5.53: the
+rollout verbs decompose over it, so it is a resource like the others; it was missing
+from this list while `std.ops` shipped it, which is the drift V7's checker now
+catches)*. *(Realization note: the snapshot store is the binding store's quotation
+record — "snapshot = quote" — rather than a separate host object.)* This joins the per-instance grammar enumerations and the
 compile portals as the third *kind* of closed enumeration (§13.2) whose *completeness*
 makes a safety claim checkable — here, "no backdoor."
 
@@ -559,6 +563,58 @@ one bytecode definition, one hardening surface); docs-v5.0 frozen as the single
 normative spec (in-place revisions only); compatibility principle (§1: no flag-day);
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
+
+**v5.53 (in place — the verification track's now-due column: V3 executable reference
+semantics, V4 monotonicity-as-an-assertion, V7 generated enumerations):** three obligations
+that §12's own table listed as due *now* and that had never been built. Each found something.
+
+**V3 — a kernel ORACLE** (`t/tools/kernel-oracle.js`), written from the RULES rather than the
+implementation, because an oracle derived from the code it checks agrees by construction and
+detects nothing. It shares no code with `src/js` and never calls `comcon`; it models R-ENV,
+R-ADMIT, R-MEDIATE, R-MEET and R-ZERO, and `t/comcon_v3_oracle.t` runs a **generated** corpus
+(14 mediation chains × 5 admission settings) through model and engine and compares field by
+field — after checking that the corpus is large and that the model's predictions
+*discriminate*, since an oracle predicting one answer agrees with an engine doing anything.
+
+**It diverged on the first run, and the divergence is a policy question rather than a bug:**
+the C3 gate has a deny list (`eval`, `Function`, `globalThis`, `global`, `self`) and **no
+intrinsics allowance**, so `undefined`, `JSON`, `Object`, `Math` are free globals that must
+appear in `imports` — an ordinary `x !== undefined` is refused unless the operator declares
+`undefined`, a name nothing is granted for. Consequences worth deciding rather than
+inheriting: `std.profiles.pure_library` (`imports: []`) cannot use `JSON` or `Object`, and the
+gate refuses to let a fragment *declare* intrinsics that the compartment *provides* (and that
+a fragment with admission OFF uses freely). **Deliberately not widened** — the audit is
+signed, and widening an admission gate is a decision, not a cleanup. What did change is the
+diagnostic: *"free name not declared in imports"* instead of *"not granted"*, since the old
+wording sent a reader hunting a missing capability.
+
+**V4 — the lattice inclusion asserted**, in the two places authority could grow downward.
+Re-mediation now computes the **attenuation meet** (field masks are a lattice; the meet is an
+AND) and asserts `A(cap'') ⊆ A(cap')`; before, re-mediating an already-mediated capability
+failed with *"grant is not a NginxSocket"* — fail-closed by accident, with a message about the
+wrong thing. A `routes` glob has no computable meet, so it is re-mediated only by an identical
+glob and otherwise refused; guessing would be the widening the check exists to prevent. And
+`realize()` asserts the restricted env is a **sub-map** of the realizer's — true by
+construction, which is why it is checked: a substituted cap is the shape a TCB bug takes, and
+it would otherwise confer authority nobody granted.
+
+**V7 — the three closed enumerations, checked from source** by
+`t/tools/check-enumerations.py`, run by `t/comcon_enumerations.t` so drift breaks the suite:
+p_symbol kinds (C enum vs POM.md vs the JS selector layer — where a `FunctionDeclaration` once
+reported *stmt* at one tier and *function* at the other), **compile portals** (every place
+`src/js` turns text into code — 13 functions, 20 sites, the operator REPL included, since an
+operator session IS a compile portal), and the ops resources. **It found drift immediately:**
+the audit/enforce/learn mode switch was in the code and absent from FOUNDATION §8a's list, so
+§8a now enumerates it, and the snapshot store it named is enumerated in the code as the
+binding store's quotation record. Two honest limits: the p_symbol list is *checked* against
+three sources rather than *emitted* from one, and the portal list is an allow-list rather than
+generated — both make drift loud, which is the property, with generation proper belonging to
+the M2.5 registry walk.
+
+Also fixed while here: my own instrument counted a **comment** mentioning `JS_EvalFunction`
+as a compile portal, and a test probe built by `String.replace()` on a pattern that did not
+occur was identical to the probe it was supposed to differ from — so the corpus passed while
+covering nothing. Both are now asserted rather than assumed.
 
 **v5.52 (in place — increment M-LIB step 2: `std.ops`, administration as library code; and a
 runtime mode switch that was silently inert):** FOUNDATION §8a says there is no management

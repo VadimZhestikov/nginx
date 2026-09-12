@@ -54,19 +54,68 @@ keeps serving (R7).
 
 ## Verifying what we prove
 
-**V3 — Executable reference semantics (before mechanization).** The No-Amplification
-theorem is a hand sketch. The highest-value first step is not Coq: it is an
-**executable reference implementation of the kernel rules** (a few hundred lines of
-plain JS) used as an oracle, differentially tested against the real engine on every
+**V3 — Executable reference semantics (before mechanization). ✅ BUILT 2026-09-12.**
+The No-Amplification theorem is a hand sketch. The highest-value first step is not Coq:
+it is an **executable reference implementation of the kernel rules** (a few hundred lines
+of plain JS) used as an oracle, differentially tested against the real engine on every
 admission-relevant operation — catching *implementation drift from the model*, which
 proofs of the model alone never see. Mechanization (Lean/Coq — the monotonicity and
 stone lemmas are small) follows for M8.
 
-**V4 — Monotonicity as an assertion, not only a theorem.** The theorem holds *given*
-an unforgeable TCB; a TCB bug currently fails silently. Environments are finite and
-capabilities registry-typed, so `A*(child) ⊆ A*(parent)` is mechanically checkable:
-the kernel **asserts the lattice inclusion at every grant/bind at admission time**
-(SEMANTICS §6, implementation note). Cheap; converts TCB bugs into loud failures.
+**The model:** `t/tools/kernel-oracle.js`, written from the RULES rather than from the
+implementation (an oracle derived from the code it checks agrees by construction and
+detects nothing). It shares no code with `src/js` and never calls `comcon`. Rules
+modelled: **R-ENV** (a fragment sees exactly the granted names), **R-ADMIT** (admission
+is on iff `imports` is present; every free global outside the manifest refuses),
+**R-MEDIATE** (the vocabulary is closed; `revoke` withholds; unknown is refused),
+**R-MEET** (re-mediation is the meet), **R-ZERO** (revoke absorbs).
+`t/comcon_v3_oracle.t` runs a **generated** corpus — 14 mediation chains × 5 admission
+settings — through both and compares field by field, after two instrument checks (the
+corpus is large; the model's predictions *discriminate*, since an oracle that predicts
+one answer agrees with an engine that does anything).
+
+**IT FOUND A DIVERGENCE ON ITS FIRST RUN, and the divergence is a POLICY QUESTION, not
+a bug to quietly fix.** The C3 gate has a deny list (`eval`, `Function`, `globalThis`,
+`global`, `self`) and **no intrinsics allowance**: `undefined`, `JSON`, `Object`, `Math`
+are free globals like any other and must appear in `imports`. So an ordinary
+`x !== undefined` is refused unless the operator declares `undefined` — a name nothing
+is granted for. Two consequences worth deciding on rather than inheriting:
+
+1. `std.profiles.pure_library` (`imports: []`) can compute arithmetic but cannot use
+   `JSON` or `Object` — it is stricter than "cap-free" suggests.
+2. The gate is inconsistent with the compartment it guards: the intrinsics it refuses to
+   let a fragment *declare* are ones the compartment *provides*, and a fragment with
+   admission OFF uses them freely.
+
+**Deliberately NOT changed here.** Widening an admission gate is a security decision and
+the audit is signed; the oracle's job was to make the divergence visible. What did change
+is the diagnostic: the refusal now says *"free name not declared in imports"* instead of
+*"not granted"*, because the old wording sent a reader looking for a missing capability
+when what was missing was a declaration.
+
+**V4 — Monotonicity as an assertion, not only a theorem. ✅ BUILT 2026-09-12.** The
+theorem holds *given* an unforgeable TCB; a TCB bug currently fails silently.
+Environments are finite and capabilities registry-typed, so `A*(child) ⊆ A*(parent)` is
+mechanically checkable: the kernel **asserts the lattice inclusion at every grant/bind at
+admission time** (SEMANTICS §6, implementation note). Cheap; converts TCB bugs into loud
+failures.
+
+Asserted in the two places authority could grow on the way down:
+
+- **Re-mediation** now computes the **attenuation meet** — field masks are a lattice, so
+  the meet is an AND — and asserts the inclusion. Before this, re-mediating an
+  already-mediated capability failed with *"grant is not a NginxSocket"*: fail-closed by
+  accident, with a message about the wrong thing, because the translation unwraps one
+  facet level and found another. A glob has no computable meet, so a `routes` facet is
+  re-mediated only by an identical glob and otherwise **refused** — guessing would be the
+  widening this exists to prevent. `revoke` is the zero and absorbs.
+- **Realization** asserts that the restricted env is a **sub-map** of the realizer's, name
+  by name and value by value. True by construction, which is exactly why it is checked: a
+  substituted cap or an extra name is the shape a TCB bug takes, and it would otherwise
+  confer authority nobody granted, silently.
+
+`t/comcon_v4_monotonicity.t` asserts the *widening attempt is defeated* rather than that a
+call throws: the fragment still cannot read the field the inner membrane hid.
 
 ## Verifying the compiler (upgrading M8 from "tested" to "verified")
 
@@ -84,12 +133,31 @@ this, R4 is a promise.
 
 ## Verifying maintained metadata (the quiet rot vector)
 
-**V7 — Enumerations are generated, never maintained.** The three closed enumerations'
-*completeness* is load-bearing, and hand-maintained lists rot. By construction:
-p_symbols exported **from the parser's production table**; compile portals enforced by
-a build-time assertion that every call site of the internal compile entry is
-enumerated; ops-resource caps emitted by the same S4 registry walk. Drift = build
-failure.
+**V7 — Enumerations are generated, never maintained. ✅ BUILT 2026-09-12.** The three
+closed enumerations' *completeness* is load-bearing, and hand-maintained lists rot —
+silently, since nothing fails when a list stops matching the code.
+`t/tools/check-enumerations.py` derives each from the source and fails on drift;
+`t/comcon_enumerations.t` runs it, so drift breaks the suite (this project's spelling of
+"drift = build failure").
+
+1. **p_symbol kinds** — the C enum, POM.md's documented schema, and the JS selector layer
+   must agree, and `cstKind` may only ever produce kinds from the schema. This is where it
+   already drifted: a `FunctionDeclaration` reported *stmt* at the CST tier and *function*
+   at the bytecode tier, so `query('function')` silently found nothing at one of them.
+2. **Compile portals** — every place `src/js` turns text into code, keyed by (file,
+   enclosing function) so ordinary edits do not churn the list. A new compiling function
+   is a failure until it is enumerated *with what it compiles*. 13 functions, 20 call
+   sites today, including the operator REPL — an operator session **is** a compile portal.
+3. **Ops-resource capabilities** — `std.ops` builds its session from `OPS_RES`, so that
+   table decides which verbs exist; every entry must appear in FOUNDATION §8a, or the prose
+   describes a smaller kernel than ships. **It found exactly that on the first run:** the
+   audit/enforce/learn *mode switch*, which the rollout verbs decompose over, was in the
+   code and missing from §8a's list of seven.
+
+*Not yet by construction:* the p_symbol list is *checked* against three sources rather than
+*emitted* from one, and the portal list is an allow-list rather than a generated one. Both
+make drift loud, which is the property V7 is for; generation proper belongs with the M2.5
+registry walk (E10, one generator two outputs).
 
 *(v5.1 — E10)* **One generator, two outputs:** the conformance-test generator below and
 the `comconctl dev` capability-doubles generator are the same registry walk with two
@@ -158,7 +226,7 @@ deliverables land.
 
 | Now / M2–M3 | M5–M6 | M7 / M8 / M-SES |
 |---|---|---|
-| V1 ✅ decided · V2 ✅ decided · V3 · V4 · V7 | V5a · V6 · V8 · V9 · V13 | V5b · V10 · V11 · V12 · V14 · V15 |
+| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · V13 | V5b · V10 · V11 · V12 · V14 · V15 |
 
 **Meta-observation:** the R-review's critical findings clustered at *tier boundaries*
 and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maintained-
