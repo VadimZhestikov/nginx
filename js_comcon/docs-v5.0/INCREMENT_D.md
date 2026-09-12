@@ -4,7 +4,8 @@
 enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` selectors), **D3 ✅**
 (POM-node quotations + stone splices), **D4a ✅** (epochs + admitted replace + rollback), **D4b ✅**
 (class-F multi-worker fan-out), **D5a ✅** (call-site audit), **D5b-1 ✅** (declarative-profile
-checker), **D5b-2 ✅** (full CST + finer selectors + anchors, 2026-09-12); D4c, D5b-3/4 deferred. Follows the operator kernel
+checker), **D5b-2 ✅** (full CST + finer selectors + anchors, 2026-09-12), **D5b-3 ✅**
+(source-rewrite hardening, 2026-09-12); D4c, D5b-4 deferred. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -357,8 +358,26 @@ ES parser for the full CST (D5b-2) rather than hand-roll one.
   Both predicates ship together and the test asserts that difference on two fragments identical but
   for two inserted lines. Anchor recognition reuses acorn's own `directive` determination and
   matches the RAW spelling, so the name a reviewer reads is the name that binds.
-- **D5b-3 — source-rewrite hardening.** `harden(node, query, wrapperQuotation)` → rewrite matched
-  sites → rebuild via D4. Depends on D5b-2 + D4. The brownfield-hardening showcase (§38) in full.
+- **D5b-3 ✅ (2026-09-12) — source-rewrite hardening.** `comcon.harden(node, query, wrapper)`
+  replaces every matched site with the wrapper, `$$` standing for the site's own source, and returns
+  a REPORT whose `quotation` installs through D4 (`bindAt`/`replace`) — so the rewrite is pure text
+  (class R/L) and the authority to install stays in D4, where it can be reviewed and admitted first.
+  `comcon.cst(source)` came with it: a CST over plain TEXT (the §38 shape — you have vendor source,
+  not a live function), which is also what makes a rewrite reviewable structurally and hardening
+  passes composable. Targets the residual: the test hardens a **locally-bound callee**
+  (`var g = real; g('a')`) — a call no grant can name and `callsites()` cannot see — and asserts the
+  guard STOPS it (the wrapped function's log is empty), against the unhardened fragment in the same
+  request. `t/comcon_pom_harden.t` (31, eight negative controls).
+
+  **Limits, stated because they are easy to overread.** The wrapper must be ONE
+  `ExpressionStatement` (`$$` is spliced at an expression position), which is what stops
+  `__guard($$); evil()` — that splices to three *valid* statements, so re-parsing cannot catch it.
+  It is NOT an injection defence in general: a wrapper is code, a comma sequence is one expression,
+  and what bounds a wrapper is **the env it is realized under**, never its syntax. Overlapping
+  matches are refused rather than half-rewritten. A **host function cannot be granted** into a
+  compartment (only C-wrapped COM caps cross), so a wrapper installed on the confined tier must
+  carry its own logic or call a granted capability — asserted, along with the live site surviving
+  the refused install untouched.
 - **D5b-4 — cross-file provenance.** Span mapping through `include` splices (POM.md §6 Q3). Depends
   on D5b-2.
 

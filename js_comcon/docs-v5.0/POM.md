@@ -173,7 +173,16 @@ until retired.
    does not parse, so it cannot answer, and "no sites" would be the wrong answer to give a
    hardening query.
 3. **Cross-file provenance** — an `include`-spliced fragment gets a synthetic file
-   origin; span mapping through includes needs a provenance hop. *(D5.)*
+   origin; span mapping through includes needs a provenance hop. *(D5b-4, still open.)*
+
+   *Source-rewrite hardening resolved at D5b-3 (2026-09-12):*
+   `comcon.harden(node, query, wrapper)` rewrites every matched site (`$$` = the site's own
+   source) and returns a report whose `quotation` installs through D4 — the rewrite produces
+   TEXT and never an install, so it can be reviewed, diffed and admitted first. Node-local
+   spans are what make this work: the offsets a query reports are exactly the offsets the
+   splice uses, and sites are spliced back-to-front so each range still indexes the text it
+   was measured in. `comcon.cst(source)` gives the same view over plain text, for code you
+   have as source rather than as a live function.
 4. **p_symbol enumeration** — *(resolved, increment D0)* schema **`comcon-pom-1`** (never
    renumber, only append): `module=1, function=2, block=3, stmt=4, expr=5` (`quickjs.c`,
    `NGX_COMCON_POM_*`). Kinds 1–2 are materialized in D0; 3–5 are reserved for later synthesis.

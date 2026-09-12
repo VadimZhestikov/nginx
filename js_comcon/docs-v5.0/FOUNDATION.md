@@ -560,6 +560,38 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.48 (in place — increment D5b-3: source-rewrite hardening):**
+`comcon.harden(node, query, wrapper)` replaces every site a query matches with the wrapper
+quotation, `$$` standing for the site's own source, and returns a report whose `quotation`
+installs through D4 (`bindAt`/`replace`). **The rewrite produces TEXT, never an install** —
+so a hardening pass is reviewable, diffable and admissible before it runs, and the authority
+to change a live site stays where D4a put it. `comcon.cst(source)` arrived with it: the same
+CST view over plain TEXT rather than a live function, which is the §38 shape (you have vendor
+source you may not edit), and what lets a rewrite be checked structurally instead of by string
+compare.
+
+**What it is for, against what already existed.** For a FREE name the capability kernel is
+strictly better — `grant(env,"fetch",mediate(cap,guard))` needs no parser and cannot be
+evaded by spelling. harden() exists for the residual the kernel cannot *name* and D5a's
+bytecode audit cannot *see*: a locally-bound callee, a method call, one site at a position.
+`t/comcon_pom_harden.t` hardens `var g = real; g('a')` and asserts the guard STOPS the call
+(the wrapped function's log is empty), with the unhardened fragment running in the same
+request as the control.
+
+**Three limits, recorded because they are easy to overread.** (1) The wrapper must be ONE
+`ExpressionStatement` — that is what refuses `__guard($$); evil()`, which splices to three
+*valid* statements and so cannot be caught by re-parsing; it is NOT a general injection
+defence, since a comma sequence is also one expression and a wrapper is code. **What bounds a
+wrapper is the env it is realized under, never its syntax.** (2) Overlapping matches are
+refused rather than half-rewritten (whichever is spliced second would discard the first).
+(3) A **host function cannot be granted** into a compartment — only C-wrapped COM
+capabilities cross — so a wrapper on the confined tier must carry its own logic or call a
+granted capability; the test asserts the refused install leaves the live site untouched.
+
+Found by composing the two: D4a's `replace()` pushed history *before* realizing, so a
+replacement that failed admission consumed a rollback slot and the next `rollback()` restored
+the epoch already live. It now realizes first — all-or-nothing.
+
 **v5.47 (in place — increment D5b-2: full CST, finer selectors, and the anchors model):**
 acorn 8.14.0 is vendored as a TCB artifact (`src/js/vendor/`, provenance + sha256 + a generator
 with a `--check` mode) and exposed fail-closed as `comcon.__parse`; `node.cst()` maps ESTree onto

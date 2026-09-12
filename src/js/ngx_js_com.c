@@ -3831,6 +3831,21 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(n.body&&n.body.type==='BlockStatement')"
     "      return cstAnchorsIn(n.body.body);"
     "    return [];}"
+    /* Parse a NODE'S source.  A fragment's source is `function(req){...}` -- a
+       function EXPRESSION, not a Program -- so a plain parse fails at the
+       anonymous `function` and we retry in expression mode.  NOT via a paren
+       wrapper: that shifts every range by one, and ranges are the load-bearing
+       output.  Guarded two ways so the retry cannot become a fail-open: the
+       expression parse must consume the WHOLE input, and if it does not the
+       ORIGINAL Program error is rethrown.  A half-parsed source must never
+       present a CST covering only the part that parsed -- "no sites" for code
+       the parser never read is the worst answer a hardening query can give.
+       Shared by node.cst() and harden(), which re-parses its own output. */
+    "  function cstParse(src){"
+    "    try{return C.__parse(src);}catch(e){"
+    "      var ex=C.__parse(src,true);"
+    "      if(!ex||ex.range[1]!==src.length)throw e;"
+    "      return ex;}}"
     "  function cstView(src,n,path,getParent){"
     "    var v={},r=n.range,slice=src.slice(r[0],r[1]);"
     "    v.kind=cstKind(n.type);v.type=n.type;v.name=cstName(n);"
@@ -3892,18 +3907,8 @@ static const char  ngx_js_comcon_bootstrap[] =
        empty CST, or a hardening query would report "no sites" for code it never
        managed to read). */
     "    v.cst=function(){"
-    "      var src=raw.source,ast;"
-    "      try{ast=C.__parse(src);}catch(e){"
-    /* A fragment's source is a function EXPRESSION, not a Program, so retry in
-       expression mode. Guarded two ways so this cannot become a fail-open: the
-       expression parse must consume the WHOLE input, and if it does not the
-       ORIGINAL Program error is rethrown -- a half-parsed source must never
-       present a CST covering only the part that parsed. */
-    "        var ex=C.__parse(src,true);"
-    "        if(!ex||ex.range[1]!==src.length)throw e;"
-    "        ast=ex;}"
-    "      return cstView(src,ast,path.concat(['cst']),"
-    "                     function(){return v;});};"
+    "      return cstView(raw.source,cstParse(raw.source),"
+    "                     path.concat(['cst']),function(){return v;});};"
     /* references(name)/callsites(name): D5a call-site audit — every reference to
        a free name or method `name` in this fragment (whole subtree), with line
        numbers; callsites = the references that are the callee of a call. Read
@@ -3929,6 +3934,116 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        a.push(pomView(rootFn,path.concat([i])));return a;}});"
     "    return Object.freeze(v);};"
     "  C.pom=function(rootFn){return pomView(rootFn,[]);};"
+    /* cst(source): a CST view over plain SOURCE, with no live function behind it
+       -- the §38 shape, where what you have is vendor TEXT you may not edit.
+       pom() needs a compiled function (it reads the bytecode's source slice);
+       this needs only a parse.  It is also what makes a rewrite REVIEWABLE
+       before installation (`cst(rep.source).query(...)` checks the result
+       structurally instead of by string compare) and what lets hardening passes
+       compose, since harden() returns source rather than a node.  Pure analysis:
+       it confers nothing, parses fail-closed, and the view is frozen like any
+       other.  `parent` is null at the root -- there is no enclosing node. */
+    "  C.cst=function(source){var src=String(source);"
+    "    return cstView(src,cstParse(src),['cst'],function(){return null;});};"
+    /* harden(node, query, wrapperQuotation) -- increment D5b-3: SOURCE-REWRITE
+       hardening, the residual §38 case.  Every site the query matches is
+       replaced by the wrapper with `$$` standing for the site's own source, and
+       the result comes back as a QUOTATION, so installation stays D4's
+       (`bindAt(site,q,contract)` / `epoch.replace(q)` -- rebuild-on-write, never
+       an in-place edit of a running fragment).
+
+       WHY IT IS NOT THE ENFORCEMENT STORY.  For a free name the capability
+       kernel is strictly better: `grant(env,"fetch",mediate(cap,guard))` needs no
+       parser and cannot be evaded by spelling.  harden() exists for what the
+       kernel cannot name -- a LOCALLY-BOUND callee, a method call, one site out
+       of many at a position -- which is also exactly what D5a's bytecode audit
+       cannot see.  Reach for the kernel first; this is the fallback.
+
+       WHY IT RETURNS A DESCRIPTION AND NOT AN INSTALL.  Rewriting is analysis
+       (class R/L): it produces text.  Keeping the authority to install in D4
+       means a hardening pass can be reviewed, diffed and admitted before it runs
+       -- and that a rewrite cannot quietly become an install.
+
+       $$ IS A CODE SPLICE, and that is the one place this differs from quote()'s
+       data splices, which deliberately bind as JSON literals so a spliced string
+       can never become code.  It is sound here only because the code spliced is
+       the fragment's OWN source, read back out of the node it came from -- never
+       caller text.
+
+       The wrapper IS caller text, and is held to being a single
+       `ExpressionStatement`.  What that buys, precisely: the splice stays at the
+       expression position its range was measured at, so `guard($$); evil()` --
+       which would splice to three VALID statements, and therefore cannot be
+       caught by re-parsing the result -- is refused.  What it does NOT buy: any
+       general guarantee about a wrapper, since `(guard($$), evil())` is also one
+       expression.  A wrapper is code; what bounds it is the env it is realized
+       under, never its syntax.  Do not read this check as an injection defence.
+
+       The report's `count` is the only field that means anything happened --
+       same discipline as jitCompile()'s `installed`.  A query matching nothing
+       yields count 0 and the source unchanged; it does not throw, because
+       hardening a corpus legitimately finds files with no sites, but a caller
+       who does not read `count` cannot tell that from a rewrite. */
+    "  var SITE='$$';"
+    "  C.harden=function(node,query,wrapper){"
+    "    if(!node||typeof node.query!=='function')throw new TypeError("
+    "      'harden: arg0 must be a POM node');"
+    "    var v=(typeof node.cst==='function')?node.cst():node;"
+    "    if(typeof v.src!=='string'||typeof v.query!=='function')"
+    "      throw new TypeError('harden: arg0 has no cst() view');"
+    "    if(typeof query!=='string')throw new TypeError("
+    "      'harden: arg1 must be a selector string');"
+    "    if(!wrapper||!wrapper[QUOTE])throw new TypeError("
+    "      'harden: arg2 must be a comcon.quote() description');"
+    "    var w=String(wrapper.source).trim();"
+    "    if(w.indexOf(SITE)<0)throw new TypeError("
+    "      'harden: wrapper must contain '+SITE+', the matched site -- a "
+                               "wrapper without it would DELETE the site');"
+    /* "One expression" is checked by SHAPE -- the wrapper must parse as a
+       Program of exactly one ExpressionStatement -- not by comparing an
+       expression parse's end offset to the text length.  The offset test looked
+       equivalent and was not: `(__guard($$), evil())` parses to a node whose
+       range EXCLUDES the parentheses, so a perfectly good parenthesized wrapper
+       was refused for the wrong reason, and the refusal would have been credited
+       to the injection rule.
+
+       Normalization then strips only a trailing `;` (spliced verbatim it would
+       break the expression the site sits in).  NOT by slicing to the parsed
+       expression's own range, which was the first attempt: for
+       `(__guard($$), evil())` that range excludes the parentheses, and dropping
+       them changes the precedence of the spliced result -- a rewrite that alters
+       how the surrounding expression groups is exactly what must not happen. */
+    "    var wp=null;"
+    "    try{wp=C.__parse(w);}catch(we){wp=null;}"
+    "    if(!wp||!wp.body||wp.body.length!==1"
+    "       ||wp.body[0].type!=='ExpressionStatement')throw new TypeError("
+    "      'harden: wrapper must be ONE expression, got: '+w);"
+    "    w=w.replace(/[\\s;]+$/,'');"
+    "    var hits=v.query(query).slice().sort(function(a,b){"
+    "      return a.range[0]-b.range[0];});"
+    /* Overlapping matches (a site nested inside another) cannot both be spliced:
+       whichever is written second is built from the ORIGINAL text and discards
+       the first rewrite. Refuse, loudly, rather than silently leaving the inner
+       site unhardened -- the caller narrows the query instead. */
+    "    for(var i=1;i<hits.length;i++)"
+    "      if(hits[i].range[0]<hits[i-1].range[1])throw new Error("
+    "        'harden: sites overlap ('+hits[i-1].type+'@'+hits[i-1].range[0]+"
+    "        ' contains '+hits[i].type+'@'+hits[i].range[0]+"
+    "        '), narrow the query');"
+    /* Back to front, so every range still indexes the text it was measured in. */
+    "    var out=v.src,recs=[];"
+    "    for(var j=hits.length-1;j>=0;j--){"
+    "      var r=hits[j].range,was=v.src.slice(r[0],r[1]);"
+    "      var now=w.split(SITE).join(was);"
+    "      out=out.slice(0,r[0])+now+out.slice(r[1]);"
+    "      recs.unshift(Object.freeze({range:[r[0],r[1]],line:hits[j].line0,"
+    "        type:hits[j].type,before:was,after:now}));}"
+    /* FAIL CLOSED: a splice that produced something unparseable must never be
+       handed back as a quotation -- realize() would be the first thing to find
+       out, at install time, on a live site. */
+    "    if(recs.length)cstParse(out);"
+    "    return Object.freeze({count:recs.length,from:v.hash,source:out,"
+    "      sites:Object.freeze(recs),quotation:C.quote(out)});};"
     /* bindAt(site, quotation, contract): install an admitted quotation at a live
        binding SITE and return an epoch handle (increment D4a — POM mutation is
        REBUILD-ON-WRITE: recompile the quotation, swap the site, new epoch). The
@@ -3957,12 +4072,18 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    h.tombstoned=function(){return tomb;};"
     "    h.call=function(arg){if(tomb)throw new Error('bindAt: tombstoned');"
     "      return cur(arg);};"
+    /* Realize BEFORE touching history or the site, so a replacement that fails
+       admission changes nothing.  Found composing D5b-3 with this: a hardening
+       pass that asks for a capability it cannot have must not cost the live site
+       a rollback slot -- with the push first, a failed replace consumed one and
+       the next rollback() restored the CURRENT epoch instead of the previous. */
     "    h.replace=function(q2){"
     "      if(!q2||!q2[QUOTE])throw new TypeError("
     "        'replace: arg0 must be a comcon.quote() description');"
+    "      var next=make(q2);"
     "      hist.push({epoch:epoch,callable:cur});"
     "      while(hist.length>BINDCAP)pomFreeFrag(hist.shift().callable);"
-    "      cur=make(q2);epoch++;tomb=false;site(cur,epoch);return epoch;};"
+    "      cur=next;epoch++;tomb=false;site(cur,epoch);return epoch;};"
     "    h.rollback=function(){"
     "      if(!hist.length)throw new Error('bindAt: nothing to roll back');"
     "      var prev=hist.pop(),old=cur;"
