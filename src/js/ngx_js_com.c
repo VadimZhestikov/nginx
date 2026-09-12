@@ -3264,9 +3264,22 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      'with':1,'class':1,'yield':1,'await':1,'typeof':1,'delete':1,'void':1,"
     "      'in':1,'instanceof':1,'this':1,'super':1};"
     "    function fail(m){throw new TypeError('not declarative: '+m+' (@'+i+')');}"
+    /* A line comment ends at ANY JS LineTerminator -- LF, CR, U+2028, U+2029 --
+       not only at LF. Scanning for LF alone let a BARE CR (or LS/PS) hide the
+       rest of the line from the review while the engine still compiled it:
+       `a(1); //<CR>for(;;){}` was accepted, its descriptor table listed the one
+       call a(1), and the admitted program ran the loop. That is the escape this
+       profile exists to prevent, so the terminator set must match the engine's.
+       LS/PS end a comment but are NOT accepted as whitespace: outside a comment
+       they still refuse, which is the conservative direction. */
+    "    function isNL(c){return c==='\\n'||c==='\\r'"
+    "      ||c==='\\u2028'||c==='\\u2029';}"
+    "    var ce=0;"
+    "    function nlBetween(a,b){for(var k=a;k<b;k++)if(isNL(s[k]))return true;"
+    "      return false;}"
     "    function ws(){for(;;){var c=s[i];"
     "      if(c===' '||c==='\\t'||c==='\\n'||c==='\\r'){i++;continue;}"
-    "      if(c==='/'&&s[i+1]==='/'){while(i<N&&s[i]!=='\\n')i++;continue;}"
+    "      if(c==='/'&&s[i+1]==='/'){i+=2;while(i<N&&!isNL(s[i]))i++;continue;}"
     "      break;}}"
     "    function ident(){ws();var st=i;if(!isIdS(s[i]))fail('expected name');"
     "      while(i<N&&isId(s[i]))i++;var w=s.slice(st,i);"
@@ -3275,14 +3288,32 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      if(s[i]==='.'){var sv=i;i++;ws();"
     "        if(isIdS(s[i]))p.push(ident());else{i=sv;break;}}else break;}"
     "      return p.join('.');}"
+    /* An unescaped LF or CR inside a string literal is a SyntaxError to the
+       engine, so a source carrying one is not a program at all and must not be
+       reviewed as if it were. A line continuation (backslash + newline) is
+       legal and stays legal: the escape branch consumes it before this test. */
     "    function str(){var q=s[i++],o='';"
-    "      while(i<N&&s[i]!==q){if(s[i]==='\\\\'){o+='\\\\'+s[i+1];i+=2;}else o+=s[i++];}"
+    "      while(i<N&&s[i]!==q){"
+    "        if(s[i]==='\\n'||s[i]==='\\r')fail('line terminator in string');"
+    "        if(s[i]==='\\\\'){o+='\\\\'+s[i+1];i+=2;}else o+=s[i++];}"
     "      if(s[i]!==q)fail('unterminated string');i++;"
     "      try{return JSON.parse('\"'+o+'\"');}catch(e){return o;}}"
-    "    function num(){var st=i;if(s[i]==='-')i++;while(i<N&&isD(s[i]))i++;"
-    "      if(s[i]==='.'){i++;while(i<N&&isD(s[i]))i++;}"
+    /* A numeric literal must actually be one. Scanning optimistically and
+       handing back Number(slice) minted values the source never contained: a
+       bare '-' and a truncated exponent ('1e') both produced NaN, which the
+       descriptor table then reported as JSON null -- a literal the reviewer
+       sees but the source does not have, in a source the engine rejects. A
+       non-finite value (1e400) is refused for the same reason: the table is
+       advertised as a diffable JSON artifact, and JSON cannot carry it. */
+    "    function num(){var st=i,nd=0;if(s[i]==='-')i++;"
+    "      while(i<N&&isD(s[i])){i++;nd++;}"
+    "      if(s[i]==='.'){i++;while(i<N&&isD(s[i])){i++;nd++;}}"
+    "      if(nd===0)fail('malformed number');"
     "      if(s[i]==='e'||s[i]==='E'){i++;if(s[i]==='+'||s[i]==='-')i++;"
-    "        while(i<N&&isD(s[i]))i++;}return Number(s.slice(st,i));}"
+    "        var ne=0;while(i<N&&isD(s[i])){i++;ne++;}"
+    "        if(ne===0)fail('malformed exponent');}"
+    "      var v=Number(s.slice(st,i));"
+    "      if(!isFinite(v))fail('number literal is not finite');return v;}"
     "    function obj(){i++;var o={};ws();if(s[i]==='}'){i++;return o;}"
     "      for(;;){ws();var k=(s[i]==='\"'||s[i]===\"'\")?str():ident();ws();"
     "        if(s[i]!==':')fail(\"expected ':'\");i++;o[k]=value();ws();"
@@ -3293,15 +3324,20 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        if(s[i]!==']')fail(\"expected ']'\");i++;break;}return a;}"
     "    function args(){var a=[];ws();if(s[i]===')')return a;"
     "      for(;;){a.push(value());ws();if(s[i]===','){i++;continue;}break;}return a;}"
+    /* `ce` tracks the index just past the ')' that closed the most recent call,
+       i.e. where the statement really ended. chain() skips trailing whitespace
+       itself while looking for a further '.' step, so the statement separator
+       below cannot be decided from a flag set during that skip -- it needs the
+       span of source between the closing ')' and the next token. */
     "    function chain(){var steps=[],p=path();ws();"
     "      if(s[i]!=='(')fail(\"expected '(' after '\"+p+\"'\");i++;"
     "      steps.push({op:p,args:args()});ws();"
-    "      if(s[i]!==')')fail(\"expected ')'\");i++;"
+    "      if(s[i]!==')')fail(\"expected ')'\");i++;ce=i;"
     "      for(;;){ws();if(s[i]==='.'){var sv=i;i++;ws();"
     "        if(!isIdS(s[i])){i=sv;break;}var p2=path();ws();"
     "        if(s[i]!=='(')fail(\"chain step '\"+p2+\"' is not a call\");i++;"
     "        steps.push({op:p2,args:args()});ws();"
-    "        if(s[i]!==')')fail(\"expected ')'\");i++;continue;}break;}"
+    "        if(s[i]!==')')fail(\"expected ')'\");i++;ce=i;continue;}break;}"
     "      return steps;}"
     "    function value(){ws();var c=s[i];"
     "      if(c==='\"'||c===\"'\")return str();"
@@ -3312,10 +3348,19 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        if(s[i]==='('){i=sv;return {chain:chain()};}"
     "        return {ref:p};}"
     "      fail(\"unexpected '\"+(c||'<eof>')+\"'\");}"
+    /* Statements must be SEPARATED, by ';' or by a line break. Treating the
+       ';' as merely optional accepted `one() two()`, which is not a program in
+       any grammar -- the engine rejects it outright -- so the table described
+       something that could never run. This is the engine's own rule (explicit
+       semicolon, or automatic insertion at a line terminator), kept strict:
+       nothing legal is lost, since a proposal that omits both is not JS. */
     "    var out=[];ws();"
     "    while(i<N){var sv=i;path();ws();"
     "      if(s[i]!=='(')fail('statement must be a call');i=sv;"
-    "      out.push(chain());ws();if(s[i]===';'){i++;ws();}}"
+    "      out.push(chain());var ep=ce;ws();"
+    "      if(s[i]===';'){i++;ws();}"
+    "      else if(i<N&&!nlBetween(ep,i))"
+    "        fail(\"expected ';' between statements\");}"
     "    return {declarative:true,statements:out};};"
     /* reviewCalls(source, grants) — the admission-time CALL check.
        reviewDeclarative() proves a proposal has the declarative SHAPE, but its

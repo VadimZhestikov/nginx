@@ -69,6 +69,21 @@ tables**; `realize(q, {profile:'declarative'})` refuses a non-declarative propos
 now *soundly review/diff* an untrusted config sentence, not just runtime-validate it. The remainder
 below (full CST / source-rewrite) is still D5b-2+.
 
+**Hardened 2026-09-11 (`t/comcon_declarative_fuzz.t`).** Property fuzzing the checker found that its
+hand-rolled lexer did not agree with the engine's, and one disagreement was an escape: a `//` comment
+was scanned to LF only, so a **bare CR** — or U+2028 / U+2029, all LineTerminators to the engine —
+ended the comment for the compiler but not for the reviewer. `a(1); //<CR>for(;;){}` was accepted and
+its descriptor table listed the single call `a(1)`, while the admitted program ran the loop. A review
+artifact that omits a statement is worse than no review, since the operator signs it. Three further
+divergences let sources through that are not JavaScript at all (no statement separator required, so
+`one() two()` passed; raw line terminators inside string literals; `-` and `1e` scanned into a NaN
+literal the source never contained). The accepted grammar is now exactly: statements separated by
+`;` or a line break, string literals free of raw line terminators, numeric literals well-formed and
+finite. A backstop of "and it must also compile" via `new Function(source)` was deliberately **not**
+added — the test uses that same compile as its independent oracle, and wiring it into the
+implementation would make the differential agree with itself by construction and stop it finding
+the next divergence.
+
 
 
 Making a proposal's review **sound** — proving a sentence stays in a declarative subset (no loops /
