@@ -357,6 +357,70 @@ function release() {
     return freed;
 }
 
+/* ------------------------------------------------- retired listener ---
+ * A listener keeps a back-reference to its socket as a registry INDEX.  A hard
+ * removeListener() clears in_listening, which lets the socket be closed and its
+ * slot recycled, while the listener object stays usable -- no getter checks
+ * st->closed.  Resolving that index without the generation made a retired
+ * listener report the new occupant's address and, through `.socket`, mint a
+ * LIVE handle that could close a socket it never owned.  Set up here at config
+ * phase, exercised once at request time.
+ */
+var RETIRE = { ok: false };
+var R_LIS = null, R_SOCK = null;
+try {
+    R_SOCK = nginx.createSocket('127.0.0.1:19601');
+    var rsrv = nginx.http.addServer('retired.local');
+    rsrv.addLocation('/x').handler = function (req) { req.respond(200, {}, 'x'); };
+    R_LIS = nginx.http.attach(R_SOCK);
+    R_LIS.addServer(rsrv);
+    RETIRE.ok = true;
+} catch (e) { RETIRE.error = String(e && e.message); }
+
+function retiredProbe() {
+    var r = { setupOk: RETIRE.ok, setupError: RETIRE.error };
+    if (!RETIRE.ok) { return r; }
+
+    /* CONTROLS first, while the listener is live: these prove the getters
+     * under test actually return something, so that "null" and "" afterwards
+     * mean the guard fired rather than that the getter never works. */
+    try { r.liveAddr = String(R_LIS.address); } catch (e) { r.liveAddr = 'threw'; }
+    try {
+        var live = R_LIS.socket;
+        r.liveSocketNull = (live === null);
+        if (live) { r.liveSocketAddr = String(live.address); }
+    } catch (e2) { r.liveSocketThrew = true; }
+
+    try {
+        r.removed = nginx.http.removeListener('127.0.0.1:19601', { hard: true });
+        try { R_SOCK.close(); r.sockClosed = true; }
+        catch (e3) { r.sockClosed = 'threw: ' + String(e3.message).slice(0, 50); }
+
+        /* the slot is free again; this takes it */
+        var s2 = nginx.createSocket('127.0.0.1:19602');
+        r.s2Addr = String(s2.address);
+
+        try { r.retiredAddr = String(R_LIS.address); }
+        catch (e4) { r.retiredAddr = 'threw'; }
+
+        try {
+            var back = R_LIS.socket;
+            r.backIsNull = (back === null);
+            if (back !== null && back !== undefined) {
+                try { r.backAddr = String(back.address); } catch (e5) { r.backAddr = 'threw'; }
+                try { back.close(); r.backCloseAccepted = true; }
+                catch (e6) { r.backCloseAccepted = false; }
+            }
+        } catch (e7) { r.backThrew = true; }
+
+        try { s2.fd; r.s2Alive = true; } catch (e8) { r.s2Alive = false; }
+        try { s2.close(); r.s2OwnerCanClose = true; }
+        catch (e9) { r.s2OwnerCanClose = false; }
+    } catch (e) { r.probeError = String(e && e.message); }
+
+    return r;
+}
+
 var locs = nginx.http.servers[0].locations;
 for (var li = 0; li < locs.length; li++) {
     if (locs[li].path === "/sock") {
@@ -367,6 +431,7 @@ for (var li = 0; li < locs.length; li++) {
                 else if (q.op === 'hold')    { r = { held: hold(parseInt(q.n) || 10) }; }
                 else if (q.op === 'release') { r = { freed: release() }; }
                 else if (q.op === 'nonstring') { r = nonStringProbe(); }
+                else if (q.op === 'retired') { r = retiredProbe(); }
                 else { r = runRange(parseInt(q.from) || 0, parseInt(q.n) || 100); }
             } catch (e) { r = { driverError: String(e && e.message) }; }
             req.respond(200, { 'content-type': 'application/json' },
@@ -385,7 +450,7 @@ for (var li = 0; li < locs.length; li++) {
 }
 JS
 
-$t->try_run('no js module')->plan(19);
+$t->try_run('no js module')->plan(26);
 
 sub jget {
     my ($path) = @_;
@@ -495,6 +560,37 @@ cmp_ok($a{accepted} || 0, '>', 100,
        'the accept path was exercised enough for the faithfulness oracle to mean something');
 is($a{failCount} || 0, 0,
    'no address was bound unfaithfully, refused improperly, or left open');
+
+# ---------------------------------------------------------------------------
+# 2b. A retired listener must not resurrect as a handle to someone else's
+#     socket.  Destructive, so it runs once and last among the JS probes.
+# ---------------------------------------------------------------------------
+my $rt = jget('/sock?op=retired');
+
+ok($rt->{setupOk}, 'retired-listener fixture attached a socket to a listener')
+    or diag 'setup error: ' . ($rt->{setupError} || 'unknown');
+
+SKIP: {
+    skip 'fixture did not attach', 6 unless $rt->{setupOk};
+
+    # controls: the getters return something while the listener is live, so a
+    # null/empty reading afterwards means the guard fired, not that the getter
+    # is simply always empty.
+    is($rt->{liveAddr}, '127.0.0.1:19601',
+       'control: a live listener reports its own address');
+    ok(!$rt->{liveSocketNull} && $rt->{liveSocketAddr} eq '127.0.0.1:19601',
+       'control: a live listener hands back its own socket');
+
+    ok($rt->{sockClosed} eq '1' || $rt->{sockClosed},
+       'after a hard removeListener the socket can be closed');
+
+    isnt($rt->{retiredAddr}, $rt->{s2Addr},
+         'a retired listener does not report the address of the socket that took its slot');
+    ok($rt->{backIsNull},
+       'a retired listener does not mint a handle to the socket that took its slot');
+    ok($rt->{s2Alive} && $rt->{s2OwnerCanClose},
+       'that socket is untouched and its owner can still close it');
+}
 
 # ---------------------------------------------------------------------------
 # 3. fd leak, with the counter shown to move first.

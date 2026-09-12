@@ -408,7 +408,19 @@ ngx_js_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
      * (incl. the socket back-ref and serverNames escalation) when the current
      * compartment may not reach that owner. No-op today (HOST_ROOT).
      */
-    if (!ngx_js_compartment_may_reach(ngx_js_socket_owner(st->socket_handle))
+    /*
+     * Resolve the socket THIS listener attached to, not whatever holds its slot
+     * now.  A hard removeListener() clears in_listening, which lets the socket
+     * be closed and its slot recycled, while this listener object stays usable
+     * -- nothing marks it dead to the getters.  Resolving by index alone made a
+     * retired listener report the new socket's address and, via `socket`, hand
+     * out a live handle that could close it.
+     */
+    sock = ngx_js_socket_state_checked(st->socket_handle, st->socket_gen);
+
+    if (!ngx_js_compartment_may_reach(sock != NULL
+                                      ? sock->owner
+                                      : NGX_JS_COMPARTMENT_HOST_ROOT)
         && ngx_js_compartment_denial(NGX_JS_DENIAL_LISTENER_READ, NULL))
     {
         return JS_NULL;
@@ -416,16 +428,14 @@ ngx_js_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
 
     switch (magic) {
     case 0: /* address — same as sock.address */
-        if (st->socket_handle >= NGX_JS_SOCKET_REG_MAX
-            || ngx_js_socket_reg[st->socket_handle] == NULL)
-        {
+        if (sock == NULL) {
             return JS_NewString(ctx, "");
         }
-        sock = ngx_js_socket_reg[st->socket_handle];
         return JS_NewString(ctx, sock->addr);
 
     case 1: /* socket — NginxSocket back-reference */
-        return ngx_js_socket_wrap(ctx, st->socket_handle);
+        return ngx_js_socket_wrap_checked(ctx, st->socket_handle,
+                                          st->socket_gen);
 
     case 2: /* serverNames[] — array of server name strings */
     {
@@ -2988,6 +2998,7 @@ ngx_js_http_attach(JSContext *ctx, JSValueConst this_val,
 
     ngx_memzero(st, sizeof(ngx_js_http_listener_state_t));
     st->socket_handle = socket_handle;
+    st->socket_gen    = ngx_js_socket_gen_at(socket_handle);
 
     /* Fill sockaddr from the socket state */
     st->sin.sin_family = AF_INET;

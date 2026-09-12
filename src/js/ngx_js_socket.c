@@ -66,6 +66,42 @@ ngx_js_socket_owner(uint32_t handle)
 }
 
 
+/*
+ * The generation currently occupying a slot, for a holder that wants to record
+ * which incarnation it attached to (a listener does).  Returns 0 for a slot
+ * that is out of range or empty; a live slot's generation is always >= 1,
+ * since createSocket() bumps before storing.
+ */
+uint32_t
+ngx_js_socket_gen_at(uint32_t handle)
+{
+    if (handle >= NGX_JS_SOCKET_REG_MAX || ngx_js_socket_reg[handle] == NULL) {
+        return 0;
+    }
+
+    return ngx_js_socket_gen[handle];
+}
+
+
+/*
+ * Resolve a handle REMEMBERED by a long-lived holder.  Same rule as the JS
+ * handle path: an index is not enough, the incarnation has to match too.
+ */
+ngx_js_socket_state_t *
+ngx_js_socket_state_checked(uint32_t handle, uint32_t gen)
+{
+    if (handle >= NGX_JS_SOCKET_REG_MAX || ngx_js_socket_reg[handle] == NULL) {
+        return NULL;
+    }
+
+    if (gen != 0 && ngx_js_socket_gen[handle] != gen) {
+        return NULL;
+    }
+
+    return ngx_js_socket_reg[handle];
+}
+
+
 /* ------------------------------------------------------------------ */
 /* NginxSocket opaque + finalizer                                       */
 /* ------------------------------------------------------------------ */
@@ -106,6 +142,11 @@ ngx_js_socket_handle(JSValueConst val)
 
     op = JS_GetOpaque(val, ngx_js_socket_class_id);
     if (op == NULL) {
+        return -1;
+    }
+
+    /* dead once the slot has moved on, same as every other handle path */
+    if (ngx_js_socket_state_of(op) == NULL) {
         return -1;
     }
 
@@ -375,6 +416,26 @@ ngx_js_socket_wrap(JSContext *ctx, uint32_t handle)
  * 0 address, 1 port, 2 fd, 3 listener). A clear bit hides that field
  * (reads undefined). Attenuation-only — a membrane never adds authority.
  */
+/*
+ * Wrap a socket a holder recorded earlier, refusing if the slot has been
+ * recycled since.  ngx_js_socket_wrap() stamps the handle with the generation
+ * the slot has NOW, which is exactly right when the caller has just created or
+ * been handed the socket -- and exactly wrong for a back-reference stored long
+ * ago, because it would mint a valid handle to whatever moved in.  A retired
+ * listener asked for its socket that way and got a live capability to an
+ * unrelated one.
+ */
+JSValue
+ngx_js_socket_wrap_checked(JSContext *ctx, uint32_t handle, uint32_t gen)
+{
+    if (ngx_js_socket_state_checked(handle, gen) == NULL) {
+        return JS_NULL;
+    }
+
+    return ngx_js_socket_wrap(ctx, handle);
+}
+
+
 JSValue
 ngx_js_socket_wrap_masked(JSContext *ctx, uint32_t handle, uint32_t mask)
 {
@@ -636,6 +697,17 @@ ngx_js_socket_get_handle(JSValueConst sock)
 
     op = JS_GetOpaque(sock, ngx_js_socket_class_id);
     if (op == NULL) {
+        return (uint32_t) NGX_JS_SOCKET_REG_MAX;
+    }
+
+    /*
+     * Hand back the INDEX only while it still means the socket this object was
+     * issued for.  Callers (attach) go straight from here to
+     * ngx_js_socket_reg[handle], so returning a live index for a dead object
+     * would launder a stale handle into a reference to the slot's new
+     * occupant.
+     */
+    if (ngx_js_socket_state_of(op) == NULL) {
         return (uint32_t) NGX_JS_SOCKET_REG_MAX;
     }
 

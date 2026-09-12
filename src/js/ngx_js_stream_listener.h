@@ -32,8 +32,11 @@
  *   addServer() — fills default_server, activates (pushes into cycle->listening)
  */
 typedef struct {
-    /* Back-reference to the NginxSocket */
+    /* Back-reference to the NginxSocket.  Slot index + the generation it held
+     * at attach; an index alone stops meaning this socket once the slot is
+     * recycled. */
     uint32_t                      socket_handle;
+    uint32_t                      socket_gen;
 
     /* Stream routing structures */
     ngx_stream_port_t             port;    /* .addrs → &addr, .naddrs = 1 */

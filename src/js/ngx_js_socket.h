@@ -47,6 +47,19 @@ typedef struct ngx_js_socket_state_s {
  */
 extern ngx_js_socket_state_t *ngx_js_socket_reg[NGX_JS_SOCKET_REG_MAX];
 
+/*
+ * Slot generations.  A registry index identifies a SLOT, not a socket: close()
+ * frees the slot and the next createSocket() refills it.  Anything that keeps a
+ * handle across that boundary -- a JS NginxSocket, or a listener's
+ * socket_handle -- must remember the generation it was issued for and check it
+ * on every use, or it silently comes to refer to a different socket.
+ */
+uint32_t ngx_js_socket_gen_at(uint32_t handle);
+ngx_js_socket_state_t *ngx_js_socket_state_checked(uint32_t handle,
+    uint32_t gen);
+JSValue ngx_js_socket_wrap_checked(JSContext *ctx, uint32_t handle,
+    uint32_t gen);
+
 
 /*
  * COMCON A1.1: the owning compartment of a registered socket, or HOST_ROOT for

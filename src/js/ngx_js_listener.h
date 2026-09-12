@@ -44,8 +44,11 @@
  *   addVirtualServer() — extends vservers[], rebuilds virtual_names (Phase D)
  */
 typedef struct {
-    /* Back-reference to the socket */
+    /* Back-reference to the socket.  The handle names a registry SLOT, so it
+     * is only meaningful together with the generation that slot held when this
+     * listener attached -- see ngx_js_socket_state_checked(). */
     uint32_t                  socket_handle;
+    uint32_t                  socket_gen;
 
     /* HTTP routing structures */
     ngx_http_port_t           port;          /* contains addrs pointer */

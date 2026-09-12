@@ -632,7 +632,7 @@ ngx_js_stream_listener_activate(ngx_js_stream_listener_state_t *st,
         return NGX_ERROR;
     }
 
-    sock = ngx_js_socket_reg[st->socket_handle];
+    sock = ngx_js_socket_state_checked(st->socket_handle, st->socket_gen);
     if (sock == NULL) {
         return NGX_ERROR;
     }
@@ -1196,6 +1196,7 @@ ngx_js_stream_attach(JSContext *ctx, JSValueConst this_val,
     ngx_memzero(st, sizeof(ngx_js_stream_listener_state_t));
 
     st->socket_handle = socket_handle;
+    st->socket_gen    = ngx_js_socket_gen_at(socket_handle);
 
     /* Build sockaddr_in from socket state */
     ngx_memzero(&st->sin, sizeof(st->sin));
