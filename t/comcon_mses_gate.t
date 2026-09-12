@@ -232,3 +232,4 @@ cmp_ok($ms // 0, '>=', 100,
        'gate (e): it ran until the deadline (not an unrelated immediate throw)');
 cmp_ok($ms // 999999, '<', 5000,
        'gate (e): and was stopped well before the loop would have ended');
+

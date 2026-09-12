@@ -1621,17 +1621,36 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         JS_FreeValue(hctx, jstr);
     }
 
-    if (timeout > 0) {
-        w = jcf->worker;
-        if (w != NULL) {
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
-            newd = now_ms + timeout;
-            old_deadline = w->request_deadline_ms;
-            w->request_deadline_ms =
-                (old_deadline != 0 && old_deadline < newd) ? old_deadline : newd;
-            metered = 1;
-        }
+    /*
+     * A confined fragment ALWAYS runs under a deadline.
+     *
+     * The contract's meter sets it; with no meter, `timeout` arrives as 0 and
+     * this used to arm nothing -- so the default configuration ran untrusted
+     * code with no bound at all, and an accidental infinite loop took the
+     * worker down without any escape being involved. The M-SES gate's
+     * resource-guard condition would still pass, because it arms the deadline
+     * itself; that gap is what made this worth fixing rather than documenting.
+     *
+     * Enforced HERE rather than in the JS wrapper that computes `ms`, so
+     * calling __invokeConfined directly cannot skip it.
+     *
+     * An explicit meter still wins when it asks for LONGER, and the min() below
+     * keeps the old rule that a fragment may only tighten an enclosing
+     * deadline, never extend it.
+     */
+    if (timeout == 0) {
+        timeout = NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS;
+    }
+
+    w = jcf->worker;
+    if (w != NULL) {
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
+        newd = now_ms + timeout;
+        old_deadline = w->request_deadline_ms;
+        w->request_deadline_ms =
+            (old_deadline != 0 && old_deadline < newd) ? old_deadline : newd;
+        metered = 1;
     }
 
     /* run the fragment as a confined compartment: the A1 reach gate denies the

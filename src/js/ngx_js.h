@@ -20,6 +20,16 @@ typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
  * message.  Serialized via JS_WriteObject; sent over the existing nginx
  * channel socketpair with a ngx_channel_t header (ch.fd = payload_len).
  */
+/*
+ * Default wall-clock bound for a confined comcon.include fragment, in ms,
+ * applied when the contract carries no meter. A fragment is the one place
+ * untrusted code runs, so it must never run unbounded: without this an
+ * accidental infinite loop hangs the worker with no escape involved.
+ * An explicit contract.meter[...].timeoutMs overrides it in either direction;
+ * a fragment can still only TIGHTEN an enclosing request deadline.
+ */
+#define NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS  5000
+
 #define NGX_JS_MSG_MAX  (64 * 1024)
 
 /* Forward declaration to allow ngx_js_loc_conf_t to store original_handler */
