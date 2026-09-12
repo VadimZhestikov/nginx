@@ -2181,7 +2181,20 @@ ngx_js_comcon_op_mode(JSContext *ctx, JSValueConst this_val, int argc,
     }
 
     JS_FreeCString(ctx, m);
-    return JS_UNDEFINED;
+
+    /*
+     * Write BOTH: jcf->tenant_mode so a config-time call survives
+     * policy_init() (which reads it at the end of the host eval), and the
+     * effective mode so a REQUEST-time call is not silently inert -- the
+     * audit-first rollout is a live session's verb, and it used to report
+     * success while the compartment kept the mode it had.  Per process; there is
+     * no fleet-wide fan-out (std.ops says so rather than implying otherwise).
+     */
+    ngx_js_compartment_mode_set((ngx_js_tenant_mode_e) jcf->tenant_mode);
+
+    /* Return the effective name, so a caller can VERIFY the switch landed
+       instead of trusting that it did. */
+    return JS_NewString(ctx, ngx_js_tenant_mode_name());
 }
 
 

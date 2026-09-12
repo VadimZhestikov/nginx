@@ -122,6 +122,10 @@ typedef enum {
  * from init_conf before the tenant evaluates; workers inherit by fork).
  */
 void ngx_js_compartment_policy_init(ngx_js_tenant_mode_e mode);
+/* Runtime mode switch (audit-first rollout), counters preserved, PER PROCESS.
+ * policy_init only runs at config load, so without this comcon.mode() was
+ * silently inert at request time -- see the definition. */
+void ngx_js_compartment_mode_set(ngx_js_tenant_mode_e mode);
 
 /* B0: record a harvested access path (deny-by-default wishlist entry). */
 void         ngx_js_learn_record(const char *path);

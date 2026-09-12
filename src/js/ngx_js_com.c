@@ -4110,6 +4110,144 @@ static const char  ngx_js_comcon_bootstrap[] =
     "       why:'needs C-side enforcement; the mediation vocabulary is closed "
              "at revoke/redact/allow/routes'},"
     "      {name:'std.ops',why:'the comconctl verbs; not started'}]};};"
+    /* ---------------- std.ops: administration as library code ----------------
+       FOUNDATION §8a: THERE IS NO MANAGEMENT PLANE.  comconctl is a shell, not a
+       tool; every verb is an ordinary library program over the four kernel
+       operators plus the OPS-RESOURCE CAPABILITIES, so v2 §9.3's "the tooling
+       never needs a backdoor" is derived rather than asserted.
+
+       Which means a session TAKES ITS RESOURCES AS ARGUMENTS and reaches for no
+       ambient authority: `std.ops({log: nginx.tenantDenials, mode: comcon.mode})`.
+       A verb whose resource was not passed is ABSENT FROM THE SESSION, not
+       present-and-throwing, so "what can this session do" is answerable by
+       Object.keys() instead of by reading the implementation. A session given
+       nothing has no verbs -- that is the no-backdoor property, visible.
+
+       THE RESOURCE LIST IS THE THIRD CLOSED ENUMERATION (§8a, ROADMAP §12 V7:
+       enumerations are generated, never maintained).  All seven are named here,
+       including the two with no host spelling yet -- `host:null` is what makes
+       the gap checkable instead of invisible, and the verbs needing them are
+       reported as withheld with the reason. describe() walks the SAME table the
+       session is built from, so the list and the reality cannot drift. */
+    "  var OPS_RES={"
+    "    log:{doc:'denial/observation log',host:'nginx.tenantDenials()'},"
+    "    learn:{doc:'learning recorder',host:'nginx.tenantLearning()'},"
+    "    mode:{doc:'audit/enforce/learn switch',host:'comcon.mode()'},"
+    "    bindings:{doc:'binding/epoch store',"
+    "              host:'the session\\'s own record of bindAt handles'},"
+    "    broadcast:{doc:'class-F broadcast channel',"
+    "               host:'nginx.shared (via bindShared)'},"
+    "    provenance:{doc:'grant-chain registry',host:null},"
+    "    signing:{doc:'signing key',host:null}};"
+    "  STD.ops=function(res){"
+    "    res=res||{};"
+    "    var have={},k;"
+    "    for(k in OPS_RES)if(Object.prototype.hasOwnProperty.call(OPS_RES,k))"
+    "      have[k]=(res[k]!==undefined&&res[k]!==null&&res[k]!==false);"
+    /* The session's own binding/epoch store. It holds bindAt handles the
+       operator registered, plus the quotation each epoch was built from --
+       which IS the snapshot store: "snapshot = quote" (§8a). */
+    "    var reg={},names=[];"
+    "    function need(n){var b=reg[n];"
+    "      if(!b)throw new TypeError('ops: no binding named '+n);return b;}"
+    "    var V=[];"
+    "    function verb(name,needs,fn){V.push({name:name,needs:needs,fn:fn});}"
+
+    "    verb('denials','log',function(){"
+    "      var d=res.log();return {mode:d.mode,total:d.total,byOp:d.byOp};});"
+    "    verb('learn','learn',function(){return res.learn();});"
+    /* shadow/enforce are the audit-first rollout, and they are REAL here because
+       comcon.mode() is real: audit observes and records, enforce denies. */
+    /* Each returns the EFFECTIVE mode, read back rather than assumed -- and if
+       the session also holds the log cap, read back from the reporter, which is
+       a different path from the setter.  comcon.mode() used to be silently inert
+       at request time; a verb that reports its own argument back would have said
+       'enforce' throughout. */
+    "    function setMode(m){var got=res.mode(m);"
+    "      if(have.log){var d=res.log();if(d&&d.mode)got=d.mode;}"
+    "      return got;}"
+    "    verb('shadow','mode',function(){return setMode('audit');});"
+    "    verb('enforce','mode',function(){return setMode('enforce');});"
+    "    verb('learnMode','mode',function(){return setMode('learn');});"
+
+    "    verb('register','bindings',function(name,handle,quotation){"
+    "      if(typeof name!=='string'||!name)throw new TypeError("
+    "        'ops.register: arg0 must be a name');"
+    "      if(!handle||typeof handle.replace!=='function')throw new TypeError("
+    "        'ops.register: arg1 must be a comcon.bindAt() handle');"
+    "      if(!quotation||!quotation[QUOTE])throw new TypeError("
+    "        'ops.register: arg2 must be the quotation it was bound from');"
+    "      if(reg[name])throw new TypeError('ops.register: duplicate '+name);"
+    "      reg[name]={h:handle,q:quotation,hist:[quotation]};"
+    "      names.push(name);return name;});"
+    "    verb('bindings','bindings',function(){"
+    "      return names.map(function(n){var b=reg[n];return {name:n,"
+    "        epoch:b.h.epoch(),tombstoned:b.h.tombstoned(),"
+    "        snapshots:b.hist.length};});});"
+    /* snapshot = quote: the quotation the live epoch was built from. Inert,
+       cap-free, and exactly what rollback/rebind consume. */
+    "    verb('snapshot','bindings',function(name){return need(name).q;});"
+    "    verb('rebind','bindings',function(name,q){var b=need(name);"
+    "      if(!q||!q[QUOTE])throw new TypeError("
+    "        'ops.rebind: arg1 must be a comcon.quote() description');"
+    "      var e=b.h.replace(q);b.q=q;b.hist.push(q);return e;});"
+    "    verb('rollback','bindings',function(name){var b=need(name);"
+    "      var e=b.h.rollback();"
+    "      if(b.hist.length>1){b.hist.pop();b.q=b.hist[b.hist.length-1];}"
+    "      return e;});"
+    /* rewrite = harden + rebind: SHOWCASE §38 as one operator action. harden()
+       confers nothing (text -> text), so it needs no capability of its own; the
+       authority is in the rebind, which needs the binding store. */
+    "    verb('rewrite','bindings',function(name,query,wrapper){"
+    "      var b=need(name);"
+    "      var rep=C.harden(C.cst(b.q.source),query,wrapper);"
+    "      if(rep.count===0)return {count:0,epoch:b.h.epoch()};"
+    "      var e=b.h.replace(rep.quotation);"
+    "      b.q=rep.quotation;b.hist.push(rep.quotation);"
+    "      return {count:rep.count,epoch:e,sites:rep.sites};});"
+    /* remove is class X (POM.md §3): guarded by SNAPSHOT-FIRST plus a
+       confirmation that NAMES the binding -- a blind {confirm:true} pasted from
+       another call cannot remove the wrong one. */
+    "    verb('remove','bindings',function(name,opts){var b=need(name);"
+    "      if(!opts||opts.confirm!==name)throw new TypeError("
+    "        'ops.remove is class X (irreversible): pass {confirm:\"'+name+"
+    "        '\"} to say which binding you mean');"
+    "      b.hist.push(b.q);return b.h.remove();});"
+    "    verb('revive','bindings',function(name){return need(name).h.revive();});"
+
+    /* trustReport: for each registered binding, what is actually holding -- the
+       epoch, whether it is bounded, and which contract fields bite. Over the
+       binding store; the operator-session half of §8a's trust-report needs the
+       provenance registry, which does not exist (see withheld). */
+    "    verb('trustReport','bindings',function(){"
+    "      return {bindings:names.map(function(n){var b=reg[n];return {"
+    "        name:n,epoch:b.h.epoch(),tombstoned:b.h.tombstoned(),"
+    "        ops:b.h.describe().ops.map(function(o){"
+    "          return o.name+':'+o.cls;})};}),"
+    "        enforcedBy:STD.describe().enforced};});"
+
+    "    var sess={},withheld=[],avail=[];"
+    "    for(var i=0;i<V.length;i++){"
+    "      if(have[V[i].needs]){sess[V[i].name]=V[i].fn;avail.push(V[i].name);}"
+    "      else withheld.push({verb:V[i].name,needs:V[i].needs,"
+    "        host:OPS_RES[V[i].needs]?OPS_RES[V[i].needs].host:null});}"
+    "    sess.describe=function(){"
+    "      var rs=[];for(var k2 in OPS_RES)"
+    "        if(Object.prototype.hasOwnProperty.call(OPS_RES,k2))"
+    "          rs.push({name:k2,doc:OPS_RES[k2].doc,host:OPS_RES[k2].host,"
+    "                   held:!!have[k2]});"
+    "      return {resources:rs,verbs:avail.slice(),withheld:withheld.slice(),"
+    "        absent:["
+    "          {verb:'revoke',needs:'provenance',"
+    "           why:'no grant-chain registry: revocation walks chains'},"
+    "          {verb:'cosign / office-hours',needs:'signing',"
+    "           why:'no signing key capability'},"
+    "          {verb:'propose',needs:'learn+heuristics',"
+    "           why:'the harvest is here (learn); turning it into a quotation "
+                   "is not'},"
+    "          {verb:'diff / docs',needs:'describe cap',"
+    "           why:'nginx.describe() is not yet handed out as a capability'}]};};"
+    "    return Object.freeze(sess);};"
     "  C.std=Object.freeze(STD);"
     "  Object.freeze(STD.profiles);"
     "  C.pom=function(rootFn){"

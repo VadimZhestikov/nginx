@@ -200,7 +200,7 @@ fallback) → the event dispatcher calls the C function pointer directly.
   admit end-to-end. Gives the 3-layer operator-reconfig UX plan its principled
   foundation.
 
-- **M-LIB — standard policy library. 🚧 STARTED 2026-09-12 — step 1 shipped**
+- **M-LIB — standard policy library. 🚧 IN PROGRESS — steps 1 and 2 shipped 2026-09-12**
   (`INCREMENT_MLIB.md`): `comcon.std` with `profiles.tenant(env,opts)` /
   `profiles.pure_library(opts)` / `describe()`, imports **derived** from the env so the
   manifest cannot drift from the grants, tenants **bounded by default**, and the mediation
@@ -210,9 +210,23 @@ fallback) → the event dispatcher calls the C function pointer directly.
   `std.describe()` names, per contract field, what enforces it — and names what is absent,
   because the one rule for a profile is **only fields the kernel enforces**: MANUAL's
   `postures`/`onViolation` are NOT shipped, since nothing reads them and a posture of
-  ignored keys would be believed. `t/comcon_std_lib.t` (19) + 7 controls. Remaining:
-  `std.ops`, the posture vocabulary (needs enforcement), `allowHosts`/`ttl`/`window`/…
-  (need C-side enforcement), and the "raw operators withheld" governance half.
+  ignored keys would be believed. `t/comcon_std_lib.t` (19) + 7 controls.
+  **Step 2 — `std.ops`, administration as library code** (FOUNDATION §8a, "there is no
+  management plane"): a session **takes its ops-resource capabilities as arguments** and a
+  verb whose resource was not passed is ABSENT, so the no-backdoor property is visible by
+  `Object.keys()` — a session given nothing has only `describe()`. All seven §8a resources
+  are enumerated **including the two with no host spelling** (`provenance`, `signing` →
+  `host:null`), which is what makes those gaps checkable rather than invisible, and
+  `describe()` walks the same table the session is built from (**V7 discharged for this
+  enumeration**). Fifteen verbs; **snapshot = quote**; `remove` is class X with a
+  confirmation that NAMES the binding; `rewrite` is §38 in one verb (`harden` + rebind).
+  **It found a silently-inert runtime `comcon.mode()`:** the gating mode is a static set
+  once at config load, so an operator calling `enforce()` on a running server got "ok" and
+  kept AUDITING — still allowing what they believed they had begun denying. Fixed without
+  resetting the counters (the evidence that justified the switch must survive making it);
+  per process, no fleet-wide fan-out. `t/comcon_std_ops.t` (26) + 6 controls. Remaining:
+  the posture vocabulary (needs enforcement), `allowHosts`/`ttl`/`window`/… (need C-side
+  enforcement), the "raw operators withheld" governance half, and the mode fan-out.
   *(Original scope, preserved:)* The user-facing
   surface is not the kernel but the combinators: `std.profiles.*` (tenant,
   pure_library, forensics/REL, marketplace, config_builder…) and the mediation

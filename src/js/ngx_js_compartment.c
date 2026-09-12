@@ -79,6 +79,33 @@ static ngx_uint_t  ngx_js_learn_path_hits[NGX_JS_LEARN_MAX];
 static ngx_uint_t  ngx_js_learn_n;
 
 
+/*
+ * Switch the EFFECTIVE mode at runtime, without touching the counters.
+ *
+ * The mode that gates lives in the static below; policy_init() sets it once, at
+ * the end of config load.  So comcon.mode() -- which writes jcf->tenant_mode --
+ * took effect during the host eval and was SILENTLY INERT afterwards, which is
+ * precisely when an operator runs it: audit-first rollout is a live session's
+ * verb.  An operator calling enforce() on a running server got "ok" and kept
+ * auditing, i.e. kept ALLOWING what they believed they had started denying.
+ * Found by M-LIB step 2, because std.ops' shadow()/enforce() read the mode back
+ * through the denial report and the two disagreed.
+ *
+ * The counters are deliberately NOT reset here: switching audit -> enforce must
+ * not destroy the audit evidence that justified the switch.  policy_init keeps
+ * zeroing them, since a config load is a new cycle.
+ *
+ * PER PROCESS.  This sets the mode in THIS worker only; the others keep theirs.
+ * There is no fleet-wide mode fan-out (it would want the class-F transport, like
+ * bindShared), and std.ops reports the scope rather than implying otherwise.
+ */
+void
+ngx_js_compartment_mode_set(ngx_js_tenant_mode_e mode)
+{
+    ngx_js_tenant_mode = mode;
+}
+
+
 void
 ngx_js_compartment_policy_init(ngx_js_tenant_mode_e mode)
 {

@@ -560,6 +560,45 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.52 (in place — increment M-LIB step 2: `std.ops`, administration as library code; and a
+runtime mode switch that was silently inert):** FOUNDATION §8a says there is no management
+plane — comconctl is a shell, not a tool, and every verb is an ordinary library program over the
+kernel plus the **ops-resource capabilities**, which is what makes v2 §9.3's "the tooling never
+needs a backdoor" **derived** rather than asserted. `comcon.std.ops(resources)` is that
+derivation made executable: **a session takes its resources as arguments and reaches for no
+ambient authority**, and a verb whose resource was not passed is **absent from the session**
+rather than present-and-throwing. So "what can this session do" is answered by `Object.keys()`;
+a session given nothing has only `describe()`.
+
+**The third closed enumeration is now checkable.** All seven §8a resources are enumerated,
+including the two with **no host spelling** (`provenance` — grant-chain registry; `signing` —
+signing key): `host:null` is what makes a gap visible instead of absent, and the verbs needing
+them (`revoke`, `cosign`) are reported as *withheld, with the reason*. `describe()` walks the
+same table the session is built from, so the enumeration cannot drift from reality (ROADMAP §12
+**V7**: generated, never maintained).
+
+Fifteen verbs ship, each decomposing over something real: `denials`/`learn` (the report caps),
+`shadow`/`enforce`/`learnMode` (the audit-first rollout = `comcon.mode`), the binding-epoch
+store over `bindAt` handles where **snapshot = quote**, `rewrite` (SHOWCASE §38 in one verb:
+`harden` + rebind), and `trustReport`. **`remove` is class X** and is guarded as that class
+demands — snapshot-first plus a confirmation that NAMES the binding, so a `{confirm:true}`
+pasted from another call cannot remove the wrong one.
+
+**THE DEFECT STEP 2 FOUND.** `comcon.mode()` wrote `jcf->tenant_mode`, but the mode that
+*gates* is a static set once by `ngx_js_compartment_policy_init()` at the end of config load.
+So `mode()` worked during the host eval and was **silently inert at request time** — precisely
+when an operator runs it. An operator calling `enforce()` on a running server got "ok" and kept
+**auditing**: still allowing what they believed they had begun denying. It surfaced because
+`std.ops` reads the mode back through the denial report, and the two disagreed.
+`ngx_js_compartment_mode_set()` now switches the effective mode **without resetting the
+counters** (switching audit → enforce must not destroy the evidence that justified it), and
+`comcon.mode()` returns the effective mode so a caller can verify rather than trust. **Per
+process:** there is no fleet-wide mode fan-out, and `std.ops` reports the scope.
+
+`t/comcon_std_ops.t` (26) asserts the rollout as ENFORCEMENT, not as a label — the same A1
+reach probe is denied under `enforce` and allowed under `shadow`, switched at request time —
+plus six negative controls. Scope in `INCREMENT_MLIB.md` §6.
+
 **v5.51 (in place — increment M-LIB step 1: the standard policy library, and the fail-open
 it found first):** increment D finished the kernel, and finished is not usable: there were
 **20 kernel operators and no `std.*` at all**, while MANUAL.md was written as-if-shipped

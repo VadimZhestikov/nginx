@@ -1,9 +1,10 @@
 # INCREMENT — M-LIB: the standard policy library — scope
 
-**Status:** 🚧 STARTED 2026-09-12 (docs v5.51). **Step 1 ✅** — `comcon.std` with
+**Status:** 🚧 IN PROGRESS 2026-09-12 (docs v5.52). **Step 1 ✅** — `comcon.std` with
 `profiles.tenant` / `profiles.pure_library` / `describe()`, and the closed mediation
-vocabulary that step 1 had to fix first. `std.ops`, further profiles, and the posture
-vocabulary are NOT built (see §4 for why each is absent rather than pending).
+vocabulary that step 1 had to fix first. **Step 2 ✅** — `std.ops`: administration as
+library code (§6), which found and fixed a silently-inert runtime `comcon.mode()`.
+Further profiles and the posture vocabulary are NOT built (see §4).
 
 ## 1. Why this is the next increment
 
@@ -106,3 +107,74 @@ the fall-through decides whether that mistake means REFUSE or FULL AUTHORITY.
 from the env, that a tenant is bounded by default, that `describe()` names both the enforced
 fields and the absent vocabulary, and the whole closed-vocabulary story including the TOCTOU.
 Seven controls, each reverting one decision and confirming the named assertion fails.
+
+## 6. Step 2 — `std.ops`: administration as library code
+
+FOUNDATION §8a: **there is no management plane.** comconctl is a shell, not a tool; every
+verb is an ordinary library program over the four kernel operators plus the **ops-resource
+capabilities**, so v2 §9.3's *"the tooling never needs a backdoor"* is **derived** rather than
+asserted. `std.ops` is that derivation, made executable.
+
+```js
+var ops = comcon.std.ops({ log: nginx.tenantDenials, mode: comcon.mode,
+                           learn: nginx.tenantLearning, bindings: true });
+```
+
+**A session takes its resources as arguments and reaches for no ambient authority.** A verb
+whose resource was not passed is **absent from the session**, not present-and-throwing, so
+"what can this session do" is answered by `Object.keys(ops)` rather than by reading the
+implementation. A session given nothing has only `describe()` — the no-backdoor property,
+visible.
+
+### The third closed enumeration, made checkable
+
+All seven ops resources of §8a are enumerated, **including the two with no host spelling**:
+
+| resource | host spelling |
+|---|---|
+| `log` — denial/observation log | `nginx.tenantDenials()` |
+| `learn` — learning recorder | `nginx.tenantLearning()` |
+| `mode` — audit/enforce/learn switch | `comcon.mode()` |
+| `bindings` — binding/epoch store | the session's own record of `bindAt` handles |
+| `broadcast` — class-F channel | `nginx.shared` (via `bindShared`) |
+| `provenance` — grant-chain registry | **none** |
+| `signing` — signing key | **none** |
+
+`host: null` is what makes those two gaps *checkable* instead of invisible, and the verbs
+needing them (`revoke`, `cosign`/office-hours) are reported as withheld **with the reason**.
+`describe()` walks the same table the session is built from, so the enumeration cannot drift
+from reality (ROADMAP §12 **V7**: generated, never maintained).
+
+### The fifteen verbs, and what they decompose to
+
+`denials` · `learn` (reads over the report caps) · `shadow`/`enforce`/`learnMode` (the
+audit-first rollout = `comcon.mode`) · `register`/`bindings`/`snapshot`/`rebind`/`rollback`/
+`remove`/`revive` (the binding-epoch store = `bindAt` handles; **snapshot = quote**) ·
+`rewrite` (§38 in one verb: `harden` + rebind) · `trustReport` · `describe`.
+
+- **`remove` is class X** (POM.md §3) and is guarded the way that class demands:
+  snapshot-first **plus a confirmation that NAMES the binding**, so a `{confirm:true}` pasted
+  from another call cannot remove the wrong one.
+- **`shadow`/`enforce` read the mode BACK** — through the denial report when the session holds
+  it, which is a different path from the setter — so a verb cannot report a switch that did
+  not happen.
+
+### The defect step 2 found
+
+`comcon.mode()` wrote `jcf->tenant_mode`, but the mode that **gates** is a static set once by
+`ngx_js_compartment_policy_init()` at the end of config load. So `mode()` took effect during
+the host eval and was **silently inert at request time** — exactly when an operator runs it.
+An operator calling `enforce()` on a running server got "ok" and kept **auditing**: still
+allowing what they believed they had begun denying. It surfaced because `std.ops` reads the
+mode back through the denial report and the two disagreed.
+
+Fixed with `ngx_js_compartment_mode_set()`, which switches the effective mode **without
+resetting the counters** — switching audit → enforce must not destroy the audit evidence that
+justified the switch. `comcon.mode()` now also returns the effective mode name, so a caller
+can verify rather than trust. **The switch is PER PROCESS**: there is no fleet-wide mode
+fan-out (that wants the class-F transport, as `bindShared` does), and `std.ops` reports the
+scope rather than implying otherwise.
+
+`t/comcon_std_ops.t` (26) asserts the rollout as **enforcement**, not as a label: the same A1
+reach probe returns `null` (denied) under `enforce` and a real listener under `shadow`,
+switched at request time — plus six negative controls.
