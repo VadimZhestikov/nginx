@@ -40,6 +40,20 @@
 JSClassID              ngx_js_socket_class_id;
 ngx_js_socket_state_t *ngx_js_socket_reg[NGX_JS_SOCKET_REG_MAX];
 
+/*
+ * Per-slot generation counter, bumped every time a slot is handed out.
+ *
+ * A NginxSocket holds an INDEX into the registry, and close() frees the slot
+ * for reuse while the JS object keeps its index.  Without a generation, the
+ * next createSocket() handed the freed slot back and every stale handle became
+ * a live handle to an unrelated socket: a closed `a` then read b's address and
+ * fd, and a.close() destroyed b's listening socket.  The generation makes an
+ * index alone insufficient -- a handle must also match the incarnation it was
+ * issued for.  It lives beside the registry, not inside the state, because the
+ * state is freed on close and the generation has to outlive it.
+ */
+static uint32_t        ngx_js_socket_gen[NGX_JS_SOCKET_REG_MAX];
+
 
 ngx_js_compartment_t
 ngx_js_socket_owner(uint32_t handle)
@@ -58,8 +72,31 @@ ngx_js_socket_owner(uint32_t handle)
 
 typedef struct {
     uint32_t  handle;   /* index into ngx_js_socket_reg[] */
+    uint32_t  gen;      /* incarnation this handle was issued for */
     uint32_t  mask;     /* COMCON mediate: allowed fields, bit==magic (see get) */
 } ngx_js_socket_opaque_t;
+
+
+/*
+ * The one way to turn a JS handle into state.  Returns NULL for an index that
+ * is out of range, freed, or -- the case a bare NULL check misses -- refilled
+ * by a later createSocket() since this handle was issued.
+ */
+static ngx_js_socket_state_t *
+ngx_js_socket_state_of(ngx_js_socket_opaque_t *op)
+{
+    if (op == NULL || op->handle >= NGX_JS_SOCKET_REG_MAX) {
+        return NULL;
+    }
+
+    if (ngx_js_socket_reg[op->handle] == NULL
+        || ngx_js_socket_gen[op->handle] != op->gen)
+    {
+        return NULL;
+    }
+
+    return ngx_js_socket_reg[op->handle];
+}
 
 
 int32_t
@@ -119,13 +156,10 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
         return JS_UNDEFINED;
     }
 
-    if (op->handle >= NGX_JS_SOCKET_REG_MAX
-        || ngx_js_socket_reg[op->handle] == NULL)
-    {
+    st = ngx_js_socket_state_of(op);
+    if (st == NULL) {
         return JS_ThrowInternalError(ctx, "NginxSocket: invalid handle");
     }
-
-    st = ngx_js_socket_reg[op->handle];
 
     switch (magic) {
     case 0:  return JS_NewString(ctx, st->addr);
@@ -192,14 +226,11 @@ ngx_js_socket_close(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    if (op->handle >= NGX_JS_SOCKET_REG_MAX
-        || ngx_js_socket_reg[op->handle] == NULL)
-    {
+    st = ngx_js_socket_state_of(op);
+    if (st == NULL) {
         return JS_ThrowInternalError(ctx,
             "sock.close: socket already closed or invalid");
     }
-
-    st = ngx_js_socket_reg[op->handle];
 
     /* COMCON SR-1 MEDIUM-4: close() destroys host state — a mutating op, not a
      * scalar read. A tenant handed this socket via grantToTenant may not close
@@ -261,9 +292,8 @@ ngx_js_socket_broadcast(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
-    if (op->handle >= NGX_JS_SOCKET_REG_MAX
-        || ngx_js_socket_reg[op->handle] == NULL)
-    {
+    st = ngx_js_socket_state_of(op);
+    if (st == NULL) {
         return JS_ThrowInternalError(ctx,
             "sock.broadcast: socket already closed or invalid");
     }
@@ -272,8 +302,6 @@ ngx_js_socket_broadcast(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowInternalError(ctx,
             "sock.broadcast: only valid in worker processes");
     }
-
-    st = ngx_js_socket_reg[op->handle];
 
     /* COMCON SR-1 MEDIUM-4: broadcast distributes the fd fleet-wide — mutating;
      * gate on ownership like close(). */
@@ -359,6 +387,7 @@ ngx_js_socket_wrap_masked(JSContext *ctx, uint32_t handle, uint32_t mask)
     }
 
     op->handle = handle;
+    op->gen = (handle < NGX_JS_SOCKET_REG_MAX) ? ngx_js_socket_gen[handle] : 0;
     op->mask = mask;
 
     obj = JS_NewObjectClass(ctx, ngx_js_socket_class_id);
@@ -400,6 +429,13 @@ ngx_js_parse_addr_port(const char *s, char *host_buf, size_t host_bufsz,
     ngx_memcpy(host_buf, s, host_len);
     host_buf[host_len] = '\0';
 
+    /* strtol() skips leading whitespace and accepts a sign, so "host: 80" and
+     * "host:+80" both bound port 80 -- an address that does not look like the
+     * one it becomes.  The port is digits, and nothing else. */
+    if (colon[1] < '0' || colon[1] > '9') {
+        return -1;
+    }
+
     port = strtol(colon + 1, &endp, 10);
     if (*endp != '\0' || port < 1 || port > 65535) {
         return -1;
@@ -419,6 +455,7 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     const char              *s;
+    size_t                   slen;
     char                     host[48];
     char                     addr_str[64];
     uint16_t                 port;
@@ -434,9 +471,21 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
             "createSocket: expected string argument 'host:port'");
     }
 
-    s = JS_ToCString(ctx, argv[0]);
+    s = JS_ToCStringLen(ctx, &slen, argv[0]);
     if (!s) {
         return JS_EXCEPTION;
+    }
+
+    /*
+     * An embedded NUL ends the C string early while the JS string carries on,
+     * so "127.0.0.1:19112\0:19113" parsed as "127.0.0.1:19112" and bound a
+     * port the caller never asked for -- the reviewed value and the bound
+     * value were not the same value.  Refuse rather than silently truncate.
+     */
+    if (ngx_strlen(s) != slen) {
+        JS_FreeCString(ctx, s);
+        return JS_ThrowTypeError(ctx,
+            "createSocket: address contains an embedded NUL");
     }
 
     if (ngx_js_parse_addr_port(s, host, sizeof(host), &port) != 0) {
@@ -564,6 +613,9 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
     st->owner        = ngx_js_current_compartment();   /* COMCON A1.1 */
     ngx_cpystrn((u_char *) st->addr, (u_char *) addr_str, sizeof(st->addr));
 
+    /* New incarnation of this slot: every handle issued for the previous one
+     * stops resolving here, which is what keeps a closed socket closed. */
+    ngx_js_socket_gen[handle]++;
     ngx_js_socket_reg[handle] = st;
 
     /* F3: register in worker-local registry for cleanup tracking */
