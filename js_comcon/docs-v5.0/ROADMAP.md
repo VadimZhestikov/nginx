@@ -9,13 +9,16 @@
 > (`comcon.include` + `location.handler`) on both tiers, with the `js_tenant_*` directives
 > removed.
 >
-> Increment **D (live POM ops)** is **NOT "not started" — it is built through D5b-1.**
+> Increment **D (live POM ops)** is **NOT "not started" — it is built through D5b-2.**
 > `INCREMENT_D.md` is authoritative: D0 (substrate) · D1 (lazy NodeView) · D2 (`query(sel)`) ·
 > D3 (quotations + stone splices) · D4a (epochs/replace/rollback) · D4b (class-F multi-worker
-> fan-out) · D5a (call-site audit) · D5b-1 (declarative-profile checker) all ✅, with **D4c
-> (compiled-tier live re-AOT)** and **D5b-2/3/4 (full CST, source-rewrite hardening, cross-file
-> provenance)** deferred. Nine `t/comcon_pom_*` + `t/comcon_declarative*` files cover it.
-> D5b-2 is the dependency for D5b-3 and D5b-4.
+> fan-out) · D5a (call-site audit) · D5b-1 (declarative-profile checker) ·
+> **D5b-2 (full CST + finer selectors + anchors, 2026-09-12)** all ✅, with **D4c
+> (compiled-tier live re-AOT)** and **D5b-3/4 (source-rewrite hardening, cross-file
+> provenance)** deferred. Eleven `t/comcon_pom_*` + `t/comcon_declarative*` +
+> `t/comcon_parser_vendor.t` files cover it.
+> **D5b-2 was the dependency for D5b-3 and D5b-4, so both are now unblocked.** It also
+> closes §4 item 1 (anchor recognition), the last unbuilt item of the minimal first slice.
 >
 > **The maxim-finalization gate is CLEARED (2026-09-11).** The test262 JIT sweep that used to
 > abort ~54% in on an atom-table assertion now completes: 14/14 shards, 49,402 files, **55
@@ -33,8 +36,8 @@
 >
 > **So the two forward tracks are now genuinely open, and nothing is blocking either.**
 > (1) **Finish increment D** — `D4c` (compiled-tier live re-AOT, separately gated) and
-> `D5b-2/3/4` (full CST via a vendored ES parser → source-rewrite hardening → cross-file
-> provenance; 3 and 4 both depend on 2). This is the last standing frontier on the
+> `D5b-3/4` (source-rewrite hardening → cross-file provenance), both unblocked by D5b-2
+> as of 2026-09-12. This is the last standing frontier on the
 > confinement track. (2) **The compiler track (M5 →)** remains **parked by decision
 > 2026-09-11, not by capability** — M5's value is the typed nginx stubs, not lowering JS
 > control flow, so the typed IR is not to be built without a commitment to M5 (see M4 below
@@ -376,8 +379,9 @@ argued (soundness is stage-independent — SEMANTICS §3):
 
 Exercises every pillar, updated for the kernel and the anchors model:
 
-1. **Anchor recognition** — `"use comcon: <name>";` directive-prologue anchors parsed
-   and exposed as node attributes (inert in plain JS).
+1. **Anchor recognition** ✅ *(D5b-2, 2026-09-12)* — `"use comcon: <name>";`
+   directive-prologue anchors parsed and exposed as node attributes (inert in plain JS),
+   queryable as `anchors(glob)`. `t/comcon_pom_anchors.t`.
 2. **Minimal kernel** — `env()/grant/bind` for one enumerated node kind; a policy
    program runs at stage 0 under a hardcoded root environment.
 3. **One static enforcement** — a free identifier not in the bound environment is a

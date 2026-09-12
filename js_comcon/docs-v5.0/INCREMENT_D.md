@@ -4,7 +4,7 @@
 enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` selectors), **D3 ✅**
 (POM-node quotations + stone splices), **D4a ✅** (epochs + admitted replace + rollback), **D4b ✅**
 (class-F multi-worker fan-out), **D5a ✅** (call-site audit), **D5b-1 ✅** (declarative-profile
-checker); D4c, D5b-2/3/4 deferred. Follows the operator kernel
+checker), **D5b-2 ✅** (full CST + finer selectors + anchors, 2026-09-12); D4c, D5b-3/4 deferred. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -347,9 +347,16 @@ ES parser for the full CST (D5b-2) rather than hand-roll one.
   realizer). This is the config-language pattern's one platform hook (`PATTERN_config_language.md`):
   an untrusted proposal is now *soundly reviewable*, not merely runtime-validated. `t/comcon_declarative.t`
   (16). Independent of the full parser.
-- **D5b-2 — full CST + expression-granularity POM + finer selectors.** Vendor the ES parser; map
-  ESTree → POM stmt/expr nodes with spans; extend `query` with `callsites(x)`/method/span predicates.
-  **Large; the real M3 front-end.** Gate on a concrete need for expression-level targeting.
+- **D5b-2 ✅ (2026-09-12) — full CST + expression-granularity POM + finer selectors.** acorn 8.14.0
+  vendored as TCB (`src/js/vendor/`, fail-closed, `t/comcon_parser_vendor.t`); `node.cst()` maps
+  ESTree → POM block/stmt/expr nodes with node-local spans (`t/comcon_pom_cst.t`); `query` gained
+  `block`/`stmt`/`expr`/`call(glob)`/`type(glob)`/`anchors(glob)`/`line(N)`/`line(N-M)`
+  (`t/comcon_pom_anchors.t`). **Anchors are the ROADMAP §4.1 deliverable**, not a selector
+  convenience: `"use comcon: <name>";` directive-prologue markers, inert in plain JS, exposed as
+  node attributes — so a policy names a SITE and survives edits above it, where `line(N)` does not.
+  Both predicates ship together and the test asserts that difference on two fragments identical but
+  for two inserted lines. Anchor recognition reuses acorn's own `directive` determination and
+  matches the RAW spelling, so the name a reviewer reads is the name that binds.
 - **D5b-3 — source-rewrite hardening.** `harden(node, query, wrapperQuotation)` → rewrite matched
   sites → rebuild via D4. Depends on D5b-2 + D4. The brownfield-hardening showcase (§38) in full.
 - **D5b-4 — cross-file provenance.** Span mapping through `include` splices (POM.md §6 Q3). Depends

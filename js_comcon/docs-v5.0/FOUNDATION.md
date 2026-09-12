@@ -341,6 +341,13 @@ Two ways to *name a target*, one policy language:
   it trapped policy text inside string literals, made policy unswappable without
   touching code, and violated the sidecar discipline v2 itself recommended for tenants.
   What v2's nesting expressed (the scope stack) is expressed by node nesting itself.
+  **BUILT in increment D5b-2 (2026-09-12)**, in the directive-prologue spelling only:
+  anchors are node attributes, selectable as `anchors(glob)` over a `cst()` view
+  (`t/comcon_pom_anchors.t`). The `/*@comcon checkout*/` comment spelling is **not**
+  built — it needs comment trivia threaded through the parse and attached to the
+  following node, and a half-built anchor form that silently fails to register is worse
+  than one that does not exist. Recognition matches the **raw** directive text, so the
+  name a reviewer reads is the name that binds.
 
 **Two policy profiles** *(new in v3)*:
 
@@ -552,6 +559,28 @@ one bytecode definition, one hardening surface); docs-v5.0 frozen as the single
 normative spec (in-place revisions only); compatibility principle (§1: no flag-day);
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
+
+**v5.47 (in place — increment D5b-2: full CST, finer selectors, and the anchors model):**
+acorn 8.14.0 is vendored as a TCB artifact (`src/js/vendor/`, provenance + sha256 + a generator
+with a `--check` mode) and exposed fail-closed as `comcon.__parse`; `node.cst()` maps ESTree onto
+the kinds D0 reserved at the substrate (block=3, stmt=4, expr=5) with **node-local** spans, so the
+tree descends below function granularity and sees what a bytecode scan cannot — a locally-bound
+callee (`var g = fetch; g()`) or a method call. `query` gains `block`/`stmt`/`expr`/`call(glob)`/
+`type(glob)`/`anchors(glob)`/`line(N)`/`line(N-M)`.
+
+**The anchors half is §9's inline binding, finally built** (and ROADMAP §4 item 1, the last
+unbuilt item of the minimal first slice): `"use comcon: <name>";` is an INERT MARKER NAMING A
+SITE — a directive-prologue string, a no-op statement in plain JS — exposed as a node ATTRIBUTE
+and selectable by name, while the policy stays in a separate unit referencing it. So policy text
+is never trapped in a string literal, and a policy targets a site that **survives edits above
+it**. That is asserted rather than argued: two fragments identical but for two inserted lines,
+where the anchor selector finds the site in both and the `line()` selector finds it in exactly
+one. Anchor recognition reuses acorn's own `directive` determination (a hand-rolled prologue scan
+accepted a parenthesized string, which the language does not) and matches the **raw** spelling, so
+an escaped name that decodes to `checkout` binds nothing — the name a reviewer reads is the name
+that binds. `anchors()` on the bytecode tier **throws** rather than reporting no sites.
+`t/comcon_parser_vendor.t`, `t/comcon_pom_cst.t`, `t/comcon_pom_anchors.t` (five negative controls,
+each named in the test header with the test it breaks).
 
 **v5.46 (in place — increment D5b-1: the declarative-profile checker):**
 `comcon.reviewDeclarative(source)` implements the `syntax_allowed` declarative profile (§8 /

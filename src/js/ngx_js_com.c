@@ -3639,7 +3639,18 @@ static const char  ngx_js_comcon_bootstrap[] =
        hardening pattern). A value-level DSL interpreted here, under the handle —
        no new grammar in the host language. Matches over the node's whole subtree
        (self + descendants); recomputed live on every call (born-bound, R9). */
+    /* Quotes are stripped here, centrally, for EVERY glob factor.  MANUAL.md
+       spells this one anchors('name') while call(fetch)/name(foo)/type(T) are
+       unquoted, so a reader who follows the manual would otherwise match zero
+       nodes and be told nothing -- a selector that silently finds no sites is
+       the worst answer a hardening query can give.  No glob can legitimately
+       contain a quote (anchor names are [A-Za-z0-9_$.-], identifiers and
+       ESTree type names likewise), so accepting both spellings is unambiguous
+       rather than merely lenient. */
     "  function pomName(name,g){"
+    "    var q=g.charCodeAt(0);"          /* 39 = apostrophe, 34 = quote */
+    "    if((q===39||q===34)&&g.length>1&&g.charCodeAt(g.length-1)===q)"
+    "      g=g.slice(1,-1);"
     "    if(g==='*')return true;"
     "    var s=g.charAt(0)==='*',e=g.charAt(g.length-1)==='*';"
     "    if(s&&e)return name.indexOf(g.slice(1,-1))>=0;"
@@ -3659,6 +3670,29 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      return node.type==='CallExpression'&&pomName(node.name,f.slice(5,-1));"
     "    if(f.slice(0,5)==='type('&&f.charAt(f.length-1)===')')"
     "      return pomName(String(node.type||''),f.slice(5,-1));"
+    /* anchors(glob): nodes carrying a matching inert site marker. The point of
+       the anchors model -- a policy targets a NAMED SITE, not a line number,
+       so edits above it do not move the target. */
+    "    if(f.slice(0,8)==='anchors('&&f.charAt(f.length-1)===')'){"
+    "      if(!Array.isArray(node.anchors))"
+    "        throw new TypeError('query: anchors() needs a cst() view; the "
+                               "bytecode tier does not parse');"
+    "      var ag=f.slice(8,-1),as=node.anchors;"
+    "      for(var ai=0;ai<as.length;ai++)if(pomName(as[ai],ag))return true;"
+    "      return false;}"
+    /* line(N) / line(N-M): a span predicate over the node's START line. Brittle
+       by nature (any edit above shifts it), which is exactly why anchors exist;
+       offered for interactive/LSP use, where a caller has a cursor position. */
+    "    if(f.slice(0,5)==='line('&&f.charAt(f.length-1)===')'){"
+    /* Validate with a regex, not parseInt: parseInt('5x') is 5, so a typo
+       would be silently READ AS a line number and answer a question the
+       caller did not ask.  An inverted range throws for the same reason --
+       matching nothing is indistinguishable from "no sites here". */
+    "      var lm=/^([0-9]+)(?:-([0-9]+))?$/.exec(f.slice(5,-1));"
+    "      if(!lm)throw new TypeError('query: bad line(): '+f);"
+    "      var a0=+lm[1],a1=lm[2]===undefined?a0:+lm[2];"
+    "      if(a1<a0)throw new TypeError('query: inverted line range: '+f);"
+    "      return node.line0>=a0&&node.line0<=a1;}"
     "    if(f.slice(0,5)==='name('&&f.charAt(f.length-1)===')')"
     "      return pomName(node.name,f.slice(5,-1));"
     "    throw new TypeError('query: bad selector factor: '+f);}"
@@ -3706,8 +3740,18 @@ static const char  ngx_js_comcon_bootstrap[] =
        (kind 5) rather than being dropped: a CST that silently omits a construct
        would let a hardening query miss a site, which is the failure that
        matters here. */
+    /* Functions are checked BEFORE the Statement/Declaration suffix rule: a
+       FunctionDeclaration ends in "Declaration", but the p_symbol schema
+       reserves kind 2 for FUNCTION, and the bytecode tier already uses it.  If
+       the CST called it a stmt instead, `query('function ...')` would match at
+       one tier and silently return nothing at the other -- for the same
+       function. Cross-tier agreement on `function` matters more than ESTree's
+       (also true) claim that a function declaration is a statement; anything
+       wanting the narrower reading has type(FunctionDeclaration). */
     "  function cstKind(t){"
     "    if(t==='Program'||t==='BlockStatement')return 3;"
+    "    if(t==='FunctionDeclaration'||t==='FunctionExpression'"
+    "       ||t==='ArrowFunctionExpression')return 2;"
     "    if(/(Statement|Declaration)$/.test(t))return 4;"
     "    return 5;}"
     /* The name a selector matches on: for a call it is the CALLEE (so
@@ -3740,6 +3784,53 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        else if(typeof val.type==='string'&&val.range)out.push(val);}}"
     "    out.sort(function(a,b){return a.range[0]-b.range[0];});"
     "    return out;}"
+    /* ANCHORS (FOUNDATION, "Inline binding -- anchors, not policy text").
+       An anchor is an INERT MARKER NAMING A SITE -- "use comcon: checkout"; --
+       a directive-prologue string, which is a no-op statement in plain JS.  The
+       policy itself lives in a separate unit that references the anchor by name,
+       so policy text is never trapped inside a string literal and can be
+       swapped without touching the code it governs.  POM.md: anchors are
+       queryable ATTRIBUTES of a node, not nodes of their own.
+
+       Read off the directive prologue of whatever body this node owns, so both
+       a function and its block report the anchors declared inside it -- a policy
+       author names a function, not the block bracket inside it.
+
+       The block-comment anchor form is NOT here: it needs comment trivia
+       threaded through the parse and mapped to the following node.  Noted as
+       remaining rather than half-done, because an anchor form that silently
+       fails to register is worse than one that does not exist. */
+    /* Reuse acorn's OWN prologue determination (`st.directive`, set only on
+       real directive-prologue statements of a Program or function body) rather
+       than re-deriving the rule here.  Re-deriving it got the parenthesized
+       case wrong: `("use comcon: x");` is an ExpressionStatement wrapping a
+       string Literal, so a hand-rolled type check accepts it, while the
+       language does not treat it as a directive at all.  Same class of bug as
+       [[bug-declarative-comment-terminator-escape]] -- a reviewer that lexes
+       the source its own way eventually disagrees with the engine.
+
+       Match the RAW directive text (`directive` is the source slice with
+       escapes UNDECODED), never `expression.value`.  That one choice is what
+       makes the name a human reads the name that binds: an escaped spelling
+       such as "use comcon: check\u006fut" decodes to exactly `checkout`, but
+       its raw form carries a backslash, which the name charset below excludes,
+       so it registers nothing rather than silently binding under a spelling no
+       reviewer would recognize.  The charset does that work on its own -- an
+       explicit backslash test next to it looked like the enforcement and could
+       not be made to fail, so it is not here.  Anything outside the charset is
+       simply not an anchor, like any other non-matching directive. */
+    "  function cstAnchorsIn(body){var out=[];"
+    "    if(!body||!body.length)return out;"
+    "    for(var i=0;i<body.length;i++){var st=body[i];"
+    "      if(!st||typeof st.directive!=='string')break;"
+    "      var m=/^use\\s+comcon:\\s*([A-Za-z0-9_$.-]+)$/.exec(st.directive);"
+    "      if(m)out.push(m[1]);}"
+    "    return out;}"
+    "  function cstAnchors(n){"
+    "    if(Array.isArray(n.body))return cstAnchorsIn(n.body);"
+    "    if(n.body&&n.body.type==='BlockStatement')"
+    "      return cstAnchorsIn(n.body.body);"
+    "    return [];}"
     "  function cstView(src,n,path,getParent){"
     "    var v={},r=n.range,slice=src.slice(r[0],r[1]);"
     "    v.kind=cstKind(n.type);v.type=n.type;v.name=cstName(n);"
@@ -3751,6 +3842,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "            col1:n.loc?n.loc.end.column:0,range:[r[0],r[1]]};"
     "    v.id=pomId(v.hash,path.join('.'));"
     "    v.src=src;"
+    "    v.anchors=Object.freeze(cstAnchors(n));"
     "    v.binding={epoch:0,profile:'unbound'};"
     "    v.text=function(){return C.quote(slice);};"
     "    v.quote=function(){return C.quote(slice);};"

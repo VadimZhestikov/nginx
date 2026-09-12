@@ -458,6 +458,15 @@ schema for denials, learning records (sign-flipped), and deny-suite assertions.
 `within(...)` combinator. **[TBD-7]** Full grammar is an M2.5 deliverable; treat this
 list as the working subset the examples use.
 
+*Implemented as of D5b-2 (2026-09-12):* `module` · `function` · `*` · `name(glob)` ·
+`within` (D2), and over a `cst()` view `block` · `stmt` · `expr` · `call(glob)` ·
+`type(glob)` · `anchors(glob)` · `line(N)` · `line(N-M)`. Factors AND within a term.
+Quoting a glob is optional — this section's `anchors('name')` and a bare
+`anchors(name)` are the same selector, because a reader following the manual must not
+get a silent zero-match. Still TBD: `exports(fragment)`, and `callsites(name)` as a
+*selector* (it exists as the method `node.callsites(name)`; the selector spelling is
+`call(glob)`).
+
 ### 7.6 Glossary
 
 **fragment** a governed subtree of the program · **environment** the complete name→

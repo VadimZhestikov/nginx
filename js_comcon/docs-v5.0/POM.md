@@ -163,7 +163,15 @@ until retired.
    B` selects nodes matching A that have an ANCESTOR matching B (intensional composition — the
    hardening pattern). Matches over self + descendants; recomputed live per call (born-bound, R9).
    Same language for policy targeting and interactive/LSP use, as required. Finer selectors
-   (`callsites(fetch)`, span/anchor predicates) extend this grammar at D5 when stmt/expr nodes exist.
+   *(extended in increment D5b-2, 2026-09-12, over a `cst()` view)*: `factor` also takes
+   `'block' | 'stmt' | 'expr' | 'call(' glob ')' | 'type(' glob ')' | 'anchors(' glob ')' |
+   'line(' N ')' | 'line(' N '-' M ')'`; a glob may be quoted or bare (`anchors('checkout')` =
+   `anchors(checkout)`). `line()` is a span predicate on the node's START line, node-local and
+   1-based. **Prefer `anchors()` to `line()` for anything durable** — an edit above the site moves
+   the line and moves it silently, which is precisely why FOUNDATION's inline binding is an
+   anchor. `anchors()` THROWS on the bytecode tier rather than returning no matches: that tier
+   does not parse, so it cannot answer, and "no sites" would be the wrong answer to give a
+   hardening query.
 3. **Cross-file provenance** — an `include`-spliced fragment gets a synthetic file
    origin; span mapping through includes needs a provenance hop. *(D5.)*
 4. **p_symbol enumeration** — *(resolved, increment D0)* schema **`comcon-pom-1`** (never
