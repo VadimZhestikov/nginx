@@ -1,8 +1,9 @@
 # M-SES audit checklist (S6)
 
-**Status: UNSIGNED.** Evidence assembled 2026-09-11 and re-measured the same
-day after eight commits of hardening (§2b); the sign-off block at the end is
-deliberately blank. An audit attested by the party that wrote the code
+**Status: UNSIGNED.** Evidence assembled 2026-09-11 and re-measured 2026-09-12
+after fourteen commits of hardening (§2b); the sign-off block at the end is
+deliberately blank. An audit certifies a date — if you are reading this well
+after the one above, re-run §4 before trusting any row. An audit attested by the party that wrote the code
 and the tests certifies nothing — a human who did not write them signs, or it
 stays unsigned and is read as "evidence assembled", which is all it currently
 is.
@@ -29,11 +30,21 @@ The M-SES gate: no probe may (a) obtain a value not in its ρ, (b) mutate a
 frozen intrinsic, (c) create code from strings without admit, (d) traverse a COM
 facet beyond handle reach, (e) escape the resource guards.
 
+**What these rows do and do not establish.** Each probe shows the mechanism
+behaves correctly **when it runs**. None of them shows that it *runs on every
+path that reaches it*, and that distinction is not academic: the two most
+serious defects found in the 2026-09-11/12 hardening were both of the second
+kind — a guard that was correct, and a path that avoided it. The declarative
+reviewer read comments correctly and a bare CR walked past it; the C3 admission
+gate checked correctly and a malformed contract meant it never executed. The
+reachability tests added in §2b are cited per row below; where a row has no
+such citation, its reachability is **not evidenced**.
+
 | # | Claim | Mechanism | Evidence | Verdict |
 |---|---|---|---|---|
-| **a** | A fragment cannot obtain a value outside its ρ | free-name gate at admission + no ambient globals in the compartment | `t/comcon_mses_gate.t` probes `a_global_this`, `a_com_root`, `a_comcon` (closed confined, **open unconfined**); `t/comcon_include_admit.t` refuses an ungranted free name; `t/comcon_include_grant.t` asserts `"nginx":"undefined"` inside the fragment | **EVIDENCED** |
+| **a** | A fragment cannot obtain a value outside its ρ | free-name gate at admission + no ambient globals in the compartment | `t/comcon_mses_gate.t` probes `a_global_this`, `a_com_root`, `a_comcon` (closed confined, **open unconfined**); `t/comcon_include_admit.t` refuses an ungranted free name; `t/comcon_include_grant.t` asserts `"nginx":"undefined"` inside the fragment. **Reachability:** `t/comcon_include_contract_fuzz.t` — a malformed contract used to skip the admission-time half of this entirely. Two independent mechanisms back this row, and only the second held: with admission bypassed, a fragment naming `nginx` still got `ReferenceError: 'nginx' is not defined`, because the compartment has no ambient globals. | **EVIDENCED** (both mechanisms; admission reachability evidenced since 2026-09-12) |
 | **b** | A fragment cannot mutate a frozen intrinsic | M-SES lockdown freezes core intrinsics | `t/comcon_mses_gate.t` probes `b_proto_poll`, `b_array_push`, `b_freeze_str` (closed confined, open unconfined) | **EVIDENCED** |
-| **c** | A fragment cannot create code from strings without admit | dynamic-code taming (`%Function%`, generator/async constructors, eval) | `t/comcon_mses_gate.t` probes `c_fn_ctor`, `c_obj_ctor`, `c_gen_ctor`, `c_async_ctor`; `t/comcon_include_mses.t` asserts `routes=closed,closed,closed,closed` | **EVIDENCED** |
+| **c** | A fragment cannot create code from strings without admit | dynamic-code taming (`%Function%`, generator/async constructors, eval) | `t/comcon_mses_gate.t` probes `c_fn_ctor`, `c_obj_ctor`, `c_gen_ctor`, `c_async_ctor`; `t/comcon_include_mses.t` asserts `routes=closed,closed,closed,closed`. **Reachability:** `t/comcon_include_contract_fuzz.t`. This row is also backed by two mechanisms — a static refusal at admission and the lockdown that removes the constructors from the compartment — and until 2026-09-12 the first was skippable by `include(src, {imports: 42})`. **Measured on the pre-fix build: the second held.** A fragment whose body was `eval("1+1")` compiled, and invoking it threw `ReferenceError: 'eval' is not defined`; `Function` likewise. So the defect was a defence-in-depth failure, not an escape — but the row was marked EVIDENCED while one of its two mechanisms could be bypassed, which is the thing a signer should know. | **EVIDENCED** (both mechanisms; admission reachability evidenced since 2026-09-12) |
 | **d** | A fragment cannot traverse a COM facet beyond handle reach | A1 reach gate (`ngx_js_compartment_may_reach`) + route-glob facets | `t/comcon_include_grant.t`: `sock.listener` is null cross-compartment, and prototype planting on a granted handle fails; `t/comcon_com_facet.t`: an out-of-glob location is not visible; `t/comcon_com_facet_mutate.t` (12 checks): gated mutation inside the route succeeds, outside is denied | **EVIDENCED** |
 | **e** | A fragment cannot escape the resource guards | per-fragment wall-clock deadline (always armed) + 64 MB cap on the comcon runtime | `t/comcon_mses_gate.t` `GUARD-FIRED` probe (armed guard stops a runaway); `t/comcon_fragment_deadline.t` (a fragment with **no meter** is still bounded) | **EVIDENCED for TIME; PARTIAL for MEMORY — see §3** |
 
@@ -110,7 +121,7 @@ reverting it fails the named test.
 
 | **Listener / stream methods** | `t/js_com_listener_args.t` | The last untested COM surface and the one I expected to be worst — structural mutation of live routing, in the file pair where the socket aliasing lived, with a `Track L` routing bug in its history. **No defect found.** 17 hostile arguments through 11 methods, at config phase and at request time: 159 refusals, every one a proper Error, 0 malformed, and the listener still resolves its own server name and reports its own address afterwards. Acceptances are pinned per method — `addServer` and `addVirtualServer` (HTTP and stream) take **none** of the battery; `serverByName` takes the four strings and answers null; the L4 registrars take only a function. The file is a ratchet, and it has teeth: weakening one type check in `addVirtualServer` makes nginx **dump core on startup**, so the guard it pins is load-bearing against a NULL dereference. | **CLEAN** |
 
-| **Include contract** | `t/comcon_include_contract_fuzz.t` | Rated lowest-yield of the fuzz rows, and it held the session's second **fail-open admission** defect. Admission is opt-in on the contract naming `imports`/`identity`/`checkRequest`/`tests`, but "naming imports" was decided by truthiness in JS (`contract.imports || ...`) and by `JS_IsObject(imp_h)` in C — and that C condition governed the WHOLE block, free names *and* the dynamic-code denial *and* checkRequest. So `include(src, {imports: 42})` and `{imports: ''}` compiled a fragment with **no gate at all**: measured, `eval("1+1")` admitted where `{imports: []}` refuses it. A contract that looks stricter than it is, is worse than an absent one. A malformed `imports` now means no names granted — fail closed. `imports: undefined` and a contract with no admission fields remain ungated **by design**, pinned so the opt-in boundary stays deliberate. | **FIXED** |
+| **Include contract** | `t/comcon_include_contract_fuzz.t` | Rated lowest-yield of the fuzz rows, and it held the session's second **fail-open admission** defect. Admission is opt-in on the contract naming `imports`/`identity`/`checkRequest`/`tests`, but "naming imports" was decided by truthiness in JS (`contract.imports || ...`) and by `JS_IsObject(imp_h)` in C — and that C condition governed the WHOLE block, free names *and* the dynamic-code denial *and* checkRequest. So `include(src, {imports: 42})` and `{imports: ''}` compiled a fragment with **no gate at all**: measured, `eval("1+1")` admitted where `{imports: []}` refuses it. A contract that looks stricter than it is, is worse than an absent one. A malformed `imports` now means no names granted — fail closed. **Severity, measured rather than assumed (2026-09-12):** this was a defence-in-depth failure, NOT an escape. On the pre-fix build a fragment admitted through the bypass still could not do anything — `eval` and `Function` threw `ReferenceError: ... is not defined` and the free name `nginx` likewise, because the compartment lockdown and the absence of ambient globals are separate mechanisms that held. The commit message for the fix says the fragment compiled "with no gate at all", which is true of the GATE and overstates the consequence; this row is the correction. `imports: undefined` and a contract with no admission fields remain ungated **by design**, pinned so the opt-in boundary stays deliberate. | **FIXED** |
 
 **The two halves had opposite coverage**, which is why this survived: the READER
 of the name (`tenantLearning()`) sits at 85.7% and is exercised by
