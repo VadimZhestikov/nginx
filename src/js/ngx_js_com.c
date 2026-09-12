@@ -3650,6 +3650,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(f==='*')return true;"
     "    if(f==='module')return node.kind===1;"
     "    if(f==='function')return node.kind===2;"
+    /* D5b-2: CST kinds. The p_symbol schema reserved block=3/stmt=4/expr=5 at
+       D0 for exactly this; they only appear inside a cst() view. */
+    "    if(f==='block')return node.kind===3;"
+    "    if(f==='stmt')return node.kind===4;"
+    "    if(f==='expr')return node.kind===5;"
+    "    if(f.slice(0,5)==='call('&&f.charAt(f.length-1)===')')"
+    "      return node.type==='CallExpression'&&pomName(node.name,f.slice(5,-1));"
+    "    if(f.slice(0,5)==='type('&&f.charAt(f.length-1)===')')"
+    "      return pomName(String(node.type||''),f.slice(5,-1));"
     "    if(f.slice(0,5)==='name('&&f.charAt(f.length-1)===')')"
     "      return pomName(node.name,f.slice(5,-1));"
     "    throw new TypeError('query: bad selector factor: '+f);}"
@@ -3672,6 +3681,107 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        ai++;p=p.parent;}"
     "      if(ok)out.push(n);}"
     "    return out;}"
+    /* ---- D5b-2: ESTree -> POM CST nodes -------------------------------
+       A POM node's source is parsed with the vendored acorn and mapped onto the
+       kinds D0 reserved (block=3, stmt=4, expr=5), so children descend BELOW
+       function granularity -- the residual D5a's bytecode scan cannot reach
+       (locally-bound callees, method calls, per-site positions).
+
+       SPANS ARE RELATIVE TO THE OWNING NODE'S `source`, not to a file. That is
+       what composes with D4: harden() rewrites A NODE'S SOURCE and rebuilds via
+       bindAt/replace, so offsets local to that node are exactly what
+       rebuild-on-write consumes, and no absolute-offset plumbing is needed. Each
+       view carries its own `src`, so a caller slices without guessing a base.
+
+       ADDITIVE ON PURPOSE. D1's bytecode children/childCount contract is
+       unchanged -- D1/D2 and the F/X ops are built on it. The CST hangs off
+       cst(), whose own children descend fully. INCREMENT_D.md words D5b-2 as
+       "node.children descends below function granularity"; doing that in place
+       would redefine childCount under D1/D2, so it is offered beside them. */
+    "  function cstFnv(str){var h=0x811c9dc5;"
+    "    for(var i=0;i<str.length;i++){h^=str.charCodeAt(i)&0xff;"
+    "      h=(h+((h<<1)+(h<<4)+(h<<7)+(h<<8)+(h<<24)))>>>0;}"
+    "    return ('00000000'+h.toString(16)).slice(-8);}"
+    /* ESTree type -> the reserved p_symbol kind. Unknown types still get a node
+       (kind 5) rather than being dropped: a CST that silently omits a construct
+       would let a hardening query miss a site, which is the failure that
+       matters here. */
+    "  function cstKind(t){"
+    "    if(t==='Program'||t==='BlockStatement')return 3;"
+    "    if(/(Statement|Declaration)$/.test(t))return 4;"
+    "    return 5;}"
+    /* The name a selector matches on: for a call it is the CALLEE (so
+       call(fetch) matches obj.fetch() too), for a function/identifier its own
+       name, else ''. */
+    "  function cstName(n){"
+    "    if(n.type==='CallExpression'||n.type==='NewExpression'){"
+    "      var c=n.callee;"
+    "      if(!c)return '';"
+    "      if(c.type==='Identifier')return c.name;"
+    "      if(c.type==='MemberExpression'&&c.property)"
+    "        return c.property.name||String(c.property.value||'');"
+    "      return '';}"
+    "    if(n.type==='Identifier')return n.name;"
+    "    if(n.id&&n.id.name)return n.id.name;"
+    "    if(n.key&&(n.key.name||n.key.value!==undefined))"
+    "      return n.key.name||String(n.key.value);"
+    "    return '';}"
+    /* Child ESTree nodes in SOURCE ORDER. Walks own enumerable properties rather
+       than a per-type visitor table: a table goes stale the moment the parser
+       learns new syntax, and a missed child is a missed hardening site. */
+    "  function cstKids(n){var out=[];"
+    "    for(var k in n){"
+    "      if(k==='loc'||k==='range'||k==='start'||k==='end'||k==='type')continue;"
+    "      var val=n[k];"
+    "      if(val&&typeof val==='object'){"
+    "        if(Array.isArray(val)){for(var i=0;i<val.length;i++){"
+    "          if(val[i]&&typeof val[i].type==='string'&&val[i].range)"
+    "            out.push(val[i]);}}"
+    "        else if(typeof val.type==='string'&&val.range)out.push(val);}}"
+    "    out.sort(function(a,b){return a.range[0]-b.range[0];});"
+    "    return out;}"
+    "  function cstView(src,n,path,getParent){"
+    "    var v={},r=n.range,slice=src.slice(r[0],r[1]);"
+    "    v.kind=cstKind(n.type);v.type=n.type;v.name=cstName(n);"
+    "    v.hash=cstFnv(slice);"
+    "    v.range=[r[0],r[1]];"
+    "    v.line0=n.loc?n.loc.start.line:0;v.line1=n.loc?n.loc.end.line:0;"
+    "    v.span={line0:v.line0,line1:v.line1,"
+    "            col0:n.loc?n.loc.start.column:0,"
+    "            col1:n.loc?n.loc.end.column:0,range:[r[0],r[1]]};"
+    "    v.id=pomId(v.hash,path.join('.'));"
+    "    v.src=src;"
+    "    v.binding={epoch:0,profile:'unbound'};"
+    "    v.text=function(){return C.quote(slice);};"
+    "    v.quote=function(){return C.quote(slice);};"
+    "    v.query=function(sel){return pomQuery(v,sel);};"
+    /* Unlike D5a's bytecode scan these see LOCALLY-BOUND callees and method
+       calls, which is what D5b-2 exists for. Read (class R); enforcement stays
+       the capability kernel's. */
+    "    v.references=function(nm){"
+    "      return v.query('* name('+String(nm)+')').map(function(x){"
+    "        return {name:x.name,line:x.line0,"
+    "                call:x.type==='CallExpression',range:x.range};});};"
+    "    v.callsites=function(nm){"
+    "      return v.query('call('+String(nm)+')').map(function(x){"
+    "        return {name:x.name,line:x.line0,call:true,range:x.range};});};"
+    "    v.describe=function(){return {kind:v.kind,type:v.type,ops:["
+    "      {name:'text',op:'read',cls:'R'},{name:'quote',op:'read',cls:'R'},"
+    "      {name:'query',op:'read',cls:'R'},"
+    "      {name:'references',op:'read',cls:'R'},"
+    "      {name:'callsites',op:'read',cls:'R'},"
+    "      {name:'describe',op:'read',cls:'R'},"
+    "      {name:'children',op:'read',cls:'R'},"
+    "      {name:'parent',op:'read',cls:'R'}]};};"
+    "    var kids=cstKids(n);"
+    "    v.childCount=kids.length;"
+    "    Object.defineProperty(v,'parent',{enumerable:true,get:getParent});"
+    "    Object.defineProperty(v,'children',{enumerable:true,get:function(){"
+    "      var a=[];for(var i=0;i<kids.length;i++){"
+    "        (function(j){a.push(cstView(src,kids[j],path.concat([j]),"
+    "          function(){return v;}));})(i);}"
+    "      return a;}});"
+    "    return Object.freeze(v);}"
     "  function pomView(rootFn,path){"
     "    var raw=C.__pomNodeAt(rootFn,path);"
     "    if(raw===undefined)return null;"
@@ -3684,6 +3794,24 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    v.text=function(){return C.quote(raw.source);};"
     "    v.quote=function(){return C.quote(raw.source);};"
     "    v.query=function(sel){return pomQuery(v,sel);};"
+    /* D5b-2: the CST view of THIS node's source. Parsed on demand -- most nodes
+       are never hardened, and the parser itself loads lazily. Throws on a source
+       that will not parse (FAIL CLOSED: an unparseable node must not present an
+       empty CST, or a hardening query would report "no sites" for code it never
+       managed to read). */
+    "    v.cst=function(){"
+    "      var src=raw.source,ast;"
+    "      try{ast=C.__parse(src);}catch(e){"
+    /* A fragment's source is a function EXPRESSION, not a Program, so retry in
+       expression mode. Guarded two ways so this cannot become a fail-open: the
+       expression parse must consume the WHOLE input, and if it does not the
+       ORIGINAL Program error is rethrown -- a half-parsed source must never
+       present a CST covering only the part that parsed. */
+    "        var ex=C.__parse(src,true);"
+    "        if(!ex||ex.range[1]!==src.length)throw e;"
+    "        ast=ex;}"
+    "      return cstView(src,ast,path.concat(['cst']),"
+    "                     function(){return v;});};"
     /* references(name)/callsites(name): D5a call-site audit — every reference to
        a free name or method `name` in this fragment (whole subtree), with line
        numbers; callsites = the references that are the callee of a call. Read

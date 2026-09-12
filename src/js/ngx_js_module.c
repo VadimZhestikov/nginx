@@ -1866,7 +1866,7 @@ ngx_js_comcon_parse(JSContext *ctx, JSValueConst this_val, int argc,
     size_t       len;
 
     if (argc < 1 || !JS_IsString(argv[0])) {
-        return JS_ThrowTypeError(ctx, "comcon.__parse(source): string required");
+        return JS_ThrowTypeError(ctx, "comcon.__parse(source[, expr]): string required");
     }
 
     global = JS_GetGlobalObject(ctx);
@@ -1905,7 +1905,19 @@ ngx_js_comcon_parse(JSContext *ctx, JSValueConst this_val, int argc,
         JS_DeleteProperty(ctx, global, JS_NewAtom(ctx, "acorn"), 0);
     }
 
-    parse = JS_GetPropertyStr(ctx, acorn, "parse");
+    /*
+     * A COMCON fragment's source is `function(req){...}` -- a function
+     * EXPRESSION, which is not a valid Program (an anonymous function
+     * declaration is a syntax error at statement position). So the caller may
+     * ask for expression mode, which uses acorn.parseExpressionAt at offset 0.
+     *
+     * parseExpressionAt, NOT a paren wrapper: wrapping would shift every range
+     * by one, and ranges are the load-bearing output here -- D5b-3 splices at
+     * them. Parsing the original string keeps every offset usable as-is.
+     */
+    parse = JS_GetPropertyStr(ctx, acorn,
+                              (argc > 1 && JS_ToBool(ctx, argv[1]))
+                                  ? "parseExpressionAt" : "parse");
     if (!JS_IsFunction(ctx, parse)) {
         JS_FreeValue(ctx, parse);
         JS_FreeValue(ctx, acorn);
@@ -1929,12 +1941,20 @@ ngx_js_comcon_parse(JSContext *ctx, JSValueConst this_val, int argc,
     JS_SetPropertyStr(ctx, opts, "locations",   JS_TRUE);
 
     {
-        JSValueConst a[2];
+        JSValueConst a[3];
+        int          n = 2;
+
         arg  = JS_NewStringLen(ctx, src, len);
         a[0] = arg;
-        a[1] = opts;
+        if (argc > 1 && JS_ToBool(ctx, argv[1])) {
+            a[1] = JS_NewInt32(ctx, 0);   /* parseExpressionAt(src, 0, opts) */
+            a[2] = opts;
+            n = 3;
+        } else {
+            a[1] = opts;
+        }
         /* A SyntaxError from here propagates to the caller unchanged: FAIL CLOSED. */
-        ret = JS_Call(ctx, parse, acorn, 2, a);
+        ret = JS_Call(ctx, parse, acorn, n, a);
         JS_FreeValue(ctx, arg);
     }
 
