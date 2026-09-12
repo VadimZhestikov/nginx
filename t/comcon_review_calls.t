@@ -149,7 +149,29 @@ for (var i = 0; i < locs.length; i++) {
                                   dn.unchecked.indexOf('notAnAccessor.doThing') >= 0);
 
             /* the wrapper rows must not leak into settable() */
-            out.m4_not_settable = (nginx.settable(loc).indexOf('proxy') < 0);
+            var st = nginx.settable(loc);
+            out.m4_not_settable = (st.indexOf('proxy') < 0 && st.indexOf('mirror') < 0);
+
+            /* COVERAGE: every sub-object accessor the location prototype
+             * exposes must be typed, or a chain through it silently degrades to
+             * `unchecked`. Derived from describe() itself rather than a list
+             * kept in the test, so a newly exposed accessor fails here instead
+             * of quietly going untyped. */
+            var accessors = nginx.describe(loc).filter(function (d) {
+                return d.access === 'read-only' && !d.callable &&
+                       (d.type === 'getter' || /^handle</.test(d.type));
+            });
+            var untyped = accessors.filter(function (d) { return d.type === 'getter'; });
+            out.m4_cov_total  = accessors.length;
+            out.m4_cov_untyped = untyped.map(function (d) { return d.name; }).join(',');
+
+            /* NginxServer.ssl is typed too. Asserted through describeType
+             * rather than a live `sv.ssl.setCiphers(..)` chain: this server has
+             * no `listen ... ssl`, so the instance is null and the FIRST-step
+             * path would (correctly) report it unchecked — which would test the
+             * fixture, not the typing. */
+            var svSsl = dtype('NginxServer', 'ssl');
+            out.m4_server_ssl = !!(svSsl && svSsl.type === 'handle<NginxSSL>');
 
             /* describeType itself: by TYPE NAME, no instance needed.
              * Guarded so a null/!absent result fails ONE assertion instead of
@@ -175,7 +197,7 @@ for (var i = 0; i < locs.length; i++) {
 }
 JS
 
-$t->try_run('no js module')->plan(21);
+$t->try_run('no js module')->plan(24);
 
 ###############################################################################
 
@@ -206,6 +228,15 @@ like($r, qr/"m4_dotted_soft":true/,
      'M4 soundness: an UNtyped accessor stays unchecked, not refused');
 like($r, qr/"m4_not_settable":true/,
      'wrapper rows do not leak into settable()');
+like($r, qr/"m4_server_ssl":true/,
+     'NginxServer.ssl is typed handle<NginxSSL>');
+# Coverage, derived from describe() so a NEW accessor fails here rather than
+# silently degrading every chain through it to `unchecked`.
+my ($cov)  = $r =~ /"m4_cov_total":(\d+)/;
+my ($unty) = $r =~ /"m4_cov_untyped":"([^"]*)"/;
+cmp_ok($cov, '>=', 32, "every location sub-object accessor is classified (found $cov)");
+is($unty, '', 'no location sub-object accessor is left untyped'
+              . ($unty ? " - untyped: $unty" : ''));
 like($r, qr/"dt_member":true/,        'describeType(type, member) resolves by name');
 like($r, qr/"dt_all":true/,           'describeType(type) lists the classified table');
 like($r, qr/"dt_bogus":true/,         'describeType on an unknown type yields null');

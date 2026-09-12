@@ -223,12 +223,22 @@ check('readonly_typed_array', hfD && hfD.type === 'object[]', hfD && hfD.type);
  * to walk, so the sub-object accessors had to move into the table). Pick the
  * accessor by its SYMPTOM instead of by name, so typing one more member
  * refines the registry without falsifying this check. */
-var fbD = allL.filter(function (d) { return d.type === 'getter'; })[0];
+var fbD = null, fbWhere = '';
+[['location', loc], ['server', nginx.http.servers[0]], ['http', nginx.http],
+ ['upstream', nginx.http.upstreams[0]], ['peer', nginx.http.upstreams[0].peers[0]],
+ ['proxy', loc.proxy], ['headers', loc.headers]]
+    .forEach(function (pair) {
+        if (fbD) { return; }
+        var ms;
+        try { ms = nginx.describe(pair[1]); } catch (e) { return; }
+        var hit = ms.filter(function (d) { return d.type === 'getter'; })[0];
+        if (hit) { fbD = hit; fbWhere = pair[0] + '.' + hit.name; }
+    });
 check('readonly_fallback', !!(fbD && fbD.class === 'readonly'),
-      fbD ? JSON.stringify(fbD)
-          : 'no untyped accessor left on NginxLocation (that is fine — but then '
-            + 'this check no longer exercises the fallback; move it to a class '
-            + 'that still has one)');
+      fbD ? fbWhere + ' ' + JSON.stringify(fbD)
+          : 'no untyped accessor left on location/server/http — the fallback is '
+            + 'unreachable from here, so this check has stopped exercising it; '
+            + 'point it at a class that still has one, or retire it');
 /* and the newly classified accessor reports its handle type, not "getter" */
 var proxyD = nginx.describe(locPath, 'proxy');
 check('readonly_wrapper_typed',

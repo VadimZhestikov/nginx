@@ -520,6 +520,24 @@ static const ngx_js_member_class_t  ngx_js_loc_members[] = {
     { "charset",    "handle<NginxCharset>",    RO, WRAP, WL, NULL },
     { "subFilter",  "handle<NginxSubFilter>",  RO, WRAP, WL, NULL },
     { "autoindex",  "handle<NginxAutoindex>",  RO, WRAP, WL, NULL },
+    { "referer",     "handle<NginxReferer>",     RO, WRAP, WL, NULL },
+    { "dav",         "handle<NginxDav>",         RO, WRAP, WL, NULL },
+    { "ssi",         "handle<NginxSsi>",         RO, WRAP, WL, NULL },
+    { "userid",      "handle<NginxUserid>",      RO, WRAP, WL, NULL },
+    { "addition",    "handle<NginxAddition>",    RO, WRAP, WL, NULL },
+    { "gunzip",      "handle<NginxGunzip>",      RO, WRAP, WL, NULL },
+    { "slice",       "handle<NginxSlice>",       RO, WRAP, WL, NULL },
+    { "imageFilter", "handle<NginxImageFilter>", RO, WRAP, WL, NULL },
+    { "xslt",        "handle<NginxXslt>",        RO, WRAP, WL, NULL },
+    { "secureLink",  "handle<NginxSecureLink>",  RO, WRAP, WL, NULL },
+    { "mp4",         "handle<NginxMp4>",         RO, WRAP, WL, NULL },
+    { "randomIndex", "handle<NginxRandomIndex>", RO, WRAP, WL, NULL },
+    { "authRequest", "handle<NginxAuthRequest>", RO, WRAP, WL, NULL },
+    { "gzipStatic",  "handle<NginxGzipStatic>",  RO, WRAP, WL, NULL },
+    { "memcached",   "handle<NginxMemcached>",   RO, WRAP, WL, NULL },
+    { "scgi",        "handle<NginxScgi>",        RO, WRAP, WL, NULL },
+    { "uwsgi",       "handle<NginxUwsgi>",       RO, WRAP, WL, NULL },
+    { "mirror",      "handle<NginxMirror>",      RO, WRAP, WL, NULL },
     { "addLocation",              "function",GRD, REV|METH,     WL,
       "Rebuilds live location BST; reverse with removeLocation",
       &ngx_js_sig_add_location },
@@ -1106,6 +1124,11 @@ static const ngx_js_member_class_t  ngx_js_snapshot_members[] = {
 /* NginxServer — scalar setters safe; names/dispatch/topology are guarded or
  * irreversible. */
 static const ngx_js_member_class_t  ngx_js_server_members[] = {
+    /* Sub-object accessor, classified for its TYPE — see the NginxLocation
+     * block. `names`/`locations` are collections: the declarative profile
+     * rejects computed access, so a chain cannot pass through them and they
+     * need no handle type here. */
+    { "ssl",        "handle<NginxSSL>",        RO, WRAP, WL, NULL },
     { "root",                   "string",  SAFE, REV, WL, NULL },
     { "clientHeaderBufferSize", "number",  SAFE, REV, WL, NULL },
     { "clientHeaderTimeout",    "number",  SAFE, REV, WL, NULL },
