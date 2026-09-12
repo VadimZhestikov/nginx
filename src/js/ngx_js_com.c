@@ -1405,6 +1405,60 @@ ngx_js_nginx_fn_settable(JSContext *ctx, JSValueConst this_val,
  * See js_com_docs/js-com-safety-classes.adoc.  Unregistered classes yield an
  * empty array (or null for the single-member form), mirroring settable().
  */
+/*
+ * nginx.describeType(name [, member]) — describe a COM class by TYPE NAME.
+ *
+ *   nginx.describeType("NginxLocation")            -> Descriptor[]
+ *   nginx.describeType("NginxLocation", "addHook") -> Descriptor | null
+ *
+ * describe() needs an object: it answers "what can I do to THIS value". A
+ * static check has no object — to validate `nginx.addServer(..).addLocation(..)`
+ * it must ask what a NginxLocation offers before any location exists. That is
+ * the M4 return-type binding, and the reason comcon.reviewCalls() could only
+ * check the FIRST call in a chain.
+ *
+ * Deliberately a separate function rather than an overload: describe()'s string
+ * form is a COM PATH ("http.servers[0]"), so a type name there would be
+ * ambiguous with a path that happens to match.
+ */
+static JSValue
+ngx_js_nginx_fn_describe_type(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue      result;
+    const char  *type, *name;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+                                 "nginx.describeType(name[, member]): "
+                                 "type name required");
+    }
+
+    type = JS_ToCString(ctx, argv[0]);
+    if (type == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    name = NULL;
+    if (argc >= 2 && JS_IsString(argv[1])) {
+        name = JS_ToCString(ctx, argv[1]);
+        if (name == NULL) {
+            JS_FreeCString(ctx, type);
+            return JS_EXCEPTION;
+        }
+    }
+
+    result = ngx_js_describe_type(ctx, type, name);
+
+    JS_FreeCString(ctx, type);
+    if (name != NULL) {
+        JS_FreeCString(ctx, name);
+    }
+
+    return result;
+}
+
+
 static JSValue
 ngx_js_nginx_fn_describe(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
@@ -3272,29 +3326,58 @@ static const char  ngx_js_comcon_bootstrap[] =
        resolve statically against the typed describe() registry — unknown member
        or wrong arity is refused HERE, at admission, where the refusal can be
        charged to the realizer and reported with the offending call path.
-       SOUNDNESS: it never guesses. A receiver it cannot resolve (a chained step,
-       whose type needs the return-type binding of M4; a non-COM grant; an
-       un-granted root, which is the free-name gate's job) is reported in
-       `unchecked` rather than rejected, so this can only turn runtime failures
-       into admission failures, never reject a valid proposal. Arity is checked
-       as the RANGE required..declared, matching how describe() records optional
-       parameters. */
+       M4 RETURN-TYPE BINDING: a chained step is a member of the PREVIOUS step's
+       return type, so it used to be unconditionally `unchecked` -- only the
+       first call in `nginx.addServer(..).addLocation(..)` was ever verified.
+       The typed registry records returns (M2b: addLocation -> handle<Location>),
+       so the chain's receiver TYPE is now carried across steps and checked with
+       nginx.describeType(), which answers "what does this type offer" without
+       an instance. Only `handle<X>` names a receiver; void/bool/str end the
+       chain's type knowledge and the rest falls back to `unchecked`.
+       SOUNDNESS IS PRESERVED -- it still never guesses. A receiver it cannot
+       resolve (a non-COM grant; an un-granted root, which is the free-name
+       gate's job; a chain step after a non-handle return; a DOTTED chained step
+       like `.ssl.setCiphers(..)`, which would need namespace typing on top of
+       the return type) is reported in `unchecked` rather than rejected, so this
+       can only turn runtime failures into admission failures, never reject a
+       valid proposal. Arity is checked as the RANGE required..declared,
+       matching how describe() records optional parameters. */
     "  C.reviewCalls=function(source,grants){"
     "    var r=C.reviewDeclarative(source),checked=[],unchecked=[];"
     "    function fail(m){throw new TypeError('admission refused: '+m);}"
+    /* M4 return-type binding: handle<X> is the only return that names a
+       receiver for the NEXT step in a chain. Anything else (void, bool, str)
+       ends the chain's type knowledge, and the rest goes to `unchecked`. */
+    "    function hnd(t){var m=/^handle<([A-Za-z_$][A-Za-z0-9_$]*)>$/"
+    "      .exec(String(t===undefined||t===null?'':t));return m?m[1]:null;}"
     "    var st=r.statements;"
     "    for(var si=0;si<st.length;si++){var ch=st[si];"
+    "      var ctype=null;"
     "      for(var k=0;k<ch.length;k++){var step=ch[k];"
     "        var segs=String(step.op).split('.');"
     "        var mem=segs[segs.length-1];"
-    "        if(k>0||!grants||segs.length<2){unchecked.push(step.op);continue;}"
-    "        var root=segs[0];"
-    "        if(!Object.prototype.hasOwnProperty.call(grants,root)){"
-    "          unchecked.push(step.op);continue;}"
-    "        var recv=grants[root];"
-    "        for(var j=1;j<segs.length-1&&recv;j++)recv=recv[segs[j]];"
-    "        if(!recv||typeof recv!=='object'){unchecked.push(step.op);continue;}"
-    "        var d=null;try{d=nginx.describe(recv,mem);}catch(e){d=null;}"
+    "        var d=null;"
+    "        if(k===0){"
+    "          if(!grants||segs.length<2){"
+    "            unchecked.push(step.op);ctype=null;continue;}"
+    "          var root=segs[0];"
+    "          if(!Object.prototype.hasOwnProperty.call(grants,root)){"
+    "            unchecked.push(step.op);ctype=null;continue;}"
+    "          var recv=grants[root];"
+    "          for(var j=1;j<segs.length-1&&recv;j++)recv=recv[segs[j]];"
+    "          if(!recv||typeof recv!=='object'){"
+    "            unchecked.push(step.op);ctype=null;continue;}"
+    "          try{d=nginx.describe(recv,mem);}catch(e){d=null;}"
+    /* A chained step is a member of the PREVIOUS step's return type, so it can
+       only be checked once that type is known. A dotted chained step
+       (`.ssl.setCiphers(..)`) would need namespace typing on top of that, so
+       it stays unchecked rather than guessed. */
+    "        }else if(ctype&&segs.length===1){"
+    "          try{d=nginx.describeType(ctype,mem);}catch(e){d=null;}"
+    "          if(d===null||d===undefined)"
+    "            fail(\"unknown member '\"+mem+\"' on \"+ctype+"
+    "                 \" in chained call '\"+step.op+\"'\");"
+    "        }else{unchecked.push(step.op);ctype=null;continue;}"
     "        if(d===null||d===undefined)"
     "          fail(\"unknown member '\"+mem+\"' in call '\"+step.op+\"'\");"
     "        if(d.params){var lo=0,hi=d.params.length;"
@@ -3302,6 +3385,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "          var n=step.args.length;"
     "          if(n<lo||n>hi)"
     "            fail(\"'\"+step.op+\"' expects \"+lo+\"..\"+hi+\" argument(s), got \"+n);}"
+    "        ctype=hnd(d.returns);"
     "        checked.push(step.op);}}"
     "    return {ok:true,checked:checked,unchecked:unchecked};};"
     /* realize(q, contract, realizerEnv): give a quotation force under the
@@ -3823,6 +3907,9 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "settable",
                       JS_NewCFunction(ctx, ngx_js_nginx_fn_settable,
                                       "settable", 1));
+    JS_SetPropertyStr(ctx, nginx_obj, "describeType",
+                      JS_NewCFunction(ctx, ngx_js_nginx_fn_describe_type,
+                                      "describeType", 2));
     JS_SetPropertyStr(ctx, nginx_obj, "describe",
                       JS_NewCFunction(ctx, ngx_js_nginx_fn_describe,
                                       "describe", 2));

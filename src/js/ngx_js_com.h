@@ -461,6 +461,15 @@ JSValue  ngx_js_describe_member(JSContext *ctx, JSValueConst obj,
  * ngx_js_com_describe.c.
  */
 JSValue  ngx_js_describe_catalog(JSContext *ctx);
+/*
+ * describe by TYPE NAME rather than by instance — "what does a NginxLocation
+ * offer", with no location in hand.  `name` NULL yields the Descriptor[] for
+ * the whole classified table; otherwise one Descriptor or JS_NULL.  Reports
+ * the classified table only: read-only getters need a prototype, hence an
+ * instance.  Backs nginx.describeType() and the M4 return-type binding.
+ */
+JSValue  ngx_js_describe_type(JSContext *ctx, const char *type,
+                              const char *name);
 
 /*
  * Some COM roots (e.g. nginx.http) are plain JS objects, not class instances,

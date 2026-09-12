@@ -1948,6 +1948,94 @@ ngx_js_describe_settable_props(JSContext *ctx, JSValueConst obj)
  * { class, members[] } for every classifiable COM class, so tooling can list
  * what exists before drilling into a specific path.
  */
+/*
+ * Look up a class-catalog table by TYPE NAME.
+ *
+ * The catalog's display names carry a parenthetical hint for the root
+ * ("NginxHttp (nginx.http)"), so match the bare identifier before any space —
+ * callers name the type, not the display string.
+ */
+static const ngx_js_member_class_t *
+ngx_js_describe_table_by_type(const char *name)
+{
+    size_t  i, n;
+
+    if (name == NULL || *name == '\0') {
+        return NULL;
+    }
+
+    for (i = 0; ngx_js_class_catalog[i].name != NULL; i++) {
+        const char *cn = ngx_js_class_catalog[i].name;
+
+        for (n = 0; cn[n] != '\0' && cn[n] != ' '; n++) { /* void */ }
+
+        if (ngx_strlen(name) == n && ngx_strncmp(name, cn, n) == 0) {
+            return ngx_js_class_catalog[i].table;
+        }
+    }
+
+    return NULL;
+}
+
+
+/*
+ * nginx.describeType(name [, member]) backend.
+ *
+ * describe() answers "what can I do to THIS object"; this answers "what does a
+ * value of this TYPE offer", with no instance in hand.  That is what the M4
+ * return-type binding needs: given `addLocation` returns
+ * handle<NginxLocation>, the next call in a chain has to be checked against
+ * NginxLocation before any location exists.
+ *
+ * HONEST LIMIT: this reports the CLASSIFIED TABLE only.  describe() on a live
+ * object additionally walks the prototype for read-only getters, which needs
+ * an instance, so a getter absent from the table is absent here too.  Methods
+ * — what a call check cares about — are always in the table.
+ *
+ * ngx_js_describe_one() reads `obj` only through the refine hook, so passing
+ * JS_UNDEFINED with refine=NULL is safe and yields the unrefined propagation
+ * recorded in the table.
+ */
+JSValue
+ngx_js_describe_type(JSContext *ctx, const char *type, const char *name)
+{
+    const ngx_js_member_class_t  *m, *table;
+    JSValue                       arr, d;
+    uint32_t                      i;
+
+    table = ngx_js_describe_table_by_type(type);
+
+    if (table == NULL) {
+        return name != NULL ? JS_NULL : JS_NewArray(ctx);
+    }
+
+    if (name != NULL) {
+        for (m = table; m->name != NULL; m++) {
+            if (ngx_strcmp(m->name, name) == 0) {
+                return ngx_js_describe_one(ctx, JS_UNDEFINED, m, NULL);
+            }
+        }
+        return JS_NULL;
+    }
+
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) {
+        return arr;
+    }
+
+    for (i = 0, m = table; m->name != NULL; m++, i++) {
+        d = ngx_js_describe_one(ctx, JS_UNDEFINED, m, NULL);
+        if (JS_IsException(d)) {
+            JS_FreeValue(ctx, arr);
+            return d;
+        }
+        JS_SetPropertyUint32(ctx, arr, i, d);
+    }
+
+    return arr;
+}
+
+
 JSValue
 ngx_js_describe_catalog(JSContext *ctx)
 {
