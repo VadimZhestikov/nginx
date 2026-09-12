@@ -178,9 +178,20 @@ mode back through the denial report and the two disagreed.
 Fixed with `ngx_js_compartment_mode_set()`, which switches the effective mode **without
 resetting the counters** — switching audit → enforce must not destroy the audit evidence that
 justified the switch. `comcon.mode()` now also returns the effective mode name, so a caller
-can verify rather than trust. **The switch is PER PROCESS**: there is no fleet-wide mode
-fan-out (that wants the class-F transport, as `bindShared` does), and `std.ops` reports the
-scope rather than implying otherwise.
+can verify rather than trust.
+
+**FLEET-WIDE as of the same day.** The switch was per process, and that was not a limitation
+but a hole: measured on four workers, one `shadow()` call then 24 requests gave **16 audit and
+8 enforce** — the fleet in mixed modes, nondeterministically, with the dangerous direction the
+common one (an operator calls `enforce()`, gets `"enforce"` back, and some workers keep
+allowing what they believe they have begun denying). The mode now lives in `nginx.shared` as
+`{epoch, mode}` and each worker **reconciles lazily** — one shared read before a fragment runs
+and before the mode is reported — which is D4b's transport rather than a new one. Measured
+cost: **+0.10 µs per fragment invocation** against a 0.64 µs do-nothing fragment; noise for
+anything that computes, with the C-side alternative (a plain shared integer on the invoke
+path) available if it ever shows. A reconcile applies the mode locally and **publishes
+nothing**, or every worker would bump the epoch and the fleet would chase its own tail.
+`t/comcon_mode_fanout.t`.
 
 `t/comcon_std_ops.t` (26) asserts the rollout as **enforcement**, not as a label: the same A1
 reach probe returns `null` (denied) under `enforce` and a real listener under `shadow`,

@@ -564,6 +564,40 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.56 (in place — the audit/enforce mode switch goes FLEET-WIDE):** `std.ops` shipped the
+rollout verbs with a doc note saying the switch was "per process". That was not a limitation
+but a hole, and measuring it settled the question: on four workers, one `shadow()` call
+followed by 24 requests gave **16 audit and 8 enforce** — the fleet in **mixed modes**,
+nondeterministically. The dangerous direction is the common one: an operator calls
+`enforce()`, gets `"enforce"` back, and some workers keep **auditing** — still allowing what
+they believe they have begun denying. It is the same shape as the inert-`comcon.mode()` defect
+fixed hours earlier (a verb reporting success while the system does not change), now
+distributed.
+
+The fix rides **D4b's transport**, not a new one: the mode lives in `nginx.shared` as
+`{epoch, mode}`, and each worker **reconciles lazily** — one shared read before a fragment
+runs, and before the mode is reported. Lazy pull, no broadcast, no stop-the-world; a worker
+busy during the switch picks it up on its next fragment. A reconcile applies the mode
+**locally and publishes nothing**, or every worker would bump the epoch and the fleet would
+chase its own tail (asserted: 24 invocations across the fleet leave the epoch unchanged).
+`nginx.shared` does not exist at config-eval time, so every access is guarded — a config-time
+`comcon.mode()` sets the local mode and publishes nothing, which is right, since every worker
+inherits it across `fork()`.
+
+**Measured cost: +0.10 µs per fragment invocation** (a `nginx.shared.get`) against a 0.64 µs
+do-nothing fragment — noise for anything that computes, ~16% of the degenerate case. The C-side
+alternative (a plain shared integer read on the invoke path) is there if it ever shows.
+
+**WHY IT SURVIVED REVIEW, which is the transferable part.** `t/comcon_std_ops.t` runs with the
+default `worker_processes 1`, and a single-worker fixture cannot see a fan-out bug. The new
+test's instrument then took three tries, each version green while measuring nothing: "several
+workers" inferred from *repeated* per-worker counters (repeats are coincidences); a per-process
+id from `Math.random()` (the runtime is created pre-fork, so every worker returned the *same*
+"identity" and four workers looked like one); and finally `nginx.shared.incr()`, which is
+genuinely per-process. The requests also had to become **concurrent** — under light sequential
+load one worker wins nearly every accept. Until all of that was true, the invoke-path control
+PASSED: the fix looked unnecessary because the test could not see the workers it was about.
+
 **v5.55 (in place — `contract.intrinsics`: the allowance narrows, so a policy can suppress
 it):** v5.54 made the intrinsics a floor that nothing could lower, and that **removed an
 expressible policy**: before it, `{imports: []}` meant *no free names at all*; afterwards the

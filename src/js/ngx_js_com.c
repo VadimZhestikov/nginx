@@ -3846,6 +3846,51 @@ static const char  ngx_js_comcon_bootstrap[] =
        contract.grants maps a name -> a live host capability (a NginxSocket);
        each is re-wrapped compartment-native and injected as a closure binding
        of that name (attenuation-only: the cap stays reach-gated). */
+    /* ---- the audit/enforce/learn mode, FLEET-WIDE -----------------------
+       comcon.mode() sets a per-process static, so the rollout verbs switched
+       only the worker that served the request.  Measured on four workers: one
+       shadow() call, then 24 requests -> 16 audit and 8 enforce.  THE FLEET SAT
+       IN MIXED MODES, and the dangerous direction is the common one -- an
+       operator calls enforce(), gets "enforce" back, and some workers keep
+       AUDITING: still allowing what they believe they have begun denying.
+
+       Fixed with D4b's transport rather than a new one: the mode lives in
+       nginx.shared as {epoch, mode}, and each worker RECONCILES LAZILY -- one
+       shared read before a fragment runs, and before the mode is reported.
+       Lazy pull, not eager push: no broadcast, no stop-the-world, and a worker
+       that was busy during the switch picks it up on its next fragment.
+
+       nginx.shared does not exist at config-eval time (only once workers run),
+       so every access here is guarded: a config-time comcon.mode() sets the
+       local mode and publishes nothing, which is right -- the value is already
+       in jcf->tenant_mode and every worker inherits it across fork(). */
+    "  var MODEK='__comconMode__',modeEpoch=-1,__modeC=C.mode;"
+    "  function modeShared(){"
+    "    try{return (typeof nginx!=='undefined'&&nginx.shared)?nginx.shared:null;}"
+    "    catch(e){return null;}}"
+    "  function modeReconcile(){"
+    "    var sh=modeShared();if(!sh)return;"
+    "    var raw;try{raw=sh.get(MODEK);}catch(e){return;}"
+    "    if(raw===undefined||raw===null)return;"
+    "    var st;try{st=JSON.parse(raw);}catch(e){return;}"
+    "    if(!st||st.epoch===modeEpoch)return;"
+    /* Apply LOCALLY through the C setter, never through C.mode -- publishing
+       here would bump the epoch on every reconcile and the fleet would chase
+       its own tail. */
+    "    __modeC(st.mode);modeEpoch=st.epoch;}"
+    "  C.mode=function(m){"
+    "    var eff=__modeC(m);"
+    "    var sh=modeShared();"
+    "    if(sh){try{"
+    "      var raw=sh.get(MODEK);"
+    "      var prev=0;"
+    "      if(raw!==undefined&&raw!==null){"
+    "        try{prev=(JSON.parse(raw).epoch|0);}catch(e2){prev=0;}}"
+    "      modeEpoch=prev+1;"
+    "      sh.set(MODEK,JSON.stringify({epoch:modeEpoch,mode:eff}));"
+    "    }catch(e){}}"
+    "    return eff;};"
+    "  C.__modeReconcile=modeReconcile;"
     "  C.include=function(source,contract){"
     "    contract=contract||{};"
     "    var g=contract.grants||{},names=[],caps=[],pols=[];"
@@ -3908,7 +3953,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var h=C.__includeConfined(String(source),names,caps,pols,admit,deps);"
     "    var ms=(contract.meter&&contract.meter[METER]"
     "            &&contract.meter[METER].timeoutMs)|0;"
-    "    var bound=function(arg){return C.__invokeConfined(h,arg,ms);};"
+    "    var bound=function(arg){modeReconcile();"
+    "      return C.__invokeConfined(h,arg,ms);};"
     "    bound.confined=true;bound.handle=h;bound.meterMs=ms;return bound;};"
     /* pom(fragment): the reflective Program Object Model surface (increment D1).
        A lazy NodeView tree over a compiled fragment (module/function granularity
@@ -4421,6 +4467,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    function verb(name,needs,fn){V.push({name:name,needs:needs,fn:fn});}"
 
     "    verb('denials','log',function(){"
+    "      C.__modeReconcile();"
     "      var d=res.log();return {mode:d.mode,total:d.total,byOp:d.byOp};});"
     "    verb('learn','learn',function(){return res.learn();});"
     /* shadow/enforce are the audit-first rollout, and they are REAL here because
