@@ -24787,7 +24787,9 @@ static void comcon_pom_fill(JSContext *ctx, JSValue node, JSFunctionBytecode *b,
                             int is_module)
 {
     char        namebuf[256];
+    char        filebuf[256];
     const char *name;
+    const char *fname;
     int         line0, line1, col, i;
 
     JS_SetPropertyStr(ctx, node, "kind",
@@ -24815,6 +24817,21 @@ static void comcon_pom_fill(JSContext *ctx, JSValue node, JSFunctionBytecode *b,
     }
     JS_SetPropertyStr(ctx, node, "line0", JS_NewInt32(ctx, line0));
     JS_SetPropertyStr(ctx, node, "line1", JS_NewInt32(ctx, line1));
+
+    /* D5b-4 (cross-file provenance): a line number is useless without the file
+     * it counts in, and these lines count in the ENCLOSING FILE (find_line_num
+     * walks pc2line, which is file-relative), while a cst() view's lines are
+     * NODE-relative.  Two bases, so each must name itself: `file` + `col0` make
+     * this one absolute, and the JS layer converts node-local spans against it.
+     * `col0` was already computed here and discarded. */
+    if (b->has_debug && b->debug.filename != JS_ATOM_NULL) {
+        fname = JS_AtomGetStr(ctx, filebuf, sizeof(filebuf), b->debug.filename);
+    } else {
+        fname = NULL;
+    }
+    JS_SetPropertyStr(ctx, node, "file",
+                      JS_NewString(ctx, fname ? fname : ""));
+    JS_SetPropertyStr(ctx, node, "col0", JS_NewInt32(ctx, col < 0 ? 0 : col));
 
     JS_SetPropertyStr(ctx, node, "sourceLen",
         JS_NewInt32(ctx, (b->has_debug && b->debug.source)

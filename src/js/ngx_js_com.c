@@ -3846,18 +3846,44 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      var ex=C.__parse(src,true);"
     "      if(!ex||ex.range[1]!==src.length)throw e;"
     "      return ex;}}"
-    "  function cstView(src,n,path,getParent){"
+    "  function cstView(src,n,path,getParent,org){"
     "    var v={},r=n.range,slice=src.slice(r[0],r[1]);"
     "    v.kind=cstKind(n.type);v.type=n.type;v.name=cstName(n);"
     "    v.hash=cstFnv(slice);"
     "    v.range=[r[0],r[1]];"
     "    v.line0=n.loc?n.loc.start.line:0;v.line1=n.loc?n.loc.end.line:0;"
-    "    v.span={line0:v.line0,line1:v.line1,"
+    /* D5b-4: a span SAYS WHICH BASE IT COUNTS IN.  These are NODE-LOCAL (line 1
+       is the first line of this view's own source), while a bytecode-tier span
+       is FILE-relative -- the same field name meaning two things is how a
+       denial record ends up pointing at the wrong place.  base:'node' here,
+       base:'file' there, and origin() converts. */
+    "    v.span={base:'node',line0:v.line0,line1:v.line1,"
     "            col0:n.loc?n.loc.start.column:0,"
     "            col1:n.loc?n.loc.end.column:0,range:[r[0],r[1]]};"
     "    v.id=pomId(v.hash,path.join('.'));"
     "    v.src=src;"
     "    v.anchors=Object.freeze(cstAnchors(n));"
+    /* origin(): this node's position in the FILE the view came from, or null if
+       the view has no origin (plain text handed to comcon.cst with no opts).
+       NULL IS THE POINT -- inventing a plausible absolute location for a node
+       whose origin is unknown is the source-map lie, and a denial record that
+       names the wrong file:line is worse than one that says it does not know.
+
+       Only line 1 of the node's source starts at the origin's column; every
+       later line starts at column 0 of its own line, so the column shift
+       applies to line 1 alone.  An absolute `range` needs the node's byte
+       OFFSET in the file, which the bytecode tier does not carry (pc2line maps
+       lines, not offsets) -- so it is reported only when the origin supplies
+       one, and is null otherwise rather than guessed. */
+    "    v.origin=function(){"
+    "      if(!org)return null;"
+    "      var l0=org.line0+v.line0-1,l1=org.line0+v.line1-1;"
+    "      var c0=(v.line0===1)?org.col0+v.span.col0:v.span.col0;"
+    "      var c1=(v.line1===1)?org.col0+v.span.col1:v.span.col1;"
+    "      var rg=(org.offset===null||org.offset===undefined)?null:"
+    "             [org.offset+r[0],org.offset+r[1]];"
+    "      return Object.freeze({base:'file',file:org.file,line0:l0,line1:l1,"
+    "                            col0:c0,col1:c1,range:rg});};"
     "    v.binding={epoch:0,profile:'unbound'};"
     "    v.text=function(){return C.quote(slice);};"
     "    v.quote=function(){return C.quote(slice);};"
@@ -3886,7 +3912,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    Object.defineProperty(v,'children',{enumerable:true,get:function(){"
     "      var a=[];for(var i=0;i<kids.length;i++){"
     "        (function(j){a.push(cstView(src,kids[j],path.concat([j]),"
-    "          function(){return v;}));})(i);}"
+    "          function(){return v;},org));})(i);}"
     "      return a;}});"
     "    return Object.freeze(v);}"
     "  function pomView(rootFn,path){"
@@ -3895,7 +3921,13 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var ps=path.join('.'),v={};"
     "    v.kind=raw.kind;v.name=raw.name;v.hash=raw.hash;"
     "    v.line0=raw.line0;v.line1=raw.line1;v.childCount=raw.childCount;"
-    "    v.span={line0:raw.line0,line1:raw.line1};"
+    /* FILE-relative (find_line_num walks pc2line), so the span carries the file
+       and says base:'file'. col1 is NOT known at this tier -- line1 is derived
+       by counting newlines in the source slice, which says nothing about where
+       the last line ends -- so it is null, not 0. */
+    "    v.file=raw.file;"
+    "    v.span={base:'file',file:raw.file,line0:raw.line0,line1:raw.line1,"
+    "            col0:raw.col0,col1:null};"
     "    v.id=pomId(raw.hash,ps);"
     "    v.binding={epoch:0,profile:'unbound'};"
     "    v.text=function(){return C.quote(raw.source);};"
@@ -3908,7 +3940,9 @@ static const char  ngx_js_comcon_bootstrap[] =
        managed to read). */
     "    v.cst=function(){"
     "      return cstView(raw.source,cstParse(raw.source),"
-    "                     path.concat(['cst']),function(){return v;});};"
+    "                     path.concat(['cst']),function(){return v;},"
+    "                     {file:raw.file,line0:raw.line0,col0:raw.col0,"
+    "                      offset:null});};"
     /* references(name)/callsites(name): D5a call-site audit — every reference to
        a free name or method `name` in this fragment (whole subtree), with line
        numbers; callsites = the references that are the callee of a call. Read
@@ -3933,7 +3967,20 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      var a=[];for(var i=0;i<raw.childCount;i++)"
     "        a.push(pomView(rootFn,path.concat([i])));return a;}});"
     "    return Object.freeze(v);};"
-    "  C.pom=function(rootFn){return pomView(rootFn,[]);};"
+    /* A confined fragment's `bound` wrapper is NOT the fragment.  Handing it to
+       pom() used to describe the WRAPPER -- a two-line closure in
+       <comcon-bootstrap> -- and answer every query about it: a wrong answer that
+       looks exactly like a right one (it has a kind, a hash, a source, children).
+       The fragment itself lives in the other compartment, so refuse and say what
+       to do instead.  The caller already holds the source it passed to
+       include(), and comcon.cst(source, {file:'<comcon-fragment>'}) gives the
+       fragment's own tree with its synthetic origin (POM.md §6 Q3). */
+    "  C.pom=function(rootFn){"
+    "    if(rootFn&&rootFn.confined===true)throw new TypeError("
+    "      'pom: this is the BOUND WRAPPER of a confined fragment, not the "
+                 "fragment; use comcon.cst(source,{file:"
+                 "\"<comcon-fragment>\"}) for the fragment itself');"
+    "    return pomView(rootFn,[]);};"
     /* cst(source): a CST view over plain SOURCE, with no live function behind it
        -- the §38 shape, where what you have is vendor TEXT you may not edit.
        pom() needs a compiled function (it reads the bytecode's source slice);
@@ -3943,8 +3990,15 @@ static const char  ngx_js_comcon_bootstrap[] =
        compose, since harden() returns source rather than a node.  Pure analysis:
        it confers nothing, parses fail-closed, and the view is frozen like any
        other.  `parent` is null at the root -- there is no enclosing node. */
-    "  C.cst=function(source){var src=String(source);"
-    "    return cstView(src,cstParse(src),['cst'],function(){return null;});};"
+    "  C.cst=function(source,opts){var src=String(source);"
+    "    var org=null;"
+    "    if(opts&&typeof opts==='object'){"
+    "      org={file:String(opts.file===undefined?'':opts.file),"
+    "           line0:(opts.line0===undefined?1:opts.line0),"
+    "           col0:(opts.col0===undefined?0:opts.col0),"
+    "           offset:(opts.offset===undefined?null:opts.offset)};}"
+    "    return cstView(src,cstParse(src),['cst'],"
+    "                   function(){return null;},org);};"
     /* harden(node, query, wrapperQuotation) -- increment D5b-3: SOURCE-REWRITE
        hardening, the residual §38 case.  Every site the query matches is
        replaced by the wrapper with `$$` standing for the site's own source, and

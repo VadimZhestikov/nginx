@@ -30,6 +30,29 @@ typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
  */
 #define NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS  5000
 
+/*
+ * The SYNTHETIC FILE ORIGIN of every confined fragment (POM.md §6 Q3): the name
+ * include()'s eval is given, and therefore the name that appears in a fragment's
+ * own stack frames.  One constant, because the eval site and the error-location
+ * extractor must agree -- if they drift, fragment errors silently lose their
+ * location and nothing fails.
+ */
+#define NGX_JS_COMCON_FRAGMENT_ORIGIN      "<comcon-fragment>"
+
+/*
+ * The wrapper include() evaluates a fragment inside.  Three pieces, defined
+ * ONCE: the buffer sizing and the copies both derive from these, so a change
+ * here cannot overflow the buffer (it used to be a third, separate literal).
+ *
+ * NGX_JS_COMCON_WRAP_MID MUST CONTAIN NO NEWLINE.  It is what makes a
+ * fragment's reported line the AUTHOR's line -- add one and every line in
+ * every fragment error, stack frame and POM span shifts by one, silently, at
+ * every tier at once.  Pinned by t/comcon_pom_origin.t.
+ */
+#define NGX_JS_COMCON_WRAP_HEAD            "(function("
+#define NGX_JS_COMCON_WRAP_MID             "){\"use strict\";return("
+#define NGX_JS_COMCON_WRAP_TAIL            ");})"
+
 #define NGX_JS_MSG_MAX  (64 * 1024)
 
 /* Forward declaration to allow ngx_js_loc_conf_t to store original_handler */

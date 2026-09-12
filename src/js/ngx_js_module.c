@@ -1115,8 +1115,17 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         dn = 16 - gn;
     }
 
-    /* build "(function(<grant names><dep names>){\"use strict\";return(...);})" */
-    total = sizeof("(function(){\"use strict\";return();})") + slen;
+    /*
+     * Build "(function(<grant names><dep names>){\"use strict\";return(...);})".
+     *
+     * The three pieces are ONE definition each (below, at the top of this file)
+     * because the allocation size and the copies used to be separate literals of
+     * the same text: editing the wrapper without editing the sizeof overflows
+     * this buffer by exactly the difference, and nothing would say so.  Found
+     * while writing the D5b-4 negative control that adds a newline here.
+     */
+    total = sizeof(NGX_JS_COMCON_WRAP_HEAD NGX_JS_COMCON_WRAP_MID
+                   NGX_JS_COMCON_WRAP_TAIL) + slen;
     for (gi = 0; gi < gn; gi++) {
         name_v = JS_GetPropertyUint32(hctx, argv[1], gi);
         name = JS_ToCString(hctx, name_v);
@@ -1143,7 +1152,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         JS_FreeCString(hctx, source);
         return JS_ThrowOutOfMemory(hctx);
     }
-    p = ngx_cpymem(buf, "(function(", sizeof("(function(") - 1);
+    p = ngx_cpymem(buf, NGX_JS_COMCON_WRAP_HEAD,
+                   sizeof(NGX_JS_COMCON_WRAP_HEAD) - 1);
     idx = 0;
     for (gi = 0; gi < gn; gi++) {
         name_v = JS_GetPropertyUint32(hctx, argv[1], gi);
@@ -1173,15 +1183,16 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         JS_FreeValue(hctx, name_v);
         JS_FreeValue(hctx, dv);
     }
-    p = ngx_cpymem(p, "){\"use strict\";return(",
-                   sizeof("){\"use strict\";return(") - 1);
+    p = ngx_cpymem(p, NGX_JS_COMCON_WRAP_MID,
+                   sizeof(NGX_JS_COMCON_WRAP_MID) - 1);
     p = ngx_cpymem(p, source, slen);
-    p = ngx_cpymem(p, ");})", sizeof(");})") - 1);
+    p = ngx_cpymem(p, NGX_JS_COMCON_WRAP_TAIL,
+                   sizeof(NGX_JS_COMCON_WRAP_TAIL) - 1);
     *p = '\0';                    /* JS_Eval requires a NUL-terminated buffer */
     JS_FreeCString(hctx, source);
 
-    outer = JS_Eval(sctx, (const char *) buf, p - buf, "<comcon-fragment>",
-                    JS_EVAL_TYPE_GLOBAL);
+    outer = JS_Eval(sctx, (const char *) buf, p - buf,
+                    NGX_JS_COMCON_FRAGMENT_ORIGIN, JS_EVAL_TYPE_GLOBAL);
     ngx_free(buf);
 
     if (JS_IsException(outer)) {
@@ -1595,8 +1606,10 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     JSContext        *sctx;
     ngx_js_worker_t  *w = NULL;
     JSValueConst      fn;
-    JSValue           arg, result, jstr, retv, exc;
-    const char       *s;
+    JSValue           arg, result, jstr, retv, exc, stack_v;
+    const char       *s, *st, *where;
+    char              wbuf[24];
+    int               wn = 0;
     size_t            len;
     int64_t           handle = 0;
     int               nargs = 0;
@@ -1681,7 +1694,53 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     if (JS_IsException(result)) {
         exc = JS_GetException(sctx);
         s = JS_ToCString(sctx, exc);
-        retv = JS_ThrowTypeError(hctx, "comcon: fragment: %s", s ? s : "error");
+
+        /*
+         * D5b-4 (cross-file provenance): carry the fragment's OWN location out
+         * with the error.  Without it a fragment failure says what went wrong
+         * and not WHERE, so MANUAL §7.4's denial-record `where` (file:line)
+         * cannot be filled for the one tier where it matters most.
+         *
+         * Only the "<comcon-fragment>:LINE[:COL]" token is copied -- never the
+         * rest of the stack, which also names host frames and host paths.  The
+         * fragment's synthetic file origin is that name; the line is the
+         * AUTHOR's line, because include()'s wrapper preamble
+         * ("(function(g){\"use strict\";return(") contains no newline.  That
+         * is a contract, not a coincidence: add a newline there and every line
+         * reported for every fragment shifts by one, silently.  Pinned by
+         * t/comcon_pom_origin.t.
+         */
+        wbuf[0] = '\0';
+        stack_v = JS_GetPropertyStr(sctx, exc, "stack");
+        if (JS_IsString(stack_v)) {
+            st = JS_ToCString(sctx, stack_v);
+            if (st != NULL) {
+                where = strstr(st, NGX_JS_COMCON_FRAGMENT_ORIGIN ":");
+                if (where != NULL) {
+                    where += sizeof(NGX_JS_COMCON_FRAGMENT_ORIGIN ":") - 1;
+                    for (wn = 0; wn + 1 < (int) sizeof(wbuf); wn++) {
+                        if (!((where[wn] >= '0' && where[wn] <= '9')
+                              || where[wn] == ':'))
+                        {
+                            break;
+                        }
+                        wbuf[wn] = where[wn];
+                    }
+                    wbuf[wn] = '\0';
+                }
+                JS_FreeCString(sctx, st);
+            }
+        }
+        JS_FreeValue(sctx, stack_v);
+
+        if (wbuf[0] != '\0') {
+            retv = JS_ThrowTypeError(hctx, "comcon: fragment: %s at %s:%s",
+                                     s ? s : "error",
+                                     NGX_JS_COMCON_FRAGMENT_ORIGIN, wbuf);
+        } else {
+            retv = JS_ThrowTypeError(hctx, "comcon: fragment: %s",
+                                     s ? s : "error");
+        }
         if (s != NULL) {
             JS_FreeCString(sctx, s);
         }

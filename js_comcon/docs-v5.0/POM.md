@@ -172,8 +172,32 @@ until retired.
    anchor. `anchors()` THROWS on the bytecode tier rather than returning no matches: that tier
    does not parse, so it cannot answer, and "no sites" would be the wrong answer to give a
    hardening query.
-3. **Cross-file provenance** — an `include`-spliced fragment gets a synthetic file
-   origin; span mapping through includes needs a provenance hop. *(D5b-4, still open.)*
+3. **Cross-file provenance** — *(resolved, increment D5b-4, 2026-09-12)* **a span now says
+   which base it counts in.** A bytecode-tier span is FILE-relative and carries `base:'file'`,
+   `file` and `col0`; a `cst()` span is NODE-local and carries `base:'node'` and no file, so it
+   cannot be misread as absolute. `node.origin()` converts node-local → absolute against the
+   origin the view inherited (`{file, line0, col0}` from the bytecode node it came from, or an
+   explicit `comcon.cst(source, {file, line0, col0, offset})` for text you hold rather than a
+   live function).
+
+   This was a real defect, not a formality: `pom(fn).line0` was **18** and
+   `pom(fn).cst().line0` was **1** for the same function, with no file named anywhere — the
+   same field meaning two things at two tiers, so a denial record built from one and read as
+   the other points at the wrong place and looks right.
+
+   `origin()` returns **null** when the origin is unknown, and an absolute `range` only when a
+   byte offset was supplied (the bytecode tier has none — `pc2line` maps lines, not offsets).
+   Inventing a plausible location is the source-map lie; a denial record naming the wrong
+   file:line is worse than one that says it does not know.
+
+   **The include hop:** a fragment's synthetic file origin is `<comcon-fragment>`
+   (`NGX_JS_COMCON_FRAGMENT_ORIGIN`), and a fragment failure now reports
+   `... at <comcon-fragment>:LINE:COL` — only that token, never the rest of the stack, which
+   also names host frames. The line is the AUTHOR's line because `include()`'s wrapper preamble
+   contains no newline; that is a **contract** (add one and every reported line shifts by one,
+   silently), pinned by `t/comcon_pom_origin.t`. And `pom()` now **refuses** a confined
+   fragment's bound wrapper: it used to describe the wrapper — a two-line closure in
+   `<comcon-bootstrap>` — and answer every query about it.
 
    *Source-rewrite hardening resolved at D5b-3 (2026-09-12):*
    `comcon.harden(node, query, wrapper)` rewrites every matched site (`$$` = the site's own

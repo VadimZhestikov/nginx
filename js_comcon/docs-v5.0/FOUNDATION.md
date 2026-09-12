@@ -560,6 +560,42 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.49 (in place — increment D5b-4: cross-file provenance; increment D's D5b line is
+complete):** **a span now says which base it counts in.** This closed a real defect, not a
+formality: `pom(fn).line0` was **18** and `pom(fn).cst().line0` was **1** for the same
+function, with no file named anywhere — the same field meaning two things at two tiers, so a
+denial record built from one and read as the other points at the wrong place and looks right.
+Bytecode-tier spans now carry `base:'file'`, `file` and `col0` (`col0` was already computed in
+`comcon_pom_fill` and discarded); `cst()` spans carry `base:'node'` and no file, so they cannot
+be misread as absolute; and `node.origin()` converts node-local → absolute against the origin a
+view inherited from the bytecode node it came from, or an explicit
+`comcon.cst(source, {file, line0, col0, offset})` for text you hold rather than a live
+function (the §38 shape). The column shift applies to **line 1 only** — later lines start at
+their own column 0.
+
+**`origin()` returns null when the origin is unknown, and an absolute `range` only when a byte
+offset was supplied** (the bytecode tier has none: `pc2line` maps lines, not offsets).
+Inventing a plausible location is the source-map lie — a denial record naming the wrong
+file:line is worse than one that admits it does not know.
+
+**The include hop (POM.md §6 Q3).** A fragment's synthetic file origin is `<comcon-fragment>`
+(`NGX_JS_COMCON_FRAGMENT_ORIGIN`, now one constant shared by the eval site and the error path),
+and a fragment failure reports `... at <comcon-fragment>:LINE:COL` — only that token is copied
+out of the inner stack, never the rest, which also names host frames and host paths. So
+MANUAL §7.4's denial-record `where` is fillable at the tier where it matters most. The line is
+the AUTHOR's line because `include()`'s wrapper preamble contains no newline: that is a
+**contract**, pinned by `t/comcon_pom_origin.t`, because adding one shifts every line in every
+fragment error, frame and span by one, silently, at every tier at once.
+
+And `pom()` now **refuses** a confined fragment's bound wrapper. It used to describe the
+wrapper — a two-line closure in `<comcon-bootstrap>` — and answer every query about it: a wrong
+answer shaped exactly like a right one. It names what to use instead.
+
+Found while writing the negative control for the preamble contract: the wrapper's buffer size
+was computed from a **separate literal** of the same text, so editing the wrapper without
+editing the `sizeof` overflowed the allocation by the difference. The three pieces now derive
+from one definition each (`NGX_JS_COMCON_WRAP_HEAD/MID/TAIL`).
+
 **v5.48 (in place — increment D5b-3: source-rewrite hardening):**
 `comcon.harden(node, query, wrapper)` replaces every site a query matches with the wrapper
 quotation, `$$` standing for the site's own source, and returns a report whose `quotation`

@@ -5,7 +5,8 @@ enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` sel
 (POM-node quotations + stone splices), **D4a ✅** (epochs + admitted replace + rollback), **D4b ✅**
 (class-F multi-worker fan-out), **D5a ✅** (call-site audit), **D5b-1 ✅** (declarative-profile
 checker), **D5b-2 ✅** (full CST + finer selectors + anchors, 2026-09-12), **D5b-3 ✅**
-(source-rewrite hardening, 2026-09-12); D4c, D5b-4 deferred. Follows the operator kernel
+(source-rewrite hardening), **D5b-4 ✅** (cross-file provenance, all 2026-09-12) — **the D5b
+line is complete**; only D4c remains deferred. Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -378,8 +379,16 @@ ES parser for the full CST (D5b-2) rather than hand-roll one.
   compartment (only C-wrapped COM caps cross), so a wrapper installed on the confined tier must
   carry its own logic or call a granted capability — asserted, along with the live site surviving
   the refused install untouched.
-- **D5b-4 — cross-file provenance.** Span mapping through `include` splices (POM.md §6 Q3). Depends
-  on D5b-2.
+- **D5b-4 ✅ (2026-09-12) — cross-file provenance.** A span says which base it counts in
+  (`base:'file'` + `file` + `col0` at the bytecode tier, `base:'node'` at the CST tier) and
+  `node.origin()` converts node-local → absolute; null when the origin is unknown, absolute
+  `range` only when an offset was supplied. The include hop: `<comcon-fragment>` is the synthetic
+  origin (one constant), fragment failures report `at <comcon-fragment>:LINE:COL` (that token
+  only — the rest of the stack names host frames), and `pom()` refuses a fragment's bound wrapper
+  instead of describing it. `t/comcon_pom_origin.t` (16, nine negative controls).
+  **What it fixed:** `pom(fn).line0` = 18 vs `pom(fn).cst().line0` = 1 for the same function, with
+  no file anywhere — MANUAL §7.4's denial `where` was unfillable, and a number from one tier read
+  as the other is wrong in a way that looks right.
 
 ### Invariants
 - Reads still return quotations; a query result is a quote()-able node.

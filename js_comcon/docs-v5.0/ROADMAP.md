@@ -13,9 +13,10 @@
 > `INCREMENT_D.md` is authoritative: D0 (substrate) · D1 (lazy NodeView) · D2 (`query(sel)`) ·
 > D3 (quotations + stone splices) · D4a (epochs/replace/rollback) · D4b (class-F multi-worker
 > fan-out) · D5a (call-site audit) · D5b-1 (declarative-profile checker) ·
-> **D5b-2 (full CST + finer selectors + anchors)** · **D5b-3 (source-rewrite hardening,
-> 2026-09-12)** all ✅, with **D4c (compiled-tier live re-AOT)** and **D5b-4 (cross-file
-> provenance)** deferred. Twelve `t/comcon_pom_*` + `t/comcon_declarative*` +
+> **D5b-2 (full CST + finer selectors + anchors)** · **D5b-3 (source-rewrite hardening)** ·
+> **D5b-4 (cross-file provenance, all 2026-09-12)** all ✅ — **the whole D5b line is done**,
+> leaving only **D4c (compiled-tier live re-AOT)**. Thirteen `t/comcon_pom_*` +
+> `t/comcon_declarative*` +
 > `t/comcon_parser_vendor.t` files cover it. D5b-2 also closed §4 item 1 (anchor
 > recognition), the last unbuilt item of the minimal first slice.
 > **SHOWCASE §38 (harden code you will never touch) is now built end to end** — audit
@@ -36,9 +37,9 @@
 > COM members · compiled tier under the escape probes · host JS unbounded by default).
 >
 > **So the two forward tracks are now genuinely open, and nothing is blocking either.**
-> (1) **Finish increment D** — what remains is `D4c` (compiled-tier live re-AOT,
-> separately gated) and `D5b-4` (cross-file provenance: span mapping through `include`
-> splices, POM.md §6 Q3). This is the last standing frontier on the
+> (1) **Finish increment D** — what remains is `D4c` alone (compiled-tier live re-AOT,
+> separately gated; the interpreted-tier epoch switch is already coherent per worker, so
+> this is JIT-tier work riding the existing C5/C7 machinery). This is the last frontier on the
 > confinement track. (2) **The compiler track (M5 →)** remains **parked by decision
 > 2026-09-11, not by capability** — M5's value is the typed nginx stubs, not lowering JS
 > control flow, so the typed IR is not to be built without a commitment to M5 (see M4 below
