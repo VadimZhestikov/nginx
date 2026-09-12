@@ -286,9 +286,12 @@ the same `admit`; follows the program-fragment operators.
 - **LARGE** — the biggest COMCON increment (the kernel realization A–C approximated). But
   mostly rewiring + API surface + test migration, not new confinement logic.
 - **Risks:** (a) getting the operator *shapes* right (admit contract, mediate interceptor,
-  attenuation meet); (b) init-time-only admission for now (runtime/dynamic admission deferred);
-  (c) the thin-sugar step is what de-risks the confined-tier regression; (d) M-CFG config-grammar
-  admission is its own sub-effort — sequence it **after** the program-fragment operators.
+  attenuation meet); (b) ~~init-time-only admission for now (runtime/dynamic admission
+  deferred)~~ — **closed by increment D (2026-09-12):** `bindAt().replace()` admits at
+  REQUEST time, in a worker, and `t/comcon_pom_harden.t` asserts a request-time admission
+  *refusal* leaves the live site serving its previous epoch; (c) the thin-sugar step is what
+  de-risks the confined-tier regression; (d) M-CFG config-grammar admission is its own
+  sub-effort — sequence it **after** the program-fragment operators.
 - **Recommendation:** start with step 1 (the operator API **design doc**), then `admit()` as the
   umbrella (step 2), then retire directives via thin sugar (steps 4–6). The config-instance
   M-CFG phase follows once `admit` is solid.

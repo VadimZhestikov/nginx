@@ -3241,8 +3241,40 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(!env||!env[ENV])throw new TypeError('grant: arg0 must be comcon.env()');"
     "    env.grants[name]=cap;return env;};"
     "  C.meter=function(opts){var m={};m[METER]=opts||{};return m;};"
+    /* The mediation vocabulary is CLOSED, and an unknown member is refused here
+       -- at the producer, stage 0 -- for the same reason a splice is checked at
+       quote() time: the alternative is discovering it where it cannot be
+       reported.  It used to fall through include()'s flavor translation and
+       leave the default `{kind:0, mask:FULL}` in place, so a descriptor the
+       enforcement layer does not implement (`allowHosts`) or a one-letter typo
+       (`redcat` for `redact`) granted the capability IN FULL -- a misspelling
+       that widened authority. Measured before fixing: the fragment read
+       s.address as a string through both, where redact() correctly hid it.
+       Adding a vocabulary word therefore means adding it in BOTH places -- the
+       point of a closed set is that the two cannot drift silently. */
+    "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1};"
     "  C.mediate=function(cap,interceptor){var f={};"
-    "    f[FACET]={cap:cap,interceptor:interceptor};return f;};"
+    "    if(!interceptor||typeof interceptor!=='object')throw new TypeError("
+    "      'mediate: arg1 must be an interceptor descriptor "
+                 "(revoke/redact/allow/routes)');"
+    "    if(!FLAVORS[interceptor.flavor])throw new TypeError("
+    "      'mediate: unknown interceptor flavor '+String(interceptor.flavor)+"
+    "      '; the vocabulary is closed (revoke, redact, allow, routes) -- an "
+                 "unrecognized one used to mean FULL authority');"
+    /* SNAPSHOT, do not hold the caller's object.  Validating here and reading it
+       at include() time is a time-of-check/time-of-use gap: the descriptor is an
+       ordinary object the caller still holds, so
+         var it = redact(['address']); var m = mediate(sock, it);
+         it.flavor = 'redcat';
+       passed the check and then reached the translation as an unknown flavor --
+       which is the fail-open this increment closed, reopened from the other end.
+       A frozen copy of the fields the translation reads means the value that was
+       checked is the value that is used. */
+    "    var snap={flavor:interceptor.flavor};"
+    "    if(interceptor.fields!==undefined)"
+    "      snap.fields=Array.prototype.slice.call(interceptor.fields);"
+    "    if(interceptor.glob!==undefined)snap.glob=String(interceptor.glob);"
+    "    f[FACET]={cap:cap,interceptor:Object.freeze(snap)};return f;};"
     /* interceptor library — attenuation-only membranes over a cap. For a
        NginxSocket the fields are address/port/fd/listener; the membrane is
        realized as a C-side field mask on the re-wrapped cap. */
@@ -3585,7 +3617,19 @@ static const char  ngx_js_comcon_bootstrap[] =
     "          (it.fields||[]).forEach(function(f){r&=~(FM[f]||0);});"
     "          pol={kind:0,mask:r>>>0};}"
     "        else if(it.flavor==='routes'){"
-    "          pol={kind:1,glob:String(it.glob||'*')};}}"
+    "          pol={kind:1,glob:String(it.glob||'*')};}"
+    /* No fall-through to the FULL default.  NOTE it is not reachable through the
+       public API any more -- mediate() refuses an unknown flavor and snapshots
+       the descriptor -- so no test drives this line, and it is kept anyway as a
+       deliberate exception to "delete what no control can break".  What it
+       guards is DRIFT: this translation and mediate()'s FLAVORS set are two
+       lists of the same closed vocabulary, and if a future word is added to one
+       and not the other, the fall-through decides whether that mistake means
+       REFUSE or FULL AUTHORITY.  The cost of being wrong here is silent full
+       authority, so the default direction is the whole point. */
+    "        else throw new TypeError("
+    "          'include: unknown mediation flavor '+String(it.flavor)+"
+    "          ' for grant '+k+'; refusing rather than granting in full');}"
     "      names.push(String(k));caps.push(cap);pols.push(pol);}}"
     /* P1 (CONVERGE): opt-in C3 admission + identity pin — present iff the
        contract asks (imports/identity/checkRequest). Absent => no admission
@@ -3990,6 +4034,84 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      throw new TypeError('aotStatus: arg0 must be a confined fragment "
                  "(the value comcon.include returned)');"
     "    return C.__aotStatus(frag.handle);};"
+    /* ================= M-LIB: the standard policy library =================
+       ROADMAP M-LIB: "the user-facing surface is not the kernel but the
+       combinators."  Everything above is the kernel: 20 operators, correct and
+       unusable by anyone who does not already know which four of them have to
+       agree.  A PROFILE is a named bundle of contract fields for one use case,
+       so the agreement is made once, here, instead of at every call site.
+
+       ONE RULE GOVERNS WHAT MAY GO IN A PROFILE: only fields the kernel
+       actually ENFORCES.  MANUAL.md is written as-if-shipped against
+       `{profile:"restrictive", onViolation:"audit"}` and `std.postures.lockdown`,
+       and those are NOT here, because nothing reads them -- realize() knows only
+       profile:'declarative'.  A posture that sets ignored keys would read like a
+       policy and do nothing, which is worse than its absence: it would be
+       believed.  std.describe() lists, per field, what enforces it.
+
+       IMPORTS ARE DERIVED FROM THE ENV, never written twice.  Writing both is
+       the library's main reason to exist: omit a granted name from imports and
+       admission refuses the fragment (fail-closed but baffling); list a name
+       that is not granted and the fragment sees undefined at runtime.  The env
+       already knows the answer. */
+    "  var STD={version:'comcon-std-1'};"
+    "  STD.profiles={};"
+    /* tenant(env, opts): an untrusted fragment.  Admission ON (imports present),
+       request-field checks ON, and BOUNDED BY DEFAULT -- the audit's §3 gap list
+       names "host JS unbounded by default" as accepted residual risk, so a
+       tenant profile that inherited only the 5s fragment ceiling would be
+       repeating it on purpose. 100ms is a default, not a finding: override it. */
+    "  STD.profiles.tenant=function(env,opts){"
+    "    if(!env||!env[ENV])throw new TypeError("
+    "      'std.profiles.tenant: arg0 must be a comcon.env()');"
+    "    opts=opts||{};"
+    "    var names=Object.keys(env.grants);"
+    "    var c={grants:env.grants,imports:names,checkRequest:true,"
+    "           meter:opts.meter||C.meter({timeoutMs:100})};"
+    "    if(opts.identity!==undefined)c.identity=opts.identity;"
+    "    if(opts.tests!==undefined)c.tests=opts.tests;"
+    "    if(opts.deps!==undefined)c.deps=opts.deps;"
+    "    return Object.freeze(c);};"
+    /* pure_library(opts): a cap-free computation.  grants {} and imports [] --
+       imports is PRESENT, which is what switches admission on, so any free name
+       at all refuses the fragment.  The strongest profile that is fully enforced
+       today, and the right default for third-party code that should only
+       compute. */
+    "  STD.profiles.pure_library=function(opts){"
+    "    opts=opts||{};"
+    "    var c={grants:{},imports:[],checkRequest:false,"
+    "           meter:opts.meter||C.meter({timeoutMs:50})};"
+    "    if(opts.identity!==undefined)c.identity=opts.identity;"
+    "    if(opts.tests!==undefined)c.tests=opts.tests;"
+    "    if(opts.deps!==undefined)c.deps=opts.deps;"
+    "    return Object.freeze(c);};"
+    /* describe(): the library's own honesty surface -- per contract field, WHAT
+       ENFORCES IT.  So a reader can tell a field that bites from a field that is
+       decoration, without reading the C.  `absent` rows are the vocabulary
+       ROADMAP lists that is deliberately not shipped. */
+    "  STD.describe=function(){return {version:STD.version,"
+    "    profiles:Object.keys(STD.profiles),"
+    "    enforced:["
+    "      {field:'imports',by:'admit free-name gate (C3)',effect:'refuse'},"
+    "      {field:'grants',by:'include: caps re-wrapped compartment-native',"
+    "       effect:'authority'},"
+    "      {field:'checkRequest',by:'admit request-field predicate',"
+    "       effect:'refuse'},"
+    "      {field:'meter',by:'worker request deadline',effect:'interrupt'},"
+    "      {field:'identity',by:'C4 artifact pin (sha256)',effect:'refuse'},"
+    "      {field:'tests',by:'admit test phase, run in the compartment',"
+    "       effect:'refuse'},"
+    "      {field:'deps',by:'pinned dep eval, bound as closure params',"
+    "       effect:'authority'}],"
+    "    absent:["
+    "      {name:'postures / onViolation',why:'nothing reads them yet -- a "
+             "posture of ignored keys would be believed'},"
+    "      {name:'allowHosts / uses / ttl / window / cosign / protocol',"
+    "       why:'needs C-side enforcement; the mediation vocabulary is closed "
+             "at revoke/redact/allow/routes'},"
+    "      {name:'std.ops',why:'the comconctl verbs; not started'}]};};"
+    "  C.std=Object.freeze(STD);"
+    "  Object.freeze(STD.profiles);"
     "  C.pom=function(rootFn){"
     "    if(rootFn&&rootFn.confined===true)throw new TypeError("
     "      'pom: this is the BOUND WRAPPER of a confined fragment, not the "

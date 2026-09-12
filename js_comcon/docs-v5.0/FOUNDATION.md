@@ -560,6 +560,42 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.51 (in place — increment M-LIB step 1: the standard policy library, and the fail-open
+it found first):** increment D finished the kernel, and finished is not usable: there were
+**20 kernel operators and no `std.*` at all**, while MANUAL.md was written as-if-shipped
+against `std.profiles.tenant(acme)`. A correct `include()` needs four contract fields to agree
+with an environment built by three other operators, and the agreement fails in two opposite
+directions — omit a granted name from `imports` and admission refuses the fragment
+(fail-closed but baffling); list an ungranted one and the fragment sees `undefined` at
+runtime. **`comcon.std.profiles.*` makes that agreement once**, with `imports` DERIVED from
+the env so the manifest cannot drift from the grants, and tenants **bounded by default**
+(the audit's §3 list names "host JS unbounded by default" as accepted residual risk — a
+tenant profile inheriting only the 5s ceiling would repeat it deliberately).
+
+**The one rule for a profile: only fields the kernel ENFORCES.** MANUAL's
+`{profile:"restrictive", onViolation:"audit"}` and `std.postures.*` are NOT shipped, because
+nothing reads them — `realize()` knows only `profile:'declarative'`. A posture assembled from
+ignored keys would read like a policy and do nothing, which is worse than its absence: it
+would be believed, by exactly the reader least able to check. `std.describe()` states, per
+contract field, **what enforces it**, and names the absent vocabulary.
+
+**The fail-open step 1 closed first.** A library generates mediation descriptors
+mechanically, so their failure mode is the library's. `include()`'s flavor translation fell
+through to its default `{kind:0, mask:FULL}`: a descriptor the enforcement layer does not
+implement (`allowHosts`) or a one-letter typo (`redcat` for `redact`) **granted the capability
+in full** — a misspelling that WIDENED authority, measured (`s.address` read as a string
+through both, where `redact()` hid it). The vocabulary is now closed
+(`revoke`/`redact`/`allow`/`routes`) and refused at `mediate()`, at the producer; and
+`mediate()` **snapshots** the descriptor, because checking at `mediate()` and reading at
+`include()` is a time-of-check/time-of-use gap that reopened the hole from the other end
+(`var it = redact([...]); mediate(sock, it); it.flavor = 'redcat'`).
+
+`t/comcon_std_lib.t` (19), seven negative controls, scope in `INCREMENT_MLIB.md`. Absent by
+decision, each with its reason recorded there: `std.ops`, postures, the host/ttl/window
+vocabulary (needs C-side enforcement), the "raw operators withheld" governance half, and
+interceptor certification criteria — which do not apply yet, because in this implementation
+interceptors are inert descriptors interpreted in C, never functions that close over caps.
+
 **v5.50 (in place — increment D4c: the compiled tier under a live epoch switch;
 INCREMENT D IS COMPLETE):** scoped by measurement rather than by the plan's wording, because
 the measurement changed the answer.

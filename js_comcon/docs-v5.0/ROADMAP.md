@@ -1,7 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.46 — corrected 2026-09-12, twice: the block was stamped v5.35 and wrong
-> about D and the standing gate; then the audit was signed the same day).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.50 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -15,10 +14,10 @@
 > fan-out) · D5a (call-site audit) · D5b-1 (declarative-profile checker) ·
 > **D5b-2 (full CST + finer selectors + anchors)** · **D5b-3 (source-rewrite hardening)** ·
 > **D5b-4 (cross-file provenance)** · **D4c (compiled tier under a live epoch switch, all
-> 2026-09-12)** all ✅ — **nothing in increment D is left open.** Fourteen `t/comcon_pom_*` +
-> `t/comcon_declarative*` +
-> `t/comcon_parser_vendor.t` files cover it. D5b-2 also closed §4 item 1 (anchor
-> recognition), the last unbuilt item of the minimal first slice.
+> 2026-09-12)** all ✅ — **nothing in increment D is left open.** Fifteen files cover it:
+> eleven `t/comcon_pom_*`, plus `t/comcon_declarative*`, `t/comcon_parser_vendor.t` and
+> `t/comcon_aot_epoch.t`. D5b-2 also closed §4 item 1 (anchor recognition), the last
+> unbuilt item of the minimal first slice.
 > **SHOWCASE §38 (harden code you will never touch) is now built end to end** — audit
 > (D5a) + kernel enforcement + source rewrite for the residual the kernel cannot name.
 >
@@ -36,17 +35,30 @@
 > (per-fragment memory attribution · cross-compartment identity · `guarded`/`irreversible`
 > COM members · compiled tier under the escape probes · host JS unbounded by default).
 >
-> **So the two forward tracks are now genuinely open, and nothing is blocking either.**
-> (1) **Increment D is finished** — as of 2026-09-12 there is no open item on the
-> confinement track. One thing inside D4c was deliberately NOT built and should not be
-> mistaken for an oversight: **re-AOT of a live epoch inside a worker**, which the fork
-> model forbids (the gcc thread does not survive `fork()`). A rewritten epoch runs the
-> bytecode fallback — correct and coherent, and `comcon.aotStatus()` reports it. Reaching
-> native would need a compiler-bearing process to build the `.so` and workers to pick it up
-> from the hash-keyed JIT cache: new IPC, a separate increment, no correctness impact. (2) **The compiler track (M5 →)** remains **parked by decision
-> 2026-09-11, not by capability** — M5's value is the typed nginx stubs, not lowering JS
-> control flow, so the typed IR is not to be built without a commitment to M5 (see M4 below
-> and `AOT-A` in `INCREMENT_C5.md` for the measurement that settled it).
+> **THE CONFINEMENT TRACK IS CLOSED; ONE TRACK IS PARKED; THE NEXT WORK IS THE LIBRARY.**
+>
+> - **Confinement (increments A–E + D): no open item.** One thing inside D4c was
+>   deliberately NOT built and should not be mistaken for an oversight: **re-AOT of a live
+>   epoch inside a worker**, which the fork model forbids (the gcc thread does not survive
+>   `fork()`). A rewritten epoch runs the bytecode fallback — correct and coherent, and
+>   `comcon.aotStatus()` reports it. Reaching native would need a compiler-bearing process
+>   to build the `.so` and workers to pick it up from the hash-keyed JIT cache: new IPC, a
+>   separate increment, no correctness impact.
+> - **The compiler track (M5 →) remains parked by decision 2026-09-11, not by capability.**
+>   M5's value is the typed nginx stubs, not lowering JS control flow, so the typed IR is not
+>   to be built without a commitment to M5 (see M4 below and `AOT-A` in `INCREMENT_C5.md`
+>   for the measurement that settled it: 5.79× on compute-bearing JS, **1.0× on a
+>   host-call-dominated policy**).
+> - **What is open and unblocked is M-LIB** — and it became unblocked quietly, when M3
+>   completed: M-LIB is specified as "authored *in* the policy language once M3 exists".
+>   There are **20 kernel operators and no `std.*` at all**, while `MANUAL.md` is written
+>   as-if-shipped against `std.profiles.tenant(acme)`, `std.postures.lockdown` and
+>   `std.ops`. The kernel is finished and unusable by anyone who does not already know it;
+>   that gap, not another kernel feature, is the next piece of value. **STARTED
+>   2026-09-12** (see M-LIB below).
+> - Also due by §12's own table and never done: the **now/M2–M3 verification column**
+>   (V3 executable reference semantics · V4 monotonicity-as-assertion · V7 generated
+>   enumerations).
 >
 > One standing instruction survives the signature: **adding findings re-stales the date the
 > audit certifies**, so a new hardening round should be a deliberate choice to re-sign, not a
@@ -188,7 +200,20 @@ fallback) → the event dispatcher calls the C function pointer directly.
   admit end-to-end. Gives the 3-layer operator-reconfig UX plan its principled
   foundation.
 
-- **M-LIB — standard policy library (new; showcase lesson §5.1).** The user-facing
+- **M-LIB — standard policy library. 🚧 STARTED 2026-09-12 — step 1 shipped**
+  (`INCREMENT_MLIB.md`): `comcon.std` with `profiles.tenant(env,opts)` /
+  `profiles.pure_library(opts)` / `describe()`, imports **derived** from the env so the
+  manifest cannot drift from the grants, tenants **bounded by default**, and the mediation
+  vocabulary **closed** — step 1 had to fix a fail-open first: an unimplemented flavor
+  (`allowHosts`) or a typo (`redcat`) fell through include()'s translation to
+  `mask:FULL` and granted the capability IN FULL, so a misspelling widened authority.
+  `std.describe()` names, per contract field, what enforces it — and names what is absent,
+  because the one rule for a profile is **only fields the kernel enforces**: MANUAL's
+  `postures`/`onViolation` are NOT shipped, since nothing reads them and a posture of
+  ignored keys would be believed. `t/comcon_std_lib.t` (19) + 7 controls. Remaining:
+  `std.ops`, the posture vocabulary (needs enforcement), `allowHosts`/`ttl`/`window`/…
+  (need C-side enforcement), and the "raw operators withheld" governance half.
+  *(Original scope, preserved:)* The user-facing
   surface is not the kernel but the combinators: `std.profiles.*` (tenant,
   pure_library, forensics/REL, marketplace, config_builder…) and the mediation
   vocabulary (`routes/allowHosts/uses/ttl/window/cosign/readOnly/redact/protocol/
@@ -353,8 +378,8 @@ fallback) → the event dispatcher calls the C function pointer directly.
   axis — FOUNDATION §13.4).
 
 **Critical path:** M1 ✅ → M2(+S4) ✅ → M2.5 ✅ → M3 ✅ → M4 (admission half ✅, typed IR for
-lowering NOT started — banked 2026-09-11) → M5 → [M-SES gate — S1–S6 built, audit unsigned]
-→ M6 → M7 → M8 gate → M9.
+lowering NOT started — banked 2026-09-11) → M5 → [M-SES gate ✅ — S1–S6 built, **audit
+signed 2026-09-12** with §3's five gaps accepted as residual risk] → M6 → M7 → M8 gate → M9.
 
 > The chain is no longer blocked on capability anywhere before M5, and the M-SES gate is
 > signed off. It is blocked on ONE decision: whether to commit to M5, which is what makes
