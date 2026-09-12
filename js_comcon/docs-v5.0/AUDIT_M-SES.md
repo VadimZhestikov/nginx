@@ -1,7 +1,8 @@
 # M-SES audit checklist (S6)
 
-**Status: UNSIGNED.** Evidence assembled 2026-09-11; the sign-off block at the
-end is deliberately blank. An audit attested by the party that wrote the code
+**Status: UNSIGNED.** Evidence assembled 2026-09-11 and re-measured the same
+day after eight commits of hardening (§2b); the sign-off block at the end is
+deliberately blank. An audit attested by the party that wrote the code
 and the tests certifies nothing — a human who did not write them signs, or it
 stays unsigned and is read as "evidence assembled", which is all it currently
 is.
@@ -60,10 +61,19 @@ itself attack surface.
 
 | Tool | Corpus | Result |
 |---|---|---|
-| ASAN | 34 COMCON files, 313 tests | **0 findings** |
-| UBSAN | 34 COMCON files, 313 tests | **0 findings in `src/js`**; 34 in stock nginx, all one site (`ngx_pstrdup`, `src/core/ngx_string.c:84` — `memcpy(dst, NULL, 0)` at cycle init; upstream's, benign) |
+| ASAN | 35 COMCON files, 336 tests | **0 findings** |
+| UBSAN | 35 COMCON files, 336 tests | **0 findings in `src/js`**; 35 in stock nginx, all one site (`ngx_pstrdup`, `src/core/ngx_string.c:84` — `memcpy(dst, NULL, 0)` at cycle init; upstream's, benign) |
 
-Re-run: `bash t/run_sanitizers.sh`.
+Re-run: `bash t/run_sanitizers.sh`. Measured 2026-09-11 after the work in §2b.
+
+**What changed in this machinery since the first measurement**, because a clean
+sanitizer run over unchanged code is a weaker claim than one over code that
+moved: the socket registry gained a per-slot generation and a single install
+choke point (`ngx_js_socket_reg_install`), listeners now record the generation
+they attached to, and a misaligned 32-bit load in the broadcast receive path was
+replaced with `ngx_memcpy`. The first two are lifetime changes, the third was
+UBSAN-visible UB. All three are covered by the corpus above plus the fuzz files
+in §2b.
 
 **The suites' own `ok - no sanitizer errors` line is VACUOUS** — neither `objs/`
 nor `objs_jit/` is built with a sanitizer, so it has nothing to look at. Only the
@@ -74,20 +84,72 @@ tests; and a file skipping with `no js module` means nginx could not start. The
 last two exist because the script produced a vacuous PASS on itself twice while
 being written.
 
+
+## 2b. Fuzz corpus — what exists, and what it found
+
+The gap table below used to carry all of this in one cell. It is evidence, not a
+gap, and §5 asks a signer to check §3 — which is only possible if §3 is short.
+
+Each file validates its own instrument before reporting (planted bugs,
+false-positive controls, work counters), and each fix has a negative control:
+reverting it fails the named test.
+
+| Surface | Test | What it found | State |
+|---|---|---|---|
+| **Admission path** | `t/comcon_declarative_fuzz.t` — 6000 deterministic, index-addressable mutants | A **profile escape**: `reviewDeclarative` ended a `//` comment at LF only, so a bare CR (or U+2028/9) hid the rest of the line from the review while the engine compiled it as code. `a(1); //<CR>for(;;){}` was accepted with a table listing only `a(1)` — the artifact an operator signs omitted a statement. Plus 3 divergences where accepted sources were not valid JavaScript. | **FIXED** |
+| **COM setters** | `t/js_com_setter_fuzz.t` — corpus derived from `nginx.describe()`, 344 members, 8600 hostile assignments | Four `describe()` rows misdeclaring their type (`limitExcept`/`keepaliveDisable` are `string[]`; `clientBodyInFileOnly` is tri-state; `directio` is `number\|string`). That surface feeds M4 `reviewCalls` and `describeType()`, so a wrong type is an admission decision on a false premise. **No memory error** under ASAN/UBSAN. | **FIXED** |
+| **Socket surface** | `t/js_com_socket_fuzz.t` — 1500 generated addresses + non-string battery + fd-leak oracle | A **use-after-close aliasing bug**: `close()` freed the registry slot while the JS object kept its index, so the next `createSocket()` handed it back and a stale handle read *and closed* an unrelated live socket. The first fix was incomplete — a retired listener holds the same index, and `removeListener(…,{hard:true})` clears the invariant that protected it, so `.socket` **minted a fresh valid handle** to the new occupant. Also NUL truncation and `strtol` laxness in the address parser. Negative results worth keeping: the 48-byte host buffer is correctly bounded, and no fd leak over 600 calls. | **FIXED** (two rounds) |
+| **`broadcast()`** | `t/js_com_broadcast_fuzz.t` — 3-worker fleet, saturation oracle | Reached the broadcast RECEIVE path, which nothing had, and **UBSAN reported a misaligned load** on the first run: the header is `[u8][u32][u32]`, so the receiver's `(uint32_t *)(void *)(buf+1)` read both fields off alignment. Sixteen clean sanitizer runs had passed over it — *a sanitizer only sanitizes what you execute*. Plus an uninitialised `st->owner` (`ngx_alloc` is `malloc`, and the ownership gate reads it) and a missing generation bump, both by inspection. | **FIXED** |
+| **Numbers cast, not checked** | `t/js_com_numeric_range.t`, `t/js_com_peer_range.t`, `t/js_com_ssl_range.t`, lint `t/tools/numeric-cast-sweep.py` | One defect in nine places. `JS_ToInt32/64` answer 0 for `NaN`, `{}` and `"abc"` with no error, and hand back negatives the caller stores unsigned: `peers[0].weight = -1` stored ~1.8e19 into the load balancer, `ssl.verifyDepth = {}` silently set verification depth to 0, and `respond(-1)` put `HTTP/1.1 18446744073709551615` on the wire. 94 sites of the shape, 81 already guarded, 4 false positives, **9 real**. All now use one shared `ngx_js_com_num_range()`. | **FIXED** |
+
+**Coverage is not the instrument for the last row**, and that is worth recording
+because it was the instrument for the two before it: `ngx_js_rr_peer_set` was
+**96% covered** and carried the defect — tests ran that code constantly and never
+passed it a negative. Coverage finds unexecuted code; that class hid in
+well-executed code and needed a mechanical sweep. See `t/README-coverage.md`.
+
 ## 3. GAPS — claims without evidence
 
-An audit that lists only passes is marketing. These are the holes as of
-2026-09-11:
+An audit that lists only passes is marketing. **Open holes only** — what has been
+closed is in §2b, so this table stays short enough to actually check, which is
+what §5 asks of a signer.
 
 | Gap | Why it matters | Status |
 |---|---|---|
-| **Per-fragment memory attribution** | `JS_SetMemoryLimit(comcon_rt, 64 MB)` bounds the *runtime*, shared by every fragment. One fragment can therefore exhaust the budget of all of them — a denial-of-service against siblings, not an authority escape. | **DEFERRED BY DESIGN** (HARDENING S5, "coarse runtime limits + gas first"). Partially evidenced: `t/js_worker_memory_limit.t` proves the mechanism works on the HOST runtime — an OOM under a 1 MB cap is caught and the worker survives — but it exercises `nginx.workerMemoryLimit`, not the hardcoded 64 MB cap on `comcon_rt`, and nothing asserts a *fragment* hitting it. |
-| **Cross-compartment identity** | Named in the S6 probe classes; not probed. Low expected yield — the include path marshals via JSON, so only strings cross and object identity cannot survive by construction — but "cannot by construction" is an argument, not a test. | **NOT EVIDENCED** |
-| **Fuzz corpus** | S6 names one. A probe suite tests the attacks we thought of. | **PARTIAL — the admission path now has one.** `t/comcon_declarative_fuzz.t` property-fuzzes `reviewDeclarative` (6000 deterministic, index-addressable mutants; totality, soundness against an independent scanner, validity differential against the engine's own lexer, faithfulness, JSON-diffability, and no-false-refusal for `reviewCalls`). It immediately found a **profile escape**: a line comment was scanned to LF only, so a bare CR — or U+2028/U+2029 — hid the rest of the line from the review while the engine still compiled it as code (`a(1); //<CR>for(;;){}` was accepted with a table listing only `a(1)`), plus three lesser divergences where accepted sources were not valid JavaScript at all. All fixed 2026-09-11. **The COM setters now have one too** (2026-09-11): `t/js_com_setter_fuzz.t` walks the live COM tree, takes its corpus from `nginx.describe()` rather than a hand-written list, and drives a 25-value hostile battery (NaN, ±Infinity, 16 KB string, embedded NUL, U+2028, an object whose `toString()` throws, arrays, functions) through every member the registry classifies `safe`+`reversible` — 344 members, 8600 assignments — asserting liveness, declared-type discipline, the reversibility the registry claims, and no cross-talk to sibling fields. **Clean under ASAN and UBSAN** via `bash t/run_sanitizers.sh 'js_com_setter_fuzz.t'` (positive control landed; 17 tests verified run), so the setters show no memory error under hostile values. It did find **four `describe()` rows that misdeclare their type** — `limitExcept` and `keepaliveDisable` are `string[]` not `string`, `clientBodyInFileOnly` is the tri-state `"off"|"on"|"clean"` not a boolean, and `directio` is `number|string`. That surface is consumed by M4 `reviewCalls`, `describeType()` and the mirror schema, so a wrong type there is an admission-time decision made on a false premise. Fixed. **The socket surface now has one too** (2026-09-11): `t/js_com_socket_fuzz.t` drives 1500 generated addresses plus a non-string battery through `nginx.createSocket()`, asserting liveness, proper refusals, and that an ACCEPTED address binds the address that was asked for; it also asserts the worker's descriptor count stays flat across 600 calls, with the counter first shown to MOVE when descriptors are deliberately held so the leak assertion is falsifiable. It found a **use-after-close aliasing bug**: `close()` frees the registry slot while the JS object keeps its index, so the next `createSocket()` handed the slot back and every stale handle became a live handle to an unrelated socket — reading its address and fd, and **closing its listening socket**. Fixed with a per-slot generation that a handle must match. **The first fix was incomplete** and the follow-up found the hole was worse: a listener stores its socket as a bare index too, and `removeListener(addr, {hard:true})` clears `in_listening` — the invariant that had been protecting those references — so the socket becomes closable and its slot recyclable while the listener object stays usable, since no getter checks `st->closed`. A retired listener then reported the new occupant's address and, through `.socket`, **minted a fresh VALID handle** to it (the wrap stamps the current generation), which closed a socket it never owned. Listeners now record the generation they attached to, and `ngx_js_socket_get_handle()` refuses a stale object so `attach()` cannot launder one either. Also fixed: an embedded NUL ended the address early while the JS string carried on (`'127.0.0.1:19112\0:19113'` bound :19112), and `strtol()` laxness accepted `'host: 80'` and `'host:+80'` — all three are the same family, an address that is not the address it looks like. **Clean under ASAN and UBSAN**, and no fd leak. **`broadcast()` now has one** (2026-09-11): `t/js_com_broadcast_fuzz.t` runs a 3-worker fleet through create/broadcast/close cycles plus a hostile argument battery, and asserts descriptor **saturation** rather than flatness — a peer legitimately keeps what it receives until its registry fills, so the honest property is that a second equal phase adds nothing (measured: phase 1 +4, phase 2 **+0** over 120 further broadcasts). It exercised the broadcast RECEIVE path, which no test had, and UBSAN immediately reported a **misaligned load**: the header is `[type:u8][handle:u32][addr_len:u32]`, so the receiver's `(uint32_t *)(void *)(buf + 1)` read both 32-bit fields off alignment — undefined behaviour, and on a strict-alignment target a fault or a wrong read (the sender already packed them with `ngx_memcpy`; only the receiver cast). Fixed, and the failing run is its negative control. Two more receive-path defects fixed by inspection: `st->owner` was never initialised though `ngx_alloc()` is `malloc()` and the ownership gate reads it, and the install did not bump the slot generation — registry installs now go through one choke point so the bump cannot be forgotten. **Honestly scoped: the generation defect was not reproduced**; peers are confirmed to receive, but the arriving socket could not be forced onto the slot a stale handle names, so that fix is defence in depth and the test pins the property rather than proving it. **Still not evidenced: the include contract**, and the listener/stream method surfaces (`addServer`, `addL4Filter`, `attach`); the setter fuzz deliberately excludes `guarded` (8 members: rewires live dispatch) and `irreversible` members. |
-| **Compiled tier under the escape probes** | `t/comcon_mses_gate.t` runs on whatever build the suite runs on; it has been run on both `objs` and `objs_jit`, but AOT-compiled *fragments* (C5 server-AOT) are not separately asserted against the probe battery. SR-2 covers faithfulness of the compiled tier for the confinement surface. | **PARTIAL** |
-| **`nginx.workerRequestTimeout` default** | The per-request deadline for *host JS* remains opt-in (default 0). A runaway `location.handler` — host JS, not a fragment — still hangs the worker. Fragments are bounded; host JS is not. | **OPEN — deliberate scope choice** (2026-09-11: bind the guard to the confined path only, so host JS behaviour does not change) |
+| **Per-fragment memory attribution** | `JS_SetMemoryLimit(comcon_rt, 64 MB)` bounds the *runtime*, shared by every fragment. One fragment can exhaust the budget of all of them — denial of service against siblings, not an authority escape. | **DEFERRED BY DESIGN** (HARDENING S5). Partially evidenced: `t/js_worker_memory_limit.t` proves the mechanism on the HOST runtime, but exercises `nginx.workerMemoryLimit`, not the 64 MB cap on `comcon_rt`, and nothing asserts a *fragment* hitting it. |
+| **Cross-compartment identity** | Named in the S6 probe classes; not probed. Low expected yield — the include path marshals via JSON, so only strings cross — but "cannot by construction" is an argument, not a test. | **NOT EVIDENCED** |
+| **Include contract fuzz** | The last unfuzzed entry point of the confined path. Expected yield is low (arguments cross by JSON marshalling; the contract is validated in JS, so the C surface is thin) but that is an argument, not a result. | **NOT STARTED** |
+| **Listener / stream method surfaces** | `addServer`, `addVirtualServer`, `addL4Filter`, `addL4SendFilter`, `on`, and the stream protos take caller values and were not reached by the socket fuzz. The socket work showed handle-lifetime defects live exactly here. | **NOT EVIDENCED** |
+| **Guarded and irreversible COM members** | The setter fuzz deliberately skips them: `guarded` (8 members) rewires live dispatch and `irreversible` cannot be undone for the process lifetime, so fuzzing either degrades the server under test rather than measuring it. | **OPEN — deliberate scope choice** |
+| **SSL client-hello path** | ~200 lines at 0% coverage (`ngx_js_ssl_on_client_hello`, `ngx_js_ch_cb`, `ngx_js_build_client_hello`). Reaching it needs a real TLS handshake from a client, not a COM walk. The four scalar `ssl.*` setters beside it ARE now covered (§2b). | **NOT EVIDENCED** |
+| **Custom load-balancer registry** | ~100 lines at 0% coverage (`ngx_js_lb_choose`, `_get`, `_init`, `_find`, `_registry`, `ngx_js_upstream_on_select_peer`). An entire feature with no test. | **NOT EVIDENCED** |
+| **Compiled tier under the escape probes** | `t/comcon_mses_gate.t` has been run on both `objs` and `objs_jit`, but AOT-compiled *fragments* (C5 server-AOT) are not separately asserted against the probe battery. SR-2 covers faithfulness of the compiled tier for the confinement surface. | **PARTIAL** |
+| **`nginx.workerRequestTimeout` default** | The per-request deadline for *host JS* remains opt-in (default 0). A runaway `location.handler` — host JS, not a fragment — still hangs the worker. Fragments are bounded; host JS is not. | **OPEN — deliberate scope choice** (bind the guard to the confined path only, so host JS behaviour does not change) |
+| **`ngx_js_grant_to_tenant`** | 29 lines at 0% coverage, still present after the tenant path was retired in the M-CFG convergence. Either dead code to delete or a live surface with no test; which one has not been determined. | **UNTRIAGED** |
 
 ## 4. Re-running the whole thing
+
+### REBUILD FIRST. The `objs*/` binaries in the tree are stale artifacts.
+
+`objs_jit/` and friends are **tracked in git**, so a fresh clone or a
+`git reset --hard` gives you a committed binary, not one built from the source
+you are auditing. Re-running §1 against it tests whatever was committed last.
+
+This is not hypothetical: assembling this revision, the escape gate came back
+**FAIL** on `objs_jit`, and the cause was a stale committed binary — the real
+build passes. An auditor who took that at face value would have recorded a
+failing gate; one who took the reverse case at face value would have signed off
+on a pass that was never measured. Rebuild every builddir you intend to test,
+and check that the binary contains something you know is new:
+
+```bash
+for d in objs objs_jit objs_asan objs_ubsan; do
+    [ -d "$d" ] && make -f $d/Makefile build -j8
+done
+strings objs_jit/nginx | grep -c 'must be between'   # a string from the newest fix
+```
+
+### Then
 
 ```bash
 # escape probes + resource guard (both builds)
@@ -95,17 +157,42 @@ TEST_NGINX_BINARY=$PWD/objs_jit/nginx prove t/comcon_mses_gate.t t/comcon_fragme
 TEST_NGINX_BINARY=$PWD/objs/nginx     prove t/comcon_mses_gate.t t/comcon_fragment_deadline.t
 
 # the whole COMCON corpus
-TEST_NGINX_BINARY=$PWD/objs_jit/nginx prove t/comcon_*.t        # 34 files, 313 tests
+TEST_NGINX_BINARY=$PWD/objs_jit/nginx prove t/comcon_*.t        # 35 files, 336 tests
+
+# the fuzz and range corpus of §2b
+TEST_NGINX_BINARY=$PWD/objs/nginx prove \
+    t/comcon_declarative_fuzz.t t/js_com_setter_fuzz.t \
+    t/js_com_socket_fuzz.t t/js_com_broadcast_fuzz.t \
+    t/js_com_numeric_range.t t/js_com_peer_range.t t/js_com_ssl_range.t
+                                                    # 7 files, 127 tests
+
+# the cast-not-checked lint (expect 2 known false positives, no more)
+python3 t/tools/numeric-cast-sweep.py
 
 # memory safety (builds its own guards in; refuses a vacuous run)
 bash t/run_sanitizers.sh
+
+# everything
+TEST_NGINX_BINARY=$PWD/objs/nginx prove t/          # 290 files, ~3780 tests
+TEST_NGINX_BINARY=$PWD/objs/nginx prove t_stress/   # 18 files, 90 tests
 ```
+
+Measured 2026-09-11 on a rebuilt tree: escape gate PASS on both builds, ASAN 0
+and UBSAN 0 findings in `src/js`, the §2b corpus green, `t/` and `t_stress/`
+green.
 
 ## 5. Sign-off
 
 Left blank on purpose. To sign, a reviewer who did **not** author the code or the
-tests should re-run §4, confirm each row of §1 against the named assertions, and
-confirm §3 still lists every known gap.
+tests should re-run §4 **on a rebuilt tree** (read the warning there first),
+confirm each row of §1 against the named assertions, spot-check §2b by reverting
+one fix and watching its named test fail, and confirm §3 still lists every known
+gap.
+
+§2b is the part to be most skeptical about: every one of those findings was
+reported by the same party that wrote the test that reports it. The negative
+controls are what make them checkable — each says which test fails when the fix
+is reverted, and that is a claim a reviewer can falsify in minutes.
 
 | Role | Name | Date | Scope reviewed |
 |---|---|---|---|
