@@ -3595,8 +3595,13 @@ static const char  ngx_js_comcon_bootstrap[] =
        blast radius — no host authority is in scope). A String tests fn refuses
        admission if it throws. Present iff the contract asks. */
     "    var admit=null;"
-    "    if(contract.imports||contract.identity||contract.checkRequest"
-    "       ||contract.tests){"
+    /* PRESENCE, not truthiness, for imports: `{imports: ''}` is a caller
+       who meant to declare a manifest and got it wrong, not one who
+       declined admission, and reading it as "declined" left the fragment
+       ungated.  The other three keep truthiness so that an explicit
+       `checkRequest: false` does not newly switch admission on. */
+    "    if(contract.imports!==undefined||contract.identity"
+    "       ||contract.checkRequest||contract.tests){"
     "      admit={imports:contract.imports||[],"
     "             checkRequest:!!contract.checkRequest,"
     "             identity:contract.identity,"

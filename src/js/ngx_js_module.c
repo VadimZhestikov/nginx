@@ -1370,7 +1370,21 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         JSValue  imp_h, idv;
 
         imp_h = JS_GetPropertyStr(hctx, argv[4], "imports");
-        if (JS_IsObject(imp_h)) {
+
+        /*
+         * The contract asked for admission, so admission RUNS.  This used to be
+         * gated on `imports` happening to be an object, and that one condition
+         * governed the whole block -- free names, the dynamic-code denial,
+         * checkRequest, all of it.  So `include(src, {imports: 42})` compiled a
+         * fragment with NO gate at all: measured, `eval("1+1")` was admitted,
+         * where {imports: []} refuses it.  A contract that looks stricter than
+         * it is, is worse than an absent one.
+         *
+         * A malformed `imports` now means NO NAMES GRANTED, which is the
+         * strictest reading and the fail-closed direction; ngx_js_comcon_
+         * admit_check() already treats a non-object that way.
+         */
+        {
             JSValue      imp_s, lv, e, cr;
             uint32_t     ilen = 0, k;
             const char  *iname;
@@ -1379,9 +1393,13 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             ngx_int_t    rc;
 
             imp_s = JS_NewArray(sctx);
-            lv = JS_GetPropertyStr(hctx, imp_h, "length");
-            JS_ToUint32(hctx, &ilen, lv);
-            JS_FreeValue(hctx, lv);
+
+            if (JS_IsObject(imp_h)) {
+                lv = JS_GetPropertyStr(hctx, imp_h, "length");
+                JS_ToUint32(hctx, &ilen, lv);
+                JS_FreeValue(hctx, lv);
+            }
+
             for (k = 0; k < ilen; k++) {
                 e = JS_GetPropertyUint32(hctx, imp_h, k);
                 iname = JS_ToCString(hctx, e);
