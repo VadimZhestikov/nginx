@@ -215,7 +215,22 @@ gap.
 §2b is the part to be most skeptical about: every one of those findings was
 reported by the same party that wrote the test that reports it. The negative
 controls are what make them checkable — each says which test fails when the fix
-is reverted, and that is a claim a reviewer can falsify in minutes.
+is reverted, and that is a claim a reviewer can falsify in minutes:
+
+```bash
+bash t/tools/verify-negative-controls.sh            # all rows
+bash t/tools/verify-negative-controls.sh 67bc359e9  # one row
+```
+
+It reverts only the `src/js` half of each fix (the tests stay, or there would be
+nothing to run), rebuilds, and requires the named test to FAIL without the fix
+and PASS with it. It refuses to start on a dirty tree and restores on any exit.
+**Eight of the twelve rows verify this way; four need a manual revert** because
+later commits rewrote the same lines — the script names them and says why rather
+than skipping them quietly.
+
+Running that script is not a substitute for reading the code. It checks that the
+tests can tell the difference, not that the fixes are the right ones.
 
 | Role | Name | Date | Scope reviewed |
 |---|---|---|---|
