@@ -235,11 +235,43 @@ checked invariant of that model rather than a slogan. Lands with M6.
 
 ## Verifying the policies themselves
 
-**V11 — Policy mutation testing (the deny-suite's own verifier).** A deny-suite with a
-hole is invisible today. Mechanically **widen one permit** in a policy (add a name,
-relax a predicate): some deny-suite test must fail — the mutant must be killed.
+**V11 — Policy mutation testing (the deny-suite's own verifier). ✅ BUILT 2026-09-12.**
+A deny-suite with a hole is invisible today. Mechanically **widen one permit** in a policy
+(add a name, relax a predicate): some deny-suite test must fail — the mutant must be killed.
 Surviving mutants are an exact map of the cage's untested boundaries. Composes with
 the asymmetric-failure story; candidate for a patent dependent claim.
+
+*Built early — it is listed under M7/M8 but needs nothing from the compiler, and it is the
+systematic form of the negative-control discipline this project already applies by hand.*
+A negative control asks *does this test fail when I break the code*; mutation testing asks
+the harder question: **does the suite notice when the POLICY gets weaker?** For a capability
+system that is the question that matters, because a regression there does not look like a
+crash — it looks like a permit nobody asked for. Every defect found by hand this month had
+that shape: a typo'd mediation flavor that granted FULL authority, a mode switch that
+reported success and changed nothing, an admission gate that refused ordinary JS.
+
+`t/tools/policy-mutants.js` emits widen-one-permit variants of a base policy — one more field
+through the membrane, the membrane removed, one more name in the manifest, the intrinsics
+narrowing relaxed or dropped, `checkRequest` off, the meter off.
+`t/comcon_v11_mutants.t` records the deny-suite's outcomes under the base policy and re-runs
+them per mutant: **a mutant is killed if any outcome differs, and a survivor is the finding** —
+the policy grants one more permit and the suite cannot tell. Result: **12 mutants, all killed,
+none survived.**
+
+**Equivalent mutants are declared, not discovered, and checked in the other direction.**
+`imports+eval` cannot widen anything (the deny list refuses `eval` whatever a manifest says),
+so it MUST survive; a suite that killed it would be reporting authority that does not exist.
+Two-sided, so neither a lazy suite nor an over-eager one passes.
+
+**It corrected a belief on its first run.** It killed `imports+JSON`, which had been labelled
+equivalent on the assumption that `intrinsics: []` excludes `JSON` outright. It does not:
+`intrinsics` removes the **no-declaration free pass**, it does not stop a name from being
+DECLARED, so `{intrinsics: [], imports: ['JSON']}` permits `JSON`. Coherent, but not what "the
+narrowing excludes JSON" sounds like — and the mutation run is what said so, about a policy
+written two commits earlier. Three controls, all mutating the HARNESS rather than the engine,
+since the suite is what V11 is about: drop a probe and the matching mutant survives; make every
+probe report one outcome and everything survives; declare a real widening equivalent and the
+two-sided check fires.
 
 **V12 — Golden denial-code corpus.** Denial codes are the tenants' CI contract
 (MANUAL §3.2); a frozen (probe → expected code) corpus verifies code stability across
@@ -274,7 +306,7 @@ deliverables land.
 
 | Now / M2–M3 | M5–M6 | M7 / M8 / M-SES |
 |---|---|---|
-| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · V13 | V5b · V10 · V11 · V12 · V14 · V15 |
+| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · V13 | **V11 ✅ (2026-09-12, built early)** · V5b · V10 · V12 · V14 · V15 |
 
 **Meta-observation:** the R-review's critical findings clustered at *tier boundaries*
 and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maintained-

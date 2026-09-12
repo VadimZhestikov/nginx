@@ -564,6 +564,33 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.57 (in place — V11: policy mutation testing, the deny-suite's own verifier):** built
+early (it is listed under M7/M8 but needs nothing from the compiler) because it is the
+systematic form of the discipline this project applies by hand. A negative control asks *does
+this test fail when I break the code*; mutation testing asks **does the suite notice when the
+POLICY gets weaker** — which is the question that matters for a capability system, where a
+regression looks like a permit nobody asked for rather than a crash.
+
+`t/tools/policy-mutants.js` emits widen-one-permit variants of a base policy: one more field
+through the membrane, the membrane removed, one more name in the manifest, the intrinsics
+narrowing relaxed or dropped, `checkRequest` off, the meter off. The test records the
+deny-suite's outcomes under the base policy and re-runs them per mutant — **killed if any
+outcome differs; a survivor is the finding.** 12 mutants, all killed, none survived.
+Equivalent mutants are **declared, not discovered**, and asserted in the other direction:
+`imports+eval` must SURVIVE, because the deny list refuses `eval` whatever a manifest says, and
+a suite that killed it would be reporting authority that does not exist.
+
+**It corrected a belief on its first run**, which is the argument for having it: it killed
+`imports+JSON`, labelled equivalent on the assumption that `intrinsics: []` excludes `JSON`
+outright. It does not — `intrinsics` removes the **no-declaration free pass**, not the ability
+to DECLARE a name, so `{intrinsics: [], imports: ['JSON']}` permits `JSON`. Coherent, and not
+what "the narrowing excludes JSON" sounds like; the run said so about a policy written two
+commits earlier (v5.55).
+
+Three controls, all mutating the HARNESS rather than the engine, since the suite is the
+subject: drop a probe and the matching mutant survives; make every probe report one outcome
+and everything survives; declare a real widening equivalent and the two-sided check fires.
+
 **v5.56 (in place — the audit/enforce mode switch goes FLEET-WIDE):** `std.ops` shipped the
 rollout verbs with a doc note saying the switch was "per process". That was not a limitation
 but a hole, and measuring it settled the question: on four workers, one `shadow()` call
