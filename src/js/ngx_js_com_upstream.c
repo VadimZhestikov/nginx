@@ -1119,12 +1119,40 @@ ngx_js_lb_choose(ngx_js_lb_peer_t *lp)
     args[1] = (lp->r && lp->r->connection)
               ? ngx_js_connection_ctx_obj(ctx, lp->r->connection) : JS_UNDEFINED;
 
+    /*
+     * Only a real, finite, in-range NUMBER is taken as a peer index.  Anything
+     * else falls back to round-robin, which is what the contract already says
+     * -1 does.
+     *
+     * JS_ToInt32() answers 0 without an error for undefined, for NaN, for {}
+     * and for "nonsense", so a selection function that fell off the end without
+     * returning — the easiest mistake to make in a callback whose whole job is
+     * to return something — silently sent EVERY request to peer 0.  Measured
+     * on three backends: `return;` gave B1,B1,B1,B1,B1,B1 where round-robin
+     * gives B1,B2,B3.  Two thirds of the pool idle and one backend carrying
+     * everything, with nothing logged.
+     *
+     * This is stricter than the ToNumber policy used by the config setters
+     * (ngx_js_com_num_range), deliberately: those parse operator input where
+     * coercion is conventional, while this is a hot-path callback whose author
+     * meant to return an index, and where a safe documented fallback exists.
+     * The range test also keeps the cast defined — converting an out-of-range
+     * double to int32_t is undefined behaviour.
+     */
     idx = -1;
     ret = JS_Call(ctx, fn, JS_UNDEFINED, 2, (JSValueConst *) args);
     if (JS_IsException(ret)) {
         ngx_js_log_exception(ctx, ngx_cycle->log);
-    } else {
-        JS_ToInt32(ctx, &idx, ret);
+
+    } else if (JS_IsNumber(ret)) {
+        double  d;
+
+        if (JS_ToFloat64(ctx, &d, ret) < 0) {
+            JS_FreeValue(ctx, JS_GetException(ctx));   /* do not leave it set */
+
+        } else if (!isnan(d) && !isinf(d) && d >= 0 && d <= 2147483647) {
+            idx = (int32_t) d;
+        }
     }
 
     JS_FreeValue(ctx, ret);
