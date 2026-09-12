@@ -1,14 +1,38 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.35).** Increments **A / B / C are done** (COMCON-lite core; typed admission
-> front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed). **M-SES-0/1/1b** are
-> in place and the confined tier is adversarially validated (**SR-1/SR-2/SR-3 passed**).
-> Increment **E (M-CFG / config instance)** is now **substantially built**: the kernel-operator
+> **POSITION (v5.46 — corrected 2026-09-12; the previous block was stamped v5.35 and was
+> wrong about D and about the standing gate).** Increments **A / B / C are done** (COMCON-lite
+> core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
+> Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
 > **CONVERGENCE (INCREMENT_CONVERGE.md) is complete** — one confined mechanism
 > (`comcon.include` + `location.handler`) on both tiers, with the `js_tenant_*` directives
-> removed. Increment **D (live POM ops — rewrite/epochs, F/X rights)** is **not started**. The
-> standing gate before untrusted-native production is **maxim finalization (full test262)**.
+> removed.
+>
+> Increment **D (live POM ops)** is **NOT "not started" — it is built through D5b-1.**
+> `INCREMENT_D.md` is authoritative: D0 (substrate) · D1 (lazy NodeView) · D2 (`query(sel)`) ·
+> D3 (quotations + stone splices) · D4a (epochs/replace/rollback) · D4b (class-F multi-worker
+> fan-out) · D5a (call-site audit) · D5b-1 (declarative-profile checker) all ✅, with **D4c
+> (compiled-tier live re-AOT)** and **D5b-2/3/4 (full CST, source-rewrite hardening, cross-file
+> provenance)** deferred. Nine `t/comcon_pom_*` + `t/comcon_declarative*` files cover it.
+> D5b-2 is the dependency for D5b-3 and D5b-4.
+>
+> **The maxim-finalization gate is CLEARED (2026-09-11).** The test262 JIT sweep that used to
+> abort ~54% in on an atom-table assertion now completes: 14/14 shards, 49,402 files, **55
+> failing files — all 55 in the known-errors baseline, 0 new, 0 crashes**. So "full test262"
+> is no longer what stands between here and untrusted-native.
+>
+> **What actually stands open.** (1) **A human signature on `AUDIT_M-SES.md` §5** — M-SES
+> S1–S6 are built, SR-1/SR-2/SR-3 passed, the S6 *standing* escape gate landed 2026-09-11
+> (`t/comcon_mses_gate.t`, ASAN+UBSAN via `t/run_sanitizers.sh`), and the audit checklist is
+> assembled but deliberately **unsigned** — an audit attested by the party that wrote the code
+> certifies nothing. Do **not** add findings before it is signed: each round adds rows a
+> reviewer must re-check and re-stales the date the audit certifies. (2) The compiler track
+> (M5 →) is **parked by decision 2026-09-11, not by capability** — M5's value is the typed
+> nginx stubs, not lowering JS control flow, so the typed IR is not to be built without a
+> commitment to M5 (see M4 below and `AOT-A` in `INCREMENT_C5.md` for the measurement that
+> settled it). (3) Finishing D (D4c, D5b-2/3/4) is the other forward track.
+>
 > Entries below that describe `js_tenant_*` / `comcon_load` / a separate tenant path as the plan
 > are superseded by the operator kernel; see FOUNDATION §12 (v5.29–v5.35) for the delta.
 
@@ -309,8 +333,13 @@ fallback) → the event dispatcher calls the C function pointer directly.
   one-per-node rule. **Post-M9 track:** information-flow/taint labels (confidentiality
   axis — FOUNDATION §13.4).
 
-**Critical path:** M1 ✅ → M2(+S4) → M2.5 → M3 → M4 → M5 → [M-SES gate] → M6 → M7 →
-M8 gate → M9.
+**Critical path:** M1 ✅ → M2(+S4) ✅ → M2.5 ✅ → M3 ✅ → M4 (admission half ✅, typed IR for
+lowering NOT started — banked 2026-09-11) → M5 → [M-SES gate — S1–S6 built, audit unsigned]
+→ M6 → M7 → M8 gate → M9.
+
+> The chain is no longer blocked on capability anywhere before M5. It is blocked on two
+> decisions: whether to commit to M5 (which is what makes the typed IR worth building), and
+> who signs `AUDIT_M-SES.md` §5.
 
 ---
 
