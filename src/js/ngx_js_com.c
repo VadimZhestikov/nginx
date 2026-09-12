@@ -4130,6 +4130,13 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__pomNodeAt",
                           JS_NewCFunction(ctx, ngx_js_comcon_pom_node_at,
                                           "__pomNodeAt", 2));
+        /* increment D5b-2: ESTree parse via the vendored acorn. Internal
+           (double-underscore) and host-side only — trusted analysis over
+           untrusted TEXT, never reachable from a confined fragment. Lazy: the
+           parser is evaluated on first use, not at every startup. */
+        JS_SetPropertyStr(ctx, comcon_obj, "__parse",
+                          JS_NewCFunction(ctx, ngx_js_comcon_parse,
+                                          "__parse", 1));
         /* increment D5a: call-site / reference enumeration (bytecode scan). */
         JS_SetPropertyStr(ctx, comcon_obj, "__pomCallsites",
                           JS_NewCFunction(ctx, ngx_js_comcon_pom_callsites,

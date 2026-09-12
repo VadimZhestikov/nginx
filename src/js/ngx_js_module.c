@@ -32,6 +32,7 @@
 
 #include <openssl/sha.h>
 #include "ngx_js_sw.h"
+#include "vendor/acorn_js.h"
 #include "ngx_js_listener.h"
 
 
@@ -1836,6 +1837,117 @@ ngx_js_comcon_pom_node_at(JSContext *ctx, JSValueConst this_val, int argc,
  * COMCON increment D5a — references/call-sites of a name in a fragment subtree.
  * argv[0] = fragment, argv[1] = target name. Backs node.callsites()/references().
  */
+/*
+ * comcon.__parse(source) -> ESTree  [D5b-2, internal]
+ *
+ * The vendored acorn (src/js/vendor/, MIT, pinned) parsed into an ESTree with
+ * byte RANGES. Ranges are the load-bearing output: D5b-3 rewrites by splicing
+ * at offsets into the ORIGINAL source and never re-prints the AST, so no code
+ * generator enters the TCB and comments/formatting round-trip exactly.
+ *
+ * LAZY. acorn is ~238 KB of JS; evaluating it in every worker at startup would
+ * tax every config, and the overwhelming majority never harden anything. It is
+ * evaluated on first use and cached on the comcon object. Loaded pre-fork in
+ * the master when a config does use it, so workers inherit it by COW.
+ *
+ * FAILS CLOSED, which is the whole reason a proven parser was vendored rather
+ * than hand-rolled: a SyntaxError propagates as a thrown exception, so a caller
+ * that cannot parse a source cannot proceed to admit it.
+ *
+ * HOST-SIDE ONLY. This is trusted analysis over untrusted TEXT: it is not
+ * reachable from a confined fragment, and it never evaluates what it parses.
+ */
+JSValue
+ngx_js_comcon_parse(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    JSValue      global, comcon, acorn, parse, ret, opts, arg;
+    const char  *src;
+    size_t       len;
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx, "comcon.__parse(source): string required");
+    }
+
+    global = JS_GetGlobalObject(ctx);
+    comcon = JS_GetPropertyStr(ctx, global, "comcon");
+    if (JS_IsException(comcon)) {
+        JS_FreeValue(ctx, global);
+        return comcon;
+    }
+
+    acorn = JS_GetPropertyStr(ctx, comcon, "__acorn");
+    if (JS_IsUndefined(acorn)) {
+        /* First use: evaluate the vendored parser into this context. */
+        JSValue r = JS_Eval(ctx, ngx_js_vendor_acorn_js,
+                            sizeof(ngx_js_vendor_acorn_js) - 1,
+                            "<vendor/acorn.js>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(r)) {
+            JS_FreeValue(ctx, acorn);
+            JS_FreeValue(ctx, comcon);
+            JS_FreeValue(ctx, global);
+            return r;
+        }
+        JS_FreeValue(ctx, r);
+
+        JS_FreeValue(ctx, acorn);
+        acorn = JS_GetPropertyStr(ctx, global, "acorn");
+        if (!JS_IsObject(acorn)) {
+            JS_FreeValue(ctx, acorn);
+            JS_FreeValue(ctx, comcon);
+            JS_FreeValue(ctx, global);
+            return JS_ThrowInternalError(ctx,
+                       "comcon.__parse: vendored parser did not define acorn");
+        }
+        /* Cache on comcon, and take the global binding away again: the parser
+           is an internal of the analysis path, not part of the host surface. */
+        JS_SetPropertyStr(ctx, comcon, "__acorn", JS_DupValue(ctx, acorn));
+        JS_DeleteProperty(ctx, global, JS_NewAtom(ctx, "acorn"), 0);
+    }
+
+    parse = JS_GetPropertyStr(ctx, acorn, "parse");
+    if (!JS_IsFunction(ctx, parse)) {
+        JS_FreeValue(ctx, parse);
+        JS_FreeValue(ctx, acorn);
+        JS_FreeValue(ctx, comcon);
+        JS_FreeValue(ctx, global);
+        return JS_ThrowInternalError(ctx, "comcon.__parse: acorn.parse missing");
+    }
+
+    src = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (src == NULL) {
+        JS_FreeValue(ctx, parse);
+        JS_FreeValue(ctx, acorn);
+        JS_FreeValue(ctx, comcon);
+        JS_FreeValue(ctx, global);
+        return JS_EXCEPTION;
+    }
+
+    opts = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, opts, "ecmaVersion", JS_NewInt32(ctx, 2022));
+    JS_SetPropertyStr(ctx, opts, "ranges",      JS_TRUE);
+    JS_SetPropertyStr(ctx, opts, "locations",   JS_TRUE);
+
+    {
+        JSValueConst a[2];
+        arg  = JS_NewStringLen(ctx, src, len);
+        a[0] = arg;
+        a[1] = opts;
+        /* A SyntaxError from here propagates to the caller unchanged: FAIL CLOSED. */
+        ret = JS_Call(ctx, parse, acorn, 2, a);
+        JS_FreeValue(ctx, arg);
+    }
+
+    JS_FreeCString(ctx, src);
+    JS_FreeValue(ctx, opts);
+    JS_FreeValue(ctx, parse);
+    JS_FreeValue(ctx, acorn);
+    JS_FreeValue(ctx, comcon);
+    JS_FreeValue(ctx, global);
+    return ret;
+}
+
+
 JSValue
 ngx_js_comcon_pom_callsites(JSContext *ctx, JSValueConst this_val, int argc,
     JSValueConst *argv)
