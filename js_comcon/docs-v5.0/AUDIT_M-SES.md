@@ -102,6 +102,14 @@ reverting it fails the named test.
 | **`broadcast()`** | `t/js_com_broadcast_fuzz.t` — 3-worker fleet, saturation oracle | Reached the broadcast RECEIVE path, which nothing had, and **UBSAN reported a misaligned load** on the first run: the header is `[u8][u32][u32]`, so the receiver's `(uint32_t *)(void *)(buf+1)` read both fields off alignment. Sixteen clean sanitizer runs had passed over it — *a sanitizer only sanitizes what you execute*. Plus an uninitialised `st->owner` (`ngx_alloc` is `malloc`, and the ownership gate reads it) and a missing generation bump, both by inspection. | **FIXED** |
 | **Numbers cast, not checked** | `t/js_com_numeric_range.t`, `t/js_com_peer_range.t`, `t/js_com_ssl_range.t`, lint `t/tools/numeric-cast-sweep.py` | One defect in nine places. `JS_ToInt32/64` answer 0 for `NaN`, `{}` and `"abc"` with no error, and hand back negatives the caller stores unsigned: `peers[0].weight = -1` stored ~1.8e19 into the load balancer, `ssl.verifyDepth = {}` silently set verification depth to 0, and `respond(-1)` put `HTTP/1.1 18446744073709551615` on the wire. 94 sites of the shape, 81 already guarded, 4 false positives, **9 real**. All now use one shared `ngx_js_com_num_range()`. | **FIXED** |
 
+| **`grantToTenant`** | `t/js_com_grant_declare.t` | Triaged from the 0%-coverage list and it was **neither dead nor working**: it once published a socket into the tenant compartment, the M-CFG convergence removed that compartment, and nothing replaced the read — so it validated a `NginxSocket`, stored its handle, and never looked at it again. Callers were told a capability had been conferred when none had, and `tenantLearning()` then listed the name among its `grants`; a demo in-tree claimed it handed over "a genuine host capability". Reduced to what it actually does — record a NAME for the onboarding delta — with the second argument accepted and ignored so existing host JS keeps working. | **FIXED** |
+
+**The two halves had opposite coverage**, which is why this survived: the READER
+of the name (`tenantLearning()`) sits at 85.7% and is exercised by
+`t/comcon_include_learn.t`, while the WRITER was never called by anything. *A
+function whose output is consumed by a well-tested function is not thereby
+tested.*
+
 **Coverage is not the instrument for the last row**, and that is worth recording
 because it was the instrument for the two before it: `ngx_js_rr_peer_set` was
 **96% covered** and carried the defect — tests ran that code constantly and never
@@ -125,7 +133,6 @@ what §5 asks of a signer.
 | **Custom load-balancer registry** | ~100 lines at 0% coverage (`ngx_js_lb_choose`, `_get`, `_init`, `_find`, `_registry`, `ngx_js_upstream_on_select_peer`). An entire feature with no test. | **NOT EVIDENCED** |
 | **Compiled tier under the escape probes** | `t/comcon_mses_gate.t` has been run on both `objs` and `objs_jit`, but AOT-compiled *fragments* (C5 server-AOT) are not separately asserted against the probe battery. SR-2 covers faithfulness of the compiled tier for the confinement surface. | **PARTIAL** |
 | **`nginx.workerRequestTimeout` default** | The per-request deadline for *host JS* remains opt-in (default 0). A runaway `location.handler` — host JS, not a fragment — still hangs the worker. Fragments are bounded; host JS is not. | **OPEN — deliberate scope choice** (bind the guard to the confined path only, so host JS behaviour does not change) |
-| **`ngx_js_grant_to_tenant`** | 29 lines at 0% coverage, still present after the tenant path was retired in the M-CFG convergence. Either dead code to delete or a live surface with no test; which one has not been determined. | **UNTRIAGED** |
 
 ## 4. Re-running the whole thing
 

@@ -54,7 +54,7 @@ Triaged, highest value first:
 | `ngx_js_com_stream_upstream` | 165 (58.8% file) | `ngx_js_stream_rr_peer_set` (47 lines) is the stream twin of the peer setter fixed here, and is still untested. **Likely carries the same defect.** |
 | `ngx_js_com_access` | 73 | `ngx_js_access_set_rules6` (IPv6) and `_unix` (unix sockets) — the IPv4 path is tested, these are not. |
 | `ngx_js_listener` connection/L4 | ~90 | `ngx_js_connection_on_close`, `ngx_js_conn_state*`, `ngx_js_l4_send`, `ngx_js_connection_get_ctx`. |
-| `ngx_js_grant_to_tenant` | 29 | Still present after the tenant path was retired (M-CFG convergence). Check whether it is now dead code to delete rather than test. |
+| `ngx_js_grant_to_tenant` | 29 | **Done** — `t/js_com_grant_declare.t`. Neither dead nor working: it recorded a socket handle nothing read, so it reported a capability it did not confer. Reduced to the name registry it actually is. A reminder that 0% does not mean "delete": half its output fed a function sitting at 85.7%. |
 
 ## A class coverage could not have found
 

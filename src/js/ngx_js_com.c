@@ -2871,13 +2871,24 @@ ngx_js_shared_fn_ttl(JSContext *ctx, JSValueConst this_val,
 
 
 /*
- * COMCON A2.1: nginx.grantToTenant(name, socket) — the host publishes a socket
- * into the tenant compartment under `name`. Recorded per-cycle; the tenant eval
- * re-wraps the handle into the tenant context. Host-authority only (on the full
- * nginx global); a tenant has no such method (deny-by-default). This is the
- * minimal grant primitive that lets us prove the A1 reach gate isolates: the
- * tenant can use the granted socket (scalar reads) but sock.listener returns
- * null cross-compartment.
+ * COMCON A2.1 (reduced): nginx.grantToTenant(name) — DECLARE that `name` is
+ * granted, for the wanted-vs-granted delta in nginx.tenantLearning().
+ *
+ * IT DOES NOT GRANT ANYTHING, and the name is a misnomer kept for
+ * compatibility.  It once published a socket into the tenant compartment, which
+ * the tenant eval re-wrapped under `name`; the M-CFG convergence removed that
+ * compartment and nothing replaced the read.  What was left validated a socket
+ * argument, stored its handle, and never looked at it again — so a caller was
+ * told a capability had been conferred when none had, and the harvest report
+ * then listed the name as granted.  An API that reports success for work it no
+ * longer does is worse than one that was deleted.
+ *
+ * To actually confer a capability use `comcon.grant(env, name, cap)` and
+ * `comcon.include(source, {grants})`, which is what the confined path consumes.
+ *
+ * A second argument is still ACCEPTED AND IGNORED so existing host JS keeps
+ * working.  It is deliberately not validated: checking a value that is then
+ * discarded implies it is used.
  */
 static JSValue
 ngx_js_grant_to_tenant(JSContext *ctx, JSValueConst this_val, int argc,
@@ -2888,17 +2899,10 @@ ngx_js_grant_to_tenant(JSContext *ctx, JSValueConst this_val, int argc,
     ngx_js_conf_t          *jcf;
     ngx_js_tenant_grant_t  *grant;
     const char             *s;
-    int32_t                 handle;
 
-    if (argc < 2) {
+    if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx,
-            "nginx.grantToTenant(name, socket): two arguments required");
-    }
-
-    handle = ngx_js_socket_handle(argv[1]);
-    if (handle < 0) {
-        return JS_ThrowTypeError(ctx,
-            "nginx.grantToTenant: second argument must be a NginxSocket");
+            "nginx.grantToTenant(name): a name string is required");
     }
 
     cycle = JS_GetContextOpaque(ctx);
@@ -2932,7 +2936,6 @@ ngx_js_grant_to_tenant(JSContext *ctx, JSValueConst this_val, int argc,
     }
 
     grant->name = name;
-    grant->handle = (uint32_t) handle;
 
     return JS_UNDEFINED;
 }
@@ -4041,7 +4044,7 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     /* COMCON A2.1: host-only grant primitive (tenants never see this). */
     JS_SetPropertyStr(ctx, nginx_obj, "grantToTenant",
                       JS_NewCFunction(ctx, ngx_js_grant_to_tenant,
-                                      "grantToTenant", 2));
+                                      "grantToTenant", 1));
 
     /* COMCON A4: host-only denial report (audit→enforce loop). */
     JS_SetPropertyStr(ctx, nginx_obj, "tenantDenials",

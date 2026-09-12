@@ -43,12 +43,19 @@ typedef struct ngx_js_socket_state_s ngx_js_socket_state_t;
 #define NGX_JS_LOCAL_SOCKET_REG_MAX  32
 
 /*
- * COMCON A2.1: a socket the host granted into the tenant compartment, by name.
- * The tenant eval re-wraps `handle` into the tenant context as `name`.
+ * COMCON A2.1 (reduced): a name the host has DECLARED as granted, for the
+ * onboarding delta in nginx.tenantLearning().
+ *
+ * It used to carry the socket handle too, because the tenant eval re-wrapped it
+ * into the tenant context.  That compartment went away with the M-CFG
+ * convergence and nothing replaced the read: the handle was still written and
+ * never looked at again, so `grantToTenant(name, sock)` recorded a capability
+ * it did not confer.  Granting is `comcon.grant(env, name, cap)` /
+ * `comcon.include(src, {grants})`; this records the NAME only, which is all the
+ * report ever consumed.
  */
 typedef struct {
     ngx_str_t            name;
-    uint32_t             handle;
 } ngx_js_tenant_grant_t;
 
 
@@ -110,8 +117,9 @@ typedef struct {
     ngx_array_t          tenant_sources;  /* ngx_str_t: js_tenant_source paths
                                              — evaluated in a reduced,
                                              deny-by-default compartment (A2.0) */
-    ngx_array_t          tenant_grants;   /* ngx_js_tenant_grant_t: sockets the
-                                             host granted into the tenant (A2.1) */
+    ngx_array_t          tenant_grants;   /* ngx_js_tenant_grant_t: names the
+                                             host declared granted, for the
+                                             tenantLearning() delta (A2.1) */
     ngx_array_t          tenant_deps;     /* ngx_js_tenant_dep_t: pinned pure
                                              libraries (B/E1) */
 
