@@ -30,6 +30,7 @@
 #include <ngx_http_upstream_round_robin.h>
 #include <cutils.h>
 #include "ngx_js.h"
+#include <math.h>
 #include "ngx_js_com.h"
 
 /* Like JS_CGETSET_MAGIC_DEF but with JS_PROP_ENUMERABLE so that
@@ -110,6 +111,18 @@ ngx_js_peer_num(JSContext *ctx, JSValueConst val, int32_t min,
     const char *name, int32_t *out)
 {
     int32_t  i32;
+    double   d;
+
+    /* Refuse what is not a number instead of taking JS_ToInt32's 0 for it:
+     * `maxFails = {}` is a mistake, not a request for zero. */
+    if (JS_ToFloat64(ctx, &d, val) < 0) {
+        return -1;
+    }
+
+    if (isnan(d) || isinf(d)) {
+        JS_ThrowRangeError(ctx, "peer.%s must be a number", name);
+        return -1;
+    }
 
     if (JS_ToInt32(ctx, &i32, val)) {
         return -1;

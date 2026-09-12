@@ -37,6 +37,7 @@
 #include <ngx_http.h>
 #include <cutils.h>
 #include "ngx_js.h"
+#include <math.h>
 #include "ngx_js_com.h"
 
 
@@ -124,6 +125,44 @@ ngx_js_ssl_get(JSContext *ctx, JSValueConst this_val, int magic)
  *   2 — preferServerCiphers  SSL_OP_CIPHER_SERVER_PREFERENCE
  *   3 — verifyDepth          SSL_CTX_set_verify_depth()
  */
+/*
+ * A number written into a TLS knob is bounds-checked, and a value that is not a
+ * number is REFUSED rather than coerced.
+ *
+ * JS_ToInt64() yields 0 for NaN, for {} and for "abc" without reporting an
+ * error, so `ssl.verifyDepth = {}` silently set the verification depth to 0 --
+ * a security control weakened by a typo, with nothing raised.  Negatives were
+ * taken too: verifyDepth lands in an ngx_uint_t and then goes to
+ * SSL_CTX_set_verify_depth() as an int, and 2^31 wrapped to INT_MIN on the way.
+ * The ranges below are nginx's own for ssl_session_timeout and
+ * ssl_verify_depth, because these setters write the same fields.
+ */
+static int
+ngx_js_ssl_num(JSContext *ctx, JSValueConst val, int64_t min, int64_t max,
+    const char *name, int64_t *out)
+{
+    double  d;
+
+    if (JS_ToFloat64(ctx, &d, val) < 0) {
+        return -1;
+    }
+
+    if (isnan(d) || isinf(d)) {
+        JS_ThrowRangeError(ctx, "ssl.%s must be a number", name);
+        return -1;
+    }
+
+    if (d < (double) min || d > (double) max) {
+        JS_ThrowRangeError(ctx, "ssl.%s must be between %lld and %lld",
+                           name, (long long) min, (long long) max);
+        return -1;
+    }
+
+    *out = (int64_t) d;
+    return 0;
+}
+
+
 static JSValue
 ngx_js_ssl_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
 {
@@ -140,7 +179,9 @@ ngx_js_ssl_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
 
     switch (magic) {
     case 0: /* sessionTimeout */
-        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (ngx_js_ssl_num(ctx, val, 0, 2147483647, "sessionTimeout", &n) < 0) {
+            return JS_EXCEPTION;
+        }
         sscf->session_timeout = (time_t) n;
         if (sscf->ssl.ctx != NULL) {
             SSL_CTX_set_timeout(sscf->ssl.ctx, (long) n);
@@ -176,7 +217,9 @@ ngx_js_ssl_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
         return JS_UNDEFINED;
 
     case 3: /* verifyDepth */
-        if (JS_ToInt64(ctx, &n, val) < 0) { return JS_EXCEPTION; }
+        if (ngx_js_ssl_num(ctx, val, 0, 2147483647, "verifyDepth", &n) < 0) {
+            return JS_EXCEPTION;
+        }
         sscf->verify_depth = (ngx_uint_t) n;
         if (sscf->ssl.ctx != NULL) {
             SSL_CTX_set_verify_depth(sscf->ssl.ctx, (int) n);

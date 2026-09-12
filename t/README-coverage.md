@@ -48,7 +48,8 @@ Triaged, highest value first:
 | what | lines at 0% | why it matters |
 |---|---|---|
 | **`NginxPeer` (`ngx_js_peer_get`/`_set`)** | 40 | **Acted on in this commit.** The config-phase twin of the round-robin peer view. Every test reaches peers at *request* time, so this class had never run — and the twins had drifted: neither validated, but this one writes an `ngx_uint_t`, so `weight = -1` stored ~1.8e19 into the load balancer. |
-| `ngx_js_com_ssl` client-hello surface | 239 (44.8% file) | `ngx_js_ssl_set`, `ngx_js_ssl_on_client_hello`, `ngx_js_ch_cb`, `ngx_js_build_client_hello`. A whole feature with no test; `ngx_js_ssl_set` is a setter taking untrusted values, missed by `js_com_setter_fuzz.t` only because its config has no `ssl` server. Cheapest next win: add one. |
+| `ngx_js_ssl_set` (4 scalar TLS props) | 37 | **Done** — `t/js_com_ssl_range.t`. The SSL tests next to it cover the *methods* (`setCertificate`, `setCiphers`, `setProtocols`) and the getters, so the four scalar setters had never been written to. Same defect as the peers: `verifyDepth = {}` silently set the verification depth to 0. |
+| `ngx_js_com_ssl` client-hello surface | ~200 (44.8% file) | Still open: `ngx_js_ssl_on_client_hello`, `ngx_js_ch_cb`, `ngx_js_build_client_hello`, `ngx_js_ch_ext_ints`, `ngx_js_ch_registry` — the client-hello inspection feature, which needs a real TLS handshake to reach and so needs a client, not just a COM walk. |
 | `ngx_js_com_upstream` load-balancer registry | ~100 | `ngx_js_lb_choose`, `_get`, `_init`, `_find`, `_registry`, `ngx_js_upstream_on_select_peer` — the custom-LB hook, entirely unexercised. |
 | `ngx_js_com_stream_upstream` | 165 (58.8% file) | `ngx_js_stream_rr_peer_set` (47 lines) is the stream twin of the peer setter fixed here, and is still untested. **Likely carries the same defect.** |
 | `ngx_js_com_access` | 73 | `ngx_js_access_set_rules6` (IPv6) and `_unix` (unix sockets) — the IPv4 path is tested, these are not. |
