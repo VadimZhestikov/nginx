@@ -23,13 +23,21 @@
  *   R-ENV     a fragment sees exactly the names granted to it; every other free
  *             name is unbound.
  *   R-ADMIT   admission is ON iff the contract declares imports (presence, not
- *             truthiness); with it on, EVERY free global outside the manifest
- *             refuses the fragment -- including language intrinsics. There is a
- *             deny list (eval, Function, globalThis, global, self) that no
- *             manifest can re-admit, and NO intrinsics allowance: `undefined`,
- *             `JSON`, `Object` and friends are free globals like any other and
- *             must be declared. That surprised this oracle into existence --
- *             see t/comcon_v3_oracle.t and VERIFICATION.md V3.
+ *             truthiness). A free global then falls in one of THREE categories:
+ *             DENIED (eval, Function, globalThis, global, self -- no manifest
+ *             re-admits them), INTRINSIC (a language value to compute with:
+ *             allowed without declaration), or DECLARABLE (everything else,
+ *             including every host name: must appear in the manifest).
+ *
+ *             The intrinsic list is deliberately SHORT. Date and Math are NOT
+ *             on it -- clock and RNG are the side channels M-SES left open --
+ *             nor are Promise (scheduling past the invocation), Symbol
+ *             (Symbol.for is a runtime-wide registry, i.e. a channel), Proxy /
+ *             Reflect, or the ArrayBuffer family (SharedArrayBuffer is a
+ *             channel). Each is still usable by DECLARING it.
+ *
+ *             This category did not exist until the oracle disagreed with the
+ *             engine about `undefined`; see VERIFICATION.md V3.
  *   R-MEDIATE the mediation vocabulary is CLOSED. revoke withholds the name
  *             entirely; allow/redact are field masks; an unknown flavor is
  *             refused (never "full authority").
@@ -105,6 +113,19 @@ function predict(kase) {
 
     /* R-ADMIT: admission is on iff imports is PRESENT. */
     var DENIED = { eval: 1, Function: 1, globalThis: 1, global: 1, self: 1 };
+    /* KEEP IN SYNC with ngx_js_admit_intrinsics[] in src/js/ngx_js_com.c.
+     * Two copies of a closed enumeration is the drift V7 exists to catch, and
+     * t/tools/check-enumerations.py compares these two on every test run -- so
+     * the model cannot quietly stop describing the engine. */
+    var INTRINSIC = {
+        undefined: 1, NaN: 1, Infinity: 1,
+        Object: 1, Array: 1, String: 1, Number: 1, Boolean: 1, BigInt: 1,
+        JSON: 1, RegExp: 1, Map: 1, Set: 1, WeakMap: 1, WeakSet: 1,
+        Error: 1, TypeError: 1, RangeError: 1, SyntaxError: 1,
+        ReferenceError: 1, EvalError: 1, URIError: 1,
+        parseInt: 1, parseFloat: 1, isNaN: 1, isFinite: 1,
+        encodeURIComponent: 1, decodeURIComponent: 1, encodeURI: 1, decodeURI: 1
+    };
     if (kase.imports !== undefined) {
         for (i = 0; i < kase.reads.length; i++) {
             if (DENIED[kase.reads[i]]) {
@@ -113,6 +134,7 @@ function predict(kase) {
                                 + 'it): ' + kase.reads[i];
                 return out;
             }
+            if (INTRINSIC[kase.reads[i]]) { continue; }   /* no declaration */
             if (kase.imports.indexOf(kase.reads[i]) < 0) {
                 out.admitted = false;
                 out.refusedBy = 'R-ADMIT: free name outside the manifest: '

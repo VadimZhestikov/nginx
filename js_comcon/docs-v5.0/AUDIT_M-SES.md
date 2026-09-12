@@ -286,3 +286,16 @@ still defaults to 0; the fuzz-corpus row is correctly gone, closed by the
 **Any signature on this table without §3 having been checked is worth less than
 no signature**, because it converts "we know these holes exist" into "someone
 looked and found nothing".
+
+---
+
+## 6. Changes to the audited surface AFTER the signature (not covered by it)
+
+The §5 signatures are dated 2026-09-12 and attest the tree as of §4's re-run.
+This section records changes to the **audited surface** made after that point, so
+no reader mistakes the signature for coverage of them. It adds information; it
+alters no attested claim, and nothing here is re-signed.
+
+| date | change | why it is not a §3 gap, and what a re-reviewer should check |
+|---|---|---|
+| 2026-09-12 | **C3 admission gained an INTRINSICS category** (`ngx_js_admit_intrinsics[]`, `src/js/ngx_js_com.c`): a short list of language values — `undefined`/`Object`/`Array`/`String`/`Number`/`Boolean`/`BigInt`/`JSON`/`RegExp`/`Map`/`Set`/`WeakMap`/`WeakSet`/the `Error` types/`parseInt`/`parseFloat`/`isNaN`/`isFinite`/the URI helpers — is admitted **without appearing in `imports`**. Decided by the user after the V3 kernel oracle found the gate refusing an ordinary `x !== undefined`. | It **widens a declaration requirement, not a reach**: every name on the list was already reachable at runtime inside the compartment (the fragment ran with the standard intrinsics either way, and a fragment with admission OFF used them freely) — the gate previously demanded they be *named* in a manifest that grants nothing for them. Row **(a)** of §1 rests on "no ambient **host** globals in the compartment", which is unchanged: `nginx`, the COM root, `globalThis` and the rest are still refused, and the `t/comcon_mses_gate.t` probes that back row (a) are untouched. **Deliberately excluded and still requiring declaration: `Date` and `Math`** (clock and RNG — the side channels §3 leaves open), plus `Promise`, `Symbol`, `Proxy`/`Reflect` and the `ArrayBuffer` family. A re-reviewer should check `t/comcon_v3_oracle.t` (the three categories asserted one by one) and `t/tools/check-enumerations.py` check 4, which fails the suite if `Date`/`Math` are ever added to the list or if the engine's list and the V3 model's copy drift apart. |

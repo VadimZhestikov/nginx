@@ -91,7 +91,12 @@ The biggest unknowns are front-loaded. Each slice is a differential-tested verti
   - **C3.0 — static free-name admission.** `js_comcon_collect_free_globals`
     (quickjs.c) recursively walks the registered handler's `closure_var` globals
     (into nested `cpool` functions); `ngx_js_module.c` refuses the fragment at load
-    if any free name is absent from the bound tenant environment. The A/B runtime
+    if any free name is absent from the bound tenant environment. *(2026-09-12: a
+    free name now falls in one of THREE categories — DENIED (`eval`, `Function`,
+    `globalThis`, `global`, `self`; no manifest re-admits them), INTRINSIC (a short
+    list of language values, admitted without declaration — NOT `Date`/`Math`,
+    whose clock and RNG stay declarable), or DECLARABLE (every host name). See
+    VERIFICATION.md V3 and AUDIT_M-SES.md §6.)* The A/B runtime
     deny-by-default becomes an admission-time refusal. Test: `t/comcon_admission.t`.
   - **C3-rest — restricted constructs.** Dynamic code in its naive forms is refused at
     load: `js_comcon_uses_dynamic_code` (quickjs.c) scans the handler's bytecode for

@@ -15,7 +15,7 @@ suite rather than waiting for someone to re-read a document.
 
     python3 t/tools/check-enumerations.py [--verbose]
 
-Exit 0 = the three enumerations agree with the code. Exit 1 = drift, printed.
+Exit 0 = the four enumerations agree with the code. Exit 1 = drift, printed.
 """
 
 import re
@@ -235,9 +235,58 @@ def check_ops_resources():
                          "smaller kernel than ships" % (k, alts))
 
 
+# ---------------------------------------------------------------------------
+# 4. The C3 intrinsics allowance: one list, two copies.
+#
+# The engine decides admission from ngx_js_admit_intrinsics[]; the V3 kernel
+# oracle predicts admission from its own copy. If they drift, the oracle stops
+# describing the engine and the differential test agrees with itself -- the
+# exact failure V3 was built to avoid, arriving through the back door. So the
+# two are compared here, and a difference is drift in either direction.
+# ---------------------------------------------------------------------------
+def check_intrinsics():
+    print("[4] C3 intrinsics allowance (engine vs the V3 oracle)")
+    com = read("src/js/ngx_js_com.c")
+    m = re.search(r"ngx_js_admit_intrinsics\[\]\s*=\s*\{(.*?)NULL", com, re.S)
+    if not m:
+        fails.append("[4] ngx_js_admit_intrinsics[] not found")
+        return
+    c_list = set(re.findall(r'"([A-Za-z]+)"', m.group(1)))
+
+    orc = read("t/tools/kernel-oracle.js")
+    m2 = re.search(r"var INTRINSIC = \{(.*?)\};", orc, re.S)
+    if not m2:
+        fails.append("[4] INTRINSIC table not found in the kernel oracle")
+        return
+    js_list = set(re.findall(r"([A-Za-z]+)\s*:\s*1", m2.group(1)))
+
+    note("engine: %d names" % len(c_list))
+    note("oracle: %d names" % len(js_list))
+    for n in sorted(c_list - js_list):
+        fails.append("[4] %r is intrinsic in the engine but not in the oracle "
+                     "-- the model would predict a refusal the engine does not "
+                     "make" % n)
+    for n in sorted(js_list - c_list):
+        fails.append("[4] %r is intrinsic in the oracle but not in the engine "
+                     "-- the model would predict an admission the engine "
+                     "refuses" % n)
+
+    # Date and Math are excluded by DECISION (user, 2026-09-12): clock and RNG
+    # are the side channels M-SES left open. A checker is the only thing that
+    # keeps a decision from being undone by a convenient edit.
+    for n in ("Date", "Math", "Promise", "Symbol", "Proxy", "Reflect",
+              "ArrayBuffer", "SharedArrayBuffer"):
+        if n in c_list or n in js_list:
+            fails.append("[4] %r was added to the intrinsics allowance; it is "
+                         "excluded by decision (clock/RNG/scheduling/registry/"
+                         "channel) -- if that is meant to change, change it "
+                         "here and in VERIFICATION.md V3 as well" % n)
+
+
 check_p_symbols()
 check_portals()
 check_ops_resources()
+check_intrinsics()
 
 print("")
 if fails:
@@ -245,5 +294,5 @@ if fails:
     for f in fails:
         print("  - " + f)
     sys.exit(1)
-print("three enumerations agree with the code")
+print("all four enumerations agree with the code")
 sys.exit(0)

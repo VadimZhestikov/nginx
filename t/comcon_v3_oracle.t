@@ -106,7 +106,12 @@ var CHAINS = [
 var ADMIT = [
     { imports: undefined,          reads: ['s','undefined'] },
     { imports: ['s','undefined'],  reads: ['s','undefined'] },
+    /* the intrinsics decision, both ways: `undefined` needs no declaration... */
     { imports: ['s'],              reads: ['s','undefined'] },
+    /* ...but Math does, because clock and RNG are the side channels M-SES
+     * left open, so they were deliberately kept OUT of the allowance. */
+    { imports: ['s'],              reads: ['s','undefined','Math'] },
+    { imports: ['s','Math'],       reads: ['s','undefined','Math'] },
     { imports: ['s','undefined'],  reads: ['s','undefined','nope'] },
     { imports: ['s','undefined','eval'], reads: ['s','undefined','eval'] }
 ];
@@ -132,6 +137,12 @@ var PROBE2 = "function(){ nope;"
            + " return { bound:true, address: typeof s.address !== 'undefined',"
            + " port: typeof s.port !== 'undefined', fd: typeof s.fd !== 'undefined',"
            + " listener: (s.listener !== undefined) }; }";
+/* Math: an intrinsic that is NOT in the allowance, so it must be declared */
+var PROBE4 = "function(){ var m = Math;"
+           + " if (typeof s === 'undefined') return {bound:false};"
+           + " return { bound:true, address: typeof s.address !== 'undefined',"
+           + " port: typeof s.port !== 'undefined', fd: typeof s.fd !== 'undefined',"
+           + " listener: (s.listener !== undefined) }; }";
 /* the deny list: no manifest re-admits `eval`, even when it is declared */
 var PROBE3 = "function(){ var q = eval;"
            + " if (typeof s === 'undefined') return {bound:false};"
@@ -151,6 +162,7 @@ function runEngine(chain, adm) {
     var src = PROBE;
     if (adm.reads.indexOf('nope') >= 0) { src = PROBE2; }
     if (adm.reads.indexOf('eval') >= 0) { src = PROBE3; }
+    if (adm.reads.indexOf('Math') >= 0) { src = PROBE4; }
     var f, r;
     try { f = comcon.include(src, contract); }
     catch (e) { out.admitted = false; out.why = e.message; return out; }
@@ -205,17 +217,32 @@ l.handler = function (req) {
         }
     }
 
+    /* THE INTRINSICS DECISION, stated directly rather than left implicit in
+     * "no mismatches": three categories, asserted one by one. */
+    function admits(src, imports) {
+        try { comcon.include(src, { grants: {}, imports: imports });
+              return 'admitted'; }
+        catch (e) { return 'refused'; }
+    }
+    o.catIntrinsic = admits("function(){ return JSON.stringify(Object.keys({}))"
+                            + " + (typeof undefined); }", []);
+    o.catClock     = admits("function(){ return Math.random(); }", []);
+    o.catDeclared  = admits("function(){ return Math.random(); }", ['Math']);
+    o.catDenied    = admits("function(){ var q = eval; return 1; }", ['eval']);
+    o.catHost      = admits("function(){ return nginx; }", []);
+
     /* the fixture must actually contain the thing it is about */
-    o.probesDiffer = (PROBE2 !== PROBE && PROBE3 !== PROBE
+    o.probesDiffer = (PROBE2 !== PROBE && PROBE3 !== PROBE && PROBE4 !== PROBE
                       && PROBE2.indexOf('nope') > 0
-                      && PROBE3.indexOf('eval') > 0);
+                      && PROBE3.indexOf('eval') > 0
+                      && PROBE4.indexOf('Math') > 0);
     o.distinct = Object.keys(o.shapes).length;
     delete o.shapes;
     req.respond(200, {'content-type':'application/json'}, JSON.stringify(o));
 };
 JS
 
-$t->try_run('no js module')->plan(6);
+$t->try_run('no js module')->plan(11);
 
 ###############################################################################
 
@@ -226,14 +253,29 @@ like($r, qr/"probesDiffer":true/,
      'the three probes really do differ -- the undeclared-name and denied-name '
      . 'cases reference what they claim to (a replace() that matched nothing '
      . 'once made both identical to the base probe, and the corpus passed)');
-like($r, qr/"cases":70/,
-     'the generated corpus is 14 mediation chains x 5 admission settings');
+like($r, qr/"cases":98/,
+     'the generated corpus is 14 mediation chains x 7 admission settings');
 like($r, qr/"distinct":([5-9]|\d\d)/,
      'the model DISCRIMINATES: it predicts several different answers over the '
      . 'corpus, so agreement means something (an oracle that predicts one '
      . 'answer agrees with an engine that does anything)');
 
 # --- the comparison ------------------------------------------------------
+# --- the intrinsics decision (user, 2026-09-12), one category at a time ----
+like($r, qr/"catIntrinsic":"admitted"/,
+     'INTRINSIC: a cap-free fragment may use JSON/Object/undefined with an '
+     . 'EMPTY manifest -- they are values to compute with, not authority');
+like($r, qr/"catClock":"refused"/,
+     'NOT intrinsic: Math must be declared -- clock and RNG are the side '
+     . 'channels M-SES left open, so they stayed out of the allowance');
+like($r, qr/"catDeclared":"admitted"/,
+     '...and declaring it is all it takes');
+like($r, qr/"catDenied":"refused"/,
+     'DENIED still wins over every category: no manifest re-admits eval');
+like($r, qr/"catHost":"refused"/,
+     'and a HOST name is still refused with an empty manifest -- the allowance '
+     . 'did not widen anything but the language');
+
 like($r, qr/"mismatches":\[\]/,
      'MODEL == ENGINE on every admission-relevant case: environment binding, '
      . 'the closed mediation vocabulary, the attenuation meet, revoke as zero, '

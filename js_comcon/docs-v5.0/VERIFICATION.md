@@ -87,11 +87,34 @@ is granted for. Two consequences worth deciding on rather than inheriting:
    let a fragment *declare* are ones the compartment *provides*, and a fragment with
    admission OFF uses them freely.
 
-**Deliberately NOT changed here.** Widening an admission gate is a security decision and
-the audit is signed; the oracle's job was to make the divergence visible. What did change
-is the diagnostic: the refusal now says *"free name not declared in imports"* instead of
-*"not granted"*, because the old wording sent a reader looking for a missing capability
-when what was missing was a declaration.
+**RESOLVED BY DECISION (user, 2026-09-12): a third category.** A free name is now DENIED
+(`eval`, `Function`, `globalThis`, `global`, `self` — no manifest re-admits them),
+**INTRINSIC** (a language value to compute with: admitted without declaration), or
+DECLARABLE (everything else, including every host name). The intrinsic list is short on
+purpose — `undefined`/`NaN`/`Infinity`, `Object`/`Array`/`String`/`Number`/`Boolean`/
+`BigInt`/`JSON`/`RegExp`, `Map`/`Set`/`WeakMap`/`WeakSet`, the `Error` types,
+`parseInt`/`parseFloat`/`isNaN`/`isFinite`, the URI helpers — because the cost of omitting
+one is a word in a manifest while the cost of wrongly including one is a silently wider
+gate.
+
+**`Date` and `Math` are deliberately NOT on it**: clock and RNG are the side channels §3
+leaves open, so a fragment that wants them declares them. Nor are `Promise` (scheduling
+past the invocation the deadline measures), `Symbol` (`Symbol.for` is a runtime-wide
+registry — a channel between fragments, not a value), `Proxy`/`Reflect` (object-graph
+tampering over held values, capabilities included), or the `ArrayBuffer` family
+(`SharedArrayBuffer` is a channel, and the family travels under one rule).
+
+This widens a **declaration requirement, not a reach** — every intrinsic was already
+reachable inside the compartment, and a fragment with admission OFF used them freely; the
+gate had been stricter than the boundary it guards. Recorded in `AUDIT_M-SES.md` §6 as a
+change made after the signature, since the audited surface moved. The diagnostic also
+changed: *"free name not declared in imports"* rather than *"not granted"*, because the old
+wording sent a reader looking for a missing capability.
+
+The oracle now models the three categories, so the differential keeps the decision honest,
+and **`check-enumerations.py` check 4 compares the engine's list with the model's copy and
+fails if `Date`/`Math` are ever added** — a decision that nothing checks is a decision that
+gets undone by a convenient edit.
 
 **V4 — Monotonicity as an assertion, not only a theorem. ✅ BUILT 2026-09-12.** The
 theorem holds *given* an unforgeable TCB; a TCB bug currently fails silently.

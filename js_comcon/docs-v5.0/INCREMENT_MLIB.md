@@ -50,8 +50,12 @@ plus an `absent` list naming the vocabulary that is deliberately not here.
   residual risk, and a tenant profile inheriting only the 5s fragment ceiling would repeat
   it deliberately. `opts` overrides `meter` and supplies `identity` / `tests` / `deps`.
 - **`std.profiles.pure_library(opts)`** — a cap-free computation: `grants {}` and
-  `imports []`. `imports` is *present*, which is what switches admission on, so **any** free
-  name refuses the fragment. The strongest fully-enforced profile, and the right default for
+  `imports []`. `imports` is *present*, which is what switches admission on, so **any
+  undeclared HOST name refuses the fragment** — while language intrinsics need no
+  declaration (the C3 intrinsics allowance, v5.54), so such a fragment can actually compute
+  with `JSON` and `Object` rather than arithmetic alone. Before that decision it could not,
+  which made this profile stricter than "cap-free" suggests; `Date` and `Math` still have to
+  be declared. The strongest fully-enforced profile, and the right default for
   third-party code that should only compute.
 - **`std.describe()`**, **`std.version`** (`comcon-std-1`), frozen namespace and frozen
   contracts.

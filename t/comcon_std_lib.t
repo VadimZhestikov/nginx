@@ -101,8 +101,13 @@ var tenant = comcon.include(
     "function(){ return { addrType: typeof s.address, port: (s.port|0) }; }",
     tenantContract);
 
-/* A pure library: no grants at all, so any free name must refuse admission. */
-var pure = comcon.include("function(n){ return 6 * 7; }", libContract);
+/* A pure library: no grants at all, so any HOST name must refuse admission --
+ * but language intrinsics need no declaration (decided 2026-09-12 after the V3
+ * oracle found the gate refusing `x !== undefined`), so a cap-free fragment can
+ * actually compute with JSON and Object rather than arithmetic alone. */
+var pure = comcon.include(
+    "function(n){ return JSON.parse('[6,7]').reduce(function(a,b){return a*b;}); }",
+    libContract);
 
 l.handler = function (req) {
     var o = {};
@@ -209,7 +214,10 @@ like($r, qr/"checkReq":true/, 'request-field admission is on for a tenant');
 like($r, qr/"tenant":\{"addrType":"undefined","port":8091\}/,
      'the tenant profile grants the mediated cap: port visible, address '
      . 'redacted by the membrane');
-like($r, qr/"pure":42/, 'the pure_library profile runs a cap-free computation');
+like($r, qr/"pure":42/,
+     'the pure_library profile runs a cap-free computation -- and may use the '
+     . 'language intrinsics (JSON, Object) without declaring them, which it '
+     . 'could not before the C3 intrinsics allowance');
 like($r, qr/"freeName":"refused"/,
      'pure_library refuses a fragment that touches ANY free name -- imports '
      . 'is present and empty, which is what switches admission on');

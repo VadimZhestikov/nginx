@@ -3068,6 +3068,77 @@ ngx_js_admit_name_denied(const char *name)
 }
 
 
+/*
+ * C3 free-name categories, and the reason there are three rather than two.
+ *
+ *   DENIED       eval / Function / globalThis / global / self. Ambient-authority
+ *                reach; no manifest re-admits them.
+ *   INTRINSIC    the list below: language values a fragment computes WITH, not
+ *                authority it acts through. Allowed WITHOUT declaration.
+ *   DECLARABLE   everything else, including every host name: must appear in
+ *                `imports`, which is what makes the manifest meaningful.
+ *
+ * Before this list existed there were only two categories, so `undefined`,
+ * `JSON` and `Object` were "ungranted host names" and an ordinary
+ * `x !== undefined` was refused unless the operator declared `undefined` -- a
+ * name nothing is granted for. Worse, the gate refused to let a fragment DECLARE
+ * intrinsics that the compartment PROVIDES, and that a fragment with admission
+ * OFF used freely: the gate was stricter than the boundary it guards. Found by
+ * the V3 kernel oracle (t/comcon_v3_oracle.t) disagreeing with the engine, and
+ * decided deliberately rather than inherited -- widening an admission gate is a
+ * decision (user, 2026-09-12).
+ *
+ * WHAT IS DELIBERATELY *NOT* HERE, each for its own reason, and each still
+ * usable by DECLARING it:
+ *
+ *   Date, Math    clock and RNG -- the side channels M-SES left open
+ *                 ("clock/RNG doubles during the run" is still an open item).
+ *                 A fragment that wants them should say so.
+ *   Promise       scheduling: continuations that outlive the invocation the
+ *                 deadline is measured against.
+ *   Symbol        Symbol.for is a RUNTIME-WIDE registry -- a channel between
+ *                 fragments, not a value.
+ *   Proxy,        object-graph tampering over values a fragment holds,
+ *   Reflect       including granted capabilities.
+ *   ArrayBuffer,  SharedArrayBuffer is a communication channel; the buffer
+ *   typed arrays  family travels with it under one rule rather than a
+ *                 case-by-case one.
+ *
+ * The cost of omitting something is one word in a manifest. The cost of
+ * wrongly including one is a silently wider gate, so the list is short on
+ * purpose and grows only by decision.
+ *
+ * KEEP IN SYNC with the same list in t/tools/kernel-oracle.js -- two copies of a
+ * closed enumeration is exactly the drift V7 exists to catch, and
+ * t/tools/check-enumerations.py compares them on every test run.
+ */
+static const char *ngx_js_admit_intrinsics[] = {
+    "undefined", "NaN", "Infinity",
+    "Object", "Array", "String", "Number", "Boolean", "BigInt", "JSON",
+    "RegExp", "Map", "Set", "WeakMap", "WeakSet",
+    "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError",
+    "EvalError", "URIError",
+    "parseInt", "parseFloat", "isNaN", "isFinite",
+    "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI",
+    NULL
+};
+
+
+static ngx_uint_t
+ngx_js_admit_name_intrinsic(const char *name)
+{
+    const char **p;
+
+    for (p = ngx_js_admit_intrinsics; *p != NULL; p++) {
+        if (ngx_strcmp(name, *p) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+
 static ngx_uint_t
 ngx_js_admit_in_imports(ngx_js_admit_check_t *c, const char *name)
 {
@@ -3101,7 +3172,19 @@ ngx_js_admit_free_cb(void *ud, const char *name)
         return;
     }
 
-    if (ngx_js_admit_name_denied(name) || !ngx_js_admit_in_imports(c, name)) {
+    /* denied wins over intrinsic: no manifest, and no category, re-admits the
+       ambient-authority names. */
+    if (ngx_js_admit_name_denied(name)) {
+        c->bad = 1;
+        ngx_cpystrn((u_char *) c->badname, (u_char *) name, sizeof(c->badname));
+        return;
+    }
+
+    if (ngx_js_admit_name_intrinsic(name)) {
+        return;                    /* a value to compute with, not authority */
+    }
+
+    if (!ngx_js_admit_in_imports(c, name)) {
         c->bad = 1;
         ngx_cpystrn((u_char *) c->badname, (u_char *) name, sizeof(c->badname));
     }

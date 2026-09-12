@@ -564,6 +564,45 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.54 (in place — the C3 intrinsics allowance: a third free-name category, decided not
+inherited):** the V3 oracle's divergence (v5.53) is resolved by decision (user, 2026-09-12).
+A free name now falls in one of THREE categories rather than two:
+
+- **DENIED** — `eval`, `Function`, `globalThis`, `global`, `self`. Ambient-authority reach;
+  no manifest re-admits them.
+- **INTRINSIC** — a short list of language values a fragment computes WITH: `undefined`/
+  `NaN`/`Infinity`, `Object`/`Array`/`String`/`Number`/`Boolean`/`BigInt`/`JSON`/`RegExp`,
+  `Map`/`Set`/`WeakMap`/`WeakSet`, the `Error` types, `parseInt`/`parseFloat`/`isNaN`/
+  `isFinite`, the URI helpers. **Admitted without declaration.**
+- **DECLARABLE** — everything else, including every host name: must appear in `imports`,
+  which is what makes a manifest mean anything.
+
+**`Date` and `Math` are deliberately NOT intrinsic** — clock and RNG are the side channels
+§3 of the audit leaves open — nor are `Promise` (scheduling past the invocation the deadline
+measures), `Symbol` (`Symbol.for` is a runtime-wide registry: a channel between fragments,
+not a value), `Proxy`/`Reflect` (object-graph tampering over held values, capabilities
+included), or the `ArrayBuffer` family (`SharedArrayBuffer` is a channel). Each remains
+usable by declaring it. The list is short on purpose: the cost of omitting a name is one
+word in a manifest; the cost of wrongly including one is a silently wider gate.
+
+**This widens a declaration requirement, not a reach.** Every intrinsic was already
+reachable inside the compartment — a fragment ran with the standard intrinsics either way,
+and one with admission OFF used them freely — so the gate had been *stricter than the
+boundary it guards*, while refusing ordinary JS: `x !== undefined` needed `undefined`
+declared, a name nothing is granted for, and `std.profiles.pure_library` (`imports: []`)
+could not use `JSON` or `Object`. It can now.
+
+Recorded in **`AUDIT_M-SES.md` §6 — changes to the audited surface after the signature**,
+a new section that adds information without altering an attested claim: row (a) of §1 rests
+on "no ambient HOST globals", which is unchanged, and the `t/comcon_mses_gate.t` probes
+behind it are untouched. Nothing is re-signed.
+
+Two things keep the decision from decaying: the V3 oracle models the three categories, so
+the differential test fails if the engine stops matching; and **`check-enumerations.py`
+check 4 compares the engine's list against the model's copy and fails the suite if `Date` or
+`Math` is ever added to either** — a decision nothing checks is a decision a convenient edit
+undoes.
+
 **v5.53 (in place — the verification track's now-due column: V3 executable reference
 semantics, V4 monotonicity-as-an-assertion, V7 generated enumerations):** three obligations
 that §12's own table listed as due *now* and that had never been built. Each found something.
