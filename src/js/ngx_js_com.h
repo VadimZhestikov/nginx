@@ -500,6 +500,16 @@ void  ngx_js_describe_tag(JSContext *ctx, JSValueConst obj, int tag);
  */
 JSValue  ngx_js_describe_settable_props(JSContext *ctx, JSValueConst obj);
 
+
+/*
+ * Bounded numeric conversion for every COM setter that writes a number into a
+ * config field.  Use this instead of JS_ToInt32/JS_ToInt64 + a cast: those are
+ * casts, not checks, and the difference has been a defect three times.
+ * Defined in ngx_js_com.c.
+ */
+int  ngx_js_com_num_range(JSContext *ctx, JSValueConst val, int64_t min,
+    int64_t max, const char *name, int64_t *out);
+
 /*
  * Object-or-key ergonomics for remove/restore methods: if argv[0] is a COM
  * object (e.g. the location returned by addLocation), pull its key property

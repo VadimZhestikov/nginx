@@ -56,6 +56,28 @@ Triaged, highest value first:
 | `ngx_js_listener` connection/L4 | ~90 | `ngx_js_connection_on_close`, `ngx_js_conn_state*`, `ngx_js_l4_send`, `ngx_js_connection_get_ctx`. |
 | `ngx_js_grant_to_tenant` | 29 | Still present after the tenant path was retired (M-CFG convergence). Check whether it is now dead code to delete rather than test. |
 
+## A class coverage could not have found
+
+The three defects above were one defect -- a JS number CAST into a config field
+rather than checked -- and coverage is the wrong instrument for it.
+`ngx_js_rr_peer_set` was **96% covered** and had it: tests executed that code
+constantly, they just never passed it a negative. Coverage finds unexecuted
+code; this hid in well-executed code.
+
+So it was swept mechanically instead: `t/tools/numeric-cast-sweep.py` enumerates
+every place a converted value is cast into an unsigned or time field. The first
+run found 94 sites, 81 already guarded, 13 not -- of which 4 were false
+positives and **9 were real**, in two families (response status, stream peers).
+All now go through one shared check, `ngx_js_com_num_range()` in
+`ngx_js_com.c`, and the two previously-local helpers were collapsed onto it,
+because three copies of a check is how the HTTP and stream peer setters came to
+differ in the first place.
+
+The tool's site count drops as sites are fixed (a converted-then-cast pair
+becomes a single `ngx_js_com_num_range()` call, which it no longer counts). It
+is a lint, not an oracle: judge each hit, since a length read off an internal
+array is not caller input.
+
 Percentages are a poor target — plenty of the remainder is fork paths and
 syscall-failure branches that a test rig cannot reach, and chasing the number
 would be worse than useless. The list above is the part worth acting on.

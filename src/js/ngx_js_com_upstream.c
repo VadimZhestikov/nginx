@@ -110,31 +110,20 @@ static int
 ngx_js_peer_num(JSContext *ctx, JSValueConst val, int32_t min,
     const char *name, int32_t *out)
 {
-    int32_t  i32;
-    double   d;
+    int64_t  n64;
+    char     label[64];
 
-    /* Refuse what is not a number instead of taking JS_ToInt32's 0 for it:
-     * `maxFails = {}` is a mistake, not a request for zero. */
-    if (JS_ToFloat64(ctx, &d, val) < 0) {
+    /* One implementation of the check, in ngx_js_com.c.  This is the adapter
+     * that keeps the int32 out-param the peer setters use; it is deliberately
+     * not a second copy of the logic, because a second copy is how the HTTP
+     * and stream peer setters came to differ in the first place. */
+    ngx_snprintf((u_char *) label, sizeof(label) - 1, "peer.%s%Z", name);
+
+    if (ngx_js_com_num_range(ctx, val, min, 2147483647, label, &n64) < 0) {
         return -1;
     }
 
-    if (isnan(d) || isinf(d)) {
-        JS_ThrowRangeError(ctx, "peer.%s must be a number", name);
-        return -1;
-    }
-
-    if (JS_ToInt32(ctx, &i32, val)) {
-        return -1;
-    }
-
-    if (i32 < min) {
-        JS_ThrowRangeError(ctx, "peer.%s must be >= %d, got %d",
-                           name, (int) min, (int) i32);
-        return -1;
-    }
-
-    *out = i32;
+    *out = (int32_t) n64;
     return 0;
 }
 

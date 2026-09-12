@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <cutils.h>
 #include "ngx_js.h"
+#include <math.h>
 #include "ngx_js_com.h"
 #include "ngx_js_worker.h"
 #include "ngx_js_sw.h"
@@ -1144,6 +1145,52 @@ ngx_js_resume_all_workers(JSContext *ctx, JSValueConst this_val,
 {
     return ngx_js_make_accept_ctrl_promise(ctx,
                                            NGX_JS_MGR_CMD_RESUME_ACCEPT);
+}
+
+
+/*
+ * ngx_js_com_num_range — read a bounded number out of a JS value.
+ *
+ * The one place this check lives.  JS_ToInt32()/JS_ToInt64() are CASTS: they
+ * answer 0 for NaN, for {} and for "abc" without reporting an error, and they
+ * happily hand back a negative that the caller then stores in an ngx_uint_t.
+ * Both halves of that produced real defects -- `peers[0].weight = -1` stored
+ * ~1.8e19 into the load balancer (5186565a1), `ssl.verifyDepth = {}` silently
+ * set certificate verification depth to 0 (0ebac7e47), and `respond(-1)` put
+ * "HTTP/1.1 18446744073709551615" on the wire.
+ *
+ * Those were found one at a time, in code that had been written twice: a
+ * config-phase setter and its runtime twin, each casting, neither checking.
+ * A shared function is the fix for that, not a shared convention -- the
+ * convention is what drifted.
+ *
+ * `name` is the full property name for the message ("peer.weight").  Policy is
+ * plain ToNumber, then refuse non-finite and out-of-range, so the coercions
+ * ToNumber itself admits (Number([]) is 0, Number("600") is 600) still pass.
+ */
+int
+ngx_js_com_num_range(JSContext *ctx, JSValueConst val, int64_t min,
+    int64_t max, const char *name, int64_t *out)
+{
+    double  d;
+
+    if (JS_ToFloat64(ctx, &d, val) < 0) {
+        return -1;
+    }
+
+    if (isnan(d) || isinf(d)) {
+        JS_ThrowRangeError(ctx, "%s must be a number", name);
+        return -1;
+    }
+
+    if (d < (double) min || d > (double) max) {
+        JS_ThrowRangeError(ctx, "%s must be between %lld and %lld, got %g",
+                           name, (long long) min, (long long) max, d);
+        return -1;
+    }
+
+    *out = (int64_t) d;
+    return 0;
 }
 
 

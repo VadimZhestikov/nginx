@@ -141,25 +141,12 @@ static int
 ngx_js_ssl_num(JSContext *ctx, JSValueConst val, int64_t min, int64_t max,
     const char *name, int64_t *out)
 {
-    double  d;
+    char  label[64];
 
-    if (JS_ToFloat64(ctx, &d, val) < 0) {
-        return -1;
-    }
+    /* Adapter over the single check in ngx_js_com.c — see the note there. */
+    ngx_snprintf((u_char *) label, sizeof(label) - 1, "ssl.%s%Z", name);
 
-    if (isnan(d) || isinf(d)) {
-        JS_ThrowRangeError(ctx, "ssl.%s must be a number", name);
-        return -1;
-    }
-
-    if (d < (double) min || d > (double) max) {
-        JS_ThrowRangeError(ctx, "ssl.%s must be between %lld and %lld",
-                           name, (long long) min, (long long) max);
-        return -1;
-    }
-
-    *out = (int64_t) d;
-    return 0;
+    return ngx_js_com_num_range(ctx, val, min, max, label, out);
 }
 
 

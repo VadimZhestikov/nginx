@@ -2862,7 +2862,7 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
 {
     ngx_js_request_opaque_t  *op;
     ngx_http_request_t       *r;
-    int32_t                   status;
+    int64_t                    status64;
     const char               *body_cstr;
     size_t                    body_len;
     ngx_buf_t                *b;
@@ -2894,10 +2894,20 @@ ngx_js_request_respond(JSContext *ctx, JSValueConst this_val,
 
     /* status — argv[0] or r.statusCode or 200 */
     if (argc >= 1 && !JS_IsUndefined(argv[0]) && !JS_IsNull(argv[0])) {
-        if (JS_ToInt32(ctx, &status, argv[0])) {
+        /*
+         * A status goes out on the wire as the status line.  Unchecked, this
+         * was a cast into an ngx_uint_t: respond(-1) emitted
+         * "HTTP/1.1 18446744073709551615" and respond({}) emitted
+         * "HTTP/1.1 000" -- malformed responses from a reverse proxy, which
+         * intermediaries then have to guess about.  100..599 is the range a
+         * status code can be.
+         */
+        if (ngx_js_com_num_range(ctx, argv[0], 100, 599,
+                                 "respond: status", &status64) < 0)
+        {
             return JS_EXCEPTION;
         }
-        r->headers_out.status = (ngx_uint_t) status;
+        r->headers_out.status = (ngx_uint_t) status64;
     } else if (r->headers_out.status == 0) {
         r->headers_out.status = NGX_HTTP_OK;
     }
@@ -4427,7 +4437,7 @@ ngx_js_request_write_head(JSContext *ctx, JSValueConst this_val,
 {
     ngx_js_request_opaque_t  *op;
     ngx_http_request_t       *r;
-    int32_t                   status;
+    int64_t                    status64;
     ngx_int_t                 rc;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_request_class_id);
@@ -4439,12 +4449,19 @@ ngx_js_request_write_head(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "r.writeHead: headers already sent");
     }
 
-    if (argc < 1 || JS_ToInt32(ctx, &status, argv[0])) {
+    if (argc < 1) {
         return JS_ThrowTypeError(ctx, "r.writeHead: expected status argument");
     }
 
+    /* same range as respond(): a status line has to be a status */
+    if (ngx_js_com_num_range(ctx, argv[0], 100, 599,
+                             "writeHead: status", &status64) < 0)
+    {
+        return JS_EXCEPTION;
+    }
+
     r = op->r;
-    r->headers_out.status = (ngx_uint_t) status;
+    r->headers_out.status = (ngx_uint_t) status64;
     /* leave content_length_n = -1 so nginx uses chunked / close */
 
     if (argc >= 2) {

@@ -106,7 +106,7 @@ ngx_js_stream_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 {
     ngx_js_stream_peer_opaque_t   *op;
     ngx_stream_upstream_server_t  *srv;
-    int32_t                        i32;
+    int64_t                        n64;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_peer_class_id);
     if (!op) {
@@ -117,13 +117,21 @@ ngx_js_stream_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
 
     switch (magic) {
     case 1:
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
-        srv->weight = (ngx_uint_t) i32;
+        if (ngx_js_com_num_range(ctx, val, 1, 2147483647,
+                                 "peer.weight", &n64) < 0)
+        {
+            return JS_EXCEPTION;
+        }
+        srv->weight = (ngx_uint_t) n64;
         return JS_UNDEFINED;
 
     case 2:
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
-        srv->max_fails = (ngx_uint_t) i32;
+        if (ngx_js_com_num_range(ctx, val, 0, 2147483647,
+                                 "peer.maxFails", &n64) < 0)
+        {
+            return JS_EXCEPTION;
+        }
+        srv->max_fails = (ngx_uint_t) n64;
         return JS_UNDEFINED;
 
     case 3:
@@ -131,13 +139,21 @@ ngx_js_stream_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         return JS_UNDEFINED;
 
     case 5:
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
-        srv->fail_timeout = (time_t) i32;
+        if (ngx_js_com_num_range(ctx, val, 0, 2147483647,
+                                 "peer.failTimeout", &n64) < 0)
+        {
+            return JS_EXCEPTION;
+        }
+        srv->fail_timeout = (time_t) n64;
         return JS_UNDEFINED;
 
     case 6:
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
-        srv->max_conns = (ngx_uint_t) i32;
+        if (ngx_js_com_num_range(ctx, val, 0, 2147483647,
+                                 "peer.maxConns", &n64) < 0)
+        {
+            return JS_EXCEPTION;
+        }
+        srv->max_conns = (ngx_uint_t) n64;
         return JS_UNDEFINED;
     }
 
@@ -257,6 +273,7 @@ ngx_js_stream_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     ngx_stream_upstream_rr_peers_t  *peers;
     ngx_stream_upstream_rr_peer_t   *p;
     int32_t                          i32;
+    int64_t                          n64;
     ngx_uint_t                       was_down;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_stream_rr_peer_class_id);
@@ -270,7 +287,12 @@ ngx_js_stream_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     switch (magic) {
 
     case 1: /* weight */
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_com_num_range(ctx, val, 1, 2147483647,
+                                 "peer.weight", &n64) < 0)
+        {
+            return JS_EXCEPTION;
+        }
+        i32 = (int32_t) n64;
         ngx_stream_upstream_rr_peers_wlock(peers);
         p->weight           = (ngx_int_t) i32;
         p->effective_weight = p->weight;
@@ -286,9 +308,13 @@ ngx_js_stream_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         return JS_UNDEFINED;
 
     case 2: /* maxFails */
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_com_num_range(ctx, val, 0, 2147483647,
+                                 "peer.maxFails", &n64) < 0)
+        {
+            return JS_EXCEPTION;
+        }
         ngx_stream_upstream_rr_peers_wlock(peers);
-        p->max_fails = (ngx_uint_t) i32;
+        p->max_fails = (ngx_uint_t) n64;
         ngx_stream_upstream_rr_peers_unlock(peers);
         return JS_UNDEFINED;
 
@@ -305,16 +331,25 @@ ngx_js_stream_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         return JS_UNDEFINED;
 
     case 6: /* failTimeout */
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_com_num_range(ctx, val, 0, 2147483647,
+                                 "peer.failTimeout", &n64) < 0)
+        {
+            return JS_EXCEPTION;
+        }
+        i32 = (int32_t) n64;
         ngx_stream_upstream_rr_peers_wlock(peers);
         p->fail_timeout = (time_t) i32;
         ngx_stream_upstream_rr_peers_unlock(peers);
         return JS_UNDEFINED;
 
     case 7: /* maxConns */
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_com_num_range(ctx, val, 0, 2147483647,
+                                 "peer.maxConns", &n64) < 0)
+        {
+            return JS_EXCEPTION;
+        }
         ngx_stream_upstream_rr_peers_wlock(peers);
-        p->max_conns = (ngx_uint_t) i32;
+        p->max_conns = (ngx_uint_t) n64;
         ngx_stream_upstream_rr_peers_unlock(peers);
         return JS_UNDEFINED;
     }
