@@ -216,10 +216,24 @@ check('readonly_single_form',
 check('readonly_typed', pathD && pathD.type === 'string', pathD && pathD.type);
 var hfD = nginx.describe(locPath, 'headerFilters');
 check('readonly_typed_array', hfD && hfD.type === 'object[]', hfD && hfD.type);
-/* an unmapped read-only accessor still falls back to "getter" honestly */
+/* An unmapped read-only accessor must still fall back to type:"getter" —
+ * the honest "I don't know" path, which is the thing under test.
+ * This used to hardcode `proxy`, and broke the moment `proxy` was classified
+ * as handle<NginxProxy> (M4 namespace typing: a static check has no prototype
+ * to walk, so the sub-object accessors had to move into the table). Pick the
+ * accessor by its SYMPTOM instead of by name, so typing one more member
+ * refines the registry without falsifying this check. */
+var fbD = allL.filter(function (d) { return d.type === 'getter'; })[0];
+check('readonly_fallback', !!(fbD && fbD.class === 'readonly'),
+      fbD ? JSON.stringify(fbD)
+          : 'no untyped accessor left on NginxLocation (that is fine — but then '
+            + 'this check no longer exercises the fallback; move it to a class '
+            + 'that still has one)');
+/* and the newly classified accessor reports its handle type, not "getter" */
 var proxyD = nginx.describe(locPath, 'proxy');
-check('readonly_fallback', proxyD && proxyD.type === 'getter'
-                                  && proxyD.class === 'readonly',
+check('readonly_wrapper_typed',
+      proxyD && proxyD.type === 'handle<NginxProxy>'
+             && proxyD.class === 'readonly',
       proxyD && JSON.stringify(proxyD));
 /* read-only members must NOT leak into settable() */
 check('settable_excludes_readonly',
@@ -451,7 +465,7 @@ check('walk_every_method_classified',
 
 JS
 
-$t->try_run('no js module or upstream_zone')->plan(68);
+$t->try_run('no js module or upstream_zone')->plan(69);
 
 # --- Config-phase assertions (error.log) ---
 my $log = $t->read_file('error.log');
@@ -503,7 +517,8 @@ like($log, qr/JSTEST PASS describe_includes_readonly_path/, 'describe() includes
 like($log, qr/JSTEST PASS readonly_single_form/,        'describe(path,name) classifies read-only getter');
 like($log, qr/JSTEST PASS readonly_typed/,              'read-only getter typed from static map (path → string)');
 like($log, qr/JSTEST PASS readonly_typed_array/,        'read-only getter typed (headerFilters → object[])');
-like($log, qr/JSTEST PASS readonly_fallback/,           'unmapped read-only getter falls back to type:getter');
+like($log, qr/JSTEST PASS readonly_fallback/,           'unmapped read-only getter falls back honestly');
+like($log, qr/JSTEST PASS readonly_wrapper_typed/,     'classified sub-object accessor reports handle<NginxProxy>');
 like($log, qr/JSTEST PASS settable_excludes_readonly/,  'settable() excludes read-only members');
 
 # --- Request-phase assertion: zoned-shared vs worker-local ---

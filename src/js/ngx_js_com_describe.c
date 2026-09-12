@@ -23,6 +23,7 @@
 
 
 /* Convenience shorthands for table rows. */
+#define WRAP NGX_JS_MF_WRAPPER
 #define RO   NGX_JS_CLS_READONLY
 #define SAFE NGX_JS_CLS_SAFE
 #define GRD  NGX_JS_CLS_GUARDED
@@ -498,6 +499,27 @@ static const ngx_js_member_class_t  ngx_js_loc_members[] = {
     { "directio",                 "number",  SAFE, REV|RQS, WL, NULL },
     { "directioAlignment",        "number",  SAFE, REV|RQS, WL, NULL },
     { "errorPage",                "object[]",SAFE, REV|RQS, WL, NULL },
+    /* Sub-object accessors (getter-only on the NginxLocation prototype).
+     * Classified for their TYPE, not their mutability: describe() on a live
+     * location already found them by walking the prototype, but a STATIC check
+     * has no prototype to walk, so `nginx.addLocation({}).proxy.setPass(..)`
+     * could not be typed.  handle<X> names the class each returns, which is
+     * what carries a chain's receiver type across a step.
+     * WRAP keeps them out of settable() — they are read-only accessors. */
+    { "proxy",      "handle<NginxProxy>",      RO, WRAP, WL, NULL },
+    { "gzip",       "handle<NginxGzip>",       RO, WRAP, WL, NULL },
+    { "headers",    "handle<NginxHeaders>",    RO, WRAP, WL, NULL },
+    { "rewrite",    "handle<NginxRewrite>",    RO, WRAP, WL, NULL },
+    { "access",     "handle<NginxAccess>",     RO, WRAP, WL, NULL },
+    { "auth",       "handle<NginxAuth>",       RO, WRAP, WL, NULL },
+    { "limitReq",   "handle<NginxLimitReq>",   RO, WRAP, WL, NULL },
+    { "limitConn",  "handle<NginxLimitConn>",  RO, WRAP, WL, NULL },
+    { "fastcgi",    "handle<NginxFastcgi>",    RO, WRAP, WL, NULL },
+    { "log",        "handle<NginxLog>",        RO, WRAP, WL, NULL },
+    { "realip",     "handle<NginxRealip>",     RO, WRAP, WL, NULL },
+    { "charset",    "handle<NginxCharset>",    RO, WRAP, WL, NULL },
+    { "subFilter",  "handle<NginxSubFilter>",  RO, WRAP, WL, NULL },
+    { "autoindex",  "handle<NginxAutoindex>",  RO, WRAP, WL, NULL },
     { "addLocation",              "function",GRD, REV|METH,     WL,
       "Rebuilds live location BST; reverse with removeLocation",
       &ngx_js_sig_add_location },
@@ -1933,8 +1955,14 @@ ngx_js_describe_settable_props(JSContext *ctx, JSValueConst obj)
     }
 
     for (i = 0, m = table; m->name != NULL; m++) {
-        if (m->flags & NGX_JS_MF_METHOD) {
-            continue;   /* callable method — not an assignable property */
+        if (m->flags & (NGX_JS_MF_METHOD | NGX_JS_MF_WRAPPER)) {
+            /* callable method, or a read-only sub-object accessor — neither is
+             * an assignable property.  WRAPPER rows exist only so describe()
+             * and describeType() can report their handle<> type; they were
+             * never settable, and no row carried the flag before it was added,
+             * so this cannot change what settable() reported for anything
+             * that existed. */
+            continue;
         }
         JS_SetPropertyUint32(ctx, arr, i++, JS_NewString(ctx, m->name));
     }

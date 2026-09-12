@@ -365,6 +365,15 @@ typedef enum {
 /* flags */
 #define NGX_JS_MF_REVERSIBLE      0x01u
 #define NGX_JS_MF_REQUEST_SCOPED  0x02u   /* honours setWriteMode('local') */
+#define NGX_JS_MF_WRAPPER         0x08u   /* read-only accessor returning a
+                                             sub-object (loc.proxy, loc.gzip):
+                                             classified so describe()/
+                                             describeType() can report its
+                                             handle<> TYPE, but NOT assignable,
+                                             so settable() must skip it like a
+                                             method. Needed because a static
+                                             check cannot walk a prototype —
+                                             see ngx_js_describe_type(). */
 #define NGX_JS_MF_METHOD          0x04u   /* callable method, not an assignable
                                            * property — excluded from settable() */
 

@@ -129,11 +129,27 @@ for (var i = 0; i < locs.length; i++) {
             var ma = refused('loc.addLocation({}).addHook()');
             out.m4_chain_arity = (ma !== false) && /expects 1\.\.1 argument/.test(ma);
 
-            /* a DOTTED chained step needs namespace typing on top of the
-             * return type, so it stays unchecked rather than guessed */
-            var dn = review('loc.addLocation({}).ssl.setCiphers("X")');
+            /* DOTTED chained step: the accessor's handle<> type carries the
+             * walk, so a sub-object call past the first step is now checked */
+            var dp = review('loc.addLocation({}).headers.addHeader("x", "y")');
+            out.m4_ns_checked = (dp.ok === true &&
+                                 dp.checked.indexOf('headers.addHeader') >= 0 &&
+                                 dp.unchecked.length === 0);
+
+            /* and a typo behind an accessor is refused, naming the accessor's
+             * class rather than the location's */
+            var mn = refused('loc.addLocation({}).headers.addHeaderTypo("x")');
+            out.m4_ns_typo = (mn !== false) &&
+                             /unknown member 'addHeaderTypo' on NginxHeaders/.test(mn);
+
+            /* SOUNDNESS: an accessor that is NOT typed in the tables must stay
+             * unchecked, never become a refusal */
+            var dn = review('loc.addLocation({}).notAnAccessor.doThing("X")');
             out.m4_dotted_soft = (dn.ok === true &&
-                                  dn.unchecked.indexOf('ssl.setCiphers') >= 0);
+                                  dn.unchecked.indexOf('notAnAccessor.doThing') >= 0);
+
+            /* the wrapper rows must not leak into settable() */
+            out.m4_not_settable = (nginx.settable(loc).indexOf('proxy') < 0);
 
             /* describeType itself: by TYPE NAME, no instance needed.
              * Guarded so a null/!absent result fails ONE assertion instead of
@@ -159,7 +175,7 @@ for (var i = 0; i < locs.length; i++) {
 }
 JS
 
-$t->try_run('no js module')->plan(18);
+$t->try_run('no js module')->plan(21);
 
 ###############################################################################
 
@@ -182,8 +198,14 @@ like($r, qr/"m4_chain_typo":true/,
      'M4: a typo past the first call is now refused, naming the type');
 like($r, qr/"m4_chain_arity":true/,
      'M4: arity is enforced on chained steps too');
+like($r, qr/"m4_ns_checked":true/,
+     'M4: a call behind a typed accessor (.headers.addHeader) is CHECKED');
+like($r, qr/"m4_ns_typo":true/,
+     'M4: a typo behind an accessor is refused, naming the accessor class');
 like($r, qr/"m4_dotted_soft":true/,
-     'M4 soundness: a DOTTED chained step is still unchecked, not guessed');
+     'M4 soundness: an UNtyped accessor stays unchecked, not refused');
+like($r, qr/"m4_not_settable":true/,
+     'wrapper rows do not leak into settable()');
 like($r, qr/"dt_member":true/,        'describeType(type, member) resolves by name');
 like($r, qr/"dt_all":true/,           'describeType(type) lists the classified table');
 like($r, qr/"dt_bogus":true/,         'describeType on an unknown type yields null');

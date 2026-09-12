@@ -3336,9 +3336,9 @@ static const char  ngx_js_comcon_bootstrap[] =
        chain's type knowledge and the rest falls back to `unchecked`.
        SOUNDNESS IS PRESERVED -- it still never guesses. A receiver it cannot
        resolve (a non-COM grant; an un-granted root, which is the free-name
-       gate's job; a chain step after a non-handle return; a DOTTED chained step
-       like `.ssl.setCiphers(..)`, which would need namespace typing on top of
-       the return type) is reported in `unchecked` rather than rejected, so this
+       gate's job; a chain step after a non-handle return; a dotted chained step
+       whose accessor is not typed in the tables yet) is reported in `unchecked`
+       rather than rejected, so this
        can only turn runtime failures into admission failures, never reject a
        valid proposal. Arity is checked as the RANGE required..declared,
        matching how describe() records optional parameters. */
@@ -3369,13 +3369,22 @@ static const char  ngx_js_comcon_bootstrap[] =
     "            unchecked.push(step.op);ctype=null;continue;}"
     "          try{d=nginx.describe(recv,mem);}catch(e){d=null;}"
     /* A chained step is a member of the PREVIOUS step's return type, so it can
-       only be checked once that type is known. A dotted chained step
-       (`.ssl.setCiphers(..)`) would need namespace typing on top of that, so
-       it stays unchecked rather than guessed. */
-    "        }else if(ctype&&segs.length===1){"
-    "          try{d=nginx.describeType(ctype,mem);}catch(e){d=null;}"
+       only be checked once that type is known. A DOTTED chained step
+       (`.proxy.setPass(..)`) additionally walks sub-object accessors, which a
+       static check cannot do by following a prototype — hence the WRAP rows in
+       the describe() tables, whose handle<X> type names each accessor's class.
+       If any segment fails to resolve the step is left UNCHECKED, never
+       guessed: an accessor absent from the table (a class whose wrappers are
+       not typed yet) must not become a refusal. */
+    "        }else if(ctype){"
+    "          var t=ctype;"
+    "          for(var q=0;q<segs.length-1&&t;q++){"
+    "            var nd=null;try{nd=nginx.describeType(t,segs[q]);}catch(e){nd=null;}"
+    "            t=nd?hnd(nd.type):null;}"
+    "          if(!t){unchecked.push(step.op);ctype=null;continue;}"
+    "          try{d=nginx.describeType(t,mem);}catch(e){d=null;}"
     "          if(d===null||d===undefined)"
-    "            fail(\"unknown member '\"+mem+\"' on \"+ctype+"
+    "            fail(\"unknown member '\"+mem+\"' on \"+t+"
     "                 \" in chained call '\"+step.op+\"'\");"
     "        }else{unchecked.push(step.op);ctype=null;continue;}"
     "        if(d===null||d===undefined)"
