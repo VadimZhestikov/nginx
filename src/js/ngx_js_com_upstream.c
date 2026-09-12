@@ -97,6 +97,35 @@ ngx_js_peer_get(JSContext *ctx, JSValueConst this_val, int magic)
 
 
 
+/*
+ * Peer numbers are bounds-checked exactly the way nginx bounds-checks the
+ * `server` directive that sets them, because these setters write the SAME
+ * fields.  Without it a negative slipped straight through: NginxPeer writes
+ * srv->weight, an ngx_uint_t, so `peers[0].weight = -1` stored ~1.8e19, and
+ * that value is then summed into peers->total_weight and decides which backend
+ * every request goes to.  JS_ToInt32 alone is not validation -- it is a cast.
+ */
+static int
+ngx_js_peer_num(JSContext *ctx, JSValueConst val, int32_t min,
+    const char *name, int32_t *out)
+{
+    int32_t  i32;
+
+    if (JS_ToInt32(ctx, &i32, val)) {
+        return -1;
+    }
+
+    if (i32 < min) {
+        JS_ThrowRangeError(ctx, "peer.%s must be >= %d, got %d",
+                           name, (int) min, (int) i32);
+        return -1;
+    }
+
+    *out = i32;
+    return 0;
+}
+
+
 static JSValue
 ngx_js_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
 {
@@ -113,12 +142,12 @@ ngx_js_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
 
     switch (magic) {
     case 1:
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_peer_num(ctx, val, 1, "weight", &i32)) { return JS_EXCEPTION; }
         srv->weight = (ngx_uint_t) i32;
         return JS_UNDEFINED;
 
     case 2:
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_peer_num(ctx, val, 0, "maxFails", &i32)) { return JS_EXCEPTION; }
         srv->max_fails = (ngx_uint_t) i32;
         return JS_UNDEFINED;
 
@@ -127,12 +156,14 @@ ngx_js_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
         return JS_UNDEFINED;
 
     case 5: /* failTimeout */
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_peer_num(ctx, val, 0, "failTimeout", &i32)) {
+            return JS_EXCEPTION;
+        }
         srv->fail_timeout = (time_t) i32;
         return JS_UNDEFINED;
 
     case 6: /* maxConns */
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_peer_num(ctx, val, 0, "maxConns", &i32)) { return JS_EXCEPTION; }
         srv->max_conns = (ngx_uint_t) i32;
         return JS_UNDEFINED;
     }
@@ -329,7 +360,7 @@ ngx_js_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
     switch (magic) {
 
     case 1: /* weight */
-        if (JS_ToInt32(ctx, &i32, val)) {
+        if (ngx_js_peer_num(ctx, val, 1, "weight", &i32)) {
             return JS_EXCEPTION;
         }
         ngx_http_upstream_rr_peers_wlock(peers);
@@ -347,7 +378,7 @@ ngx_js_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         return JS_UNDEFINED;
 
     case 2: /* maxFails */
-        if (JS_ToInt32(ctx, &i32, val)) {
+        if (ngx_js_peer_num(ctx, val, 0, "maxFails", &i32)) {
             return JS_EXCEPTION;
         }
         ngx_http_upstream_rr_peers_wlock(peers);
@@ -368,14 +399,18 @@ ngx_js_rr_peer_set(JSContext *ctx, JSValueConst this_val, JSValue val,
         return JS_UNDEFINED;
 
     case 6: /* failTimeout */
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_peer_num(ctx, val, 0, "failTimeout", &i32)) {
+            return JS_EXCEPTION;
+        }
         ngx_http_upstream_rr_peers_wlock(peers);
         p->fail_timeout = (time_t) i32;
         ngx_http_upstream_rr_peers_unlock(peers);
         return JS_UNDEFINED;
 
     case 7: /* maxConns */
-        if (JS_ToInt32(ctx, &i32, val)) { return JS_EXCEPTION; }
+        if (ngx_js_peer_num(ctx, val, 0, "maxConns", &i32)) {
+            return JS_EXCEPTION;
+        }
         ngx_http_upstream_rr_peers_wlock(peers);
         p->max_conns = (ngx_uint_t) i32;
         ngx_http_upstream_rr_peers_unlock(peers);
