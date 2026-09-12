@@ -2131,7 +2131,6 @@ ngx_js_bcast_recv_handler(ngx_event_t *ev)
     struct iovec            iov;
     struct msghdr           mh;
     ssize_t                 n;
-    uint32_t               *hdr32;
     uint32_t                handle, addr_len;
     char                   *addr_ptr;
     int                     recv_fd;
@@ -2211,9 +2210,18 @@ ngx_js_bcast_recv_handler(ngx_event_t *ev)
             continue;
         }
 
-        hdr32    = (uint32_t *)(void *)(recv_body + 1);  /* skip type byte */
-        handle   = hdr32[0];
-        addr_len = hdr32[1];
+        /*
+         * The header is [type:u8][handle:u32][addr_len:u32], so both 32-bit
+         * fields sit at ODD offsets in the receive buffer.  Casting to
+         * uint32_t* and dereferencing is a misaligned load -- undefined
+         * behaviour, flagged by UBSAN, and on a strict-alignment target a fault
+         * or a silently wrong read.  The `(void *)` in the old cast is exactly
+         * what stopped -Wcast-align from saying so.  Copy the bytes out, which
+         * is what the SENDER already does when it packs them (ngx_js_sw.c).
+         */
+        ngx_memcpy(&handle, recv_body + 1, sizeof(uint32_t));
+        ngx_memcpy(&addr_len, recv_body + 1 + sizeof(uint32_t),
+                   sizeof(uint32_t));
 
         if (addr_len == 0 || addr_len > 63
             || (size_t) n < NGX_JS_BCAST_HDR + addr_len)
@@ -2263,13 +2271,25 @@ ngx_js_bcast_recv_handler(ngx_event_t *ev)
             continue;
         }
 
+        /*
+         * ngx_alloc() is malloc(): every field has to be written, and `owner`
+         * was not.  The ownership gate on close()/broadcast() reads it, so a
+         * socket that arrived over SCM_RIGHTS was gated on whatever happened to
+         * be in that heap word.  A broadcast socket belongs to the host of the
+         * worker receiving it.
+         */
+        ngx_memzero(st, sizeof(ngx_js_socket_state_t));
+
         st->fd          = recv_fd;
         st->port        = (uint16_t) port;
         st->in_listening = 0;
+        st->owner        = NGX_JS_COMPARTMENT_HOST_ROOT;
         ngx_cpystrn((u_char *) st->addr, (u_char *) addr_ptr,
                     sizeof(st->addr));
 
-        ngx_js_socket_reg[handle] = st;
+        /* Installs AND bumps the slot generation, retiring any handle still
+         * held for the socket that used to live here. */
+        ngx_js_socket_reg_install(handle, st);
 
         /* Register in worker-local registry for cleanup */
         for (i = 0; i < NGX_JS_LOCAL_SOCKET_REG_MAX; i++) {

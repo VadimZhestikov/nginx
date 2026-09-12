@@ -54,6 +54,7 @@ extern ngx_js_socket_state_t *ngx_js_socket_reg[NGX_JS_SOCKET_REG_MAX];
  * socket_handle -- must remember the generation it was issued for and check it
  * on every use, or it silently comes to refer to a different socket.
  */
+void ngx_js_socket_reg_install(uint32_t handle, ngx_js_socket_state_t *st);
 uint32_t ngx_js_socket_gen_at(uint32_t handle);
 ngx_js_socket_state_t *ngx_js_socket_state_checked(uint32_t handle,
     uint32_t gen);

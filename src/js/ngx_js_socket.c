@@ -84,6 +84,29 @@ ngx_js_socket_gen_at(uint32_t handle)
 
 
 /*
+ * The ONLY way a socket enters the registry.  Bumping the generation is what
+ * retires every handle issued for the slot's previous occupant, so it must
+ * happen on every install -- not just the one in createSocket().  It was a
+ * rule to remember, and the broadcast receive path in ngx_js_module.c did not:
+ * it stored straight into ngx_js_socket_reg[], leaving the generation where the
+ * closed socket had left it, so a stale handle from before the close matched
+ * again and resolved to the socket that arrived over SCM_RIGHTS.  Making the
+ * bump structural is the point of this function; do not assign to the registry
+ * anywhere else.
+ */
+void
+ngx_js_socket_reg_install(uint32_t handle, ngx_js_socket_state_t *st)
+{
+    if (handle >= NGX_JS_SOCKET_REG_MAX) {
+        return;
+    }
+
+    ngx_js_socket_gen[handle]++;
+    ngx_js_socket_reg[handle] = st;
+}
+
+
+/*
  * Resolve a handle REMEMBERED by a long-lived holder.  Same rule as the JS
  * handle path: an index is not enough, the incarnation has to match too.
  */
@@ -676,8 +699,7 @@ ngx_js_create_socket(JSContext *ctx, JSValueConst this_val,
 
     /* New incarnation of this slot: every handle issued for the previous one
      * stops resolving here, which is what keeps a closed socket closed. */
-    ngx_js_socket_gen[handle]++;
-    ngx_js_socket_reg[handle] = st;
+    ngx_js_socket_reg_install(handle, st);
 
     /* F3: register in worker-local registry for cleanup tracking */
     if (ngx_process == NGX_PROCESS_WORKER && w != NULL
