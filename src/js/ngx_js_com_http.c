@@ -3746,6 +3746,17 @@ ngx_js_body_filters_run(JSContext *ctx, JSRuntime *rt,
                 continue;
             }
 
+            /* A filter that returns something other than a generator
+             * used to reach JS_GetPropertyStr() on a primitive, which
+             * throws and surfaces several calls later as a confusing
+             * "not a function".  Say what is actually wrong. */
+            if (!JS_IsObject(gen)) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "js body filter did not return a generator");
+                JS_FreeValue(ctx, gen);
+                continue;
+            }
+
             gen_out      = NULL;
             gen_out_last = &gen_out;
 
@@ -4257,6 +4268,15 @@ ngx_js_run_generator_filter_array(JSContext *ctx, JSRuntime *rt,
 
         if (JS_IsException(gen)) {
             ngx_js_log_exception(ctx, r->connection->log);
+            JS_FreeValue(ctx, gen);
+            continue;
+        }
+
+        /* as above: a non-generator return is named, not left to surface as a
+         * property access on a primitive several calls later */
+        if (!JS_IsObject(gen)) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "js body filter did not return a generator");
             JS_FreeValue(ctx, gen);
             continue;
         }

@@ -73,6 +73,12 @@ All now go through one shared check, `ngx_js_com_num_range()` in
 because three copies of a check is how the HTTP and stream peer setters came to
 differ in the first place.
 
+There is a second lint, `t/tools/callback-return-sweep.py`, for the shape this
+one misses: a value that arrives as a callback RETURN rather than an argument.
+It exists because running the numeric lint over the balancer bug (a321849fa)
+reports it clean. Callback returns deserve more suspicion than arguments, not
+less — they are produced per request by a script that can be silently wrong.
+
 The tool's site count drops as sites are fixed (a converted-then-cast pair
 becomes a single `ngx_js_com_num_range()` call, which it no longer counts). It
 is a lint, not an oracle: judge each hit, since a length read off an internal

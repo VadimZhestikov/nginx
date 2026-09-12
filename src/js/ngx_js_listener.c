@@ -692,6 +692,13 @@ ngx_js_l4_run_send_filters(ngx_connection_t *c,
             continue;
         }
 
+        if (!JS_IsObject(source)) {
+            ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                          "js l4 send filter source is not an object");
+            JS_FreeValue(ctx, source);
+            continue;
+        }
+
         deliver_fn = JS_GetPropertyStr(ctx, source, "_deliver");
 
         fn  = ngx_js_l4_filter_get_fn(ctx, st->l4_send_filters[fi]);
@@ -700,6 +707,15 @@ ngx_js_l4_run_send_filters(ngx_connection_t *c,
 
         if (JS_IsException(gen)) {
             ngx_js_log_exception(ctx, c->log);
+            JS_FreeValue(ctx, deliver_fn);
+            JS_FreeValue(ctx, source);
+            continue;
+        }
+
+        if (!JS_IsObject(gen)) {
+            ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                          "js l4 send filter did not return a generator");
+            JS_FreeValue(ctx, gen);
             JS_FreeValue(ctx, deliver_fn);
             JS_FreeValue(ctx, source);
             continue;
@@ -1324,6 +1340,13 @@ ngx_js_l4_start_filter(JSContext *ctx, JSRuntime *rt,
         return NGX_ERROR;
     }
 
+    if (!JS_IsObject(source)) {
+        ngx_log_error(NGX_LOG_ERR, p->c->log, 0,
+                      "js l4 filter source is not an object");
+        JS_FreeValue(ctx, source);
+        return NGX_ERROR;
+    }
+
     deliver_fn = JS_GetPropertyStr(ctx, source, "_deliver");
 
     fn  = ngx_js_l4_filter_get_fn(ctx, p->st->l4_filters[p->fi]);
@@ -1332,6 +1355,15 @@ ngx_js_l4_start_filter(JSContext *ctx, JSRuntime *rt,
 
     if (JS_IsException(gen)) {
         ngx_js_log_exception(ctx, p->c->log);
+        JS_FreeValue(ctx, deliver_fn);
+        JS_FreeValue(ctx, source);
+        return NGX_ERROR;
+    }
+
+    if (!JS_IsObject(gen)) {
+        ngx_log_error(NGX_LOG_ERR, p->c->log, 0,
+                      "js l4 filter did not return a generator");
+        JS_FreeValue(ctx, gen);
         JS_FreeValue(ctx, deliver_fn);
         JS_FreeValue(ctx, source);
         return NGX_ERROR;
