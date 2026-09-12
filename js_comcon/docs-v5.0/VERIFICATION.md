@@ -12,6 +12,12 @@
 > full records + 1/100 sampling, exact counters) — previously "specified, not implemented." SR-3
 > (escape completeness) and M-SES-0/1/1b are unchanged. The standing open gate remains **SR-4**
 > (assurance case) and **maxim finalization** (full test262 for untrusted-native).
+>
+> **UPDATE 2026-09-11:** maxim finalization's conformance blocker is **CLEARED** — the
+> test262 JIT sweep that aborted at 54% on an atom-table assertion now completes
+> 14/14 shards over 49,402 files with 55 failing files, all 55 in the known-errors
+> baseline, 0 new, 0 crashes. And **M-SES now has a STANDING gate** (S6) rather than
+> only the SR-3 pentest: see the gate table below. SR-4 remains the open gate.
 
 *Companion to `ROADMAP.md` §12. The R-review (ROADMAP §11) hunted design bugs; this
 track answers a different question: for every claim the design makes, **what would
@@ -177,6 +183,52 @@ gate-reviews across the whole roadmap, and two already exist as milestones (M8, 
 | **SR-2 faithfulness** | **C7** | did compilation preserve the reach gates and not leak authority via the type/cap side-tables? T2 refines T1. | **= M8** — **PASSED profile-scoped 2026-09-01** (`t/comcon_faithfulness.t`: interp vs AOT-compiled over the confinement surface incl. A1 gated reach/mutator → identical responses + identical denials, 22/22). Scope = confined strict-module profile; full-test262-under-AOT + untrusted-native production still gated on M-SES + full maxim finalization. |
 | **SR-3 adversarial pentest** | after **M-SES** | engine escapes, eval/Function/Proxy sandbox completeness, memory safety — closes the accepted residuals (`THREATS.md` T8/T4/T9). The full red-team pass. | **PASSED 2026-09-01** — no sandbox escape (dynamic-code routes tamed, no global reach, core intrinsics frozen, recursion bounded); one MEDIUM freeze-completeness gap (SR3-1 sibling iterator prototypes) **found + fixed**, one availability case (SR3-2 microtask loop) **gas-contained**. Both tiers. See the SR-3 audit record below. Full-test262-under-AOT untrusted-native still gated on maxim finalization. |
 | **SR-4 assurance case** | before first untrusted-tenant **production** | assemble the whole claim→assumption→evidence tree; every leaf without evidence is a finding. | **= V15** |
+| **S6 escape gate** (standing) | **every test run**, from 2026-09-11 | the M-SES gate as a REGRESSION gate rather than a moment: `t/comcon_mses_gate.t` (12 probes over gate conditions (a)/(b)/(c) + `.stack` + `Symbol.species`, plus the resource guard) and `bash t/run_sanitizers.sh` (the corpus under ASAN + UBSAN). | **NEW 2026-09-11** — see §"The standing gate" below |
+
+### The standing gate (added 2026-09-11)
+
+SR-3 passed as a **pentest**: it certifies a moment, not every subsequent commit.
+Nothing failed when a facet was widened afterwards. `t/comcon_mses_gate.t` closes
+that: it runs the probe battery on **every** suite run.
+
+**Self-validating by construction.** Every probe runs twice — inside a confined
+`comcon.include` fragment and in unconfined host JS — and the suite asserts the
+two **differ**. A probe reporting "closed" in both contexts is not evidence of
+confinement, it is a probe that never held the capability, and the suite fails on
+it. Measured: **12/12 closed confined, 12/12 open unconfined**.
+
+Coverage of the five M-SES conditions:
+
+| | before | now |
+|---|---|---|
+| (a) value outside ρ | indirect (free-name gate) | probed (ambient roots, `.stack`, `Symbol.species`) |
+| (b) mutate a frozen intrinsic | **not probed** | probed (prototype pollution, `Array.prototype` hijack, `String.prototype`) |
+| (c) code from strings | 4 probes | 4 probes, in the gate |
+| (d) COM facet beyond reach | route-glob + `comcon_include_grant.t` | unchanged (already covered) |
+| (e) escape resource guards | **not probed** | probed — **and the probe found a real hole** |
+
+**What (e) found.** The deadline was opt-in: `__invokeConfined` armed it only when
+`contract.meter[...].timeoutMs > 0`, so a fragment with no meter ran **unbounded**
+(measured 4474 ms to completion). An accidental infinite loop hung the worker with
+no escape involved. Fixed — fragments are now always bounded; see
+`OPERATOR_API.md` §3.
+
+**Memory safety (`bash t/run_sanitizers.sh`).** 313 tests over the 34-file COMCON
+corpus under each sanitizer: **ASAN 0 findings; UBSAN 0 findings in `src/js`**, 34
+in stock nginx at one site (`ngx_pstrdup`, `src/core/ngx_string.c:84` — a
+`memcpy(dst, NULL, 0)` at cycle init; upstream's, benign, reported not failed).
+This replaces the `ok - no sanitizer errors` line the suites already printed, which
+was **vacuous**: neither `objs/` nor `objs_jit/` is built with a sanitizer.
+
+The script carries four guards, because a clean sanitizer run is the easiest false
+negative there is — an inert build reports exactly what a clean one does: the
+binary must carry the sanitizer's symbols; a **positive control** must land a
+report through the same `prove` pipeline; the run must have **executed tests**;
+and a file skipping with `no js module` means nginx could not start. The last two
+exist because the script produced a vacuous PASS on itself twice while being
+written (`prove` does not glob its arguments; `-fno-sanitize-recover` made stock
+nginx's startup UB fatal, so every file skipped while the harness printed "All
+tests successful").
 
 **Why SR-1 before C, specifically:** A/B *are* the entire confinement surface; C is a
 performance layer that must preserve it. And C's correctness argument is *differential*

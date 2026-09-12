@@ -48,7 +48,8 @@
 > - **Still design (not built):** POM nodes (increment D) — parsed-subtree quotations, structured
 >   splices, `query()`/anchor targeting, live rewrite/epochs. `policy({...})` as a reified value,
 >   and the `rateLimit`/`transform`/`audit` mediate flavors, remain design. `meter`'s `gas` unit is
->   forward-declared (only `timeoutMs` maps to the shipped deadline).
+>   forward-declared (only `timeoutMs` maps to the shipped deadline — which now also
+>   has a **default**, applied when a contract carries no meter at all; see §3).
 >
 > The rest of this document is retained as the design reference for the shapes.
 
@@ -126,6 +127,29 @@ include("tenants/acme/main.js", std.profiles.tenant(acme),
         { profile: "restrictive", onViolation: "audit" });   // observe-first rollout
 ```
 `include(source, policy, opts) = parse(source) ∘ admit(·, policy.contract) ∘ bind(policy.env, ·)`.
+
+> **Every fragment runs under a wall-clock deadline — including one with no
+> `meter` (SHIPPED 2026-09-11).** `meter({timeoutMs})` sets it; when the contract
+> carries no meter, `NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS` (**5 s**) applies. It is
+> **not** opt-in, and there is no way to ask for "unbounded": a fragment is the
+> one place untrusted code runs, and before this an accidental infinite loop
+> hung the worker with no escape involved (measured: 4474 ms to completion,
+> nothing stopping it).
+>
+> An explicit `timeoutMs` overrides the default **in either direction** — it may
+> ask for longer as well as shorter. Independently, a fragment can only
+> **tighten** an enclosing request deadline, never extend it, so
+> `min(enclosing, fragment)` always wins.
+>
+> Enforced in `ngx_js_comcon_invoke_confined`, not in the JS wrapper that
+> computes the value, so calling `__invokeConfined` directly cannot skip it.
+> Asserted by `t/comcon_fragment_deadline.t`, which must live in its own file:
+> the per-request deadline is computed at *request entry* from
+> `nginx.workerRequestTimeout`, so any test that sets that property already has
+> a deadline in force and cannot observe the fragment's own default.
+>
+> `meter`'s `gas` unit remains forward-declared; only `timeoutMs` maps to a
+> shipped mechanism.
 The returned fragment handle carries **attenuated** operators, so the fragment can `include(...)`
 its **own** sub-fragments under its **own** policy — and by No-Amplification an inner policy can
 only **narrow** what its includer granted. `js_source → root → fragment → sub-fragment → …`, one

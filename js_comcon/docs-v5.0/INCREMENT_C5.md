@@ -37,6 +37,43 @@ checks" is a **later perf optimization** (§4), not a correctness prerequisite.
   dispatches to the compiled function. This **sidesteps the C6-lite activation blockers**
   (per-worker background thread, lazy in-request trigger, segfault) — those were about the
   *lazy JIT worker thread*, which AOT-at-load does not use.
+- **AOT-A — the same trick for HOST JS (`nginx.jitCompile`, shipped 2026-09-11).**
+  C5's server-AOT covers admitted `comcon.include` fragments only; host JS loaded
+  via `js_source` — all of mirror, every `location.handler` — got no such call, and
+  the engine's automatic path merely *enqueues*: nothing in `src/js` ever drained
+  it. `nginx.jitCompile(fn[, {maxFunctions, maxMillis}])` runs
+  `js_jit_compile_all` + `drain` + `install` over a function and its nested tree, at
+  config load, **in the master, pre-fork** — the only place it can work, since the
+  gcc worker is a pthread and does not survive `fork()`. What the master installs
+  is inherited by every worker through COW. It returns a **report**
+  (`{walked, attempted, installed, skipped, budgetHit, ms}`), not a boolean:
+  `installed` is the only field meaning compiled code exists.
+
+  **WHEN IT PAYS — measured, and the answer is "it depends entirely on the policy
+  shape":**
+
+  | workload | off | on | gain |
+  |---|--:|--:|--:|
+  | handler with a 4000-iteration loop | 97,273 req/s | 563,415 | **5.79x** |
+  | M1's "count + tag" mirror policy | 460,281 req/s | 477,438 | **1.0x (none)** |
+
+  The 1.0x is not a dead arm — 11 functions installed, including `mirror.attach`'s
+  tree with the per-request dispatcher, and four passes straddle 1.0. "Increment a
+  counter, read a header, set two headers" is almost entirely host C calls, and
+  compiling the JS glue around them removes nothing.
+
+  **So: compile compute-bearing functions, not everything.** An automatic root-set
+  walk over every registered handler was considered and REJECTED on this evidence —
+  it costs ~100 ms per function at load and buys ~nothing for a host-call-dominated
+  policy. Reload is ~2x cheaper, not free: a function emitting P10.3 direct
+  JIT-to-JIT calls can never be reused from the disk cache (its callees are named
+  by symbol and resolved per process), so it recompiles every load.
+
+  This also sharpens the M4/M5 case rather than weakening it: M1 measured hand-C at
+  90-96% of floor on the *same* count+tag policy, so the 2.57x gap **is**
+  reclaimable — but compiling the same JS reclaims ~0 of it. The gap is the boxed
+  host-call/COM boundary, which is exactly what a typed compiler removes and what
+  compiling JS as-is cannot.
 - **The A1 gate** (`ngx_js_compartment_may_reach`) and **denial counters** — present; the
   compiled handler inherits them via its callees.
 - **NOT present anywhere yet (interpreted or compiled):** **gas / back-edge budget** and a
