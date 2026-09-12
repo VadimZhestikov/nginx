@@ -9,13 +9,13 @@
 > (`comcon.include` + `location.handler`) on both tiers, with the `js_tenant_*` directives
 > removed.
 >
-> Increment **D (live POM ops)** is **NOT "not started" — it is built through D5b-2.**
+> Increment **D (live POM ops)** is **COMPLETE (2026-09-12).**
 > `INCREMENT_D.md` is authoritative: D0 (substrate) · D1 (lazy NodeView) · D2 (`query(sel)`) ·
 > D3 (quotations + stone splices) · D4a (epochs/replace/rollback) · D4b (class-F multi-worker
 > fan-out) · D5a (call-site audit) · D5b-1 (declarative-profile checker) ·
 > **D5b-2 (full CST + finer selectors + anchors)** · **D5b-3 (source-rewrite hardening)** ·
-> **D5b-4 (cross-file provenance, all 2026-09-12)** all ✅ — **the whole D5b line is done**,
-> leaving only **D4c (compiled-tier live re-AOT)**. Thirteen `t/comcon_pom_*` +
+> **D5b-4 (cross-file provenance)** · **D4c (compiled tier under a live epoch switch, all
+> 2026-09-12)** all ✅ — **nothing in increment D is left open.** Fourteen `t/comcon_pom_*` +
 > `t/comcon_declarative*` +
 > `t/comcon_parser_vendor.t` files cover it. D5b-2 also closed §4 item 1 (anchor
 > recognition), the last unbuilt item of the minimal first slice.
@@ -37,10 +37,13 @@
 > COM members · compiled tier under the escape probes · host JS unbounded by default).
 >
 > **So the two forward tracks are now genuinely open, and nothing is blocking either.**
-> (1) **Finish increment D** — what remains is `D4c` alone (compiled-tier live re-AOT,
-> separately gated; the interpreted-tier epoch switch is already coherent per worker, so
-> this is JIT-tier work riding the existing C5/C7 machinery). This is the last frontier on the
-> confinement track. (2) **The compiler track (M5 →)** remains **parked by decision
+> (1) **Increment D is finished** — as of 2026-09-12 there is no open item on the
+> confinement track. One thing inside D4c was deliberately NOT built and should not be
+> mistaken for an oversight: **re-AOT of a live epoch inside a worker**, which the fork
+> model forbids (the gcc thread does not survive `fork()`). A rewritten epoch runs the
+> bytecode fallback — correct and coherent, and `comcon.aotStatus()` reports it. Reaching
+> native would need a compiler-bearing process to build the `.so` and workers to pick it up
+> from the hash-keyed JIT cache: new IPC, a separate increment, no correctness impact. (2) **The compiler track (M5 →)** remains **parked by decision
 > 2026-09-11, not by capability** — M5's value is the typed nginx stubs, not lowering JS
 > control flow, so the typed IR is not to be built without a commitment to M5 (see M4 below
 > and `AOT-A` in `INCREMENT_C5.md` for the measurement that settled it).

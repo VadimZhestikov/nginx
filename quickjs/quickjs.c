@@ -15955,6 +15955,68 @@ JSFunctionBytecode *js_jit_get_callee_fb(JSValue func)
  * compiled code calls the SAME gated host functions under the SAME host-set
  * compartment as the interpreted handler. Returns 0 on success, -1 if `func`
  * is not a bytecode function. */
+/*
+ * COMCON D4c — is this fragment's code ACTUALLY native right now?
+ *
+ * A STATUS QUERY, and deliberately a separate function from the compile path:
+ * asking must never be able to trigger a compile.  It exists because the
+ * compiled tier had no way to tell an operator what tier is running.
+ * js_comcon_aot_compile() returns 0 as soon as its argument is a bytecode
+ * function -- "eligible", never "compiled" -- so the include site's "lowered to
+ * native C" notice was printed whether or not anything was lowered, including
+ * on every request-time epoch switch in a worker, where the gcc thread does not
+ * exist (it does not survive fork()).  POM.md §4's "bytecode fallback -> re-AOT
+ * -> live(e+1)" was therefore unfalsifiable prose; this makes it checkable.
+ *
+ * Walks the same tree as js_jit_compile_tree (nested functions live in cpool)
+ * and counts how many have a jit_func installed.  *n_funcs gets the tree size.
+ * Returns the compiled count, or -1 if func is not a bytecode function.
+ */
+int js_comcon_aot_status(JSContext *ctx, JSValueConst func, int *n_funcs)
+{
+    JSFunctionBytecode *root, **stack = NULL;
+    int sp = 0, scap = 64, i, walked = 0, compiled = 0, ret = -1;
+
+    root = js_jit_get_callee_fb(func);
+    if (!root)
+        return -1;
+
+    stack = js_malloc(ctx, sizeof(*stack) * scap);
+    if (!stack)
+        return -1;
+
+    stack[sp++] = root;
+    while (sp > 0) {
+        JSFunctionBytecode *b = stack[--sp];
+
+        walked++;
+        if (js_jit_fb_get_func(b) != NULL)
+            compiled++;
+
+        for (i = 0; i < b->cpool_count; i++) {
+            if (JS_VALUE_GET_TAG(b->cpool[i]) != JS_TAG_FUNCTION_BYTECODE)
+                continue;
+            if (sp == scap) {
+                int ncap = scap * 2;
+                JSFunctionBytecode **ns = js_realloc(ctx, stack,
+                                                     sizeof(*ns) * ncap);
+                if (!ns)
+                    goto done;
+                stack = ns;
+                scap = ncap;
+            }
+            stack[sp++] = JS_VALUE_GET_PTR(b->cpool[i]);
+        }
+    }
+    ret = compiled;
+
+done:
+    if (n_funcs)
+        *n_funcs = walked;
+    js_free(ctx, stack);
+    return ret;
+}
+
 int js_comcon_aot_compile(JSContext *ctx, JSValueConst func)
 {
     JSFunctionBytecode *b = js_jit_get_callee_fb(func);

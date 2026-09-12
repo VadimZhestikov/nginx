@@ -119,7 +119,17 @@ sub run_case {
         if (open my $f, '<', $lf) { local $/; $log .= <$f>; close $f; }
     }
     my $denials = () = $log =~ /js denial:/g;
-    my $lowered = ($log =~ /lowered to native C/) ? 1 : 0;
+    # D4c: match the NATIVE notice, which is printed only when functions really
+    # have compiled code.  The line this used to grep ("lowered to native C")
+    # was printed for EVERY include whether or not anything was lowered --
+    # js_comcon_aot_compile() returns 0 for any bytecode function -- so this
+    # non-vacuity check could not actually tell.  Now it can, and the answer is
+    # that these fragments are genuinely native (1 of 1 functions each): the
+    # gate really is comparing a compiled tier against an interpreted one.  A
+    # BYTECODE line here would mean it was comparing two interpreted tiers
+    # while claiming otherwise.
+    my $lowered = ($log =~ /include fragment NATIVE \(COMCON C5 server-AOT: /)
+                  ? 1 : 0;
     return ($resp, $denials, $lowered);
 }
 

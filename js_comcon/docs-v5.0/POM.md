@@ -109,6 +109,17 @@ Every mutable operation in `describe()` carries one of four classes:
   **bytecode** (the maxim phase-34 hybrid `.so` = C fn + bytecode fallback) → re-AOT →
   all workers switch epoch together. A half-propagated rewrite is exactly the failure
   this class exists to prevent.
+
+  *Measured at D4c (2026-09-12) — the fallback half holds; the re-AOT half is not
+  something a worker can do.* A live epoch switch is built in a **worker, post-fork**,
+  and the JIT's gcc thread does not survive `fork()`, so the new epoch runs
+  **bytecode**: correct, coherent, and interpreted. `comcon.aotStatus(fragment)` reports
+  `{jit, functions, compiled}` so this is observable rather than assumed — `compiled:0`
+  means the fallback is what runs. The same include path logs `NATIVE` at load (master,
+  pre-fork) and `BYTECODE` at request time, asserted in `t/comcon_aot_epoch.t`.
+  Re-AOT of a live epoch needs a process that HAS a compiler to build the `.so` and the
+  workers to pick it up from the hash-keyed JIT cache — a separate increment with its own
+  IPC, not D4c, and not needed for correctness.
 - **X — irreversible/guarded.** `remove()` without tombstone, revoking an admission
   certificate, permanently redacting source of a compiled-only node. Requires a guard:
   snapshot-first, explicit confirmation, or reject — COM class-3 semantics.
@@ -130,7 +141,12 @@ parsed ──admit(K)──▶ certified ──bind(ρ)──▶ bound(epoch e) 
 
 Live rewrite is therefore never stop-the-world: class-F propagation rides the hybrid
 fallback, and the previous epoch remains rollback-able (the A2.7 snapshot pattern)
-until retired.
+until retired. **Verified at D4c:** a rewrite of a fragment that WAS lowered natively is
+answered by the new epoch, never by the old `.so`, and rollback restores the retained
+epoch — that safety property is what this class exists for, and it is what was tested
+first. The `re-AOT ──▶ live(e+1)` arrow above is the part a worker cannot walk (no gcc
+thread after `fork()`); until a compiler-bearing process lowers it, `live(e+1)` is the
+bytecode tier, and `aotStatus()` says so.
 
 ---
 

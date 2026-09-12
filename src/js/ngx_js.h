@@ -492,6 +492,8 @@ JSValue ngx_js_comcon_pom_node_at(JSContext *ctx, JSValueConst this_val,
  * host-side only. See src/js/vendor/PROVENANCE.md for the TCB rules. */
 JSValue ngx_js_comcon_parse(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
+JSValue ngx_js_comcon_aot_status(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_pom_callsites(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 ngx_int_t ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn,

@@ -560,6 +560,35 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.50 (in place — increment D4c: the compiled tier under a live epoch switch;
+INCREMENT D IS COMPLETE):** scoped by measurement rather than by the plan's wording, because
+the measurement changed the answer.
+
+**The safety half holds, and is what was tested first:** a live rewrite of a fragment that WAS
+lowered to native C is answered by the new epoch — never by the old `.so` — and rollback
+restores the retained epoch. A stale `.so` still serving requests after a rewrite is the worst
+failure class F exists to prevent.
+
+**The re-AOT half is not a worker's to do.** A live epoch switch is built in a worker,
+post-fork, and the JIT's gcc thread does not survive `fork()`, so the new epoch runs the
+**bytecode fallback**: correct, coherent, interpreted. POM.md §4's `re-AOT ──▶ live(e+1)` arrow
+is the one a worker cannot walk. Reaching it needs a compiler-bearing process (the master keeps
+its thread) to build the `.so` and workers to pick it up from the hash-keyed JIT cache — new
+IPC, a separate increment, and not needed for correctness.
+
+**What was actually missing was the ability to TELL**, and that was a defect, not a gap.
+`js_comcon_aot_compile()` returns 0 for any bytecode function — "eligible", never "compiled",
+as its own header says — and the include site logged *"include fragment lowered to native C"*
+on that 0. On every include. Including every request-time epoch switch, in a process with no
+compiler. `comcon.aotStatus(fragment)` → `{jit, functions, compiled}` now answers it
+(read-only: asking never compiles; `compiled` is the only field that means native code exists),
+and the notice says `NATIVE (n of m functions)` or `BYTECODE (m functions, nothing lowered: no
+compiler in this process)` — two messages sharing no substring, so a log reader grepping for
+one can never match the other.
+
+`t/comcon_aot_epoch.t` asserts the asymmetry directly: the same include path logs NATIVE at
+load (master, pre-fork) and BYTECODE at request time, on the same fragment.
+
 **v5.49 (in place — increment D5b-4: cross-file provenance; increment D's D5b line is
 complete):** **a span now says which base it counts in.** This closed a real defect, not a
 formality: `pom(fn).line0` was **18** and `pom(fn).cst().line0` was **1** for the same

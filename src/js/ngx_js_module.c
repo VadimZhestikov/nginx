@@ -1065,6 +1065,9 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     ngx_js_conf_t  *jcf;
     JSContext      *sctx;
     JSValue         fn, outer, thrown, exc, name_v, av[16];
+#ifdef CONFIG_JIT
+    int             aot_c, aot_n;
+#endif
     const char     *source, *estr, *name;
     u_char         *buf, *p;
     void           *slot;
@@ -1558,9 +1561,28 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
        and getters materialize under it). Best-effort: on failure the fragment
        runs interpreted (maxim skips-to-interpreter). */
     if (js_comcon_aot_compile(sctx, fn) == 0) {
-        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
-                      "js comcon: include fragment lowered to native C "
-                      "(COMCON C5 server-AOT)");
+        /*
+         * D4c: SAY WHAT HAPPENED, not what was attempted.  aot_compile()
+         * returns 0 for any bytecode function -- "eligible", never "compiled"
+         * (see its header) -- so this used to log "lowered to native C" on
+         * every include, including the request-time epoch switches of a live
+         * rewrite, where the gcc thread does not exist because it does not
+         * survive fork().  The two messages share no substring: a log reader
+         * grepping for one can never match the other.
+         */
+        aot_n = 0;
+        aot_c = js_comcon_aot_status(sctx, fn, &aot_n);
+        if (aot_c > 0) {
+            ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                          "js comcon: include fragment NATIVE "
+                          "(COMCON C5 server-AOT: %d of %d functions)",
+                          aot_c, aot_n);
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                          "js comcon: include fragment BYTECODE "
+                          "(%d functions, nothing lowered: no compiler in "
+                          "this process)", aot_n);
+        }
     }
 #endif
 
@@ -1591,6 +1613,76 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     handle = jcf->comcon_frags->nelts - 1;
 
     return JS_NewInt64(hctx, (int64_t) handle);
+}
+
+
+/*
+ * comcon.__aotStatus(handle) -> {jit, functions, compiled}
+ *
+ * COMCON D4c: which TIER is this fragment's code actually running on, right now.
+ *
+ * Needed because nothing could answer it.  js_comcon_aot_compile() returns 0 for
+ * any bytecode function, so "did the lowering happen" was unanswerable, and
+ * POM.md §4's "bytecode fallback -> re-AOT -> live(e+1)" was prose no test could
+ * check.  It matters most exactly where the answer is least obvious: a live
+ * epoch switch runs in a WORKER, post-fork, where there is no gcc thread (it
+ * does not survive fork()), so a rewritten fragment runs BYTECODE until a
+ * process that has a compiler compiles it.  That is a real property of the
+ * architecture, and an operator doing a live rewrite should be able to see it
+ * rather than infer it.
+ *
+ * Reads only: it never compiles, and on a build without CONFIG_JIT it reports
+ * jit:false rather than pretending there is a tier to report on.
+ */
+JSValue
+ngx_js_comcon_aot_status(JSContext *hctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_conf_t  *jcf;
+    JSValueConst    fn;
+    JSValue         r;
+    int64_t         handle = 0;
+#ifdef CONFIG_JIT
+    int             n = 0, c;
+#endif
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx == NULL || jcf->comcon_frags == NULL) {
+        return JS_ThrowInternalError(hctx, "comcon: no compartment");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(hctx, "comcon.__aotStatus: handle required");
+    }
+    JS_ToInt64(hctx, &handle, argv[0]);
+
+    if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
+        return JS_ThrowTypeError(hctx, "comcon: bad fragment handle");
+    }
+    fn = ((JSValue *) jcf->comcon_frags->elts)[handle];   /* borrowed */
+
+    if (JS_IsUndefined(fn)) {
+        return JS_ThrowTypeError(hctx,
+                                 "comcon: fragment was freed (stale epoch)");
+    }
+
+    r = JS_NewObject(hctx);
+    if (JS_IsException(r)) {
+        return r;
+    }
+
+#ifdef CONFIG_JIT
+    c = js_comcon_aot_status(jcf->comcon_ctx, fn, &n);
+    JS_SetPropertyStr(hctx, r, "jit", JS_TRUE);
+    JS_SetPropertyStr(hctx, r, "functions", JS_NewInt32(hctx, n));
+    JS_SetPropertyStr(hctx, r, "compiled", JS_NewInt32(hctx, c < 0 ? 0 : c));
+#else
+    JS_SetPropertyStr(hctx, r, "jit", JS_FALSE);
+    JS_SetPropertyStr(hctx, r, "functions", JS_NewInt32(hctx, 0));
+    JS_SetPropertyStr(hctx, r, "compiled", JS_NewInt32(hctx, 0));
+#endif
+
+    return r;
 }
 
 

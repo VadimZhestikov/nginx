@@ -3975,6 +3975,21 @@ static const char  ngx_js_comcon_bootstrap[] =
        to do instead.  The caller already holds the source it passed to
        include(), and comcon.cst(source, {file:'<comcon-fragment>'}) gives the
        fragment's own tree with its synthetic origin (POM.md §6 Q3). */
+    /* aotStatus(fragment) -- increment D4c: the TIER a live fragment runs on.
+       Takes the bound wrapper include() returned (the thing an operator
+       actually holds) and reports {jit, functions, compiled}: `compiled` is the
+       only field that means native code exists, and 0 means the BYTECODE
+       FALLBACK is what runs.  Read-only (class R): asking never compiles.
+
+       Why an operator needs it: a live rewrite's new epoch is compiled in a
+       WORKER, post-fork, where there is no gcc thread -- so it runs bytecode,
+       correctly but interpreted, until a process with a compiler lowers it.
+       Before this, nothing could distinguish that from a re-AOT'd epoch. */
+    "  C.aotStatus=function(frag){"
+    "    if(!frag||frag.confined!==true||typeof frag.handle!=='number')"
+    "      throw new TypeError('aotStatus: arg0 must be a confined fragment "
+                 "(the value comcon.include returned)');"
+    "    return C.__aotStatus(frag.handle);};"
     "  C.pom=function(rootFn){"
     "    if(rootFn&&rootFn.confined===true)throw new TypeError("
     "      'pom: this is the BOUND WRAPPER of a confined fragment, not the "
@@ -4532,6 +4547,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__parse",
                           JS_NewCFunction(ctx, ngx_js_comcon_parse,
                                           "__parse", 1));
+        /* increment D4c: which tier a fragment's code is actually on. */
+        JS_SetPropertyStr(ctx, comcon_obj, "__aotStatus",
+                          JS_NewCFunction(ctx, ngx_js_comcon_aot_status,
+                                          "__aotStatus", 1));
         /* increment D5a: call-site / reference enumeration (bytecode scan). */
         JS_SetPropertyStr(ctx, comcon_obj, "__pomCallsites",
                           JS_NewCFunction(ctx, ngx_js_comcon_pom_callsites,

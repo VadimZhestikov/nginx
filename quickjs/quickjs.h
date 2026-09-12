@@ -871,8 +871,18 @@ JSValue js_comcon_pom_callsites(JSContext *ctx, JSValueConst func,
                                 const char *name);
 
 /* COMCON C5.0-b: server-AOT-compile a confined handler at load (CONFIG_JIT
- * only). Returns 0 on success, -1 if func is not a bytecode function. */
+ * only). Returns 0 on success, -1 if func is not a bytecode function.
+ * "Success" means ELIGIBLE, not compiled -- see js_comcon_aot_status(). */
 int js_comcon_aot_compile(JSContext *ctx, JSValueConst func);
+
+/* COMCON D4c: how many functions in this fragment's tree are ACTUALLY native
+ * now. Returns the compiled count (0 = the bytecode fallback is what runs),
+ * *n_funcs = tree size, -1 if func is not a bytecode function. A status query:
+ * it never compiles. Needed because aot_compile() cannot answer it, and because
+ * a live epoch switch in a worker CANNOT re-AOT -- the gcc thread does not
+ * survive fork() -- so the tier a rewritten fragment runs on must be
+ * observable rather than assumed. */
+int js_comcon_aot_status(JSContext *ctx, JSValueConst func, int *n_funcs);
 
 /* AOT-A: budgeted load-time compilation of a function AND its nested functions.
  *

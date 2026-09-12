@@ -5,8 +5,8 @@ enumeration), **D1 ✅** (lazy read-only NodeView), **D2 ✅** (`query(sel)` sel
 (POM-node quotations + stone splices), **D4a ✅** (epochs + admitted replace + rollback), **D4b ✅**
 (class-F multi-worker fan-out), **D5a ✅** (call-site audit), **D5b-1 ✅** (declarative-profile
 checker), **D5b-2 ✅** (full CST + finer selectors + anchors, 2026-09-12), **D5b-3 ✅**
-(source-rewrite hardening), **D5b-4 ✅** (cross-file provenance, all 2026-09-12) — **the D5b
-line is complete**; only D4c remains deferred. Follows the operator kernel
+(source-rewrite hardening), **D5b-4 ✅** (cross-file provenance), **D4c ✅** (compiled tier
+under a live epoch switch, all 2026-09-12). **INCREMENT D IS COMPLETE.** Follows the operator kernel
 (`INCREMENT_MCFG.md`), the convergence (`INCREMENT_CONVERGE.md`), and the closure/quotation
 resolution (`bind` v5.37, `realize`/`quote` v5.38). This is the last standing forward frontier on
 the confinement track; the alternative track is maxim → test262 (the untrusted-native gate).
@@ -215,10 +215,27 @@ Likely **little or no new C** — a JS orchestration over `realize`/`include` + 
   `nginx.shared` is unavailable at config-eval time, so all shared access is deferred to request time
   (lazy seed in `reconcile`). **Gate met:** rebind propagates to all workers; no stop-the-world.
 
-- **D4c — compiled-tier live re-AOT (DEFERRED / separately gated).** POM.md §3's class-F
-  "bytecode-fallback → re-AOT → coherent epoch switch" for an *AOT-compiled* fragment. JIT-tier;
-  rides the existing C5/C7 machinery. Not on the D4 critical path — the interpreted-tier epoch
-  switch (reassign the handler) is already coherent per worker.
+- **D4c ✅ (2026-09-12) — the compiled tier under a live epoch switch.** Scoped by measurement
+  rather than by the plan's wording, because the measurement changed the answer.
+
+  **The safety half holds and is now tested:** a rewrite of a fragment that WAS lowered to
+  native C is answered by the new epoch — never by the old `.so` — and rollback restores the
+  retained epoch (`t/comcon_aot_epoch.t`).
+
+  **The re-AOT half is not a worker's to do.** A live epoch switch runs in a worker, post-fork,
+  and the gcc thread does not survive `fork()` ([[jit-inert-in-nginx-workers]]), so the new
+  epoch runs the **bytecode fallback**. That is correct and coherent; it is just not native.
+  Doing better needs a compiler-bearing process (the master still has its thread) to build the
+  `.so` and workers to pick it up from the hash-keyed JIT cache — new IPC, a separate increment.
+
+  **What was actually missing was the ability to tell.** `js_comcon_aot_compile()` returns 0 for
+  any bytecode function — "eligible", never "compiled", as its own header says — and the include
+  site logged *"include fragment lowered to native C"* on that 0, on **every** include, including
+  every request-time epoch switch. So the tier was unobservable and the log was wrong.
+  `comcon.aotStatus(fragment)` → `{jit, functions, compiled}` answers it (read-only: asking never
+  compiles), and the notice now says `NATIVE (n of m functions)` or
+  `BYTECODE (m functions, nothing lowered: no compiler in this process)` — two messages with no
+  shared substring, so grepping for one cannot match the other.
 
 **D4a surface (RESOLVED 2026-09-03):** a **thin `comcon.bindAt(site, quotation, contract)` handle**
 — it returns an epoch handle carrying `replace`/`rollback`/`remove`/`revive` and the rollback
@@ -293,6 +310,9 @@ independent of the POM.
 
 **Decision (2026-09-03):** proceed with **D5a** (bytecode call-site enumeration / audit); D5b stays a
 separately-gated future milestone, D4c stays deferred.
+**Superseded (2026-09-12):** D5b-1…4 and D4c are all done; increment D is complete. The one piece
+deliberately NOT built is re-AOT of a live epoch inside a worker, which the fork model forbids —
+see D4c above for the shape a future increment would take.
 
 ## 9. D5b detailed sub-scope — the CST front-end (2026-09-04)
 
