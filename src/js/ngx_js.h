@@ -497,7 +497,8 @@ JSValue ngx_js_comcon_aot_status(JSContext *ctx, JSValueConst this_val,
 JSValue ngx_js_comcon_pom_callsites(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 ngx_int_t ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn,
-    JSValueConst imports, int check_request, char *reason, size_t reason_len);
+    JSValueConst imports, JSValueConst intrinsics, int check_request,
+    char *reason, size_t reason_len);
 
 
 /* COM initialisation — installs nginx.* into ctx's global object */

@@ -55,7 +55,10 @@ plus an `absent` list naming the vocabulary that is deliberately not here.
   declaration (the C3 intrinsics allowance, v5.54), so such a fragment can actually compute
   with `JSON` and `Object` rather than arithmetic alone. Before that decision it could not,
   which made this profile stricter than "cap-free" suggests; `Date` and `Math` still have to
-  be declared. The strongest fully-enforced profile, and the right default for
+  be declared. **`pure_library({intrinsics: []})`** goes the other way and is the strictest
+  contract expressible — no free names at all, not even language values. It is *not* the
+  default: tightening a shipped profile silently would break fragments already computing
+  with `JSON`. The strongest fully-enforced profile, and the right default for
   third-party code that should only compute.
 - **`std.describe()`**, **`std.version`** (`comcon-std-1`), frozen namespace and frozen
   contracts.

@@ -135,6 +135,18 @@ l.handler = function (req) {
         o.freeName = 'ACCEPTED';
     } catch (e) { o.freeName = 'refused'; }
 
+    /* a profile can carry the C3 narrowing: the strictest contract expressible
+     * is pure_library({intrinsics: []}) -- no free names at all, not even
+     * language values. NOT the default: tightening a shipped profile silently
+     * would break fragments that already compute with JSON. */
+    o.strictest = 'ACCEPTED';
+    try {
+        comcon.include("function(){ return JSON.stringify([1]); }",
+                       comcon.std.profiles.pure_library({ intrinsics: [] }));
+    } catch (e) { o.strictest = 'refused'; }
+    o.defaultStillOpen = (comcon.std.profiles.pure_library().intrinsics
+                          === undefined);
+
     /* describe() names what enforces each field, and what is absent */
     var d = comcon.std.describe();
     o.enforced = d.enforced.map(function (r) { return r.field; });
@@ -188,7 +200,7 @@ l.handler = function (req) {
 };
 JS
 
-$t->try_run('no js module')->plan(19);
+$t->try_run('no js module')->plan(21);
 
 ###############################################################################
 
@@ -223,7 +235,13 @@ like($r, qr/"freeName":"refused"/,
      . 'is present and empty, which is what switches admission on');
 
 # --- describe() is the honesty surface ----------------------------------
-like($r, qr/"enforced":\["imports","grants","checkRequest","meter","identity","tests","deps"\]/,
+like($r, qr/"strictest":"refused"/,
+     'a profile can carry the C3 narrowing: pure_library({intrinsics: []}) '
+     . 'refuses even JSON -- the strictest contract expressible');
+like($r, qr/"defaultStillOpen":true/,
+     '...and it is NOT the default: tightening a shipped profile silently '
+     . 'would break fragments already computing with JSON');
+like($r, qr/"enforced":\["imports","intrinsics","grants","checkRequest","meter","identity","tests","deps"\]/,
      'describe() names every contract field a profile may set, with what '
      . 'enforces it');
 like($r, qr/"absentCount":3/, '...and names what is deliberately absent');

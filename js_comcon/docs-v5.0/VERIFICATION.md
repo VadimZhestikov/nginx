@@ -111,8 +111,33 @@ change made after the signature, since the audited surface moved. The diagnostic
 changed: *"free name not declared in imports"* rather than *"not granted"*, because the old
 wording sent a reader looking for a missing capability.
 
-The oracle now models the three categories, so the differential keeps the decision honest,
-and **`check-enumerations.py` check 4 compares the engine's list with the model's copy and
+**The allowance NARROWS per contract** *(added the same day, on the question "can a policy
+suppress the intrinsics?" — the answer was no, and that was a regression the allowance
+introduced: `{imports: []}` used to mean "no free names at all", and afterwards the
+strictest expressible setting was "intrinsics and nothing else")*. `contract.intrinsics`
+takes a list and the effective allowance is **the static list MEET that list**:
+
+```js
+{ imports: ['s'] }                       // the full allowance (default)
+{ imports: ['s'], intrinsics: [] }       // no free names at all — the old strictest
+{ imports: ['s'], intrinsics: ['JSON'] } // exactly JSON; Object is refused
+```
+
+**`imports` declares, `intrinsics` narrows** — two knobs pointing one direction each, so
+nothing here widens authority. Naming a non-intrinsic in `intrinsics` is **refused** with a
+message saying to use `imports`, rather than ignored, because a contract word that reads
+like policy and does nothing is the failure this project keeps meeting. A narrowing also
+switches admission **on** by itself (it would otherwise be inert with the gate off), it
+survives `realize()` — the path `bindAt` and `std.ops.rebind` take, where dropping it would
+silently un-narrow a live rewrite — and a **present-but-malformed** narrowing reads as the
+strictest setting, the same fail-closed direction a malformed `imports` takes.
+
+`std.profiles.tenant` and `pure_library` pass `opts.intrinsics` through; **neither defaults
+to it**, since tightening a shipped profile silently would break fragments already computing
+with `JSON`. `pure_library({intrinsics: []})` is the strictest contract expressible.
+
+The oracle models all of it, so the differential keeps the decision honest, and
+**`check-enumerations.py` check 4 compares the engine's list with the model's copy and
 fails if `Date`/`Math` are ever added** — a decision that nothing checks is a decision that
 gets undone by a convenient edit.
 

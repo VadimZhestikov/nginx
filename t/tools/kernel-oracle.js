@@ -12,7 +12,7 @@
  * no code with src/js: it is plain data manipulation over a description of a
  * case, and it never calls comcon.
  *
- * It predicts, for a case {grants, mediations, source}:
+ * It predicts, for a case {grants, mediations, imports, intrinsics, reads}:
  *   admitted   - does admission accept the fragment
  *   bound      - which names the fragment actually sees
  *   visible    - per granted socket name, which fields are readable
@@ -35,6 +35,13 @@
  *             (Symbol.for is a runtime-wide registry, i.e. a channel), Proxy /
  *             Reflect, or the ArrayBuffer family (SharedArrayBuffer is a
  *             channel). Each is still usable by DECLARING it.
+ *
+ *             The allowance NARROWS with `contract.intrinsics`: absent means the
+ *             full list, a list means exactly those (and naming something
+ *             outside the allowance is refused, because `intrinsics` cannot
+ *             widen -- `imports` is the way to add a name). So `{intrinsics:[]}`
+ *             is the strictest contract expressible: no free names at all, which
+ *             is what `{imports:[]}` meant before the allowance existed.
  *
  *             This category did not exist until the oracle disagreed with the
  *             engine about `undefined`; see VERIFICATION.md V3.
@@ -134,7 +141,12 @@ function predict(kase) {
                                 + 'it): ' + kase.reads[i];
                 return out;
             }
-            if (INTRINSIC[kase.reads[i]]) { continue; }   /* no declaration */
+            if (INTRINSIC[kase.reads[i]]
+                && (kase.intrinsics === undefined
+                    || kase.intrinsics.indexOf(kase.reads[i]) >= 0))
+            {
+                continue;                         /* allowed, no declaration */
+            }
             if (kase.imports.indexOf(kase.reads[i]) < 0) {
                 out.admitted = false;
                 out.refusedBy = 'R-ADMIT: free name outside the manifest: '

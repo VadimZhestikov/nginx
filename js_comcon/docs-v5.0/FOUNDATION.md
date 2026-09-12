@@ -564,6 +564,35 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.55 (in place — `contract.intrinsics`: the allowance narrows, so a policy can suppress
+it):** v5.54 made the intrinsics a floor that nothing could lower, and that **removed an
+expressible policy**: before it, `{imports: []}` meant *no free names at all*; afterwards the
+strictest expressible contract was "intrinsics and nothing else". Asked whether a policy could
+suppress the intrinsics, the answer was no — a regression the allowance introduced, now closed.
+
+`contract.intrinsics` takes a list, and the effective allowance is the static list **MEET**
+that list: `{intrinsics: []}` refuses every free name including language values (the old
+strictest setting, back), `{intrinsics: ['JSON']}` permits exactly that one.
+
+**`imports` DECLARES, `intrinsics` NARROWS** — two knobs pointing one direction each, so
+nothing here widens authority and the monotonicity story (V4) survives intact. Naming a
+non-intrinsic in `intrinsics` is **refused**, with a message saying to use `imports`, rather
+than ignored: a contract word that reads like policy and does nothing is the failure this
+project keeps meeting. A narrowing switches admission **on** by itself (inert otherwise), it
+survives `realize()` — the path `bindAt` and `std.ops.rebind` take, where dropping it would
+silently un-narrow a live rewrite — and a **present-but-malformed** narrowing reads as the
+strictest setting, the same fail-closed direction a malformed `imports` takes.
+
+`std.profiles.tenant` and `pure_library` pass `opts.intrinsics` through, and **neither
+defaults to it**: tightening a shipped profile silently would break fragments already
+computing with `JSON`. `pure_library({intrinsics: []})` is the strictest contract expressible.
+
+The V3 oracle models the narrowing (corpus now 14 × 9 = 126 cases), and five negative controls
+cover it. Two of them had to be *added* rather than merely run: the first attempt at
+"realize() carries the narrowing" and "malformed reads as strictest" both PASSED, because the
+code was right and nothing tested it — a control that cannot fail is telling you about the
+tests, not about the code. Recorded in `AUDIT_M-SES.md` §6 alongside the allowance itself.
+
 **v5.54 (in place — the C3 intrinsics allowance: a third free-name category, decided not
 inherited):** the V3 oracle's divergence (v5.53) is resolved by decision (user, 2026-09-12).
 A free name now falls in one of THREE categories rather than two:

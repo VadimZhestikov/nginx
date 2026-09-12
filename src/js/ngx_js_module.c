@@ -1382,9 +1382,10 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     if (jcf->tenant_mode != NGX_JS_TENANT_LEARN
         && argc > 4 && JS_IsObject(argv[4]))
     {
-        JSValue  imp_h, idv;
+        JSValue  imp_h, idv, intr_h;
 
         imp_h = JS_GetPropertyStr(hctx, argv[4], "imports");
+        intr_h = JS_GetPropertyStr(hctx, argv[4], "intrinsics");
 
         /*
          * The contract asked for admission, so admission RUNS.  This used to be
@@ -1400,8 +1401,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
          * admit_check() already treats a non-object that way.
          */
         {
-            JSValue      imp_s, lv, e, cr;
-            uint32_t     ilen = 0, k;
+            JSValue      imp_s, intr_s, lv, e, cr;
+            uint32_t     ilen = 0, nlen = 0, k;
             const char  *iname;
             int          check;
             char         reason[256];
@@ -1430,18 +1431,47 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             check = JS_ToBool(hctx, cr);
             JS_FreeValue(hctx, cr);
 
-            rc = ngx_js_comcon_admit_check(sctx, fn, imp_s, check,
+            /*
+             * The intrinsics NARROWING, copied across contexts like imports.
+             * Present-but-not-an-array stays present (an empty sctx array), so
+             * a malformed narrowing reads as the strictest setting rather than
+             * as absent -- the same fail-closed direction imports takes above.
+             */
+            intr_s = JS_IsUndefined(intr_h) || JS_IsNull(intr_h)
+                     ? JS_UNDEFINED : JS_NewArray(sctx);
+
+            if (!JS_IsUndefined(intr_s) && JS_IsObject(intr_h)) {
+                lv = JS_GetPropertyStr(hctx, intr_h, "length");
+                JS_ToUint32(hctx, &nlen, lv);
+                JS_FreeValue(hctx, lv);
+
+                for (k = 0; k < nlen; k++) {
+                    e = JS_GetPropertyUint32(hctx, intr_h, k);
+                    iname = JS_ToCString(hctx, e);
+                    JS_SetPropertyUint32(sctx, intr_s, k,
+                                         JS_NewString(sctx, iname ? iname : ""));
+                    if (iname != NULL) {
+                        JS_FreeCString(hctx, iname);
+                    }
+                    JS_FreeValue(hctx, e);
+                }
+            }
+
+            rc = ngx_js_comcon_admit_check(sctx, fn, imp_s, intr_s, check,
                                            reason, sizeof(reason));
             JS_FreeValue(sctx, imp_s);
+            JS_FreeValue(sctx, intr_s);
 
             if (rc != NGX_OK) {
                 JS_FreeValue(hctx, imp_h);
+                JS_FreeValue(hctx, intr_h);
                 JS_FreeValue(sctx, fn);
                 return JS_ThrowTypeError(hctx,
                     "comcon.include: admission refused: %s", reason);
             }
         }
         JS_FreeValue(hctx, imp_h);
+        JS_FreeValue(hctx, intr_h);
 
         /* optional identity pin: H(H(source) ‖ schema-version) */
         idv = JS_GetPropertyStr(hctx, argv[4], "identity");

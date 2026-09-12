@@ -30,6 +30,18 @@
 # Both are engine mutations, not model mutations: an oracle is only worth having
 # if a wrong engine makes it disagree. (A model mutation would also "fail", and
 # would prove nothing about the engine.)
+#
+# For the intrinsics rules (2026-09-12), five more, all reverted to failure:
+#
+#   the contract narrowing is consulted at all   -> narrowNone / narrowOther
+#   naming a non-intrinsic there is REFUSED      -> narrowWiden
+#   a narrowing switches admission ON by itself  -> narrowEnables
+#   realize() carries the narrowing              -> narrowViaRealize
+#   malformed narrowing = strictest, not absent  -> narrowMalformed
+#
+# The last two were added because the first attempt at those controls PASSED:
+# the code was right and nothing tested it. A control that cannot fail is telling
+# you about the tests, not about the code.
 
 use warnings;
 use strict;
@@ -113,7 +125,12 @@ var ADMIT = [
     { imports: ['s'],              reads: ['s','undefined','Math'] },
     { imports: ['s','Math'],       reads: ['s','undefined','Math'] },
     { imports: ['s','undefined'],  reads: ['s','undefined','nope'] },
-    { imports: ['s','undefined','eval'], reads: ['s','undefined','eval'] }
+    { imports: ['s','undefined','eval'], reads: ['s','undefined','eval'] },
+    /* the NARROWING: `intrinsics` can only remove from the allowance, so
+     * {intrinsics: []} is the strictest contract expressible -- what
+     * {imports: []} meant before the allowance existed. */
+    { imports: ['s'], intrinsics: [],            reads: ['s','undefined'] },
+    { imports: ['s'], intrinsics: ['undefined'], reads: ['s','undefined'] }
 ];
 
 function build(chain) {                 /* fold mediate() over the chain */
@@ -158,6 +175,7 @@ function runEngine(chain, adm) {
 
     var contract = { grants: { s: cap } };
     if (adm.imports !== undefined) { contract.imports = adm.imports; }
+    if (adm.intrinsics !== undefined) { contract.intrinsics = adm.intrinsics; }
 
     var src = PROBE;
     if (adm.reads.indexOf('nope') >= 0) { src = PROBE2; }
@@ -187,7 +205,8 @@ l.handler = function (req) {
         for (ai = 0; ai < ADMIT.length; ai++) {
             var chain = CHAINS[ci], adm = ADMIT[ai];
             var kase = { grants: [{ name: 's', mediations: chain }],
-                         reads: adm.reads, imports: adm.imports };
+                         reads: adm.reads, imports: adm.imports,
+                         intrinsics: adm.intrinsics };
 
             var want = predict(kase);
             var got  = runEngine(chain, adm);
@@ -231,6 +250,51 @@ l.handler = function (req) {
     o.catDenied    = admits("function(){ var q = eval; return 1; }", ['eval']);
     o.catHost      = admits("function(){ return nginx; }", []);
 
+    /* THE NARROWING, in all three directions. */
+    function admitsN(src, imports, intrinsics) {
+        try { comcon.include(src, { grants: {}, imports: imports,
+                                    intrinsics: intrinsics });
+              return 'admitted'; }
+        catch (e) { return /not in the intrinsics allowance/.test(e.message)
+                           ? 'refused-bad-name' : 'refused'; }
+    }
+    var USES_JSON = "function(){ return JSON.stringify([1]); }";
+    o.narrowNone   = admitsN(USES_JSON, [], []);
+    o.narrowExact  = admitsN(USES_JSON, [], ['JSON']);
+    o.narrowOther  = admitsN("function(){ return Object.keys({}); }", [], ['JSON']);
+    o.narrowAbsent = admitsN(USES_JSON, [], undefined);
+    /* it cannot WIDEN: naming a non-intrinsic is refused, not ignored */
+    o.narrowWiden  = admitsN("function(){ return Math.random(); }", [], ['Math']);
+    /* ...and declaring it in imports still works */
+    o.narrowDeclare = admitsN("function(){ return Math.random(); }", ['Math'],
+                              undefined);
+    /* a narrowing switches admission ON by itself: a policy word that needs the
+     * gate must not be silently inert when the gate is off */
+    o.narrowEnables = 'ACCEPTED';
+    try { comcon.include("function(){ return JSON.stringify([1]); }",
+                         { grants: {}, intrinsics: [] });
+          o.narrowEnables = 'ACCEPTED'; }
+    catch (e) { o.narrowEnables = 'refused'; }
+
+    /* The narrowing must survive REALIZE, which is the path bindAt and
+     * std.ops.rebind take -- dropping it there would silently un-narrow a live
+     * rewrite, and the fragment would regain JSON at the next epoch. */
+    o.narrowViaRealize = 'ACCEPTED';
+    try {
+        comcon.realize(comcon.quote("function(){ return JSON.stringify([1]); }"),
+                       { imports: [], intrinsics: [] }, comcon.env());
+    } catch (e) { o.narrowViaRealize = 'refused'; }
+
+    /* PRESENT-but-malformed reads as the STRICTEST setting, not as absent --
+     * the same fail-closed direction a malformed `imports` takes, and for the
+     * same reason: a contract that looks stricter than it is, is worse than an
+     * absent one. */
+    o.narrowMalformed = 'ACCEPTED';
+    try {
+        comcon.include("function(){ return JSON.stringify([1]); }",
+                       { grants: {}, imports: [], intrinsics: 42 });
+    } catch (e) { o.narrowMalformed = 'refused'; }
+
     /* the fixture must actually contain the thing it is about */
     o.probesDiffer = (PROBE2 !== PROBE && PROBE3 !== PROBE && PROBE4 !== PROBE
                       && PROBE2.indexOf('nope') > 0
@@ -242,7 +306,7 @@ l.handler = function (req) {
 };
 JS
 
-$t->try_run('no js module')->plan(11);
+$t->try_run('no js module')->plan(20);
 
 ###############################################################################
 
@@ -253,8 +317,8 @@ like($r, qr/"probesDiffer":true/,
      'the three probes really do differ -- the undeclared-name and denied-name '
      . 'cases reference what they claim to (a replace() that matched nothing '
      . 'once made both identical to the base probe, and the corpus passed)');
-like($r, qr/"cases":98/,
-     'the generated corpus is 14 mediation chains x 7 admission settings');
+like($r, qr/"cases":126/,
+     'the generated corpus is 14 mediation chains x 9 admission settings');
 like($r, qr/"distinct":([5-9]|\d\d)/,
      'the model DISCRIMINATES: it predicts several different answers over the '
      . 'corpus, so agreement means something (an oracle that predicts one '
@@ -275,6 +339,31 @@ like($r, qr/"catDenied":"refused"/,
 like($r, qr/"catHost":"refused"/,
      'and a HOST name is still refused with an empty manifest -- the allowance '
      . 'did not widen anything but the language');
+
+# --- the narrowing: `intrinsics` removes, `imports` adds -----------------
+like($r, qr/"narrowNone":"refused"/,
+     'NARROWING: {intrinsics: []} refuses even JSON -- the strictest contract '
+     . 'expressible, and what {imports: []} meant before the allowance existed');
+like($r, qr/"narrowExact":"admitted"/,
+     'a narrowing to exactly [JSON] still admits JSON');
+like($r, qr/"narrowOther":"refused"/,
+     '...and refuses Object, which the default allowance would have permitted');
+like($r, qr/"narrowAbsent":"admitted"/,
+     'an absent narrowing means the full allowance (unchanged default)');
+like($r, qr/"narrowWiden":"refused-bad-name"/,
+     'intrinsics CANNOT WIDEN: naming Math there is refused with a message '
+     . 'saying to use imports -- not silently ignored, which would be a '
+     . 'contract word that reads like policy and does nothing');
+like($r, qr/"narrowDeclare":"admitted"/,
+     '...while declaring Math in imports still admits it');
+like($r, qr/"narrowEnables":"refused"/,
+     'a narrowing switches admission ON by itself, so it cannot be inert');
+like($r, qr/"narrowViaRealize":"refused"/,
+     'the narrowing survives realize() -- the path bindAt and std.ops.rebind '
+     . 'take, where dropping it would silently un-narrow a live rewrite');
+like($r, qr/"narrowMalformed":"refused"/,
+     'a PRESENT but malformed narrowing reads as the STRICTEST setting, not as '
+     . 'absent: a contract that looks stricter than it is, is worse than none');
 
 like($r, qr/"mismatches":\[\]/,
      'MODEL == ENGINE on every admission-relevant case: environment binding, '

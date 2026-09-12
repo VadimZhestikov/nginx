@@ -3052,6 +3052,16 @@ typedef struct {
     JSContext    *ctx;
     JSValueConst  imports;      /* array of allowed free-name strings, or undefined */
     uint32_t      imports_len;
+    /*
+     * The contract's INTRINSICS NARROWING (absent => the full allowance).
+     * `intr_present` distinguishes "not asked for" from "asked for nothing":
+     * {intrinsics: []} is the strictest contract expressible -- no free names at
+     * all, not even language values -- and it is the setting that {imports: []}
+     * used to mean before the allowance existed.
+     */
+    JSValueConst  intrinsics;
+    uint32_t      intr_len;
+    ngx_uint_t    intr_present;
     ngx_uint_t    bad;
     char          badname[128];
 } ngx_js_admit_check_t;
@@ -3140,26 +3150,59 @@ ngx_js_admit_name_intrinsic(const char *name)
 
 
 static ngx_uint_t
-ngx_js_admit_in_imports(ngx_js_admit_check_t *c, const char *name)
+ngx_js_admit_in_list(JSContext *ctx, JSValueConst arr, uint32_t len,
+    const char *name)
 {
     uint32_t     i;
     JSValue      v;
     const char  *s;
     ngx_uint_t   match = 0;
 
-    for (i = 0; i < c->imports_len && !match; i++) {
-        v = JS_GetPropertyUint32(c->ctx, c->imports, i);
-        s = JS_ToCString(c->ctx, v);
+    for (i = 0; i < len && !match; i++) {
+        v = JS_GetPropertyUint32(ctx, arr, i);
+        s = JS_ToCString(ctx, v);
         if (s != NULL && ngx_strcmp(s, name) == 0) {
             match = 1;
         }
         if (s != NULL) {
-            JS_FreeCString(c->ctx, s);
+            JS_FreeCString(ctx, s);
         }
-        JS_FreeValue(c->ctx, v);
+        JS_FreeValue(ctx, v);
     }
 
     return match;
+}
+
+
+/*
+ * The EFFECTIVE allowance for this contract: the static list MEET the contract's
+ * narrowing, which is why `intrinsics` can only ever attenuate.
+ *
+ * `imports` DECLARES (it can add any name, including Date and Math);
+ * `intrinsics` NARROWS (it can only remove from the list above, and naming
+ * something outside that list is refused rather than quietly ignored -- see the
+ * validation in ngx_js_comcon_admit_check). Two knobs pointing in one direction
+ * each, so the monotonicity story survives: nothing here widens authority.
+ */
+static ngx_uint_t
+ngx_js_admit_name_allowed_intrinsic(ngx_js_admit_check_t *c, const char *name)
+{
+    if (!ngx_js_admit_name_intrinsic(name)) {
+        return 0;
+    }
+
+    if (!c->intr_present) {
+        return 1;                          /* no narrowing asked for */
+    }
+
+    return ngx_js_admit_in_list(c->ctx, c->intrinsics, c->intr_len, name);
+}
+
+
+static ngx_uint_t
+ngx_js_admit_in_imports(ngx_js_admit_check_t *c, const char *name)
+{
+    return ngx_js_admit_in_list(c->ctx, c->imports, c->imports_len, name);
 }
 
 
@@ -3180,7 +3223,7 @@ ngx_js_admit_free_cb(void *ud, const char *name)
         return;
     }
 
-    if (ngx_js_admit_name_intrinsic(name)) {
+    if (ngx_js_admit_name_allowed_intrinsic(c, name)) {
         return;                    /* a value to compute with, not authority */
     }
 
@@ -3216,11 +3259,12 @@ ngx_js_admit_verdict(JSContext *ctx, ngx_uint_t certified, const char *reject)
  */
 ngx_int_t
 ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
-    int check_request, char *reason, size_t reason_len)
+    JSValueConst intrinsics, int check_request, char *reason, size_t reason_len)
 {
     JSValue               len;
     ngx_js_admit_check_t  chk;
     char                  field[128];
+    uint32_t              i;
 
     if (!JS_IsFunction(ctx, fn)) {
         ngx_snprintf((u_char *) reason, reason_len,
@@ -3244,6 +3288,48 @@ ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
         len = JS_GetPropertyStr(ctx, imports, "length");
         JS_ToUint32(ctx, &chk.imports_len, len);
         JS_FreeValue(ctx, len);
+    }
+
+    /*
+     * The contract's intrinsics narrowing. PRESENT-but-malformed reads as the
+     * NARROWEST setting (no intrinsics), the same fail-closed direction a
+     * malformed `imports` takes: a contract that looks stricter than it is, is
+     * worse than an absent one.
+     */
+    chk.intrinsics = intrinsics;
+    chk.intr_present = !JS_IsUndefined(intrinsics) && !JS_IsNull(intrinsics);
+
+    if (chk.intr_present && JS_IsObject(intrinsics)) {
+        len = JS_GetPropertyStr(ctx, intrinsics, "length");
+        JS_ToUint32(ctx, &chk.intr_len, len);
+        JS_FreeValue(ctx, len);
+    }
+
+    /*
+     * NARROWING ONLY, enforced rather than assumed: a name here that is not in
+     * the allowance cannot widen anything, so accepting it silently would leave
+     * a contract word that reads like policy and does nothing. `imports` is the
+     * way to add a name; say so in the refusal.
+     */
+    for (i = 0; i < chk.intr_len; i++) {
+        JSValue      iv = JS_GetPropertyUint32(ctx, intrinsics, i);
+        const char  *is = JS_ToCString(ctx, iv);
+        ngx_uint_t   known = (is != NULL) ? ngx_js_admit_name_intrinsic(is) : 0;
+
+        if (!known) {
+            ngx_snprintf((u_char *) reason, reason_len,
+                         "intrinsics: %s is not in the intrinsics allowance; "
+                         "`intrinsics` only narrows it -- declare the name in "
+                         "`imports` instead%Z", is ? is : "?");
+            if (is != NULL) {
+                JS_FreeCString(ctx, is);
+            }
+            JS_FreeValue(ctx, iv);
+            return NGX_ERROR;
+        }
+
+        JS_FreeCString(ctx, is);
+        JS_FreeValue(ctx, iv);
     }
 
     if (js_comcon_collect_free_globals(ctx, fn, ngx_js_admit_free_cb, &chk)
@@ -3290,7 +3376,7 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
     JSValueConst *argv)
 {
     JSValueConst  fn, contract;
-    JSValue       imports, cr;
+    JSValue       imports, intrinsics, cr;
     int           check_request = 0;
     char          reason[256];
     ngx_int_t     rc;
@@ -3300,6 +3386,8 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
 
     imports = JS_IsObject(contract)
               ? JS_GetPropertyStr(ctx, contract, "imports") : JS_UNDEFINED;
+    intrinsics = JS_IsObject(contract)
+                 ? JS_GetPropertyStr(ctx, contract, "intrinsics") : JS_UNDEFINED;
 
     if (JS_IsObject(contract)) {
         cr = JS_GetPropertyStr(ctx, contract, "checkRequest");
@@ -3307,9 +3395,10 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
         JS_FreeValue(ctx, cr);
     }
 
-    rc = ngx_js_comcon_admit_check(ctx, fn, imports, check_request,
+    rc = ngx_js_comcon_admit_check(ctx, fn, imports, intrinsics, check_request,
                                    reason, sizeof(reason));
     JS_FreeValue(ctx, imports);
+    JS_FreeValue(ctx, intrinsics);
 
     return ngx_js_admit_verdict(ctx, rc == NGX_OK, rc == NGX_OK ? NULL : reason);
 }
@@ -3716,6 +3805,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        throw new Error('admission refused: checkCalls requires "
     "profile:\\'declarative\\'');"
     "      C.reviewCalls(q.source,rg);}"
+    "    if(contract.intrinsics!==undefined)c.intrinsics=contract.intrinsics;"
     "    if(contract.meter)c.meter=contract.meter;"
     "    if(contract.tests)c.tests=contract.tests;"
     "    if(contract.identity)c.identity=contract.identity;"
@@ -3796,9 +3886,15 @@ static const char  ngx_js_comcon_bootstrap[] =
        declined admission, and reading it as "declined" left the fragment
        ungated.  The other three keep truthiness so that an explicit
        `checkRequest: false` does not newly switch admission on. */
+    /* `intrinsics` joins the presence test for the same reason `imports` is
+       there: a contract that narrows the allowance has asked for admission, and
+       a narrowing with the gate switched off would be a policy word that does
+       nothing. */
     "    if(contract.imports!==undefined||contract.identity"
-    "       ||contract.checkRequest||contract.tests){"
+    "       ||contract.checkRequest||contract.tests"
+    "       ||contract.intrinsics!==undefined){"
     "      admit={imports:contract.imports||[],"
+    "             intrinsics:contract.intrinsics,"
     "             checkRequest:!!contract.checkRequest,"
     "             identity:contract.identity,"
     "             tests:(typeof contract.tests==='function'"
@@ -4223,6 +4319,10 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(opts.identity!==undefined)c.identity=opts.identity;"
     "    if(opts.tests!==undefined)c.tests=opts.tests;"
     "    if(opts.deps!==undefined)c.deps=opts.deps;"
+    /* opts.intrinsics NARROWS the C3 allowance (it can only remove). Passed
+       through rather than defaulted: making a profile stricter than it shipped
+       would change behaviour for anyone already using it. */
+    "    if(opts.intrinsics!==undefined)c.intrinsics=opts.intrinsics;"
     "    return Object.freeze(c);};"
     /* pure_library(opts): a cap-free computation.  grants {} and imports [] --
        imports is PRESENT, which is what switches admission on, so any free name
@@ -4236,6 +4336,11 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(opts.identity!==undefined)c.identity=opts.identity;"
     "    if(opts.tests!==undefined)c.tests=opts.tests;"
     "    if(opts.deps!==undefined)c.deps=opts.deps;"
+    /* `pure_library({intrinsics: []})` is the strictest contract expressible:
+       no free names at all, not even language values. NOT the default, because
+       this profile shipped with the full allowance and tightening it silently
+       would break fragments that already compute with JSON. */
+    "    if(opts.intrinsics!==undefined)c.intrinsics=opts.intrinsics;"
     "    return Object.freeze(c);};"
     /* describe(): the library's own honesty surface -- per contract field, WHAT
        ENFORCES IT.  So a reader can tell a field that bites from a field that is
@@ -4245,6 +4350,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    profiles:Object.keys(STD.profiles),"
     "    enforced:["
     "      {field:'imports',by:'admit free-name gate (C3)',effect:'refuse'},"
+    "      {field:'intrinsics',by:'admit free-name gate (C3), narrowing only',"
+    "       effect:'refuse'},"
     "      {field:'grants',by:'include: caps re-wrapped compartment-native',"
     "       effect:'authority'},"
     "      {field:'checkRequest',by:'admit request-field predicate',"
