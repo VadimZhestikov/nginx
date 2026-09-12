@@ -1,8 +1,9 @@
 # M-SES audit checklist (S6)
 
-**Status: SIGNED for ENGINEERING 2026-09-12 (§5). The SECURITY row is still
-blank — that is a separate attestation and this file should not be read as
-carrying it.** Evidence assembled 2026-09-11 and re-measured 2026-09-12 after
+**Status: SIGNED 2026-09-12 (§5), engineering and security — BUT BOTH ROWS CARRY
+THE SAME SIGNER, so this is one attestation, not two. No second pair of eyes has
+reviewed it. The security row accepts §3's five gaps as residual risk; it does
+not close them.** Evidence assembled 2026-09-11 and re-measured 2026-09-12 after
 fourteen commits of hardening (§2b), then re-run in full on a rebuilt tree for
 the signature (the run log is in §5).
 
@@ -270,7 +271,17 @@ still defaults to 0; the fuzz-corpus row is correctly gone, closed by the
 | Role | Name | Date | Scope reviewed |
 |---|---|---|---|
 | Engineering | Vadim Zhestikov | 2026-09-12 | §1–§4 on a rebuilt tree, all green (table above); §3's five gap rows re-confirmed still complete; negative controls 8/8. **The §4 commands were executed by the authoring session, not independently re-run by the signer** — so this attests acceptance of reproducible evidence, not an independent reproduction. Every command is in §4 and re-runnable. |
-| Security | | | |
+| Security | Vadim Zhestikov | 2026-09-12 | The five M-SES gate conditions (§1) are evidenced as claimed, incl. the self-validating control (12/12 closed confined, 12/12 open unconfined). §2b findings and their severities accepted, with the negative controls as the check (8/8 automated). **§3's five gaps are ACCEPTED AS RESIDUAL RISK, not closed** — per-fragment memory attribution, cross-compartment identity, `guarded`/`irreversible` COM members, the compiled tier under the escape probes, and host JS still unbounded by default. |
+
+> **BOTH ROWS CARRY THE SAME SIGNER.** The table has two rows so two perspectives
+> can attest independently; with one name in both, this is **one attestation, not
+> two**, and no second pair of eyes has been applied. Read it that way. A reader
+> who needs genuine separation-of-duties should treat the security row as
+> outstanding and re-run §4 themselves — every command is there, and
+> `verify-negative-controls.sh` makes §2b falsifiable in minutes.
+>
+> A security signature is an **acceptance of residual risk**, not a statement
+> that the gaps are closed. §3 lists exactly what is being accepted.
 
 **Any signature on this table without §3 having been checked is worth less than
 no signature**, because it converts "we know these holes exist" into "someone
