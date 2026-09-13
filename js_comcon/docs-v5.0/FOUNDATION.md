@@ -635,6 +635,43 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.73 (in place — F4 closed, F9 reduced, F8 measured: the three that "were not mine to
+close"):**
+
+**F4 — the guarded class, fuzzed one process at a time.** The setter fuzz excluded `guarded`
+because writing to those members rewires live dispatch and degrades the server under test,
+so every probe after the write measures wreckage. **That objection was about SHARED STATE,
+not about the members** — so each one now gets its own nginx: enumerate the guarded members
+from the live registry, start a fresh instance per member, fuzz that one alone. Three
+members are reached by the same walk the setter fuzz uses; all three take a hostile battery
+without a crash and keep serving. `irreversible` stays untested because the walk reaches
+**none** — a fact about the walk, recorded as such rather than as coverage.
+
+**What the control taught, and it changed the file:** with the handler setter patched to
+dereference NULL, the "does the process still serve?" probe **still passes**, because nginx's
+master respawns the dead worker before the next request. Only the log check fails. The
+liveness probe is not a crash detector; a file with only that probe would have called a
+segfaulting setter clean.
+
+**F9 — V13 is built, so six V-items remain rather than seven.** `t/comcon_v13_erasure.t`
+runs one corpus twice: admitted and confined inside COMCON, and in plain **node** with no
+annotations at all. **A different ENGINE is the point** — an in-process comparison shares
+the runtime whose behaviour is in question and would agree with itself. Seven rows chosen
+where erasure could plausibly break (V1's numeric boundaries 2⁵³/−0/NaN, string and JSON
+round-trips, RegExp state, sort and enumeration order, try/catch/finally ordering): all
+byte-identical. One row had to be rewritten before it counted — `1/-0` serializes to JSON
+`null` on both sides, so the row would have agreed no matter what the engines did.
+
+**F8 — not closed, but no longer unquantified.** T9 is accepted by design; an accepted risk
+of unknown magnitude is worth less than one of measured magnitude. A fragment cannot read a
+clock (`Date` is deliberately not an intrinsic), so the receiving tenant times nothing: the
+observer is the client and the medium is contention. The worker is single-threaded, so while
+one tenant burns CPU the other **does not run at all** — a peer's latency goes from
+**0.3 ms to 347 ms (1227× idle, ~2.9 bits/s)**. Under a 50 ms execution deadline the
+separation falls to 49.8 ms. **The deadline (F6/F12) is the only mitigation for T9 in the
+tree, and it bounds the per-event leak to exactly its own value** — narrowing the channel,
+never closing it, which is what "accepted residual" has to mean.
+
 **v5.72 (in place — F12 and F2: the bounds reach the places execution actually resumes):**
 two resource findings from the ledger, and both tests were WRONG FIRST in ways only their
 controls could show.

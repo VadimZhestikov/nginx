@@ -119,6 +119,24 @@ sessions (forensics, secrets-adjacent); opaque values close the *direct* readout
 *Residual (accepted, named):* timing/cache/contention channels between co-resident
 tenants — with IFC (T4), the explicitly-deferred confidentiality axis.
 
+**MEASURED 2026-09-13** (`t/tools/ifc-timing-channel.t` — evidence, not a gate). An
+accepted risk of unknown magnitude is worth less than one of measured magnitude, so
+here is the magnitude. A fragment cannot read a clock (`Date` is deliberately not an
+intrinsic), so the receiving tenant times nothing itself; the observer is the CLIENT
+and the medium is CPU contention. An nginx worker is single-threaded, so while one
+tenant burns CPU the other **does not run at all**:
+
+| receiver's latency | bit = 0 | bit = 1 | separation |
+|---|--:|--:|--:|
+| no execution bound | 0.3 ms | 347.5 ms | **347 ms — 1227× idle**, ~2.9 bits/s |
+| 50 ms deadline | 0.2 ms | 50.1 ms | 49.8 ms |
+
+This is not a subtle cache-timing attack; it is a complete stall, trivially readable
+by any client that can time two requests. **The execution deadline (F6/F12) is the
+only mitigation for it currently in the tree**, and it bounds the per-event leak to
+exactly the deadline — narrowing the channel, not closing it, which is what
+"accepted residual" has to mean here.
+
 ### T10 — Request-level attacker (classic injection, from the network)
 *Blocked by:* grammar-valued interfaces (SQL scenario 3, header CRLF scenario 4,
 patterns w/o ReDoS); tenant cages bound the blast radius of any tenant-code bug the

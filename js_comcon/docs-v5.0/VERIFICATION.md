@@ -342,9 +342,21 @@ list, as an undeclared free name. The row would have passed forever while attest
 gate it never reached. A probe must be checked for *which* mechanism refuses it, not only
 that something did.
 
-**V13 — Erasure spot check.** Run allow-suites on plain `qjs`/node (annotations
-ignored, capability doubles) vs admitted T1; must agree — keeps Principle 11 honest
-mechanically, forever.
+**V13 ✅ BUILT 2026-09-13 — Erasure spot check.** One corpus, two engines: each row of
+`t/tools/erasure-corpus.js` runs admitted-and-confined inside COMCON and in plain **node**
+with no annotations and no confinement at all, and the outputs must be byte-identical.
+
+**A different engine is the point.** An in-process second arm shares the runtime whose
+behaviour is in question and would agree with itself; node is an independent implementation
+of the same specification, which is what makes agreement worth anything.
+
+Seven rows, chosen where erasure could plausibly break rather than where it obviously holds:
+V1's numeric boundaries (2⁵³, −0, NaN — the places a naive int64 or a normalizing compiler
+would diverge), string and JSON round-trips, RegExp capture state, sort and enumeration
+order, try/catch/finally ordering with closure capture. All agree. **One row had to be
+rewritten before it counted:** `1/-0` serializes to JSON `null` on both sides, so comparing
+it as a number would have agreed regardless of what either engine did — a vacuous row
+dressed as a strict one. The control perturbs the node arm and prints the diff.
 
 ## Verifying the build
 
@@ -407,7 +419,7 @@ does not establish, and that statement is part of what was signed.
 
 | Now / M2–M3 | M5–M6 | M7 / M8 / M-SES |
 |---|---|---|
-| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · V13 | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · V5b · V10 · V14 |
+| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · **V13 ✅ (2026-09-13)** | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · V5b · V10 · V14 |
 
 **Meta-observation:** the R-review's critical findings clustered at *tier boundaries*
 and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maintained-

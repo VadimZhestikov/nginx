@@ -423,15 +423,30 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T7, T8
 - **V:** V5b
 
+#### G7.8 — the GUARDED class, fuzzed one process at a time
+- **CLAIM:** Hostile writes to a `guarded` COM member fail like an engineered operation, not
+  like a memory error: no crash, no alert, and the getter still answers afterwards.
+- **ARGUMENT:** The setter fuzz excludes `guarded` and says why — those members rewire live
+  dispatch, so writing to them in the shared instance degrades the server under test and
+  every probe after the write measures wreckage. The exclusion was about SHARED STATE, not
+  about the members, so each one gets **its own nginx**: enumerate the guarded members from
+  the live registry, then start a fresh instance per member and fuzz that one alone.
+- **EV:** `t/js_com_guarded_fuzz.t` — 3 guarded members reached by the same walk the setter fuzz uses, one process each; the control (a setter that dereferences NULL) shows the log check is what detects a crash, because nginx respawns the worker and the liveness probe passes anyway.
+- **EV:** `t/js_com_setter_fuzz.t` — the safe/reversible class, and the skip counts that named this gap.
+- **THREAT:** T1, T8
+- **V:** V5b
+
 #### G7.7 — co-resident tenants and the channels between them
 - **CLAIM:** *(partial, and the weakest claim in this document)* The DIRECT readout is
   closed — a peer's name is unresolvable, its values unreachable, and opaque secrets are
   unprintable. What is not closed is the INDIRECT one.
 - **GAP:** Timing, cache and contention channels between co-resident tenants are not
-  mitigated and not probed; the constant-response-time REL profile is specified for the
-  strictest sessions and is not built. With the IFC gap (T4) this is the explicitly
-  deferred confidentiality axis of the whole design, accepted rather than closed.
-  **home:** THREATS.md T9 · FOUNDATION §13.4 (post-M9 IFC track) · finding F8.
+  mitigated; the constant-response-time REL profile is specified and not built. With the IFC
+  gap (T4) this is the explicitly deferred confidentiality axis of the design, accepted
+  rather than closed — but **no longer unquantified**: measured at 0.3 ms → 347 ms on a
+  peer's latency (1227× idle, ~2.9 bits/s), narrowed to 49.8 ms by a 50 ms execution
+  deadline. **home:** THREATS.md T9 · FOUNDATION §13.4 (post-M9 IFC track) · finding F8.
+- **EV:** `t/tools/ifc-timing-channel.t` — the measurement (evidence, not a gate).
 - **EV:** `t/comcon_include_deny.t` — what IS closed: no peer name resolves, no shared surface.
 - **THREAT:** T9, T4
 - **V:** V13
@@ -564,6 +579,20 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T12
 - **V:** V7
 
+#### G11.7 — ERASURE: annotations decide whether code runs, never what it computes
+- **CLAIM:** A policy's source computes the same answers admitted-and-confined inside COMCON
+  as it does in plain **node**, with no annotations and no confinement at all.
+- **ARGUMENT:** Principle 11 — extend by granting, never by changing the language. If an
+  annotation could change semantics, "T2 refines T1" would be comparing two different
+  programs and SR-2 would measure nothing. A *different engine* is the point: an in-process
+  comparison shares the runtime whose behaviour is in question. The corpus targets where
+  erasure could plausibly break — the numeric model at its boundaries (V1: 2⁵³, −0, NaN),
+  string/JSON round-trips, RegExp state, sort and enumeration order, try/catch/finally.
+- **EV:** `t/comcon_v13_erasure.t` — seven rows, two engines, byte-identical; its control perturbs the node arm and the diff is reported.
+- **EV:** `t/tools/erasure-corpus.js` — the single corpus both arms read.
+- **THREAT:** T3, T7
+- **V:** V13, V1
+
 #### G11.2 — the reference semantics is independent of the implementation
 - **EV:** `t/tools/kernel-oracle.js` — written from the rules, sharing no code with `src/js`.
 - **THREAT:** T1
@@ -647,12 +676,12 @@ assurance case whose findings section is empty has not been built honestly.
 | **F1** | **20 of 83 evidence citations in the doc set pointed at files that do not exist** — pre-CONVERGENCE names, deleted in P6a/P6b. A reviewer following THREATS T11 to `t/comcon_gas.t` found nothing. | this document, §12 | **FIXED + now checked** (`check-assurance.py`) |
 | **F2** | No per-fragment memory attribution; nothing asserts a fragment hitting the 64 MB runtime cap | G6.6 | **PARTLY CLOSED 2026-09-13:** a per-INVOCATION allowance (16 MB default; `contract.meter.memoryBytes` may only narrow) enforced by narrowing the runtime limit for one call. **It bounds a BURST, not a leak** — a fragment retaining a little per call still walks the shared cap up, and that residue is the part of F2 still OPEN |
 | **F3** | Cross-compartment identity not probed | G7.6 | **PROBED 2026-09-12** — no channel found on eight shared surfaces, and removing the freeze opens five of them, so the mechanism is identified rather than assumed. **Residual:** declaring `Symbol` for two tenants gives them `Symbol.for` as a rendezvous, unwarned |
-| **F4** | `guarded` / `irreversible` COM members are excluded from the setter fuzz | AUDIT_M-SES.md §3 | OPEN — deliberate scope choice |
+| **F4** | `guarded` / `irreversible` COM members are excluded from the setter fuzz | AUDIT_M-SES.md §3 → G7.8 | **CLOSED 2026-09-13:** each guarded member is now fuzzed in **its own nginx instance**, which is what the shared-state objection actually required. `irreversible` remains untested because the live walk reaches **none** — the class exists in the registry but no member on those paths carries it |
 | **F5** | AOT-compiled fragments not separately run against the escape battery | G7.5 | **CLOSED 2026-09-12** (after the §15 signature — see §16): the battery now runs against a fragment with 20 natively-lowered functions, the precondition is asserted, and the tiers agree probe by probe |
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 → G6.6 | **CLOSED 2026-09-13** (after the §15 signature — see §16): the deadline defaults ON at 10 s, `0` opts out, a malformed value reads as the default. Superseded in part by **F12** |
 | **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
-| **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 | ACCEPTED residual (post-M9) |
-| **F9** | V-track items with no machinery yet: V5b, V6, V8, V9, V10, V13, V14 | VERIFICATION.md | OPEN — scheduled |
+| **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 → G7.7 | **ACCEPTED — and now QUANTIFIED (2026-09-13):** a co-resident tenant's CPU burn moves a peer's latency from **0.3 ms to 347 ms** (1227× idle, ~2.9 bits/s) because the worker is single-threaded. Under a 50 ms execution deadline the separation falls to 49.8 ms. The deadline is the only mitigation in the tree and it narrows, never closes |
+| **F9** | V-track items with no machinery yet: V5b, V6, V8, V9, V10, V14 | VERIFICATION.md | **REDUCED 2026-09-13: V13 is built** (G11.7 — erasure across two engines, node as the independent one). Six remain, each its own increment |
 | **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2 | ACCEPTED — stated in the audit |
 | **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
@@ -759,6 +788,8 @@ signature is never quietly credited with work it did not see.
 | **F6 CLOSED, F12 OPENED** — the host-JS request deadline now defaults ON (10 s; `0` opts out; malformed reads as the default), with `t/js_host_request_deadline.t` and two controls (the default reverted to 0; the interrupt handler made inert). Closing it exposed the narrower gap that F12 now names: the deadline covers one synchronous entry, not a continuation re-entered from an event callback. | **Narrows one residual and names a smaller one.** F6 as signed ("host JS is unbounded by default") is no longer true; the remainder is F12, which did not exist as a separate row when §15 was signed. |
 
 | **F12 CLOSED, F2 PARTLY CLOSED** — the host deadline is now armed at every entry that runs request JS (`w->current_request` is the chokepoint: 8 sites, one helper, nested entries inherit rather than extend), so a runaway after an `await` is stopped; and a confined fragment gets a per-invocation memory allowance (16 MB default, narrowable by contract, enforced by the engine). **Both probes were wrong first and their controls caught it:** the F12 probe used a GET (no body → no suspension → nothing tested) and the F2 probe allocated 64 MB (which hits the pre-existing runtime cap, so it passed with the new bound disabled). | **Narrows two residuals.** F2's remainder — a slow leak across calls — stays open and is named in its row. |
+
+| **F4 CLOSED, F9 REDUCED** — the guarded COM members are fuzzed one process at a time (G7.8), which is what the shared-state objection actually required rather than an exemption; and V13 is built (G11.7), so F9 drops from seven unbuilt V-items to six. `irreversible` stays untested because the live walk reaches none of them, which is a fact about the walk and is recorded as such. | **Closes one residual and shrinks another.** |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

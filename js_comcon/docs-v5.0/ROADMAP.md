@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.72 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.73 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,6 +74,12 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **F4 CLOSED, F9 REDUCED, F8 MEASURED (2026-09-13, v5.73).** The guarded COM members
+>   are fuzzed **one process at a time** (the shared-state objection required isolation,
+>   not an exemption); **V13 is built** (erasure checked against node — a different
+>   engine, which is the point), leaving six unbuilt V-items; and **T9 now has a number**:
+>   a peer's latency moves 0.3 ms → 347 ms (1227× idle, ~2.9 bits/s), narrowed to 49.8 ms
+>   by a 50 ms execution deadline — accepted, but no longer unquantified.
 > - **F12 CLOSED + F2 PARTLY CLOSED (2026-09-13, v5.72).** The host deadline is armed at
 >   every entry that runs request JS (`w->current_request`, 8 sites, one helper — an
 >   `await` no longer resets the bound), and a confined fragment gets a per-invocation
