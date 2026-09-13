@@ -221,7 +221,27 @@ kernel oracle + drift/enumeration checks); slow lane nightly (differential fuzzi
 mutation testing, TLA+, reproducibility) — the verification track must not make the
 edit-test loop slow.
 
-**V8 — Schema conformance tests, generated per registry row.** The typed tier trusts
+**V8 — Schema conformance tests, generated per registry row. ✅ BUILT 2026-09-13
+(the READ-ONLY half).** `t/js_com_schema_conformance.t`: the corpus is the live walk, so it
+cannot go stale; the hand-written parts — the unclassified inventory and the rows the walk
+cannot reach — are pinned, because a coverage number that moves silently is not coverage.
+Per row: the declared type must be what a real read returns (`handle<T>` is an object,
+`object[]`/`string[]` are arrays of that element); reading must mutate nothing, checked
+against a **volatility control** (two snapshots back to back with no reads between, so the
+server's own counters are not reported as mutations caused by the read); and a row declared
+`getter` is UNCLASSIFIED — counted, never passed.
+
+**What it found.** `names` declared `object[]` and returns `string[]` (the adjacent
+`serverNames` row had it right, which is what an inconsistency looks like from the inside);
+**20 read-only rows the walk reaches had no declared type at all**, now classified against
+their implementations; and `nginx.describe(req)` returns **zero rows** — the request, the
+tenant-facing surface, is outside the registry entirely (finding F13). Seven controls: five
+over planted objects, two end to end against the C map (a row deleted → the inventory pin
+fires; a row made to lie → the type check fires, naming both peer paths).
+
+**Still to do here:** the effect-class half for SETTABLE rows — "worker-local didn't leak
+cross-worker" needs the two-worker observation harness, and the propagation claim is the
+one registry field nothing has yet held to account. The typed tier trusts
 the schema's word about C stubs. Auto-generate property tests from the registry (the
 third consumer of the M2+S4 walk): call each op across its typed domain; verify result
 types **and effect classes** — "pure-read mutated nothing," "worker-local didn't leak
@@ -419,7 +439,7 @@ does not establish, and that statement is part of what was signed.
 
 | Now / M2–M3 | M5–M6 | M7 / M8 / M-SES |
 |---|---|---|
-| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · **V13 ✅ (2026-09-13)** | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · V5b · V10 · V14 |
+| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · **V8 ✅ (2026-09-13, read-only half)** · V9 · **V13 ✅ (2026-09-13)** | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · V5b · V10 · V14 |
 
 **Meta-observation:** the R-review's critical findings clustered at *tier boundaries*
 and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maintained-

@@ -1699,9 +1699,27 @@ ngx_js_table_has(const ngx_js_member_class_t *table, const char *name)
  * side-effect-free, and some COM getters (e.g. loc.proxy when the proxy module
  * is not configured for that location) dereference unconfigured module state
  * and crash if called outside a matching request.  So the type of a read-only
- * member is looked up here by name instead.  Entries are the verified,
- * cross-class-consistent getters operators inspect; anything not listed falls
- * back to type "getter" (still honest — it is a read-only accessor).
+ * member is looked up here by name instead.  Anything not listed falls back to
+ * type "getter" (still honest — it is a read-only accessor — but it is not yet
+ * an ANSWER, and the typed tier cannot reason with it).
+ *
+ * EVERY TYPE BELOW WAS READ OFF THE IMPLEMENTATION, and every row the live
+ * walk can reach is checked against a real read by
+ * t/js_com_schema_conformance.t (V8), whose inventory assertion is pinned at
+ * "no read-only row the walk reaches is left without a declared type".  So a
+ * getter added without a row here fails CI on the day it lands.  That test is
+ * how the 20 rows in the second group below were found, and how the `names`
+ * row was found to be wrong.
+ *
+ * THE MAP IS KEYED BY BARE MEMBER NAME, across every type.  A name that means
+ * different things on different types cannot be expressed: `server` is a
+ * STRING on an upstream peer and a `handle<NginxServer>` elsewhere.  That is
+ * survivable only because a member listed in a classification TABLE never
+ * consults this map — the table wins — so the entry below describes the
+ * read-only-discovered `server` (the peer's) and nothing else.  A future
+ * collision between two DISCOVERED read-only members of the same name is a
+ * real hazard, and it is detectable: the conformance test reports a mismatch
+ * per PATH, so the second type's rows would fail there.
  */
 static const struct {
     const char  *name;
@@ -1721,7 +1739,11 @@ static const struct {
     { "internal",                "boolean"  },
     { "hasHandler",              "boolean"  },
     /* collections */
-    { "names",                   "object[]" },
+    /* Strings, not objects: ngx_js_server_get_names() builds an array of
+     * server_name values.  It said "object[]" until V8 read one.  The adjacent
+     * `serverNames` row had it right all along, which is what an inconsistency
+     * between two rows for the same kind of thing looks like from the inside. */
+    { "names",                   "string[]" },
     { "locations",               "object[]" },
     { "peers",                   "object[]" },
     { "servers",                 "object[]" },
@@ -1734,8 +1756,49 @@ static const struct {
     { "ssl",                     "object"   },
     { "listener",                "object"   },
     { "largeClientHeaderBuffers","object"   },
+
+    /* ---- the core/cycle facts (ngx_js_cycle_get) ---------------------- *
+     * `pid` is the pid FILE PATH, not a process id — a string.  Classifying
+     * it is what makes that trap visible instead of letting a consumer infer
+     * "number" from the name. */
+    { "hostname",                "string"   },
+    { "prefix",                  "string"   },
+    { "installPrefix",           "string"   },
+    { "confFile",                "string"   },
+    { "errorLog",                "string"   },
+    { "pid",                     "string"   },
+    { "workingDirectory",        "string"   },
+    { "connectionN",             "number"   },
+    { "timerResolution",         "number"   },
+    { "shutdownTimeout",         "number"   },
+    { "priority",                "number"   },
+    { "rlimitNofile",            "number"   },
+    { "daemon",                  "boolean"  },
+    { "master",                  "boolean"  },
+
+    /* ---- the events block (ngx_js_events_get) ------------------------- */
+    { "connections",             "number"   },
+    { "use",                     "string"   },
+
+    /* ---- upstream peers (ngx_js_rr_peer_get / ngx_js_peer_get) -------- *
+     * `server` here is the peer's configured address string.  See the note
+     * on name-keying above: the `handle<NginxServer>` rows of the same name
+     * come from a classification table and never reach this map. */
+    { "server",                  "string"   },
+    { "conns",                   "number"   },
+    { "fails",                   "number"   },
+    { "backup",                  "boolean"  },
+
     { NULL, NULL }
 };
+
+/*
+ * NOT VERIFIED BY THE CONFORMANCE TEST: `alias`, `port`, `listener`, `servers`
+ * and `upstreams` are listed above but the live walk never reaches them as
+ * read-only rows, so nothing reads one back and compares.  Recorded here
+ * rather than left to look checked — the test reports the reached set so this
+ * list can be re-derived instead of trusted.
+ */
 
 static const char *
 ngx_js_ro_type_lookup(const char *name)

@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.74 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.75 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,6 +74,16 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **V8 BUILT (2026-09-13, v5.75): the registry's READ-ONLY half is now held to
+>   account per row** — `t/js_com_schema_conformance.t`, generated from the live walk.
+>   Found one real misdeclaration (`names`), **20 reached rows with no declared type**, and
+>   that **`nginx.describe(req)` returns ZERO rows**: the tenant-facing request surface is
+>   outside the registry (F13). That makes the read-only descriptor's hardcoded
+>   `requestScoped:false` unfalsifiable rather than wrong — and the test pins the request
+>   row count at zero so adding those rows must fix the field in the same change. **F9 is
+>   down to five unbuilt V-items.** Next here: V8's effect-class half (`worker-local` needs
+>   the two-worker observation harness — the one registry field nothing has yet checked),
+>   then M2's request-surface classification, which is what S4 needs for reach.
 > - **M-LIB STEP 4 SHIPPED (2026-09-13, v5.74): `ttl`, a capability lifetime.** The
 >   composition hole between TM-2's session lease and `include()`'s admission-time
 >   binding: the mapping expired while the authority did not. Lifetimes compose by `min`

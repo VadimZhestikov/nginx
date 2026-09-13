@@ -635,6 +635,50 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.75 (in place — V8: the registry's read-only half is held to account, and the
+request turns out not to be in the registry at all):** the typed tier and the config-review
+path reason from what `describe()` says. The SETTABLE half has had an instrument since the
+setter fuzz — which found four rows misdeclaring their type. The READ-ONLY half never did,
+and that is the half where the REACH paths live: `proxy`, `ssl`, `upstream`, `sockets` are
+getters that hand back a handle reaching further into the tree.
+
+The classification tables deliberately omit read-only members ("they carry no mutation
+safety class"), so a read-only row is assembled at runtime from a prototype discovery pass
+plus a static name→type map — **24 entries standing in front of 126 getter-only members.**
+
+`t/js_com_schema_conformance.t` generates the check from the live walk and found three
+things. **One real misdeclaration:** `names` declared `object[]` and returns `string[]`,
+while the adjacent `serverNames` row had it right all along — what an inconsistency looks
+like from the inside is two rows for the same kind of thing disagreeing. **Twenty read-only
+rows the walk reaches had no declared type at all** — honest (`"getter"` is not a lie) but
+not an answer, and the typed tier cannot reason with it; all twenty are now classified
+against their implementations, which is also how `pid` got recorded as the pid FILE PATH
+rather than a process id. **And `nginx.describe(req)` returns ZERO rows.**
+
+**That third one is the finding.** The request — `remoteAddr`, `uri`, `method`, `headers`,
+`body` — is the tenant-facing surface, and it carries no declared type and no class. The
+read-only descriptor hardcodes `requestScoped: false` for every row, which looked like a
+false claim about seventeen plainly request-scoped getters until the walk settled it: those
+rows are never emitted, so the field is **unfalsifiable rather than wrong**. Latent, not
+live — a distinction worth making, and worth pinning: the test asserts the request row count
+is zero, so whoever adds those rows must fix that field in the same change. Finding F13.
+
+**Pinning the negative space is the method here.** The corpus is generated, so it cannot go
+stale; what is hand-written is the *inventory* — the unclassified set (pinned at empty) and
+the five map entries the walk cannot reach (named, and explicitly NOT counted as verified).
+A coverage number that moves silently is not coverage, and "24 of 24 rows" would have meant
+nineteen.
+
+**The volatility control, and an assumption of mine that was wrong.** A pure-read check
+compares snapshots before and after reading everything — but live counters (`conns`,
+`fails`, `connections`) move on their own, and without a control the server's own traffic
+reads as a mutation caused by the read. So it takes two snapshots back to back with no reads
+between and excludes whatever already moved. I then asserted that this exclusion set must be
+non-empty, on the theory that a live tree always has moving counters. **It is empty** — an
+idle fixture has none — and that is the *best* case, not a failure: nothing excluded means
+the pure-read result is unqualified. Demanding the instrument find noise is not a control;
+the control is C4, which proves the mechanism fires on a value that really moves.
+
 **v5.74 (in place — M-LIB `ttl`: a capability with a lifetime, and the lease that finally
 bites):** TM-2 gave session grants a lease; `include()` binds grants as closure parameters at
 ADMISSION. So an operator who resolved a session once and bound a fragment had handed it

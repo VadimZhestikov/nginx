@@ -610,6 +610,36 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T3, T7
 - **V:** V13, V1
 
+#### G11.8 — the registry's READ-ONLY rows are held to account, per row
+- **CLAIM:** Every read-only member the live walk reaches declares a type, that type is
+  what a real read returns, and reading it mutates nothing.
+- **ARGUMENT:** The typed tier and the config-review path reason from the registry's word.
+  The SETTABLE half has had an instrument since the setter fuzz; the read-only half never
+  did — and the read-only half is where the reach paths live (`proxy`, `ssl`, `upstream`,
+  `sockets` all hand back a handle that reaches further). Its types come from a static
+  name→type map of 24 entries standing in front of 126 getters, which is the shape of a
+  claim that is true when written and quietly false later. The corpus is generated from the
+  live tree, so it cannot go stale; what is hand-written — the unclassified inventory and
+  the rows the walk cannot reach — is **pinned**, because a coverage number that moves
+  silently is not coverage.
+- **EV:** `t/js_com_schema_conformance.t` — 14 assertions, five instrument controls (a row
+  that lies, the honest version of the same row, a getter that mutates a sibling on read, an
+  undeclared row, and the volatility control firing on a value that really moves) plus two
+  end-to-end controls run against the C map itself.
+- **FOUND:** `names` declared `object[]` and returns `string[]`; **20 read-only rows the
+  walk reaches had no declared type at all**; and `nginx.describe(req)` returns **zero
+  rows**, so the request — `remoteAddr`, `uri`, `headers`, `body` — is entirely outside the
+  registry.
+- **GAP:** The read-only descriptor hardcodes `requestScoped: false` and
+  `propagation: "worker-local"` for every row. Those are unfalsifiable today *because* there
+  are no request rows to be wrong about; the test pins that at zero so adding them cannot
+  quietly leave the field lying. The map is also keyed by bare member name across all types,
+  which cannot express `server` being a string on a peer and a handle elsewhere — survivable
+  only because a table-listed member never consults the map.
+  **home:** finding F13 · M2 read-only rows · `ngx_js_ro_types[]` in ngx_js_com_describe.c.
+- **THREAT:** T1, T10
+- **V:** V8
+
 #### G11.2 — the reference semantics is independent of the implementation
 - **EV:** `t/tools/kernel-oracle.js` — written from the rules, sharing no code with `src/js`.
 - **THREAT:** T1
@@ -698,9 +728,10 @@ assurance case whose findings section is empty has not been built honestly.
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 → G6.6 | **CLOSED 2026-09-13** (after the §15 signature — see §16): the deadline defaults ON at 10 s, `0` opts out, a malformed value reads as the default. Superseded in part by **F12** |
 | **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
 | **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 → G7.7 | **ACCEPTED — and now QUANTIFIED (2026-09-13):** a co-resident tenant's CPU burn moves a peer's latency from **0.3 ms to 347 ms** (1227× idle, ~2.9 bits/s) because the worker is single-threaded. Under a 50 ms execution deadline the separation falls to 49.8 ms. The deadline is the only mitigation in the tree and it narrows, never closes |
-| **F9** | V-track items with no machinery yet: V5b, V6, V8, V9, V10, V14 | VERIFICATION.md | **REDUCED 2026-09-13: V13 is built** (G11.7 — erasure across two engines, node as the independent one). Six remain, each its own increment |
+| **F9** | V-track items with no machinery yet: V5b, V6, V9, V10, V14 | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7 — erasure across two engines) **and V8 built** (G11.8 — read-only schema conformance, generated per row). Five remain, each its own increment |
 | **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2 | ACCEPTED — stated in the audit |
+| **F13** | The REQUEST is outside the registry: `nginx.describe(req)` returns **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carry no declared type and no class. And the read-only descriptor hardcodes `requestScoped: false` and `propagation: "worker-local"` for every row, which is unfalsifiable only *because* there are no request rows to be wrong about. The map is also keyed by bare member name, so one name cannot have two types on two types (`server`). | G11.8 | **OPEN (found 2026-09-13 by V8).** Not a misstatement today, a latent one: `t/js_com_schema_conformance.t` pins the request row count at zero, so the field must be made per-row in the same change that adds them. Classifying the request surface is its own increment (it is the M2 half S4 needs for reach) |
 | **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
 
 ---
@@ -811,6 +842,8 @@ signature is never quietly credited with work it did not see.
 | **`ttl` SHIPPED — G6.7 added** (a capability lifetime; `t/comcon_cap_ttl.t`, 3 controls). G0 is now decomposed into 59 leaves. It also closes the half of TM-2's session lease that G6.6's GAP could not reach: a lease can now bite on authority already bound into a fragment. | **Adds a leaf and narrows a GAP.** Nothing signed becomes untrue; §15's evidence table gains one row it did not see. |
 
 | **The two INCONCLUSIVE negative-control rows are RE-BASED to MANUAL** (2026-09-13). §15 records "6 verified, 0 failed, 2 INCONCLUSIVE"; on the current tree the battery reports **6 verified, 0 failed, 0 skipped**, with the two rows moved into the MANUAL list *with the reason their inverse patch no longer applies* — so the count is honest rather than quietly two short. `git apply -R -3` was tried as an automated re-base and is now recorded in the script's header as a **trap**: it applied one file, failed the other, and left the partial revert in the tree. **The maintenance debt §15 accepted is not paid — it is now accurately labelled**, which is a different and lesser thing: six rows require a hand revert to check. | **Corrects an accounting, closes nothing.** The falsifiability that was lost is still lost; what changes is that the report no longer has an "inconclusive" bucket that reads like a transient failure. |
+
+| **V8 BUILT — G11.8 added; F9 down to five** — `t/js_com_schema_conformance.t` generates a conformance check per registry row for the READ-ONLY half of the surface, which no instrument had ever covered. It found a real misdeclaration (`names`: `object[]` → `string[]`), **20 read-only rows with no declared type**, and that `nginx.describe(req)` returns **zero rows** — the tenant-facing request surface is outside the registry entirely. All 21 type rows are now classified against their implementations, and the inventory is pinned at empty so a getter added without a type fails CI the day it lands. Seven controls: five over planted objects, two run end to end against the C map (a row removed, a row made to lie). | **Closes one V-item and narrows F9.** It also converts part of F9 from "no machinery" into a standing gate. Two NEW gaps are recorded in G11.8 rather than left implicit: the hardcoded `requestScoped`/`propagation` on read-only rows, and the map's bare-name keying. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with
