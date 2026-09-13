@@ -741,6 +741,47 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T1, T10
 - **V:** V8
 
+#### G11.12 — the same fragment compiles to the same bytes
+- **CLAIM:** One fragment, one toolchain, two cold compiles ⇒ a bit-identical `.so`.
+- **ARGUMENT:** The compile→sign→cache story rests on it. Without it a signature over an
+  artifact attests *which compile produced it*, not *what is in it* — so two honest compiles of
+  one fragment disagree and signature equality cannot decide that a cached artifact matches a
+  fragment.
+- **EV:** `t/tools/check-jit-reproducible.sh` — hand-run (it needs a JIT-capable `qjs`), three
+  controls: the defect restored, a compile error (refuses), and no artifact produced (refuses).
+- **FOUND:** the claim was **false**, in six bytes. GCC records the translation unit's filename
+  as an `STT_FILE` symbol and the name came from `mkstemps`. Fixed by deriving the basename from
+  the bytecode hash. **Half the first fix was inert** — a `chdir` on the theory that absolute
+  paths are recorded; GCC records only the basename, and the control is what established that.
+- **GAP:** One fragment, one compiler, one host. It does not check reproducibility across
+  toolchain versions or machines, and trusting-trust remains accepted as residual. It is
+  hand-run, so it constrains nothing per-commit.
+  **home:** VERIFICATION.md V14 · `jit_write_repro()` in quickjs/quickjs-jit.c.
+- **THREAT:** T3, T12
+- **V:** V14
+
+#### G11.13 — describe ⊇ mutable holds for the PROGRAM instance too
+- **CLAIM:** Every callable member of every program-instance surface appears in that surface's
+  own `describe().ops` with an op and a rights class from the closed vocabularies, and every row
+  names a member that exists.
+- **ARGUMENT:** `t/js_com_describe.t` holds the COM tree to this discipline. The program
+  instance has the same shape and had no check: four surfaces each carry a hand-written op list
+  sitting inches from the members it describes, which is the drift vector the enumeration
+  checker exists for — and two of the four are siblings with separate copies of one list.
+- **EV:** `t/comcon_v9_pom_describe.t` — four surfaces, both directions, closed vocabularies
+  restated in the test rather than imported (importing them would agree by construction), four
+  controls over planted drift.
+- **FOUND:** seven undescribed ops — `cst`, `origin`, and `describe`/`epoch`/`tombstoned` on
+  `bindAt`, `describe`/`epoch` on `bindShared`. **`describe` was a classified row on both
+  NodeViews and absent on both handles**: the same op classified on one surface and not its
+  sibling. Auditing the fourth surface found the last two.
+- **GAP:** It checks that a class is FROM the vocabulary, never that it is the RIGHT one — a
+  `replace` row marked `R` instead of `F` would pass. The rights semantics (R/F/X/L) are not
+  formalised anywhere a checker can read, so only presence and vocabulary are mechanical.
+  **home:** VERIFICATION.md V9 · POM.md's rights classes.
+- **THREAT:** T1, T10
+- **V:** V9
+
 #### G11.9 — THE SPEC cannot silently fall behind the code
 - **CLAIM:** Every member of a set `SPEC.md` calls closed appears in `SPEC.md`, so the
   normative read cannot quietly stop describing the shipped system.
@@ -854,7 +895,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 → G6.6 | **CLOSED 2026-09-13** (after the §15 signature — see §16): the deadline defaults ON at 10 s, `0` opts out, a malformed value reads as the default. Superseded in part by **F12** |
 | **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
 | **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 → G7.7 | **ACCEPTED — and now QUANTIFIED (2026-09-13):** a co-resident tenant's CPU burn moves a peer's latency from **0.3 ms to 347 ms** (1227× idle, ~2.9 bits/s) because the worker is single-threaded. Under a 50 ms execution deadline the separation falls to 49.8 ms. The deadline is the only mitigation in the tree and it narrows, never closes |
-| **F9** | V-track items with no machinery yet: **V5a, V5b, V6, V9, V10, V14** (six — this row said five until 2026-09-13, omitting V5a, which §Placement has always listed as unbuilt; a ledger that undercounts its own backlog is the quiet kind of wrong) | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7) **and V8 built COMPLETE** — both halves: G11.8 (read-only schema conformance) and G11.10 (the propagation column, across real workers). Six remain, each its own increment — and four of them (V5a, V5b, V6, V10) sit on the compiler/protocol track, so only V9 and V14 are reachable today |
+| **F9** | V-track items with no machinery yet: **V5a, V5b, V6, V10** (four — **V14 built 2026-09-13**, and it found its claim FALSE; was six — this row said five until 2026-09-13, omitting V5a, which §Placement has always listed as unbuilt; a ledger that undercounts its own backlog is the quiet kind of wrong) | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7) **and V8 built COMPLETE** — both halves: G11.8 (read-only schema conformance) and G11.10 (the propagation column, across real workers). **V14 built 2026-09-13** (G11.12 — and its claim was FALSE: the same fragment compiled to different bytes). **V9 built 2026-09-13** (G11.13 — seven undescribed ops found). **Four remain, and ALL FOUR (V5a, V5b, V6, V10) sit on the parked compiler/protocol track** — the reachable V-track backlog is empty |
 | **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2 | ACCEPTED — stated in the audit |
 | **F13** | The REQUEST was outside the registry: `nginx.describe(req)` returned **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carried no declared type and no class. The read-only descriptor hardcoded `requestScoped: false` for every row, unfalsifiable only *because* there were no request rows to be wrong about. | G11.8, G3.7 | **CLOSED 2026-09-13.** All **54** rows classified — 28 getters, 25 methods, one settable (`statusCode`) — as TABLE rows, which are per-class and carry their own `RQS`, rather than through the bare-name read-only map. **Every type was read off its getter, and none was wrong on the first run** (`startTime` is a number not a Date; `location` is a live handle, not a path string). The pin at zero is now the real count, plus an assertion that every request row declares `requestScoped` — so a getter added without a table row is emitted by the discovery pass with `false` and fails the day it lands. Three controls |
@@ -980,6 +1021,10 @@ signature is never quietly credited with work it did not see.
 | **THE TESTS ARE NOW GATED TOO — G11.11 added.** `check-dead-probes.py` hunts assertions that cannot fail, after five such defects surfaced by accident in this arc. First run: **39 assertions claiming something and checking nothing** — 27 padding, 8 restating a proven claim, and 4 genuinely untested behaviours that now have real assertions (all 4 claims were true, which is why they survived). Five controls, one per check. | **Strengthens the basis of every other row in this ledger, and weakens confidence in none of them — but it should temper how the word "closed" is read.** Each closure rests on an instrument, and roughly one instrument in ten in this tree was measuring nothing. §15 attested the code and the instruments as they were; this is the first gate on whether an instrument measures at all. |
 
 | **F13 CLOSED — G3.7 added.** The request surface is classified: 54 rows (28 getters, 25 methods, one settable), every one `requestScoped`, every type read off its getter and none wrong on the first run. V8's pin at zero — placed precisely so this could not happen quietly — is now the real count, and a new assertion means a getter added without a table row fails the suite. Three controls. | **Closes the last OPEN finding in the ledger.** What remains is two ACCEPTED residuals (F8 timing channels, F11 the single signer) and F9's six unbuilt V-items. Nothing §15 attested changes; a claim that was latent-false is now checked. |
+
+| **V14 BUILT — G11.12 added, and the claim it checks was FALSE.** The same fragment compiled to a different `.so` on every run, differing in six bytes: GCC records the translation unit's filename and that name came from `mkstemps`. Fixed by deriving the basename from the bytecode hash. Three controls; half the first fix was inert and the control is what said so. | **Closes a V-item and fixes a real defect in the signing story's premise.** §15 attested the instruments as they were; this one did not exist, and what it found means any earlier reasoning that treated artifact bytes as a content identity was wrong. F9 drops to five, only one of them reachable. |
+
+| **V9 BUILT — G11.13 added.** The describe⊇mutable discipline now covers the program instance: four surfaces, both directions, closed vocabularies. **Seven undescribed ops found**, including `describe` itself being a classified row on both NodeViews and absent on both epoch handles. Four controls; two rules of the auditor had to be corrected first (it reported the correct implementation of lazy materialization as drift). | **Closes the last REACHABLE V-item.** F9 drops to four, all of them on the parked compiler track. The new GAP is worth reading: this checks that a class is FROM the vocabulary, never that it is the RIGHT one. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

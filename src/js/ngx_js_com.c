@@ -4744,7 +4744,13 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    v.callsites=function(nm){"
     "      return v.query('call('+String(nm)+')').map(function(x){"
     "        return {name:x.name,line:x.line0,call:true,range:x.range};});};"
+    /* V9: `origin` is this CST view's crossing back to the bytecode-backed one,
+       and was unclassified.  (The list carrying `type` is the CST view -- the
+       first version of this fix put each crossing in the other's list, which the
+       checker reported as one undescribed member and one imaginary row per
+       view.) */
     "    v.describe=function(){return {kind:v.kind,type:v.type,ops:["
+    "      {name:'origin',op:'read',cls:'R'},"
     "      {name:'text',op:'read',cls:'R'},{name:'quote',op:'read',cls:'R'},"
     "      {name:'query',op:'read',cls:'R'},"
     "      {name:'references',op:'read',cls:'R'},"
@@ -4799,7 +4805,11 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    v.callsites=function(nm){"
     "      return (C.__pomCallsites(rootFn,String(nm))||[])"
     "        .filter(function(r){return r.call;});};"
+    /* V9: `cst` was added by D5b and never classified -- the drift this list
+       exists to prevent, in the list itself, found by asking the object rather
+       than by reading the source. */
     "    v.describe=function(){return {kind:v.kind,ops:["
+    "      {name:'cst',op:'read',cls:'R'},"
     "      {name:'text',op:'read',cls:'R'},{name:'quote',op:'read',cls:'R'},"
     "      {name:'query',op:'read',cls:'R'},"
     "      {name:'references',op:'read',cls:'R'},"
@@ -5560,7 +5570,14 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      pomFreeFrag(old);return epoch;};"
     "    h.remove=function(){tomb=true;site(null,epoch);return epoch;};"
     "    h.revive=function(){if(tomb){tomb=false;site(cur,epoch);}return epoch;};"
+    /* V9: the three READ ops on this handle were missing.  `describe` is
+       itself a row on both NodeViews and was absent here -- the same op
+       classified on one surface and not on its sibling, which is the shape a
+       reader cannot detect and a checker can. */
     "    h.describe=function(){return {ops:["
+    "      {name:'describe',op:'read',cls:'R'},"
+    "      {name:'epoch',op:'read',cls:'R'},"
+    "      {name:'tombstoned',op:'read',cls:'R'},"
     "      {name:'call',op:'invoke',cls:'R'},"
     "      {name:'replace',op:'rewrite',cls:'F'},"
     "      {name:'rollback',op:'rewrite',cls:'F'},"
@@ -5625,7 +5642,13 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    h.revive=function(){"
     "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
     "      return bump({source:st.source||''});};"
+    /* V9: the same two READ ops were missing here as on bindAt.  A sibling
+       surface with its own hand-written copy of an op list is exactly where the
+       drift lands twice, which is why the checker audits all four rather than
+       the three that were easy to reach. */
     "    h.describe=function(){return {shared:true,ops:["
+    "      {name:'describe',op:'read',cls:'R'},"
+    "      {name:'epoch',op:'read',cls:'R'},"
     "      {name:'handler',op:'invoke',cls:'R'},"
     "      {name:'replace',op:'rewrite',cls:'F'},"
     "      {name:'remove',op:'remove',cls:'X'},"

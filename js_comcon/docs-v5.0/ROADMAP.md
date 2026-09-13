@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.80 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.82 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,17 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **V9 BUILT (2026-09-13, v5.82): describe ⊇ mutable now covers the PROGRAM instance —
+>   seven undescribed ops.** Four surfaces each carry a hand-written op list next to the
+>   members it describes. `describe` itself was classified on both NodeViews and absent on
+>   both epoch handles. **Auditing the fourth surface found the last two.** **F9 is down to
+>   four, ALL on the parked compiler track: the reachable verification backlog is EMPTY.**
+> - **V14 BUILT (2026-09-13, v5.81) — and its claim was FALSE.** The same fragment compiled
+>   to a different `.so` every run, differing in six bytes: GCC records the translation
+>   unit's filename and it came from `mkstemps`. **Signed bytes therefore attested which
+>   compile produced an artifact, not what is in it.** Fixed with one content-derived
+>   basename. **Half the first fix was inert and only the control said so.** F9 down to five,
+>   with **V9 the only reachable one left**.
 > - **F13 CLOSED (2026-09-13, v5.80): the request surface is classified — 54 rows, every one
 >   request-scoped.** The tenant-facing object had no type and no class while every
 >   config-phase node had both. Table rows (per-class), not the bare-name read-only map, so

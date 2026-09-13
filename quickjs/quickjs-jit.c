@@ -2018,6 +2018,57 @@ static char *jit_write_tmp(const char *src, const char *suffix)
     return strdup(path);
 }
 
+/*
+ * V14 — write src where GCC will record a REPRODUCIBLE name for it.
+ *
+ * The compiled .so used to differ on every run for the same fragment, in
+ * exactly six bytes: GCC records the translation unit's filename as an
+ * STT_FILE symbol, and the name came from mkstemps -- `qjs_jit_2m6d6L.c` one
+ * run, `qjs_jit_Y1siAd.c` the next.  The generated C was byte-identical both
+ * times; only the temp name leaked in.  That is enough to break the claim the
+ * compile->sign->cache story rests on: a signature over the bytes then attests
+ * WHICH COMPILE produced an artifact rather than WHAT IS IN IT, so two honest
+ * compiles of one fragment cannot be shown to agree.
+ *
+ * So the file gets a BASENAME derived from the bytecode hash -- the same identity
+ * the cache is keyed by -- inside a private directory.
+ *
+ * The basename is the whole fix, and that was MEASURED rather than assumed.  The
+ * first version also chdir'd the compiler into the job directory and passed bare
+ * names, on the theory that an absolute path would be recorded; reverting just
+ * that half changed nothing, because GCC records only the basename in STT_FILE.
+ * The control said so, the extra machinery came out, and what is left is one
+ * name.
+ *
+ * The directory is per-call on purpose.  A deterministic PATH would put two
+ * processes compiling the same function on the same file: identical content, but
+ * nothing makes a partial write or an unlink-during-read safe, and the old random
+ * names were at least free of that.  A unique directory keeps that safety and
+ * still gives GCC a deterministic name, which is all reproducibility needs.
+ */
+static char *jit_write_repro(const char *src, uint64_t hash, const char *suffix,
+                             char **dir_out)
+{
+    char dir[192];
+    char path[256];
+
+    snprintf(dir, sizeof(dir), "/tmp/qjs_jitd_XXXXXX");
+    if (mkdtemp(dir) == NULL) return NULL;
+
+    snprintf(path, sizeof(path), "%s/qjs_jit_%016llx%s",
+             dir, (unsigned long long)hash, suffix);
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) { rmdir(dir); return NULL; }
+    size_t len = strlen(src);
+    ssize_t written = write(fd, src, len);
+    close(fd);
+    if (written != (ssize_t)len) { unlink(path); rmdir(dir); return NULL; }
+
+    *dir_out = strdup(dir);
+    return strdup(path);
+}
+
 /* Execute one GCC job: compile C to .so, dlopen, install jit_func. */
 /*
  * BACKSTOP: does the generated C still bake a RUNTIME-SPECIFIC atom?
@@ -2210,7 +2261,8 @@ static void jit_compile_gcc_job(JITGCCJob *job)
         fprintf(stderr, "qjs jit: codegen bug: %016llx bakes a "
                         "runtime-specific atom; not cached\n",
                 (unsigned long long)job->bc_hash);
-    char *c_path = jit_write_tmp(job->c_src, ".c");
+    char *job_dir = NULL;
+    char *c_path = jit_write_repro(job->c_src, job->bc_hash, ".c", &job_dir);
     free(job->c_src);
     job->c_src = NULL;
     if (!c_path) goto fail;
@@ -2220,6 +2272,8 @@ static void jit_compile_gcc_job(JITGCCJob *job)
     snprintf(so_path, sizeof(so_path), "%s", c_path);
     char *dot = strrchr(so_path, '.');
     if (dot) strcpy(dot, ".so");
+
+
 
     /* Fork + exec gcc */
     pid_t pid = fork();
@@ -2251,7 +2305,11 @@ static void jit_compile_gcc_job(JITGCCJob *job)
         jit_cache_put_c_src(c_path, job->bc_hash);
     if (!getenv("QJS_JIT_KEEP_C")) unlink(c_path);
     free(c_path);
-    if (!gcc_ok) { unlink(so_path); goto fail; }
+    if (!gcc_ok) {
+        unlink(so_path);
+        if (job_dir) { rmdir(job_dir); free(job_dir); job_dir = NULL; }
+        goto fail;
+    }
 
     /* Cache the compiled .so before unlinking (Phase 7.3).
      * P45b: warm recompile results are not cached — they're observation-specific. */
@@ -2266,6 +2324,7 @@ static void jit_compile_gcc_job(JITGCCJob *job)
      * invisible to other dlopen calls and they fail with RTLD_NOW. */
     void *handle = dlopen(so_path, RTLD_NOW | RTLD_GLOBAL);
     unlink(so_path);
+    if (job_dir) { rmdir(job_dir); free(job_dir); job_dir = NULL; }
     if (!handle) {
         /* dlopen failure is transient (missing callee symbol not yet loaded,
          * or OS error) — do NOT write .skip; we want to retry on future runs.

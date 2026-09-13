@@ -273,8 +273,37 @@ types **and effect classes** — "pure-read mutated nothing," "worker-local didn
 cross-worker" (two-worker observation harness). A misclassified safety class currently
 fails silently; this makes it fail in CI.
 
-**V9 — The describe⊇mutable drift check extends to POM node-kind rows** (the js_com
-discipline, automated, covering the program instance too).
+**V9 — The describe⊇mutable drift check extends to the PROGRAM INSTANCE. ✅ BUILT
+2026-09-13.** `t/comcon_v9_pom_describe.t`. The js_com discipline — every mutable member appears
+in `describe()` with a class — had never been applied to the program instance, which has the
+same shape: a POM NodeView and an epoch handle each carry a `describe()` listing their ops with
+a rights class, **hand-written inches from the members they describe.** Add `h.freeze` without a
+row and nothing fails.
+
+**Four surfaces carry such a list** (bytecode-backed NodeView, CST-backed NodeView, `bindAt`
+handle, `bindShared` handle), and it is checked in **both directions**: ⊇ every callable member
+appears in its own `describe().ops`; ⊆ every row names a member that exists; plus a closed `op`
+and `cls` vocabulary, restated in the test rather than imported from the implementation — a test
+that imports the vocabulary agrees with the implementation by construction and checks nothing.
+
+**FOUND: seven undescribed ops.** `cst` on the bytecode view and `origin` on the CST view (the
+crossings between them, both added later and never classified); `describe`, `epoch` and
+`tombstoned` on the `bindAt` handle; `describe` and `epoch` on `bindShared`. `describe` was
+itself a classified row on both NodeViews and absent on both handles — **the same op classified
+on one surface and not on its sibling**, which a reader cannot detect and a checker can.
+Auditing the fourth surface is what found the last two: a sibling with its own copy of a
+hand-written list is exactly where the same drift lands twice.
+
+**A runtime test, not a scraper:** these surfaces are built in the JS bootstrap and frozen, and
+their members exist only once a fragment is compiled and a site bound. A static reader would be
+guessing at what `Object.keys` returns; the test asks the objects.
+
+Four controls over a planted object whose `describe()` is wrong in each way. Two rules of the
+auditor itself had to be corrected first: requiring callability reported `children`/`parent`,
+which are real ops that materialize **lazily as data** (the point of a lazy view), and requiring
+the two NodeView variants to have identical op sets would have required them to be the same
+object — they legitimately differ by one crossing each, so what is checked is that they classify
+every op they SHARE identically.
 
 ## Verifying the protocols
 
@@ -405,10 +434,33 @@ dressed as a strict one. The control perturbs the node arm and prints the diff.
 
 ## Verifying the build
 
-**V14 — Reproducible builds.** The compile→sign→cache story assumes deterministic
-compilation; nothing verifies it. CI: same fragment artifact + pinned toolchain ⇒
-bit-identical `.so`. Without it, signatures attest provenance but not content
-equivalence. (Trusting-trust accepted as residual, noted.)
+**V14 — Reproducible builds. ✅ BUILT 2026-09-13 — and the claim was FALSE when first
+measured.** The compile→sign→cache story assumes deterministic compilation and nothing
+verified it. `t/tools/check-jit-reproducible.sh`: two cold-cache compiles of one fragment,
+diff the `.so`.
+
+**It failed, in exactly six bytes.** The generated C was byte-identical both runs; GCC records
+the translation unit's filename as an `STT_FILE` symbol, and that name came from `mkstemps` —
+`qjs_jit_2m6d6L.c` one run, `qjs_jit_Y1siAd.c` the next. So **a signature over the bytes
+attested WHICH COMPILE produced an artifact rather than WHAT IS IN IT**: two honest compiles of
+one fragment disagreed, and signature equality could not be used to decide that a cached `.so`
+matches a fragment. Fixed by `jit_write_repro()` — a private directory per job with a basename
+derived from the bytecode hash, the same identity the cache is keyed by.
+
+**Half of the first fix was inert, and the control is what said so.** It also `chdir`'d GCC into
+the job directory and passed bare names, on the theory that an absolute path would be recorded.
+Reverting only that half changed nothing: **GCC records only the basename.** The machinery came
+out; what remains is one name. Three controls — the random basename restored (the defect
+reproduces, same six bytes at the same offset), a deliberate compile error (**REFUSES**, after
+the first version of the script reported a broken engine as "SKIP", which is a broken tree
+reading as nothing to test), and a run that produces no artifact at all (refuses rather than
+diffing two absences).
+
+Hand-run, like `run_sanitizers.sh`: it needs a JIT-capable `qjs`, which the ordinary build does
+not produce. It rebuilds that binary when it is older than the engine source — a stale `qjs`
+reports the behaviour of the code it was built from, and that cost real time here: the probe's
+first run called `--jit-aot` an unknown option because `qjs.o` had been reused from a non-JIT
+build. (Trusting-trust remains accepted as residual, noted.)
 
 ## Assembling it
 
@@ -464,7 +516,7 @@ does not establish, and that statement is part of what was signed.
 
 | Now / M2–M3 | M5–M6 | M7 / M8 / M-SES |
 |---|---|---|
-| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · **V8 ✅ (2026-09-13, BOTH halves)** · V9 · **V13 ✅ (2026-09-13)** | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · V5b · V10 · V14 |
+| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · **V8 ✅ (2026-09-13, BOTH halves)** · **V9 ✅ (2026-09-13)** · **V13 ✅ (2026-09-13)** | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · **V14 ✅ (2026-09-13)** · V5b · V10 |
 
 **Meta-observation:** the R-review's critical findings clustered at *tier boundaries*
 and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maintained-

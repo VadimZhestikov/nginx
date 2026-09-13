@@ -635,6 +635,88 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.82 (in place — V9: describe ⊇ mutable reaches the program instance, and seven ops were
+undescribed):** `t/js_com_describe.t` has held the COM tree to one discipline since the
+beginning — every mutable member appears in `describe()` with a class. The **program instance**
+has exactly the same shape and had no check at all. Four surfaces carry a `describe()` listing
+their ops with a rights class: the bytecode-backed NodeView, the CST-backed NodeView, the
+`bindAt` epoch handle and its class-F sibling `bindShared`. **Each list is hand-written inches
+from the members it describes.** Add `h.freeze` without a row and nothing fails.
+
+**Seven ops were undescribed.** `cst` on the bytecode view and `origin` on the CST view — the
+crossings between the two, both added later than the lists. `describe`, `epoch` and `tombstoned`
+on `bindAt`. `describe` and `epoch` on `bindShared`. **`describe` was itself a classified row on
+both NodeViews and absent on both handles**: the same op classified on one surface and not on its
+sibling, which no reader would spot and a checker finds immediately.
+
+**Auditing the fourth surface is what found the last two, and that is the lesson.** Three of the
+four were easy to construct; `bindShared` needed a shared key and an `onRequest` hook. Stopping
+at three would have produced a coverage claim that reads as complete — and the sibling with its
+own copy of a hand-written list is precisely where the same drift lands twice. It did.
+
+**Checked in BOTH directions**, because the two failures are different: ⊇ catches a new op
+nobody classified, ⊆ catches a row left behind by a rename, describing something imaginary. The
+`op` and `cls` vocabularies are **restated in the test** rather than imported from the
+implementation — a test that imports the vocabulary it is checking agrees by construction and
+checks nothing.
+
+**Two of the auditor's own rules were wrong first, and both were caught by reading its output
+rather than by trusting it.** Requiring a described member to be CALLABLE reported `children`
+and `parent` on both NodeViews — which are real ops that materialize **lazily as data** on
+access, i.e. the correct implementation of a lazy view. And requiring the two NodeView variants
+to have identical op sets would have required them to be the same object; they differ by one
+crossing each, legitimately, so what is checked is that they classify every op they SHARE
+identically. *A rule that reports the correct implementation of the thing it checks gets switched
+off within a week.*
+
+**Stated limit:** it checks that a class is FROM the vocabulary, never that it is the RIGHT one.
+A `replace` row marked `R` instead of `F` would pass. The rights semantics are not written
+anywhere a checker can read, so only presence and vocabulary are mechanical here.
+
+**With V9 built, F9 drops to four unbuilt V-items — and all four sit on the parked compiler
+track. The reachable verification backlog is empty.**
+
+**v5.81 (in place — V14: the same fragment did NOT compile to the same bytes, and half the
+first fix was inert):** the compile→sign→cache story assumes deterministic compilation. Nothing
+had ever checked it, and the premise was already suspect: `bc_hash` folds in a
+`__DATE__ __TIME__` build stamp. Two cold compiles of one fragment, diff the `.so`.
+
+**It failed, in exactly six bytes, at the same offset every time.** The generated C was
+byte-identical; GCC records the translation unit's filename as an `STT_FILE` symbol, and that
+name came from `mkstemps` — `qjs_jit_2m6d6L.c` one run, `qjs_jit_Y1siAd.c` the next. Six
+characters of randomness, straight into the artifact.
+
+**What that cost was the meaning of a signature.** Signed bytes attested WHICH COMPILE produced
+an artifact rather than WHAT IS IN IT: two honest compiles of one fragment disagreed, so
+signature equality could not be used to decide that a cached `.so` matches a fragment. The fix
+is one name — `jit_write_repro()` gives the file a basename derived from the bytecode hash, the
+same identity the cache is already keyed by, inside a private directory. The directory stays
+unique deliberately: a deterministic PATH would put two processes on one file, and nothing makes
+a partial write or an unlink-during-read safe.
+
+**HALF THE FIRST FIX DID NOTHING, and the control is the only reason that is known.** It also
+`chdir`'d the compiler into the job directory and passed bare filenames, on the theory that an
+absolute path would be recorded. Reverting just that half changed nothing — **GCC records only
+the basename** — so the probe still passed with the chdir gone. A control that confirms a fix
+also tells you which part of it was load-bearing, and here it removed a third of the diff.
+*Shipping the inert half would have been shipping a belief.*
+
+**And the instrument's own first version hid a broken tree behind a SKIP.** When a deliberate
+compile error was introduced, it reported "could not build … SKIP" and exited 0 — a failing
+engine reading as "nothing to test". A skip is for a toolchain that is ABSENT, never for one
+that is present and failing; it refuses now. Same family as the stale-object trap that bit
+twice more today: `qjs.o` reused from a non-JIT build made `--jit-aot` look like an unknown
+option, and `libquickjs.a` was a day old, so the nginx binaries would have been gated against
+the *old* engine.
+
+Three controls: the random basename restored (the defect reproduces, same six bytes at the same
+offset), a compile error (refuses), and a run producing no artifact (refuses rather than diffing
+two absences). V14 is hand-run — it needs a JIT-capable `qjs`, which the ordinary build does not
+produce — so it constrains nothing per-commit, and one fragment on one compiler on one host says
+nothing about reproducibility across toolchains. Trusting-trust stays accepted as residual.
+
+**F9 drops to five unbuilt V-items, and only V9 is reachable.**
+
 **v5.80 (in place — F13 closed: the request is in the registry, and every row says it is
 request-scoped):** every config-phase node had a declared type and a safety class. The object a
 tenant actually touches had neither — `nginx.describe(req)` returned **zero rows**. `remoteAddr`,
