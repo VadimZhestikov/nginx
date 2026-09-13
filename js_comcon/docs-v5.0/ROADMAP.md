@@ -75,6 +75,32 @@
 >   loop-free". Measured: a natively-lowered fragment (`aotStatus` `compiled:1`) running an
 >   8-billion-iteration loop under a 150 ms meter is **interrupted at 150 ms**, exactly like
 >   the interpreted one.
+>
+>   **AND THE PAYOFF IS NOT WHERE THE THESIS PUTS IT** (`t/tools/host-call-cost.t`,
+>   2 M iterations, identical on both tiers). Decomposing the host call these policies make:
+>
+>   | per call | µs | |
+>   |---|---|---|
+>   | a plain JS function call | 0.034 | for scale |
+>   | JS→C dispatch, boxed args | 0.039 | **the ABI floor — about the price of a JS call** |
+>   | + `JS_ToCString` of the key | 0.033 | **not measurable; string marshalling is free** |
+>   | typed stub, slot resolved | 0.034 | what M1's slab atomic looked like |
+>   | + the spinlock | 0.041 | |
+>   | **`shared.incr` today** (near-front hit) | **0.079** | +0.045 is the LINEAR SCAN |
+>   | **`shared.incr` on a miss** (217 keys) | **0.417** | +0.38 is the scan |
+>   | `req.headers['x-tenant']` | 0.130 | |
+>   | …with `req.headers` hoisted once | 0.030 | **+0.10 is materializing the surface** |
+>
+>   So the costs a typed stub ABI **uniquely** removes — boxing, marshalling, dispatch — total
+>   about **0.035 µs, roughly one JS call**. The costs that dominate are a **linear scan over
+>   256 slots with 128-byte key compares** (2.3× on a hit, 12× on a miss) and **re-materializing
+>   `req.headers` on every access** (0.10 µs). **Both are host-side and fixable today, with no
+>   compiler**: an index instead of a scan, and a per-request cached headers surface.
+>
+>   M1's hand-written C did not have either cost — it used a slab atomic on a resolved slot —
+>   which means a substantial part of its **3.44×** is a data-structure result being attributed
+>   to compilation. **Before committing to M5, fix those two and re-measure the gap**; what
+>   remains after that is the honest size of the compiler's prize.
 > - **What is open and unblocked is M-LIB** — and it became unblocked quietly, when M3
 >   completed: M-LIB is specified as "authored *in* the policy language once M3 exists".
 >   There are **20 kernel operators and no `std.*` at all**, while `MANUAL.md` is written

@@ -564,6 +564,41 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.59 (in place — M5 evidence, part 2: the payoff is not where the thesis puts it):**
+part 1 (v5.58) showed that compiling a policy's JS buys ~1.0×, so M5's value, if any, is in
+the typed stub ABI. Part 2 decomposes the host call itself (`t/tools/host-call-cost.t`,
+2 M iterations, identical on both tiers), and the answer is that **the typed ABI is not the
+expensive part**.
+
+| per call | µs | |
+|---|---|---|
+| a plain JS function call | 0.034 | for scale |
+| JS→C dispatch, boxed args | 0.039 | **the ABI floor — about the price of a JS call** |
+| + `JS_ToCString` of the key | 0.033 | **not measurable: string marshalling is free** |
+| typed stub, slot resolved | 0.034 | what M1's slab atomic looked like |
+| + the spinlock | 0.041 | |
+| **`shared.incr` today** (near-front hit) | **0.079** | +0.045 = the LINEAR SCAN |
+| **`shared.incr` on a miss** (217 keys) | **0.417** | +0.38 = the scan |
+| `req.headers['x-tenant']` | 0.130 | |
+| …with `req.headers` hoisted once | 0.030 | **+0.10 = materializing the surface** |
+
+The costs a typed stub ABI **uniquely** removes — dispatch, boxing, marshalling — come to
+about **0.035 µs, roughly one JS call**. What dominates instead is a **linear scan over 256
+slots comparing 128-byte keys under a spinlock** (2.3× on a hit, 12× on a miss) and
+**re-materializing `req.headers` on every access** (0.10 µs, versus 0.030 µs when the surface
+is hoisted). Both are host-side and fixable **today, with no compiler**: an index instead of a
+scan, a per-request cached headers surface.
+
+**This reframes the M1 gate.** M1's hand-written C had neither cost — a slab atomic on a
+resolved slot, direct request access — so a substantial part of its **3.44×** is a
+data-structure result that has been read as a compilation result. The honest next step before
+any M5 commitment is to fix those two host costs and re-measure the gap; what survives is the
+compiler's actual prize.
+
+`nginx.__benchStub(mode, arg)` is the decomposition instrument (documented in
+`src/js/ngx_js_com.c` as an instrument, not an API: it writes a slot by index with no key,
+which no policy should be able to do).
+
 **v5.58 (in place — M5 decision evidence: two measurements, and one belief corrected):**
 the commitment question for the compiler track rested on two unmeasured beliefs.
 `t/tools/policy-compute-split.t` measures both, **in-process** — a throughput benchmark on

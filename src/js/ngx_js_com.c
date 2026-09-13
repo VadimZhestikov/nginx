@@ -2741,6 +2741,94 @@ ngx_js_shared_fn_keys(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/*
+ * nginx.__benchStub(mode, arg) -> number   [M5 EVIDENCE INSTRUMENT, not an API]
+ *
+ * Decomposes what a host call costs, so the M5 question -- "is the payoff in the
+ * typed stub ABI?" -- can be answered with numbers instead of a thesis.
+ * `shared.incr` is the host call the candidate policies make, and it currently
+ * does THREE things per call: a JS->C dispatch with boxed args, a
+ * JS_ToCString() of the key, and a LINEAR SCAN of up to 256 slots comparing
+ * 128-byte keys under a spinlock. A "typed stub" removes the first two. Only
+ * measuring separates them:
+ *
+ *   mode 0  return immediately            -- the JS->C call floor
+ *   mode 1  JS_ToCString(arg) and free    -- adds string marshalling
+ *   mode 2  increment slot `arg` directly -- a typed stub: int in, no scan
+ *   mode 3  as 2 without the spinlock     -- what the lock costs
+ *
+ * Against the real `shared.incr(key, 1)` these give the whole breakdown. It is
+ * deliberately double-underscored and documented as an instrument: it writes to
+ * a slot by index with no key, which is not a thing any policy should be able to
+ * do. See t/tools/policy-compute-split.t and ROADMAP's M5 evidence block.
+ */
+static JSValue
+ngx_js_bench_stub(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    const char             *s;
+    int32_t                 mode = 0;
+    int64_t                 slot = 0;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "__benchStub(mode[, arg])");
+    }
+    JS_ToInt32(ctx, &mode, argv[0]);
+
+    if (mode == 0) {
+        return JS_NewInt64(ctx, 0);
+    }
+
+    if (mode == 1) {
+        if (argc < 2) {
+            return JS_ThrowTypeError(ctx, "__benchStub(1, str)");
+        }
+        s = JS_ToCString(ctx, argv[1]);
+        if (s == NULL) {
+            return JS_EXCEPTION;
+        }
+        JS_FreeCString(ctx, s);
+        return JS_NewInt64(ctx, 0);
+    }
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return JS_EXCEPTION;
+    }
+    entries = (ngx_js_shared_entry_t *) (hdr + 1);
+
+    if (argc >= 2) {
+        JS_ToInt64(ctx, &slot, argv[1]);
+    }
+    if (slot < 0 || (ngx_uint_t) slot >= hdr->capacity) {
+        return JS_ThrowRangeError(ctx, "__benchStub: slot out of range");
+    }
+
+    /* The typed-stub shape: the key was resolved to a slot at bind time, so the
+     * per-call work is an add. This is what M1's hand-written C did with a slab
+     * atomic -- no key, no scan, no lock. */
+    if (mode == 3) {
+        int64_t  v;
+        ngx_memcpy(&v, entries[slot].val, sizeof(int64_t));
+        v += 1;
+        ngx_memcpy(entries[slot].val, &v, sizeof(int64_t));
+        return JS_NewInt64(ctx, v);
+    }
+
+    {
+        int64_t  v;
+        ngx_spinlock(&hdr->lock, 1, 2048);
+        ngx_memcpy(&v, entries[slot].val, sizeof(int64_t));
+        v += 1;
+        ngx_memcpy(entries[slot].val, &v, sizeof(int64_t));
+        ngx_unlock(&hdr->lock);
+        return JS_NewInt64(ctx, v);
+    }
+}
+
+
 static JSValue
 ngx_js_shared_fn_incr(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
@@ -5077,6 +5165,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "grantToTenant",
                       JS_NewCFunction(ctx, ngx_js_grant_to_tenant,
                                       "grantToTenant", 1));
+
+    /* M5 evidence instrument (see its comment): host-call cost decomposition. */
+    JS_SetPropertyStr(ctx, nginx_obj, "__benchStub",
+                      JS_NewCFunction(ctx, ngx_js_bench_stub, "__benchStub", 2));
 
     /* D4c/AOT-A: which tier a host function is on (read-only). */
     JS_SetPropertyStr(ctx, nginx_obj, "jitStatus",
