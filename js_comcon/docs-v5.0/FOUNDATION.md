@@ -635,6 +635,45 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.71 (in place — F6: host JS is bounded by default, and the narrower gap that closing it
+exposed):** AUDIT_M-SES §3 carried this as OPEN *and as a deliberate scope choice* — "bind
+the guard to the confined path only, so host JS behaviour does not change." The cost of that
+choice was a worker hung until SIGKILL on one accidental `while(true)` in a
+`location.handler`, taking every other client on it down, while
+`nginx.workerRequestTimeout` — the knob that would have prevented it — defaulted to 0.
+**A guard that is off by default protects only the operators who already knew they needed
+it.**
+
+**Ten seconds, not the tenant's one.** Host JS is trusted and may legitimately spend real
+SYNCHRONOUS time in a request (a COM tree walk, a large parse); nothing legitimate
+approaches ten seconds, and a worker wedged for ten is still enormously better than one
+wedged forever. `0` is an explicit opt-out, a malformed or missing value reads as the
+default (the same fail-closed direction as every other malformed-contract decision here),
+and the property now READS as its own default so the knob documents itself.
+
+**Three measurements shaped the test, and each corrected an assumption.** (1) Assigning the
+knob inside a handler affects the NEXT request, because it is read once before the handler
+runs — the first probe was measuring the default while claiming to measure 300 ms. (2) The
+CLIENT gives up before a 10 s server bound does (Test::Nginx waits 8 s), so the default's
+evidence is the error log, not the response — which is also the symptom an operator meets:
+a runaway looks like a client timeout. (3) An abort is not catchable in the handler; the
+interrupt unwinds the whole call, so a handler cannot report its own execution and the test
+must not ask it to.
+
+**Closing F6 exposed a narrower gap, now named F12 rather than implied away:** the deadline
+bounds one SYNCHRONOUS ENTRY and is cleared when a handler suspends, so a continuation
+re-entered from an event callback runs unbounded — **an `await` resets the protection**.
+Arming every re-entry means touching 19 `JS_Call` sites; a time-gap heuristic was considered
+and REJECTED because under sustained load the worker never idles, so a cumulative clock
+would abort every request — a cure far worse than the disease. It is also not probeable
+today: a content handler suspended on a `setTimeout`-resolved promise does not resume at all
+(measured: 500 with no deadline involved), so that path cannot be exercised that way.
+
+Two controls: the default reverted to 0 (six assertions fail, including the headline) and the
+interrupt handler made inert (five fail). `t/js_host_request_deadline.t` (7). Recorded in
+ASSURANCE §16 — F6 as signed is no longer true, and F12 did not exist as a row when §15 was
+signed.
+
 **v5.70 (in place — [TBD-2] fully resolved: the capability layer's own refusals get codes):**
 the second and last tranche. `E_CAP_FLAVOR` — a mediation flavor outside the closed
 vocabulary, which is the refusal that closed a **fail-open** where a typo (`redcat` for

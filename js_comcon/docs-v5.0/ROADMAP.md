@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.70 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.71 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,6 +74,13 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **F6 CLOSED (2026-09-13, v5.71): host JS is bounded by default.**
+>   `nginx.workerRequestTimeout` now defaults to 10 s (0 = explicit opt-out, malformed =
+>   the default). The old default of 0 meant one accidental `while(true)` hung a worker
+>   until SIGKILL. **Closing it exposed and named F12:** the deadline bounds one
+>   SYNCHRONOUS entry, so a continuation after an `await` is still unbounded — the
+>   time-gap heuristic that would cover it was rejected (under load the worker never
+>   idles, so a cumulative clock would abort every request).
 > - **F10 CLOSED / [TBD-2] FULLY RESOLVED (2026-09-12, v5.70):** `E_CAP_FLAVOR` and
 >   `E_CAP_ESCALATE` ship — the latter one code for one rule over four raising sites, two
 >   of which are defence-in-depth and recorded as unprobeable rather than given a dead

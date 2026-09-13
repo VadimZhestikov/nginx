@@ -378,6 +378,36 @@ var limited = comcon.mediate(sock, comcon.uses('acme-sock', 100, 60));
 
 ---
 
+## 8c. `nginx.workerRequestTimeout` — host JS is bounded by default *(v5.71)*
+
+```js
+nginx.workerRequestTimeout        // 10000 — the shipped default, readable
+nginx.workerRequestTimeout = 0    // explicit opt-out: unbounded, deliberately
+nginx.workerRequestTimeout = 500  // takes effect on the NEXT request
+```
+
+A runaway `location.handler` used to hang the worker until SIGKILL, taking every other
+client on it down, and this knob defaulted to `0`. It now defaults to **10 s** — ten,
+not the tenant fragment's one, because host JS is trusted and may legitimately spend real
+*synchronous* time in a request (a COM tree walk, a large parse).
+
+Three things to know:
+
+1. **It is read once, before your handler runs**, so assigning it inside a handler affects
+   the *next* request, not the current one. That is deliberate (the value is a worker-level
+   setting, not a per-request argument) and is what makes it cheap.
+2. **A malformed value reads as the default**, not as unbounded — a setting nobody can read
+   must not silently remove the bound.
+3. **It bounds one synchronous entry.** The deadline is cleared when a handler suspends, so
+   a continuation resumed from an event callback runs without one: an `await` resets your
+   protection. Recorded as ASSURANCE.md finding F12.
+
+An abort is not catchable in the handler: the interrupt unwinds the whole call, so nginx
+answers 500 (or the client sees a timeout, if it is less patient than the deadline) and the
+error log carries `InternalError: interrupted`. That log line is how you find these.
+
+---
+
 ## 8a. Sessions — turning an authenticated principal into an environment *(v5.65)*
 
 The operator-facing half of FOUNDATION §8b (which owns the design and the reasoning).

@@ -132,6 +132,26 @@ typedef struct {
  * js_tenant_timeout directive is a follow-up; this is the safe default. */
 #define NGX_JS_TENANT_TIMEOUT_MS  1000
 
+/*
+ * F6: the per-request execution deadline for HOST JS -- ON BY DEFAULT.
+ *
+ * A runaway `location.handler` is operator code, not a tenant fragment, so it
+ * was deliberately left unbounded: "bind the guard to the confined path only,
+ * so host JS behaviour does not change" (AUDIT_M-SES §3). The cost of that
+ * choice is a worker that hangs FOREVER on one accidental `while(true)`, taking
+ * every other client on it down, and the knob that would have prevented it
+ * defaulted to off -- so it protected only the operators who already knew.
+ *
+ * 10 s, not the tenant's 1 s, because host JS is trusted and may legitimately
+ * do heavy SYNCHRONOUS work in a request (a COM tree walk, a large parse). No
+ * legitimate synchronous stretch approaches ten seconds; a worker wedged for
+ * ten is still enormously better than one wedged until SIGKILL.
+ *
+ * `nginx.workerRequestTimeout = 0` remains an explicit opt-out, and the
+ * property now READS as this default so the knob documents itself.
+ */
+#define NGX_JS_HOST_REQUEST_TIMEOUT_MS  10000
+
 
 /*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).

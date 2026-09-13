@@ -5725,13 +5725,17 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                               | JS_PROP_CONFIGURABLE);
 
     /*
-     * nginx.workerRequestTimeout — per-request JS execution cap in ms (0 =
-     * none).  js_source scripts write this value; init_process installs a
-     * QuickJS interrupt handler that checks a monotonic-clock deadline set
-     * around each JS_Call in the content handler.
+     * nginx.workerRequestTimeout — per-request JS execution cap in ms.
+     *
+     * F6: DEFAULTED ON (NGX_JS_HOST_REQUEST_TIMEOUT_MS). It used to read 0,
+     * which meant a runaway host handler hung the worker forever unless the
+     * operator had already thought to set this -- a guard that protects only
+     * the people who did not need it. Setting it to 0 is now an explicit
+     * opt-out, and the property reads as its own default so the knob documents
+     * itself instead of requiring a document.
      */
     JS_DefinePropertyValueStr(ctx, nginx_obj, "workerRequestTimeout",
-                              JS_NewInt32(ctx, 0),
+                              JS_NewInt32(ctx, NGX_JS_HOST_REQUEST_TIMEOUT_MS),
                               JS_PROP_WRITABLE | JS_PROP_ENUMERABLE
                               | JS_PROP_CONFIGURABLE);
 

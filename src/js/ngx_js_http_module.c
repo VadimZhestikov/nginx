@@ -6796,10 +6796,26 @@ ngx_js_content_handler(ngx_http_request_t *r)
         }
         JS_FreeValue(ctx, val);
 
+        /*
+         * F6: the deadline is ON unless the operator turns it off.
+         *
+         *   a number > 0   that many milliseconds
+         *   exactly 0      NO deadline -- an explicit, deliberate opt-out
+         *   anything else  the default (absent, deleted, NaN, negative, a
+         *                  string): a setting nobody can read must not silently
+         *                  mean "unbounded", which is the direction every other
+         *                  malformed-contract decision in this codebase takes.
+         */
         val = JS_GetPropertyStr(ctx, nginx_obj, "workerRequestTimeout");
-        if (!JS_IsException(val)
-            && JS_ToInt64(ctx, &n, val) == 0 && n > 0)
-        {
+
+        if (JS_IsException(val) || JS_ToInt64(ctx, &n, val) != 0 || n < 0) {
+            n = NGX_JS_HOST_REQUEST_TIMEOUT_MS;
+        }
+        if (JS_IsUndefined(val) || JS_IsNull(val)) {
+            n = NGX_JS_HOST_REQUEST_TIMEOUT_MS;
+        }
+
+        if (n > 0) {
             struct timespec  ts;
 
             clock_gettime(CLOCK_MONOTONIC, &ts);
