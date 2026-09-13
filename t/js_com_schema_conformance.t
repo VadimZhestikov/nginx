@@ -59,6 +59,12 @@
 #               request rows to be wrong about.  Pinned so that adding them
 #               becomes a deliberate act that must also fix that field.
 #
+# Run under the sanitizers by name -- this file is not in the S6 gate's default
+# corpus (comcon_*.t), and a stale objs_asan/objs_ubsan reports the behaviour of
+# whatever it was built from, which looks exactly like a build-dependent bug:
+#
+#     bash t/run_sanitizers.sh 'js_com_schema_conformance.t'
+#
 # The oracles are written against nothing but property reads and a row table, so
 # the SAME code runs over planted-bug objects in the /ctl self-test: a row that
 # lies about its type, a getter that mutates a sibling when read, and an extra

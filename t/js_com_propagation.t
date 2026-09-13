@@ -54,6 +54,16 @@
 # The precondition -- that the fan-out really reached two or more workers -- is
 # asserted as a TEST, never as a skip. A run that reached one worker has measured
 # nothing, and must say so by failing.
+#
+# This file writes into live config structures from several processes, so it is
+# worth running under the sanitizers.  It is not in the S6 gate's default corpus
+# (that glob is comcon_*.t), so name it:
+#
+#     bash t/run_sanitizers.sh 'js_com_propagation.t'
+#
+# Verified clean under both, 0 findings in src/js -- but rebuild objs_asan and
+# objs_ubsan first.  A stale sanitizer tree reports the behaviour of the code it
+# was built from, which looks exactly like a build-dependent bug.
 
 use warnings;
 use strict;
