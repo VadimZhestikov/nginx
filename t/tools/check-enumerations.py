@@ -15,7 +15,7 @@ suite rather than waiting for someone to re-read a document.
 
     python3 t/tools/check-enumerations.py [--verbose]
 
-Exit 0 = the five enumerations agree with the code. Exit 1 = drift, printed.
+Exit 0 = the six enumerations agree with the code. Exit 1 = drift, printed.
 """
 
 import re
@@ -309,7 +309,11 @@ def check_denial_codes():
     note("C: %s" % sorted(c_codes))
 
     golden = read("t/tools/golden-denials.js")
-    g_codes = set(re.findall(r"code:\s*'([^']+)'", golden))
+    # the GOLDEN array only -- REFUSALS holds the admission half (check 6), and
+    # scraping the whole file made every refusal code look like a denial row
+    # that the runtime "no longer emits".
+    gblock = golden[golden.index("var GOLDEN = ["):golden.index("var REFUSALS = [")]
+    g_codes = set(re.findall(r"code:\s*'([^']+)'", gblock))
     note("corpus: %s" % sorted(g_codes))
 
     for c in sorted(c_codes - g_codes):
@@ -322,11 +326,50 @@ def check_denial_codes():
                      "exist" % g)
 
 
+# ---------------------------------------------------------------------------
+# 6. Refusal codes: the C enumeration vs the V12 golden corpus.
+#
+# The other half of MANUAL §3.2, added with [TBD-2]. A denial code names a gate
+# that fired at RUN time; a refusal code names why a fragment was never admitted.
+# Same rule as check [5], for the same reason: a code that ships without a row is
+# an unfrozen promise, and a row without a code is a contract for something that
+# does not exist.
+#
+# The NONE row is skipped deliberately -- it is the success value, spelled "",
+# and is not a code any tenant can be refused with.
+# ---------------------------------------------------------------------------
+def check_refusal_codes():
+    print("[6] refusal codes (C enum vs the V12 golden corpus)")
+    cmp_c = read("src/js/ngx_js_compartment.c")
+    m = re.search(r"ngx_js_refusal_codes\[NGX_JS_REFUSAL_LAST\]\s*=\s*\{(.*?)\};",
+                  cmp_c, re.S)
+    if not m:
+        fails.append("[6] ngx_js_refusal_codes[] not found")
+        return
+    c_codes = set(c for c in re.findall(r'"([^"]*)"', m.group(1)) if c)
+    note("C: %s" % sorted(c_codes))
+
+    golden = read("t/tools/golden-denials.js")
+    # the REFUSALS array only -- GOLDEN's rows are the denial half (check 5)
+    rblock = golden[golden.index("var REFUSALS = ["):]
+    g_codes = set(re.findall(r"code:\s*'(E_[A-Z_]+)'", rblock))
+    note("corpus: %s" % sorted(g_codes))
+
+    for c in sorted(c_codes - g_codes):
+        fails.append("[6] refusal code %r has no row in the golden corpus -- "
+                     "MANUAL §3.2 tells tenants to pin CI to codes, so an "
+                     "unprobed one ships unfrozen" % c)
+    for g in sorted(g_codes - c_codes):
+        fails.append("[6] the golden corpus freezes refusal %r, which the "
+                     "runtime cannot emit" % g)
+
+
 check_p_symbols()
 check_portals()
 check_ops_resources()
 check_intrinsics()
 check_denial_codes()
+check_refusal_codes()
 
 print("")
 if fails:
@@ -334,5 +377,5 @@ if fails:
     for f in fails:
         print("  - " + f)
     sys.exit(1)
-print("all five enumerations agree with the code")
+print("all six enumerations agree with the code")
 sys.exit(0)

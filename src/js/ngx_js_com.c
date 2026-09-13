@@ -3366,16 +3366,58 @@ ngx_js_admit_free_cb(void *ud, const char *name)
 
 
 static JSValue
-ngx_js_admit_verdict(JSContext *ctx, ngx_uint_t certified, const char *reject)
+ngx_js_admit_verdict(JSContext *ctx, ngx_uint_t certified, const char *reject,
+    ngx_js_refusal_code_t code)
 {
     JSValue  o;
 
     o = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, o, "certified", JS_NewBool(ctx, certified ? 1 : 0));
     if (!certified && reject != NULL) {
+        /*
+         * `code` before `reject`: the verdict is read by machines first
+         * ([TBD-2] — MANUAL §3.2 tells tenants to pin CI to the code) and by
+         * a person second. Both are always present on a refusal; a verdict
+         * with prose and no code is the thing this enum was added to end.
+         */
+        JS_SetPropertyStr(ctx, o, "code",
+                          JS_NewString(ctx, ngx_js_refusal_name(code)));
         JS_SetPropertyStr(ctx, o, "reject", JS_NewString(ctx, reject));
     }
     return o;
+}
+
+
+/*
+ * Throw a coded refusal: the message keeps its prose and gains a bracketed
+ * code at the END (so every existing reader and every grep still finds the
+ * text it knew), and the Error object carries `.code` — the half a deny-suite
+ * should actually assert on, since it survives rewording.
+ */
+JSValue
+ngx_js_comcon_refuse(JSContext *ctx, ngx_js_refusal_code_t code,
+    const char *fmt, ...)
+{
+    u_char       *p, buf[512];
+    JSValue       exc;
+    va_list       args;
+    const char   *name;
+
+    name = ngx_js_refusal_name(code);
+
+    va_start(args, fmt);
+    p = ngx_vslprintf(buf, buf + sizeof(buf) - 1, fmt, args);
+    va_end(args);
+    *p = '\0';
+
+    JS_ThrowTypeError(ctx, "%s [%s]", (char *) buf, name);
+
+    exc = JS_GetException(ctx);
+    if (JS_IsObject(exc)) {
+        JS_SetPropertyStr(ctx, exc, "code", JS_NewString(ctx, name));
+    }
+
+    return JS_Throw(ctx, exc);
 }
 
 
@@ -3384,20 +3426,30 @@ ngx_js_admit_verdict(JSContext *ctx, ngx_uint_t certified, const char *reject)
  * `comcon.include` (which composes admission on the fragment it compiles in the
  * confined compartment) share ONE implementation. Runs entirely in `ctx`:
  * `fn` and `imports` (a JS array, or JS_UNDEFINED) must belong to `ctx`.
- * Returns NGX_OK (certified) or NGX_ERROR with `reason` filled. Grants are
+ * Returns NGX_OK (certified) or NGX_ERROR with `reason` filled and `*code` set
+ * to the refusal code ([TBD-2]; ngx_js_compartment.h). Grants are
  * closure var-refs on `fn`, not free globals, so they are auto-excluded from
  * the free-name check — only genuine global lookups must be in `imports`.
+ *
+ * `reason` is the prose and `*code` is the CONTRACT: the two are set together
+ * at every refusal site, because a reason without a code is what MANUAL §3.2
+ * told tenants not to pin to, and a code without a reason is a lookup table
+ * the operator reading the error log does not have.
  */
 ngx_int_t
 ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
-    JSValueConst intrinsics, int check_request, char *reason, size_t reason_len)
+    JSValueConst intrinsics, int check_request, char *reason, size_t reason_len,
+    ngx_js_refusal_code_t *code)
 {
     JSValue               len;
     ngx_js_admit_check_t  chk;
     char                  field[128];
     uint32_t              i;
 
+    *code = NGX_JS_REFUSAL_NONE;
+
     if (!JS_IsFunction(ctx, fn)) {
+        *code = NGX_JS_REFUSAL_ADMIT_ARG;
         ngx_snprintf((u_char *) reason, reason_len,
                      "admit: arg0 must be a function%Z");
         return NGX_ERROR;
@@ -3405,6 +3457,7 @@ ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
 
     /* C3: no direct eval / with */
     if (js_comcon_uses_dynamic_code(fn)) {
+        *code = NGX_JS_REFUSAL_ADMIT_DYNCODE;
         ngx_snprintf((u_char *) reason, reason_len,
                      "dynamic-code: eval or with%Z");
         return NGX_ERROR;
@@ -3448,6 +3501,7 @@ ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
         ngx_uint_t   known = (is != NULL) ? ngx_js_admit_name_intrinsic(is) : 0;
 
         if (!known) {
+            *code = NGX_JS_REFUSAL_ADMIT_INTRINSIC;
             ngx_snprintf((u_char *) reason, reason_len,
                          "intrinsics: %s is not in the intrinsics allowance; "
                          "`intrinsics` only narrows it -- declare the name in "
@@ -3466,6 +3520,7 @@ ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
     if (js_comcon_collect_free_globals(ctx, fn, ngx_js_admit_free_cb, &chk)
         != 0)
     {
+        *code = NGX_JS_REFUSAL_ADMIT_NOTBYTECODE;
         ngx_snprintf((u_char *) reason, reason_len,
                      "admit: arg0 not a bytecode function%Z");
         return NGX_ERROR;
@@ -3484,6 +3539,7 @@ ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
          * declaration is a policy question recorded in VERIFICATION.md V3, not
          * something to widen silently.
          */
+        *code = NGX_JS_REFUSAL_ADMIT_FREENAME;
         ngx_snprintf((u_char *) reason, reason_len,
                      "free name not declared in imports: %s%Z", chk.badname);
         return NGX_ERROR;
@@ -3493,12 +3549,44 @@ ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn, JSValueConst imports,
     if (check_request
         && js_comcon_check_request_fields(ctx, fn, field, sizeof(field)))
     {
+        *code = NGX_JS_REFUSAL_ADMIT_SCHEMA;
         ngx_snprintf((u_char *) reason, reason_len,
                      "request field not in sealed schema: %s%Z", field);
         return NGX_ERROR;
     }
 
     return NGX_OK;
+}
+
+
+/*
+ * COMCON [TBD-2]: comcon.refusalCodes() — the closed refusal set, read from the
+ * same table the refusals are thrown from.
+ *
+ * V7's rule (enumerations are generated, never maintained) applies with force
+ * here: this is the list a tenant's CI enumerates to discover what it may be
+ * refused with, so a hand-kept copy would be a promise that drifts. There are
+ * no counters — a refusal happens at ADMISSION, so it is a load-time event with
+ * an exception to catch, not a per-request statistic like a denial counter.
+ */
+static JSValue
+ngx_js_comcon_refusal_codes(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    JSValue     a;
+    uint32_t    n = 0;
+    ngx_uint_t  i;
+
+    a = JS_NewArray(ctx);
+
+    /* from 1: NONE is the success value, not a code (see the names table) */
+    for (i = NGX_JS_REFUSAL_NONE + 1; i < NGX_JS_REFUSAL_LAST; i++) {
+        JS_SetPropertyUint32(ctx, a, n++,
+            JS_NewString(ctx,
+                ngx_js_refusal_name((ngx_js_refusal_code_t) i)));
+    }
+
+    return a;
 }
 
 
@@ -3511,6 +3599,7 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
     int           check_request = 0;
     char          reason[256];
     ngx_int_t     rc;
+    ngx_js_refusal_code_t  code;
 
     fn = argc > 0 ? argv[0] : JS_UNDEFINED;
     contract = argc > 1 ? argv[1] : JS_UNDEFINED;
@@ -3527,11 +3616,12 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
     }
 
     rc = ngx_js_comcon_admit_check(ctx, fn, imports, intrinsics, check_request,
-                                   reason, sizeof(reason));
+                                   reason, sizeof(reason), &code);
     JS_FreeValue(ctx, imports);
     JS_FreeValue(ctx, intrinsics);
 
-    return ngx_js_admit_verdict(ctx, rc == NGX_OK, rc == NGX_OK ? NULL : reason);
+    return ngx_js_admit_verdict(ctx, rc == NGX_OK, rc == NGX_OK ? NULL : reason,
+                                code);
 }
 
 
@@ -5464,6 +5554,11 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__aotStatus",
                           JS_NewCFunction(ctx, ngx_js_comcon_aot_status,
                                           "__aotStatus", 1));
+        /* [TBD-2]: the closed refusal-code set, generated from the C table —
+           what a tenant's deny-suite may be refused with. */
+        JS_SetPropertyStr(ctx, comcon_obj, "refusalCodes",
+                          JS_NewCFunction(ctx, ngx_js_comcon_refusal_codes,
+                                          "refusalCodes", 0));
         /* increment D5a: call-site / reference enumeration (bytecode scan). */
         JS_SetPropertyStr(ctx, comcon_obj, "__pomCallsites",
                           JS_NewCFunction(ctx, ngx_js_comcon_pom_callsites,

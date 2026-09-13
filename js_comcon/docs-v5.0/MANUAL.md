@@ -148,19 +148,53 @@ DENIED  E_CAP_UNRESOLVED                        ← stable, machine-parsable cod
   hint:   your grant covers: api.partner.com    ← what WOULD work
 ```
 
+**That block is the record's designed shape, not today's output.** What exists now:
+exact per-code counters (`nginx.tenantDenials()`), an error-log line naming the op, the
+object, the mode and the running total (under the TM-1 quota + sampling), and — for a
+refusal — a thrown `Error` carrying `.code` and a source position
+(`at <comcon-fragment>:LINE:COL`). The `policy:` and `hint:` fields have no
+implementation yet; do not write CI against them.
+
 The same record, sign-flipped, is what learning mode logs and what your deny-suite
 asserts against. Codes are stable across releases — pin your CI to codes, not to
-message text. **[TBD-2]** The exact code taxonomy is undesigned (candidate families:
-`E_CAP_*` resolution, `E_ADMIT_*` admission, `E_BUDGET_*`, `E_PIN_*`, `E_EPOCH_*`).
+message text.
 
-**What that promise covers TODAY (v5.61).** Only the *runtime compartment* denials are
-codes: `sock.listener`, `listener.read`, `listener.serverByName`, `enum.sockets`,
-`sock.mutate` — machine-readable via `nginx.tenantDenials().byOp`, and each one frozen
-with a probe in the V12 golden corpus (`t/tools/golden-denials.js`), so a rename breaks
-the project's own suite before it breaks yours. **The ADMISSION refusals are not codes
-yet** — an undeclared free name, dynamic code, a request field outside the sealed schema
-all arrive as message text. Until [TBD-2] lands you cannot follow the advice above for
-admission; match those on the *prefix*, expect it to move, and do not build a gate on it.
+**Two axes, and you need both.** A **denial** names a gate that fired while your
+policy was *running*; a **refusal** names why your policy was never *admitted*. They
+fail differently and you fix them differently, so they are separate sets:
+
+| | what it means | where you read it | today's set |
+|---|---|---|---|
+| **denial** | a reach gate denied an operation at request time | `nginx.tenantDenials().byOp` (exact counters per code) | `sock.listener`, `listener.read`, `listener.serverByName`, `enum.sockets`, `sock.mutate` |
+| **refusal** | the fragment was not admitted — it never ran | `e.code` on the throw; `code` on an `admit()` verdict; `comcon.refusalCodes()` enumerates the set | `E_ADMIT_ARG`, `E_ADMIT_NOTBYTECODE`, `E_ADMIT_SOURCE`, `E_ADMIT_DYNCODE`, `E_ADMIT_FREENAME`, `E_ADMIT_INTRINSIC`, `E_ADMIT_SCHEMA`, `E_ADMIT_TEST`, `E_ADMIT_CONTRACT`, `E_ADMIT_DEP`, `E_CAP_GRANT`, `E_PIN_IDENTITY`, `E_EPOCH_STALE` |
+
+A refusal carries its code three ways: as `.code` on the thrown `Error` (**assert on
+this one**), bracketed at the end of the message so your error log is greppable
+(`… free name not declared in imports: nginx [E_ADMIT_FREENAME]`), and as `code` on
+the verdict object `admit()` returns. The prose beside it may be reworded in any
+release; the code may not.
+
+```js
+try {
+    comcon.include(src, contract);
+} catch (e) {
+    if (e.code === 'E_ADMIT_FREENAME') { /* add the name to imports */ }
+}
+```
+
+**Both sets are frozen by a test, not by a promise.** Every code above carries a probe
+in `t/tools/golden-denials.js`, and `t/comcon_v12_denial_codes.t` provokes each one and
+compares what fires against what is frozen (V12) — so a renamed code breaks this
+project's own suite before it breaks your CI. A code cannot be added to the runtime
+without a probe or a written reason it is unreachable.
+
+**[TBD-2] — what is still missing.** The taxonomy above is the admission and runtime
+surface. Two families named in earlier drafts have **no members yet, deliberately**:
+`E_BUDGET_*` (the deadline abort is the engine's interrupt — there is no refusal of
+ours at that point to label) and the capability layer's own `E_CAP_FLAVOR` /
+`E_CAP_ESCALATE` (an unknown mediation flavor; a `realize()` that would widen
+authority) — those are thrown in the JS layer, deserve codes, and are the next tranche.
+Until then, match those two on message text and expect it to move.
 
 ### 3.3 Your documentation is generated — and cannot lie
 
@@ -506,7 +540,12 @@ The `comconctl` verb set is a design target consolidated from the showcases.
 ## Appendix B. The [TBD] harvest — decisions this manual forced into the open
 
 1. **[TBD-1] Default-root contents** — the secure-vs-useful out-of-box line.
-2. **[TBD-2] Denial code taxonomy** — stable machine codes; feeds M2.5's schema.
+2. **[TBD-2] Denial code taxonomy — ✅ RESOLVED 2026-09-12 (v5.62), except two named
+   families.** Two axes shipped and frozen by V12: DENIAL codes (the run-time gates,
+   `nginx.tenantDenials().byOp`) and REFUSAL codes (admission, `e.code` +
+   `comcon.refusalCodes()`) — see §3.2. Still open, recorded rather than invented:
+   `E_BUDGET_*` (no refusal of ours to label — the deadline is the engine's
+   interrupt) and the JS capability layer's `E_CAP_FLAVOR` / `E_CAP_ESCALATE`.
 3. **[TBD-3] `comconctl dev` / tenant SDK** — capability doubles, fidelity contract,
    emulator ≡ admission. *Not in the plan at all before this manual.*
 4. **[TBD-4] Budget unit semantics** — wall vs CPU, per-request vs per-episode.

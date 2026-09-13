@@ -2,7 +2,7 @@
 
 # COMCON V7 — enumerations are generated, never maintained (VERIFICATION.md).
 #
-# Five enumerations in this design are CLOSED and their COMPLETENESS is
+# Six enumerations in this design are CLOSED and their COMPLETENESS is
 # load-bearing:
 #
 #   p_symbol kinds      a kind that means two things at two tiers is a wrong
@@ -20,6 +20,9 @@
 #                       tells them to pin CI to codes -- so every code in the C
 #                       enum must carry a V12 golden-corpus row, with a probe or
 #                       a written reason it is unreachable
+#   refusal codes       the same promise for the ADMISSION half ([TBD-2]): a
+#                       refusal names why a fragment never loaded, and every one
+#                       must carry a probe in the same corpus
 #
 # Hand-maintained lists rot, and the rot is SILENT: nothing fails when a list
 # stops matching the code. So t/tools/check-enumerations.py derives each list from
@@ -41,7 +44,7 @@ BEGIN { use FindBin; chdir($FindBin::Bin); }
 use lib 'lib';
 use Test::Nginx;
 
-plan(tests => 6);
+plan(tests => 7);
 
 my $tool = "tools/check-enumerations.py";
 ok(-f $tool, "the enumeration checker exists ($tool)");
@@ -57,5 +60,6 @@ like($out, qr/\[1\] p_symbol kinds/,  'check 1 ran (p_symbol kinds)');
 like($out, qr/\[2\] compile portals/, 'check 2 ran (compile portals)');
 like($out, qr/\[4\] C3 intrinsics/,   'check 4 ran (C3 intrinsics allowance)');
 like($out, qr/\[5\] denial codes/,    'check 5 ran (denial codes vs the V12 corpus)');
+like($out, qr/\[6\] refusal codes/,   'check 6 ran (refusal codes vs the V12 corpus)');
 
 is($rc, 0, "no enumeration drift\n" . $out);

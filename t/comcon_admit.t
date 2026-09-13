@@ -63,19 +63,27 @@ for (var i = 0; i < locs.length; i++) {
 }
 JS
 
-$t->try_run('no js module')->plan(6);
+$t->try_run('no js module')->plan(7);
 
 my $body = http_get('/admit');
 
 like($body, qr/"clean":\{"certified":true\}/,
      'admit: a fragment with no free names is certified');
-like($body, qr/"nginxNo":\{"certified":false,"reject":"free name not declared in imports: nginx"\}/,
-     'admit: an ungranted free name (nginx) is rejected');
+like($body, qr/"nginxNo":\{"certified":false,"code":"E_ADMIT_FREENAME","reject":"free name not declared in imports: nginx"\}/,
+     'admit: an ungranted free name (nginx) is rejected -- with the CODE beside '
+     . 'the prose ([TBD-2]), which is the half a deny-suite should assert on');
 like($body, qr/"nginxYes":\{"certified":true\}/,
      'admit: the same name granted via imports is certified');
-like($body, qr/"evalBad":\{"certified":false,"reject":"dynamic-code[^"]*"\}/,
-     'admit: dynamic code (eval) is rejected');
+like($body, qr/"evalBad":\{"certified":false,"code":"E_ADMIT_DYNCODE","reject":"dynamic-code[^"]*"\}/,
+     'admit: dynamic code (eval) is rejected, as E_ADMIT_DYNCODE');
 like($body, qr/"jsonYes":\{"certified":true\}/,
      'admit: an intrinsic listed in imports is certified');
-like($body, qr/"notFn":\{"certified":false,"reject":"admit: arg0 must be a function"\}/,
-     'admit: a non-function arg is rejected');
+like($body, qr/"notFn":\{"certified":false,"code":"E_ADMIT_ARG","reject":"admit: arg0 must be a function"\}/,
+     'admit: a non-function arg is rejected, as E_ADMIT_ARG');
+
+# A certified verdict carries NO code: the field exists only where there is a
+# refusal to name, so `verdict.code` is never an empty string a caller might
+# compare against by accident.
+unlike($body, qr/"certified":true,"code"/,
+     'a CERTIFIED verdict carries no code -- an empty code on success is a '
+     . 'value someone eventually compares against');

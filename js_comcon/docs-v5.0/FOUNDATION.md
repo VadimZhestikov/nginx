@@ -564,6 +564,48 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.62 (in place — [TBD-2] resolved: the admission refusals have codes, and writing
+them found a contract field that did nothing):** V12 dated the gap; this closes it.
+**Two axes, deliberately not merged.** A DENIAL code names the gate that fired while a
+fragment was RUNNING (`nginx.tenantDenials().byOp`); a REFUSAL code names why a fragment
+was never admitted at all. Thirteen refusal codes — `E_ADMIT_{ARG, NOTBYTECODE, SOURCE,
+DYNCODE, FREENAME, INTRINSIC, SCHEMA, TEST, CONTRACT, DEP}`, `E_CAP_GRANT`,
+`E_PIN_IDENTITY`, `E_EPOCH_STALE` — closed and frozen in `ngx_js_compartment.h`, each
+carried three ways: `.code` on the thrown Error (the contract), bracketed at the END of
+the message (so an error log is greppable, and so no existing reader or test that
+matched the prose stops matching), and `code` on the verdict `admit()` returns. A
+CERTIFIED verdict carries no code at all — an empty code on success is a value someone
+eventually compares against. `comcon.refusalCodes()` enumerates the set from the same
+table the refusals are thrown from (V7: generated, never maintained), which is what lets
+the V12 corpus check completeness in both directions; check [6] of the enumeration
+checker does the same against the C table.
+
+**WHERE THE LINE IS DRAWN — and it is the whole design decision.** A code is warranted
+where the refusal is a POLICY OUTCOME about a fragment, something a deploy pipeline
+should assert on. It is NOT warranted for a malformed call into a library function
+(`query: empty selector`, `std.config.apply: arg0 must be a plan`): the fix there is to
+fix the call, and coding it would invite CI to pin to our argument checks. Of 48 JS-side
+throws, most are the second kind. Naming everything would make the taxonomy mean nothing.
+Two families are named-but-empty on purpose, the `host:null` discipline again:
+`E_BUDGET_*` (the deadline abort is the ENGINE's interrupt — there is no refusal of ours
+at that point to label) and `E_CAP_FLAVOR`/`E_CAP_ESCALATE` (the JS capability layer's
+own refusals — policy outcomes that DO deserve codes, and are the next tranche).
+
+**THE DEFECT IT FOUND, in the writing of its own probe:** `contract.tests` was read with
+a bare `JS_IsString()` and **silently ignored otherwise**, so `tests: [fn]` — the
+spelling the plural key invites — was ADMITTED with the behavioural gate never run. A
+contract asking to be checked, admitted unchecked, saying nothing. Now refused
+(`E_ADMIT_CONTRACT`), the same direction the `intrinsics` narrowing already takes: a
+contract that looks stricter than it is, is worse than an absent one. It was found
+because the corpus row was written in the plausible-but-wrong spelling and the test
+reported `accepted:true` — the probe was wrong AND the code was wrong, and only the
+instrument could tell which. Five controls, each red on its own assertion: rename a code
+in C (both enumeration directions + three assertions), drop `.code` from the throw (only
+the own-code assertion), drop the bracketed code from the message (only the in-message
+assertion), revert the fail-closed `tests` check (the defect returns, loudly), drop a
+corpus row. `t/comcon_v12_denial_codes.t` now 14; MANUAL §3.2 rewritten around the two
+axes, with the aspirational denial-record block marked as design rather than output.
+
 **v5.61 (in place — V12: the denial codes are now a frozen contract, and the admission
 side is shown to have none):** MANUAL §3.2 tells tenants "codes are stable across releases —
 pin your CI to codes, not to message text." Nothing could keep or break that promise on

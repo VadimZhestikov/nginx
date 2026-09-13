@@ -1279,7 +1279,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             JS_FreeValue(sctx, av[gi]);
         }
         JS_FreeValue(sctx, outer);
-        return JS_ThrowTypeError(hctx,
+        return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_CAP_GRANT,
                    "comcon.include: grant is not a NginxSocket or NginxServer");
     }
 
@@ -1350,8 +1350,9 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                 JS_FreeValue(sctx, av[b]);
             }
             JS_FreeValue(sctx, outer);
-            return JS_ThrowTypeError(hctx, "comcon.include: %s",
-                                     depreason[0] ? depreason : "dependency load failed");
+            return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_ADMIT_DEP,
+                     "comcon.include: %s",
+                     depreason[0] ? depreason : "dependency load failed");
         }
     }
 
@@ -1367,7 +1368,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     }
     if (!JS_IsFunction(sctx, fn)) {
         JS_FreeValue(sctx, fn);
-        return JS_ThrowTypeError(hctx,
+        return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_ADMIT_SOURCE,
                    "comcon.include: source must be a function expression");
     }
 
@@ -1407,6 +1408,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             int          check;
             char         reason[256];
             ngx_int_t    rc;
+            ngx_js_refusal_code_t  rcode;
 
             imp_s = JS_NewArray(sctx);
 
@@ -1458,7 +1460,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             }
 
             rc = ngx_js_comcon_admit_check(sctx, fn, imp_s, intr_s, check,
-                                           reason, sizeof(reason));
+                                           reason, sizeof(reason), &rcode);
             JS_FreeValue(sctx, imp_s);
             JS_FreeValue(sctx, intr_s);
 
@@ -1466,7 +1468,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                 JS_FreeValue(hctx, imp_h);
                 JS_FreeValue(hctx, intr_h);
                 JS_FreeValue(sctx, fn);
-                return JS_ThrowTypeError(hctx,
+                return ngx_js_comcon_refuse(hctx, rcode,
                     "comcon.include: admission refused: %s", reason);
             }
         }
@@ -1511,7 +1513,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                     }
                     JS_FreeValue(hctx, idv);
                     JS_FreeValue(sctx, fn);
-                    return JS_ThrowTypeError(hctx,
+                    return ngx_js_comcon_refuse(hctx,
+                        NGX_JS_REFUSAL_PIN_IDENTITY,
                         "comcon.include: artifact identity mismatch");
                 }
                 JS_FreeCString(hctx, want);
@@ -1529,6 +1532,29 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
        holds.) contract.tests is a function(fragment){…} source string. */
     if (argc > 4 && JS_IsObject(argv[4])) {
         JSValue  tv = JS_GetPropertyStr(hctx, argv[4], "tests");
+
+        /*
+         * PRESENT BUT UNUSABLE IS A REFUSAL, NOT A NO-OP.
+         *
+         * `tests` is a function(fragment){…} — or its source string. It used to
+         * be read with a bare JS_IsString() test and SILENTLY IGNORED otherwise,
+         * so the plural spelling the key invites (`tests: [fn]`, an array) was
+         * accepted and the behavioural gate never ran: a contract asking to be
+         * checked, admitted unchecked, with nothing said. Found by V12's own
+         * corpus, whose E_ADMIT_TEST probe was written with an array and was
+         * ADMITTED.
+         *
+         * The direction is the one the `intrinsics` narrowing already takes: a
+         * contract that looks stricter than it is, is worse than an absent one.
+         */
+        if (!JS_IsUndefined(tv) && !JS_IsNull(tv) && !JS_IsString(tv)) {
+            JS_FreeValue(hctx, tv);
+            JS_FreeValue(sctx, fn);
+            return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                     "comcon.include: admission refused: contract `tests` must "
+                     "be a function(fragment) or its source string; refusing "
+                     "rather than skipping the test phase");
+        }
 
         if (JS_IsString(tv)) {
             const char  *tsrc;
@@ -1563,7 +1589,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                             JS_FreeValue(sctx, testfn);
                             JS_FreeCString(hctx, tsrc);
                             JS_FreeValue(hctx, tv);
-                            thrown = JS_ThrowTypeError(hctx,
+                            thrown = ngx_js_comcon_refuse(hctx,
+                                NGX_JS_REFUSAL_ADMIT_TEST,
                                 "comcon.include: admission refused: "
                                 "test failed: %s", es ? es : "threw");
                             if (es != NULL) {
@@ -1760,7 +1787,8 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     if (JS_IsUndefined(fn)) {
         /* freed by __freeConfined (a superseded epoch beyond the rollback
            window); invoking a stale handle is an error, not a crash. */
-        return JS_ThrowTypeError(hctx, "comcon: fragment was freed (stale epoch)");
+        return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_EPOCH_STALE,
+                   "comcon: fragment was freed (stale epoch)");
     }
 
     arg = JS_UNDEFINED;

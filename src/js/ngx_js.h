@@ -10,6 +10,9 @@
 #include <ngx_core.h>
 #include <quickjs.h>
 
+/* COMCON compartment tokens + the closed denial/refusal enumerations */
+#include "ngx_js_compartment.h"
+
 
 /* Forward declaration for SharedWorker state list */
 struct ngx_js_sw_state_s;
@@ -498,7 +501,11 @@ JSValue ngx_js_comcon_pom_callsites(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 ngx_int_t ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn,
     JSValueConst imports, JSValueConst intrinsics, int check_request,
-    char *reason, size_t reason_len);
+    char *reason, size_t reason_len, ngx_js_refusal_code_t *code);
+
+/* [TBD-2]: throw a refusal carrying its code, in the message and as `.code` */
+JSValue ngx_js_comcon_refuse(JSContext *ctx, ngx_js_refusal_code_t code,
+    const char *fmt, ...);
 
 
 /* COM initialisation — installs nginx.* into ctx's global object */

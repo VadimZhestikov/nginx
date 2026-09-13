@@ -8,14 +8,17 @@
  * Each row is a code, a probe that provokes it, and the mode the probe needs;
  * the test runs them and compares the per-code counters before and after.
  *
- * WHAT IS FROZEN HERE IS WHAT EXISTS. The compartment denial codes are real,
- * closed, and machine-parsable (`nginx.tenantDenials().byOp`). The ADMISSION
- * refusals are not codes at all -- they are message text -- so a tenant cannot
- * pin CI to them today, which is precisely what the manual tells them not to do.
- * MANUAL §3.2 marks the code taxonomy **[TBD-2]** ("E_CAP_*, E_ADMIT_*,
- * E_BUDGET_*, E_PIN_*, E_EPOCH_*" are candidate families, undesigned). The
- * `provisional` rows below record today's message prefixes so the gap is
- * visible and dated -- they are NOT a contract, and the test says so.
+ * TWO AXES, NOT ONE. A DENIAL code (`GOLDEN`) names the gate that fired while a
+ * fragment was RUNNING -- read from `nginx.tenantDenials().byOp`. A REFUSAL code
+ * (`REFUSALS`) names why a fragment was never admitted at all -- read from
+ * `e.code` on the thrown error, or `code` on an `admit()` verdict, and
+ * enumerated by `comcon.refusalCodes()`. A tenant's CI needs both and needs them
+ * kept apart: "my policy tripped sock.listener on request 41" and "my policy
+ * will not load" are different failures with different fixes.
+ *
+ * The refusal half was MESSAGE TEXT until [TBD-2] shipped (FOUNDATION v5.62).
+ * V12 dated that gap; the rows below are what closed it, and they are frozen on
+ * the same terms as the denial codes.
  *
  * A row may be `unreachable` instead of carrying a probe. That is not a gap in
  * the corpus: a gate can be defence-in-depth for a path that does not exist yet,
@@ -82,23 +85,151 @@ var GOLDEN = [
     }
 ];
 
-/* NOT codes. Today's admission refusals are message text; recorded so the
- * absence of a code taxonomy is visible and dated, not so anyone pins to them. */
-var PROVISIONAL = [
-    { prefix: 'free name not declared in imports',
-      probe: "function(){ return typeof nosuchhostname; }", imports: [] },
-    /* A direct eval CALL, not a reference to `eval`: a reference is caught by
-     * the deny list as a free name and never reaches the dynamic-code check, so
-     * the first version of this row froze the wrong refusal. (`with` is the
-     * other trigger and cannot be probed: include()'s wrapper is "use strict",
-     * where `with` is a syntax error.) */
-    { prefix: 'dynamic-code: eval or with',
-      probe: "function(){ return eval('1+1'); }", imports: [] },
-    { prefix: 'request field not in sealed schema',
-      probe: "function(req){ return req.bogusField; }", imports: [],
-      checkRequest: true }
+/*
+ * The REFUSAL codes ([TBD-2]). A fragment is refused at ADMISSION -- before it
+ * ever runs -- and every such refusal now carries a code in three places: as
+ * `.code` on the thrown Error, bracketed at the end of the message (so the
+ * error log is greppable), and, for `admit()`, as `code` on the verdict object.
+ *
+ * `via` says which operator provokes it, because the two report differently by
+ * design: `admit()` RETURNS a verdict ({certified, code, reject}) -- it is the
+ * question "would this be admitted?" -- while `include()` THROWS, because it
+ * was asked to install something and could not.
+ *
+ * WHERE THE LINE IS DRAWN. A code is warranted where the refusal is a POLICY
+ * OUTCOME about a fragment -- something a deploy pipeline should assert on. It
+ * is NOT warranted for a malformed call into a library function (`query: empty
+ * selector`, `std.config.apply: arg0 must be a plan`): the fix there is to fix
+ * the call, and coding it would invite CI to pin to our argument checks. Naming
+ * everything would make the taxonomy mean nothing.
+ *
+ * STILL UNCODED, recorded rather than invented (the std.ops `host:null`
+ * discipline -- a gap you can see is a gap someone can close):
+ *   - E_BUDGET_* : the deadline abort is the ENGINE's interrupt. There is no
+ *     refusal of ours at that point to label, so no code is claimed for it.
+ *   - E_CAP_FLAVOR / E_CAP_ESCALATE : the capability layer's own refusals
+ *     (mediate()'s closed vocabulary; realize()'s least-authority sub-map
+ *     assertion) are thrown in the JS bootstrap, not the host. They are policy
+ *     outcomes and DO deserve codes -- the next tranche, not this one.
+ */
+var REFUSALS = [
+    {
+        code: 'E_ADMIT_ARG',
+        why: 'admit() was handed something that is not a function at all',
+        via: 'admit',
+        probe: "comcon.admit(42, {imports: []})",
+        msg: 'arg0 must be a function'
+    },
+    {
+        code: 'E_ADMIT_NOTBYTECODE',
+        why: 'a function, but not one with bytecode to scan -- a host C '
+           + 'function has no free-name manifest to check, so it cannot be '
+           + 'certified either way; refusing beats guessing',
+        via: 'admit',
+        probe: "comcon.admit(Math.max, {imports: []})",
+        msg: 'not a bytecode function'
+    },
+    {
+        code: 'E_ADMIT_SOURCE',
+        why: 'include() source that does not compile to a function expression',
+        via: 'include',
+        probe: "comcon.include('42', {imports: []})",
+        msg: 'source must be a function expression'
+    },
+    {
+        code: 'E_ADMIT_DYNCODE',
+        why: 'C3: direct eval (or `with`) inside the fragment',
+        via: 'include',
+        probe: "comcon.include(\"function(){ return eval('1+1'); }\", "
+             + "{imports: []})",
+        msg: 'dynamic-code'
+    },
+    {
+        code: 'E_ADMIT_FREENAME',
+        why: 'C3 deny-by-default: a free global not declared in `imports`',
+        via: 'include',
+        probe: "comcon.include('function(){ return nosuchhostname; }', "
+             + "{imports: []})",
+        msg: 'free name not declared in imports'
+    },
+    {
+        code: 'E_ADMIT_INTRINSIC',
+        why: '`intrinsics` names something outside the allowance; it only '
+           + 'NARROWS, so accepting the name would leave a contract word that '
+           + 'reads like policy and does nothing',
+        via: 'include',
+        probe: "comcon.include('function(){ return 1; }', "
+             + "{imports: [], intrinsics: ['nosuchintrinsic']})",
+        msg: 'is not in the intrinsics allowance'
+    },
+    {
+        code: 'E_ADMIT_SCHEMA',
+        why: 'checkRequest: a request field outside the sealed schema',
+        via: 'include',
+        probe: "comcon.include('function(req){ return req.bogusField; }', "
+             + "{imports: [], checkRequest: true})",
+        msg: 'request field not in sealed schema'
+    },
+    {
+        code: 'E_ADMIT_TEST',
+        why: 'a contract test threw -- BEHAVIOURAL admission, run against the '
+           + 'compiled fragment inside the compartment',
+        via: 'include',
+        probe: "comcon.include('function(){ return 1; }', {imports: [], "
+             + "tests: 'function(f){ throw new Error(\"nope\"); }'})",
+        msg: 'test failed'
+    },
+    {
+        code: 'E_ADMIT_CONTRACT',
+        why: 'a contract field is PRESENT BUT UNUSABLE. This row exists '
+           + 'because writing the E_ADMIT_TEST probe above found the defect: '
+           + '`tests` was read with a bare string test and silently ignored '
+           + 'otherwise, so `tests: [fn]` -- the spelling the plural key '
+           + 'invites -- was ADMITTED with the behavioural gate never run. A '
+           + 'contract asking to be checked must not be admitted unchecked',
+        via: 'include',
+        probe: "comcon.include('function(){ return 1; }', {imports: [], "
+             + "tests: ['function(f){ throw new Error(\"nope\"); }']})",
+        msg: 'must be a function(fragment)'
+    },
+    {
+        code: 'E_ADMIT_DEP',
+        why: 'a pinned pure-library dependency failed to load or failed its '
+           + 'hash pin -- the supply-chain gate',
+        via: 'include',
+        probe: "comcon.include('function(){ return 1; }', {imports: [], "
+             + "deps: [{name: 'lib', path: '/nonexistent/comcon-v12.js', "
+             + "sha256: '00'}]})",
+        msg: 'comcon.include'
+    },
+    {
+        code: 'E_CAP_GRANT',
+        why: 'a grant that is not a mediatable capability. The membrane\'s '
+           + 'TYPE rule is policy, not an argument check: what may cross into '
+           + 'a compartment is exactly what the host can wrap',
+        via: 'include',
+        probe: "comcon.include('function(){ return 1; }', "
+             + "{imports: [], grants: {x: {not: 'a cap'}}})",
+        msg: 'grant is not a NginxSocket or NginxServer'
+    },
+    {
+        code: 'E_PIN_IDENTITY',
+        why: 'the artifact identity pin (R7) did not match the source',
+        via: 'include',
+        probe: "comcon.include('function(){ return 1; }', "
+             + "{imports: [], identity: 'deadbeef'})",
+        msg: 'artifact identity mismatch'
+    },
+    {
+        code: 'E_EPOCH_STALE',
+        why: 'calling a fragment whose epoch was superseded beyond the '
+           + 'rollback window and freed -- an error, never a crash',
+        via: 'stale',
+        probe: null,          /* built by the test: include, free, then call */
+        msg: 'stale epoch'
+    }
 ];
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { GOLDEN: GOLDEN, PROVISIONAL: PROVISIONAL };
+    module.exports = { GOLDEN: GOLDEN, REFUSALS: REFUSALS };
 }

@@ -100,6 +100,57 @@ typedef enum {
 
 
 /*
+ * COMCON [TBD-2]: the REFUSAL codes — the other half of MANUAL §3.2's promise.
+ *
+ * Two axes, deliberately not merged. A DENIAL code (above) names the gate that
+ * fired while a fragment was RUNNING; a REFUSAL code names why a fragment was
+ * never admitted in the first place. A tenant's CI needs both, and needs them
+ * to be different things: "my policy tripped sock.listener at request 41" and
+ * "my policy will not load at all" are different failures with different fixes.
+ *
+ * Until this enum existed, every admission refusal was MESSAGE TEXT. MANUAL
+ * §3.2 tells tenants "pin your CI to codes, not to message text" and then left
+ * them nothing to pin to for the whole admission surface — the gap V12 dated
+ * (t/tools/golden-denials.js). The code travels two ways: bracketed in the
+ * thrown message (so the audit trail is greppable) and as `.code` on the Error
+ * object (so a deny-suite reads it without parsing prose). `admit()`'s verdict
+ * object carries it as `code` beside `reject`.
+ *
+ * CLOSED AND FROZEN. Appending is allowed; renaming or renumbering is the
+ * breakage this exists to prevent. Every code here must appear in the V12
+ * golden corpus with a probe or a written reason it is unreachable —
+ * check [5] of t/tools/check-enumerations.py fails otherwise.
+ *
+ * NOT every throw gets a code: a host fault ("no conf", "compartment failed",
+ * "no compartment") is not a refusal — nothing the tenant wrote caused it and
+ * there is nothing for them to fix, so coding it would invite a deny-suite to
+ * assert on our bugs. MANUAL's E_BUDGET_* family has no member here yet for a
+ * related reason: the deadline abort is the engine's interrupt, which carries
+ * no refusal of ours to label. Recorded rather than invented.
+ */
+
+typedef enum {
+    NGX_JS_REFUSAL_NONE = 0,           /* no refusal (success)              */
+    NGX_JS_REFUSAL_ADMIT_ARG,          /* arg0 is not a function            */
+    NGX_JS_REFUSAL_ADMIT_NOTBYTECODE,  /* a function, but not bytecode      */
+    NGX_JS_REFUSAL_ADMIT_SOURCE,       /* include: source is not a function expr */
+    NGX_JS_REFUSAL_ADMIT_DYNCODE,      /* C3: direct eval / with            */
+    NGX_JS_REFUSAL_ADMIT_FREENAME,     /* C3: free name not in `imports`    */
+    NGX_JS_REFUSAL_ADMIT_INTRINSIC,    /* `intrinsics` names a non-intrinsic */
+    NGX_JS_REFUSAL_ADMIT_SCHEMA,       /* C3: request field outside the seal */
+    NGX_JS_REFUSAL_ADMIT_TEST,         /* a contract test threw             */
+    NGX_JS_REFUSAL_ADMIT_CONTRACT,     /* a contract field is present but unusable */
+    NGX_JS_REFUSAL_ADMIT_DEP,          /* a pinned dependency failed to load */
+    NGX_JS_REFUSAL_CAP_GRANT,          /* a grant is not a mediatable cap   */
+    NGX_JS_REFUSAL_PIN_IDENTITY,       /* artifact identity pin mismatch    */
+    NGX_JS_REFUSAL_EPOCH_STALE,        /* the fragment was freed (old epoch) */
+    NGX_JS_REFUSAL_LAST
+} ngx_js_refusal_code_t;
+
+const char *ngx_js_refusal_name(ngx_js_refusal_code_t code);
+
+
+/*
  * Tenant enforcement mode (A4 + B0):
  *   ENFORCE — gates deny (default).
  *   AUDIT   — gates log-and-allow (observe-then-enforce).

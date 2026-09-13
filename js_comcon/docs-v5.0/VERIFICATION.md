@@ -273,7 +273,8 @@ since the suite is what V11 is about: drop a probe and the matching mutant survi
 probe report one outcome and everything survives; declare a real widening equivalent and the
 two-sided check fires.
 
-**V12 ✅ (2026-09-12) — Golden denial-code corpus.** Denial codes are the tenants' CI
+**V12 ✅ (2026-09-12) — Golden denial-code corpus** (extended the same day by
+[TBD-2], which gave the admission half real codes to freeze)**.** Denial codes are the tenants' CI
 contract: MANUAL §3.2 tells them "codes are stable across releases — pin your CI to codes,
 not to message text." That was a promise the project had no way to keep or break on
 purpose. `t/tools/golden-denials.js` freezes every code with a probe that provokes it and
@@ -293,13 +294,12 @@ and **check [5] of the generated enumerations (V7) ties the corpus to the C enum
 code cannot be added to `ngx_js_denial_names[]` without someone either probing it or
 writing down why they cannot.
 
-**The finding is on the admission side: there are no codes there at all.** Admission
+**The finding was on the admission side: there were no codes there at all.** Admission
 refusals — undeclared free name, dynamic code, a request field outside the sealed schema —
-are *message text*. A tenant told to pin to codes rather than message text cannot do it for
-admission, which is the exact practice §3.2 warns against; the taxonomy (`E_CAP_*`,
-`E_ADMIT_*`, `E_BUDGET_*`, `E_PIN_*`, `E_EPOCH_*`) is still marked **[TBD-2]**. The
-`PROVISIONAL` rows record today's prefixes so the gap is dated and visible, and the test
-says in its own assertion text that they are not a contract.
+arrived as *message text*, so a tenant told to pin to codes rather than message text could
+not do it for admission at all: the exact practice §3.2 warns against, in the surface a
+tenant meets first. V12's first run recorded those prefixes as `PROVISIONAL` rows — not a
+contract, just a dated gap — which is what made the omission concrete enough to close.
 
 **Controls (5, all red where intended).** The one that matters is the premise itself:
 renaming `listener.serverByName` in `src/js/ngx_js_compartment.c` and rebuilding failed
@@ -310,6 +310,25 @@ fails the test and *not* check [5], since [5] knows nothing about collateral). T
 guards the guard: a checker that exits cleanly *before* check [5] — the shape an appended
 check invites — is caught, because `t/comcon_enumerations.t` now asserts the LAST check
 printed its banner, not just that the tool exited 0.
+
+**The finding was acted on ([TBD-2], v5.62): the admission side now HAS codes.** Thirteen
+refusal codes, closed in `ngx_js_compartment.h`, each carried as `.code` on the thrown
+Error, bracketed at the end of the message, and as `code` on an `admit()` verdict;
+`comcon.refusalCodes()` enumerates them from the same table they are thrown from, so the
+corpus checks completeness both ways and enumeration check [6] ties it to the C table.
+The corpus's `PROVISIONAL` message-prefix rows are gone — they existed only because there
+was nothing to pin to. Each refusal row now asserts four things: the code is the one
+frozen, the prose survives beside it, the code is IN the message (an error log has no
+properties to read), and the probe is still refused at all. Two families stay
+named-but-empty on purpose (`E_BUDGET_*`; the JS layer's `E_CAP_FLAVOR`/`E_CAP_ESCALATE`)
+— recorded, not invented.
+
+**Writing the E_ADMIT_TEST probe found a contract field that did nothing.** `tests` was
+read with a bare string check and silently ignored otherwise, so `tests: [fn]` — the
+spelling the plural key invites — was ADMITTED with the behavioural gate never run. The
+probe was written in that spelling, the test reported `accepted:true`, and only the
+instrument could say whether the probe or the code was wrong. Both were. Now
+`E_ADMIT_CONTRACT`: present-but-unusable is a refusal, not a no-op.
 
 **Writing it caught a row that froze the wrong refusal.** The dynamic-code probe first
 *referenced* `eval` rather than calling it — a reference is caught earlier, by the deny

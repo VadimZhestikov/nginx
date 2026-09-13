@@ -253,3 +253,41 @@ ngx_js_denial_code_name(ngx_js_denial_code_t code)
 {
     return ngx_js_denial_names[code];
 }
+
+
+/* ------------------------------------------------------------------ */
+/* COMCON [TBD-2]: the refusal codes (admission-time; see the header)  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Index-parallel to ngx_js_refusal_code_t. The NONE row is spelled "" and is
+ * not a code: it is the success value, and naming it would put a thirteenth
+ * entry in front of every tenant that can never be refused with.
+ */
+static const char  *ngx_js_refusal_codes[NGX_JS_REFUSAL_LAST] = {
+    "",
+    "E_ADMIT_ARG",
+    "E_ADMIT_NOTBYTECODE",
+    "E_ADMIT_SOURCE",
+    "E_ADMIT_DYNCODE",
+    "E_ADMIT_FREENAME",
+    "E_ADMIT_INTRINSIC",
+    "E_ADMIT_SCHEMA",
+    "E_ADMIT_TEST",
+    "E_ADMIT_CONTRACT",
+    "E_ADMIT_DEP",
+    "E_CAP_GRANT",
+    "E_PIN_IDENTITY",
+    "E_EPOCH_STALE",
+};
+
+
+const char *
+ngx_js_refusal_name(ngx_js_refusal_code_t code)
+{
+    if (code <= NGX_JS_REFUSAL_NONE || code >= NGX_JS_REFUSAL_LAST) {
+        return "";
+    }
+
+    return ngx_js_refusal_codes[code];
+}
