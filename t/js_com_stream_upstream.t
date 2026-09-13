@@ -19,7 +19,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http stream/)->plan(14);
+my $t = Test::Nginx->new()->has(qw/http stream/)->plan(12);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -107,5 +107,3 @@ is(prop('p0down'),        'false',          'peer 0 not down');
 is(prop('p0backup'),      'false',          'peer 0 not backup');
 is(prop('p1backup'),      'true',           'peer 1 is backup');
 
-ok(1, 'nginx started without crash');
-ok(1, 'all checks passed');

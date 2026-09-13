@@ -22,7 +22,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(8);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(7);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -175,4 +175,3 @@ like(req($p1, 'server_a',
      'listener still routes after multiple addVirtualServer calls');
 
 # Sanity
-ok(1, 'nginx started without crash');

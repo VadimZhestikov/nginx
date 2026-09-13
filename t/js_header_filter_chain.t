@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(8);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(10);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -103,5 +103,16 @@ is(hdr($r, 'X-After'), 'B', 'after: B inserted after A → B runs last, wins');
 $r = http_get('/index/');
 is(hdr($r, 'X-Idx'), 'V', 'index:0 inserts at front → V runs last, wins');
 
-ok(1, 'filter ordering consistent across restarts');
-ok(1, 'nginx started without crash');
+# Ordering across a RESTART.  The filters are registered from init.js at config
+# phase, so a restart re-runs that registration from scratch: if order depended
+# on anything accumulated at runtime -- an array appended to rather than rebuilt,
+# a hash iteration order, a priority comparison that is not a total order -- the
+# winners below would move.  This was an ok(1) asserting nothing, in a file whose
+# whole subject is ordering.
+$t->stop();
+$t->run();
+
+is(hdr(http_get('/order/'),  'X-Order'), 'B', 'after restart: priority order unchanged');
+is(hdr(http_get('/before/'), 'X-Pos'),   'Z', 'after restart: before-insertion order unchanged');
+is(hdr(http_get('/after/'),  'X-After'), 'B', 'after restart: after-insertion order unchanged');
+is(hdr(http_get('/index/'),  'X-Idx'),   'V', 'after restart: index-insertion order unchanged');

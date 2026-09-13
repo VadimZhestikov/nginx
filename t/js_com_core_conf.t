@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(9);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(7);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -79,5 +79,3 @@ is(prop('workingDirectory'), '',      'workingDirectory unset → empty string')
 
 # Verify workers and daemon are still working (regression)
 is(body(http_get('/prop/?key=undefined')), 'undefined', 'unknown key → "undefined"');
-ok(1, 'nginx started without crash');
-ok(1, 'all checks passed');

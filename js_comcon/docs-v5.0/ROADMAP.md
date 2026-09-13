@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.78 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.79 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,12 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **THE TESTS ARE GATED (2026-09-13, v5.79): 39 assertions claimed something and checked
+>   nothing.** V11 mutation-tests the policies; nothing tested the tests, and five dead
+>   assertions surfaced in this arc BY ACCIDENT. `check-dead-probes.py` + `comcon_dead_probes.t`
+>   gate four shapes. 27 padding deleted, 8 duplicates removed, **4 genuinely untested
+>   behaviours now checked — and all four claims were TRUE, which is why they survived.**
+>   Static only: clean means "not dead in the four known ways".
 > - **F3 CLOSED (2026-09-13, v5.78): its `Symbol.for` residual is WITHDRAWN as a dead-probe
 >   artefact.** The read compared `Symbol.for(k) === Symbol.for(k)` inside ONE fragment. The
 >   rewritten probe attempts the real exploit and is refused on every surface: a shared

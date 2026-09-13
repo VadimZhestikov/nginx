@@ -21,7 +21,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(6);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(5);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -108,4 +108,3 @@ ok(defined $conn, 'TCP connect to worker-created socket succeeds');
 $conn->close() if defined $conn;
 
 # Sanity
-ok(1, 'nginx started without crash');

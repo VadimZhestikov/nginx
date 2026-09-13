@@ -18,7 +18,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http stream stream_return/)->plan(6);
+my $t = Test::Nginx->new()->has(qw/http stream stream_return/)->plan(4);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -86,5 +86,3 @@ is(prop('serverNamesHashBucketSize'), '64',  'serverNamesHashBucketSize 64');
 is(prop('variablesHashMaxSize'),      '512', 'variablesHashMaxSize 512');
 is(prop('variablesHashBucketSize'),   '64',  'variablesHashBucketSize 64');
 
-ok(1, 'nginx started without crash');
-ok(1, 'all checks passed');

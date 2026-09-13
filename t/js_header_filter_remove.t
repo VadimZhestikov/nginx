@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(6);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(4);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -75,5 +75,3 @@ $r = http_get('/by_fn/');
 is(hdr($r, 'X-Gone'),  undef, 'remove by fn ref: removed filter does not run');
 is(hdr($r, 'X-Stay'),  'yes', 'remove by fn ref: kept filter still runs');
 
-ok(1, 'removeHeaderFilter accepts both string name and function reference');
-ok(1, 'nginx started without crash');

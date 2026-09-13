@@ -33,6 +33,8 @@ http {
         location /undef/  { }
         location /null/   { }
         location /mixed/  { }
+        location /number/ { }
+        location /object/ { }
     }
 }
 EOF
@@ -55,6 +57,18 @@ $t->write_file_expand('init.js', <<'JS');
     by['/mixed/'].addBodyFilter('wholeBodySync', function(r, body) { return body.toUpperCase(); });
     by['/mixed/'].addBodyFilter('wholeBodySync', function(r, body) { return null; });
     by['/mixed/'].handler = function(r) { r.respond(200, {}, 'hello'); };
+
+    /* /number/ and /object/ — a filter that returns a NON-STRING.  The claim
+       was that these are treated as pass-through like undefined and null; it
+       rode on an ok(1) and was never exercised.  Written as two locations
+       rather than one because a number and an object can fail differently: a
+       number could be coerced to its decimal text, an object to
+       "[object Object]", and either would show up here as a changed body. */
+    by['/number/'].addBodyFilter('wholeBodySync', function(r, body) { return 42; });
+    by['/number/'].handler = function(r) { r.respond(200, {}, 'num-keep'); };
+
+    by['/object/'].addBodyFilter('wholeBodySync', function(r, body) { return { a: 1 }; });
+    by['/object/'].handler = function(r) { r.respond(200, {}, 'obj-keep'); };
 })();
 JS
 
@@ -73,5 +87,10 @@ is(body($r), 'keep', 'null return: body passes through unchanged');
 $r = http_get('/mixed/');
 is(body($r), 'HELLO', 'null return after modification: previous change is preserved');
 
-ok(1, 'non-string return values (number, object) also treated as pass-through');
-ok(1, 'nginx started without crash');
+$r = http_get('/number/');
+is(body($r), 'num-keep',
+    'a filter returning a NUMBER is pass-through, not coerced to "42"');
+
+$r = http_get('/object/');
+is(body($r), 'obj-keep',
+    'a filter returning an OBJECT is pass-through, not coerced to "[object Object]"');

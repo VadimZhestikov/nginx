@@ -33,6 +33,11 @@ http {
         location /upper/ { }
         location /empty/ { }
         location /hdr/   { }
+        # No body filter here: the CONTROL for the Content-Length assertion
+        # below.  Without it, `unlike(..., /^Content-Length:/)` passes whenever
+        # the pattern is simply wrong, which is the way that assertion fails
+        # silently.
+        location /plain/ { return 200 "plain\n"; }
     }
 }
 EOF
@@ -77,5 +82,11 @@ is(body($r), '', 'empty-string return: body is empty');
 $r = http("GET /hdr/ HTTP/1.0\r\nHost: localhost\r\nX-Prefix: tag\r\n\r\n");
 is(body($r), 'tag:body', 'body filter can read request headers');
 
-ok(1, 'Content-Length suppressed for body-filter locations');
-ok(1, 'nginx started without crash');
+# A body filter can change the length, so nginx must not send the original
+# Content-Length.  This was an ok(1) carrying the claim in its message and
+# checking nothing.
+unlike($r, qr/^Content-Length:/mi,
+    'Content-Length suppressed for body-filter locations');
+like(http_get('/plain/'), qr/^Content-Length:/mi,
+    'and the control: a location with NO body filter DOES send it, so the '
+    . 'assertion above can fail');

@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(7);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(6);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -75,4 +75,3 @@ is(hdr($r, 'X-List-Len'), '2',    'headerFilters: correct length');
 is(hdr($r, 'X-List-0'),   'f1',   'headerFilters: first entry is lowest priority');
 is(hdr($r, 'X-List-1'),   'f2',   'headerFilters: second entry is higher priority');
 
-ok(1, 'nginx started without crash');

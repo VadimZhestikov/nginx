@@ -22,7 +22,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(8);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(7);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -131,5 +131,3 @@ is($distinct, 'distinct', 'listener object is distinct from sock object');
 like(body(http_get('/listener/')), qr/127\.0\.0\.1:$p1/,
      'listener address appears in response');
 
-# OK marker
-ok(1, 'attach returns NginxHttpListener without crash');

@@ -682,6 +682,40 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T1, T10
 - **V:** V8
 
+#### G11.11 — the TESTS are checked for assertions that cannot fail
+- **CLAIM:** No assertion in `t/` is dead in one of the four ways this tree has already been
+  burned by: a discriminator comparing an expression with itself, an assertion true by
+  construction, a corpus with no reader or a drifted row scraper, or a coverage tally scraped
+  from the whole payload and described as a fixed total.
+- **ARGUMENT:** V11 mutation-tests the policies; nothing tested the tests. Five assertions
+  that could not fail were found in this arc, **every one by accident while doing something
+  else** — the forged-argument `realize` probe, the `cap.expired` row that reported "alive"
+  forever, the `Symbol.for` arm comparing a value with itself, that file's payload-wide
+  coverage tally, and the F9 ledger row that counted five where the table showed six.
+  **A dead probe does not fail; it reassures.** Every "closed" in the findings ledger rests on
+  an instrument, so the instruments are now themselves gated.
+- **EV:** `t/tools/check-dead-probes.py` — the four checks, each with its own control.
+- **EV:** `t/comcon_dead_probes.t` — runs the tool as a gate and pins that each of the four
+  checks actually RAN, the same argument `t/comcon_enumerations.t` makes about its own tool,
+  and the reason two missing checks were found in that list.
+- **FOUND, on the first run:** **39 assertions that claim something and verify nothing.** 27
+  were padding ("nginx started without crash", "all checks passed", hand-written duplicates of
+  the harness's own no-alerts checks); **12 named a specific behaviour and checked none of
+  it** — 8 restating a claim the neighbouring assertion already proves, and **4 genuinely
+  untested**: Content-Length suppression under a body filter, a chained filter running after
+  an empty intermediate body, non-string filter returns passing through, and header-filter
+  ordering surviving a restart. All four now have real assertions; all four claims turned out
+  to be TRUE, which is why nobody noticed.
+- **GAP:** It is a STATIC reader. It cannot tell whether an assertion's subject is reachable,
+  whether a control fires, or whether a corpus row is compared with its expectation at run
+  time — only a mutation answers that. A clean run means "not dead in the four known ways",
+  never "every assertion is live". The dynamic half is
+  `t/tools/verify-negative-controls.sh` (six rows automated, six manual) and the inline
+  controls in the `comcon_*` suites.
+  **home:** VERIFICATION.md V11 · `t/tools/verify-negative-controls.sh` for the dynamic half.
+- **THREAT:** T3
+- **V:** V11
+
 #### G11.9 — THE SPEC cannot silently fall behind the code
 - **CLAIM:** Every member of a set `SPEC.md` calls closed appears in `SPEC.md`, so the
   normative read cannot quietly stop describing the shipped system.
@@ -917,6 +951,8 @@ signature is never quietly credited with work it did not see.
 | **V8 COMPLETED — G11.10 added** — the effect-class half. `t/js_com_propagation.t` holds the `propagation` column to account across four real workers: the conditional pair (the refine hook's `zoned-shared` vs `worker-local` on two upstreams in one config) and a sweep generated per registry row. **The claim holds — 67 rows swept, none leaked, no defect.** Four controls, two of them at the CONFIG level (remove the zone, add a zone) so they exercise the mechanism rather than mutating the test. Clean under ASAN and UBSAN. | **Adds a leaf that is positive evidence rather than a fix.** §15's evidence table gains a row; nothing it attested changes. The new GAP is quantified in G11.10: 67 of 154 rows, with both exclusions named, and `auto-shared` recorded as an enumeration value with no instances. |
 
 | **F3 CLOSED — a residual WITHDRAWN, not fixed** — the `Symbol.for` rendezvous was an artefact of a dead probe: its read compared `Symbol.for(k) === Symbol.for(k)` inside ONE fragment, which cannot be false. The rewritten arm attempts the whole exploit and is refused on every surface; a shared registry is a shared NAME, and a name is not a channel without a store. Backed by two controls — the unconfined arm reads the mark back (proving the key matched, so the registry is genuinely shared) and the freeze-disabled arm turns the confined case into a live channel. `AUDIT_M-SES.md` §3's attested row is left as signed and carries an ERRATUM marker pointing at its §6. | **Removes a residual by retracting it.** This is the one kind of change that should make a reader MORE careful, not less: a signed audit recorded a finding that was not there, so the fix is an erratum plus a probe that can now fail. Nothing else §15 attested is affected. |
+
+| **THE TESTS ARE NOW GATED TOO — G11.11 added.** `check-dead-probes.py` hunts assertions that cannot fail, after five such defects surfaced by accident in this arc. First run: **39 assertions claiming something and checking nothing** — 27 padding, 8 restating a proven claim, and 4 genuinely untested behaviours that now have real assertions (all 4 claims were true, which is why they survived). Five controls, one per check. | **Strengthens the basis of every other row in this ledger, and weakens confidence in none of them — but it should temper how the word "closed" is read.** Each closure rests on an instrument, and roughly one instrument in ten in this tree was measuring nothing. §15 attested the code and the instruments as they were; this is the first gate on whether an instrument measures at all. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

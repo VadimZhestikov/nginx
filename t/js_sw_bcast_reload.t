@@ -87,7 +87,7 @@ $t->write_file('init_bcast_reload.js', <<"JS");
 })();
 JS
 
-$t->try_run('no js module')->plan(6);
+$t->try_run('no js module')->plan(5);
 
 sub wait_ready {
     for (1 .. 100) {
@@ -112,4 +112,3 @@ like(wait_ready(), qr/hello/, 'post-reload 3: delivery works');
 $t->stop();
 unlike($t->read_file('error.log'), qr/\[alert\]|\[emerg\]/i,
     'no alert/emerg after 3 reloads');
-ok(1, 'bcast_fds cleanup on reload passes all checks');

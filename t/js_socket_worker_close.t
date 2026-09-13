@@ -21,7 +21,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(8);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(7);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -156,4 +156,3 @@ ok(defined $conn, 'new socket TCP port reachable');
 $conn->close() if defined $conn;
 
 # 8. No errors or alerts
-ok(1, 'nginx ran without crash');

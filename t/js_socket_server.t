@@ -22,7 +22,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(7);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(6);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -165,4 +165,3 @@ is(body(http_get('/errnone/')), 'TypeError',
    'addServer() with no arg throws TypeError');
 
 # Sanity: nginx started without crash
-ok(1, 'nginx started and served requests without crash');

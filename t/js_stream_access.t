@@ -142,7 +142,7 @@ check("rulesUnix_deny",       rulesUnix2[1].deny === true,
       rulesUnix2[1].deny);
 JS
 
-$t->try_run('no js module or stream module')->plan(24);
+$t->try_run('no js module or stream module')->plan(22);
 
 my $log = $t->read_file('error.log');
 
@@ -168,5 +168,3 @@ like($log, qr/JSTEST PASS rulesUnix_is_array/,      'rulesUnix is array');
 like($log, qr/JSTEST PASS rulesUnix_set_count/,     'rulesUnix setter: count is 2');
 like($log, qr/JSTEST PASS rulesUnix_allow/,         'rulesUnix first: deny=false');
 like($log, qr/JSTEST PASS rulesUnix_deny/,          'rulesUnix second: deny=true');
-ok(1, 'no alerts');
-ok(1, 'no sanitizer errors');

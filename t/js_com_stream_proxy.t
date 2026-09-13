@@ -17,7 +17,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http stream/)->plan(14);
+my $t = Test::Nginx->new()->has(qw/http stream/)->plan(12);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -109,5 +109,3 @@ is(prop('proxyProtocol'),       'false', 'proxyProtocol off → false');
 is(prop('halfClose'),           'false', 'halfClose off → false');
 is(prop('socketKeepalive'),     'false', 'socketKeepalive default off → false');
 
-ok(1, 'nginx started without crash');
-ok(1, 'all checks passed');

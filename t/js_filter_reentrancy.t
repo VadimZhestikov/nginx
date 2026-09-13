@@ -22,7 +22,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(10);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(9);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -144,4 +144,3 @@ is(body($r), 'HI!', 'body_add second req: A then B ran');
 $r = http_get('/body_remove/');
 is(body($r), 'x:A', 'body_remove: B removed before it ran, only A applied');
 
-ok(1, 'nginx started without crash');

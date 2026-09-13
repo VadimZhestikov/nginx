@@ -14,7 +14,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http stream stream_return/)->plan(7);
+my $t = Test::Nginx->new()->has(qw/http stream stream_return/)->plan(5);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -125,5 +125,3 @@ my $conn = IO::Socket::INET->new(
 ok(defined $conn, 'TCP connect to JS stream listener succeeds');
 $conn->close() if defined $conn;
 
-ok(1, 'nginx started without crash');
-ok(1, 'all checks passed');

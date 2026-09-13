@@ -75,7 +75,7 @@ $t->write_file('init_timeout.js', <<"JS");
 })();
 JS
 
-$t->try_run('no js module')->plan(8);
+$t->try_run('no js module')->plan(6);
 
 # Four sequential requests — each completes well within the 5 s timeout.
 like(http_get('/echo/'), qr/timeout-ok/, 'dynamic SW request 1');
@@ -89,5 +89,3 @@ unlike($t->read_file('error.log'), qr/timeout|EAGAIN/i,
     'no timeout errors in error.log');
 unlike($t->read_file('error.log'), qr/\[alert\]|\[emerg\]/i,
     'no alert/emerg in error.log');
-ok(1, 'recvmsg timeout applied — normal operation unaffected');
-ok(1, 'manager replies arrive well within 5s window');

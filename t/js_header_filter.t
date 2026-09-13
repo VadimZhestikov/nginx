@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(5);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(3);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -72,5 +72,3 @@ like($r, qr{HTTP/1\.1 200}, 'no-op filter: 200 response');
 $r = http_get('/readuri/');
 is(hdr($r, 'X-Uri'), '/readuri/', 'filter can read r.uri');
 
-ok(1, 'addHeaderFilter accepts a single function argument');
-ok(1, 'nginx started without crash');

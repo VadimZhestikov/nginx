@@ -22,7 +22,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http/)->plan(6);
+my $t = Test::Nginx->new()->has(qw/http/)->plan(5);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -140,4 +140,3 @@ ok(defined $conn2, 'TCP connect to open socket port succeeds');
 $conn2->close() if defined $conn2;
 
 # Sanity
-ok(1, 'nginx started without crash');

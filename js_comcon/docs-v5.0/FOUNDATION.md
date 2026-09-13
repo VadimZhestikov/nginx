@@ -635,6 +635,51 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.79 (in place — the TESTS are gated now: 39 assertions claimed something and checked
+nothing):** V11 mutation-tests the policies. Nothing tested the tests — and this arc found
+**five assertions that could not fail, every one by accident while doing something else**: the
+`realize` probe that forged a 4th argument to a 3-argument operator, the `cap.expired` corpus
+row that reported "alive" forever with nothing pinning it, the `Symbol.for` arm comparing a
+value with itself, that file's coverage tally scraped from the whole payload (a battery of
+seven reporting 8-of-8), and the F9 ledger row that counted five unbuilt V-items where the
+table had always shown six.
+
+**A dead probe does not fail. It reassures.** Every "closed" in the findings ledger rests on an
+instrument, so `check-dead-probes.py` now gates the four shapes above, each cheap to detect
+statically and each expensive to find by hand.
+
+**First run: 39 assertions that claim something and verify nothing.** 27 were padding —
+"nginx started without crash", "all checks passed", and hand-written duplicates of the
+harness's own no-alerts checks — deleted, with every plan decremented to match. Twelve named a
+specific behaviour: **eight restated a claim the assertion directly above already proves**
+(deleting a duplicate claim loses no coverage; keeping it teaches the reader that a message
+implies a check), and **four were genuinely untested** — Content-Length suppression under a
+body filter, a chained filter running after an empty intermediate body, non-string filter
+returns passing through, and header-filter ordering surviving a restart.
+
+**All four of those claims turned out to be TRUE, which is exactly why they survived.** A
+false claim gets noticed the first time someone relies on it; a true claim with no check
+behind it is indistinguishable from a verified one until the behaviour changes. The Content-
+Length assertion got a control of its own — a location with no body filter, which DOES send
+the header — because `unlike(..., /^Content-Length:/)` also passes when the pattern is simply
+wrong.
+
+**And the checker was twice its own best test case.** Its first version reported the *prose*
+that documents a dead probe as a dead probe — in the very file whose comment explains the bug
+it was written to find — and then did it again in a second check after being fixed in the
+first. A checker that reads source as text must be told where the code is, once per check, and
+forgetting it in one place produces findings that look exactly like the real thing. Its
+`f(x) === f(x)` rule also had to learn the difference between a dead discriminator and the
+legitimate **determinism** assertion two fuzz generators here use (`f(77) === f(77) &&
+f(77) !== f(78)`): the rule now fires only when the comparison decides between two labels.
+Five controls, one per check.
+
+**Stated limit, so nothing is over-credited:** this is a STATIC reader. It cannot tell whether
+an assertion's subject is reachable, whether a control fires, or whether a corpus row is
+compared with its expectation at run time. Clean means "not dead in the four known ways", never
+"every assertion is live". The dynamic half remains `verify-negative-controls.sh` (six rows
+automated, six manual) and the inline controls in the `comcon_*` suites.
+
 **v5.78 (in place — F3's `Symbol.for` residual is WITHDRAWN: it was a probe comparing a
 value with itself, and the facet that would have "fixed" it breaks erasure):** the audit's
 F3 row has said since 2026-09-12 that an operator who declares `Symbol` for two tenants

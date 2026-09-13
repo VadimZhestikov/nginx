@@ -13,7 +13,7 @@ use Test::Nginx;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http stream stream_return/)->plan(8);
+my $t = Test::Nginx->new()->has(qw/http stream stream_return/)->plan(7);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 %%TEST_GLOBALS%%
@@ -89,4 +89,3 @@ is(prop('prereadBufferSize'),    '8192',              'prereadBufferSize 8192');
 is(prop('prereadTimeout'),       '15000',             'prereadTimeout 15s → 15000ms');
 is(prop('resolverTimeout'),      '10000',             'resolverTimeout 10s → 10000ms');
 is(prop('proxyProtocolTimeout'), '5000',              'proxyProtocolTimeout 5s → 5000ms');
-ok(1, 'nginx started without crash');

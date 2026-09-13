@@ -124,7 +124,7 @@ $t->write_file('init_timer.js', <<"JS");
 })();
 JS
 
-$t->try_run('no js module')->plan(8);
+$t->try_run('no js module')->plan(7);
 
 # 1. Request the SW to set a timer — confirm acknowledgement.
 like(http_get('/set_timer/'), qr/timer_set/, 'SW acknowledges timer setup');
@@ -146,4 +146,3 @@ like(http_get('/delayed/'), qr/delayed:ping/, 'SW setTimeout-delayed reply (2nd 
 $t->stop();
 unlike($t->read_file('error.log'), qr/\[alert\]|\[emerg\]/i,
     'no alert/emerg in error.log');
-ok(1, 'setTimeout in SW thread works correctly');
