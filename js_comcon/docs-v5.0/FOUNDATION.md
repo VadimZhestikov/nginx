@@ -635,6 +635,43 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.66 (in place — F3: cross-compartment identity, probed at last, and the claim turned
+out to be two claims):** AUDIT_M-SES §3 had it as **NOT EVIDENCED** with the note that
+*"cannot by construction" is an argument, not a test*. Probing it split it:
+
+**Host <-> fragment is STRUCTURAL.** The compartment is its own `JS_NewRuntime()`, so the two
+sides share no heap and no JSValue can cross — the invoke's JSON marshalling is not a policy
+but the only thing that *can* happen. Patching the invoke to pass the argument by reference,
+as a control, produces an empty response rather than a leak: using a value across runtimes is
+undefined behaviour. **An isolation whose control is "the worker dies" is structural, and
+saying so beats pretending there is a check to toggle.**
+
+**Fragment <-> fragment shares EVERYTHING.** One runtime, and one *context* — `comcon_ctx` is
+created once and reused — so two tenants share a global, an intrinsic graph and a prototype
+chain. Nothing structural separates them. Eight shared surfaces are now probed as CHANNELS
+(plant in fragment A, read in fragment B): `Object.prototype`, a frozen constructor, `JSON`,
+an array index, `Error`, `String`, the function prototype, and a granted capability plus its
+class prototype. **None is a channel — and removing the M-SES-1 freeze opens five of seven**,
+which converts "the intrinsics are frozen" from a description into a load-bearing claim with
+a demonstration.
+
+**Two findings from the probing itself.** (1) A fragment CAN write an own property onto its
+granted capability wrapper — only the class *prototype* is frozen. It reaches nobody (each
+include gets its own wrapper over the same C object; the host's carries no properties at
+all), so what makes it safe is per-include wrapping, not a refusal — a different claim, and
+now the one under test. The first version of the file asserted the refusal and PASSED, on an
+unanchored regex that matched an earlier probe's record. (2) **An operator who DECLARES
+`Symbol` for two tenants hands them `Symbol.for` as a rendezvous** — measured shared. Not an
+escape, and exactly why `Symbol` sits outside the intrinsics allowance (v5.54), but a
+declaration that reads as innocuous opens a channel and nothing warns the operator. Recorded
+as F3's residual.
+
+**And one instrument defect worth keeping.** The unconfined control arm deliberately pollutes
+the HOST's `Object.prototype` with the mark it plants — so a later host-side read of the same
+mark inherits it, and the test reported that the host could see what a fragment wrote. It
+could not; the test could see its own control. Marks must be DISJOINT, not merely different,
+and the control now cleans up after itself.
+
 **v5.65 (in place — TM-2 owned and built: a principal becomes an environment by
 ATTENUATION, never by minting):** the last unowned finding in the threat model, and the one
 with a deadline (*before the first real operator session*). Spec in **§8b**; mechanism in

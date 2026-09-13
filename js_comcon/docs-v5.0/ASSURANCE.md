@@ -387,12 +387,28 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T9, T4
 - **V:** V13
 
-#### G7.6 — cross-compartment identity
-- **CLAIM:** *(unevidenced)* Only strings cross the include boundary (JSON marshalling), so
-  object identity cannot be shared between compartments.
-- **GAP:** Named in the S6 probe classes and NOT probed. "Cannot by construction" is an
-  argument, not a test. **home:** AUDIT_M-SES.md §3 · finding F3.
-- **THREAT:** T4
+#### G7.6 — cross-compartment identity: two claims, one structural and one enforced
+- **CLAIM:** *(evidenced 2026-09-12)* **Host ↔ fragment** share no heap: the compartment is
+  its own `JS_NewRuntime()`, so no JSValue can cross and the invoke's JSON marshalling is
+  the only thing that *can* happen. **Fragment ↔ fragment** share a runtime AND a context —
+  one global, one intrinsic graph — and are separated by the M-SES-1 transitive freeze,
+  closure-bound grants, and an admission gate that refuses a fragment naming a neighbour.
+- **ARGUMENT:** Eight shared surfaces are probed as CHANNELS (plant in one fragment, read in
+  another): `Object.prototype`, a frozen constructor, `JSON`, an array index, `Error`,
+  `String`, the function prototype, and a granted capability plus its class prototype. Each
+  probe also runs UNCONFINED, where it works — so a clean confined result is a measurement.
+  **Removing the freeze turns five of seven into live channels**, which is what makes it a
+  load-bearing mechanism rather than a hopeful one. A fragment CAN write an own property on
+  its own capability wrapper; that reaches nobody, because each include gets its own wrapper
+  over the same C object and the host's carries no properties at all.
+- **EV:** `t/comcon_cross_identity.t` — the battery, its built-in unconfined control, and the marshalling and scope checks.
+- **EV:** `t/comcon_include_freeze.t` — the freeze itself, whose removal the battery shows to be decisive.
+- **GAP:** **An operator who DECLARES `Symbol` for two tenants gives them a rendezvous** —
+  `Symbol.for` is a runtime-wide registry, measured shared. Not an escape (nothing crosses
+  that was not granted) and the reason `Symbol` is outside the intrinsics allowance, but a
+  declaration that looks innocuous opens a channel and nothing warns the operator.
+  **home:** FOUNDATION v5.54 (the intrinsics decision) · finding F3.
+- **THREAT:** T4, T9
 - **V:** V5b
 
 ---
@@ -581,7 +597,7 @@ assurance case whose findings section is empty has not been built honestly.
 |---|---|---|---|
 | **F1** | **20 of 83 evidence citations in the doc set pointed at files that do not exist** — pre-CONVERGENCE names, deleted in P6a/P6b. A reviewer following THREATS T11 to `t/comcon_gas.t` found nothing. | this document, §12 | **FIXED + now checked** (`check-assurance.py`) |
 | **F2** | No per-fragment memory attribution; nothing asserts a fragment hitting the 64 MB runtime cap | G6.4 | OPEN — deferred by design (S5) |
-| **F3** | Cross-compartment identity not probed | G7.6 | OPEN — not evidenced |
+| **F3** | Cross-compartment identity not probed | G7.6 | **PROBED 2026-09-12** — no channel found on eight shared surfaces, and removing the freeze opens five of them, so the mechanism is identified rather than assumed. **Residual:** declaring `Symbol` for two tenants gives them `Symbol.for` as a rendezvous, unwarned |
 | **F4** | `guarded` / `irreversible` COM members are excluded from the setter fuzz | AUDIT_M-SES.md §3 | OPEN — deliberate scope choice |
 | **F5** | AOT-compiled fragments not separately run against the escape battery | G7.5 | PARTIAL |
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 | OPEN — deliberate scope choice |

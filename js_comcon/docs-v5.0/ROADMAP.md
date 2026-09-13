@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.65 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.66 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -57,6 +57,12 @@
 >   `E_CAP_ESCALATE` — the next tranche. It found a real defect: `contract.tests` was
 >   silently ignored unless it was a string, so `tests: [fn]` was admitted with the
 >   behavioural gate never run.
+> - **F3 PROBED (2026-09-12, v5.66):** cross-compartment identity, the audit's
+>   NOT-EVIDENCED row. Host↔fragment turns out to be STRUCTURAL (separate
+>   `JS_NewRuntime()`s — a by-reference control kills the worker instead of leaking),
+>   while fragment↔fragment shares one runtime and one context, so the M-SES-1 freeze is
+>   the mechanism: **removing it opens five of seven probed surfaces**. Residual found: an
+>   operator who declares `Symbol` for two tenants hands them `Symbol.for` as a rendezvous.
 > - **TM-2 IS CLOSED (2026-09-12, v5.65):** the identity→environment mapping, the last
 >   unowned finding in THREATS.md and the one that had to exist *before the first real
 >   operator session*. FOUNDATION §8b owns it; `comcon.std.sessions` implements it as
