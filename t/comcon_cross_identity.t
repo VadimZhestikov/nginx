@@ -120,13 +120,52 @@ var PROBES = [
 ];
 
 /* Symbol is NOT an intrinsic (v5.54, deliberately: Symbol.for is a runtime-wide
-   registry, i.e. a rendezvous). It is DECLARABLE, so the honest question is not
-   "can a tenant reach it" but "what does an operator open by declaring it" --
-   measured below rather than assumed. */
-var SYMBOL_PLANT = "function(){ var s = Symbol.for('comcon.chan'); "
-                 + "return typeof s; }";
-var SYMBOL_READ  = "function(){ return Symbol.for('comcon.chan') === "
-                 + "Symbol.for('comcon.chan') ? 'SHARED' : 'clean'; }";
+   registry). It is DECLARABLE, so the honest question is not "can a tenant reach
+   it" but "what does an operator open by declaring it for two tenants".
+ *
+ * THE FIRST VERSION OF THIS ARM MEASURED NOTHING and reported "SHARED" for
+ * three weeks.  Its read was
+ *
+ *     Symbol.for('k') === Symbol.for('k')  ? 'SHARED' : 'clean'
+ *
+ * -- two calls in the SAME fragment, compared with each other.  That is true of
+ * any registry, private or shared, so it could not come out 'clean' and never
+ * looked at another fragment at all.  Its plant returned `typeof s`, which
+ * nothing consumed.  A probe whose read cannot be false is not a probe.
+ *
+ * WHAT THE REAL QUESTION IS.  A shared registry gives two fragments the same
+ * KEY.  A key is not a channel; a channel needs a STORE both can reach and the
+ * key to unlock it.  So the probe now attempts the whole exploit -- take the
+ * symbol, and use it as a property key on every surface both fragments touch --
+ * and the read looks for the mark rather than comparing a value with itself.
+ *
+ * The unconfined control is what makes the result mean something, and it is
+ * sharper here than elsewhere in this file: the host arm has BOTH a shared
+ * registry and an unfrozen Object.prototype, so if it reads the mark back, the
+ * key must have matched across the two calls.  One arm therefore proves the
+ * registry IS shared, while the other shows what that sharing buys inside the
+ * compartment -- nothing, because the store is frozen.  Same alphabet, two
+ * regimes, and the difference names the mechanism. */
+var SYMBOL_PLANT = "function(){ var s = Symbol.for('KEY'); var t = []; "
+                 + "try { Object.prototype[s] = 'planted'; t.push('proto'); } "
+                 + "catch (e) { t.push('proto:refused'); } "
+                 + "try { JSON[s] = 'planted'; t.push('json'); } "
+                 + "catch (e) { t.push('json:refused'); } "
+                 + "try { Array.prototype[s] = 'planted'; t.push('array'); } "
+                 + "catch (e) { t.push('array:refused'); } "
+                 + "return t.join(','); }";
+var SYMBOL_READ  = "function(){ var s = Symbol.for('KEY'); "
+                 + "var v = ({})[s] || JSON[s] || [][s]; "
+                 + "return v || 'clean'; }";
+
+/* Disjoint keys for the two regimes.  The unconfined arm really does pollute the
+   host's Object.prototype, and if both arms used one key the confined read could
+   find the CONTROL's mark and be reported as a leak -- which is exactly the
+   false positive this file already hit once with `__chan` (see the grant probe's
+   `__gchan` note below). */
+var SYM_CONF   = 'comcon.chan';
+var SYM_UNCONF = 'comcon.gchan';
+function symText(t, key) { return t.replace(/KEY/g, key); }
 
 /* The grant-level probe is separate: it needs the SAME capability handed to
    both fragments, which is the interesting case (do two tenants granted one
@@ -212,22 +251,49 @@ locs.find(function (l) { return l.path === "/ident"; }).handler = function (req)
     out.arg.hostSees = (shared.mark === null) ? 'clean' : shared.mark;
     out.arg.channel = (out.arg.read !== 'clean');
 
-    /* ---- the Symbol registry, as an OPERATOR-OPENED channel ---- */
+    /* ---- the Symbol registry: a shared KEY is not a shared STORE ---- */
     out.symbol = {};
     try {
-        var SA = comcon.include(SYMBOL_PLANT, { imports: [] });
+        var SA = comcon.include(symText(SYMBOL_PLANT, SYM_CONF),
+                                { imports: [] });
         out.symbol.undeclared = SA({});
     } catch (e5) {
         out.symbol.undeclared = 'refused: ' + (e5.code || e5.name);
     }
     try {
-        var SB2 = comcon.include(SYMBOL_PLANT, { imports: ['Symbol'] });
-        var SC = comcon.include(SYMBOL_READ,   { imports: ['Symbol'] });
+        var SB2 = comcon.include(symText(SYMBOL_PLANT, SYM_CONF),
+                                 { imports: ['Symbol'] });
+        var SC  = comcon.include(symText(SYMBOL_READ, SYM_CONF),
+                                 { imports: ['Symbol'] });
         out.symbol.declaredPlant = SB2({});
         out.symbol.declaredRead  = SC({});
+        out.symbol.channel = (out.symbol.declaredRead !== 'clean');
     } catch (e6) {
         out.symbol.declaredPlant = 'refused: ' + (e6.code || e6.name);
     }
+
+    /* The control: the same text, unconfined, where the store is NOT frozen.
+       If this reads the mark back, the symbol key matched across two separate
+       calls -- which is the registry being shared, demonstrated rather than
+       asserted. */
+    try {
+        var hSP = new Function('return (' + symText(SYMBOL_PLANT, SYM_UNCONF)
+                               + ')();');
+        var hSR = new Function('return (' + symText(SYMBOL_READ, SYM_UNCONF)
+                               + ')();');
+        out.symbol.hostPlant = hSP();
+        out.symbol.hostRead  = hSR();
+        out.symbol.hostChannel = (out.symbol.hostRead !== 'clean');
+    } catch (e7) {
+        out.symbol.hostRead = 'control-threw: ' + e7.message;
+    }
+    /* Clean up after the control, or the pollution outlives the measurement. */
+    try {
+        var gk = Symbol.for(SYM_UNCONF);
+        delete Object.prototype[gk];
+        delete JSON[gk];
+        delete Array.prototype[gk];
+    } catch (e8) { /* nothing to undo */ }
 
     /* ---- scope: can B name A at all? ---- */
     /* Naming another fragment does not fail at CALL time -- it fails at
@@ -244,7 +310,7 @@ locs.find(function (l) { return l.path === "/ident"; }).handler = function (req)
 };
 JS
 
-$t->try_run('no js module')->plan(11);
+$t->try_run('no js module')->plan(13);
 
 ###############################################################################
 
@@ -255,7 +321,7 @@ diag($1) if $r =~ /("probes":.*)/;
 unlike($r, qr/"channel":true/,
      'NO probe planted a mark that another fragment could read: not through a '
      . 'shared prototype, a frozen intrinsic, JSON, an array index, Error, '
-     . 'String, or Function.prototype -- eight surfaces, all shared in one '
+     . 'String, or Function.prototype -- seven surfaces, all shared in one '
      . 'JSContext, none of them a channel');
 
 # --- and the probes can SEE a channel when there is one -------------------
@@ -264,10 +330,16 @@ like($r, qr/"hostChannel":true/,
      . 'channel, so a clean confined result is a measurement and not a '
      . 'tautology (host JS is not frozen -- that is the difference)');
 
-my @host = ($r =~ /"hostChannel":(true|false)/g);
+# Scoped to the PROBES array, not the whole payload.  `hostChannel` is also
+# emitted by the grant and symbol arms, and scanning everything made this count
+# read 8-of-8 for a battery of seven -- a coverage number that grows whenever an
+# unrelated arm is added is not a coverage number.
+my ($probe_block) = ($r =~ /"probes":\[(.*?)\]/s);
+$probe_block = '' unless defined $probe_block;
+my @host = ($probe_block =~ /"hostChannel":(true|false)/g);
 my $hostyes = grep { $_ eq 'true' } @host;
 cmp_ok($hostyes, '>=', 5,
-       "at least five of the eight probes are live channels unconfined "
+       "at least five of the seven probes are live channels unconfined "
        . "($hostyes of " . scalar(@host) . ") -- the battery is not mostly "
        . "probing things that never worked anywhere");
 
@@ -276,11 +348,27 @@ like($r, qr/"undeclared":"refused: E_ADMIT_FREENAME"/,
      'Symbol is NOT reachable by default: it is deliberately outside the '
      . 'intrinsics allowance (v5.54) precisely because Symbol.for is a '
      . 'runtime-wide registry, and a registry is a rendezvous');
-like($r, qr/"declaredRead":"SHARED"/,
-     'MEASURED, NOT ASSUMED: when an operator DECLARES Symbol for two tenants, '
-     . 'Symbol.for does give them a shared key -- an operator-opened channel. '
-     . 'Not an escape (nothing crosses that was not granted) but the reason '
-     . 'Symbol stays undeclared by default, now demonstrated instead of argued');
+# The control first: it is what makes the confined result a measurement.  If the
+# host arm reads the mark back, the symbol key MATCHED across two separate calls,
+# so the registry really is runtime-wide -- demonstrated, not asserted.
+like($r, qr/"hostRead":"planted"/,
+     'THE CONTROL IS LIVE: unconfined, a symbol-keyed mark IS readable next '
+     . 'door -- so the key matched across two calls and the registry is indeed '
+     . 'shared. Without this arm the confined result below would be a tautology');
+
+like($r, qr/"declaredRead":"clean"/,
+     'AND THE SHARED KEY BUYS NOTHING: declaring Symbol for two tenants gives '
+     . 'them the same key, and they still cannot talk -- because a key needs a '
+     . 'STORE, and every store they share is frozen. The previous version of '
+     . 'this arm reported a channel here, but its read compared '
+     . 'Symbol.for(k) === Symbol.for(k) in ONE fragment, which cannot be false. '
+     . 'The residual it recorded was an artefact of a probe that never looked '
+     . 'next door');
+
+like($r, qr/"declaredPlant":"proto:refused,json:refused,array:refused"/,
+     'and the reason is named rather than inferred: every symbol-keyed write '
+     . 'is REFUSED by the freeze, so the registry is a shared namespace over '
+     . 'stores that do not accept marks -- not a rendezvous');
 
 # --- the shared capability ----------------------------------------------
 # MEASURED: a fragment CAN write an own property onto its capability wrapper --

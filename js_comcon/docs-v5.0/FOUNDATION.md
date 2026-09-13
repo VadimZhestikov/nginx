@@ -635,6 +635,44 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.78 (in place — F3's `Symbol.for` residual is WITHDRAWN: it was a probe comparing a
+value with itself, and the facet that would have "fixed" it breaks erasure):** the audit's
+F3 row has said since 2026-09-12 that an operator who declares `Symbol` for two tenants
+hands them `Symbol.for` as a rendezvous. The arm that measured it read
+
+    Symbol.for(k) === Symbol.for(k) ? 'SHARED' : 'clean'
+
+— **two calls in the same fragment, compared with each other.** That is true of any
+registry, private or shared; it never looked next door and it could not come out `clean`. Its
+plant returned a `typeof` that nothing consumed. **A probe whose read cannot be false is not
+a probe** — the third dead probe this arc has found, after the forged-4th-argument `realize`
+probe and the `cap.expired` corpus row that reported "alive" forever.
+
+**The real question is not the key, it is the store.** A shared registry gives two fragments
+the same KEY. A key opens nothing on its own: a channel needs a STORE both can reach. So the
+probe now takes the symbol and uses it as a property key on every surface both fragments
+touch — and comes back `proto:refused,json:refused,array:refused`, read `clean`. Two controls
+make that a measurement rather than a hope: the same text **unconfined** reads the mark back,
+which proves the key matched across two separate calls (so the registry really is
+runtime-wide, now demonstrated instead of asserted), and with the **M-SES-1 freeze disabled**
+the confined arm becomes a live channel and four assertions fail. The mechanism is named by
+removal: it is the freeze, not the absence of a shared name.
+
+**A per-fragment `Symbol` facet was built, worked, and was REJECTED.** Giving each fragment
+its own `for`/`keyFor` table is the obvious capability-secure move and it is the wrong one
+here, for a reason worth stating: **it breaks erasure (G11.7).** Two fragments of one program
+that both call `Symbol.for('k')` and expect one symbol would get two under COMCON and one in
+plain node — an annotation changing what the code *computes*, which is precisely what erasure
+forbids and what SR-2's faithfulness argument rests on. Shipping it would have traded a
+signed invariant for a channel no probe can show is open. **The reject is the result**; the
+code is not in the tree.
+
+**And the accounting gets an ERRATUM, not a rewrite.** `AUDIT_M-SES.md` §3 is inside a signed
+attestation, so its text stands as signed, with a marker pointing at §6 where the withdrawal
+is recorded. A signed document that quietly acquires corrected facts is worth less than one
+whose errors are visible: a reader who cannot tell which claims moved cannot rely on any of
+them.
+
 **v5.77 (in place — V8's effect-class half: the propagation column is true, and proving it
 took two arms that disagree):** `propagation` is the COW-trap axis — `worker-local`,
 `zoned-shared`, `auto-shared` — and **306 rows make the claim while nothing had ever checked
@@ -1082,10 +1120,12 @@ include gets its own wrapper over the same C object; the host's carries no prope
 all), so what makes it safe is per-include wrapping, not a refusal — a different claim, and
 now the one under test. The first version of the file asserted the refusal and PASSED, on an
 unanchored regex that matched an earlier probe's record. (2) **An operator who DECLARES
-`Symbol` for two tenants hands them `Symbol.for` as a rendezvous** — measured shared. Not an
-escape, and exactly why `Symbol` sits outside the intrinsics allowance (v5.54), but a
-declaration that reads as innocuous opens a channel and nothing warns the operator. Recorded
-as F3's residual.
+`Symbol` for two tenants hands them `Symbol.for` as a rendezvous** — recorded as F3's
+residual. **WITHDRAWN at v5.78: this was not measured, it was an artefact.** The read compared
+`Symbol.for(k) === Symbol.for(k)` inside ONE fragment, which is true of any registry. The
+registry IS shared — the rewritten probe's unconfined control proves the key matches across
+two calls — but a shared key is not a channel without a store, and every store the two
+fragments share is frozen.
 
 **And one instrument defect worth keeping.** The unconfined control arm deliberately pollutes
 the HOST's `Object.prototype` with the mark it plants — so a later host-side read of the same

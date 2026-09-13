@@ -481,11 +481,21 @@ The primary control, and the one everything else is defence in depth for.
   over the same C object and the host's carries no properties at all.
 - **EV:** `t/comcon_cross_identity.t` — the battery, its built-in unconfined control, and the marshalling and scope checks.
 - **EV:** `t/comcon_include_freeze.t` — the freeze itself, whose removal the battery shows to be decisive.
-- **GAP:** **An operator who DECLARES `Symbol` for two tenants gives them a rendezvous** —
-  `Symbol.for` is a runtime-wide registry, measured shared. Not an escape (nothing crosses
-  that was not granted) and the reason `Symbol` is outside the intrinsics allowance, but a
-  declaration that looks innocuous opens a channel and nothing warns the operator.
-  **home:** FOUNDATION v5.54 (the intrinsics decision) · finding F3.
+- **CORRECTED 2026-09-13 — the `Symbol.for` gap this leaf used to carry is WITHDRAWN.** It
+  read: "an operator who declares `Symbol` for two tenants gives them a rendezvous." The arm
+  that measured it compared `Symbol.for(k) === Symbol.for(k)` **within one fragment** — true
+  of any registry, private or shared, and never a look next door. A probe whose read cannot
+  be false is not a probe. Rewritten to attempt the whole exploit — take the symbol, use it
+  as a property KEY on every surface both fragments touch — the writes come back
+  `proto:refused,json:refused,array:refused` and the read is `clean`. **A shared registry
+  gives two fragments the same key; a key is not a channel without a STORE to unlock, and
+  every store they share is frozen.** Two controls make that a measurement: the same text
+  unconfined reads the mark back (so the key really did match across two calls — the registry
+  IS runtime-wide), and with the freeze disabled the confined arm becomes a live channel.
+  **A per-fragment `Symbol` facet was built and then rejected:** it would have broken
+  **erasure (G11.7)** — two fragments of one program calling `Symbol.for('k')` would get
+  different symbols under COMCON than in plain node, an annotation changing what code
+  computes — to close something no probe can show is open.
 - **THREAT:** T4, T9
 - **V:** V5b
 
@@ -779,7 +789,7 @@ assurance case whose findings section is empty has not been built honestly.
 |---|---|---|---|
 | **F1** | **20 of 83 evidence citations in the doc set pointed at files that do not exist** — pre-CONVERGENCE names, deleted in P6a/P6b. A reviewer following THREATS T11 to `t/comcon_gas.t` found nothing. | this document, §12 | **FIXED + now checked** (`check-assurance.py`) |
 | **F2** | No per-fragment memory attribution; nothing asserts a fragment hitting the 64 MB runtime cap | G6.6 | **PARTLY CLOSED 2026-09-13:** a per-INVOCATION allowance (16 MB default; `contract.meter.memoryBytes` may only narrow) enforced by narrowing the runtime limit for one call. **It bounds a BURST, not a leak** — a fragment retaining a little per call still walks the shared cap up, and that residue is the part of F2 still OPEN |
-| **F3** | Cross-compartment identity not probed | G7.6 | **PROBED 2026-09-12** — no channel found on eight shared surfaces, and removing the freeze opens five of them, so the mechanism is identified rather than assumed. **Residual:** declaring `Symbol` for two tenants gives them `Symbol.for` as a rendezvous, unwarned |
+| **F3** | Cross-compartment identity not probed | G7.6 | **PROBED 2026-09-12; CLOSED 2026-09-13** — no channel found on seven shared surfaces, and removing the freeze opens them, so the mechanism is identified rather than assumed. **The `Symbol.for` residual is WITHDRAWN: it was an artefact of a probe that compared a value with itself.** Rewritten to attempt the real exploit — a shared registry gives the same KEY, and a key is no channel without a STORE, which the freeze denies. Both a live unconfined control and a freeze-disabled control back that |
 | **F4** | `guarded` / `irreversible` COM members are excluded from the setter fuzz | AUDIT_M-SES.md §3 → G7.8 | **CLOSED 2026-09-13:** each guarded member is now fuzzed in **its own nginx instance**, which is what the shared-state objection actually required. `irreversible` remains untested because the live walk reaches **none** — the class exists in the registry but no member on those paths carries it |
 | **F5** | AOT-compiled fragments not separately run against the escape battery | G7.5 | **CLOSED 2026-09-12** (after the §15 signature — see §16): the battery now runs against a fragment with 20 natively-lowered functions, the precondition is asserted, and the tiers agree probe by probe |
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 → G6.6 | **CLOSED 2026-09-13** (after the §15 signature — see §16): the deadline defaults ON at 10 s, `0` opts out, a malformed value reads as the default. Superseded in part by **F12** |
@@ -849,7 +859,7 @@ the rule that stale binaries invalidate everything after them. Tree at `d6ed6239
 
 | closed | probed, with a named residual | accepted as residual risk |
 |---|---|---|
-| **F1** (dead evidence citations — fixed and now checked) · **F7** (TM-2, specified + built) | **F3** (no channel on eight shared surfaces; residual: declaring `Symbol` gives two tenants `Symbol.for` as a rendezvous, unwarned) | **F2** per-fragment memory attribution · **F4** guarded/irreversible COM members unfuzzed · **F5** compiled tier not separately probed · **F6** host JS unbounded by default · **F8** IFC/timing channels · **F9** seven unbuilt V-items · **F10** `E_CAP_FLAVOR`/`E_CAP_ESCALATE` uncoded · **F11** the M-SES audit's single signer |
+| **F1** (dead evidence citations — fixed and now checked) · **F7** (TM-2, specified + built) · **F3** (no channel on seven shared surfaces; its `Symbol.for` residual WITHDRAWN 2026-09-13 as a dead-probe artefact) | **F2** per-fragment memory attribution · **F4** guarded/irreversible COM members unfuzzed · **F5** compiled tier not separately probed · **F6** host JS unbounded by default · **F8** IFC/timing channels · **F9** seven unbuilt V-items · **F10** `E_CAP_FLAVOR`/`E_CAP_ESCALATE` uncoded · **F11** the M-SES audit's single signer |
 
 | Role | Name | Date | Scope signed |
 |---|---|---|---|
@@ -905,6 +915,8 @@ signature is never quietly credited with work it did not see.
 | **M2.5 RE-STATED — G11.9 added** — `SPEC.md` had fallen behind the code (no `routes`, `ttl`, refusal codes, `cap.expired` or session registry; §10 still calling the identity→environment mapping a future deliverable; §13 stamped v5.35 against a delta log at v5.75). §2/§10/§13 now state current truth, and check [7] of the enumeration checker makes the currency of its closed sets machine-checked, with four controls. | **Adds a leaf; corrects a document, not a mechanism.** Nothing signed changes: §15 attested the code and the instruments, not the spec's prose. The new GAP is stated in G11.9 — presence is checked, correctness is not. |
 
 | **V8 COMPLETED — G11.10 added** — the effect-class half. `t/js_com_propagation.t` holds the `propagation` column to account across four real workers: the conditional pair (the refine hook's `zoned-shared` vs `worker-local` on two upstreams in one config) and a sweep generated per registry row. **The claim holds — 67 rows swept, none leaked, no defect.** Four controls, two of them at the CONFIG level (remove the zone, add a zone) so they exercise the mechanism rather than mutating the test. Clean under ASAN and UBSAN. | **Adds a leaf that is positive evidence rather than a fix.** §15's evidence table gains a row; nothing it attested changes. The new GAP is quantified in G11.10: 67 of 154 rows, with both exclusions named, and `auto-shared` recorded as an enumeration value with no instances. |
+
+| **F3 CLOSED — a residual WITHDRAWN, not fixed** — the `Symbol.for` rendezvous was an artefact of a dead probe: its read compared `Symbol.for(k) === Symbol.for(k)` inside ONE fragment, which cannot be false. The rewritten arm attempts the whole exploit and is refused on every surface; a shared registry is a shared NAME, and a name is not a channel without a store. Backed by two controls — the unconfined arm reads the mark back (proving the key matched, so the registry is genuinely shared) and the freeze-disabled arm turns the confined case into a live channel. `AUDIT_M-SES.md` §3's attested row is left as signed and carries an ERRATUM marker pointing at its §6. | **Removes a residual by retracting it.** This is the one kind of change that should make a reader MORE careful, not less: a signed audit recorded a finding that was not there, so the fix is an erratum plus a probe that can now fail. Nothing else §15 attested is affected. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.77 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.78 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -62,18 +62,25 @@
 >   `nginx.shared` (measured: 4 workers, a limit of 10 spent exactly 10 times), +0.037 µs
 >   per charged use. It also settles where `E_BUDGET_*` belongs: exhaustion is a DENIAL
 >   (`budget.uses`), not an admission refusal, so that family stays empty by design.
-> - **F3 PROBED (2026-09-12, v5.66):** cross-compartment identity, the audit's
+> - **F3 PROBED (2026-09-12, v5.66) — and its residual later WITHDRAWN, see v5.78 above:** cross-compartment identity, the audit's
 >   NOT-EVIDENCED row. Host↔fragment turns out to be STRUCTURAL (separate
 >   `JS_NewRuntime()`s — a by-reference control kills the worker instead of leaking),
 >   while fragment↔fragment shares one runtime and one context, so the M-SES-1 freeze is
->   the mechanism: **removing it opens five of seven probed surfaces**. Residual found: an
->   operator who declares `Symbol` for two tenants hands them `Symbol.for` as a rendezvous.
+>   the mechanism: **removing it opens five of seven probed surfaces**. (The `Symbol` residual
+>   recorded here was **WITHDRAWN 2026-09-13** — see v5.78 above: the probe that found it
+>   compared a value with itself.)
 > - **TM-2 IS CLOSED (2026-09-12, v5.65):** the identity→environment mapping, the last
 >   unowned finding in THREATS.md and the one that had to exist *before the first real
 >   operator session*. FOUNDATION §8b owns it; `comcon.std.sessions` implements it as
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **F3 CLOSED (2026-09-13, v5.78): its `Symbol.for` residual is WITHDRAWN as a dead-probe
+>   artefact.** The read compared `Symbol.for(k) === Symbol.for(k)` inside ONE fragment. The
+>   rewritten probe attempts the real exploit and is refused on every surface: a shared
+>   registry is a shared NAME, and a name is no channel without a STORE. **A per-fragment
+>   `Symbol` facet was built and rejected — it breaks erasure (G11.7).** Two controls: the
+>   unconfined arm reads the mark back, and the freeze-disabled arm opens the channel.
 > - **V8 COMPLETED (2026-09-13, v5.77): the effect-class half — `propagation` is TRUE.**
 >   The one registry column nothing had ever checked, and uncheckable in one process. Its
 >   only conditional claim (the peer refine hook) is verified on both sides in one fixture,
