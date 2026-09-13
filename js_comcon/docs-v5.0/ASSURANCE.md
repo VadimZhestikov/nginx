@@ -640,6 +640,31 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T1, T10
 - **V:** V8
 
+#### G11.9 — THE SPEC cannot silently fall behind the code
+- **CLAIM:** Every member of a set `SPEC.md` calls closed appears in `SPEC.md`, so the
+  normative read cannot quietly stop describing the shipped system.
+- **ARGUMENT:** G11.4 machine-checks THIS document; nothing checked the spec. A document
+  whose stated job is "current truth, stated once" is the one most exposed to silent decay —
+  it was accurate when written, the code moved eleven times, and no test ever failed. The
+  check is deliberately narrow: it matches a **backticked identifier**, not a bare word,
+  because `log` and `mode` are ordinary English and a bare-word search would pass on any
+  prose at all while reporting green; and it forces the spec to name the key a caller
+  actually passes rather than a paraphrase.
+- **EV:** `t/tools/check-enumerations.py` check [7] — mediation flavors, denial codes and
+  ops-resource identifiers by name; `comcon.refusalCodes()` as the delegated authority for
+  the refusal codes. Four controls, one per branch.
+- **EV:** `t/comcon_enumerations.t` — pins that check [7] actually RAN, on its own standing
+  argument that "no drift" from a checker which bailed out early is a vacuous pass.
+- **FOUND:** the spec had no mention of `routes`, `ttl`, the refusal codes, `cap.expired` or
+  the session registry — all shipped — and still called the identity→environment mapping a
+  future host deliverable; and `bindings` was described only as "binding/epoch store".
+- **GAP:** This is a PRESENCE check, not a correctness one: it can tell that the spec names
+  `ttl`, never that it describes `ttl` correctly. Nothing machine-checks prose against
+  behaviour, and nothing here pretends to.
+  **home:** VERIFICATION.md V2 (the reference semantics) · ROADMAP M2.5.
+- **THREAT:** T3
+- **V:** V2
+
 #### G11.2 — the reference semantics is independent of the implementation
 - **EV:** `t/tools/kernel-oracle.js` — written from the rules, sharing no code with `src/js`.
 - **THREAT:** T1
@@ -844,6 +869,8 @@ signature is never quietly credited with work it did not see.
 | **The two INCONCLUSIVE negative-control rows are RE-BASED to MANUAL** (2026-09-13). §15 records "6 verified, 0 failed, 2 INCONCLUSIVE"; on the current tree the battery reports **6 verified, 0 failed, 0 skipped**, with the two rows moved into the MANUAL list *with the reason their inverse patch no longer applies* — so the count is honest rather than quietly two short. `git apply -R -3` was tried as an automated re-base and is now recorded in the script's header as a **trap**: it applied one file, failed the other, and left the partial revert in the tree. **The maintenance debt §15 accepted is not paid — it is now accurately labelled**, which is a different and lesser thing: six rows require a hand revert to check. | **Corrects an accounting, closes nothing.** The falsifiability that was lost is still lost; what changes is that the report no longer has an "inconclusive" bucket that reads like a transient failure. |
 
 | **V8 BUILT — G11.8 added; F9 down to five** — `t/js_com_schema_conformance.t` generates a conformance check per registry row for the READ-ONLY half of the surface, which no instrument had ever covered. It found a real misdeclaration (`names`: `object[]` → `string[]`), **20 read-only rows with no declared type**, and that `nginx.describe(req)` returns **zero rows** — the tenant-facing request surface is outside the registry entirely. All 21 type rows are now classified against their implementations, and the inventory is pinned at empty so a getter added without a type fails CI the day it lands. Seven controls: five over planted objects, two run end to end against the C map (a row removed, a row made to lie). | **Closes one V-item and narrows F9.** It also converts part of F9 from "no machinery" into a standing gate. Two NEW gaps are recorded in G11.8 rather than left implicit: the hardcoded `requestScoped`/`propagation` on read-only rows, and the map's bare-name keying. |
+
+| **M2.5 RE-STATED — G11.9 added** — `SPEC.md` had fallen behind the code (no `routes`, `ttl`, refusal codes, `cap.expired` or session registry; §10 still calling the identity→environment mapping a future deliverable; §13 stamped v5.35 against a delta log at v5.75). §2/§10/§13 now state current truth, and check [7] of the enumeration checker makes the currency of its closed sets machine-checked, with four controls. | **Adds a leaf; corrects a document, not a mechanism.** Nothing signed changes: §15 attested the code and the instruments, not the spec's prose. The new GAP is stated in G11.9 — presence is checked, correctness is not. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

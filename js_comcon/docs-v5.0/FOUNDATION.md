@@ -635,6 +635,46 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.76 (in place — M2.5 re-stated: the spec says what the system does, and a check keeps
+it that way):** `SPEC.md`'s own header calls it "the clean normative read of the design:
+current truth, stated once, no revision archaeology." A document with that job is the one
+most exposed to silent decay, because nothing fails when it rots.
+
+It had **zero mentions of `routes`, `ttl`, the refusal codes, `cap.expired` or the session
+registry** — every one of them shipped. Its §10 still described a session's
+identity→environment mapping as "a host-integration deliverable (must exist before the first
+operator session)"; that deliverable is `std.sessions`, built weeks ago. Its §13 was stamped
+v5.35 against a delta log at v5.75 and still listed increment D as design.
+
+§2 now carries the closed mediation vocabulary and the **meet rule** — masks AND, lifetimes
+take the minimum, globs and rate budgets are REFUSED — stated as a property of each flavor's
+ORDER rather than as a convenience. §10 carries the session registry with the load-bearing
+part in the open (it stores descriptors, never environments, which is exactly why it carries
+no authority and can be fleet-wide; COMCON does not authenticate, and the host's assertion of
+the principal is the entire trust transfer), the two code axes, why `E_BUDGET_*` is empty **by
+placement**, and the ops-resource capabilities named by the identifier an operator passes.
+§13 separates a dated current-truth block from how that truth was reached.
+
+**The durable half is a checker, not an edit.** Check [7]: every member of a set the spec
+calls closed must appear in the spec. Its first run found `bindings` described only as
+"binding/epoch store" — the concept, not the key a caller types — which is why it matches a
+**backticked identifier** rather than a bare word: `log` and `mode` are ordinary English, and
+a bare-word search would pass on any prose at all *while reporting green*. An inert check
+that looks green is worse than no check.
+
+**What it deliberately does NOT check, and why.** The fifteen refusal codes are not required
+by name. Copying them into the spec would duplicate MANUAL §3.2, and **a spec that copies a
+table acquires a second place for that table to be wrong** — so the spec must name
+`comcon.refusalCodes()` and send the reader to the one authority. Demanding the list would
+trade one staleness for another. And the whole check is a **presence** check: it can tell that
+the spec names `ttl`, never that it describes `ttl` correctly. Stated in the tool, in G11.9,
+and here, because a check whose limits are not written down gets credited with more than it
+does.
+
+Four controls, one per branch. And the standing test that runs the checker already argued the
+right thing — "no drift" from a checker that bailed out early is a vacuous pass — so [7] is
+pinned there as having RUN, along with [3], which that list had been missing.
+
 **v5.75 (in place — V8: the registry's read-only half is held to account, and the
 request turns out not to be in the registry at all):** the typed tier and the config-review
 path reason from what `describe()` says. The SETTABLE half has had an instrument since the

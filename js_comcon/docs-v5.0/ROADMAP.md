@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.75 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.76 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,6 +74,12 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **M2.5 RE-STATED (2026-09-13, v5.76): the spec states current truth, and check [7]
+>   keeps it there.** The normative read had fallen behind on five shipped features. The
+>   durable half is the checker, not the edit — and it matches BACKTICKED identifiers,
+>   because a bare-word search for `log` or `mode` would pass on any prose while reporting
+>   green. The refusal codes stay delegated to `comcon.refusalCodes()`: a spec that copies a
+>   table acquires a second place for it to be wrong.
 > - **V8 BUILT (2026-09-13, v5.75): the registry's READ-ONLY half is now held to
 >   account per row** — `t/js_com_schema_conformance.t`, generated from the live walk.
 >   Found one real misdeclaration (`names`), **20 reached rows with no declared type**, and
@@ -320,7 +326,13 @@ fallback) → the event dispatcher calls the C function pointer directly.
   rule; the `type` column is already a stringly-typed signature slot, so M2's type
   signatures are a pure data extension.
 
-- **M2.5 — THE SPEC (scope expanded, v5.4).** Originally "consolidate SEMANTICS + POM";
+- **M2.5 — THE SPEC (scope expanded, v5.4; RE-STATED 2026-09-13, v5.76).** `SPEC.md` was
+  delivered and then fell behind the code — no `routes`/`ttl`/refusal codes/`cap.expired`/
+  session registry, §10 still calling identity→environment a future deliverable, §13 stamped
+  v5.35 against a delta log at v5.75. §2/§10/§13 now state current truth, **and check [7] of
+  the enumeration checker makes the closed sets' currency machine-checked** so this cannot
+  recur silently (four controls; presence, not correctness — see ASSURANCE G11.9).
+  *Original scope:* originally "consolidate SEMANTICS + POM";
   now: produce **one clean normative SPEC of the entire v5.x design** — the
   implementer's read — with zero inline archaeology (the `(vN.M — Rx)` annotations move
   to a history appendix; this document set remains the design record). The rewrite
