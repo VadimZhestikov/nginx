@@ -32,7 +32,7 @@
 #
 # It found real drift on its first run: `mode` -- the audit/enforce/learn switch
 # that std.ops' rollout verbs decompose over -- was in the code and absent from
-# §8a's list of seven resources.
+# §8a's list of resources.
 
 use warnings;
 use strict;
@@ -44,7 +44,7 @@ BEGIN { use FindBin; chdir($FindBin::Bin); }
 use lib 'lib';
 use Test::Nginx;
 
-plan(tests => 7);
+plan(tests => 9);
 
 my $tool = "tools/check-enumerations.py";
 ok(-f $tool, "the enumeration checker exists ($tool)");
@@ -58,8 +58,10 @@ my $rc  = $?;
 # what an early exit would swallow.
 like($out, qr/\[1\] p_symbol kinds/,  'check 1 ran (p_symbol kinds)');
 like($out, qr/\[2\] compile portals/, 'check 2 ran (compile portals)');
+like($out, qr/\[3\] ops-resource/,    'check 3 ran (ops-resource capabilities)');
 like($out, qr/\[4\] C3 intrinsics/,   'check 4 ran (C3 intrinsics allowance)');
 like($out, qr/\[5\] denial codes/,    'check 5 ran (denial codes vs the V12 corpus)');
 like($out, qr/\[6\] refusal codes/,   'check 6 ran (refusal codes vs the V12 corpus)');
+like($out, qr/\[7\] SPEC.md names/,   'check 7 ran (SPEC.md currency)');
 
 is($rc, 0, "no enumeration drift\n" . $out);

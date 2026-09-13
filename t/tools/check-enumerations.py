@@ -371,12 +371,94 @@ def check_refusal_codes():
                      "runtime cannot emit" % g)
 
 
+# ---------------------------------------------------------------------------
+# 7. SPEC.md currency: the normative read must NAME what the code enumerates.
+#
+# M2.5 produced SPEC.md as "the clean normative read, current truth stated once".
+# A document like that decays silently: it was accurate the day it was written,
+# the code moved eleven times, and nothing ever failed. When this check was
+# added, SPEC.md had ZERO mentions of `routes`, `ttl`, the refusal codes,
+# `cap.expired` or the session registry -- all shipped -- and its status section
+# was stamped v5.35 against a delta log at v5.75.
+#
+# So the spec's completeness claims are checked the way the corpora are: every
+# member of a set the spec calls closed must appear in it.
+#
+# WHAT IS AND IS NOT CHECKED, deliberately. The mediation flavors, the denial
+# codes and the ops-resource names are short, closed, and stated IN the spec, so
+# they are checked by name. The refusal codes are NOT: fifteen strings would
+# duplicate MANUAL §3.2, and a spec that copies a table acquires a second place
+# for it to be wrong. For those the spec must name the RUNTIME enumerator
+# instead, so a reader is sent to the one authority rather than a stale copy.
+# Demanding the list here would trade one staleness for another.
+# ---------------------------------------------------------------------------
+def check_spec_currency():
+    print("[7] SPEC.md names what the code enumerates")
+    spec = read("js_comcon/docs-v5.0/SPEC.md")
+
+    # (a) the mediation vocabulary, from the JS bootstrap's FLAVORS table
+    com_c = read("src/js/ngx_js_com.c")
+    m = re.search(r'var FLAVORS=\{([^"]*)\}', com_c)
+    if not m:
+        fails.append("[7] the FLAVORS table was not found in ngx_js_com.c")
+    else:
+        flavors = set(re.findall(r"([a-zA-Z]+):1", m.group(1)))
+        note("flavors: %s" % sorted(flavors))
+        for f in sorted(flavors):
+            if ("`%s`" % f) not in spec:
+                fails.append("[7] SPEC.md never names the mediation flavor %r, "
+                             "so its 'closed vocabulary' claim is incomplete" % f)
+
+    # (b) the denial codes, from the C names table (comments stripped, as in [5])
+    cmp_c = read("src/js/ngx_js_compartment.c")
+    m = re.search(r"ngx_js_denial_names\[NGX_JS_DENIAL_LAST\]\s*=\s*\{(.*?)\};",
+                  cmp_c, re.S)
+    if not m:
+        fails.append("[7] ngx_js_denial_names[] not found")
+    else:
+        table = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S)
+        codes = set(re.findall(r'"([^"]+)"', table))
+        note("denial codes: %s" % sorted(codes))
+        for c in sorted(codes):
+            if c not in spec:
+                fails.append("[7] SPEC.md never names the denial code %r -- the "
+                             "spec states this axis as closed, so a code missing "
+                             "from it is a promise the spec does not make" % c)
+
+    # (c) the ops-resource names, from the std.ops OPS_RES table
+    res = set(re.findall(r'"\s*([a-zA-Z]+):\{doc:', com_c))
+    note("ops resources: %s" % sorted(res))
+    if not res:
+        fails.append("[7] the OPS_RES table was not found in ngx_js_com.c")
+    # Matched as a BACKTICKED IDENTIFIER, never as a bare word. `log` and `mode`
+    # are ordinary English words, so a bare-word search would pass on any prose
+    # at all -- the check would be inert while looking green. Requiring the
+    # backticked form also forces the spec to name the key an operator actually
+    # passes rather than a paraphrase of it: this check's first run found
+    # `bindings` described only as "binding/epoch store", which tells a reader
+    # the concept and not the identifier they have to type.
+    for r in sorted(res):
+        if ("`%s`" % r) not in spec:
+            fails.append("[7] SPEC.md never names the ops-resource `%s` -- §10 "
+                         "calls this set closed, and an operator passes it by "
+                         "identifier, not by paraphrase" % r)
+
+    # (d) the refusal codes are delegated, not copied -- so the spec must name
+    #     the enumerator that IS authoritative for them.
+    if "comcon.refusalCodes()" not in spec:
+        fails.append("[7] SPEC.md does not name comcon.refusalCodes() -- the "
+                     "refusal codes are deliberately not listed there, so "
+                     "without the enumerator a reader has no authority to "
+                     "go to")
+
+
 check_p_symbols()
 check_portals()
 check_ops_resources()
 check_intrinsics()
 check_denial_codes()
 check_refusal_codes()
+check_spec_currency()
 
 print("")
 if fails:
@@ -384,5 +466,5 @@ if fails:
     for f in fails:
         print("  - " + f)
     sys.exit(1)
-print("all six enumerations agree with the code")
+print("all seven enumeration checks agree with the code")
 sys.exit(0)

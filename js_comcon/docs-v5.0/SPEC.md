@@ -68,6 +68,18 @@ what is allowed).
 - **contract**: (environment signature, natural-language spec, tests) — the admission
   gate for a fragment.
 - **tier**: T1 (interpreted bytecode) or T2 (compiled C); a fragment may be hybrid.
+- **mediation flavor**: one word from the **closed** vocabulary
+  `revoke · redact · allow · routes · uses · ttl`, naming *how* `mediate` attenuates a
+  capability: by operation mask (`revoke`/`redact`/`allow`), by route glob (`routes`), by
+  rate over a window (`uses`), or by lifetime (`ttl`). An unrecognized flavor is REFUSED,
+  never ignored — a typo that granted full authority is the failure this closure exists to
+  prevent.
+- **meet** (of two mediations of one capability): the composition rule, which never widens.
+  Masks are ANDed. Lifetimes take the **minimum** — they are ordered, so the shorter is
+  strictly narrower than both. Globs and rate budgets are **REFUSED** rather than composed:
+  `10/min` and `100/hour` are not ordered, so any meet would be a guess and a guess could
+  widen. *Same rule, different lattice* — that a mediation composes at all is a property of
+  its flavor's order, not a convenience.
 
 ---
 
@@ -283,9 +295,19 @@ R3/R4 engineered into the native tier — "spent for you."
 **There is no management plane.** `comconctl` is a shell: every verb is a `std.ops`
 library program run as an admitted stage-0 episode in an operator session; "administrative"
 is a property of the session's *environment*, never of a tool. Administration inherits
-every mechanism (audited like tenants; office-hours/cosign as mediations). A session's
-identity → environment mapping is a host-integration deliverable (must exist before the
-first operator session).
+every mechanism (audited like tenants; office-hours/cosign as mediations).
+
+**A session's identity → environment mapping is `std.sessions`, and it stores DESCRIPTORS,
+never environments** — so the registry itself carries no authority, which is what lets it be
+fleet-wide. `resolve(principal)` narrows the *caller's* environment by the stored
+attenuation; an unknown, expired or revoked principal all mean the **empty** environment.
+**COMCON does not authenticate.** The host asserts the principal, and that assertion is the
+entire trust transfer: a deployment that passes a client-supplied identifier has handed the
+client the session, and no mechanism here can detect it.
+
+A lease on a mapping is not a lease on authority, because `include` binds capabilities as
+closure parameters at ADMISSION — so `resolve()` stamps its remaining lifetime onto what it
+returns, via `ttl` (§2). Without that the mapping expires while the authority does not.
 
 **Config is an instance.** A config fragment is a sentence of a restricted config
 grammar, admitted like code (grammar + the dual-role schema's types + tests + pin +
@@ -295,11 +317,26 @@ bound to the empty environment* — one tree, an environment-richness gradient, 
 data/code dichotomy.
 
 **The closed enumerations** (all *generated*, never maintained; completeness is what
-makes safety claims checkable): per-instance grammar enumerations (JS p_symbols, config
-productions, the WASM validated format), the global **compile portals** list, and the
-global **ops-resource capabilities** (denial log, binding/epoch store, provenance
-registry, class-F broadcast channel, snapshot store, signing key, learning-recorder
-switch).
+makes safety claims checkable). Six are machine-checked against the code by
+`t/tools/check-enumerations.py`, which is the only thing that keeps this list from becoming
+a wish: per-instance grammar enumerations (JS **p_symbols**, config productions, the WASM
+validated format); the global **compile portals** list; the **ops-resource capabilities**, named
+here by the identifier an operator actually passes to `std.ops`: `log` (the denial/observation
+log), `learn` (the learning recorder), `mode` (the audit/enforce/learn switch), `bindings`
+(the binding/epoch store), `snapshot` (its quotation record — holding `bindings` implies
+`snapshot`, because snapshot *is* quote), `broadcast` (the class-F channel), `provenance`
+(the grant-chain registry), `signing` (the signing key), and `sessions` (the session
+registry); the **intrinsics allowance**; and the **two code axes** below.
+
+**Two code axes, and they are not the same axis.** A **DENIAL code** names a gate that fired
+at RUN time on authority the fragment legitimately holds (`sock.listener`, `listener.read`,
+`listener.serverByName`, `enum.sockets`, `sock.mutate`, `budget.uses`, `cap.expired`); it is
+counted in `nginx.tenantDenials().byOp` and, in audit mode, **logged and allowed**. A
+**REFUSAL code** names why a fragment was **never admitted** (`e.code`, enumerated by
+`comcon.refusalCodes()`). Both are frozen contracts: every code must have a row in the
+golden corpus and every corpus row must name a code the runtime can still emit, or the
+enumeration check fails. `E_BUDGET_*` is empty **by placement, not by omission** —
+exhausting a budget is a denial, because the fragment was admitted and then hit a gate.
 
 ---
 
@@ -338,6 +375,37 @@ fully supported; COMCON attaches per-fragment; there is no flag-day.
 ---
 
 ## 13. Status
+
+*Currency: this section is re-stated whenever the delta log moves; it is checked against the
+code by `t/tools/check-enumerations.py` only for the enumerations of §10. Everything else
+here is a claim a reader must be able to date, so it is dated.*
+
+### 13.0 Current truth (2026-09-13, delta log v5.75)
+
+**Built, tested, and gated.** The COMCON-lite core through the request path; the typed
+admission front-end; the compiled tier T1/T2 through the SR-2 faithfulness gate; increment
+**D** (anchors, the full CST, `harden()`, span provenance, quotations with
+`realize`/`includeAt`); increment **E**'s config instance (`comcon.std.config`:
+propose → review → diff → apply → rollback, refusal by SAFETY CLASS, the proposal never
+executing); the `comcon.std` profiles and `std.ops`; **six of the ten mediation vocabulary
+words** (`revoke redact allow routes uses ttl`); the session registry (`std.sessions`); both
+code axes as frozen contracts; and the resource bounds — a host-JS request deadline ON by
+default, a per-invocation fragment memory allowance, and fleet-wide rate budgets.
+
+**The M-SES escape gate is signed** (2026-09-12), with §3's gaps ACCEPTED as residual risk
+rather than closed, and the **assurance case (`ASSURANCE.md`, 60 leaves) is signed**
+(2026-09-12) — one signer, eleven findings accepted. Both signatures record what they do NOT
+cover; read §16 of the assurance case before crediting either with later work.
+
+**Still design, not built:** `admit`'s test-phase under determinism caps; the typed IR for
+LOWERING (banked — it only pays via M5, which is itself parked on one decision); WASM
+ingestion; adaptive profiles (M9); the class-F transport; the remaining four vocabulary words
+(`allowHosts` needs an outbound capability to mediate, and there is none yet; `cosign`,
+`protocol`, and the posture words need enforcement or a second compartment); and the
+*request* half of the COM registry — `nginx.describe(req)` returns zero rows, so the
+tenant-facing surface carries no declared type (finding F13).
+
+### 13.1 How this was reached
 
 Design-complete after five review passes (correctness R, verifiability V, engineering E,
 consistency C, threat model); the M1 perf spike measured the 28%/96% endpoints
