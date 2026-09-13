@@ -165,8 +165,12 @@ else
     rc=$?
     gate "ASAN+UBSAN over the COMCON corpus, 0 findings in src/js" "$rc" \
          "$(grep -E 'S6 sanitizer gate' "$OUT/sanitizers.log" | tail -1)"
+    # Shown, not just logged.  The first version piped these through
+    # `tee -a "$LOG" >/dev/null`, which put them in the transcript and threw
+    # them away on screen -- so a reviewer saw a section heading with nothing
+    # under it, which is worse than printing no heading at all.
     grep -E 'findings in src/js|findings elsewhere|tests run' "$OUT/sanitizers.log" \
-        | sed 's/^/        /' | tee -a "$LOG" >/dev/null
+        | sed 's/^/        /' | tee -a "$LOG"
 
     head2 "5. Negative controls (do the fixes' tests actually fail without the fix?)"
     bash t/tools/verify-negative-controls.sh >"$OUT/controls.log" 2>&1
@@ -175,7 +179,8 @@ else
          "$(grep -E '^verified [0-9]+' "$OUT/controls.log" | tail -1)"
     report "negative controls" "$(grep -E '^verified [0-9]+' "$OUT/controls.log" | tail -1)"
     say "  MANUAL rows (inverse patch no longer applies — revert by hand to check):"
-    sed -n '/^MANUAL/,$p' "$OUT/controls.log" | tail -n +2 | sed 's/^/        /' | tee -a "$LOG" >/dev/null
+    say "  These are the ones a full reproduction still cannot check for you."
+    sed -n '/^MANUAL/,$p' "$OUT/controls.log" | tail -n +3 | sed 's/^/        /' | tee -a "$LOG"
 fi
 
 # ─────────────────────────────────────────────── reported measurements ───
@@ -184,7 +189,12 @@ report "assurance leaves"   "$(grep -cE '^#### G[0-9]+\.' js_comcon/docs-v5.0/AS
 report "findings in ledger" "$(grep -cE '^\| \*\*F[0-9]+\*\* \|' js_comcon/docs-v5.0/ASSURANCE.md)"
 report "t/ files"           "$(ls t/*.t | wc -l)"
 report "comcon_*.t files"   "$(ls t/comcon_*.t | wc -l)"
-report "delta-log version"  "$(grep -oE '^\*\*v5\.[0-9]+' js_comcon/docs-v5.0/FOUNDATION.md | head -1)"
+# The NEWEST entry, by version number.  `head -1` gave v5.1 -- the delta log is
+# not strictly ordered in the file, and the first match is an early entry in the
+# body rather than the current one.  A provenance line that is quietly wrong is
+# the one thing this script must not produce.
+report "delta-log version"  "$(grep -oE '^\*\*v5\.[0-9]+' js_comcon/docs-v5.0/FOUNDATION.md \
+                                 | sort -t. -k2 -n | tail -1)"
 
 # ───────────────────────────────────────────────────────────── verdict ───
 head2 "VERDICT"
