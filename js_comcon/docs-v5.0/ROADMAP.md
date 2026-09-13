@@ -117,7 +117,10 @@
 >   eyes, not an artifact. The re-run itself found two things worth the exercise: the M5
 >   instrument measures only on `objs_jit` (its guards fail the run rather than reporting a
 >   false 1.0×), and automated falsifiability fell 8/8 → 6/8 because this session's own
->   commits rewrote the lines two inverse patches target.
+>   commits rewrote the lines two inverse patches target. **RE-BASED 2026-09-13:** those two
+>   rows are now MANUAL with their reason, so the battery reports 6/6 with no inconclusive
+>   bucket — the debt is labelled, not paid (six rows need a hand revert). `git apply -R -3`
+>   is recorded as a trap: it half-applied and left the partial revert in the tree.
 > - **SR-4 was BUILT (2026-09-12): `ASSURANCE.md`, the V15 assurance case.** The claim →
 >   assumption → evidence tree, machine-checked by `t/comcon_assurance.t` so it cannot rot,
 >   with a findings ledger of eleven. **It is NOT SIGNED**, and signing it is the act that

@@ -808,6 +808,10 @@ signature is never quietly credited with work it did not see.
 
 | **F4 CLOSED, F9 REDUCED** — the guarded COM members are fuzzed one process at a time (G7.8), which is what the shared-state objection actually required rather than an exemption; and V13 is built (G11.7), so F9 drops from seven unbuilt V-items to six. `irreversible` stays untested because the live walk reaches none of them, which is a fact about the walk and is recorded as such. | **Closes one residual and shrinks another.** |
 
+| **`ttl` SHIPPED — G6.7 added** (a capability lifetime; `t/comcon_cap_ttl.t`, 3 controls). G0 is now decomposed into 59 leaves. It also closes the half of TM-2's session lease that G6.6's GAP could not reach: a lease can now bite on authority already bound into a fragment. | **Adds a leaf and narrows a GAP.** Nothing signed becomes untrue; §15's evidence table gains one row it did not see. |
+
+| **The two INCONCLUSIVE negative-control rows are RE-BASED to MANUAL** (2026-09-13). §15 records "6 verified, 0 failed, 2 INCONCLUSIVE"; on the current tree the battery reports **6 verified, 0 failed, 0 skipped**, with the two rows moved into the MANUAL list *with the reason their inverse patch no longer applies* — so the count is honest rather than quietly two short. `git apply -R -3` was tried as an automated re-base and is now recorded in the script's header as a **trap**: it applied one file, failed the other, and left the partial revert in the tree. **The maintenance debt §15 accepted is not paid — it is now accurately labelled**, which is a different and lesser thing: six rows require a hand revert to check. | **Corrects an accounting, closes nothing.** The falsifiability that was lost is still lost; what changes is that the report no longer has an "inconclusive" bucket that reads like a transient failure. |
+
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with
 evidence and recorded here* is the opposite of that.
