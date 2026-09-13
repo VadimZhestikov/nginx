@@ -364,6 +364,18 @@ nginx.http.servers[0].locations.forEach(function (l) {
             } else if (op === 'sweep') {
                 var sw = sweepWrite();
                 r.wrote = sw.wrote; r.refused = sw.refused;
+                /* Count in the SAME request that did the writing.  The first
+                 * version looked the sweeping worker up in the post-sweep
+                 * fan-out instead, which assumes that worker serves at least
+                 * one of the 24 follow-up requests -- and with four workers the
+                 * distribution is lumpy enough that it sometimes serves none
+                 * (one run reported w1=67 w2=0, two workers of four).  The
+                 * assertion then read a missing key as zero and failed, about
+                 * once in 25 full-suite runs.  Phase 1 never had this problem
+                 * because its writer-specific facts come back from the write
+                 * request itself; this is the same shape. */
+                var own = sentinelCount();
+                r.ownHits = own.hits;
 
             } else if (op === 'restore') {
                 hold(4);
@@ -530,14 +542,25 @@ for my $r (@post) {
 diag("sentinels seen per worker: "
      . join('  ', map { "w$_=" . ($hits{$_} // 'undef') } sort keys %hits));
 
-cmp_ok(scalar(keys %hits), '>=', 2,
-   "the post-sweep fan-out reached " . scalar(keys %hits)
-   . " worker(s) -- the leak question needs someone other than the writer");
+# The precondition the leak check ACTUALLY needs is one worker other than the
+# writer -- that is the set @leaked is computed over.  Counting DISTINCT
+# workers instead was both stricter and wrong in a case that really happens: a
+# fan-out reaching exactly one worker which is NOT the writer satisfies the leak
+# check perfectly and would have failed this assertion.  Under load the fewest
+# workers a fan-out reached was 2, so that case is one scheduling nudge away.
+# Found by measuring the distribution rather than assuming it.
+my @reporters = grep { $_ ne ($swriter // '') } sort keys %hits;
+cmp_ok(scalar(@reporters), '>=', 1,
+   "the post-sweep fan-out reached " . scalar(@reporters)
+   . " worker(s) OTHER than the writer -- fewer and the leak question below is
+     not asked of anyone");
 
-cmp_ok($hits{$swriter} // 0, '>=', 10,
+# Asked of the sweeping worker ITSELF, in the request that wrote -- not looked up
+# in the fan-out below, which need not have reached that worker at all.
+cmp_ok($sw->{ownHits} // 0, '>=', 10,
    'the sweeping worker sees its own writes (so the observation works at all)');
 
-my @leaked = grep { $_ ne ($swriter // '') && ($hits{$_} // 0) > 0 } sort keys %hits;
+my @leaked = grep { ($hits{$_} // 0) > 0 } @reporters;
 is(scalar(@leaked), 0,
    'GENERATED: not one worker-local member leaked to another worker')
     or diag("workers seeing another worker's writes: " . join(',', @leaked)

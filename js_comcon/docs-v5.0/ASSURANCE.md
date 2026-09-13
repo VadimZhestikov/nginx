@@ -1026,6 +1026,8 @@ signature is never quietly credited with work it did not see.
 
 | **V9 BUILT — G11.13 added.** The describe⊇mutable discipline now covers the program instance: four surfaces, both directions, closed vocabularies. **Seven undescribed ops found**, including `describe` itself being a classified row on both NodeViews and absent on both epoch handles. Four controls; two rules of the auditor had to be corrected first (it reported the correct implementation of lazy materialization as drift). | **Closes the last REACHABLE V-item.** F9 drops to four, all of them on the parked compiler track. The new GAP is worth reading: this checks that a class is FROM the vocabulary, never that it is the RIGHT one. |
 
+| **G11.10's instrument had a 4%-under-load flake, found by hunting and fixed.** `t/js_com_propagation.t` test 13 looked the sweeping worker up in a later fan-out that need not have reached it (measured: absent in 4 of 40 runs under load); it now reports its own count in the request that wrote. A second assertion in the same file required ≥2 distinct workers where the leak check only needs ≥1 OTHER than the writer. A/B under load: fixed 0/40, pre-fix 3/40. | **Makes an existing leaf's evidence trustworthy; changes no claim.** Worth recording for how it was missed: the original stability check was three runs, and sixty standalone runs of the broken code also pass — the condition needs full-suite load. A denominator means nothing except against the conditions the failure requires. |
+
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with
 evidence and recorded here* is the opposite of that.

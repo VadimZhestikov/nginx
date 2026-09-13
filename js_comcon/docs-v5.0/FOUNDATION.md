@@ -635,6 +635,44 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.83 (in place — the flake hunt: the gate's one unexplained failure was mine, and my
+stability check had been too small to see it):** two intermittents had gone unattributed. A
+failure with no name poisons every later result, because any future red gate can be waved away as
+"probably that one". So: **25 full-suite runs, every run's full output kept, recording each failure
+by name** — the reason the earlier one went unidentified is that the gate piped prove through
+`tail -4` and the line naming the file fell outside the window.
+
+**24 passed, one failed, and the file was `t/js_com_propagation.t` — written the same day.** Its
+test 13 looked the *sweeping worker* up in the post-sweep fan-out tally. Nothing makes that worker
+serve any of the 24 follow-up requests, and with four workers it often does not: measured directly,
+**the writer was absent from the fan-out in 4 of 40 runs under load.** Absent means the lookup
+returns undef, `undef → 0`, and the threshold fails.
+
+**The fix removes the dependency instead of retrying around it.** The sweep request now reports
+its own count, in the request that did the writing, so "the sweeping worker sees its own writes" is
+true by construction. Phase 1 of that same file was already immune for exactly this reason — its
+writer-specific facts come back in the write request's own response — and phase 2 reached for a
+tally instead. The A/B under load is the control: **fixed 0/40, pre-fix 3/40.**
+
+**MY STABILITY CHECK WAS WORTHLESS AT THAT SCALE, and this is the transferable part.** I ran the
+file three times, saw three passes, and reported it stable. Three runs cannot distinguish "stable"
+from "fails 4% of the time". Worse: **sixty standalone runs of the PRE-FIX code also passed** — the
+condition needs full-suite load, so single-file repetition at any count would never have found it.
+A denominator is only meaningful against the conditions the failure needs.
+
+**A second, latent flake of the same family fell out of the measurement.** Test 12 required ≥2
+distinct workers in the fan-out; under load the fewest seen was exactly 2. But the writer need not
+appear, so a fan-out reaching one NON-writer worker satisfies the leak check perfectly and would
+have failed that assertion. The precondition the check actually needs is "≥1 worker other than the
+writer", and it now asserts that, over the same set the leak check uses so the two cannot disagree.
+Found by measuring the distribution rather than assuming it.
+
+**What is NOT resolved, stated with its denominator.** The earlier unexplained gate failure
+("failed test 8" on `objs`) did not recur in 25 runs; `js_sw_accept_control.t` never failed, which
+supports reading its one appearance as contamination from a concurrent rebuild of mine rather than
+a product flake. Neither is closed. The propagation flake is a plausible explanation for the
+original one — same file, same window — but the test index does not match, so it is not claimed.
+
 **v5.82 (in place — V9: describe ⊇ mutable reaches the program instance, and seven ops were
 undescribed):** `t/js_com_describe.t` has held the COM tree to one discipline since the
 beginning — every mutable member appears in `describe()` with a class. The **program instance**

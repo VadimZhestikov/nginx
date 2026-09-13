@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.82 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.83 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,12 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **FLAKE HUNT (2026-09-13, v5.83): the gate's one unexplained failure was MINE.** 25 full
+>   runs, 24 pass, 1 fail — `js_com_propagation.t` test 13 looked the sweeping worker up in a
+>   fan-out that need not have reached it (absent in 4/40 under load). Fixed by reporting its
+>   own count. **My original stability check was 3 runs, and 60 STANDALONE runs of the broken
+>   code also pass** — the condition needs full-suite load. The older unexplained failure is
+>   still unattributed, now with a denominator: not reproduced in 25 runs.
 > - **V9 BUILT (2026-09-13, v5.82): describe ⊇ mutable now covers the PROGRAM instance —
 >   seven undescribed ops.** Four surfaces each carry a hand-written op list next to the
 >   members it describes. `describe` itself was classified on both NodeViews and absent on
