@@ -1,8 +1,9 @@
 # COMCON — The Assurance Case (V15 / gate SR-4)
 
-> **Status: BUILT 2026-09-12 (v5.64). Not signed.** This is the tree; signing it is a
-> separate act with a named signer, like `AUDIT_M-SES.md` §5. Read
-> §"What this case does NOT establish" before quoting it anywhere.
+> **Status: BUILT 2026-09-12 (v5.64). SIGNED 2026-09-12 (v5.68) — see §15.** The gate SR-4
+> is closed on the evidence of §15's re-run, by one signer, accepting the residuals the
+> findings table names. Read §14 before quoting this anywhere: a signature here attests
+> that the evidence is there and was re-run, not that the system is secure.
 
 VERIFICATION.md asks for "one GSN-style **claim → assumption → evidence** tree: the
 artifact security reviewers actually want, and building it is itself a gap detector —
@@ -626,13 +627,87 @@ assurance case whose findings section is empty has not been built honestly.
 
 ## 14. What this case does NOT establish
 
-- **It is not signed.** No one has attested to it. `AUDIT_M-SES.md` §5 is the model for
-  what signing looks like, including its own caveats.
-- **It does not establish memory safety** (A1), information-flow confidentiality (A3/F8),
-  or availability against a controller inside its own subtree (A3).
+- **It does not establish memory safety** (A1), information-flow confidentiality
+  (A3/F8), or availability against a controller inside its own subtree (A3).
 - **It does not cover host JS** (A5): everything here bounds a CONFINED fragment.
 - **Evidence exists ≠ evidence is sufficient.** The checker proves each cited artifact is
   there and runs; whether a test's assertions are strong enough is a human judgement, and
   the V-track (V11 mutation testing especially) is the only mechanical pressure on it.
 - **A green suite is not a pentest.** SR-3 certified 2026-09-01; S6 carries the standing
   part of it forward. Nothing here substitutes for the next adversarial pass.
+
+---
+
+## 15. Sign-off
+
+### The re-run of 2026-09-12 — the evidence this signature points at
+
+All four builddirs rebuilt first (`objs`, `objs_jit`, `objs_asan`, `objs_ubsan`) and each
+confirmed to carry the newest change (`budget.uses`, the `uses()` validation string), per
+the rule that stale binaries invalidate everything after them. Tree at `d6ed62395`.
+
+| check | result |
+|---|---|
+| `check-assurance.py` — the case matches the tree | **PASS** — 55 leaves, 69 cited artifacts, 55/55 `comcon_*.t` cited, 20-row rename table resolving |
+| `check-enumerations.py` — six closed enumerations | **PASS** |
+| `t/` on `objs` | 317 files / 4221 tests **PASS** |
+| `t/` on `objs_jit` | 317 files / 4233 tests **PASS** |
+| `t_stress/` on `objs` | 18 / 90 **PASS** |
+| `t_stress/` on `objs_jit` | 18 / 90 **PASS** |
+| ASAN over the COMCON corpus | 55 files / 683 tests **PASS** — **0 findings in `src/js`**, 0 elsewhere |
+| UBSAN over the COMCON corpus | 55 files / 683 tests **PASS** — **0 in `src/js`**; 53 upstream, all `src/core/ngx_string.c:84` |
+| sanitizer positive control | **fired** — leak detection landed a report through the same `prove` pipeline, so a clean run is not an inert one |
+| `verify-negative-controls.sh` | **6 verified, 0 failed, 2 INCONCLUSIVE** (see below), 4 manual rows named with reasons |
+| `t/tools/host-call-cost.t` | **PASS** on `objs` |
+| `t/tools/policy-compute-split.t` | **PASS** on `objs_jit`, control at **21.6×** (`installed:1`) |
+
+### Two things the re-run found, recorded because they are the point of re-running
+
+1. **The M5 instrument measures only on `objs_jit`.** Run on `objs` it reports every arm at
+   ~1.0× with `installed:0` — no native code anywhere, because that build lacks the
+   server-AOT call. It did **not** quietly return a plausible 1.0×: its own guards (the
+   control must exceed 5×; the two arms must be on different tiers) failed the run. The
+   instrument caught the operator, which is what a guarded instrument is for — but the
+   binary it needs is now written down here rather than remembered.
+2. **Automated falsifiability dropped from 8/8 to 6/8.** `t/js_com_grant_declare.t` and
+   `t/comcon_include_contract_fuzz.t` are now INCONCLUSIVE: their inverse patches no longer
+   apply, because *this session's own commits rewrote the same lines* (the grant-wrapping
+   path for budgets; the include contract path for refusal codes and the fail-closed
+   `tests` check). Both tests still pass; what is lost is the automated proof that they can
+   tell the difference. They join the four manual rows, and re-basing those patches is
+   maintenance debt this signature is accepting, not closing.
+
+### Findings, as accepted
+
+| closed | probed, with a named residual | accepted as residual risk |
+|---|---|---|
+| **F1** (dead evidence citations — fixed and now checked) · **F7** (TM-2, specified + built) | **F3** (no channel on eight shared surfaces; residual: declaring `Symbol` gives two tenants `Symbol.for` as a rendezvous, unwarned) | **F2** per-fragment memory attribution · **F4** guarded/irreversible COM members unfuzzed · **F5** compiled tier not separately probed · **F6** host JS unbounded by default · **F8** IFC/timing channels · **F9** seven unbuilt V-items · **F10** `E_CAP_FLAVOR`/`E_CAP_ESCALATE` uncoded · **F11** the M-SES audit's single signer |
+
+| Role | Name | Date | Scope signed |
+|---|---|---|---|
+| Assurance case (SR-4) | **Vadim Zhestikov** | 2026-09-12 | The tree of §2–§11 as of `d6ed62395`, on the re-run above. Every `EV:` resolves to an artifact that exists and runs; every leaf carries evidence or a GAP with a home; no `comcon_*.t` is an orphan; T1–T12 and V1–V15 are each addressed; no document in the set cites a test that is gone. **The assumptions of §1 are accepted as stated** — in particular A1 (the TCB is assumed unforgeable) and A2 (the M-SES audit is one attestation, not two). **The findings table above is ACCEPTED AS RESIDUAL RISK, not closed.** §14 states what this case does not establish, and that statement is part of what is signed. |
+
+> **ONE SIGNER, AND THE COMMANDS WERE RUN BY THE AUTHORING SESSION.** As with
+> `AUDIT_M-SES.md` §5, this attests **acceptance of reproducible evidence**, not an
+> independent reproduction: the re-run above was executed by the session that wrote the
+> code, the tests and this document. Every command is named and re-runnable in minutes, and
+> a reader who needs separation of duties should treat this row as outstanding and re-run it
+> themselves — starting with `python3 t/tools/check-assurance.py`, which fails on drift, and
+> `bash t/tools/verify-negative-controls.sh`, which is what makes the fixes falsifiable.
+>
+> **A signature on an assurance case is an acceptance of the residuals it names.** The
+> findings table is exactly what is being accepted. A signature applied without reading it
+> converts "we know these holes exist" into "someone looked and found nothing", which is
+> worth less than no signature at all.
+
+### What would invalidate this signature
+
+Any of: a new `t/comcon_*.t` that no claim cites (check [3] fails); a code added to either
+closed enumeration without a corpus row (checks [5]/[6]); an evidence citation that stops
+resolving (checks [1]/[5]); a finding removed from the ledger without being closed; or a
+change to the assumptions in §1 — most of all A1, since every claim above is conditional on
+an engine that is not forged.
+
+---
+
+

@@ -635,6 +635,39 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.68 (in place — SR-4 SIGNED: the last standing gate is closed, on one signature and an
+accepted list of residuals):** `ASSURANCE.md` §15. The gate has stood open since SR-3 passed
+on 2026-09-01; it closes not because everything is proven but because the tree, the evidence
+and the gaps are all written down and re-runnable, and someone has accepted them by name.
+
+**The re-run is the signature's whole content.** Four builddirs rebuilt and verified to
+carry the newest change; `t/` on both builds (317 files, 4221/4233); `t_stress` on both
+(18/90); ASAN and UBSAN over the 55-file COMCON corpus with **0 findings in `src/js`** and
+the positive control firing, so a clean run is not an inert one; the six enumerations; the
+case checker (55 leaves, 69 artifacts, no orphan test, every T1–T12 and V1–V15 addressed);
+the standing instruments.
+
+**Two things the re-run found, which is why one re-runs.** (1) The M5 split instrument
+measures only on `objs_jit` — on `objs` every arm reads ~1.0× with `installed:0`, because
+that build has no server-AOT call. It did not return a plausible number: its own guards (the
+control must exceed 5×, the arms must sit on different tiers) failed the run and caught the
+operator. (2) **Automated falsifiability fell from 8/8 to 6/8**: two inverse patches no
+longer apply because *this session's own commits rewrote the lines they target* (the
+grant-wrapping path for budgets, the include contract path for refusal codes). The tests
+still pass; what is lost is the automated proof that they can tell the difference — accepted
+as maintenance debt, and named.
+
+**What the signature does NOT say.** One signer, and the commands were run by the authoring
+session, so this attests **acceptance of reproducible evidence, not independent
+reproduction** — the same caveat `AUDIT_M-SES.md` §5 carries, and the honest reading is that
+a second pair of eyes is what is still missing, not an artifact. Eleven findings are
+**accepted as residual risk rather than closed** (per-fragment memory attribution, the
+unfuzzed COM classes, the compiled tier under the escape battery, host JS unbounded by
+default, IFC/timing, seven unbuilt V-items, two uncoded capability refusals, and the
+single-signer audit). §14 states what the case does not establish — memory safety,
+confidentiality against timing, host JS, and the sufficiency of any test's assertions — and
+that statement is part of what was signed. §15 ends with what would invalidate it.
+
 **v5.67 (in place — M-LIB step 3: `uses`, the first mediation that attenuates RATE):** the
 vocabulary shipped four words (`revoke`/`redact`/`allow`/`routes`) while the documents
 promised ten, and M-LIB's remainder was blocked on exactly that — *"shipping them as

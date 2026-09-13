@@ -14,6 +14,10 @@
 > (assurance case) — **built 2026-09-12, unsigned** — and **maxim finalization** (full
 > test262 for untrusted-native), whose conformance blocker cleared 2026-09-11.
 >
+> **UPDATE 2026-09-12 (v5.68): SR-4 IS SIGNED.** `ASSURANCE.md` §15 — the last standing
+> gate is closed, on one signature, on the evidence of a full re-run, with the residuals
+> accepted by name. What remains open is a *second* pair of eyes, not a missing artifact.
+>
 > **UPDATE 2026-09-11:** maxim finalization's conformance blocker is **CLEARED** — the
 > test262 JIT sweep that aborted at 54% on an atom-table assertion now completes
 > 14/14 shards over 49,402 files with 55 failing files, all 55 in the known-errors
@@ -387,8 +391,15 @@ the unbuilt V-items, the two empty code families, and the single-signer audit. A
 assurance case whose findings section is empty has not been built honestly — so the test
 asserts the ledger is non-empty.
 
-**NOT SIGNED.** The tree exists; attesting to it is a separate act with a named signer,
-on the `AUDIT_M-SES.md` §5 model. §14 states what the case does *not* establish.
+**SIGNED 2026-09-12** (§15) after a full re-run on four rebuilt builddirs: both suites on
+both builds, ASAN and UBSAN clean in `src/js` with the positive control firing, the six
+enumerations, the case checker, and the standing instruments. Two things the re-run found
+and the signature records rather than smooths: the M5 split instrument measures only on
+`objs_jit` (on `objs` its own guards fail the run rather than reporting a false 1.0×), and
+automated falsifiability fell from 8/8 to 6/8 because this session's commits rewrote the
+lines two inverse patches target. **One signer, commands run by the authoring session**, and
+the findings table is **accepted as residual risk, not closed** — §14 says what the case
+does not establish, and that statement is part of what was signed.
 
 ---
 
@@ -420,7 +431,7 @@ gate-reviews across the whole roadmap, and two already exist as milestones (M8, 
 | **SR-1 conformance** | end of increment B → **before C** | the A/B capability logic vs `THREATS.md`, *within* the current TCB assumption (an unforgeable engine). Finds gaps between claimed and implemented confinement. Explicitly **not** engine escapes. | new (this doc) |
 | **SR-2 faithfulness** | **C7** | did compilation preserve the reach gates and not leak authority via the type/cap side-tables? T2 refines T1. | **= M8** — **PASSED profile-scoped 2026-09-01** (`t/comcon_faithfulness.t`: interp vs AOT-compiled over the confinement surface incl. A1 gated reach/mutator → identical responses + identical denials, 22/22). Scope = confined strict-module profile; full-test262-under-AOT + untrusted-native production still gated on M-SES + full maxim finalization. |
 | **SR-3 adversarial pentest** | after **M-SES** | engine escapes, eval/Function/Proxy sandbox completeness, memory safety — closes the accepted residuals (`THREATS.md` T8/T4/T9). The full red-team pass. | **PASSED 2026-09-01** — no sandbox escape (dynamic-code routes tamed, no global reach, core intrinsics frozen, recursion bounded); one MEDIUM freeze-completeness gap (SR3-1 sibling iterator prototypes) **found + fixed**, one availability case (SR3-2 microtask loop) **gas-contained**. Both tiers. See the SR-3 audit record below. Full-test262-under-AOT untrusted-native still gated on maxim finalization. |
-| **SR-4 assurance case** | before first untrusted-tenant **production** | assemble the whole claim→assumption→evidence tree; every leaf without evidence is a finding. | **= V15 — BUILT 2026-09-12 (`ASSURANCE.md`), machine-checked by `t/comcon_assurance.t`, NOT SIGNED.** Found F1: a quarter of the doc set's evidence citations were dead. |
+| **SR-4 assurance case** | before first untrusted-tenant **production** | assemble the whole claim→assumption→evidence tree; every leaf without evidence is a finding. | **= V15 — BUILT + SIGNED 2026-09-12** (`ASSURANCE.md` §15, signer Vadim Zhestikov, tree at `d6ed62395`), machine-checked by `t/comcon_assurance.t`. Found F1: a quarter of the doc set's evidence citations were dead. **ONE signer, commands run by the authoring session; the findings table is ACCEPTED as residual risk, not closed.** |
 | **S6 escape gate** (standing) | **every test run**, from 2026-09-11 | the M-SES gate as a REGRESSION gate rather than a moment: `t/comcon_mses_gate.t` (12 probes over gate conditions (a)/(b)/(c) + `.stack` + `Symbol.species`, plus the resource guard) and `bash t/run_sanitizers.sh` (the corpus under ASAN + UBSAN). | **NEW 2026-09-11** — see §"The standing gate" below |
 
 ### The standing gate (added 2026-09-11)

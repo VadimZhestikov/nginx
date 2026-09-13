@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.67 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.68 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,7 +74,17 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
-> - **SR-4 IS BUILT (2026-09-12): `ASSURANCE.md`, the V15 assurance case.** The claim →
+> - **SR-4 IS SIGNED (2026-09-12, v5.68) — the last standing gate is closed.**
+>   `ASSURANCE.md` §15: signer **Vadim Zhestikov**, tree at `d6ed62395`, on a full re-run
+>   (four builddirs rebuilt; both suites on both builds; ASAN+UBSAN clean in `src/js` with
+>   the positive control firing; six enumerations; the case checker; the instruments).
+>   **One signer, commands run by the authoring session, and the eleven findings are
+>   ACCEPTED as residual risk rather than closed** — so what is missing is a second pair of
+>   eyes, not an artifact. The re-run itself found two things worth the exercise: the M5
+>   instrument measures only on `objs_jit` (its guards fail the run rather than reporting a
+>   false 1.0×), and automated falsifiability fell 8/8 → 6/8 because this session's own
+>   commits rewrote the lines two inverse patches target.
+> - **SR-4 was BUILT (2026-09-12): `ASSURANCE.md`, the V15 assurance case.** The claim →
 >   assumption → evidence tree, machine-checked by `t/comcon_assurance.t` so it cannot rot,
 >   with a findings ledger of eleven. **It is NOT SIGNED**, and signing it is the act that
 >   actually closes the gate. Its first finding (F1) was that **20 of 83 evidence citations
