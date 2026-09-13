@@ -166,7 +166,7 @@ fail differently and you fix them differently, so they are separate sets:
 | | what it means | where you read it | today's set |
 |---|---|---|---|
 | **denial** | a gate denied an operation at request time | `nginx.tenantDenials().byOp` (exact counters per code) | `sock.listener`, `listener.read`, `listener.serverByName`, `enum.sockets`, `sock.mutate`, `budget.uses` |
-| **refusal** | the fragment was not admitted — it never ran | `e.code` on the throw; `code` on an `admit()` verdict; `comcon.refusalCodes()` enumerates the set | `E_ADMIT_ARG`, `E_ADMIT_NOTBYTECODE`, `E_ADMIT_SOURCE`, `E_ADMIT_DYNCODE`, `E_ADMIT_FREENAME`, `E_ADMIT_INTRINSIC`, `E_ADMIT_SCHEMA`, `E_ADMIT_TEST`, `E_ADMIT_CONTRACT`, `E_ADMIT_DEP`, `E_CAP_GRANT`, `E_PIN_IDENTITY`, `E_EPOCH_STALE` |
+| **refusal** | the fragment was not admitted — it never ran | `e.code` on the throw; `code` on an `admit()` verdict; `comcon.refusalCodes()` enumerates the set | `E_ADMIT_ARG`, `E_ADMIT_NOTBYTECODE`, `E_ADMIT_SOURCE`, `E_ADMIT_DYNCODE`, `E_ADMIT_FREENAME`, `E_ADMIT_INTRINSIC`, `E_ADMIT_SCHEMA`, `E_ADMIT_TEST`, `E_ADMIT_CONTRACT`, `E_ADMIT_DEP`, `E_CAP_GRANT`, `E_CAP_FLAVOR`, `E_CAP_ESCALATE`, `E_PIN_IDENTITY`, `E_EPOCH_STALE` |
 
 A refusal carries its code three ways: as `.code` on the thrown `Error` (**assert on
 this one**), bracketed at the end of the message so your error log is greppable
@@ -188,16 +188,22 @@ compares what fires against what is frozen (V12) — so a renamed code breaks th
 project's own suite before it breaks your CI. A code cannot be added to the runtime
 without a probe or a written reason it is unreachable.
 
-**[TBD-2] — what is still missing.** The taxonomy above is the admission and runtime
-surface. On budgets, the family landed on the other axis and that is the right place:
-running out of a `uses` budget is a **denial** (`budget.uses`) — a gate refusing an
-operation at request time — not an admission refusal, so `E_BUDGET_*` stays empty by
-design rather than by omission. The deadline abort still has no code of ours at all: it
-is the engine's interrupt, and there is no refusal of ours at that point to label. Two
-capability-layer refusals do deserve codes and do not have them yet: `E_CAP_FLAVOR` (an
-unknown mediation flavor) and `E_CAP_ESCALATE` (a `realize()` that would widen
-authority), both thrown in the JS layer. Until then, match those on message text and
-expect it to move.
+**[TBD-2] — RESOLVED (v5.70), and what that leaves.** Every refusal the platform makes
+about a fragment or a capability now carries a code, including the capability layer's own
+two: **`E_CAP_FLAVOR`** (a mediation flavor outside the closed vocabulary — the refusal
+that closed a fail-open, where a typo used to mean FULL authority) and
+**`E_CAP_ESCALATE`** (a composition that cannot be *shown* to narrow: a routes glob or a
+budget with no computable meet, a meet that widened, a realization env that is not a
+sub-map of the realizer's — one code, because it is one rule).
+
+Two things deliberately have **no** code, and that is the answer rather than a gap.
+`E_BUDGET_*` is empty because running out of a `uses` budget is a **denial**
+(`budget.uses`) — a gate refusing at request time — not an admission refusal. And the
+deadline abort has no code of ours at all: it is the engine's interrupt, and there is no
+refusal of ours at that point to label. What still has only message text is the argument
+checking of library calls (`query: empty selector`, `std.config.apply: arg0 must be a
+plan`), and that is on purpose: the fix for those is to fix the call, and coding them
+would invite CI to pin to our argument checks.
 
 ### 3.3 Your documentation is generated — and cannot lie
 
@@ -543,12 +549,13 @@ The `comconctl` verb set is a design target consolidated from the showcases.
 ## Appendix B. The [TBD] harvest — decisions this manual forced into the open
 
 1. **[TBD-1] Default-root contents** — the secure-vs-useful out-of-box line.
-2. **[TBD-2] Denial code taxonomy — ✅ RESOLVED 2026-09-12 (v5.62), except two named
-   families.** Two axes shipped and frozen by V12: DENIAL codes (the run-time gates,
-   `nginx.tenantDenials().byOp`) and REFUSAL codes (admission, `e.code` +
-   `comcon.refusalCodes()`) — see §3.2. Still open, recorded rather than invented:
-   `E_BUDGET_*` (no refusal of ours to label — the deadline is the engine's
-   interrupt) and the JS capability layer's `E_CAP_FLAVOR` / `E_CAP_ESCALATE`.
+2. **[TBD-2] Denial code taxonomy — ✅ FULLY RESOLVED 2026-09-12 (v5.62 + v5.70).** Two
+   axes, both frozen by V12: DENIAL codes (run-time gates,
+   `nginx.tenantDenials().byOp`, six of them incl. `budget.uses`) and fifteen REFUSAL
+   codes (admission and the capability layer, `e.code` + `comcon.refusalCodes()`) — see
+   §3.2. The two families that remain EMPTY are answers, not omissions: `E_BUDGET_*`
+   because budget exhaustion is a denial rather than a refusal, and the deadline abort
+   because it is the engine's interrupt with no refusal of ours to label.
 3. **[TBD-3] `comconctl dev` / tenant SDK** — capability doubles, fidelity contract,
    emulator ≡ admission. *Not in the plan at all before this manual.*
 4. **[TBD-4] Budget unit semantics** — wall vs CPU, per-request vs per-episode.

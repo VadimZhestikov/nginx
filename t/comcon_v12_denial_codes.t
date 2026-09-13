@@ -154,6 +154,8 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
                 rec2.accepted = true;
 
             } else {
+                /* 'include' and 'call' are both just expressions that must
+                   throw; the difference is only which layer refuses. */
                 eval(r.probe);
                 rec2.accepted = true;
             }

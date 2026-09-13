@@ -635,6 +635,36 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.70 (in place — [TBD-2] fully resolved: the capability layer's own refusals get codes):**
+the second and last tranche. `E_CAP_FLAVOR` — a mediation flavor outside the closed
+vocabulary, which is the refusal that closed a **fail-open** where a typo (`redcat` for
+`redact`) once meant FULL authority. `E_CAP_ESCALATE` — **a composition that cannot be
+SHOWN to narrow**: a routes glob or a budget with no computable meet, a mask meet that
+widened, a realization env that is not a sub-map of the realizer's. Four raising sites, one
+code, because they are one rule.
+
+**Thrown by a JS `capRefuse()` that mirrors `ngx_js_comcon_refuse()` in C** — `.code` on the
+error, the code bracketed at the END of the message — so the two halves of the platform
+cannot drift in the shape of a refusal.
+
+**Two of E_CAP_ESCALATE's four sites cannot be provoked through the public API**, and that
+is recorded rather than papered over: `realize()` builds the restricted map from the
+realizer's own env so it cannot disagree with it, and the mask meet is an AND of two masks.
+They are defence in depth against a future logic bug. The first attempt DID write a probe
+for the realize case — it passed, silently, because `realize()` takes three arguments and
+the forged fourth was ignored. **A probe that cannot fail is dead code pretending to be a
+test**; it was deleted and the reason written where the next reader will look. The two
+reachable sites are pinned instead (`comcon_v4_monotonicity.t`, `comcon_budget_uses.t`).
+
+**[TBD-2] is now fully resolved, and the two EMPTY families are answers rather than
+omissions:** `E_BUDGET_*` because budget exhaustion is a **denial** (`budget.uses`) at a
+run-time gate, not an admission refusal; and the deadline abort because it is the engine's
+interrupt, with no refusal of ours at that point to label. What keeps only message text is
+the argument checking of library calls — on purpose, since the fix there is to fix the call.
+Three controls: the refusal thrown without `.code`, the code dropped from the message, and
+the wrong code on the budget refusal. Recorded in ASSURANCE §16 as a change after the
+signature; F10 closes.
+
 **v5.69 (in place — F5: the escape battery, against code that is actually native):** the
 audit's PARTIAL row, and the one a security reviewer reaches for first. **Running the gate
 on a JIT-capable BINARY was never the same claim as running it against COMPILED CODE**, and

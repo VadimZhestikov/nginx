@@ -286,6 +286,17 @@ static const char  *ngx_js_refusal_codes[NGX_JS_REFUSAL_LAST] = {
     "E_ADMIT_CONTRACT",
     "E_ADMIT_DEP",
     "E_CAP_GRANT",
+    /*
+     * The capability layer's own two, thrown in the JS bootstrap rather than
+     * here -- which is why they waited a tranche. They are policy outcomes, not
+     * argument checks: FLAVOR is the closed vocabulary refusing a word (a typo
+     * once meant FULL authority), and ESCALATE is every composition that cannot
+     * be SHOWN to narrow -- a meet that widened, a glob or a budget with no
+     * computable meet, a realization env that is not a sub-map of the
+     * realizer's. One code, because they are one rule.
+     */
+    "E_CAP_FLAVOR",
+    "E_CAP_ESCALATE",
     "E_PIN_IDENTITY",
     "E_EPOCH_STALE",
 };

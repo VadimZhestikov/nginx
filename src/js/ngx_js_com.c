@@ -3861,6 +3861,14 @@ static const char  ngx_js_comcon_bootstrap[] =
     /* M-LIB: `uses` joins the closed vocabulary. It is normalized in mediate()
        into an allow-everything mask PLUS a budget, so the field lattice and its
        meet are untouched -- a budget attenuates HOW MANY TIMES, not WHAT. */
+    /* [TBD-2], second tranche: the capability layer throws with a CODE too.
+       Mirrors ngx_js_comcon_refuse() in C -- `.code` on the error (the contract)
+       and the code bracketed at the END of the message (so an error log is
+       greppable and no existing reader of the prose stops matching). Kept in
+       one function so the two halves of the platform cannot drift in shape. */
+    "  function capRefuse(code,msg){"
+    "    var e=new TypeError(msg+' ['+code+']');"
+    "    e.code=code;throw e;}"
     "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1,uses:1};"
     /* One definition of the socket field lattice, used by the meet here and by
        include()'s translation below -- two copies of a bitmask mapping is how a
@@ -3881,7 +3889,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "  function budgetMeet(a,b){"
     "    if(!a)return b||null;if(!b)return a;"
     "    if(a.key!==b.key||a.limit!==b.limit||a.window!==b.window)"
-    "      throw new TypeError('mediate: cannot re-mediate a budgeted "
+    "      capRefuse('E_CAP_ESCALATE','mediate: cannot re-mediate a budgeted "
                "capability with a DIFFERENT budget -- budgets are not ordered "
                "(10/min vs 100/hour), so a meet would have to guess, and the "
                "guess would widen one of them');"
@@ -3890,10 +3898,10 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(!interceptor||typeof interceptor!=='object')throw new TypeError("
     "      'mediate: arg1 must be an interceptor descriptor "
                  "(revoke/redact/allow/routes)');"
-    "    if(!FLAVORS[interceptor.flavor])throw new TypeError("
+    "    if(!FLAVORS[interceptor.flavor])capRefuse('E_CAP_FLAVOR',"
     "      'mediate: unknown interceptor flavor '+String(interceptor.flavor)+"
-    "      '; the vocabulary is closed (revoke, redact, allow, routes) -- an "
-                 "unrecognized one used to mean FULL authority');"
+    "      '; the vocabulary is closed (revoke, redact, allow, routes, uses) -- "
+                 "an unrecognized one used to mean FULL authority');"
     /* SNAPSHOT, do not hold the caller's object.  Validating here and reading it
        at include() time is a time-of-check/time-of-use gap: the descriptor is an
        ordinary object the caller still holds, so
@@ -3946,14 +3954,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      if(ii.flavor==='revoke'||oi.flavor==='revoke'){"
     "        snap=Object.freeze({flavor:'revoke'});}"
     "      else if(ii.flavor==='routes'||oi.flavor==='routes'){"
-    "        if(ii.flavor!==oi.flavor||ii.glob!==oi.glob)throw new TypeError("
+    "        if(ii.flavor!==oi.flavor||ii.glob!==oi.glob)capRefuse("
+    "          'E_CAP_ESCALATE',"
     "          'mediate: cannot re-mediate a routes facet with a different "
                  "glob -- a glob meet is not computable, and guessing would "
                  "widen');"
     "        snap=Object.freeze({flavor:'routes',glob:ii.glob});}"
     "      else{"
     "        var mi=jsMask(ii),mo=jsMask(oi),mm=(mi&mo)>>>0;"
-    "        if((mm&~mi)!==0||(mm&~mo)!==0)throw new Error("
+    "        if((mm&~mi)!==0||(mm&~mo)!==0)capRefuse('E_CAP_ESCALATE',"
     "          'mediate: attenuation meet widened authority (V4)');"
     /* Budgets do not form a computable meet either: 10-per-minute and
        100-per-hour are not ordered, and picking the smaller of each field
@@ -4253,7 +4262,7 @@ static const char  ngx_js_comcon_bootstrap[] =
        (environments are finite), and it converts that class into a loud one. */
     "    for(var rn in rg)if(Object.prototype.hasOwnProperty.call(rg,rn)){"
     "      if(!Object.prototype.hasOwnProperty.call(renv.grants,rn)"
-    "         ||rg[rn]!==renv.grants[rn])throw new Error("
+    "         ||rg[rn]!==renv.grants[rn])capRefuse('E_CAP_ESCALATE',"
     "        'realize: restricted env is not a sub-map of the realizer (V4): '"
     "        +rn);}"
     "    var c={grants:rg,imports:manifest};"

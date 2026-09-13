@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.69 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.70 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,6 +74,12 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **F10 CLOSED / [TBD-2] FULLY RESOLVED (2026-09-12, v5.70):** `E_CAP_FLAVOR` and
+>   `E_CAP_ESCALATE` ship — the latter one code for one rule over four raising sites, two
+>   of which are defence-in-depth and recorded as unprobeable rather than given a dead
+>   probe. The two EMPTY families are answers: `E_BUDGET_*` (exhaustion is a denial) and
+>   the deadline abort (the engine's interrupt). Fifteen refusal codes, six denial codes,
+>   all frozen by V12.
 > - **F5 CLOSED (2026-09-12, v5.69):** the M-SES escape battery now runs against a
 >   fragment with **20 natively-lowered functions** (`t/comcon_mses_gate_aot.t`), with the
 >   precondition asserted — compiled arm `compiled>=1`, interpreted arm `0` — and the two

@@ -227,6 +227,32 @@ var REFUSALS = [
         msg: 'grant is not a NginxSocket or NginxServer'
     },
     {
+        code: 'E_CAP_FLAVOR',
+        why: 'a mediation flavor outside the closed vocabulary. This is the '
+           + 'refusal that closed a FAIL-OPEN: an unimplemented word '
+           + '(`allowHosts`) or a one-letter typo (`redcat` for `redact`) used '
+           + 'to fall through the translation and grant the capability IN FULL',
+        via: 'call',
+        probe: "comcon.mediate(nginx.http.servers[0], {flavor: 'redcat'})",
+        msg: 'unknown interceptor flavor'
+    },
+    {
+        code: 'E_CAP_ESCALATE',
+        why: 'a composition that cannot be SHOWN to narrow -- one code, one '
+           + 'rule, four raising sites. TWO ARE REACHABLE and pinned: a routes '
+           + 'glob with no computable meet (probed here, and in '
+           + 'comcon_v4_monotonicity.t) and a budget with no computable meet '
+           + '(comcon_budget_uses.t). TWO ARE DEFENCE IN DEPTH and cannot be '
+           + 'provoked through the public API: realize() builds the restricted '
+           + 'map from the realizer\'s own env so it cannot disagree with it, '
+           + 'and the mask meet is an AND of two masks. A probe for those would '
+           + 'be dead code pretending to be a test',
+        via: 'call',
+        probe: "comcon.mediate(comcon.mediate(nginx.http.servers[0], "
+             + "comcon.routes('/a/*')), comcon.routes('/b/*'))",
+        msg: 'a glob meet is not computable'
+    },
+    {
         code: 'E_PIN_IDENTITY',
         why: 'the artifact identity pin (R7) did not match the source',
         via: 'include',

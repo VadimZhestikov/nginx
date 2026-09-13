@@ -136,6 +136,9 @@ locs.find(function (l) { return l.path === "/shape"; }).handler = function (req)
         try { fn(); return 'ACCEPTED'; }
         catch (e) { return e.message.split(' -- ')[0].slice(0, 60); }
     }
+    function codeOf(fn) {
+        try { fn(); return 'ACCEPTED'; } catch (e) { return e.code || 'NO-CODE'; }
+    }
 
     o.noKey    = refuses(function () { comcon.uses('', 5, 60); comcon.mediate(sock, comcon.uses('', 5, 60)); });
     o.noLimit  = refuses(function () { comcon.mediate(sock, comcon.uses('k')); });
@@ -147,6 +150,7 @@ locs.find(function (l) { return l.path === "/shape"; }).handler = function (req)
     var m = comcon.mediate(sock, comcon.uses('compose', 5, 60));
     o.same = refuses(function () { comcon.mediate(m, comcon.uses('compose', 5, 60)); });
     o.diff = refuses(function () { comcon.mediate(m, comcon.uses('compose', 6, 60)); });
+    o.diffCode = codeOf(function () { comcon.mediate(m, comcon.uses('compose', 6, 60)); });
 
     /* a budget composes with a field mask, and the mask still attenuates */
     var masked = comcon.mediate(comcon.mediate(sock, comcon.redact(['address'])),
@@ -172,7 +176,7 @@ locs.find(function (l) { return l.path === "/shape"; }).handler = function (req)
 };
 JS
 
-$t->try_run('no js module')->plan(16);
+$t->try_run('no js module')->plan(17);
 
 ###############################################################################
 
@@ -272,3 +276,8 @@ like($sh, qr/"masked":"undefined,number"[^}]*"redactedFree":"5:number","redacted
      . 'a redacted read is NOT charged: five reads of a hidden field spend '
      . 'nothing, because a field the membrane hides was never an exercise of '
      . 'the capability');
+
+like($sh, qr/"diffCode":"E_CAP_ESCALATE"/,
+     'and it carries E_CAP_ESCALATE ([TBD-2] tranche 2) -- the same code the '
+     . 'routes-glob refusal raises, because it is the same rule: a composition '
+     . 'that cannot be SHOWN to narrow is refused rather than guessed');

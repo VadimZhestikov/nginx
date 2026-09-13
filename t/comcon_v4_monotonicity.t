@@ -130,7 +130,10 @@ l.handler = function (req) {
     try {
         comcon.mediate(comcon.mediate(srv, comcon.routes('/a/*')),
                        comcon.routes('/b/*'));
-    } catch (e) { o.diffGlob = /glob meet/.test(e.message) ? 'refused' : 'other'; }
+    } catch (e) {
+        o.diffGlob = /glob meet/.test(e.message) ? 'refused' : 'other';
+        o.diffGlobCode = e.code || null;
+    }
 
     /* V4 at realization: the restricted env must be a sub-map of the realizer's */
     var env = comcon.grant(comcon.env(), "s", inner);
@@ -139,11 +142,20 @@ l.handler = function (req) {
     o.notInEnv = comcon.realize(comcon.quote("function(){ return typeof s; }"),
                                 { imports: ["s"] }, comcon.env())(0);
 
+    /* [TBD-2] tranche 2 note: the realize sub-map assertion and the mask-meet
+       assertion also raise E_CAP_ESCALATE, but NEITHER IS REACHABLE FROM THE
+       PUBLIC API -- realize() builds the restricted map itself from the
+       realizer's env, so it cannot disagree with it, and the mask meet is an AND
+       of two masks. They are defence in depth against a future logic bug, and a
+       probe for them would be dead code pretending to be a test. The two
+       reachable sites are pinned instead: the glob refusal here, the budget
+       refusal in comcon_budget_uses.t. */
+
     req.respond(200, {'content-type':'application/json'}, JSON.stringify(o));
 };
 JS
 
-$t->try_run('no js module')->plan(12);
+$t->try_run('no js module')->plan(13);
 
 ###############################################################################
 
@@ -189,3 +201,9 @@ like($r, qr/"notInEnv":"undefined"/,
 
 like($r, qr/"inner":\{"addr":"undefined"/,
      'sanity: the reference membrane is unchanged by everything above');
+
+# --- the refusals carry a code, not just a sentence ----------------------
+like($r, qr/"diffGlobCode":"E_CAP_ESCALATE"/,
+     'the glob refusal carries E_CAP_ESCALATE ([TBD-2] tranche 2): ONE code for '
+     . 'one rule -- a composition that cannot be SHOWN to narrow -- so a '
+     . 'pipeline asserts on the outcome instead of on the wording');

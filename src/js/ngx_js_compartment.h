@@ -143,6 +143,8 @@ typedef enum {
     NGX_JS_REFUSAL_ADMIT_CONTRACT,     /* a contract field is present but unusable */
     NGX_JS_REFUSAL_ADMIT_DEP,          /* a pinned dependency failed to load */
     NGX_JS_REFUSAL_CAP_GRANT,          /* a grant is not a mediatable cap   */
+    NGX_JS_REFUSAL_CAP_FLAVOR,         /* a mediation flavor outside the closed set */
+    NGX_JS_REFUSAL_CAP_ESCALATE,       /* a composition that cannot be shown to narrow */
     NGX_JS_REFUSAL_PIN_IDENTITY,       /* artifact identity pin mismatch    */
     NGX_JS_REFUSAL_EPOCH_STALE,        /* the fragment was freed (old epoch) */
     NGX_JS_REFUSAL_LAST

@@ -297,7 +297,9 @@ The primary control, and the one everything else is defence in depth for.
 
 #### G5.7 — a refusal says why, in a code that survives rewording
 - **CLAIM:** Admission refusals carry a stable machine code, not only prose.
-- **EV:** `t/comcon_v12_denial_codes.t` — 13 refusal codes, each probed; `comcon.refusalCodes()` enumerates.
+- **EV:** `t/comcon_v12_denial_codes.t` — 15 refusal codes, each probed; `comcon.refusalCodes()` enumerates.
+- **EV:** `t/comcon_v4_monotonicity.t` — the glob refusal carries `E_CAP_ESCALATE`.
+- **EV:** `t/comcon_budget_uses.t` — so does the budget refusal: one code, one rule.
 - **THREAT:** T3, T12
 - **V:** V12
 
@@ -629,7 +631,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
 | **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 | ACCEPTED residual (post-M9) |
 | **F9** | V-track items with no machinery yet: V5b, V6, V8, V9, V10, V13, V14 | VERIFICATION.md | OPEN — scheduled |
-| **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | OPEN — next tranche. **`E_BUDGET_*` is RESOLVED by placement (v5.67):** budget exhaustion is a DENIAL (`budget.uses`), not an admission refusal, so that family stays empty by design |
+| **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2 | ACCEPTED — stated in the audit |
 
 ---
@@ -728,6 +730,8 @@ signature is never quietly credited with work it did not see.
 | change | effect on §15 |
 |---|---|
 | **F5 CLOSED** — `t/comcon_mses_gate_aot.t` runs the M-SES battery against a fragment with **20 natively-lowered functions**, asserts the precondition (`aotStatus().compiled >= 1` on the compiled arm, `0` on the interpreted one), and asserts the two tiers agree probe by probe. Two controls: both arms on a non-compiling binary (the precondition assertion refuses), and the intrinsic freeze disabled on the compiled build only (probes open on native code, tier agreement breaks). G7.5 gains evidence and loses its GAP; the battery moves to `t/tools/mses-probes.js` so the standing gate and this one cannot drift. | **Strictly narrows what was signed.** One accepted residual is now evidenced; nothing else changes. The signature's scope — the assumptions of §1, the remaining findings, and §14 — is unaffected. |
+
+| **F10 CLOSED** — `E_CAP_FLAVOR` and `E_CAP_ESCALATE` ship, thrown by a JS `capRefuse()` that mirrors the C helper (code on `.code`, bracketed at the end of the message). E_CAP_ESCALATE has four raising sites: the two REACHABLE ones are pinned (`comcon_v4_monotonicity.t`, `comcon_budget_uses.t`), and the two that are defence-in-depth are recorded as unprobeable rather than given a dead probe. [TBD-2] is fully resolved; the two empty families are answers, not omissions. | **Strictly narrows what was signed.** A second accepted residual is now closed. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with
