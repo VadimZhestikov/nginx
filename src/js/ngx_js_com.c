@@ -704,6 +704,49 @@ ngx_js_broadcast(JSContext *ctx, JSValueConst this_val,
 
 /* ------------------------------------------------------------------ */
 /*
+ * nginx.jitStatus(fn) -> {functions, compiled}   [D4c's aotStatus, for host JS]
+ *
+ * Which TIER a host function's tree is on, read-only: asking must never compile.
+ * jitCompile() cannot answer it -- calling it to find out changes the answer,
+ * which is how a measurement of "interpreted vs compiled" ends up comparing
+ * compiled with compiled. Added while gathering M5 evidence, when the A/B's
+ * validity check said the interpreted arm already had native code and nothing
+ * could say when it got it.
+ */
+static JSValue
+ngx_js_jit_status(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    JSValue  r;
+#ifdef CONFIG_JIT
+    int      n = 0, c;
+#endif
+
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
+        return JS_ThrowTypeError(ctx, "jitStatus(fn): function required");
+    }
+
+    r = JS_NewObject(ctx);
+    if (JS_IsException(r)) {
+        return r;
+    }
+
+#ifdef CONFIG_JIT
+    c = js_comcon_aot_status(ctx, argv[0], &n);
+    JS_SetPropertyStr(ctx, r, "jit", JS_TRUE);
+    JS_SetPropertyStr(ctx, r, "functions", JS_NewInt32(ctx, n));
+    JS_SetPropertyStr(ctx, r, "compiled", JS_NewInt32(ctx, c < 0 ? 0 : c));
+#else
+    JS_SetPropertyStr(ctx, r, "jit", JS_FALSE);
+    JS_SetPropertyStr(ctx, r, "functions", JS_NewInt32(ctx, 0));
+    JS_SetPropertyStr(ctx, r, "compiled", JS_NewInt32(ctx, 0));
+#endif
+
+    return r;
+}
+
+
+/*
  * nginx.jitCompile(fn[, opts]) -> report   [AOT-A, opt-in]
  *
  * Lower a host-JS function AND its nested functions to native C at LOAD time,
@@ -5034,6 +5077,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     JS_SetPropertyStr(ctx, nginx_obj, "grantToTenant",
                       JS_NewCFunction(ctx, ngx_js_grant_to_tenant,
                                       "grantToTenant", 1));
+
+    /* D4c/AOT-A: which tier a host function is on (read-only). */
+    JS_SetPropertyStr(ctx, nginx_obj, "jitStatus",
+                      JS_NewCFunction(ctx, ngx_js_jit_status, "jitStatus", 1));
 
     /* COMCON A4: host-only denial report (audit→enforce loop). */
     JS_SetPropertyStr(ctx, nginx_obj, "tenantDenials",

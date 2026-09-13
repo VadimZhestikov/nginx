@@ -49,6 +49,32 @@
 >   to be built without a commitment to M5 (see M4 below and `AOT-A` in `INCREMENT_C5.md`
 >   for the measurement that settled it: 5.79× on compute-bearing JS, **1.0× on a
 >   host-call-dominated policy**).
+>
+>   **EVIDENCE FOR THE COMMITMENT QUESTION, measured 2026-09-12**
+>   (`t/tools/policy-compute-split.t`, in-process A/B — a throughput benchmark on this box
+>   runs through WSL2's mirrored-mode firewall, which compresses every ratio toward 1.0 and
+>   would manufacture the answer). Four policies people actually ask for, interpreted vs
+>   `jitCompile()`d, three runs:
+>   **count_tag 0.93–1.07× · ratelimit 1.02–1.28× · jwtish 0.91–0.96× · routing 0.78–0.93×**,
+>   against a known-positive control at **20.6–24.5×**. So the harness can see a speed-up and
+>   these policies simply do not have one. The `jwtish` case matters most: a realistic
+>   200-character token, a split and a hash loop — real work, still 0.92×, because the time is
+>   in the RUNTIME's string machinery rather than arithmetic the compiler can unbox.
+>   **"Compute-bearing" means arithmetic in JS; string-heavy policies do not benefit either.**
+>
+>   **The minimum stub set is single digits.** Extracted from the same policies with the
+>   D5b-2 CST: `nginx.shared`, `req.headers`, `req.uri` — **3 members**, against a classified
+>   COM surface of **339 members across 55 rows**. So a stub ABI for policies of this shape is
+>   not "type the COM surface"; it is roughly `shared.incr`, a header lookup and a uri read.
+>   That is the number the commitment turns on, and it makes M5 a milestone rather than a
+>   track — *provided* the payoff is taken from the stubs, which is where these measurements
+>   say it lives.
+>
+>   **One documented precondition is already met.** R4 warns that generated C is not covered
+>   by `JS_SetInterruptHandler`, so "until back-edge gas lands, the tier-2-eligible profile is
+>   loop-free". Measured: a natively-lowered fragment (`aotStatus` `compiled:1`) running an
+>   8-billion-iteration loop under a 150 ms meter is **interrupted at 150 ms**, exactly like
+>   the interpreted one.
 > - **What is open and unblocked is M-LIB** — and it became unblocked quietly, when M3
 >   completed: M-LIB is specified as "authored *in* the policy language once M3 exists".
 >   There are **20 kernel operators and no `std.*` at all**, while `MANUAL.md` is written

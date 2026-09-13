@@ -564,6 +564,43 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.58 (in place — M5 decision evidence: two measurements, and one belief corrected):**
+the commitment question for the compiler track rested on two unmeasured beliefs.
+`t/tools/policy-compute-split.t` measures both, **in-process** — a throughput benchmark on
+this box runs through WSL2's mirrored-mode firewall, which adds a large fixed per-request cost
+outside the thing under test and compresses every ratio toward 1.0, i.e. it would manufacture
+the answer being looked for.
+
+**Is a real policy compute-bound? No.** Interpreted vs `jitCompile()`d, same source, same
+request, three runs: count_tag **0.93–1.07×**, ratelimit **1.02–1.28×**, jwtish
+**0.91–0.96×**, routing **0.78–0.93×** — against a known-positive control at
+**20.6–24.5×**. The control is the shape AOT-A measured at 5.79× end-to-end, so the harness
+can see a speed-up and these policies simply do not have one. **The `jwtish` case is the
+informative one:** a realistic 200-character token, a split, and a hash loop over the payload
+— real work, still 0.92×, because the time is in the RUNTIME's string machinery (`split`,
+`charCodeAt`, indexing) rather than arithmetic the compiler can unbox. So "compute-bearing"
+in the AOT-A sense means **arithmetic in JS**, and string-heavy policies do not benefit either.
+
+**How big is the minimum stub set? Single digits.** Extracted from the same policy sources
+with the D5b-2 CST: `nginx.shared`, `req.headers`, `req.uri` — **3 members**, against a
+classified COM surface of **339 members across 55 rows**. A stub ABI for policies of this
+shape is roughly `shared.incr`, a header lookup and a uri read — not "type the COM surface".
+That reframes M5's cost from a track to a milestone, *provided* the payoff is taken from the
+stubs, which is where these numbers say it lives.
+
+**A documented precondition retires.** R4 warns that generated C is not covered by
+`JS_SetInterruptHandler`, so "until back-edge gas lands, the tier-2-eligible profile is
+loop-free". Measured: a natively-lowered fragment (`compiled:1`) running an 8-billion-iteration
+loop under a 150 ms meter is **interrupted at 150 ms**, exactly like the interpreted one.
+
+**`nginx.jitStatus(fn)`** ships with it — D4c's `aotStatus`, for host functions, read-only.
+It exists because the first A/B compared **compiled with compiled** and nothing could say so:
+`jitCompile()` cannot answer "is this compiled", since calling it to find out changes the
+answer, and its `skipped` field means "already compiled, ineligible, **or failed before**" —
+at request time, where the gcc thread is dead, `skipped:1` meant "not eligible here", which
+read as "already compiled". With `jitStatus` the arms report 0/1 compiled functions before and
+after the warm-up, so the comparison is what it claims to be.
+
 **v5.57 (in place — V11: policy mutation testing, the deny-suite's own verifier):** built
 early (it is listed under M7/M8 but needs nothing from the compiler) because it is the
 systematic form of the discipline this project applies by hand. A negative control asks *does

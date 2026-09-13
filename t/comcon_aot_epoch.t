@@ -125,6 +125,16 @@ ctl.handler = function (req) {
         } else if (op === "rollback") {
             r.epoch = h.rollback();
             r.after = comcon.aotStatus(live);
+        } else if (op === "hostFn") {
+            /* nginx.jitStatus(fn): the same question for HOST JS, read-only --
+             * jitCompile() cannot answer it, because calling it to find out
+             * changes the answer. */
+            var f = function (n) { return n + 1; };
+            r.before = nginx.jitStatus(f);
+            r.rep = nginx.jitCompile(f);
+            r.after = nginx.jitStatus(f);
+            r.bad = 'ACCEPTED';
+            try { nginx.jitStatus(42); } catch (e) { r.bad = 'refused'; }
         } else if (op === "badArg") {
             r.bad = 'ACCEPTED';
             try { comcon.aotStatus(function () {}); }
@@ -135,7 +145,7 @@ ctl.handler = function (req) {
 };
 JS
 
-$t->try_run('no js module')->plan(11);
+$t->try_run('no js module')->plan(13);
 
 ###############################################################################
 
@@ -167,6 +177,15 @@ like(http_get('/m'), qr/x-epoch: 0.*EPOCH-ONE:/s,
 like($rep, qr/"after":\{"jit":(true|false),"functions":\d+,"compiled":0\}/,
      'a live-rewritten epoch reports compiled:0 -- the BYTECODE FALLBACK is '
      . 'what runs, because a worker has no gcc thread after fork()');
+
+my $hf = http_get('/ctl?op=hostFn');
+# Two honest shapes, keyed on the flag: with a compiled tier it walks the tree
+# (1 function, 0 native yet); without one there is no tier to report, and it says
+# so rather than inventing counts -- the same convention as aotStatus.
+like($hf, qr/"before":\{"jit":true,"functions":1,"compiled":0\}|"before":\{"jit":false,"functions":0,"compiled":0\}/,
+     'nginx.jitStatus reports a host function as not-yet-native, without '
+     . 'compiling it to find out');
+like($hf, qr/"bad":"refused"/, 'jitStatus refuses a non-function');
 
 like(http_get('/ctl?op=badArg'), qr/"bad":"refused"/,
      'aotStatus refuses anything that is not a confined fragment');
