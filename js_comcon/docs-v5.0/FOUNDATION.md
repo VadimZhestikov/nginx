@@ -635,6 +635,36 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.69 (in place — F5: the escape battery, against code that is actually native):** the
+audit's PARTIAL row, and the one a security reviewer reaches for first. **Running the gate
+on a JIT-capable BINARY was never the same claim as running it against COMPILED CODE**, and
+the difference is not academic: server-AOT happens in the master pre-fork, and
+`js_comcon_aot_compile()` returns 0 for any bytecode function — "eligible", never
+"compiled" — which is why the include site logged success on that 0 for weeks (D4c). A gate
+that never checks whether lowering happened reports a green compiled tier while measuring an
+interpreted one.
+
+**So the precondition is asserted before anything else.** The compiled arm must report
+`compiled >= 1` from `aotStatus()` — measured **20 natively-lowered functions** — and the
+interpreted arm must report `0`: the same fragment, the same battery, two demonstrably
+different tiers, read with a probe that never compiles anything itself. Then the battery:
+nothing open on either tier, and **the two agree probe by probe** — the claim SR-2 makes for
+the confinement surface, now made for the escape battery specifically.
+
+**One definition, two consumers.** The battery moved to `t/tools/mses-probes.js`, read by
+both the standing S6 gate and this one, because two copies of an escape battery is how one
+of them quietly stops testing what the other still does.
+
+**Two controls, each aimed at a different way of being wrong.** Both arms on a
+non-compiling binary: the precondition assertion refuses, so the file cannot be fooled into
+being a second interpreted run wearing a JIT binary. The intrinsic freeze disabled on the
+**compiled build only**: probes come open *on native code* and tier agreement breaks — so
+the battery demonstrably bites on lowered code, not just on bytecode.
+
+Recorded in ASSURANCE.md **§16, changes after the signature**: F5 moves from accepted
+residual to closed. A signature is not re-earned by a change that removes a gap, and not
+invalidated by one either — but it is never credited with work it did not see.
+
 **v5.68 (in place — SR-4 SIGNED: the last standing gate is closed, on one signature and an
 accepted list of residuals):** `ASSURANCE.md` §15. The gate has stood open since SR-3 passed
 on 2026-09-01; it closes not because everything is proven but because the tree, the evidence

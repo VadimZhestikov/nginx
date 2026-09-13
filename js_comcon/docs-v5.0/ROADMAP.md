@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.68 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.69 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,6 +74,11 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **F5 CLOSED (2026-09-12, v5.69):** the M-SES escape battery now runs against a
+>   fragment with **20 natively-lowered functions** (`t/comcon_mses_gate_aot.t`), with the
+>   precondition asserted — compiled arm `compiled>=1`, interpreted arm `0` — and the two
+>   tiers agreeing probe by probe. Recorded in ASSURANCE §16 as a change after the
+>   signature. The audit's last PARTIAL row is now closed.
 > - **SR-4 IS SIGNED (2026-09-12, v5.68) — the last standing gate is closed.**
 >   `ASSURANCE.md` §15: signer **Vadim Zhestikov**, tree at `d6ed62395`, on a full re-run
 >   (four builddirs rebuilt; both suites on both builds; ASAN+UBSAN clean in `src/js` with

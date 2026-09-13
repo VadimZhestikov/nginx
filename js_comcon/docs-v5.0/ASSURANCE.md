@@ -380,13 +380,22 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T8
 - **V:** V5b
 
-#### G7.5 — the compiled tier under the escape battery
-- **CLAIM:** *(partial)* `t/comcon_mses_gate.t` runs on both builds, but AOT-compiled
-  FRAGMENTS are not separately asserted against the probe battery; SR-2 covers faithfulness
-  of the compiled tier over the confinement surface.
-- **GAP:** No separate probe run against server-AOT-compiled fragments.
-  **home:** AUDIT_M-SES.md §3 · finding F5.
-- **EV:** `t/comcon_include_faithfulness.t` — what IS covered: identical denials across tiers.
+#### G7.5 — the escape battery against code that is ACTUALLY native
+- **CLAIM:** *(evidenced 2026-09-12)* The M-SES battery closes every probe inside a fragment
+  **lowered to native C**, and the compiled and interpreted tiers agree probe by probe.
+- **ARGUMENT:** Running the gate on a JIT-capable BINARY was never the same claim as running
+  it against COMPILED CODE. Server-AOT happens in the master pre-fork, and
+  `js_comcon_aot_compile()` returns 0 for any bytecode function — "eligible", never
+  "compiled" — so a gate that does not check whether lowering happened reports a green
+  compiled tier while measuring an interpreted one. The precondition is therefore asserted
+  first: the compiled arm must report `compiled >= 1` from `aotStatus()` (measured: **20
+  functions**) and the interpreted arm must report `0`, same fragment, same battery, two
+  demonstrably different tiers. The battery is read from one file shared with the standing
+  gate, because two copies of an escape battery is how one quietly stops testing what the
+  other still does.
+- **EV:** `t/comcon_mses_gate_aot.t` — the battery against native code, on both arms, with the precondition and the unconfined control.
+- **EV:** `t/tools/mses-probes.js` — the single definition of the battery.
+- **EV:** `t/comcon_include_faithfulness.t` — SR-2: identical responses and denials across tiers over the confinement surface.
 - **THREAT:** T7, T8
 - **V:** V5b
 
@@ -615,7 +624,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F2** | No per-fragment memory attribution; nothing asserts a fragment hitting the 64 MB runtime cap | G6.4 | OPEN — deferred by design (S5) |
 | **F3** | Cross-compartment identity not probed | G7.6 | **PROBED 2026-09-12** — no channel found on eight shared surfaces, and removing the freeze opens five of them, so the mechanism is identified rather than assumed. **Residual:** declaring `Symbol` for two tenants gives them `Symbol.for` as a rendezvous, unwarned |
 | **F4** | `guarded` / `irreversible` COM members are excluded from the setter fuzz | AUDIT_M-SES.md §3 | OPEN — deliberate scope choice |
-| **F5** | AOT-compiled fragments not separately run against the escape battery | G7.5 | PARTIAL |
+| **F5** | AOT-compiled fragments not separately run against the escape battery | G7.5 | **CLOSED 2026-09-12** (after the §15 signature — see §16): the battery now runs against a fragment with 20 natively-lowered functions, the precondition is asserted, and the tiers agree probe by probe |
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 | OPEN — deliberate scope choice |
 | **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
 | **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 | ACCEPTED residual (post-M9) |
@@ -710,4 +719,16 @@ an engine that is not forged.
 
 ---
 
+## 16. Changes after the signature (not covered by it)
 
+§15's signature is dated 2026-09-12 and attests the tree as of `d6ed62395`. This section
+records changes made **after** that point, on the model of `AUDIT_M-SES.md` §6, so the
+signature is never quietly credited with work it did not see.
+
+| change | effect on §15 |
+|---|---|
+| **F5 CLOSED** — `t/comcon_mses_gate_aot.t` runs the M-SES battery against a fragment with **20 natively-lowered functions**, asserts the precondition (`aotStatus().compiled >= 1` on the compiled arm, `0` on the interpreted one), and asserts the two tiers agree probe by probe. Two controls: both arms on a non-compiling binary (the precondition assertion refuses), and the intrinsic freeze disabled on the compiled build only (probes open on native code, tier agreement breaks). G7.5 gains evidence and loses its GAP; the battery moves to `t/tools/mses-probes.js` so the standing gate and this one cannot drift. | **Strictly narrows what was signed.** One accepted residual is now evidenced; nothing else changes. The signature's scope — the assumptions of §1, the remaining findings, and §14 — is unaffected. |
+
+**A signature is not re-earned by a change that removes a gap**, and it is not invalidated
+by one either. What would invalidate it is listed at the end of §15; a finding *closed with
+evidence and recorded here* is the opposite of that.
