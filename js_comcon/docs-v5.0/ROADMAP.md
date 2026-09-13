@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.50 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.59 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -35,7 +35,18 @@
 > (per-fragment memory attribution · cross-compartment identity · `guarded`/`irreversible`
 > COM members · compiled tier under the escape probes · host JS unbounded by default).
 >
-> **THE CONFINEMENT TRACK IS CLOSED; ONE TRACK IS PARKED; THE NEXT WORK IS THE LIBRARY.**
+> **THE CONFINEMENT TRACK IS CLOSED. THE LIBRARY IS STARTED AND ITS REMAINDER IS BLOCKED.
+> THE COMPILER TRACK IS PARKED, AND NOW HAS THE EVIDENCE TO STAY THAT WAY.**
+>
+> - **M-LIB is IN PROGRESS, not next.** Steps 1–2 shipped 2026-09-12 (`comcon.std.profiles`,
+>   `std.ops`). Everything left in it is blocked on something else: the posture vocabulary and
+>   `allowHosts`/`ttl`/`window` need **C-side enforcement** (shipping them as descriptors
+>   would be shipping policy that does nothing), and "raw operators withheld" needs a second
+>   compartment for library consumers.
+> - **The nearest unblocked deliverable is M-CFG's**, and it is the last named one of
+>   increment E: *one tenant subtree onboarded through admit end-to-end*. Every piece exists
+>   (D5b-1's sound rejecter + descriptor tables, D3 quotations, M4's typing, `std.profiles`,
+>   `std.ops`); nothing has ever composed them.
 >
 > - **Confinement (increments A–E + D): no open item.** One thing inside D4c was
 >   deliberately NOT built and should not be mistaken for an oversight: **re-AOT of a live
