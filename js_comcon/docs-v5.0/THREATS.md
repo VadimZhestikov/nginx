@@ -130,7 +130,9 @@ tenant `while(true){}` no longer hangs a worker — the interpreter's interrupt 
 wired onto the tenant runtime with a host-imposed per-request deadline
 (NGX_JS_TENANT_TIMEOUT_MS, default 1s), and the JIT emits **back-edge gas** (an interrupt
 poll on backward gotos, inline-counter-gated) so compiled loops honour it too. Verified
-both interpreted and AOT-compiled infinite loops are interrupted (`t/comcon_gas.t`). Memory
+both interpreted and AOT-compiled infinite loops are interrupted
+(`t/comcon_include.t` — the meter contract; `t/comcon_fragment_deadline.t` — the
+host-imposed default when a contract carries no meter). Memory
 is separately bounded (JS_SetMemoryLimit 64MB). *Still deferred (S5):* the fuller metered
 budget model (per-op/per-fragment metering, fine-grained memory attribution) and a
 configurable js_tenant_timeout directive.

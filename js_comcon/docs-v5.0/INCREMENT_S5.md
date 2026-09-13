@@ -51,7 +51,7 @@ ms is intuitive. Defer unless load-independent budgets become a hard requirement
   main-conf value. **Per-tenant / per-profile** budgets are future multi-tenancy work.
 - Orthogonal to `tenant_mode` (enforce/audit/learn) and to the 64 MB memory cap (already done).
 
-## Verification (extend `t/comcon_gas.t`, both builds)
+## Verification (extend `t/comcon_fragment_deadline.t`, both builds)
 
 - `js_tenant_timeout 200;` → a `while(true){}` tenant aborts at ~200 ms (not ~1000).
 - `js_tenant_timeout 0;` → a bounded-but-long compute that would exceed 1 s **completes**.

@@ -10,14 +10,16 @@
 > `ngx_js_request_respond` + the include invoke, protecting every js_com handler; (c) **TM-1
 > denial-log quotas + sampling is IMPLEMENTED** and tested (`comcon_include_denial_log.t`: 100
 > full records + 1/100 sampling, exact counters) — previously "specified, not implemented." SR-3
-> (escape completeness) and M-SES-0/1/1b are unchanged. The standing open gate remains **SR-4**
-> (assurance case) and **maxim finalization** (full test262 for untrusted-native).
+> (escape completeness) and M-SES-0/1/1b are unchanged. The standing open gate was **SR-4**
+> (assurance case) — **built 2026-09-12, unsigned** — and **maxim finalization** (full
+> test262 for untrusted-native), whose conformance blocker cleared 2026-09-11.
 >
 > **UPDATE 2026-09-11:** maxim finalization's conformance blocker is **CLEARED** — the
 > test262 JIT sweep that aborted at 54% on an atom-table assertion now completes
 > 14/14 shards over 49,402 files with 55 failing files, all 55 in the known-errors
 > baseline, 0 new, 0 crashes. And **M-SES now has a STANDING gate** (S6) rather than
-> only the SR-3 pentest: see the gate table below. SR-4 remains the open gate.
+> only the SR-3 pentest: see the gate table below. **SR-4 is now BUILT (`ASSURANCE.md`,
+> V15) and awaits a signer.**
 
 *Companion to `ROADMAP.md` §12. The R-review (ROADMAP §11) hunted design bugs; this
 track answers a different question: for every claim the design makes, **what would
@@ -349,15 +351,44 @@ equivalence. (Trusting-trust accepted as residual, noted.)
 
 ## Assembling it
 
-**V15 — The assurance case (the umbrella, at M8).** Claims are scattered across a
-theorem, two gates, probe suites, and a dozen invariants. One GSN-style
-**claim → assumption → evidence** tree: the artifact security reviewers actually want,
-and building it is itself a gap detector — every leaf without evidence is a finding.
-U1–U3, F, the generated enumerations, and V1–V14 get their permanent home here.
-*(v5.4)* Its skeleton now exists: **`THREATS.md`** — the adversary × asset ×
-mitigation matrix with every cell citing its closing mechanism and three residuals
-accepted by name. V15 = that matrix extended with evidence links as the V-track
-deliverables land.
+**V15 ✅ BUILT 2026-09-12 — The assurance case (= gate SR-4).** Claims were scattered
+across a theorem, three audits, a dozen probe suites and a doc set nobody could read in
+one sitting. **`ASSURANCE.md`** is the GSN-style **claim → assumption → evidence** tree:
+G0 decomposed into 53 leaves over G1–G11, six explicit assumptions, and a findings ledger.
+U1–U3, F, the generated enumerations and V1–V14 have their home there.
+
+**What makes it a gate rather than a summary: it is checked by machine.**
+`t/tools/check-assurance.py` (run by `t/comcon_assurance.t`, so drift breaks the suite)
+enforces six rules — every `EV:` names an artifact that exists; every leaf has evidence or
+a GAP with a `home:`; **no orphan evidence** (every `t/comcon_*.t` is cited by some claim,
+so a test that proves nothing anyone claims is a finding in the other direction); every
+adversary T1–T12 and every V-item V1–V15 appears; **no document in the set cites a test
+file that does not exist**; and a gap cannot point at a finding nobody wrote down. Seven
+negative controls, one per rule, all red where intended.
+
+**It found a defect before it was written. `F1`: 20 of 83 evidence citations in the
+normative doc set pointed at files that do not exist** — every one a pre-CONVERGENCE name
+whose test was deleted in P6a/P6b when its `comcon_include_*` sibling took over. A
+reviewer following THREATS.md's T11 citation to `t/comcon_gas.t` found nothing at all.
+Roughly a quarter of the evidence a security reviewer would try to follow was dead. Fixed
+two ways: live claims now cite the successor, and §12's rename table redirects the
+historical passages — *which the checker validates too*, so the redirect cannot rot either.
+
+**Building it also found a coverage hole in itself:** the first tree addressed T1–T12
+except **T9** (side channels) — mentioned in the assumptions, claimed by no leaf. Check
+[4] refused it, and G7.7 now states the T9 position honestly: the direct readout is
+closed, the indirect one is not mitigated and not probed.
+
+**The ledger is the deliverable.** Eleven findings (F1–F11), of which one is fixed and ten
+are open or accepted: per-fragment memory attribution, cross-compartment identity,
+`guarded`/`irreversible` COM members, the compiled tier under the escape battery, host JS
+unbounded by default, TM-2 (session→env mapping, still unowned), the IFC/timing residual,
+the unbuilt V-items, the two empty code families, and the single-signer audit. An
+assurance case whose findings section is empty has not been built honestly — so the test
+asserts the ledger is non-empty.
+
+**NOT SIGNED.** The tree exists; attesting to it is a separate act with a named signer,
+on the `AUDIT_M-SES.md` §5 model. §14 states what the case does *not* establish.
 
 ---
 
@@ -365,7 +396,7 @@ deliverables land.
 
 | Now / M2–M3 | M5–M6 | M7 / M8 / M-SES |
 |---|---|---|
-| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · V13 | **V11 ✅ · V12 ✅ (2026-09-12, both built early)** · V5b · V10 · V14 · V15 |
+| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · V13 | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · V5b · V10 · V14 |
 
 **Meta-observation:** the R-review's critical findings clustered at *tier boundaries*
 and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maintained-
@@ -389,7 +420,7 @@ gate-reviews across the whole roadmap, and two already exist as milestones (M8, 
 | **SR-1 conformance** | end of increment B → **before C** | the A/B capability logic vs `THREATS.md`, *within* the current TCB assumption (an unforgeable engine). Finds gaps between claimed and implemented confinement. Explicitly **not** engine escapes. | new (this doc) |
 | **SR-2 faithfulness** | **C7** | did compilation preserve the reach gates and not leak authority via the type/cap side-tables? T2 refines T1. | **= M8** — **PASSED profile-scoped 2026-09-01** (`t/comcon_faithfulness.t`: interp vs AOT-compiled over the confinement surface incl. A1 gated reach/mutator → identical responses + identical denials, 22/22). Scope = confined strict-module profile; full-test262-under-AOT + untrusted-native production still gated on M-SES + full maxim finalization. |
 | **SR-3 adversarial pentest** | after **M-SES** | engine escapes, eval/Function/Proxy sandbox completeness, memory safety — closes the accepted residuals (`THREATS.md` T8/T4/T9). The full red-team pass. | **PASSED 2026-09-01** — no sandbox escape (dynamic-code routes tamed, no global reach, core intrinsics frozen, recursion bounded); one MEDIUM freeze-completeness gap (SR3-1 sibling iterator prototypes) **found + fixed**, one availability case (SR3-2 microtask loop) **gas-contained**. Both tiers. See the SR-3 audit record below. Full-test262-under-AOT untrusted-native still gated on maxim finalization. |
-| **SR-4 assurance case** | before first untrusted-tenant **production** | assemble the whole claim→assumption→evidence tree; every leaf without evidence is a finding. | **= V15** |
+| **SR-4 assurance case** | before first untrusted-tenant **production** | assemble the whole claim→assumption→evidence tree; every leaf without evidence is a finding. | **= V15 — BUILT 2026-09-12 (`ASSURANCE.md`), machine-checked by `t/comcon_assurance.t`, NOT SIGNED.** Found F1: a quarter of the doc set's evidence citations were dead. |
 | **S6 escape gate** (standing) | **every test run**, from 2026-09-11 | the M-SES gate as a REGRESSION gate rather than a moment: `t/comcon_mses_gate.t` (12 probes over gate conditions (a)/(b)/(c) + `.stack` + `Symbol.species`, plus the resource guard) and `bash t/run_sanitizers.sh` (the corpus under ASAN + UBSAN). | **NEW 2026-09-11** — see §"The standing gate" below |
 
 ### The standing gate (added 2026-09-11)
@@ -481,7 +512,7 @@ not breaches:
   `JS_NewContextRaw` + curated intrinsics (Proxy omitted) + an SES-style lockdown taming
   the four evaluator constructors and deleting the `eval`/`Function`/`Reflect` globals;
   `[].constructor.constructor(...)` now throws, so the "no dynamic code" property holds.
-  (`t/comcon_mses.t`; INCREMENT_MSES.md.)
+  (`t/comcon_include_mses.t`; INCREMENT_MSES.md.)
 - **A2 (MEDIUM→fixed as DiD): reflective global aliases.** `globalThis`/`global`/`self`
   let `globalThis[<computed>]` reach a bound name (incl. a granted capability) invisibly
   to the manifest. **Refused now** in `ngx_js_c3_free_name` (defense-in-depth — the
@@ -490,9 +521,9 @@ not breaches:
   parameter** (`onRequest(function({secret}){…})`) and **computed/aliased member access**
   bypass the sealed-Request field check; **rest params** (`function(req,...r)`) bypass the
   ≤1 arity check (`.length` ignores rest/defaults). Folded into the C5 erasure-complete
-  type remainder; pinned by `t/comcon_frontend_audit.t` so closure is a visible change.
+  type remainder; pinned by `t/comcon_include_admit.t` so closure is a visible change.
 
-Regressions: `t/comcon_frontend_audit.t` pins the containment guarantee (dynamic code sees
+Regressions: `t/comcon_include_admit.t` pins the containment guarantee (dynamic code sees
 zero host authority) and the A2 fix. The escape-completeness of the intrinsics themselves
 remains **SR-3** (post-M-SES), as scheduled.
 
@@ -524,7 +555,7 @@ completeness, neither an authority escape:
   looked mutable but is the generator function's **own per-function `.prototype`** —
   isolated (function `a`'s poison invisible to `b`'s instances) and chaining to the already
   -frozen shared `%GeneratorPrototype%`, so it is left alone. Pinned by two new cases in
-  `t/comcon_freeze.t` (frozen + no cross-request pollution).
+  `t/comcon_include_freeze.t` (frozen + no cross-request pollution).
 - **SR3-2 (availability — CONTAINED, no fix): Promise microtask loop.** A handler that
   self-reschedules `Promise.resolve().then(loop)` builds an unbounded microtask chain
   drained (in C) after the handler returns. It does **not** hang the worker: the
@@ -532,7 +563,7 @@ completeness, neither an authority escape:
   measured, budget 1s), breaks the chain, and the worker keeps serving. Bounded by the
   same budget as any other CPU path; no separate mechanism needed.
 
-Regressions: `t/comcon_freeze.t` (+2 SR-3 cases) pins the sibling-iterator freeze and its
+Regressions: `t/comcon_include_freeze.t` (+2 SR-3 cases) pins the sibling-iterator freeze and its
 cross-request non-pollution, confirmed identical on the interpreter and JIT builds. With
 SR-3 clean, the confined tier's confinement is **adversarially validated**, not just
 argued — the last major assurance step before untrusted tenants (full maxim finalization

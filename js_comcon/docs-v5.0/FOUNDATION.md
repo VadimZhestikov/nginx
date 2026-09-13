@@ -564,6 +564,40 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.64 (in place — V15 / SR-4: the assurance case exists, is machine-checked, and its
+first finding was that a quarter of the evidence was dead):** `ASSURANCE.md` — G0
+decomposed into 53 leaves over G1–G11, six named assumptions, a findings ledger of eleven,
+and a rename table. It is the artifact a security reviewer asks for, and it closes the one
+gate that has stood open since SR-3 passed.
+
+**Checked, not asserted.** `t/tools/check-assurance.py` (run by `t/comcon_assurance.t`)
+enforces six rules: every `EV:` names an artifact that EXISTS; every leaf has evidence or a
+GAP with a `home:`; **no orphan evidence** — every `t/comcon_*.t` must be cited by some
+claim, so a test proving something nobody claims is a finding in the other direction; every
+adversary T1–T12 and V-item V1–V15 appears; **no document in the set cites a test file that
+does not exist**; and a gap cannot point at a finding nobody wrote down. Seven controls,
+one per rule.
+
+**F1 — the finding that arrived before the document did.** Sweeping the doc set for cited
+test files: **20 of 83 citations pointed at files that do not exist**, every one a
+pre-CONVERGENCE name deleted in P6a/P6b when its `comcon_include_*` sibling took over. A
+reviewer following THREATS.md's T11 citation to `t/comcon_gas.t` found nothing. Live claims
+now cite the successor; §12's rename table redirects the historical passages, and the
+checker validates the redirect targets too, so the fix cannot rot the way the citations did.
+
+**And a hole in itself.** The first tree covered T1–T12 except **T9** — side channels were
+in the assumptions and claimed by no leaf, which check [4] refused. G7.7 now states the
+position plainly: the direct readout is closed, the indirect one is neither mitigated nor
+probed, and with T4 it is the deferred confidentiality axis of the whole design.
+
+**The ledger is the deliverable, and the test asserts it is not empty** (an assurance case
+that claims everything is evidenced has been written to reassure). Eleven findings: memory
+attribution per fragment, cross-compartment identity, guarded/irreversible COM members, the
+compiled tier under the escape battery, host JS unbounded by default, TM-2's unowned
+session→env mapping, the IFC/timing residual, seven unbuilt V-items, the two empty code
+families, and the single-signer audit. **The case is NOT SIGNED** — the tree is an artifact,
+attesting to it is an act, and §14 says what it does not establish.
+
 **v5.63 (in place — HOST-PERF: the two measured host costs are fixed, and the M5
 precondition is discharged):** not a COMCON feature — the two costs the M5 evidence run
 turned up in September, fixed on their own terms and re-measured **A/B back to back on one
