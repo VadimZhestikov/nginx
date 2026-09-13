@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.79 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.80 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,12 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **F13 CLOSED (2026-09-13, v5.80): the request surface is classified — 54 rows, every one
+>   request-scoped.** The tenant-facing object had no type and no class while every
+>   config-phase node had both. Table rows (per-class), not the bare-name read-only map, so
+>   `requestScoped` is a fact rather than a guess — and a getter added without a row now
+>   FAILS. Every type read off its getter; none wrong on the first run. **This was the last
+>   OPEN finding in the ledger.** Remaining: F8 and F11 (both ACCEPTED) and F9's six V-items.
 > - **THE TESTS ARE GATED (2026-09-13, v5.79): 39 assertions claimed something and checked
 >   nothing.** V11 mutation-tests the policies; nothing tested the tests, and five dead
 >   assertions surfaced in this arc BY ACCIDENT. `check-dead-probes.py` + `comcon_dead_probes.t`

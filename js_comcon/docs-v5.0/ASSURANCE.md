@@ -716,6 +716,31 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T3
 - **V:** V11
 
+#### G3.7 — the REQUEST is in the registry, and says it is request-scoped
+- **CLAIM:** Every member of the tenant-facing request object carries a declared type, a
+  safety class, and `requestScoped: true`; the declared type is what a real read returns.
+- **ARGUMENT:** Every config-phase node had a type and a class while the object a tenant
+  actually touches had neither — `nginx.describe(req)` returned zero rows. That is the reach
+  surface S4 needs (`req.location` is a live COM handle into the config tree) and the input
+  surface M4 types. The rows are **table** rows, not entries in the read-only name map,
+  because the map is keyed by bare member name across all classes: a request `headers` and a
+  location `headers` would have to agree, and `requestScoped` would come from the discovery
+  path's hardcoded `false`. A table row is per-class and carries its own flags.
+- **EV:** `t/js_com_schema_conformance.t` — 54 rows, every one request-scoped, every declared
+  type checked against a real read; three controls (registry entry removed, one row removed so
+  the discovery pass emits it, one row made to lie).
+- **FOUND:** nothing wrong in the 54 — every type was read off the getter's `JS_New*` rather
+  than inferred from its name, and the first run was clean. The contrast with the read-only
+  map (one misdeclaration in 24 hand-written rows) is the argument for reading implementations.
+- **GAP:** The classes for METHODS are a judgment: reads are `readonly`, response writes are
+  `safe` and not reversible (bytes sent cannot be recalled), and the five that change where the
+  request goes — `pass`, `redirect`, `subrequest`, `fetch`, `hijack` — are `guarded`, matching
+  `proxy.pass` on the config surface. Nothing mechanically checks that mapping; it is stated in
+  the table so it can be argued with.
+  **home:** `ngx_js_request_members[]` in ngx_js_com_describe.c · finding F13.
+- **THREAT:** T1, T10
+- **V:** V8
+
 #### G11.9 — THE SPEC cannot silently fall behind the code
 - **CLAIM:** Every member of a set `SPEC.md` calls closed appears in `SPEC.md`, so the
   normative read cannot quietly stop describing the shipped system.
@@ -832,7 +857,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F9** | V-track items with no machinery yet: **V5a, V5b, V6, V9, V10, V14** (six — this row said five until 2026-09-13, omitting V5a, which §Placement has always listed as unbuilt; a ledger that undercounts its own backlog is the quiet kind of wrong) | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7) **and V8 built COMPLETE** — both halves: G11.8 (read-only schema conformance) and G11.10 (the propagation column, across real workers). Six remain, each its own increment — and four of them (V5a, V5b, V6, V10) sit on the compiler/protocol track, so only V9 and V14 are reachable today |
 | **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2 | ACCEPTED — stated in the audit |
-| **F13** | The REQUEST is outside the registry: `nginx.describe(req)` returns **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carry no declared type and no class. And the read-only descriptor hardcodes `requestScoped: false` and `propagation: "worker-local"` for every row, which is unfalsifiable only *because* there are no request rows to be wrong about. The map is also keyed by bare member name, so one name cannot have two types on two types (`server`). | G11.8 | **OPEN (found 2026-09-13 by V8).** Not a misstatement today, a latent one: `t/js_com_schema_conformance.t` pins the request row count at zero, so the field must be made per-row in the same change that adds them. Classifying the request surface is its own increment (it is the M2 half S4 needs for reach) |
+| **F13** | The REQUEST was outside the registry: `nginx.describe(req)` returned **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carried no declared type and no class. The read-only descriptor hardcoded `requestScoped: false` for every row, unfalsifiable only *because* there were no request rows to be wrong about. | G11.8, G3.7 | **CLOSED 2026-09-13.** All **54** rows classified — 28 getters, 25 methods, one settable (`statusCode`) — as TABLE rows, which are per-class and carry their own `RQS`, rather than through the bare-name read-only map. **Every type was read off its getter, and none was wrong on the first run** (`startTime` is a number not a Date; `location` is a live handle, not a path string). The pin at zero is now the real count, plus an assertion that every request row declares `requestScoped` — so a getter added without a table row is emitted by the discovery pass with `false` and fails the day it lands. Three controls |
 | **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
 
 ---
@@ -953,6 +978,8 @@ signature is never quietly credited with work it did not see.
 | **F3 CLOSED — a residual WITHDRAWN, not fixed** — the `Symbol.for` rendezvous was an artefact of a dead probe: its read compared `Symbol.for(k) === Symbol.for(k)` inside ONE fragment, which cannot be false. The rewritten arm attempts the whole exploit and is refused on every surface; a shared registry is a shared NAME, and a name is not a channel without a store. Backed by two controls — the unconfined arm reads the mark back (proving the key matched, so the registry is genuinely shared) and the freeze-disabled arm turns the confined case into a live channel. `AUDIT_M-SES.md` §3's attested row is left as signed and carries an ERRATUM marker pointing at its §6. | **Removes a residual by retracting it.** This is the one kind of change that should make a reader MORE careful, not less: a signed audit recorded a finding that was not there, so the fix is an erratum plus a probe that can now fail. Nothing else §15 attested is affected. |
 
 | **THE TESTS ARE NOW GATED TOO — G11.11 added.** `check-dead-probes.py` hunts assertions that cannot fail, after five such defects surfaced by accident in this arc. First run: **39 assertions claiming something and checking nothing** — 27 padding, 8 restating a proven claim, and 4 genuinely untested behaviours that now have real assertions (all 4 claims were true, which is why they survived). Five controls, one per check. | **Strengthens the basis of every other row in this ledger, and weakens confidence in none of them — but it should temper how the word "closed" is read.** Each closure rests on an instrument, and roughly one instrument in ten in this tree was measuring nothing. §15 attested the code and the instruments as they were; this is the first gate on whether an instrument measures at all. |
+
+| **F13 CLOSED — G3.7 added.** The request surface is classified: 54 rows (28 getters, 25 methods, one settable), every one `requestScoped`, every type read off its getter and none wrong on the first run. V8's pin at zero — placed precisely so this could not happen quietly — is now the real count, and a new assertion means a getter added without a table row fails the suite. Three controls. | **Closes the last OPEN finding in the ledger.** What remains is two ACCEPTED residuals (F8 timing channels, F11 the single signer) and F9's six unbuilt V-items. Nothing §15 attested changes; a claim that was latent-false is now checked. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

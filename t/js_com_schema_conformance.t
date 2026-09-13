@@ -442,9 +442,36 @@ nginx.http.servers[0].locations.forEach(function (l) {
             var o;
             try { o = run(); }
             catch (e) { o = { driverError: String(e && e.message) }; }
-            /* The request object's own registry rows -- pinned at zero. */
-            try { o.reqRows = nginx.describe(req).length; }
-            catch (e) { o.reqRows = 'THREW: ' + String(e && e.message); }
+            /* The request object's own registry rows (F13).  Pinned at ZERO
+             * until 2026-09-13, so that classifying the tenant-facing surface
+             * had to be a deliberate act that also fixed `requestScoped`. */
+            try {
+                var rrows = nginx.describe(req);
+                o.reqRows = rrows.length;
+                /* Every request member is meaningless outside a request, so
+                 * every row must say so.  A getter added WITHOUT a table row is
+                 * emitted by the read-only DISCOVERY pass, which hardcodes
+                 * requestScoped:false -- so this is the assertion that makes the
+                 * old latent lie impossible to reintroduce. */
+                var notRQS = [], typeBad = [], i, d, v;
+                for (i = 0; i < rrows.length; i++) {
+                    d = rrows[i];
+                    if (!d.requestScoped) { notRQS.push(d.name); }
+                    try { v = req[d.name]; }
+                    catch (e) { typeBad.push(d.name + ':THREW'); continue; }
+                    if (typeVerdict(d.type, v) === 'bad') {
+                        typeBad.push(d.name + ': declared ' + d.type
+                                     + ' read ' + actualOf(v));
+                    }
+                }
+                o.reqNotRQS = notRQS;
+                o.reqTypeBad = typeBad;
+                var cls = {};
+                for (i = 0; i < rrows.length; i++) {
+                    cls[rrows[i]['class']] = (cls[rrows[i]['class']] || 0) + 1;
+                }
+                o.reqClasses = cls;
+            } catch (e) { o.reqRows = 'THREW: ' + String(e && e.message); }
             req.respond(200, { 'content-type': 'application/json' },
                         JSON.stringify(o));
         };
@@ -461,7 +488,7 @@ nginx.http.servers[0].locations.forEach(function (l) {
 });
 JS
 
-$t->try_run('no js module')->plan(14);
+$t->try_run('no js module')->plan(16);
 
 sub get_json {
     my ($path) = @_;
@@ -522,7 +549,22 @@ is_deeply($s->{movedByRead}, [],
 # descriptor's hardcoded `requestScoped: false` unfalsifiable today.  When this
 # assertion fails, request members have entered the registry and that field has
 # to become per-row in the same change.
-is($s->{reqRows}, 0,
-   'the request object still has NO registry rows (so requestScoped:false is vacuous, not wrong)');
+# F13.  This assertion was `is($s->{reqRows}, 0)` from the day V8 was built:
+# the request carried no type and no class, and the pin existed so that filling
+# it in could not happen quietly.  It is now the real count.
+cmp_ok($s->{reqRows}, '>=', 50,
+   "the request surface is classified: $s->{reqRows} rows (was 0)");
+
+is_deeply($s->{reqNotRQS}, [],
+   'every request row declares requestScoped -- a getter added without a table '
+   . 'row would be emitted by the discovery pass with false, and fail here')
+    or diag("rows not marked request-scoped: " . join(' ', @{ $s->{reqNotRQS} }));
+
+is_deeply($s->{reqTypeBad}, [],
+   'every request row reads back as the type the registry declares')
+    or diag("MISDECLARED on the request: " . join('; ', @{ $s->{reqTypeBad} }));
+
+diag("request row classes: "
+     . join(' ', map { "$_=$s->{reqClasses}{$_}" } sort keys %{ $s->{reqClasses} || {} }));
 
 $t->stop();

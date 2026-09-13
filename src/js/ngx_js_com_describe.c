@@ -696,6 +696,148 @@ static const ngx_js_member_class_t  ngx_js_rewrite_members[] = {
     { NULL, NULL, 0, 0, 0, NULL }
 };
 
+/* ------------------------------------------------------------------ *
+ * NginxRequest — the TENANT-FACING surface (F13)                      *
+ * ------------------------------------------------------------------ *
+ * Until 2026-09-13 `nginx.describe(req)` returned ZERO rows: `remoteAddr`,
+ * `uri`, `method`, `headers` and `body` -- the members a tenant actually
+ * touches -- carried no declared type and no safety class, while every
+ * config-phase node had both.  V8 found it and pinned the count at zero so that
+ * filling it in would have to be deliberate.
+ *
+ * THE ROWS ARE IN A TABLE, NOT IN THE READ-ONLY NAME MAP, and that is the
+ * point.  A discovered read-only member is typed by `ngx_js_ro_types[]`, which
+ * is keyed by BARE MEMBER NAME across every class -- so a request `headers`
+ * and a location `headers` would have to agree, and `requestScoped` would come
+ * from that path's hardcoded `false`.  A table row is per-CLASS: it carries its
+ * own type and its own flags, so RQS below is a fact about this member on this
+ * class rather than a guess that happens to be right.  `ngx_js_table_has()`
+ * makes the discovery pass skip anything listed here, so there is no
+ * duplication.
+ *
+ * EVERY TYPE WAS READ OFF THE GETTER, not inferred from the name: the
+ * name->magic map in `ngx_js_request_proto_funcs[]` and then the `JS_New*` each
+ * `case` actually returns.  `startTime` is a number and not a Date, `connection`
+ * is an object and not a number, `location` is a handle and not a path string,
+ * `body` is a string that is NULL until the body is read, and `upstream` is null
+ * until there has been an upstream attempt.
+ *
+ * THE CLASSES.  Read-only getters are RO.  Methods are METH, and their class is
+ * chosen by what they DO rather than by being methods:
+ *
+ *   RO   + METH  reads only (getHeader, getVar, variable, bodyChunks, readBody)
+ *   SAFE + METH  writes the RESPONSE (setHeader, write, respond, json, …).  Safe
+ *                because it is the intended API, and NOT reversible: bytes that
+ *                have gone to the client cannot be recalled, which is what
+ *                "irreversible for the lifetime of the process" means scaled
+ *                down to one request.
+ *   GRD  + METH  changes WHERE the request goes or who owns the connection
+ *                (pass, fetch, subrequest, hijack, redirect).  `proxy.pass` is
+ *                guarded on the config surface for the same reason -- it
+ *                re-targets dispatch -- and the request-scoped equivalents are
+ *                classified to match rather than being demoted to "safe"
+ *                because they happen to live on a request.
+ *
+ * EVERY ROW IS RQS.  A request member is meaningless outside a request; that is
+ * what made the old hardcoded `requestScoped: false` on read-only rows a claim
+ * waiting to be wrong, and `t/js_com_schema_conformance.t` now asserts that
+ * every row here says true, so a getter added WITHOUT a row (which the discovery
+ * pass would emit with `false`) fails the suite.
+ */
+static const ngx_js_member_class_t  ngx_js_request_members[] = {
+    /* ---- request facts (read-only) ---- */
+    { "method",        "string",  RO, RQS, WL, NULL },
+    { "uri",           "string",  RO, RQS, WL, NULL },
+    { "args",          "string",  RO, RQS, WL, "raw query string" },
+    { "scheme",        "string",  RO, RQS, WL, NULL },
+    { "host",          "string",  RO, RQS, WL, NULL },
+    { "httpVersion",   "string",  RO, RQS, WL, NULL },
+    { "remoteAddr",    "string",  RO, RQS, WL, NULL },
+    { "remotePort",    "number",  RO, RQS, WL, NULL },
+    { "serverAddr",    "string",  RO, RQS, WL, NULL },
+    { "serverPort",    "number",  RO, RQS, WL, NULL },
+    { "contentType",   "string",  RO, RQS, WL, NULL },
+    { "contentLength", "number",  RO, RQS, WL, NULL },
+    { "requestLength", "number",  RO, RQS, WL, NULL },
+    { "startTime",     "number",  RO, RQS, WL,
+      "milliseconds, not a Date -- read off JS_NewInt64" },
+    { "isInternal",    "boolean", RO, RQS, WL, NULL },
+    { "keepalive",     "boolean", RO, RQS, WL, NULL },
+    { "responded",     "boolean", RO, RQS, WL,
+      "whether a response has already been started" },
+    { "statusCode",    "number",  SAFE, REV|RQS, WL,
+      "the ONE settable member on a request: the status of a response not yet "
+      "sent. Reversible only while `responded` is false" },
+
+    /* ---- structured views (read-only objects) ---- */
+    { "headers",     "object", RO, RQS, WL, "request headers as data" },
+    { "queryParams", "object", RO, RQS, WL, NULL },
+    { "cookies",     "object", RO, RQS, WL, NULL },
+    { "variables",   "object", RO, RQS, WL, "nginx variables, by name" },
+    { "body",        "string", RO, RQS, WL,
+      "NULL until the body has been read (readBody/bodyChunks); a string once "
+      "buffered, never a Buffer" },
+    { "bodyPreread", "string", RO, RQS, WL, NULL },
+    { "upstream",    "object", RO, RQS, WL,
+      "the LAST upstream attempt's state, or null when there has been none" },
+    { "ctx",         "object", RO, RQS, WL,
+      "per-request scratch object; its CONTENTS are the tenant's, so the "
+      "read-only class is about the slot, not what is in it" },
+    { "connCtx",     "object", RO, RQS, WL,
+      "per-CONNECTION scratch, so it outlives this request across keepalive -- "
+      "the one member here whose lifetime is not the request's" },
+    { "connection",  "object", RO, RQS, WL, NULL },
+    { "location",    "handle<NginxLocation>", RO, RQS, WL,
+      "the MATCHED location, as a live COM handle: this is the reach path off a "
+      "request into the config surface, which is why it is typed as a handle "
+      "rather than as a path string" },
+
+    /* ---- reads (methods) ---- */
+    { "getHeader",  "function", RO, METH|RQS, WL, NULL },
+    { "getVar",     "function", RO, METH|RQS, WL, NULL },
+    { "variable",   "function", RO, METH|RQS, WL, NULL },
+    { "readBody",   "function", RO, METH|RQS, WL,
+      "async; fills `body` and mutates nothing a tenant can observe otherwise" },
+    { "bodyChunks", "function", RO, METH|RQS, WL, NULL },
+    { "log",        "function", RO, METH|RQS, WL,
+      "writes the error log, which is the HOST's sink, not tenant state" },
+    { "sleep",      "function", RO, METH|RQS, WL,
+      "delays this request only; it spends the deadline (F6/F12) rather than "
+      "changing anything" },
+
+    /* ---- writes to the response (methods) ---- */
+    { "setHeader",   "function", SAFE, METH|RQS, WL, NULL },
+    { "removeHeader","function", SAFE, METH|RQS, WL, NULL },
+    { "writeHead",   "function", SAFE, METH|RQS, WL, NULL },
+    { "write",       "function", SAFE, METH|RQS, WL, NULL },
+    { "respond",     "function", SAFE, METH|RQS, WL,
+      "sends status, headers and body; not reversible once flushed" },
+    { "json",        "function", SAFE, METH|RQS, WL, NULL },
+    { "text",        "function", SAFE, METH|RQS, WL, NULL },
+    { "html",        "function", SAFE, METH|RQS, WL, NULL },
+    { "sendfile",    "function", SAFE, METH|RQS, WL, NULL },
+    { "sendBuffer",  "function", SAFE, METH|RQS, WL, NULL },
+    { "finish",      "function", SAFE, METH|RQS, WL, NULL },
+    { "setVar",      "function", SAFE, METH|RQS, WL, NULL },
+    { "setVariable", "function", SAFE, METH|RQS, WL, NULL },
+
+    /* ---- changes where the request goes (methods) ---- */
+    { "pass",       "function", GRD, METH|RQS, WL,
+      "re-targets this request at an upstream -- the request-scoped sibling of "
+      "proxy.pass, and guarded for the same reason" },
+    { "redirect",   "function", GRD, METH|RQS, WL, NULL },
+    { "subrequest", "function", GRD, METH|RQS, WL, NULL },
+    { "fetch",      "function", GRD, METH|RQS, WL,
+      "outbound request; the only member here that reaches the network on the "
+      "tenant's behalf" },
+    { "hijack",     "function", GRD, METH|RQS, WL,
+      "takes the connection out of nginx's request pipeline: after this the "
+      "response machinery above no longer owns it" },
+
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+
 /* NginxPeer / NginxRrPeer — scalar setters; propagation is zoned-shared when
  * the upstream is zone-backed (resolved live by the refine hook below). */
 static const ngx_js_member_class_t  ngx_js_peer_members[] = {
@@ -1323,6 +1465,9 @@ static const ngx_js_member_registry_t  ngx_js_member_registry[] = {
       ngx_js_stream_peer_prop_refine },
     { &ngx_js_stream_upstream_class_id, ngx_js_stream_upstream_members, NULL },
 
+    /* The request (F13) — the tenant-facing surface, classified 2026-09-13 */
+    { &ngx_js_request_class_id,         ngx_js_request_members,         NULL },
+
     /* Topology classes — follow-up #2 (close the describe() gaps) */
     { &ngx_js_upstream_class_id,        ngx_js_upstream_members,        NULL },
     { &ngx_js_socket_class_id,          ngx_js_socket_members,          NULL },
@@ -1406,6 +1551,10 @@ static const struct {
 } ngx_js_class_catalog[] = {
     { "NginxHttp (nginx.http)",  ngx_js_http_members },
     { "NginxLocation",           ngx_js_loc_members },
+    /* The request, so `describeType('NginxRequest')` answers without an
+       instance -- which is the only way to ask about it at all outside a
+       request, and what the M4 return-type binding needs. */
+    { "NginxRequest",            ngx_js_request_members },
     { "NginxServer",             ngx_js_server_members },
     { "NginxProxy",              ngx_js_proxy_members },
     { "NginxGzip",               ngx_js_gzip_members },
@@ -1845,6 +1994,14 @@ ngx_js_describe_readonly_one(JSContext *ctx, JSValueConst obj, const char *name)
     JS_SetPropertyStr(ctx, d, "reversible",    JS_NewBool(ctx, 0));
     JS_SetPropertyStr(ctx, d, "propagation",
                       JS_NewString(ctx, "worker-local"));
+    /* Hardcoded false, and now CHECKED rather than hoped.  Every class the live
+     * walk reaches is config-phase, so a discovered read-only member really is
+     * not request-scoped -- but that was an argument, and for three weeks it was
+     * an argument covering seventeen plainly request-scoped getters that simply
+     * were not emitted (F13).  The request's members are TABLE rows now, which
+     * carry their own RQS, and `t/js_com_schema_conformance.t` asserts that every
+     * request row says true: a request getter added without a table row arrives
+     * here, gets `false`, and fails the suite the day it lands. */
     JS_SetPropertyStr(ctx, d, "requestScoped", JS_NewBool(ctx, 0));
     JS_SetPropertyStr(ctx, d, "note",
                       type ? JS_NULL

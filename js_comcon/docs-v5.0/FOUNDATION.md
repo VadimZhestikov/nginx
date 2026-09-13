@@ -635,6 +635,47 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.80 (in place — F13 closed: the request is in the registry, and every row says it is
+request-scoped):** every config-phase node had a declared type and a safety class. The object a
+tenant actually touches had neither — `nginx.describe(req)` returned **zero rows**. `remoteAddr`,
+`uri`, `method`, `headers`, `body`: no type, no class, nothing for the typed tier to reason with
+and nothing for S4 to follow, even though `req.location` is a live COM handle from a request
+into the config tree.
+
+**All 54 rows are classified: 28 getters, 25 methods, one settable (`statusCode`).** They are
+**TABLE rows, not entries in the read-only name map**, and that choice is the substance. The map
+is keyed by BARE MEMBER NAME across every class, so a request `headers` and a location `headers`
+would have to agree on one type — and `requestScoped` would come from the discovery path's
+hardcoded `false`. A table row is per-class and carries its own flags, so `RQS` is a fact about
+this member on this class instead of a guess that happens to be right.
+
+**Every type was read off its getter, and none was wrong on the first run.** The name→magic map
+in `ngx_js_request_proto_funcs[]`, then the `JS_New*` each `case` actually returns. `startTime`
+is a number, not a Date. `connection` is an object, not a number. `location` is a handle, not a
+path string. `body` is a string that is null until the body is read. Set that against the
+read-only map, where one row in 24 hand-written entries was wrong (`names`): **reading the
+implementation and inferring from the name are not the same activity**, and the difference shows
+up as a defect rate.
+
+**The hardcoded `requestScoped: false` is no longer latent-false, and it is CHECKED rather than
+argued.** It was correct only because the seventeen plainly request-scoped getters were never
+emitted. Now the request's members are table rows with their own `RQS`, and the conformance test
+asserts that **every** request row says true — so a getter added without a table row is emitted
+by the discovery pass with `false` and fails the suite the day it lands. That is the assertion
+V8's pin at zero existed to force, and the pin is now the real count.
+
+**One judgment, stated rather than hidden.** The classes for METHODS are a reading, not a
+measurement: reads are `readonly`; response writes are `safe` and NOT reversible, because bytes
+already sent cannot be recalled — "irreversible for the lifetime of the process" scaled down to
+one request; and the five that change *where the request goes* — `pass`, `redirect`,
+`subrequest`, `fetch`, `hijack` — are `guarded`, matching `proxy.pass` on the config surface for
+the same reason, rather than being demoted to safe because they happen to live on a request.
+Nothing mechanically checks that mapping. It is written in the table so it can be argued with.
+
+**F13 was the last OPEN finding in the ledger.** What remains is two ACCEPTED residuals — F8's
+timing channels and F11's single signer — and F9's six unbuilt V-items, four of which sit on the
+parked compiler track.
+
 **v5.79 (in place — the TESTS are gated now: 39 assertions claimed something and checked
 nothing):** V11 mutation-tests the policies. Nothing tested the tests — and this arc found
 **five assertions that could not fail, every one by accident while doing something else**: the
