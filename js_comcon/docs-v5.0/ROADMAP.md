@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.85 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.86 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,12 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **THE OUTBOUND ROUND TRIP (2026-09-13, v5.86).** `std.outbound.perform()` + a test where a
+>   policy asks, the host performs against a real backend, and the policy **decides from the
+>   responses**. `allowHosts` globs may pin the SCHEME (matched exactly) — which is NOT MANUAL's
+>   `protocol` (enforced operation ORDER, still unbuilt; I had assumed otherwise and checked).
+>   **Two of four controls did not fire**: one documented property was FALSE (`clear()` took no
+>   count) and one unmeasured. Both fixed and asserted.
 > - **M-LIB `allowHosts` SHIPPED (2026-09-13, v5.85): the OUTBOUND capability.** The last
 >   word blocked on a missing mechanism. **It is not a `fetch`, and that is a finding:**
 >   fragment invocation is synchronous, so the cap RECORDS INTENT and the host performs the

@@ -5393,6 +5393,51 @@ static const char  ngx_js_comcon_bootstrap[] =
        principal resolves to the EMPTY env, the same answer an undeclared free
        name gets. --------------------------------------------------------- */
     "  var SESS_PREFIX='comcon.session:';"
+    /* STD.outbound — the HOST half of the outbound capability.
+     *
+     * The capability records intents; something has to perform them, and until
+     * now that was left to the operator.  A capability whose whole point is
+     * host-performed I/O, with no demonstrated path from an intent to a
+     * response, is a half-delivery: the mediation was tested exhaustively and
+     * the ROUND TRIP was not tested at all.
+     *
+     * `perform(cap, req)` drains the queue and performs each intent through
+     * `req.fetch`, which is why it takes a request: fetch lives on the request
+     * object, so draining belongs inside a handler and not at config time.
+     *
+     * It clears the queue AFTER performing, and only what it performed --
+     * `clear(n)`, with the count read before the awaits.  Another request
+     * sharing this capability can append while this one is awaiting I/O, and a
+     * bare clear() would discard those intents unperformed.  This was DOCUMENTED
+     * before it was true: the control for it did not fire, clear() turned out to
+     * take no count, and the claim was the thing that had to change.
+     *
+     * Errors are RESULTS, not exceptions: one unreachable destination must not
+     * abandon the other intents, and a policy that asked for three things is
+     * owed three answers.  Each row carries `ok`, and `status` only when there
+     * was one. */
+    "  STD.outbound={};"
+    "  STD.outbound.perform=async function(cap,req){"
+    "    if(!cap||typeof cap.pending!=='function')throw new TypeError("
+    "      'std.outbound.perform: arg0 must be an outbound capability');"
+    "    if(!req||typeof req.fetch!=='function')throw new TypeError("
+    "      'std.outbound.perform: arg1 must be a request (fetch lives there)');"
+    "    var q=cap.pending(),list=(q&&q.requests)||[],out=[],i;"
+    "    for(i=0;i<list.length;i++){"
+    "      var it=list[i],row={url:it.url,method:it.method};"
+    "      try{"
+    "        var res=await req.fetch(it.url,{method:it.method});"
+    "        row.ok=true;row.status=res.status;"
+    "        if(typeof res.text==='function')row.body=await res.text();"
+    "        else if(res.body!==undefined)row.body=res.body;"
+    "      }catch(e){row.ok=false;row.error=String(e&&e.message);}"
+    "      out.push(row);}"
+    /* dropped is reported rather than swallowed: a queue that overflowed told
+       the fragment nothing (request() returned -1), so the operator is the only
+       one who can see it. */
+    "    if(q&&q.dropped)out.dropped=q.dropped;"
+    "    cap.clear(list.length);"
+    "    return out;};"
     "  STD.sessions=function(res){"
     "    res=res||{};"
     "    var store=res.sessions||null;"

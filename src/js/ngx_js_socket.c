@@ -913,6 +913,53 @@ static ngx_js_outbound_state_t  *ngx_js_outbound_reg[NGX_JS_OUTBOUND_REG_MAX];
 static uint32_t                  ngx_js_outbound_gen[NGX_JS_OUTBOUND_REG_MAX];
 
 
+/*
+ * A scheme-qualified host glob, spelled https + :// + a host glob.
+ *
+ * `protocol` in the vocabulary is NOT this -- MANUAL defines it as enforced
+ * OPERATION ORDER ("handshake", "frames*", "close"), a session type over a
+ * capability's methods, and that name is not free.  Restricting the scheme is an
+ * attenuation of the DESTINATION, so it belongs inside allowHosts rather than in
+ * a new vocabulary word invented outside the documented ten.
+ *
+ * A glob with no "://" matches any scheme, which is exactly today's behaviour --
+ * so this narrows for whoever asks and changes nothing for whoever does not.  An
+ * operator wanting TLS only writes the scheme; nothing is defaulted in the
+ * permissive direction relative to what shipped.
+ */
+static ngx_int_t
+ngx_js_outbound_glob_match(const u_char *glob, size_t glob_len,
+    const u_char *scheme, size_t scheme_len, const u_char *host,
+    size_t host_len)
+{
+    const u_char  *sep;
+    size_t         gs_len;
+
+    sep = (const u_char *) ngx_strlchr((u_char *) glob,
+                                       (u_char *) glob + glob_len, ':');
+
+    if (sep != NULL && (size_t) (glob + glob_len - sep) >= 3
+        && sep[1] == '/' && sep[2] == '/')
+    {
+        gs_len = (size_t) (sep - glob);
+
+        /* The scheme is matched EXACTLY, never globbed: "http*" would admit
+         * both http and https, which is the opposite of what an operator
+         * writing a scheme is asking for. */
+        if (gs_len != scheme_len
+            || ngx_strncasecmp((u_char *) glob, (u_char *) scheme, gs_len) != 0)
+        {
+            return 0;
+        }
+
+        glob = sep + 3;
+        glob_len -= gs_len + 3;
+    }
+
+    return ngx_js_glob_match(glob, glob_len, host, host_len);
+}
+
+
 ngx_int_t
 ngx_js_glob_match(const u_char *glob, size_t glob_len, const u_char *s,
     size_t s_len)
@@ -998,13 +1045,15 @@ ngx_js_outbound_state(ngx_js_outbound_opaque_t *op)
  * different things depending on how the caller spelled a default port.
  */
 static ngx_int_t
-ngx_js_outbound_host(const char *url, size_t len, const char **host,
-    size_t *host_len)
+ngx_js_outbound_host(const char *url, size_t len, const char **scheme,
+    size_t *scheme_len, const char **host, size_t *host_len)
 {
     const char  *p, *end, *h;
 
     end = url + len;
     p = url;
+    *scheme = url;
+    *scheme_len = 0;
 
     /* scheme:// — required, so that "evil.com/?x=//good.com" cannot be read as
      * a host of "good.com" by a parser that merely searches for "//". */
@@ -1013,6 +1062,7 @@ ngx_js_outbound_host(const char *url, size_t len, const char **host,
     if (h == NULL || (size_t) (end - h) < 3 || h[1] != '/' || h[2] != '/') {
         return NGX_ERROR;
     }
+    *scheme_len = (size_t) (h - url);
     p = h + 3;
 
     /* credentials are refused rather than skipped: "user@host" in an allowHosts
@@ -1057,8 +1107,8 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
     ngx_js_outbound_opaque_t  *op;
     ngx_js_outbound_state_t   *st;
     ngx_js_outbound_rec_t     *rec;
-    const char                *url, *host, *meth;
-    size_t                     len, host_len, mlen;
+    const char                *url, *host, *meth, *scheme;
+    size_t                     len, host_len, mlen, scheme_len;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_outbound_class_id);
     if (op == NULL) {
@@ -1086,7 +1136,9 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
         return JS_UNDEFINED;
     }
 
-    if (ngx_js_outbound_host(url, len, &host, &host_len) != NGX_OK) {
+    if (ngx_js_outbound_host(url, len, &scheme, &scheme_len, &host, &host_len)
+        != NGX_OK)
+    {
         JS_FreeCString(ctx, url);
         return JS_ThrowTypeError(ctx,
             "outbound.request: arg0 must be an absolute scheme://host URL "
@@ -1100,8 +1152,9 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
      * it cannot translate rather than defaulting.
      */
     if (op->glob_len > 0
-        && !ngx_js_glob_match((u_char *) op->glob, op->glob_len,
-                              (u_char *) host, host_len))
+        && !ngx_js_outbound_glob_match((u_char *) op->glob, op->glob_len,
+                                       (u_char *) scheme, scheme_len,
+                                       (u_char *) host, host_len))
     {
         if (ngx_js_compartment_denial(NGX_JS_DENIAL_OUT_HOST, url)) {
             JS_FreeCString(ctx, url);
@@ -1230,6 +1283,34 @@ ngx_js_outbound_clear(JSContext *ctx, JSValueConst this_val, int argc,
         return JS_ThrowInternalError(ctx, "outbound: capability is closed");
     }
 
+    /*
+     * clear(n) removes only the FIRST n records.  Without a count, a drain that
+     * awaited I/O and then cleared would discard intents another request had
+     * appended to the same capability meanwhile -- and std.outbound.perform()
+     * documented that it did not do that, which was simply untrue until the
+     * control for it failed to fire and the claim was checked.
+     */
+    if (argc > 0 && JS_IsNumber(argv[0])) {
+        uint32_t  n = 0;
+        ngx_uint_t k;
+
+        JS_ToUint32(ctx, &n, argv[0]);
+        if (n >= st->nrec) {
+            st->nrec = 0;
+        } else {
+            for (k = 0; k + n < st->nrec; k++) {
+                st->rec[k] = st->rec[k + n];
+            }
+            st->nrec -= n;
+        }
+        /* `dropped` counts overflow for the whole capability, so it is only
+         * reset by a full clear -- a partial drain has not seen the overflow. */
+        if (st->nrec == 0) {
+            st->dropped = 0;
+        }
+        return JS_UNDEFINED;
+    }
+
     st->nrec = 0;
     st->dropped = 0;
     return JS_UNDEFINED;
@@ -1239,7 +1320,7 @@ ngx_js_outbound_clear(JSContext *ctx, JSValueConst this_val, int argc,
 static const JSCFunctionListEntry ngx_js_outbound_proto_funcs[] = {
     JS_CFUNC_DEF("request", 2, ngx_js_outbound_request),
     JS_CFUNC_DEF("pending", 0, ngx_js_outbound_pending),
-    JS_CFUNC_DEF("clear",   0, ngx_js_outbound_clear),
+    JS_CFUNC_DEF("clear",   1, ngx_js_outbound_clear),
 };
 
 

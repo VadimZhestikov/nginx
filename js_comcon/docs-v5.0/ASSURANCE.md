@@ -361,11 +361,22 @@ The primary control, and the one everything else is defence in depth for.
   `describe()` rows. Four controls, each breaking a different assertion.
 - **EV:** `t/tools/golden-denials.js` — `out.host` and `out.drain` frozen, each with its own
   probe rather than a written reason.
-- **GAP:** The host must still perform the queued requests itself; nothing here does I/O, so
-  a policy that needs a RESPONSE needs two fragment invocations (ask, then be given the
-  result). A real `fetch` capability waits on asynchronous fragment invocation, which is its
-  own increment. And a host glob cannot express "this host but not that path" — `allowHosts`
-  attenuates destination only.
+- **EV:** `t/comcon_outbound_roundtrip.t` — the ROUND TRIP: a policy asks for three destinations
+  (one of them the link-local metadata address, denied), the host performs the permitted two
+  against a backend in the same nginx, and the **same policy is invoked again with the responses
+  and computes a verdict from them**. Plus the scheme-qualified glob. Four controls, two of which
+  did not fire on their first run and are the reason two claims changed — see the GAP.
+- **EV:** `OPERATOR_API.md` §8e — the host half (`std.outbound.perform`), which takes a request
+  because `fetch` lives there, so draining belongs inside a handler.
+- **GAP:** A policy that needs a RESPONSE needs **two fragment invocations** (ask, then be given
+  the result). That is not a workaround, it is the shape the synchronous invoke imposes, and a
+  real `fetch` capability waits on asynchronous fragment invocation — its own increment. A host
+  glob cannot express "this host but not that path": `allowHosts` attenuates destination only.
+  **And two properties here were DOCUMENTED BEFORE THEY WERE TRUE**, which is why the controls
+  matter more than the assertions: `perform()` claimed to clear only what it performed while
+  `clear()` took no count at all, and the scheme was claimed to be matched exactly while no test
+  distinguished exact from globbed. Both controls failed to fire; `clear(n)` was implemented and
+  both claims are now asserted. A property nobody can break is a property nobody has checked.
   **home:** ROADMAP M-LIB · VERIFICATION.md V8 (the classified surface).
 - **THREAT:** T5, T6, T11
 - **V:** V9
@@ -1084,6 +1095,8 @@ signature is never quietly credited with work it did not see.
 | **THE REVIEWER PACK — G11.14 added; F11 made cheap rather than closed.** `reviewer-pack.sh` runs everything §15 and the audit's §4 rest on, from one entry point, refusing on a dirty tree and rebuilding every builddir first because the committed binaries are stale artifacts. `REVIEW.md` is the procedure and the sign-off block, pointing into the canonical lists rather than copying them. | **Changes no claim and closes no finding.** F11 stays OPEN: it needs a second person, and this only makes their afternoon cheap. Worth noting what it deliberately does NOT do — it does not summarise the residuals a signer accepts, because a signature on a summary is worth less than no signature. |
 
 | **M-LIB `allowHosts` SHIPPED — G6.8 added.** The outbound capability: a fragment records an INTENT through a granted cap, the glob is checked in the compartment, and the host performs the I/O. Two new denial codes (`out.host`, `out.drain`), both frozen with probes. It composes with `uses` and `ttl`; two different host globs are refused rather than guessed. **Seven of the ten vocabulary words now ship.** | **Adds a leaf and a new authority surface.** The GAP in G6.8 is the honest part: this is not a `fetch`, because fragment invocation is synchronous, and a policy needing a response needs two invocations. Nothing §15 attested changes; a new capability is new surface, and its escape-relevant edges (the reach gate on the drain half) are evidenced rather than argued. |
+
+| **The outbound ROUND TRIP is demonstrated, and the scheme can be pinned (v5.86).** `std.outbound.perform()` drains a capability through `req.fetch`, and `t/comcon_outbound_roundtrip.t` shows a policy asking, the host performing, and the policy deciding **from the responses**. `allowHosts` globs may be scheme-qualified, with the scheme matched exactly — which is NOT MANUAL's `protocol` (enforced operation order), still unbuilt. | **Closes the gap G6.8 named for itself.** Two of its four controls did not fire on the first run: one claim was false (`clear()` took no count) and one was unmeasured (exact vs globbed scheme). Both are now true and asserted — recorded because the lesson is about the claims, not the feature. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

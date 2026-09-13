@@ -378,6 +378,56 @@ var limited = comcon.mediate(sock, comcon.uses('acme-sock', 100, 60));
 
 ---
 
+## 8e. `allowHosts(glob)` and `nginx.outbound()` — reach outward, as a capability *(v5.85, round trip v5.86)*
+
+```js
+var cap = nginx.outbound();                              // the host mints it
+var out = comcon.mediate(cap, comcon.allowHosts('https://*.example.com'));
+var policy = comcon.include(src, { imports: [], grants: { out: out } });
+
+policy({ phase: 'ask' });                                // the fragment asks
+var results = await comcon.std.outbound.perform(cap, req);   // the HOST performs
+policy({ phase: 'decide', results: results });           // the policy decides
+```
+
+**It is not a `fetch`, and the reason is structural.** A confined fragment is invoked
+synchronously — `JS_Call`, then JSON-stringify the result — with no promise detection and no
+pending-job drain. A capability that performed network I/O could not be handed to a fragment
+without making invocation asynchronous, which touches the host-JS deadline (§8c) and the
+per-invocation memory allowance. So the capability **records intent** and the host performs it,
+which is what `comcon.std.config` already does for configuration: the tenant proposes what it
+cannot apply.
+
+- **The glob is checked IN THE COMPARTMENT**, where the capability is exercised. That is what
+  makes this an attenuation of authority rather than a filter applied to data afterwards.
+- **Host globs wildcard on the LEFT** (`*.example.com`), where route globs wildcard on the right.
+  One matcher in C knows both shapes.
+- **A glob may be scheme-qualified** — `https://*.example.com` — and the scheme is matched
+  **exactly, never globbed**: `http*://` admits neither http nor https, because a wildcard scheme
+  that accepted TLS and plaintext alike is the opposite of what writing a scheme asks for. A glob
+  with no scheme matches any scheme, which is what shipped at v5.85.
+  **This is NOT `protocol`.** MANUAL's `protocol("handshake", "frames*", "close")` is enforced
+  operation ORDER — a session type over a capability's methods — and is still unbuilt. Restricting
+  the destination's scheme belongs to the destination word.
+- **A URL with credentials is refused outright**, not parsed around: `https://good@evil.net/x` is
+  an invitation to smuggle a host past a glob.
+- **Two gates, both counted denials.** `out.host` is the glob refusing a destination — and the
+  refused intent never reaches the queue, so the host cannot perform what the glob denied.
+  `out.drain` is the reach gate on `pending()`/`clear()`: those are the host's half, and a fragment
+  able to drain the queue would read what a *sibling fragment sharing the same capability* had
+  recorded. In audit mode both log and allow, like every gate.
+- **`clear(n)` clears only the first n.** `std.outbound.perform()` reads the queue, awaits the I/O,
+  then clears exactly what it performed — another request sharing the capability can append while
+  it is awaiting, and a bare `clear()` would discard those intents unperformed.
+- **Composes with `uses` and `ttl`** — "only these hosts, at most N an hour, for the next hour."
+  Two *different* host globs are refused rather than guessed (the `routes` rule: globs are not
+  ordered, so a meet would widen one).
+- **Past 32 queued intents a request is dropped and COUNTED** (`pending().dropped`), never
+  silently lost: a queue that overflowed quietly would let a fragment hide an intent behind
+  thirty-one others.
+
+---
+
 ## 8d. `ttl(seconds)` — a capability with a lifetime *(v5.74)*
 
 ```js

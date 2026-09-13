@@ -635,6 +635,48 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.86 (in place — the outbound ROUND TRIP, a scheme that can be pinned, and two properties
+that were documented before they were true):** v5.85 shipped the outbound capability and tested
+its mediation exhaustively — the glob admits and denies, the reach gate holds, composition works.
+**It never once tested the round trip.** Every assertion could have held while a queued intent was
+unperformable, because nothing carried an intent through to a response.
+
+`std.outbound.perform(cap, req)` is the host half. It takes a REQUEST because `fetch` lives on the
+request object, so draining belongs inside a handler rather than at config time. Errors are
+RESULTS, not exceptions: one unreachable destination must not abandon the others, and a policy that
+asked for three things is owed three answers.
+
+**The test is the deliverable.** A policy asks for three destinations — one of them
+`169.254.169.254`, the link-local metadata address a confined policy most wants and least should
+have, denied by the glob. The host performs the permitted two against a backend in the same nginx,
+one answering 200 and one 503. The **same policy is then invoked again with the responses and
+computes a verdict from them.** That is the loop the capability exists for, and two invocations is
+not a workaround — it is the shape the synchronous invoke imposes.
+
+**`protocol` is not what I assumed, and checking beat guessing.** The plan called for
+"`protocol` — refuse non-TLS destinations". MANUAL defines `protocol("handshake", "frames*",
+"close")` as enforced operation ORDER — a session type over a capability's methods, still unbuilt
+and a much larger feature. The name was taken. Restricting the destination's scheme is an
+attenuation of the DESTINATION, so it went into `allowHosts` as a scheme-qualified glob rather than
+becoming an undocumented eighth vocabulary word. The scheme is matched **exactly**: `http*://`
+admits neither http nor https, because a wildcard scheme accepting TLS and plaintext alike is the
+opposite of what writing a scheme asks for.
+
+**TWO OF THE FOUR CONTROLS DID NOT FIRE, and that is the finding.** Not a near miss — two
+documented properties were unbacked, and one of them was **false**:
+
+- `perform()` said it cleared "only what it performed, so an intent appended during the awaits is
+  not dropped". **`clear()` took no count at all.** The claim was invented in the comment. Fixed by
+  implementing `clear(n)`, which shifts the remainder down, so another request sharing the
+  capability can append while this one awaits I/O.
+- The scheme was said to be matched exactly rather than globbed, but every existing case refused
+  `http` under either rule, so exactness was **unmeasured**. Now asserted with a wildcard-scheme
+  glob that must match nothing.
+
+**A property nobody can break is a property nobody has checked.** Running a control and finding it
+inert is the same information as a failing test, arriving in a less obvious form — and this is the
+second time today (after the `Symbol` facet) that the useful result was a control refusing to fire.
+
 **v5.85 (in place — M-LIB `allowHosts`: a fragment's reach OUTWARD becomes a capability, and
 the reason it is not a `fetch` is a finding):** `allowHosts` was the last vocabulary word blocked
 on a missing MECHANISM rather than on enforcement. The roadmap said it "needs an outbound
