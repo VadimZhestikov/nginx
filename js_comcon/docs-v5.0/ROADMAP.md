@@ -71,10 +71,14 @@
 >   `comcon.aotStatus()` reports it. Reaching native would need a compiler-bearing process
 >   to build the `.so` and workers to pick it up from the hash-keyed JIT cache: new IPC, a
 >   separate increment, no correctness impact.
-> - **HOST-PERF (low priority, tracked 2026-09-12):** the two host-path costs the M5
->   evidence turned up — `shared.incr`'s linear scan (12× on a miss) and `req.headers`
->   re-materializing per access. Worth fixing on their own terms, and a **precondition for
->   re-measuring the M5 gap honestly**. See the HOST-PERF entry in §2.
+> - **HOST-PERF ✅ DONE 2026-09-12 (v5.63).** Both host-path costs the M5 evidence turned
+>   up are fixed and re-measured A/B on one box: `shared.incr`'s linear scan is an
+>   open-addressed hash table (**miss 0.420 → 0.084 µs, 5.0×**; the 12.7× cliff over a
+>   typed stub is now 2.6×) and `req.headers` is materialized once per request
+>   (**0.130 → 0.043 µs**). **The M5 precondition is discharged:** the gap a typed ABI
+>   could still close is ~0.03 µs per call, against 0.38 µs that was the scan. See the
+>   HOST-PERF entry in §2 for the table and the one named residual (`incr` keeps its
+>   counter as a string and re-parses it per call).
 > - **The compiler track (M5 →) remains parked by decision 2026-09-11, not by capability.**
 >   M5's value is the typed nginx stubs, not lowering JS control flow, so the typed IR is not
 >   to be built without a commitment to M5 (see M4 below and `AOT-A` in `INCREMENT_C5.md`
@@ -375,7 +379,7 @@ fallback) → the event dispatcher calls the C function pointer directly.
   pins = lockfile hashes, transitive deps as child cages (v2 §9.5's supply-chain
   inversion, finally given its tooling and manual chapter).
 
-- **HOST-PERF — the two measured host-path costs. 🟦 LOW PRIORITY** *(added 2026-09-12,
+- **HOST-PERF — the two measured host-path costs. ✅ BOTH FIXED 2026-09-12** *(tracked 2026-09-12,
   user decision: track it, do not promote it)*. Both were found by the M5 evidence run
   (§POSITION and `t/tools/host-call-cost.t`), and both are worth fixing on their own terms —
   they are live costs on the rate-limiting path today, independent of whether M5 is ever
@@ -392,12 +396,41 @@ fallback) → the event dispatcher calls the C function pointer directly.
     `var h = req.headers` in a hot handler is a free ~4× on that access, which is worth a
     line in the manual either way.
 
-  **Why low priority rather than now:** nothing is incorrect, no gate depends on it, and the
-  policies measured spend well under a microsecond per request in total — this is headroom,
-  not a defect report. **Why it is tracked at all:** it is the measurement that has to be
-  re-run before any M5 commitment (fix these, re-measure the interpreted-vs-hand-C gap, and
-  what survives is the compiler's actual prize), so leaving it unwritten would lose the
-  precondition along with the numbers.
+  **RESULT (A/B measured back to back on one box, same session, 2M iterations per arm):**
+
+  | per call | scan | hash table | |
+  |---|--:|--:|---|
+  | `shared.incr`, 17 keys | 0.077 µs | **0.062** | 1.24× |
+  | `shared.incr`, 217 keys | 0.077 µs | **0.064** | 1.20× |
+  | **miss, 217 keys** | **0.420 µs** | **0.084** | **5.0×** |
+  | miss ÷ typed slot stub | 12.73× | **2.62×** | the cliff is gone |
+  | `req.headers['x-tenant']` | 0.130 µs | **0.043** | 3.0× (hoisted: 0.029) |
+
+  The store is now an **open-addressed hash table with linear probing**, and deletion
+  **shifts the cluster back** rather than leaving a tombstone — tombstones would
+  accumulate under exactly the workload this fixes (a rate limiter churning keys), and
+  clearing them needs a 166 KB compaction under the spinlock every worker shares. The two
+  properties the old full scan gave for free are kept: an expired entry is reclaimed when
+  it is probed, and a freed slot is reusable immediately. `req.headers` is materialized
+  once per request and held on the request's opaque — with the consequence, now
+  documented, that a write to it is visible to a later read (it used to vanish into a
+  throwaway).
+
+  **What the numbers say about M5.** The precondition is discharged: re-measured, a host
+  call costs 0.062 µs where a typed stub on a resolved slot costs 0.032 — so the gap a
+  typed ABI could close is now **~0.03 µs per call**, not the 0.38 µs the linear scan was
+  contributing. The dominant remaining pieces are the JS→C dispatch (0.038) and the
+  spinlock (0.038 → they overlap), neither of which lowering JS removes. *A named,
+  measured residual:* `incr` still stores its counter as a STRING and does `ngx_atoi` +
+  `ngx_snprintf` per call (~0.024 µs of the 0.062) — a numeric entry would remove it, and
+  that is a bigger change to the store's semantics than this one, so it is recorded rather
+  than smuggled in.
+
+  Tests: `t/js_shared_hash_table.t` (16 — a MODEL oracle over 4000 mixed operations, plus
+  capacity, slot reuse and expiry-inside-a-cluster) and
+  `t/js_request_headers_cache.t` (10 — identity within a request, and isolation across
+  requests including keepalive, because a per-request surface that outlived its request
+  would hand one client another's `Authorization` header).
 
 - **M-SES — engine hardening.** Phases S1–S6 and the gate as specified in
   `HARDENING.md`. Does not block M2–M5 (trusted code); **gates M6/M7-with-tenants**;

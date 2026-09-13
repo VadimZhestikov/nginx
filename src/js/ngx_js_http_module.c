@@ -802,6 +802,21 @@ typedef struct ngx_js_subreq_list_s  ngx_js_subreq_list_t;
 typedef struct {
     ngx_http_request_t    *r;
     ngx_js_subreq_list_t  *subreq_list;  /* current in-flight subrequest group */
+    /*
+     * HOST-PERF: req.headers, materialized ONCE per request.
+     *
+     * The getter used to walk r->headers_in and build a fresh object on every
+     * access: 0.130 us against 0.029 us for a read from a hoisted local, so
+     * ~0.10 us of each access was rebuilding a surface that cannot change --
+     * nothing in the JS API mutates the incoming headers of the request being
+     * served (only a SUBREQUEST's own list is ever written, and that is a
+     * different ngx_http_request_t). Measured: t/tools/host-call-cost.t.
+     *
+     * Consequence worth knowing: `req.headers` is now the SAME object across
+     * accesses, so a handler that writes to it sees its own write afterwards.
+     * It was a throwaway before, which means the write silently did nothing.
+     */
+    JSValue                headers;     /* JS_UNDEFINED until first access */
     ngx_int_t              respond_rc;   /* rc from ngx_http_output_filter */
     unsigned               responded:1;    /* set when req.respond()/finish() called */
     unsigned               headers_sent:1; /* set after writeHead()/first write() */
@@ -834,6 +849,7 @@ ngx_js_request_finalizer(JSRuntime *rt, JSValue val)
 
     op = JS_GetOpaque(val, ngx_js_request_class_id);
     if (op) {
+        JS_FreeValueRT(rt, op->headers);
         js_free_rt(rt, op);
     }
 }
@@ -959,6 +975,11 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
                                r->connection->addr_text.len);
 
     case 4: /* headers — all incoming request headers as a plain object */
+        /* built once per request; see ngx_js_request_opaque_t.headers */
+        if (!JS_IsUndefined(op->headers)) {
+            return JS_DupValue(ctx, op->headers);
+        }
+
         obj  = JS_NewObject(ctx);
         part = &r->headers_in.headers.part;
         h    = part->elts;
@@ -984,6 +1005,8 @@ ngx_js_request_get(JSContext *ctx, JSValueConst this_val, int magic)
                                              (const char *) h[i].value.data,
                                              h[i].value.len));
         }
+
+        op->headers = JS_DupValue(ctx, obj);
 
         return obj;
 
@@ -5416,6 +5439,12 @@ ngx_js_wrap_request(JSContext *ctx, ngx_http_request_t *r)
     }
 
     op->r = r;
+    /*
+     * js_mallocz zeroes, and a zeroed JSValue is tag 0 -- the integer 0, not
+     * JS_UNDEFINED (tag 3). Left implicit, the cache check below would read a
+     * "present" cache on the very first access and hand back the number 0.
+     */
+    op->headers = JS_UNDEFINED;
 
     obj = JS_NewObjectClass(ctx, ngx_js_request_class_id);
     if (JS_IsException(obj)) {

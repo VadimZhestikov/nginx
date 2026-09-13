@@ -564,6 +564,48 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.63 (in place — HOST-PERF: the two measured host costs are fixed, and the M5
+precondition is discharged):** not a COMCON feature — the two costs the M5 evidence run
+turned up in September, fixed on their own terms and re-measured **A/B back to back on one
+box** (comparing against numbers from an earlier session is how this project has been wrong
+before). `shared.incr` miss **0.420 → 0.084 µs (5.0×)**, hit 0.077 → 0.062;
+`req.headers['x-tenant']` **0.130 → 0.043 µs (3.0×)**, against 0.029 for a hoisted local.
+
+**The store is now an open-addressed hash table, and deletion SHIFTS THE CLUSTER BACK.**
+Tombstones would have been less code and would have failed under exactly the workload this
+fixes: a rate limiter churning keys fills the table with dead markers, reports "store full"
+while holding almost nothing, and recovering needs a 166 KB compaction under the spinlock
+every worker shares. Backward shift (Knuth 6.4R) keeps the table dense and self-maintaining,
+paying a bounded memmove on the cold path (delete/expiry) instead of on the hot one. The two
+properties the old full scan provided incidentally are kept deliberately: an expired entry
+is reclaimed **when it is probed**, and a freed slot is reusable immediately.
+
+**`req.headers` is materialized once per request**, held on the request's opaque. One
+consequence is now documented rather than discovered: a write to `req.headers` is visible to
+a later read of it — before, it went to a throwaway object and vanished silently, which is
+the worse of the two behaviours.
+
+**Both fixes buy a new way to be catastrophically wrong, so both tests are built around
+that rather than around the speed-up.** A hash table can hold a key it cannot FIND (a
+deletion that breaks the probe chain reaching it) — so `t/js_shared_hash_table.t` runs 4000
+mixed operations against a JS **model** and compares key by key, plus capacity, slot reuse
+and expiry inside a cluster. A per-request cache can OUTLIVE its request — so
+`t/js_request_headers_cache.t` checks isolation across requests, including two on one
+keepalive connection, with distinct `Authorization` headers: the control (a cache made
+static) fails exactly those assertions. Three controls total, all red where intended.
+
+**Found while writing the expiry test:** `ngx_time()` is nginx's CACHED time, refreshed by
+the event loop, so a handler that busy-waits blocks the very loop that would advance it — no
+key can be seen to expire from inside one request. The first version spun 1100 ms and
+watched the ttl stay at 1. The sleep has to happen where nginx can run, i.e. between
+requests.
+
+**What it says about M5:** re-measured, a host call costs 0.062 µs where a typed stub on a
+resolved slot costs 0.032, so the gap a typed ABI could close is **~0.03 µs per call**, not
+the 0.38 µs the scan was contributing — and the rest is JS→C dispatch and the spinlock,
+neither of which lowering JS removes. One named residual, recorded rather than smuggled in:
+`incr` still stores its counter as a STRING and does atoi + snprintf per call (~0.024 µs).
+
 **v5.62 (in place — [TBD-2] resolved: the admission refusals have codes, and writing
 them found a contract field that did nothing):** V12 dated the gap; this closes it.
 **Two axes, deliberately not merged.** A DENIAL code names the gate that fired while a
@@ -694,6 +736,10 @@ resolved slot, direct request access — so a substantial part of its **3.44×**
 data-structure result that has been read as a compilation result. The honest next step before
 any M5 commitment is to fix those two host costs and re-measure the gap; what survives is the
 compiler's actual prize.
+
+> *(Done at **v5.63**, same day: both are fixed — miss 0.420 → 0.084 µs, `req.headers`
+> 0.130 → 0.043 — and the gap a typed ABI could still close is **~0.03 µs per call**. The
+> numbers in the table above are the BEFORE column; read v5.63 for the after.)*
 
 `nginx.__benchStub(mode, arg)` is the decomposition instrument (documented in
 `src/js/ngx_js_com.c` as an instrument, not an API: it writes a slot by index with no key,

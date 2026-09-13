@@ -2481,6 +2481,157 @@ ngx_js_shared_get_hdr(JSContext *ctx)
 }
 
 
+/* ------------------------------------------------------------------ */
+/* HOST-PERF: the shared store is a hash table, not a list to be scanned */
+/* ------------------------------------------------------------------ */
+
+#define NGX_JS_SHARED_NOSLOT  ((ngx_uint_t) -1)
+
+
+static uint32_t
+ngx_js_shared_hash(const char *key)
+{
+    uint32_t  h = 2166136261u;              /* FNV-1a, 32-bit */
+
+    while (*key) {
+        h ^= (uint32_t) (u_char) *key++;
+        h *= 16777619u;
+    }
+
+    return h;
+}
+
+
+/*
+ * Remove the entry at slot `i` by BACKWARD SHIFT (Knuth 6.4 alg. R), not by
+ * leaving a tombstone.
+ *
+ * Tombstones would have been less code, but they accumulate: a rate limiter
+ * that churns keys would fill the table with dead markers and start reporting
+ * "store full" while holding almost nothing, and recovering from that needs a
+ * compaction pass with a copy of the table -- 166 KB memcpy'd under the
+ * spinlock every worker shares. Shifting the cluster back keeps the table
+ * dense and self-maintaining at the cost of a bounded memmove here, on the
+ * cold path (delete / expiry), rather than on the hot one (incr).
+ *
+ * The invariant being preserved: every entry must remain reachable by probing
+ * forward from its OWN home slot. An entry may only move back into the hole if
+ * its home does not lie cyclically inside (hole, entry] -- moving it past its
+ * own home would put it where a probe starting there never looks.
+ */
+static void
+ngx_js_shared_remove(ngx_js_shared_hdr_t *hdr, ngx_js_shared_entry_t *entries,
+    ngx_uint_t i)
+{
+    ngx_uint_t  j, k, cap;
+
+    cap = hdr->capacity;
+    hdr->count--;
+
+    for ( ;; ) {
+        ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
+
+        j = i;
+
+        for ( ;; ) {
+            j = (j + 1) % cap;
+
+            if (!entries[j].used) {
+                return;              /* cluster ended: nothing left to shift */
+            }
+
+            k = (ngx_uint_t) (entries[j].hash % cap);
+
+            if (i <= j) {
+                if (!(i < k && k <= j)) {
+                    break;
+                }
+            } else {
+                if (!(i < k || k <= j)) {
+                    break;
+                }
+            }
+        }
+
+        entries[i] = entries[j];
+        i = j;
+    }
+}
+
+
+/*
+ * Probe for `key`. Returns its slot, or NGX_JS_SHARED_NOSLOT when absent.
+ *
+ * `*stop` receives the slot the probe stopped on — the hole at the end of the
+ * cluster, which is exactly where an insert of this key belongs — or
+ * NGX_JS_SHARED_NOSLOT when the table is full.
+ *
+ * Expiry is reclaimed HERE, when the key is probed, which is what the old full
+ * scan did incidentally for every slot it walked past. After a removal the
+ * probe RESTARTS: backward shift may have moved a live entry into the slot we
+ * just cleared, so a `stop` remembered from before the removal could point at
+ * an occupied slot and an insert would overwrite a live key. Each restart
+ * removes one entry, so it terminates.
+ */
+static ngx_uint_t
+ngx_js_shared_find(ngx_js_shared_hdr_t *hdr, ngx_js_shared_entry_t *entries,
+    const char *key, uint32_t hash, time_t now, ngx_uint_t *stop)
+{
+    ngx_uint_t  i, n, cap;
+
+    cap = hdr->capacity;
+
+    if (stop != NULL) {
+        *stop = NGX_JS_SHARED_NOSLOT;
+    }
+
+    if (cap == 0) {
+        return NGX_JS_SHARED_NOSLOT;
+    }
+
+restart:
+
+    i = (ngx_uint_t) (hash % cap);
+
+    for (n = 0; n < cap; n++) {
+
+        if (!entries[i].used) {
+            if (stop != NULL) {
+                *stop = i;
+            }
+            return NGX_JS_SHARED_NOSLOT;
+        }
+
+        if (entries[i].hash == hash
+            && ngx_strcmp(entries[i].key, key) == 0)
+        {
+            if (entries[i].expires != 0 && now >= entries[i].expires) {
+                ngx_js_shared_remove(hdr, entries, i);
+                goto restart;
+            }
+
+            return i;
+        }
+
+        i = (i + 1) % cap;
+    }
+
+    return NGX_JS_SHARED_NOSLOT;             /* full, and the key is not here */
+}
+
+
+static void
+ngx_js_shared_insert(ngx_js_shared_entry_t *e, const char *key, uint32_t hash,
+    const char *val, time_t expires)
+{
+    e->used = 1;
+    e->hash = hash;
+    e->expires = expires;
+    ngx_cpystrn((u_char *) e->key, (u_char *) key, NGX_JS_SHARED_KEY_LEN);
+    ngx_cpystrn((u_char *) e->val, (u_char *) val, NGX_JS_SHARED_VAL_LEN);
+}
+
+
 static JSValue
 ngx_js_shared_fn_get(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
@@ -2512,22 +2663,13 @@ ngx_js_shared_fn_get(JSContext *ctx, JSValueConst this_val,
 
     ngx_spinlock(&hdr->lock, 1, 2048);
 
-    result = JS_UNDEFINED;
+    /* find() reclaims the entry if it has expired, and reports it absent */
+    i = ngx_js_shared_find(hdr, entries, key, ngx_js_shared_hash(key), now,
+                           NULL);
 
-    for (i = 0; i < hdr->capacity; i++) {
-        if (entries[i].used
-            && ngx_strcmp(entries[i].key, key) == 0)
-        {
-            if (entries[i].expires != 0 && now >= entries[i].expires) {
-                /* expired — reclaim lazily and report absent */
-                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
-                hdr->count--;
-            } else {
-                result = JS_NewString(ctx, entries[i].val);
-            }
-            break;
-        }
-    }
+    result = (i == NGX_JS_SHARED_NOSLOT)
+             ? JS_UNDEFINED
+             : JS_NewString(ctx, entries[i].val);
 
     ngx_unlock(&hdr->lock);
 
@@ -2547,7 +2689,7 @@ ngx_js_shared_fn_set(JSContext *ctx, JSValueConst this_val,
     ngx_uint_t              i, free_slot;
     int64_t                 ttl;
     time_t                  now, expires;
-    int                     found;
+    uint32_t                hash;
 
     if (argc < 2 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx, "shared.set(key, val): key must be a string");
@@ -2596,48 +2738,26 @@ ngx_js_shared_fn_set(JSContext *ctx, JSValueConst this_val,
 
     entries = (ngx_js_shared_entry_t *)(hdr + 1);
 
+    hash = ngx_js_shared_hash(key);
+
     ngx_spinlock(&hdr->lock, 1, 2048);
 
-    found = 0;
-    free_slot = (ngx_uint_t) -1;
+    i = ngx_js_shared_find(hdr, entries, key, hash, now, &free_slot);
 
-    for (i = 0; i < hdr->capacity; i++) {
-        if (entries[i].used) {
-            /* reclaim any expired entry we pass, freeing its slot for reuse */
-            if (entries[i].expires != 0 && now >= entries[i].expires) {
-                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
-                hdr->count--;
-                if (free_slot == (ngx_uint_t) -1) {
-                    free_slot = i;
-                }
-                continue;
-            }
-            if (ngx_strcmp(entries[i].key, key) == 0) {
-                ngx_cpystrn((u_char *) entries[i].val, (u_char *) val,
-                            NGX_JS_SHARED_VAL_LEN);
-                entries[i].expires = expires;
-                found = 1;
-                break;
-            }
-        } else if (free_slot == (ngx_uint_t) -1) {
-            free_slot = i;
-        }
-    }
+    if (i != NGX_JS_SHARED_NOSLOT) {
+        ngx_cpystrn((u_char *) entries[i].val, (u_char *) val,
+                    NGX_JS_SHARED_VAL_LEN);
+        entries[i].expires = expires;
 
-    if (!found) {
-        if (free_slot == (ngx_uint_t) -1) {
+    } else {
+        if (free_slot == NGX_JS_SHARED_NOSLOT) {
             ngx_unlock(&hdr->lock);
             JS_FreeCString(ctx, val);
             JS_FreeCString(ctx, key);
             return JS_ThrowInternalError(ctx, "nginx.shared: store full");
         }
 
-        entries[free_slot].used = 1;
-        ngx_cpystrn((u_char *) entries[free_slot].key, (u_char *) key,
-                    NGX_JS_SHARED_KEY_LEN);
-        ngx_cpystrn((u_char *) entries[free_slot].val, (u_char *) val,
-                    NGX_JS_SHARED_VAL_LEN);
-        entries[free_slot].expires = expires;
+        ngx_js_shared_insert(&entries[free_slot], key, hash, val, expires);
         hdr->count++;
     }
 
@@ -2678,17 +2798,18 @@ ngx_js_shared_fn_delete(JSContext *ctx, JSValueConst this_val,
 
     ngx_spinlock(&hdr->lock, 1, 2048);
 
+    /*
+     * ngx_time(), not 0: an expired entry is already absent, so deleting it
+     * must report false rather than true. find() reclaims it either way.
+     */
+    i = ngx_js_shared_find(hdr, entries, key, ngx_js_shared_hash(key),
+                           ngx_time(), NULL);
+
     deleted = 0;
 
-    for (i = 0; i < hdr->capacity; i++) {
-        if (entries[i].used
-            && ngx_strcmp(entries[i].key, key) == 0)
-        {
-            ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
-            hdr->count--;
-            deleted = 1;
-            break;
-        }
+    if (i != NGX_JS_SHARED_NOSLOT) {
+        ngx_js_shared_remove(hdr, entries, i);
+        deleted = 1;
     }
 
     ngx_unlock(&hdr->lock);
@@ -2723,15 +2844,34 @@ ngx_js_shared_fn_keys(JSContext *ctx, JSValueConst this_val,
 
     ngx_spinlock(&hdr->lock, 1, 2048);
 
+    /*
+     * Enumeration stays a full scan -- keys() is not a hot path, and the table
+     * has no order to walk. It is done in TWO phases because removal now
+     * shifts a cluster BACKWARD: dropping an expired entry mid-scan can move an
+     * entry the cursor has already passed, and it would be missed from the very
+     * list this call exists to produce. So: report first, reclaim after.
+     */
     for (i = 0; i < hdr->capacity; i++) {
-        if (entries[i].used) {
-            if (entries[i].expires != 0 && now >= entries[i].expires) {
-                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
-                hdr->count--;
-                continue;
-            }
+        if (entries[i].used
+            && !(entries[i].expires != 0 && now >= entries[i].expires))
+        {
             JS_SetPropertyUint32(ctx, arr, idx++,
                                  JS_NewString(ctx, entries[i].key));
+        }
+    }
+
+    for ( ;; ) {
+        for (i = 0; i < hdr->capacity; i++) {
+            if (entries[i].used
+                && entries[i].expires != 0 && now >= entries[i].expires)
+            {
+                ngx_js_shared_remove(hdr, entries, i);
+                break;
+            }
+        }
+
+        if (i == hdr->capacity) {
+            break;
         }
     }
 
@@ -2840,7 +2980,7 @@ ngx_js_shared_fn_incr(JSContext *ctx, JSValueConst this_val,
     int64_t                 delta, cur;
     time_t                  now;
     char                    buf[32];
-    int                     found;
+    uint32_t                hash;
 
     if (argc < 1 || !JS_IsString(argv[0])) {
         return JS_ThrowTypeError(ctx, "shared.incr(key[, delta]): key must be a string");
@@ -2873,64 +3013,42 @@ ngx_js_shared_fn_incr(JSContext *ctx, JSValueConst this_val,
 
     now = ngx_time();
 
+    hash = ngx_js_shared_hash(key);
+
     ngx_spinlock(&hdr->lock, 1, 2048);
 
-    found = 0;
-    free_slot = (ngx_uint_t) -1;
-    cur = 0;
+    /* an expired counter is reclaimed by find() and restarts from zero */
+    i = ngx_js_shared_find(hdr, entries, key, hash, now, &free_slot);
 
-    for (i = 0; i < hdr->capacity; i++) {
-        if (entries[i].used) {
-            /* an expired counter is reclaimed and restarts from zero */
-            if (entries[i].expires != 0 && now >= entries[i].expires) {
-                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
-                hdr->count--;
-                if (free_slot == (ngx_uint_t) -1) {
-                    free_slot = i;
-                }
-                continue;
-            }
-            if (ngx_strcmp(entries[i].key, key) == 0) {
-                cur = ngx_atoi((u_char *) entries[i].val,
-                               ngx_strlen(entries[i].val));
-                if (cur == NGX_ERROR) {
-                    cur = 0;
-                }
-                cur += delta;
-                ngx_snprintf((u_char *) entries[i].val,
-                             NGX_JS_SHARED_VAL_LEN - 1, "%l", cur);
-                entries[i].val[NGX_JS_SHARED_VAL_LEN - 1] = '\0';
-                found = 1;
-                break;
-            }
-        } else if (free_slot == (ngx_uint_t) -1) {
-            free_slot = i;
+    if (i != NGX_JS_SHARED_NOSLOT) {
+        cur = ngx_atoi((u_char *) entries[i].val,
+                       ngx_strlen(entries[i].val));
+        if (cur == NGX_ERROR) {
+            cur = 0;
         }
-    }
+        cur += delta;
+        ngx_snprintf((u_char *) entries[i].val,
+                     NGX_JS_SHARED_VAL_LEN - 1, "%l", cur);
+        entries[i].val[NGX_JS_SHARED_VAL_LEN - 1] = '\0';
 
-    if (!found) {
-        if (free_slot == (ngx_uint_t) -1) {
+    } else {
+        if (free_slot == NGX_JS_SHARED_NOSLOT) {
             ngx_unlock(&hdr->lock);
             JS_FreeCString(ctx, key);
             return JS_ThrowInternalError(ctx, "nginx.shared: store full");
         }
 
         cur = delta;
-        entries[free_slot].used = 1;
-        entries[free_slot].expires = 0;   /* a fresh counter never expires */
-        ngx_cpystrn((u_char *) entries[free_slot].key, (u_char *) key,
-                    NGX_JS_SHARED_KEY_LEN);
-        ngx_snprintf((u_char *) entries[free_slot].val,
-                     NGX_JS_SHARED_VAL_LEN - 1, "%l", cur);
-        entries[free_slot].val[NGX_JS_SHARED_VAL_LEN - 1] = '\0';
+        ngx_snprintf((u_char *) buf, sizeof(buf) - 1, "%l%Z", cur);
+
+        /* a fresh counter never expires */
+        ngx_js_shared_insert(&entries[free_slot], key, hash, buf, 0);
         hdr->count++;
     }
 
     ngx_unlock(&hdr->lock);
 
     JS_FreeCString(ctx, key);
-
-    (void) buf;  /* silence unused-variable warning */
 
     return JS_NewInt64(ctx, cur);
 }
@@ -2974,23 +3092,18 @@ ngx_js_shared_fn_ttl(JSContext *ctx, JSValueConst this_val,
 
     ngx_spinlock(&hdr->lock, 1, 2048);
 
-    result = JS_NULL;
+    /* an expired key is ABSENT: find() reclaims it and reports NOSLOT */
+    i = ngx_js_shared_find(hdr, entries, key, ngx_js_shared_hash(key), now,
+                           NULL);
 
-    for (i = 0; i < hdr->capacity; i++) {
-        if (entries[i].used
-            && ngx_strcmp(entries[i].key, key) == 0)
-        {
-            if (entries[i].expires == 0) {
-                result = JS_NewInt64(ctx, -1);          /* permanent */
-            } else if (now >= entries[i].expires) {
-                ngx_memzero(&entries[i], sizeof(ngx_js_shared_entry_t));
-                hdr->count--;                           /* expired -> absent */
-            } else {
-                result = JS_NewInt64(ctx,
-                                     (int64_t) (entries[i].expires - now));
-            }
-            break;
-        }
+    if (i == NGX_JS_SHARED_NOSLOT) {
+        result = JS_NULL;
+
+    } else if (entries[i].expires == 0) {
+        result = JS_NewInt64(ctx, -1);                  /* permanent */
+
+    } else {
+        result = JS_NewInt64(ctx, (int64_t) (entries[i].expires - now));
     }
 
     ngx_unlock(&hdr->lock);

@@ -196,6 +196,21 @@ typedef struct {
  *
  * Layout inside the shared memory zone:
  *   [ngx_js_shared_hdr_t][ngx_js_shared_entry_t * capacity]
+ *
+ * HOST-PERF (2026-09-12): the array is an OPEN-ADDRESSED HASH TABLE with linear
+ * probing, not a list to be scanned. It used to be scanned linearly, comparing
+ * the 128-byte key of every slot under the spinlock: 0.079 µs on a near-front
+ * hit and **0.417 µs on a miss**, against 0.034 µs for a resolved slot — and a
+ * miss is what a rate limiter does for every new tenant key (measured:
+ * t/tools/host-call-cost.t, [[measured-host-call-costs]]).
+ *
+ * `hash` is each entry's home slot (FNV-1a over the key), which buys two
+ * things: a 4-byte rejection before any string compare, and the information
+ * backward-shift deletion needs. Deletion shifts the rest of the cluster back
+ * rather than leaving a tombstone, so the table never accumulates dead weight
+ * and needs no compaction pass — the two properties the old full scan provided
+ * for free (expiry reclamation, and reuse of a freed slot) are kept: an expired
+ * entry is reclaimed when it is probed, and a hole is refilled immediately.
  */
 
 #define NGX_JS_SHARED_KEY_LEN   128
@@ -206,10 +221,11 @@ typedef struct {
      + NGX_JS_SHARED_CAPACITY * sizeof(ngx_js_shared_entry_t))
 
 typedef struct {
-    u_char  used;
-    time_t  expires;   /* absolute expiry, ngx_time() seconds; 0 = never */
-    char    key[NGX_JS_SHARED_KEY_LEN];
-    char    val[NGX_JS_SHARED_VAL_LEN];
+    u_char    used;
+    uint32_t  hash;    /* FNV-1a of key; hash % capacity = the home slot */
+    time_t    expires; /* absolute expiry, ngx_time() seconds; 0 = never */
+    char      key[NGX_JS_SHARED_KEY_LEN];
+    char      val[NGX_JS_SHARED_VAL_LEN];
 } ngx_js_shared_entry_t;
 
 typedef struct {
