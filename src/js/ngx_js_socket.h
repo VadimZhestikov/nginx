@@ -118,6 +118,10 @@ JSValue    ngx_js_socket_wrap(JSContext *ctx, uint32_t handle);
  * 0 address, 1 port, 2 fd, 3 listener). A clear bit hides that field (reads
  * undefined) — an attenuation-only membrane over the granted cap.
  */
+/* M-LIB `ttl`: wrap with a lifetime in seconds (0 = no expiry), plus a budget */
+JSValue    ngx_js_socket_wrap_bounded(JSContext *ctx, uint32_t handle,
+    uint32_t mask, const char *budget_key, uint32_t budget_limit,
+    uint32_t budget_window, uint32_t ttl_seconds);
 /* M-LIB `uses`: wrap with a named fleet-wide budget (limit 0 = unbudgeted) */
 JSValue    ngx_js_socket_wrap_budgeted(JSContext *ctx, uint32_t handle,
     uint32_t mask, const char *budget_key, uint32_t budget_limit,

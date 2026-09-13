@@ -3869,7 +3869,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "  function capRefuse(code,msg){"
     "    var e=new TypeError(msg+' ['+code+']');"
     "    e.code=code;throw e;}"
-    "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1,uses:1};"
+    "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1,uses:1,ttl:1};"
     /* One definition of the socket field lattice, used by the meet here and by
        include()'s translation below -- two copies of a bitmask mapping is how a
        "narrower" membrane ends up wider than the one it attenuates. */
@@ -3935,6 +3935,12 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        'mediate: uses() needs an integer window >= 1 (seconds)');"
     "      snap={flavor:'allow',fields:maskFields(FMASK_FULL),"
     "            budget:{key:bk,limit:bl,window:bw}};}"
+    "    if(snap.flavor==='ttl'){"
+    "      var ts=Number(interceptor.seconds);"
+    "      if(!(ts>=1)||ts!==Math.floor(ts))throw new TypeError("
+    "        'mediate: ttl() needs an integer number of seconds >= 1; a missing "
+             "or zero lifetime is a mistake, not `forever`');"
+    "      snap={flavor:'allow',fields:maskFields(FMASK_FULL),ttlSeconds:ts};}"
     /* V4 — ATTENUATION MEET, and the lattice inclusion asserted rather than
        argued.  Re-mediating an already-mediated capability used to fail with
        "grant is not a NginxSocket", because the translation unwraps one facet
@@ -3972,6 +3978,14 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        var bb=budgetMeet(ii.budget,oi.budget);"
     "        var ns={flavor:'allow',fields:maskFields(mm)};"
     "        if(bb)ns.budget=bb;"
+    /* Lifetimes, unlike budgets, DO have a computable meet: the shorter one is
+       strictly narrower than both, so composing is min() rather than a refusal.
+       Worth saying out loud next to budgetMeet, which refuses for the opposite
+       reason -- 10/min and 100/hour are not ordered, 60s and 3600s are. */
+    "        var t1=ii.ttlSeconds,t2=oi.ttlSeconds;"
+    "        if(t1!==undefined||t2!==undefined){"
+    "          ns.ttlSeconds=(t1===undefined)?t2:"
+    "                        ((t2===undefined)?t1:(t1<t2?t1:t2));}"
     "        snap=Object.freeze(ns);}"
     "      cap=cap[FACET].cap;}"
     "    f[FACET]={cap:cap,interceptor:Object.freeze(snap)};return f;};"
@@ -3993,6 +4007,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "  C.uses=function(key,limit,window){"
     "    return {flavor:'uses',key:String(key||''),"
     "            limit:Number(limit),window:Number(window)};};"
+    /* ttl(seconds): a LIFETIME on a capability. The clock starts when the
+       capability crosses into the compartment (include time), not here -- the
+       descriptor carries a duration, so there is one clock (nginx's) instead of
+       two that could disagree.
+       This is what makes a session lease bite on authority already handed out:
+       TM-2's mapping expires by itself, but include() binds grants at admission
+       and a fragment would otherwise hold them forever. */
+    "  C.ttl=function(seconds){"
+    "    return {flavor:'ttl',seconds:Number(seconds)};};"
     /* stone check (increment D3): a splice may carry only DEEP cap-free plain
        data — primitives + frozen records/arrays; no functions, no capabilities
        (facet/quote/confined), no getters/setters (a getter could mint a cap
@@ -4380,7 +4403,8 @@ static const char  ngx_js_comcon_bootstrap[] =
        wider than the one it attenuates. */
     "        else if(it.flavor==='allow'||it.flavor==='redact'){"
     "          pol={kind:0,mask:jsMask(it)};"
-    "          if(it.budget)pol.budget=it.budget;}"
+    "          if(it.budget)pol.budget=it.budget;"
+    "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;}"
     "        else if(it.flavor==='routes'){"
     "          pol={kind:1,glob:String(it.glob||'*')};}"
     /* No fall-through to the FULL default.  NOTE it is not reachable through the

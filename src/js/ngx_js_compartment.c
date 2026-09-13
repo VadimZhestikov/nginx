@@ -74,6 +74,13 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
      * empty on purpose rather than by omission.
      */
     "budget.uses",
+    /*
+     * The lifetime axis. A capability may be granted "for the next N seconds",
+     * which is what makes a SESSION LEASE bite on authority that has already
+     * been handed out: TM-2's mapping expires on its own, but a fragment binds
+     * its grants at admission and would otherwise hold them forever.
+     */
+    "cap.expired",
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */

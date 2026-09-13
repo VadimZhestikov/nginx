@@ -378,6 +378,38 @@ var limited = comcon.mediate(sock, comcon.uses('acme-sock', 100, 60));
 
 ---
 
+## 8d. `ttl(seconds)` — a capability with a lifetime *(v5.74)*
+
+```js
+var leased = comcon.mediate(sock, comcon.ttl(3600));   // usable for an hour
+```
+
+**Why it exists:** `std.sessions` gives a grant a lease, but `include()` binds capabilities
+as closure parameters at ADMISSION. Resolve a session once, bind a fragment with it, and
+that fragment holds those capabilities for as long as it lives — the mapping expires, the
+authority does not. `ttl` is what makes a lease bite on authority already handed out, so
+`resolve()` can stamp the lease's remaining seconds onto what it returns.
+
+- **The clock starts when the capability crosses into the compartment** (include time), not
+  when `mediate()` built the descriptor. The descriptor carries a duration, so there is one
+  clock — nginx's — rather than two that could disagree. A test that waits *before*
+  including gets a fresh lifetime, which is exactly how the first version of this feature's
+  own corpus row reported "alive" forever.
+- **Lifetimes compose by taking the shorter**, in either order. This is the opposite outcome
+  to `uses`, and for a precise reason: two budgets are not ordered (10/min vs 100/hour), so
+  re-mediating with a different one is refused rather than guessed; two lifetimes ARE
+  ordered, so `min` is a real meet. Same rule — never widen — different lattice.
+- **Nothing is defaulted.** Zero, negative, fractional and absent lifetimes are refused: a
+  missing lifetime is a mistake, not "forever".
+- **Expiry is a denial, not a refusal:** code `cap.expired`, counted in
+  `nginx.tenantDenials()`, and in **audit mode it is logged and ALLOWED** — so a lifetime can
+  be watched before it is enforced, like every other gate.
+- It composes freely with a field mask and with a `uses` budget; the expiry is checked
+  *before* the budget is charged, because spending budget on an operation that cannot happen
+  would make the audit read as though the tenant were still working.
+
+---
+
 ## 8c. `nginx.workerRequestTimeout` — host JS is bounded by default *(v5.71)*
 
 ```js

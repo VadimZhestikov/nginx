@@ -21,6 +21,14 @@
 # reporting a control PASSING that had never run.  The rebuild is the point, not
 # the overhead.
 #
+# DO NOT REACH FOR `git apply -R -3`.  A three-way apply looks like the obvious
+# way to absorb context drift, and it is worse than failing: tried on these two
+# rows it applied one file cleanly, failed the other with "does not match index",
+# and LEFT THE PARTIAL REVERT IN THE TREE.  A control that half-reverts a fix and
+# walks away is how a tree quietly stops being the tree you tested.  When the
+# inverse patch no longer applies, the row belongs in MANUAL with a reason -- an
+# explicit "revert this by hand" is worth more than an automated maybe.
+#
 # WHAT IT WILL NOT DO.  It refuses to start on a dirty tree, it reverts nothing
 # outside src/js, and it restores the tree on any exit including Ctrl-C.  If it
 # ever leaves the tree modified, `git checkout -- src/js` is the whole recovery.
@@ -44,10 +52,8 @@ ROWS=(
 "1358dd0ff|t/js_com_setter_fuzz.t|objs|describe() misdeclared four member types"
 "d3a438051|t/js_com_broadcast_fuzz.t|objs_ubsan|broadcast: misaligned header read"
 "e246cc347|t/js_com_numeric_range.t|objs|numbers cast instead of checked"
-"21b42d7e5|t/js_com_grant_declare.t|objs|grantToTenant conferred nothing"
 "a321849fa|t/js_com_lb_select.t|objs|balancer with no return pinned peer 0"
 "335dc0956|t/js_com_filter_nongenerator.t|objs|filter with no return dropped the response"
-"67bc359e9|t/comcon_include_contract_fuzz.t|objs|malformed contract disabled admission"
 )
 
 MANUAL=(
@@ -55,6 +61,8 @@ MANUAL=(
 "07c7fd277|t/js_com_socket_fuzz.t|builds on cd391a160; revert both together, newest first"
 "5186565a1|t/js_com_peer_range.t|its helper was collapsed into ngx_js_com_num_range by e246cc347"
 "0ebac7e47|t/js_com_ssl_range.t|same: its helper was collapsed by e246cc347"
+"21b42d7e5|t/js_com_grant_declare.t|the grant-wrapping path was rewritten by the uses/ttl budgets (2026-09-13); revert by hand against that"
+"67bc359e9|t/comcon_include_contract_fuzz.t|the include contract path was rewritten by the refusal codes and the fail-closed tests check (2026-09-12)"
 )
 
 if ! git diff --quiet -- src/js || ! git diff --cached --quiet -- src/js; then

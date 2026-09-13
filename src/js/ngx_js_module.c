@@ -1221,7 +1221,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         JSValue      cap_v, pol_v;
         int32_t      kind = 0;
         char         bkey[80];
-        uint32_t     blimit, bwindow;
+        uint32_t     blimit, bwindow, bttl;
 
         cap_v = JS_GetPropertyUint32(hctx, argv[2], gi);
 
@@ -1267,6 +1267,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             bkey[0] = '\0';
             blimit = 0;
             bwindow = 0;
+            bttl = 0;
 
             if (JS_IsObject(pol_v)) {
                 JSValue  bud_v;
@@ -1279,6 +1280,12 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                    (key/limit/window), like the mask and the glob -- no JSValue
                    crosses, so the wrapper on the far side is built from numbers
                    and a string rather than from anything the host holds. */
+                name_v = JS_GetPropertyStr(hctx, pol_v, "ttlSeconds");
+                if (!JS_IsUndefined(name_v)) {
+                    JS_ToUint32(hctx, &bttl, name_v);
+                }
+                JS_FreeValue(hctx, name_v);
+
                 bud_v = JS_GetPropertyStr(hctx, pol_v, "budget");
                 if (JS_IsObject(bud_v)) {
                     const char  *bk;
@@ -1303,9 +1310,9 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                 JS_FreeValue(hctx, bud_v);
             }
 
-            av[gi] = ngx_js_socket_wrap_budgeted(sctx, (uint32_t) sh, mask,
-                                                 bkey[0] ? bkey : NULL,
-                                                 blimit, bwindow);
+            av[gi] = ngx_js_socket_wrap_bounded(sctx, (uint32_t) sh, mask,
+                                                bkey[0] ? bkey : NULL,
+                                                blimit, bwindow, bttl);
         }
 
         JS_FreeValue(hctx, pol_v);

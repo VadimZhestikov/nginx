@@ -82,6 +82,20 @@ function counts() {
     return out;
 }
 
+/* fragments prepared on pass 1 and called on pass 2 */
+var deferred = {};
+
+/* ONE definition of "the capability this row asks for", used by both passes */
+function capFor(row) {
+    var cap = sock;
+    if (row.budget) {
+        cap = comcon.mediate(cap, comcon.uses(row.budget.key, row.budget.limit,
+                                              row.budget.window));
+    }
+    if (row.ttl) { cap = comcon.mediate(cap, comcon.ttl(row.ttl)); }
+    return cap;
+}
+
 function fired(before, after) {
     var out = [];
     for (var k in after) {
@@ -97,15 +111,39 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
     for (i = 0; i < GOLDEN.length; i++) {
         var row = GOLDEN[i], rec = { code: row.code };
         if (row.unreachable) { rec.unreachable = true; o.rows.push(rec); continue; }
+        /*
+         * A row needing wall-clock time is INCLUDED on the first request and
+         * CALLED on the second. Both halves matter: ngx_time() is nginx's cached
+         * clock so nothing expires while one handler runs, AND a `ttl` clock
+         * starts when the capability crosses into the compartment -- so
+         * including it after the sleep would hand out a fresh lifetime and the
+         * row would report 'alive' forever. It did, until this was fixed.
+         */
+        if (row.sleepBefore) {
+            if (!/phase=2/.test(req.args)) {
+                deferred[row.code] = comcon.include(row.probe,
+                    { grants: { s: capFor(row) } });
+                rec.deferred = true; o.rows.push(rec); continue;
+            }
+            var df = deferred[row.code];
+            if (!df) { rec.missing = true; o.rows.push(rec); continue; }
+            var before0 = counts();
+            try { rec.result = df({}); } catch (e0) { rec.result = 'threw'; }
+            var after0 = counts();
+            rec.fired = fired(before0, after0);
+            rec.firedOwn = (rec.fired.indexOf(row.code) >= 0);
+            rec.undeclared = rec.fired.filter(function (c) {
+                return [row.code].concat(row.also || []).indexOf(c) < 0; });
+            if (row.expect !== null && row.expect !== undefined) {
+                rec.expectOk = (rec.result === row.expect);
+            }
+            o.rows.push(rec); continue;
+        }
 
         comcon.mode(row.mode);
         /* a row may ask for its capability to be BUDGETED (the `uses`
            mediation); everything else is granted straight. */
-        var cap = row.budget
-                  ? comcon.mediate(sock, comcon.uses(row.budget.key,
-                                                     row.budget.limit,
-                                                     row.budget.window))
-                  : sock;
+        var cap = capFor(row);
         var f = comcon.include(row.probe, { grants: { s: cap } });
         var before = counts();
         try { rec.result = f({}); } catch (e) { rec.result = 'threw'; }
@@ -186,11 +224,14 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
 };
 JS
 
-$t->try_run('no js module')->plan(12);
+$t->try_run('no js module')->plan(13);
 
 ###############################################################################
 
-my $r = http_get('/v12');
+# the first pass prepares the time-dependent rows; the second probes them
+http_get('/v12');
+select(undef, undef, undef, 1.5);
+my $r = http_get('/v12?phase=2');
 diag($1) if $r =~ /("rows":.*?"complete":\w+)/;
 
 # --- the corpus describes the runtime, both ways --------------------------
@@ -208,6 +249,12 @@ like($r, qr/"code":"listener.serverByName"[^}]*"firedOwn":true/,
      'listener.serverByName: the server escalation fires its own code');
 like($r, qr/\{"code":"sock.mutate","result":"denied"[^}]*"firedOwn":true/,
      'sock.mutate: close() on a socket the compartment does not own is denied');
+
+like($r, qr/\{"code":"cap.expired","result":"expired"[^}]*"firedOwn":true/,
+     'cap.expired: a capability granted with a ttl STOPS WORKING when its '
+     . 'lifetime passes -- pinned explicitly, because the first version of this '
+     . 'row reported "alive" with firedOwn:false and the suite passed anyway: '
+     . 'nothing asserted it, and a corpus row that never fires is decoration');
 
 unlike($r, qr/"undeclared":\["/,
      'NO probe trips a gate the corpus does not declare -- a probe that fires '

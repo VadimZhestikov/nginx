@@ -142,6 +142,14 @@ typedef struct {
     uint32_t  budget_limit;
     uint32_t  budget_window;   /* seconds; the window is FIXED, not sliding */
     char      budget_key[64];
+    /*
+     * COMCON M-LIB `ttl`: an absolute expiry for this capability, in ngx_time()
+     * seconds; 0 = never. The clock starts when the capability CROSSES into the
+     * compartment, not when mediate() built the descriptor -- the descriptor is
+     * data and carries only a duration, so there is one clock (nginx's) rather
+     * than two that could disagree.
+     */
+    time_t    expires;
 } ngx_js_socket_opaque_t;
 
 
@@ -216,6 +224,16 @@ static JSClassDef  ngx_js_socket_class = {
  * be exceeded before switching it on -- the audit-first rollout, applied to
  * rate limits rather than re-invented for them.
  */
+/* the address this wrapper points at, for the denial record's `obj` field */
+static const char *
+st_addr_of(ngx_js_socket_opaque_t *op)
+{
+    ngx_js_socket_state_t  *st = ngx_js_socket_state_of(op);
+
+    return (st != NULL) ? st->addr : "-";
+}
+
+
 static ngx_int_t
 ngx_js_socket_budget_spend(JSContext *ctx, ngx_js_socket_opaque_t *op)
 {
@@ -266,6 +284,17 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
      * because a field the membrane hides was never an exercise of the
      * capability in the first place.
      */
+    /*
+     * `ttl`: an expired capability is refused BEFORE the budget is charged --
+     * spending budget on an operation that cannot happen would make the audit
+     * read as if the tenant were still working.
+     */
+    if (op->expires != 0 && ngx_time() >= op->expires
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_EXPIRED, st_addr_of(op)))
+    {
+        return JS_UNDEFINED;
+    }
+
     if (op->budget_limit > 0
         && ngx_js_socket_budget_spend(ctx, op) != NGX_OK)
     {
@@ -529,6 +558,17 @@ JSValue
 ngx_js_socket_wrap_budgeted(JSContext *ctx, uint32_t handle, uint32_t mask,
     const char *budget_key, uint32_t budget_limit, uint32_t budget_window)
 {
+    return ngx_js_socket_wrap_bounded(ctx, handle, mask, budget_key,
+                                      budget_limit, budget_window, 0);
+}
+
+
+/* the same wrapper, plus a `ttl` lifetime in seconds (0 = no expiry) */
+JSValue
+ngx_js_socket_wrap_bounded(JSContext *ctx, uint32_t handle, uint32_t mask,
+    const char *budget_key, uint32_t budget_limit, uint32_t budget_window,
+    uint32_t ttl_seconds)
+{
     JSValue                  obj;
     ngx_js_socket_opaque_t  *op;
 
@@ -546,6 +586,10 @@ ngx_js_socket_wrap_budgeted(JSContext *ctx, uint32_t handle, uint32_t mask,
                     sizeof(op->budget_key));
         op->budget_limit = budget_limit;
         op->budget_window = budget_window ? budget_window : 1;
+    }
+
+    if (ttl_seconds > 0) {
+        op->expires = ngx_time() + (time_t) ttl_seconds;
     }
 
     obj = JS_NewObjectClass(ctx, ngx_js_socket_class_id);

@@ -340,6 +340,20 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T11, T6
 - **V:** V9
 
+#### G6.7 — a capability can be bounded by LIFETIME
+- **CLAIM:** `mediate(cap, ttl(seconds))` makes a capability stop working when its lifetime
+  passes; composing two lifetimes takes the shorter, in either order; expiry is denied as
+  `cap.expired` and logged-and-allowed in audit mode.
+- **ARGUMENT:** This is what makes a session lease bite on authority already handed out —
+  `std.sessions` expires a mapping, but `include()` binds grants at admission, so without a
+  lifetime a fragment holds its capabilities for as long as it lives. The clock starts when
+  the capability crosses into the compartment, so there is one clock rather than two.
+  Lifetimes are ordered, so `min` is a genuine meet (unlike budgets, which are refused).
+- **EV:** `t/comcon_cap_ttl.t` — expiry, the min-meet in both orders, composition with a mask and a budget, audit behaviour, and the refusal of zero/negative/fractional/absent lifetimes.
+- **EV:** `t/comcon_v12_denial_codes.t` — `cap.expired` fires its own code, pinned after a first version of the row silently reported "alive".
+- **THREAT:** T5, T6, T11
+- **V:** V9
+
 #### G6.5 — HOST JS is bounded too, by default
 - **CLAIM:** A host `location.handler` — operator code, not a tenant fragment — runs under a
   per-request execution deadline that is **on by default** (10 s). `0` is an explicit
@@ -569,6 +583,9 @@ The primary control, and the one everything else is defence in depth for.
   and are deliberately not provided; a deployment that passes a client-supplied identifier
   as the principal has handed the client the session, and nothing here can detect that.
   **home:** FOUNDATION §8b · P19 admin-shell substrate · finding F7.
+- **EV:** `t/comcon_cap_ttl.t` — the lease's other half: `resolve()` can stamp its remaining
+  seconds onto the capabilities it returns, so a lease bites on authority already bound into
+  a fragment (G6.7). Without it the mapping expired while the capability did not.
 - **THREAT:** T5, T12
 - **V:** V13
 

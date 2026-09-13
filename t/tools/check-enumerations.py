@@ -306,7 +306,12 @@ def check_denial_codes():
     if not m:
         fails.append("[5] ngx_js_denial_names[] not found")
         return
-    c_codes = set(re.findall(r'"([^"]+)"', m.group(1)))
+    # Strip C comments FIRST: the table carries explanatory prose, and a quoted
+    # phrase inside a comment was being read as a code ("for the next N
+    # seconds"), which then failed for want of a corpus row. The checker should
+    # read the table, not the commentary around it.
+    table = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S)
+    c_codes = set(re.findall(r'"([^"]+)"', table))
     note("C: %s" % sorted(c_codes))
 
     golden = read("t/tools/golden-denials.js")
@@ -347,7 +352,8 @@ def check_refusal_codes():
     if not m:
         fails.append("[6] ngx_js_refusal_codes[] not found")
         return
-    c_codes = set(c for c in re.findall(r'"([^"]*)"', m.group(1)) if c)
+    table = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S)
+    c_codes = set(c for c in re.findall(r'"([^"]*)"', table) if c)
     note("C: %s" % sorted(c_codes))
 
     golden = read("t/tools/golden-denials.js")

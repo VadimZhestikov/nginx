@@ -93,6 +93,7 @@ typedef enum {
     NGX_JS_DENIAL_ENUM_SOCKETS,        /* cycle.sockets / http.sockets enum */
     NGX_JS_DENIAL_SOCK_MUTATE,         /* sock.close / sock.broadcast (SR-1)  */
     NGX_JS_DENIAL_BUDGET_USES,         /* a `uses` budget is exhausted (M-LIB) */
+    NGX_JS_DENIAL_CAP_EXPIRED,         /* a `ttl` capability lifetime has passed  */
     NGX_JS_DENIAL_LAST
 } ngx_js_denial_code_t;
 

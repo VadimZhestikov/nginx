@@ -87,6 +87,23 @@ var GOLDEN = [
         budget: { key: 'v12-probe', limit: 2, window: 60 }
     },
     {
+        code: 'cap.expired',
+        why: 'a `ttl` capability lifetime has passed. This is what makes a '
+           + 'SESSION LEASE bite on authority already handed out: the TM-2 '
+           + 'mapping expires by itself, but include() binds grants at '
+           + 'admission, so without this a fragment holds its capabilities for '
+           + 'as long as it lives',
+        mode: 'enforce',
+        /* granted with a 1-second lifetime and probed after it: the fixture
+           sleeps between requests, because ngx_time() is nginx's CACHED clock
+           and nothing expires inside a single handler. */
+        probe: "function(){ return (typeof s.address === 'string')"
+             + " ? 'alive' : 'expired'; }",
+        expect: 'expired',
+        ttl: 1,
+        sleepBefore: 1.4
+    },
+    {
         code: 'sock.mutate',
         why: 'close() / broadcast() on a socket the compartment does not own '
            + '(SR-1 MEDIUM-4): mutating host state, not a scalar read',

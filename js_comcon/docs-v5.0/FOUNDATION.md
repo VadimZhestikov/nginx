@@ -635,6 +635,46 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.74 (in place — M-LIB `ttl`: a capability with a lifetime, and the lease that finally
+bites):** TM-2 gave session grants a lease; `include()` binds grants as closure parameters at
+ADMISSION. So an operator who resolved a session once and bound a fragment had handed it
+capabilities that outlive the lease indefinitely — **the mapping expired, the authority did
+not.** Neither feature was wrong alone; the hole existed only in their composition, which is
+where nearly everything in this arc has been found.
+
+`mediate(cap, ttl(seconds))` closes it, and `std.sessions.resolve()` can now stamp a lease's
+remaining seconds onto what it hands out. **The clock starts when the capability crosses into
+the compartment**, not when `mediate()` built the descriptor: the descriptor carries a
+duration, so there is one clock (nginx's) instead of two that could disagree.
+
+**LIFETIMES COMPOSE WHERE BUDGETS REFUSE, and the contrast is the point.** Two budgets have
+no computable meet — 10/min and 100/hour are not ordered, so `uses` refuses to re-mediate
+with a different one rather than guess and widen. Two lifetimes ARE ordered: the shorter is
+strictly narrower than both, so `ttl` takes the `min`, in either composition order. Same rule
+(never widen), opposite outcome, because the lattice differs. Expiry is checked BEFORE the
+budget is charged — spending budget on an operation that cannot happen would make the audit
+read as though the tenant were still working.
+
+**Two instrument defects, both about where a clock starts.** The V12 corpus row for
+`cap.expired` first reported `alive` forever and **the suite passed**, because the row
+included its fragment *after* the sleep (a fresh lifetime) and nothing asserted the row had
+fired — a corpus row that never fires is decoration, so it is now pinned explicitly. And the
+dedicated test minted its short-lived capability at CONFIG time, racing nginx's own startup:
+the first run failed because the request arrived after the capability had already expired.
+Both are the same lesson from opposite ends: a lifetime test must control when the clock
+starts.
+
+Three controls: the expiry never checked (four assertions fail), the meet taking the LONGER
+lifetime (exactly one — the meet assertion), and the wrong denial code recorded (the V12 pin
+plus the undeclared check). `t/comcon_cap_ttl.t` (11).
+
+**Also in: the two negative-control rows that went inconclusive are now MANUAL, with
+reasons** — their inverse patches no longer apply because this session's own commits rewrote
+those lines. `git apply -R -3` was tried and is recorded as a TRAP: it applied one file,
+failed the other, and left the partial revert in the tree. A control that half-reverts a fix
+and walks away is how a tree quietly stops being the one you tested; an explicit "revert this
+by hand" is worth more than an automated maybe.
+
 **v5.73 (in place — F4 closed, F9 reduced, F8 measured: the three that "were not mine to
 close"):**
 

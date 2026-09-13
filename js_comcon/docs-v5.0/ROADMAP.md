@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.73 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.74 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,6 +74,11 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **M-LIB STEP 4 SHIPPED (2026-09-13, v5.74): `ttl`, a capability lifetime.** The
+>   composition hole between TM-2's session lease and `include()`'s admission-time
+>   binding: the mapping expired while the authority did not. Lifetimes compose by `min`
+>   (they are ordered) where budgets are refused (they are not) — same rule, different
+>   lattice. Six of the ten vocabulary words now ship.
 > - **F4 CLOSED, F9 REDUCED, F8 MEASURED (2026-09-13, v5.73).** The guarded COM members
 >   are fuzzed **one process at a time** (the shared-state objection required isolation,
 >   not an exemption); **V13 is built** (erasure checked against node — a different
@@ -387,10 +392,15 @@ fallback) → the event dispatcher calls the C function pointer directly.
   in audit mode. Measured `+0.037 µs` per charged use — affordable *because* HOST-PERF
   fixed the store first (the same charge would have cost up to 0.42 µs a day earlier).
   `t/comcon_budget_uses.t` (16) + 4 controls; **workers=4, spent=10 of a limit of 10**.
+  **Step 4 — `ttl`: a capability LIFETIME (2026-09-13, v5.74).** The other half of TM-2's
+  lease: `include()` binds grants at admission, so without a lifetime a fragment outlives
+  the mapping that authorised it. `mediate(cap, ttl(s))`, clock starting when the capability
+  crosses into the compartment, denial `cap.expired`, audit-first like every gate — and
+  **lifetimes compose by `min` where budgets refuse**, because lifetimes are ordered and
+  budgets are not. `t/comcon_cap_ttl.t` (11) + 3 controls.
   Remaining: the posture vocabulary (needs enforcement), `allowHosts` (needs an outbound
-  capability to mediate — there is none yet), `ttl` as a capability LIFETIME (distinct
-  from `uses`'s window), `cosign`/`protocol`, and the "raw operators withheld"
-  governance half.
+  capability to mediate — there is none yet), `cosign`/`protocol`, and the "raw operators
+  withheld" governance half.
   *(Original scope, preserved:)* The user-facing
   surface is not the kernel but the combinators: `std.profiles.*` (tenant,
   pure_library, forensics/REL, marketplace, config_builder…) and the mediation
