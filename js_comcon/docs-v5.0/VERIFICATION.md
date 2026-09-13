@@ -239,10 +239,35 @@ tenant-facing surface, is outside the registry entirely (finding F13). Seven con
 over planted objects, two end to end against the C map (a row deleted → the inventory pin
 fires; a row made to lie → the type check fires, naming both peer paths).
 
-**Still to do here:** the effect-class half for SETTABLE rows — "worker-local didn't leak
-cross-worker" needs the two-worker observation harness, and the propagation claim is the
-one registry field nothing has yet held to account. The typed tier trusts
-the schema's word about C stubs. Auto-generate property tests from the registry (the
+**The effect-class half — ✅ BUILT 2026-09-13.** `t/js_com_propagation.t`, four workers.
+The `propagation` column was the one registry field nothing had ever held to account, and it
+cannot be checked in one process: within a single worker "my memory" and "the fleet" are
+indistinguishable. It is also the only **conditional** claim in the registry — `describe()`
+resolves peer propagation through a refine hook keyed on `peers->shpool != NULL` — so one
+fixture carries a zone-backed and a non-zoned upstream, the same member is classified both
+ways, and **the run asserts the two arms DISAGREE.** Without that, "no other worker saw it"
+would also pass if the write did nothing, if the fan-out reached one worker, or if
+propagation never worked at all.
+
+Phase 2 is generated per registry row: a **sentinel** value stamped into every eligible
+`worker-local` member in one worker, with every worker independently reporting anything
+holding one — **no record crosses processes**, because a shared value is capped at 512 bytes
+and would have been silently truncated.
+
+**Result: the claim holds.** 67 rows swept, none leaked, the writer's own worker sees all 67,
+and the conditional pair behaves correctly on both sides. Four controls, two at the CONFIG
+level (remove the zone; add a zone) so they exercise the mechanism rather than mutating the
+test; one sets `worker_processes 1` and confirms the precondition FAILS rather than passing
+vacuously. Clean under ASAN and UBSAN.
+
+**Coverage, stated rather than implied:** 67 of the 154 settable
+`safe`+`reversible`+`worker-local` rows the walk reaches. 52 booleans are excluded because a
+boolean cannot carry a distinguishable sentinel; 35 non-number rows because a sentinel in a
+routing member can stop the worker under test from serving, and a worker that cannot serve
+cannot report. **`auto-shared` has zero rows in the registry** — untestable by construction,
+not untested.
+
+The typed tier trusts the schema's word about C stubs. Auto-generate property tests from the registry (the
 third consumer of the M2+S4 walk): call each op across its typed domain; verify result
 types **and effect classes** — "pure-read mutated nothing," "worker-local didn't leak
 cross-worker" (two-worker observation harness). A misclassified safety class currently
@@ -439,7 +464,7 @@ does not establish, and that statement is part of what was signed.
 
 | Now / M2–M3 | M5–M6 | M7 / M8 / M-SES |
 |---|---|---|
-| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · **V8 ✅ (2026-09-13, read-only half)** · V9 · **V13 ✅ (2026-09-13)** | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · V5b · V10 · V14 |
+| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · **V8 ✅ (2026-09-13, BOTH halves)** · V9 · **V13 ✅ (2026-09-13)** | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · V5b · V10 · V14 |
 
 **Meta-observation:** the R-review's critical findings clustered at *tier boundaries*
 and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maintained-

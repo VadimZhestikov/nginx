@@ -640,6 +640,38 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T1, T10
 - **V:** V8
 
+#### G11.10 — the PROPAGATION column is held to account, across real workers
+- **CLAIM:** A member the registry calls `worker-local` does not become visible in another
+  worker when written; a member it calls `zoned-shared` does; and the per-object refine hook
+  classifies the same member correctly on a zone-backed and a non-zoned upstream.
+- **ARGUMENT:** This is the COW-trap axis and 306 rows make the claim, but no
+  single-process observation can test it — within one worker "my memory" and "the fleet" are
+  indistinguishable. It is also the one claim that is **conditional**: `describe()` does not
+  report the table's value for peers, a refine hook resolves it from
+  `peers->shpool != NULL`. So the two arms are each other's control in one fixture, one
+  request pattern, one run, and the run asserts they **DISAGREE** — without that, "no other
+  worker saw it" would also pass if the write did nothing, if the fan-out reached one
+  worker, or if propagation never worked at all.
+- **EV:** `t/js_com_propagation.t` — 17 assertions. Phase 1 is the conditional pair on
+  `peer.weight` (zoned vs plain, same config); phase 2 is **generated per registry row** — a
+  sentinel stamped into every eligible `worker-local` member in one worker, and every worker
+  independently reporting anything holding one, so no record has to cross processes.
+  Clean under ASAN and UBSAN.
+- **RESULT: the claim holds.** 67 rows swept, not one leaked; the writer's own worker sees
+  all 67; the conditional pair classifies and behaves correctly on both sides. **No defect** —
+  this leaf is evidence that a registry column is true, not a bug report.
+- **GAP:** The sweep covers **67 of the 154** settable `safe`+`reversible`+`worker-local`
+  rows the walk reaches (44%). The other 87 are excluded for stated reasons, not overlooked:
+  **52 booleans cannot carry a distinguishable sentinel** (`true` is also a natural value),
+  so a boolean leak is invisible to this method; and 35 non-number rows are excluded because
+  a sentinel written into a routing member (a `serverName`, a `root`) can stop the very
+  worker under test from matching the next request, and a worker that cannot serve cannot
+  report. **`auto-shared` has ZERO rows in the registry** — a declared enumeration value
+  with no instances, so it is untestable by construction rather than untested.
+  **home:** VERIFICATION.md V8 · `ngx_js_com_describe.c` propagation refine hooks.
+- **THREAT:** T1, T10
+- **V:** V8
+
 #### G11.9 — THE SPEC cannot silently fall behind the code
 - **CLAIM:** Every member of a set `SPEC.md` calls closed appears in `SPEC.md`, so the
   normative read cannot quietly stop describing the shipped system.
@@ -753,7 +785,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 → G6.6 | **CLOSED 2026-09-13** (after the §15 signature — see §16): the deadline defaults ON at 10 s, `0` opts out, a malformed value reads as the default. Superseded in part by **F12** |
 | **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
 | **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 → G7.7 | **ACCEPTED — and now QUANTIFIED (2026-09-13):** a co-resident tenant's CPU burn moves a peer's latency from **0.3 ms to 347 ms** (1227× idle, ~2.9 bits/s) because the worker is single-threaded. Under a 50 ms execution deadline the separation falls to 49.8 ms. The deadline is the only mitigation in the tree and it narrows, never closes |
-| **F9** | V-track items with no machinery yet: V5b, V6, V9, V10, V14 | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7 — erasure across two engines) **and V8 built** (G11.8 — read-only schema conformance, generated per row). Five remain, each its own increment |
+| **F9** | V-track items with no machinery yet: V5b, V6, V9, V10, V14 | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7) **and V8 built COMPLETE** — both halves: G11.8 (read-only schema conformance) and G11.10 (the propagation column, across real workers). Five remain, each its own increment |
 | **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2 | ACCEPTED — stated in the audit |
 | **F13** | The REQUEST is outside the registry: `nginx.describe(req)` returns **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carry no declared type and no class. And the read-only descriptor hardcodes `requestScoped: false` and `propagation: "worker-local"` for every row, which is unfalsifiable only *because* there are no request rows to be wrong about. The map is also keyed by bare member name, so one name cannot have two types on two types (`server`). | G11.8 | **OPEN (found 2026-09-13 by V8).** Not a misstatement today, a latent one: `t/js_com_schema_conformance.t` pins the request row count at zero, so the field must be made per-row in the same change that adds them. Classifying the request surface is its own increment (it is the M2 half S4 needs for reach) |
@@ -871,6 +903,8 @@ signature is never quietly credited with work it did not see.
 | **V8 BUILT — G11.8 added; F9 down to five** — `t/js_com_schema_conformance.t` generates a conformance check per registry row for the READ-ONLY half of the surface, which no instrument had ever covered. It found a real misdeclaration (`names`: `object[]` → `string[]`), **20 read-only rows with no declared type**, and that `nginx.describe(req)` returns **zero rows** — the tenant-facing request surface is outside the registry entirely. All 21 type rows are now classified against their implementations, and the inventory is pinned at empty so a getter added without a type fails CI the day it lands. Seven controls: five over planted objects, two run end to end against the C map (a row removed, a row made to lie). | **Closes one V-item and narrows F9.** It also converts part of F9 from "no machinery" into a standing gate. Two NEW gaps are recorded in G11.8 rather than left implicit: the hardcoded `requestScoped`/`propagation` on read-only rows, and the map's bare-name keying. |
 
 | **M2.5 RE-STATED — G11.9 added** — `SPEC.md` had fallen behind the code (no `routes`, `ttl`, refusal codes, `cap.expired` or session registry; §10 still calling the identity→environment mapping a future deliverable; §13 stamped v5.35 against a delta log at v5.75). §2/§10/§13 now state current truth, and check [7] of the enumeration checker makes the currency of its closed sets machine-checked, with four controls. | **Adds a leaf; corrects a document, not a mechanism.** Nothing signed changes: §15 attested the code and the instruments, not the spec's prose. The new GAP is stated in G11.9 — presence is checked, correctness is not. |
+
+| **V8 COMPLETED — G11.10 added** — the effect-class half. `t/js_com_propagation.t` holds the `propagation` column to account across four real workers: the conditional pair (the refine hook's `zoned-shared` vs `worker-local` on two upstreams in one config) and a sweep generated per registry row. **The claim holds — 67 rows swept, none leaked, no defect.** Four controls, two of them at the CONFIG level (remove the zone, add a zone) so they exercise the mechanism rather than mutating the test. Clean under ASAN and UBSAN. | **Adds a leaf that is positive evidence rather than a fix.** §15's evidence table gains a row; nothing it attested changes. The new GAP is quantified in G11.10: 67 of 154 rows, with both exclusions named, and `auto-shared` recorded as an enumeration value with no instances. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

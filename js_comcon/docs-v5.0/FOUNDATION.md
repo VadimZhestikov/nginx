@@ -635,6 +635,53 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.77 (in place — V8's effect-class half: the propagation column is true, and proving it
+took two arms that disagree):** `propagation` is the COW-trap axis — `worker-local`,
+`zoned-shared`, `auto-shared` — and **306 rows make the claim while nothing had ever checked
+it.** It cannot be checked in one process: inside a single worker, "my memory" and "the
+fleet" are the same observation.
+
+It is also the registry's **only conditional claim.** `describe()` does not report the
+table's value for upstream peers; a refine hook resolves it from `peers->shpool != NULL`. So
+one fixture carries a zone-backed upstream and a plain one, the same `weight` member is
+classified two ways, and **the run asserts the two arms DISAGREE.** That is the load-bearing
+part. "No other worker saw the write" also passes when the write did nothing, when the
+fan-out reached one worker, and when propagation never worked at all — the negative arm is
+only evidence if the positive arm fires beside it.
+
+**Result: the claim holds.** `w1 zoned=77 plain=77` and `w2/w3/w4 zoned=77 plain=1`. Then a
+sweep generated per registry row — 67 eligible `worker-local` members stamped in one worker —
+and **not one leaked.** This is a leaf that says a registry column is TRUE; after an arc in
+which nearly every instrument found a defect, it is worth noticing that one did not.
+
+**No record crosses processes, and that was forced.** The obvious design has the writer
+stash what it wrote in `nginx.shared` for the readers — but a shared value is capped at 512
+bytes, so the record would have been **silently truncated** and the sweep would have checked
+a fraction of what it reported. Instead the writer stamps a sentinel and every worker
+independently reports anything holding one. Nothing is communicated, so nothing can be cut.
+
+**Two instrument bugs, both mine, both about reading my own output.** The restore fan-out
+never reached the worker that swept — only that worker holds the old values, and a request
+cannot be addressed to a worker — so "the restore left 67 members changed" was really "the
+restore never ran"; the fix fans out until it lands, and **two separate assertions now
+distinguish "it ran" from "it worked."** And I read a diagnostic that prints a sample capped
+at six as though it were the total, so 67 unrestored members looked like 6. *A truncated
+report and a small number are indistinguishable unless the report says which it is.*
+
+**Coverage is stated, not implied:** 67 of the 154 settable `safe`+`reversible`+`worker-local`
+rows the walk reaches. **52 booleans cannot carry a distinguishable sentinel** — `true` is
+also a natural value — so a boolean leak is invisible to this method; 35 non-number rows are
+excluded because a sentinel written into a routing member can stop the worker under test from
+matching the next request, and a worker that cannot serve cannot report. And **`auto-shared`
+has ZERO rows in the registry**: a declared enumeration value with no instances, untestable
+by construction rather than untested.
+
+Four controls, two of them at the CONFIG level — remove the zone, add a zone — so they
+exercise the real mechanism instead of mutating the test; one runs `worker_processes 1` and
+confirms the precondition FAILS rather than passing vacuously. Clean under ASAN and UBSAN —
+after rebuilding those trees, which were stale and made the *other* new test look as though
+it behaved differently under a sanitizer.
+
 **v5.76 (in place — M2.5 re-stated: the spec says what the system does, and a check keeps
 it that way):** `SPEC.md`'s own header calls it "the clean normative read of the design:
 current truth, stated once, no revision archaeology." A document with that job is the one

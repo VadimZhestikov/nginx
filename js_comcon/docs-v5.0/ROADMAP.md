@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.76 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.77 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,6 +74,14 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **V8 COMPLETED (2026-09-13, v5.77): the effect-class half — `propagation` is TRUE.**
+>   The one registry column nothing had ever checked, and uncheckable in one process. Its
+>   only conditional claim (the peer refine hook) is verified on both sides in one fixture,
+>   **with the run asserting the two arms DISAGREE**, plus a sweep generated per row: 67
+>   `worker-local` members stamped in one worker, none leaked. A leaf that says a column is
+>   true rather than reporting a bug. Coverage stated (67 of 154; 52 booleans carry no
+>   distinguishable sentinel; `auto-shared` has zero rows). **Next here:** M2's request
+>   surface (F13) — the tenant-facing members with no type and no class.
 > - **M2.5 RE-STATED (2026-09-13, v5.76): the spec states current truth, and check [7]
 >   keeps it there.** The normative read had fallen behind on five shipped features. The
 >   durable half is the checker, not the edit — and it matches BACKTICKED identifiers,
@@ -87,9 +95,8 @@
 >   outside the registry (F13). That makes the read-only descriptor's hardcoded
 >   `requestScoped:false` unfalsifiable rather than wrong — and the test pins the request
 >   row count at zero so adding those rows must fix the field in the same change. **F9 is
->   down to five unbuilt V-items.** Next here: V8's effect-class half (`worker-local` needs
->   the two-worker observation harness — the one registry field nothing has yet checked),
->   then M2's request-surface classification, which is what S4 needs for reach.
+>   down to five unbuilt V-items.** Next here was V8's effect-class half — **done at v5.77,
+>   above** — then M2's request-surface classification, which is what S4 needs for reach.
 > - **M-LIB STEP 4 SHIPPED (2026-09-13, v5.74): `ttl`, a capability lifetime.** The
 >   composition hole between TM-2's session lease and `include()`'s admission-time
 >   binding: the mapping expired while the authority did not. Lifetimes compose by `min`
