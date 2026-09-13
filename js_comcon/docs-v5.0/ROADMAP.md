@@ -44,6 +44,10 @@
 >   `comcon.aotStatus()` reports it. Reaching native would need a compiler-bearing process
 >   to build the `.so` and workers to pick it up from the hash-keyed JIT cache: new IPC, a
 >   separate increment, no correctness impact.
+> - **HOST-PERF (low priority, tracked 2026-09-12):** the two host-path costs the M5
+>   evidence turned up — `shared.incr`'s linear scan (12× on a miss) and `req.headers`
+>   re-materializing per access. Worth fixing on their own terms, and a **precondition for
+>   re-measuring the M5 gap honestly**. See the HOST-PERF entry in §2.
 > - **The compiler track (M5 →) remains parked by decision 2026-09-11, not by capability.**
 >   M5's value is the typed nginx stubs, not lowering JS control flow, so the typed IR is not
 >   to be built without a commitment to M5 (see M4 below and `AOT-A` in `INCREMENT_C5.md`
@@ -338,6 +342,30 @@ fallback) → the event dispatcher calls the C function pointer directly.
   `pure_library` child fragment with a static-harvest-generated candidate policy,
   pins = lockfile hashes, transitive deps as child cages (v2 §9.5's supply-chain
   inversion, finally given its tooling and manual chapter).
+
+- **HOST-PERF — the two measured host-path costs. 🟦 LOW PRIORITY** *(added 2026-09-12,
+  user decision: track it, do not promote it)*. Both were found by the M5 evidence run
+  (§POSITION and `t/tools/host-call-cost.t`), and both are worth fixing on their own terms —
+  they are live costs on the rate-limiting path today, independent of whether M5 is ever
+  taken up:
+  - **`shared.incr` is a linear scan.** Up to 256 slots, comparing 128-byte keys under a
+    spinlock (`ngx_js_shared_fn_incr`). Measured **0.079 µs** on a near-front hit and
+    **0.417 µs on a miss** against **0.034 µs** for a typed slot stub — and a miss is what a
+    rate limiter does for *every new tenant key*. Fix = an index/hash instead of the scan.
+    Watch the two properties the scan currently provides for free: expiry reclamation, and
+    first-free-slot reuse after a delete.
+  - **`req.headers` re-materializes the surface on every access.** Measured **0.130 µs**
+    against **0.030 µs** with the surface hoisted to a local, so ~0.10 µs per access is the
+    materialization rather than the lookup. Fix = cache the surface per request. Until then
+    `var h = req.headers` in a hot handler is a free ~4× on that access, which is worth a
+    line in the manual either way.
+
+  **Why low priority rather than now:** nothing is incorrect, no gate depends on it, and the
+  policies measured spend well under a microsecond per request in total — this is headroom,
+  not a defect report. **Why it is tracked at all:** it is the measurement that has to be
+  re-run before any M5 commitment (fix these, re-measure the interpreted-vs-hand-C gap, and
+  what survives is the compiler's actual prize), so leaving it unwritten would lose the
+  precondition along with the numbers.
 
 - **M-SES — engine hardening.** Phases S1–S6 and the gate as specified in
   `HARDENING.md`. Does not block M2–M5 (trusted code); **gates M6/M7-with-tenants**;
