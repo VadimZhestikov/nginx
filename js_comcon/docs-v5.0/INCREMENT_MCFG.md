@@ -68,7 +68,44 @@ that env). **`bind` is the inclusion operator; `admit` is its gate.**
   first;** admitting a fragment *after* fork / at request time (truly dynamic) is a harder
   follow-on (per-worker compartment creation), out of this track's core.
 
-## M-CFG proper (the config instance) — second phase
+## M-CFG proper (the config instance) — second phase ✅ SHIPPED 2026-09-12
+
+`comcon.std.config` — `review(source, policy)` → a typed, hash-pinned PLAN ·
+`diff(plan, target)` → what would change, audit-first · `apply(plan, target, {confirm})` →
+all-or-nothing, snapshotting · `rollback(result, target)`. `t/comcon_config_instance.t` (20)
+walks one tenant subtree from proposal to rollback; six negative controls.
+
+**THE PROPOSAL NEVER EXECUTES**, and that is the mechanism rather than a precaution: a COM
+capability cannot cross into a compartment (only C-wrapped sockets and server facets do), so
+a config fragment could not be handed the tree even if that were wanted. D5b-1's sound
+rejecter reduces the source to a descriptor table — inert, diffable — and the operator applies
+the table with its own authority. *"Tenant proposes what it cannot apply; the operator
+realizes"* is therefore a property of the design, not a convention someone must honour.
+
+**REFUSAL IS BY SAFETY CLASS, NOT BY A BLOCKLIST.** Every member carries its type and class in
+`describe()`/`describeType()`, so the gate is derived: `class safe` applies; `guarded` is
+admitted but demoted to needs-confirmation and must be NAMED at apply time (POM.md §3 class-X
+semantics); `read-only` is refused; a member added to COM next year is classified the day it
+is added. A blocklist here would be a list that rots — the failure V7 exists to prevent.
+Review is a pure function of (source, policy, registry): `describeType()` needs no live
+object, so a proposal can be reviewed before anything is touched.
+
+**Three things the end-to-end composition taught, which the parts could not:**
+
+1. **`apply()` was not atomic.** `root` was written, `proxy.pass` was refused by the COM
+   setter, and the throw discarded the snapshot the caller needed to undo the first write. The
+   registry cannot prevent this: `proxy.pass` is a well-typed string, and whether an upstream
+   EXISTS is not something a type system knows. `apply()` now checks every gate before writing
+   anything, and on a setter refusal restores what it already wrote, in reverse, and reports
+   both the failing op and the count.
+2. **`proxy.pass` RE-TARGETS an existing `proxy_pass`** — it cannot create one. A tenant may
+   be given a proxy location to re-point; it cannot turn an arbitrary location into a proxy.
+3. **A `function`-typed member cannot be expressed at all.** 21 location members are
+   `function` (`handler`, `addLocation`, `snapshot`, …), and a declarative sentence carries
+   only literals — so they are unreachable by construction, which is stronger than refusing
+   them by class.
+
+*(Original scope, preserved:)*
 
 `admit()` generalizes from program fragments to **config** fragments: a tenant proposes config
 as *sentences of a restricted config grammar* (`syntax_allowed` over config productions —

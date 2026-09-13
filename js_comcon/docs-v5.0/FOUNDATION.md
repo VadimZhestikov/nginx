@@ -564,6 +564,38 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.60 (in place — M-CFG's config instance: one tenant subtree onboarded through admit, end
+to end):** the last named deliverable of increment E, and the first thing to compose D5b-1's
+sound rejecter, D3's quotations, M4's typed registry and `std.ops`. `comcon.std.config`:
+`review(source, policy)` → a typed, hash-pinned plan · `diff(plan, target)` → what would
+change, **audit-first** · `apply(plan, target, {confirm})` → all-or-nothing, snapshotting ·
+`rollback(result, target)`. `t/comcon_config_instance.t` (20), six negative controls.
+
+**THE PROPOSAL NEVER EXECUTES**, and that is the mechanism rather than a precaution: a COM
+capability cannot cross into a compartment, so a config fragment could not be handed the tree
+even if that were wanted. The sound rejecter reduces the source to a **descriptor table** —
+inert, diffable — and the operator applies the table with its own authority. FOUNDATION §2a's
+*"tenant proposes what it cannot apply; the operator realizes"* is thereby a property of the
+design rather than a convention someone must honour.
+
+**REFUSAL IS BY SAFETY CLASS, NOT BY A BLOCKLIST.** The gate is derived from
+`describe()`/`describeType()`: `safe` applies, `guarded` is admitted but demoted to
+needs-confirmation and must be NAMED at apply time (POM.md §3 class-X semantics), `read-only`
+is refused — so a COM member added next year is classified the day it is added. Review is a
+pure function of (source, policy, registry), needing no live object, so a proposal can be
+reviewed before anything is touched.
+
+**Three things the composition taught that the parts could not.** (1) **`apply()` was not
+atomic:** `root` was written, `proxy.pass` was refused by the COM setter, and the throw
+discarded the snapshot the caller needed to undo the first write — a live subtree left
+half-configured with no way back. The registry cannot prevent it, because whether an upstream
+EXISTS is not something a type system knows; `apply()` now checks every gate before writing
+anything and, on a setter refusal, restores what it wrote and names the failing op.
+(2) **`proxy.pass` re-targets an existing `proxy_pass`** and cannot create one — a tenant may
+be given a proxy location to re-point, not an arbitrary location to convert. (3) **A
+`function`-typed member cannot be expressed at all** (21 of them on a location): a declarative
+sentence carries only literals, which is stronger than refusing them by class.
+
 **v5.59 (in place — M5 evidence, part 2: the payoff is not where the thesis puts it):**
 part 1 (v5.58) showed that compiling a policy's JS buys ~1.0×, so M5's value, if any, is in
 the typed stub ABI. Part 2 decomposes the host call itself (`t/tools/host-call-cost.t`,

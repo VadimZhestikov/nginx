@@ -257,8 +257,13 @@ fallback) → the event dispatcher calls the C function pointer directly.
   the admission normal form (SEMANTICS §4.4); the selector grammar deliverable stands;
   the M3 front-end does double duty (tenant code *and* policy quotations).
 
-- **M-CFG — the admissible config surface (new in v4; parallel track, does not block
-  M2–M7).** Give COM its admission hinge: tenant config fragments = sentences of a
+- **M-CFG — the admissible config surface. ✅ DELIVERABLE SHIPPED 2026-09-12**
+  (`comcon.std.config`, `t/comcon_config_instance.t`, `INCREMENT_MCFG.md` §"second phase"):
+  one tenant subtree onboarded through admit end to end — propose, review (typed against the
+  registry, pinned by hash), diff audit-first, refuse by SAFETY CLASS rather than by a
+  blocklist, apply all-or-nothing with the guarded op named, roll back exactly. **The proposal
+  never executes**: it is reduced to a descriptor table and the operator applies it.
+  *(Original scope, preserved:)* Give COM its admission hinge: tenant config fragments = sentences of a
   restricted config grammar, admitted like code — `syntax_allowed` over config
   productions, typed against the dual-role M2 schema, contract tests, pin-by-hash,
   audit-first rollout. Includes quotation-based config proposals (tenant proposes what

@@ -4693,6 +4693,206 @@ static const char  ngx_js_comcon_bootstrap[] =
     "          {verb:'diff / docs',needs:'describe cap',"
     "           why:'nginx.describe() is not yet handed out as a capability'}]};};"
     "    return Object.freeze(sess);};"
+    /* ================= M-CFG: the config instance =========================
+       ROADMAP M-CFG's deliverable -- "one tenant subtree onboarded through admit
+       end to end" -- and the last named one of increment E. Config fragments are
+       sentences of a restricted grammar, admitted like code: reviewed by the
+       sound rejecter, typed against the registry, pinned by hash, applied by the
+       OPERATOR.
+
+       THE PROPOSAL NEVER EXECUTES. That is the whole design, and it is also what
+       makes it implementable: a COM capability cannot cross into a compartment
+       (only C-wrapped sockets and server facets do), so a config fragment could
+       not be handed the tree even if we wanted to. Instead D5b-1's
+       reviewDeclarative reduces the source to a DESCRIPTOR TABLE -- inert data,
+       diffable -- and the operator applies the table with its own authority.
+       "Tenant proposes what it cannot apply; the operator realizes" (FOUNDATION
+       §2a) is then a property of the mechanism rather than a convention.
+
+       REFUSAL IS BY SAFETY CLASS, NOT BY A BLOCKLIST. Every member carries its
+       type and class in the describe() registry, so `handler` (class guarded,
+       "rewires nginx dispatch") is refused because of what it IS, and a COM
+       member added next year is classified the day it is added. A blocklist here
+       would be a list that rots -- the failure mode V7 exists to prevent.
+
+       Review is a pure function of (source, policy, registry): describeType()
+       needs no live object, so a proposal can be reviewed before anything is
+       touched. */
+    "  STD.config={};"
+    "  function cfgType(t){var m=/^handle<([A-Za-z_$][A-Za-z0-9_$]*)>$/.exec(t);"
+    "    return m?m[1]:null;}"
+    "  function cfgMember(typeName,name){"
+    "    var rows=nginx.describeType(typeName);"
+    "    if(!rows)return null;"
+    "    for(var i=0;i<rows.length;i++)if(rows[i].name===name)return rows[i];"
+    "    return null;}"
+    "  function cfgArgOk(decl,v){"
+    "    if(decl==='string')return typeof v==='string';"
+    "    if(decl==='number')return typeof v==='number';"
+    "    if(decl==='boolean')return typeof v==='boolean';"
+    "    return false;}"
+    /* Walk a dotted path through the type registry. Intermediate segments must
+       be TRAVERSABLE (a handle<X>); only the last is assigned, and it must be
+       read-write. A read-only handle is exactly right in the middle and exactly
+       wrong at the end, which is why the position matters and not just the
+       flag. */
+    "  function cfgResolve(rootType,segs){"
+    "    var t=rootType,i,row;"
+    "    for(i=0;i<segs.length;i++){"
+    "      row=cfgMember(t,segs[i]);"
+    "      if(!row)return {err:'no such member: '+segs.slice(0,i+1).join('.')"
+    "        +' on '+t};"
+    "      if(i<segs.length-1){"
+    "        var nt=cfgType(row.type);"
+    "        if(!nt)return {err:'not traversable: '+segs.slice(0,i+1).join('.')"
+    "          +' is '+row.type};"
+    "        t=nt;continue;}"
+    "      return {row:row,owner:t};}"
+    "    return {err:'empty path'};}"
+    "  STD.config.review=function(source,policy){"
+    "    policy=policy||{};"
+    "    var rootType=policy.type,rootName=policy.root;"
+    "    if(typeof rootType!=='string'||typeof rootName!=='string')"
+    "      throw new TypeError("
+    "        'std.config.review: policy needs {type, root}');"
+    "    var allow=policy.allow||['*'];"
+    "    var okClasses=policy.allowClass||['safe'];"
+    "    var plan={hash:String(cstFnv(String(source))),root:rootName,"
+    "              type:rootType,ops:[],refused:[]};"
+    /* The sound rejecter runs FIRST and its refusal is the whole answer: what it
+       accepts is exactly what reduces to the table, so anything it rejects never
+       becomes an op to argue about. */
+    "    var table;"
+    "    try{table=C.reviewDeclarative(String(source));}"
+    "    catch(e){plan.ok=false;plan.rejected=String(e.message);"
+    "      return Object.freeze(plan);}"
+    "    plan.table=table;"
+    "    for(var si=0;si<table.statements.length;si++){"
+    "      var chain=table.statements[si];"
+    "      for(var ci=0;ci<chain.length;ci++){"
+    "        var st=chain[ci],segs=String(st.op).split('.');"
+    "        var op={path:st.op,args:st.args};"
+    "        if(segs.shift()!==rootName){"
+    "          op.verdict='refused';"
+    "          op.why='outside the subtree: expected '+rootName+'.*';"
+    "          plan.refused.push(op);continue;}"
+    "        var rel=segs.join('.');"
+    "        var allowed=false;"
+    "        for(var ai=0;ai<allow.length;ai++)"
+    "          if(pomName(rel,allow[ai])){allowed=true;break;}"
+    "        if(!allowed){op.verdict='refused';"
+    "          op.why='not in the policy allow-list: '+rel;"
+    "          plan.refused.push(op);continue;}"
+    "        var r=cfgResolve(rootType,segs);"
+    "        if(r.err){op.verdict='refused';op.why=r.err;"
+    "          plan.refused.push(op);continue;}"
+    "        op.member=rel;op.type=r.row.type;op.cls=r.row['class'];"
+    "        op.reversible=!!r.row.reversible;"
+    "        if(r.row.access!=='read-write'){op.verdict='refused';"
+    "          op.why='not writable: '+rel+' is '+r.row.access+' ('+op.cls+')';"
+    "          plan.refused.push(op);continue;}"
+    "        if(!st.args||st.args.length!==1){op.verdict='refused';"
+    "          op.why='expected exactly one argument for '+rel;"
+    "          plan.refused.push(op);continue;}"
+    "        if(!cfgArgOk(r.row.type,st.args[0])){op.verdict='refused';"
+    "          op.why='type: '+rel+' is '+r.row.type+', got '+typeof st.args[0];"
+    "          plan.refused.push(op);continue;}"
+    "        op.value=st.args[0];"
+    /* The class decides the gate. `safe` applies; anything else needs the
+       operator to name it at apply time, which is COM class-3 semantics
+       (POM.md §3 class X: snapshot-first, explicit confirmation, or reject). */
+    "        var clsOk=false;"
+    "        for(var ki=0;ki<okClasses.length;ki++)"
+    "          if(okClasses[ki]===op.cls){clsOk=true;break;}"
+    "        op.verdict=clsOk?'ok':'confirm';"
+    "        if(!clsOk)op.why='class '+op.cls+': needs explicit confirmation';"
+    "        plan.ops.push(op);}}"
+    "    plan.ok=(plan.refused.length===0);"
+    "    Object.freeze(plan.ops);Object.freeze(plan.refused);"
+    "    return Object.freeze(plan);};"
+    /* diff(plan, target): AUDIT-FIRST. What would change, read from the live
+       subtree, with nothing applied -- the same shape the rollout verbs use for
+       code (observe, then enforce). */
+    "  function cfgWalk(target,segs){"
+    "    var o=target,i;"
+    "    for(i=0;i<segs.length-1;i++){o=o[segs[i]];if(o===undefined)return null;}"
+    "    return o;}"
+    "  STD.config.diff=function(plan,target){"
+    "    if(!plan||!plan.ops)throw new TypeError('std.config.diff: arg0 must be a plan');"
+    "    return plan.ops.map(function(op){"
+    "      var segs=op.member.split('.'),owner=cfgWalk(target,segs);"
+    "      var cur=owner?owner[segs[segs.length-1]]:undefined;"
+    "      return {path:op.path,from:cur,to:op.value,"
+    "              changes:(cur!==op.value),verdict:op.verdict};});};"
+    /* apply(plan, target, opts): the operator's authority, not the tenant's.
+       Refuses a plan with ANY refused op unless opts.partial, requires every
+       'confirm' op to be named in opts.confirm, and snapshots before writing so
+       rollback is exact. An irreversible member cannot be applied at all here --
+       there would be nothing to roll back to. */
+    "  STD.config.apply=function(plan,target,opts){"
+    "    opts=opts||{};"
+    "    if(!plan||!plan.ops)throw new TypeError('std.config.apply: arg0 must be a plan');"
+    "    if(!target||typeof target!=='object')throw new TypeError("
+    "      'std.config.apply: arg1 must be the subtree to apply to');"
+    "    if(!plan.ok&&!opts.partial)throw new Error("
+    "      'std.config.apply: the plan has '+plan.refused.length+' refused op(s);"
+                 " pass {partial:true} to apply the rest deliberately');"
+    "    var confirm=opts.confirm||[],applied=[],snap=[];"
+    /* Every gate is checked BEFORE anything is written, so a refusal cannot
+       leave the subtree half-configured. */
+    "    for(var i=0;i<plan.ops.length;i++){"
+    "      var op=plan.ops[i];"
+    "      if(op.verdict==='confirm'){"
+    "        var named=false,ci;"
+    "        for(ci=0;ci<confirm.length;ci++)if(confirm[ci]===op.path)named=true;"
+    "        if(!named)throw new Error('std.config.apply: '+op.path+' is class '"
+    "          +op.cls+'; name it in {confirm:[...]} to apply it');}"
+    "      if(!op.reversible)throw new Error('std.config.apply: '+op.path+"
+    "        ' is irreversible; there would be nothing to roll back to');"
+    "      if(!cfgWalk(target,op.member.split('.')))throw new Error("
+    "        'std.config.apply: cannot reach '+op.member);}"
+    /* ALL OR NOTHING. A COM setter can refuse a value the registry considered
+       well-typed -- `proxy.pass` wants an upstream that EXISTS, and the type
+       system cannot know that -- so the write loop can fail halfway through.
+       Found by composing this end to end: `root` applied, `proxy.pass` threw,
+       and the throw discarded the very snapshot the caller needed to undo it,
+       leaving a live subtree half-configured with no way back. Now a failure
+       restores what was already written, in reverse, and reports both. */
+    "    var failed=null;"
+    "    try{"
+    "      for(var j=0;j<plan.ops.length;j++){"
+    "        var o2=plan.ops[j],sg=o2.member.split('.');"
+    "        var own=cfgWalk(target,sg),lst=sg[sg.length-1];"
+    "        var was=own[lst];"
+    "        failed=o2.path;"
+    /* Snapshot only AFTER the write succeeds: an entry for a write that threw
+       would be rolled back too, and the counts would describe something that
+       never happened ("rolled back 2 of 1"). */
+    "        own[lst]=o2.value;"
+    "        snap.push({member:o2.member,was:was});"
+    "        applied.push(o2.path);failed=null;}"
+    "    }catch(e){"
+    "      var undone=0;"
+    "      for(var k=snap.length-1;k>=0;k--){"
+    "        var sk=snap[k],sgk=sk.member.split('.');"
+    "        var ok2=cfgWalk(target,sgk);"
+    "        if(ok2){try{ok2[sgk[sgk.length-1]]=sk.was;undone++;}catch(e2){}}}"
+    "      throw new Error('std.config.apply: '+failed+"
+    "        ' was refused by the COM setter ('+e.message+'); rolled back '+"
+    "        undone+' of '+snap.length+' write(s) -- the subtree is as it "
+                 "was');}"
+    "    return Object.freeze({applied:applied,hash:plan.hash,"
+    "                          snapshot:Object.freeze(snap)});};"
+    "  STD.config.rollback=function(result,target){"
+    "    if(!result||!result.snapshot)throw new TypeError("
+    "      'std.config.rollback: arg0 must be an apply() result');"
+    "    var n=0;"
+    "    for(var i=result.snapshot.length-1;i>=0;i--){"
+    "      var s=result.snapshot[i],segs=s.member.split('.');"
+    "      var owner=cfgWalk(target,segs);"
+    "      if(owner){owner[segs[segs.length-1]]=s.was;n++;}}"
+    "    return n;};"
+    "  Object.freeze(STD.config);"
     "  C.std=Object.freeze(STD);"
     "  Object.freeze(STD.profiles);"
     "  C.pom=function(rootFn){"
