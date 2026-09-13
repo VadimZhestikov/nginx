@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.83 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.84 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,12 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **THE REVIEWER PACK (2026-09-13, v5.84): F11 is no longer expensive.** `reviewer-pack.sh`
+>   + `REVIEW.md` turn "read 1100 lines, extract the commands, know which builddirs are stale"
+>   into one command and a verdict table. **F11 stays OPEN — it needs a person** — but a
+>   reproduction now costs an afternoon. Refuses on a dirty tree, rebuilds every builddir and
+>   asserts binary freshness, separates GATE from REPORTED, and deliberately does NOT summarise
+>   the residuals a signer accepts.
 > - **FLAKE HUNT (2026-09-13, v5.83): the gate's one unexplained failure was MINE.** 25 full
 >   runs, 24 pass, 1 fail — `js_com_propagation.t` test 13 looked the sweeping worker up in a
 >   fan-out that need not have reached it (absent in 4/40 under load). Fixed by reporting its

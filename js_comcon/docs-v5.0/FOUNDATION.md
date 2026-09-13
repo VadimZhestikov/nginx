@@ -635,6 +635,52 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.84 (in place — the reviewer pack: F11 is not closed, but it is no longer expensive):**
+F11 is the one finding in the ledger that no engineering closes. `AUDIT_M-SES.md` §5 and
+`ASSURANCE.md` §15 each carry a single signer, and both rows say so themselves — *"the §4
+commands were executed by the authoring session, not independently re-run by the signer"*. What
+exists is acceptance of reproducible evidence, not a reproduction, and A2 accepts that as
+residual risk.
+
+**The obstacle was never missing evidence. It was work.** Reproducing §4 meant reading about
+eleven hundred lines across two documents, extracting commands by hand, knowing which build
+directories are stale, and deciding for yourself which numbers matter. `reviewer-pack.sh` does
+that once: one entry point, a verdict table, and a transcript to attach to a signature. F11 moves
+from "nobody has reproduced this" to "reproducing this costs an afternoon" — **which is a change
+in cost, not in status, and the ledger says so.**
+
+**Three design choices carry the value, and each is a lesson already paid for here.**
+
+**It refuses on a dirty tree.** A signature has to name a commit; evidence gathered from a
+modified tree names nothing. And it writes its transcript OUTSIDE the repository, because a tool
+that insists the tree be clean must not be the thing that dirties it — the first version wrote
+four build logs into the working copy, which would have made its own second invocation refuse.
+
+**It rebuilds every builddir and checks each binary is newer than the newest source.** The
+`objs*/` trees are tracked in git, so a clone or a `reset --hard` hands over a *committed* binary
+rather than one built from the code under audit. That exact trap produced a FAIL on `objs_jit`
+during the audit's own assembly, and the reverse case is worse: a pass nobody measured. This
+session hit the same shape three more times — a stale `qjs.o` made `--jit-aot` look like an
+unknown option, a day-old `libquickjs.a` would have gated nginx against the old engine, and stale
+sanitizer trees made a fixed test look build-dependent. So freshness is now asserted, not trusted.
+
+**GATE and REPORTED are separated.** Gates are objectively pass/fail and decide the exit code.
+Counts — files, tests, leaves, the delta-log version — are printed and deliberately **not
+judged**: they drift legitimately as tests are added, so gating on them would fail for the wrong
+reason, and pinning them in the script would create a second copy of every number outside the
+documents that own them. That is the same reasoning that kept the refusal codes out of SPEC.md.
+
+**And it deliberately does not summarise the residuals.** `REVIEW.md` is a procedure that points
+INTO §15, §16, §14, the findings ledger and the audit's §3 and §6; it restates none of them.
+§15's own words are the argument: a signature applied without reading the ledger *"converts 'we
+know these holes exist' into 'someone looked and found nothing', which is worth less than no
+signature at all."* A signature on a summary would be exactly that.
+
+**What a signature there would and would not buy, stated in the block itself:** it closes the
+REPRODUCTION half of F11. It does not make the case two attestations of the DESIGN — that needs a
+reviewer who disagrees with the argument and says where, which is a larger exercise. Recording the
+narrower claim honestly is worth more than implying the broader one.
+
 **v5.83 (in place — the flake hunt: the gate's one unexplained failure was mine, and my
 stability check had been too small to see it):** two intermittents had gone unattributed. A
 failure with no name poisons every later result, because any future red gate can be waved away as

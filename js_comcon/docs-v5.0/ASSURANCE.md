@@ -782,6 +782,29 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T1, T10
 - **V:** V9
 
+#### G11.14 — the evidence can be re-run by someone else, in one command
+- **CLAIM:** Everything §15 and `AUDIT_M-SES.md` §4 rest on can be reproduced by a reviewer
+  who has not read either document first, from one entry point, with an objective verdict.
+- **ARGUMENT:** F11 is the only finding no engineering closes — it needs a second person. But
+  what stood between a willing reviewer and a reproduction was not evidence, it was *work*:
+  eleven hundred lines across two documents, commands to extract by hand, knowing which
+  builddirs are stale, and judging which numbers matter. Doing that once converts F11 from
+  "nobody has reproduced this" into "reproducing this costs an afternoon".
+- **EV:** `t/tools/reviewer-pack.sh` — refuses on a dirty tree, rebuilds every builddir and
+  checks each binary is newer than the newest source, then runs the suites, the three standing
+  checkers, the sanitizers and the negative controls. **GATE** results decide its exit code;
+  **REPORTED** counts are printed and deliberately not judged, so it cannot fail for the wrong
+  reason and cannot become a second copy of numbers the documents own.
+- **EV:** `REVIEW.md` — the procedure and the sign-off block, pointing INTO
+  §15/§16/§14, the ledger and the audit's §3/§6 rather than restating them.
+- **GAP:** This closes the *reproduction* half of F11 only, and closing it needs a signature
+  this repository cannot produce for itself. **Two attestations of the DESIGN** would need a
+  reviewer who disagrees with the argument and says where — a different and larger exercise,
+  and one the sign-off block is explicit about not being.
+  **home:** finding F11 · REVIEW.md §4.
+- **THREAT:** T3
+- **V:** V15
+
 #### G11.9 — THE SPEC cannot silently fall behind the code
 - **CLAIM:** Every member of a set `SPEC.md` calls closed appears in `SPEC.md`, so the
   normative read cannot quietly stop describing the shipped system.
@@ -897,7 +920,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 → G7.7 | **ACCEPTED — and now QUANTIFIED (2026-09-13):** a co-resident tenant's CPU burn moves a peer's latency from **0.3 ms to 347 ms** (1227× idle, ~2.9 bits/s) because the worker is single-threaded. Under a 50 ms execution deadline the separation falls to 49.8 ms. The deadline is the only mitigation in the tree and it narrows, never closes |
 | **F9** | V-track items with no machinery yet: **V5a, V5b, V6, V10** (four — **V14 built 2026-09-13**, and it found its claim FALSE; was six — this row said five until 2026-09-13, omitting V5a, which §Placement has always listed as unbuilt; a ledger that undercounts its own backlog is the quiet kind of wrong) | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7) **and V8 built COMPLETE** — both halves: G11.8 (read-only schema conformance) and G11.10 (the propagation column, across real workers). **V14 built 2026-09-13** (G11.12 — and its claim was FALSE: the same fragment compiled to different bytes). **V9 built 2026-09-13** (G11.13 — seven undescribed ops found). **Four remain, and ALL FOUR (V5a, V5b, V6, V10) sit on the parked compiler/protocol track** — the reachable V-track backlog is empty |
 | **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
-| **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2 | ACCEPTED — stated in the audit |
+| **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2, G11.14 | **STILL OPEN, but no longer expensive (2026-09-13).** It needs a person, so it cannot be closed here — what has changed is the cost: `t/tools/reviewer-pack.sh` + `REVIEW.md` turn "read 1100 lines, extract the commands, know which builddirs are stale" into one command and a verdict table. **Reproduction is what a signature there buys; two attestations of the DESIGN would need a reviewer who disagrees and says where**, and the sign-off block says so rather than implying otherwise |
 | **F13** | The REQUEST was outside the registry: `nginx.describe(req)` returned **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carried no declared type and no class. The read-only descriptor hardcoded `requestScoped: false` for every row, unfalsifiable only *because* there were no request rows to be wrong about. | G11.8, G3.7 | **CLOSED 2026-09-13.** All **54** rows classified — 28 getters, 25 methods, one settable (`statusCode`) — as TABLE rows, which are per-class and carry their own `RQS`, rather than through the bare-name read-only map. **Every type was read off its getter, and none was wrong on the first run** (`startTime` is a number not a Date; `location` is a live handle, not a path string). The pin at zero is now the real count, plus an assertion that every request row declares `requestScoped` — so a getter added without a table row is emitted by the discovery pass with `false` and fails the day it lands. Three controls |
 | **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
 
@@ -1027,6 +1050,8 @@ signature is never quietly credited with work it did not see.
 | **V9 BUILT — G11.13 added.** The describe⊇mutable discipline now covers the program instance: four surfaces, both directions, closed vocabularies. **Seven undescribed ops found**, including `describe` itself being a classified row on both NodeViews and absent on both epoch handles. Four controls; two rules of the auditor had to be corrected first (it reported the correct implementation of lazy materialization as drift). | **Closes the last REACHABLE V-item.** F9 drops to four, all of them on the parked compiler track. The new GAP is worth reading: this checks that a class is FROM the vocabulary, never that it is the RIGHT one. |
 
 | **G11.10's instrument had a 4%-under-load flake, found by hunting and fixed.** `t/js_com_propagation.t` test 13 looked the sweeping worker up in a later fan-out that need not have reached it (measured: absent in 4 of 40 runs under load); it now reports its own count in the request that wrote. A second assertion in the same file required ≥2 distinct workers where the leak check only needs ≥1 OTHER than the writer. A/B under load: fixed 0/40, pre-fix 3/40. | **Makes an existing leaf's evidence trustworthy; changes no claim.** Worth recording for how it was missed: the original stability check was three runs, and sixty standalone runs of the broken code also pass — the condition needs full-suite load. A denominator means nothing except against the conditions the failure requires. |
+
+| **THE REVIEWER PACK — G11.14 added; F11 made cheap rather than closed.** `reviewer-pack.sh` runs everything §15 and the audit's §4 rest on, from one entry point, refusing on a dirty tree and rebuilding every builddir first because the committed binaries are stale artifacts. `REVIEW.md` is the procedure and the sign-off block, pointing into the canonical lists rather than copying them. | **Changes no claim and closes no finding.** F11 stays OPEN: it needs a second person, and this only makes their afternoon cheap. Worth noting what it deliberately does NOT do — it does not summarise the residuals a signer accepts, because a signature on a summary is worth less than no signature. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with
