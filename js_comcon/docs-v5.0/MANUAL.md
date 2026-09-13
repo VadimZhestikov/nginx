@@ -153,6 +153,15 @@ asserts against. Codes are stable across releases — pin your CI to codes, not 
 message text. **[TBD-2]** The exact code taxonomy is undesigned (candidate families:
 `E_CAP_*` resolution, `E_ADMIT_*` admission, `E_BUDGET_*`, `E_PIN_*`, `E_EPOCH_*`).
 
+**What that promise covers TODAY (v5.61).** Only the *runtime compartment* denials are
+codes: `sock.listener`, `listener.read`, `listener.serverByName`, `enum.sockets`,
+`sock.mutate` — machine-readable via `nginx.tenantDenials().byOp`, and each one frozen
+with a probe in the V12 golden corpus (`t/tools/golden-denials.js`), so a rename breaks
+the project's own suite before it breaks yours. **The ADMISSION refusals are not codes
+yet** — an undeclared free name, dynamic code, a request field outside the sealed schema
+all arrive as message text. Until [TBD-2] lands you cannot follow the advice above for
+admission; match those on the *prefix*, expect it to move, and do not build a gate on it.
+
 ### 3.3 Your documentation is generated — and cannot lie
 
 ```

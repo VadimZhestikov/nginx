@@ -564,6 +564,32 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.61 (in place — V12: the denial codes are now a frozen contract, and the admission
+side is shown to have none):** MANUAL §3.2 tells tenants "codes are stable across releases —
+pin your CI to codes, not to message text." Nothing could keep or break that promise on
+purpose. `t/tools/golden-denials.js` freezes each compartment code with a probe and the edge
+it guards; `t/comcon_v12_denial_codes.t` (9) runs them and diffs
+`nginx.tenantDenials().byOp` per probe, so a rename breaks here rather than in every tenant's
+CI at once. Each probe must fire **its own code and nothing undeclared** — collateral (a
+listener probe necessarily crosses `sock.listener` first) is declared in `also`, never hidden;
+a code with no reachable path carries `unreachable` **with the reason**, which `enum.sockets`
+does. Check [5] of the generated enumerations (V7) compares the corpus to
+`ngx_js_denial_names[]` in both directions, so a code cannot be added without a probe or a
+written reason it cannot have one.
+
+**The finding is the ADMISSION side: it has no codes to pin to.** Undeclared free name,
+dynamic code, a request field outside the sealed schema — all *message text*. The tenant told
+not to pin to message text has nothing else available for admission; §3.2's taxonomy
+(`E_CAP_*`, `E_ADMIT_*`, …) remains **[TBD-2]**. The corpus records today's prefixes as
+`PROVISIONAL` so the gap is dated and visible, and the test states in its own assertion text
+that they are not a contract. Five controls, the premise one included: renaming a code in
+`ngx_js_compartment.c` and rebuilding failed three assertions plus check [5]; the fifth
+guards the guard — `t/comcon_enumerations.t` now asserts the LAST check printed its banner,
+so a checker that exits cleanly before an appended check is caught. Writing it also
+caught a row that froze the wrong refusal — the dynamic-code probe *referenced* `eval` rather
+than calling it, so the deny list refused it as a free name and the row would have passed
+forever while attesting to a gate it never reached.
+
 **v5.60 (in place — M-CFG's config instance: one tenant subtree onboarded through admit, end
 to end):** the last named deliverable of increment E, and the first thing to compose D5b-1's
 sound rejecter, D3's quotations, M4's typed registry and `std.ops`. `comcon.std.config`:

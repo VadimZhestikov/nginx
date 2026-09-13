@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.59 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.61 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -43,10 +43,18 @@
 >   `allowHosts`/`ttl`/`window` need **C-side enforcement** (shipping them as descriptors
 >   would be shipping policy that does nothing), and "raw operators withheld" needs a second
 >   compartment for library consumers.
-> - **The nearest unblocked deliverable is M-CFG's**, and it is the last named one of
->   increment E: *one tenant subtree onboarded through admit end-to-end*. Every piece exists
->   (D5b-1's sound rejecter + descriptor tables, D3 quotations, M4's typing, `std.profiles`,
->   `std.ops`); nothing has ever composed them.
+> - **M-CFG's config instance SHIPPED 2026-09-12 (v5.60)** — *one tenant subtree onboarded
+>   through admit end-to-end*, the last named deliverable of increment E, and the first thing
+>   to compose D5b-1's sound rejecter, D3's quotations, M4's typed registry and `std.ops`.
+>   `comcon.std.config` (`review`/`diff`/`apply`/`rollback`), `t/comcon_config_instance.t`.
+>   Composing them found what the parts could not: `apply()` was not atomic.
+> - **The verification track has run ahead of its column.** V3/V4/V7 (now/M2–M3) and
+>   **V11 + V12** (nominally M7/M8) are all built as of 2026-09-12 — see `VERIFICATION.md`.
+>   V12's finding is worth carrying forward: the compartment denial codes are frozen and
+>   checkable, but the **admission** refusals are message text with no codes at all, so
+>   MANUAL §3.2's advice to tenants ("pin to codes, not message text") cannot be followed for
+>   admission until the **[TBD-2]** taxonomy is designed. Still open on the V-track: V5a/V5b,
+>   V6, V8, V9, V10, V13, V14, V15.
 >
 > - **Confinement (increments A–E + D): no open item.** One thing inside D4c was
 >   deliberately NOT built and should not be mistaken for an oversight: **re-AOT of a live
@@ -757,9 +765,9 @@ milestones as a V-column:
 
 | Phase | Verification deliverables |
 |---|---|
-| now / M2–M3 | V3 executable reference semantics (kernel oracle) · V4 monotonicity-as-assertion · V7 generated (never maintained) enumerations |
+| now / M2–M3 | V3 ✅ executable reference semantics (kernel oracle) · V4 ✅ monotonicity-as-assertion · V7 ✅ generated (never maintained) enumerations (all 2026-09-12) |
 | M5–M6 | V5a per-artifact translation validation for the loop-free profile · V6 gas-placement CFG check on emitted C · V8 schema conformance tests (generated per registry row) · V9 drift-check extended to POM ops · V13 erasure spot check |
-| M7/M8/M-SES | V5b coverage-guided differential fuzzing · V10 TLA+ model of the epoch/two-phase protocol (incl. worker crash mid-flip) · V11 **policy mutation testing** (widen-one-permit mutants must be killed by the deny-suite) · V12 golden denial-code corpus · V14 reproducible builds · V15 the assurance case (claim → assumption → evidence; the umbrella) |
+| M7/M8/M-SES | V5b coverage-guided differential fuzzing · V10 TLA+ model of the epoch/two-phase protocol (incl. worker crash mid-flip) · V11 ✅ **policy mutation testing** (widen-one-permit mutants must be killed by the deny-suite) · V12 ✅ golden denial-code corpus — *both built early, 2026-09-12; V12's finding is that the ADMISSION refusals have no codes to pin to, so MANUAL §3.2's [TBD-2] taxonomy is now a dated, visible gap rather than an unnoticed one* · V14 reproducible builds · V15 the assurance case (claim → assumption → evidence; the umbrella) |
 
 ## 13. The engineering review (E1–E12) and the increment re-cut (v5.1)
 

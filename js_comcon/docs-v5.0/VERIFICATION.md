@@ -273,9 +273,49 @@ since the suite is what V11 is about: drop a probe and the matching mutant survi
 probe report one outcome and everything survives; declare a real widening equivalent and the
 two-sided check fires.
 
-**V12 — Golden denial-code corpus.** Denial codes are the tenants' CI contract
-(MANUAL §3.2); a frozen (probe → expected code) corpus verifies code stability across
-releases.
+**V12 ✅ (2026-09-12) — Golden denial-code corpus.** Denial codes are the tenants' CI
+contract: MANUAL §3.2 tells them "codes are stable across releases — pin your CI to codes,
+not to message text." That was a promise the project had no way to keep or break on
+purpose. `t/tools/golden-denials.js` freezes every code with a probe that provokes it and
+a sentence saying what edge it guards; `t/comcon_v12_denial_codes.t` runs the probes and
+diffs `nginx.tenantDenials().byOp` across each one, so a renamed or renumbered code breaks
+**here** rather than in every tenant's CI at once.
+
+**Each probe must fire its own code and nothing undeclared.** Reaching a listener requires
+passing the `sock.listener` edge first, so `listener.read` and `listener.serverByName`
+declare that collateral in `also`; anything fired outside `code ∪ also` fails the run,
+because it means the corpus no longer describes what the probe does. A row may carry
+`unreachable` **with its reason** instead of a probe — `enum.sockets` does: no confined
+fragment can obtain `nginx.http` or `nginx.cycle` today, so the gate is defence-in-depth
+for a path that does not exist, and the honest record is the reason rather than a missing
+row. Completeness is asserted from the runtime's own report (`byOp` keys == corpus codes),
+and **check [5] of the generated enumerations (V7) ties the corpus to the C enum**, so a
+code cannot be added to `ngx_js_denial_names[]` without someone either probing it or
+writing down why they cannot.
+
+**The finding is on the admission side: there are no codes there at all.** Admission
+refusals — undeclared free name, dynamic code, a request field outside the sealed schema —
+are *message text*. A tenant told to pin to codes rather than message text cannot do it for
+admission, which is the exact practice §3.2 warns against; the taxonomy (`E_CAP_*`,
+`E_ADMIT_*`, `E_BUDGET_*`, `E_PIN_*`, `E_EPOCH_*`) is still marked **[TBD-2]**. The
+`PROVISIONAL` rows record today's prefixes so the gap is dated and visible, and the test
+says in its own assertion text that they are not a contract.
+
+**Controls (5, all red where intended).** The one that matters is the premise itself:
+renaming `listener.serverByName` in `src/js/ngx_js_compartment.c` and rebuilding failed
+three assertions at once — completeness, that probe's own code, and the undeclared check —
+plus enumeration check [5] in both directions. Three harness-side: renaming a code in the
+corpus, deleting the `unreachable` row, and dropping a declared `also` (which correctly
+fails the test and *not* check [5], since [5] knows nothing about collateral). The fifth
+guards the guard: a checker that exits cleanly *before* check [5] — the shape an appended
+check invites — is caught, because `t/comcon_enumerations.t` now asserts the LAST check
+printed its banner, not just that the tool exited 0.
+
+**Writing it caught a row that froze the wrong refusal.** The dynamic-code probe first
+*referenced* `eval` rather than calling it — a reference is caught earlier, by the deny
+list, as an undeclared free name. The row would have passed forever while attesting to a
+gate it never reached. A probe must be checked for *which* mechanism refuses it, not only
+that something did.
 
 **V13 — Erasure spot check.** Run allow-suites on plain `qjs`/node (annotations
 ignored, capability doubles) vs admitted T1; must agree — keeps Principle 11 honest
@@ -306,7 +346,7 @@ deliverables land.
 
 | Now / M2–M3 | M5–M6 | M7 / M8 / M-SES |
 |---|---|---|
-| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · V13 | **V11 ✅ (2026-09-12, built early)** · V5b · V10 · V12 · V14 · V15 |
+| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · V8 · V9 · V13 | **V11 ✅ · V12 ✅ (2026-09-12, both built early)** · V5b · V10 · V14 · V15 |
 
 **Meta-observation:** the R-review's critical findings clustered at *tier boundaries*
 and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maintained-

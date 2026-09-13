@@ -2,7 +2,7 @@
 
 # COMCON V7 — enumerations are generated, never maintained (VERIFICATION.md).
 #
-# Three enumerations in this design are CLOSED and their COMPLETENESS is
+# Five enumerations in this design are CLOSED and their COMPLETENESS is
 # load-bearing:
 #
 #   p_symbol kinds      a kind that means two things at two tiers is a wrong
@@ -14,6 +14,12 @@
 #                       places src/js turns text into code is complete
 #   ops resources       FOUNDATION §8a's "no backdoor" -- the verbs are library
 #                       code over exactly these capabilities
+#   intrinsics          the C3 admission allowance: the engine's list vs the V3
+#                       oracle's model of it (and Date/Math must stay OUT)
+#   denial codes        MANUAL §3.2 promises tenants the codes are stable and
+#                       tells them to pin CI to codes -- so every code in the C
+#                       enum must carry a V12 golden-corpus row, with a probe or
+#                       a written reason it is unreachable
 #
 # Hand-maintained lists rot, and the rot is SILENT: nothing fails when a list
 # stops matching the code. So t/tools/check-enumerations.py derives each list from
@@ -35,7 +41,7 @@ BEGIN { use FindBin; chdir($FindBin::Bin); }
 use lib 'lib';
 use Test::Nginx;
 
-plan(tests => 4);
+plan(tests => 6);
 
 my $tool = "tools/check-enumerations.py";
 ok(-f $tool, "the enumeration checker exists ($tool)");
@@ -43,9 +49,13 @@ ok(-f $tool, "the enumeration checker exists ($tool)");
 my $out = `python3 $tool 2>&1`;
 my $rc  = $?;
 
-# The checker must have actually run all three checks -- "no drift" printed by a
+# The checker must have actually run EVERY check -- "no drift" printed by a
 # checker that bailed out early is the vacuous pass this suite keeps meeting.
+# The last one matters most here: a new check appended to the tool is exactly
+# what an early exit would swallow.
 like($out, qr/\[1\] p_symbol kinds/,  'check 1 ran (p_symbol kinds)');
 like($out, qr/\[2\] compile portals/, 'check 2 ran (compile portals)');
+like($out, qr/\[4\] C3 intrinsics/,   'check 4 ran (C3 intrinsics allowance)');
+like($out, qr/\[5\] denial codes/,    'check 5 ran (denial codes vs the V12 corpus)');
 
 is($rc, 0, "no enumeration drift\n" . $out);

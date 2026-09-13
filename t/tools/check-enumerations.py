@@ -15,7 +15,7 @@ suite rather than waiting for someone to re-read a document.
 
     python3 t/tools/check-enumerations.py [--verbose]
 
-Exit 0 = the four enumerations agree with the code. Exit 1 = drift, printed.
+Exit 0 = the five enumerations agree with the code. Exit 1 = drift, printed.
 """
 
 import re
@@ -283,10 +283,50 @@ def check_intrinsics():
                          "here and in VERIFICATION.md V3 as well" % n)
 
 
+# ---------------------------------------------------------------------------
+# 5. Denial codes: the C enumeration vs the V12 golden corpus.
+#
+# MANUAL §3.2 promises tenants that codes are stable across releases and tells
+# them to pin CI to codes rather than message text. The corpus
+# (t/tools/golden-denials.js) is what makes that checkable -- but only while it
+# describes the same set the runtime has. A code added to the C enum without a
+# corpus row would ship unfrozen: nothing would notice it changing later. A row
+# left behind after a code is removed is the opposite rot, a frozen contract for
+# something that no longer exists.
+#
+# A row may say `unreachable` instead of carrying a probe; that counts as
+# covered, because the reason is recorded. What is not allowed is silence.
+# ---------------------------------------------------------------------------
+def check_denial_codes():
+    print("[5] denial codes (C enum vs the V12 golden corpus)")
+    cmp_c = read("src/js/ngx_js_compartment.c")
+    m = re.search(r"ngx_js_denial_names\[NGX_JS_DENIAL_LAST\]\s*=\s*\{(.*?)\};",
+                  cmp_c, re.S)
+    if not m:
+        fails.append("[5] ngx_js_denial_names[] not found")
+        return
+    c_codes = set(re.findall(r'"([^"]+)"', m.group(1)))
+    note("C: %s" % sorted(c_codes))
+
+    golden = read("t/tools/golden-denials.js")
+    g_codes = set(re.findall(r"code:\s*'([^']+)'", golden))
+    note("corpus: %s" % sorted(g_codes))
+
+    for c in sorted(c_codes - g_codes):
+        fails.append("[5] denial code %r has no row in the golden corpus -- it "
+                     "would ship unfrozen, and MANUAL §3.2 promises tenants it "
+                     "is stable" % c)
+    for g in sorted(g_codes - c_codes):
+        fails.append("[5] the golden corpus freezes %r, which the runtime no "
+                     "longer emits -- a contract for something that does not "
+                     "exist" % g)
+
+
 check_p_symbols()
 check_portals()
 check_ops_resources()
 check_intrinsics()
+check_denial_codes()
 
 print("")
 if fails:
@@ -294,5 +334,5 @@ if fails:
     for f in fails:
         print("  - " + f)
     sys.exit(1)
-print("all four enumerations agree with the code")
+print("all five enumerations agree with the code")
 sys.exit(0)
