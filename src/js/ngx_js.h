@@ -152,6 +152,31 @@ typedef struct {
  */
 #define NGX_JS_HOST_REQUEST_TIMEOUT_MS  10000
 
+/*
+ * F2: the per-INVOCATION memory allowance for a confined fragment, in bytes.
+ *
+ * JS_SetMemoryLimit is per RUNTIME, and every fragment shares one -- so the
+ * 64 MB cap bounded the compartment as a whole and one fragment could exhaust
+ * the budget of all of them. Denial of service against siblings, not an
+ * authority escape, but the audit was right that "one number for everyone" is
+ * not attribution.
+ *
+ * The mechanism is the runtime limit itself, narrowed for the duration of one
+ * call: before the invoke the limit becomes (current usage + allowance) and
+ * afterwards it is restored. Nothing else runs in between -- the invoke is
+ * single-threaded -- so growth in that window IS this fragment's.
+ *
+ * WHAT THIS BOUNDS IS A BURST, NOT A LEAK. A fragment that retains a little on
+ * every request still walks the runtime cap upward across calls; that is the
+ * runtime limit's job and it remains the backstop. Stated rather than implied,
+ * because a per-call allowance reads like per-fragment accounting and is not.
+ *
+ * 16 MB: generous for a policy fragment serving one request (the whole
+ * compartment is 64 MB) while making "one call eats everyone's budget"
+ * impossible. contract.meter.memoryBytes overrides, and may only NARROW.
+ */
+#define NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES  (16 * 1024 * 1024)
+
 
 /*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).

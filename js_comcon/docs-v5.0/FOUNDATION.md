@@ -635,6 +635,42 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.72 (in place — F12 and F2: the bounds reach the places execution actually resumes):**
+two resource findings from the ledger, and both tests were WRONG FIRST in ways only their
+controls could show.
+
+**F12 — an `await` used to reset the protection.** F6 defaulted the host deadline on, but it
+was armed in exactly one place (the content handler) and cleared whenever a handler
+suspended; everything else that runs request JS — a header or body filter, the body-read
+completion and the microtask drain after it, the access phase — ran unbounded. I first
+counted 19 `JS_Call` sites and called it out of scope. The real chokepoint is
+`w->current_request`: it is set exactly when JS is about to run on behalf of a request,
+which is exactly when a request deadline applies — **eight sites, one helper**. Nested
+entries INHERIT rather than re-arm, because a filter that re-armed inside a handler would
+hand a runaway a fresh budget every time it crossed a layer. Worker-level JS (broadcast acks,
+listener callbacks) is deliberately NOT bounded by a knob named `workerRequestTimeout`.
+
+**F2 — a fragment gets a per-INVOCATION memory allowance.** `JS_SetMemoryLimit` is per
+runtime and every fragment shares one, so 64 MB bounded the compartment as a whole and one
+fragment could exhaust everyone's budget. The mechanism is that same limit, narrowed to
+(current usage + allowance) for the duration of one call and restored after: the invoke is
+single-threaded, so growth in that window IS this fragment's. 16 MB default;
+`contract.meter.memoryBytes` may only NARROW, enforced in C so calling `__invokeConfined`
+directly cannot buy a bigger budget. **It bounds a BURST, not a leak** — a fragment retaining
+a little on every call still walks the shared cap upward, which stays the runtime limit's job
+and stays open as the remainder of F2. A per-call allowance reads like per-fragment
+accounting and is not, so the difference is pinned by a test rather than left to be assumed.
+
+**Both probes passed for the wrong reason, and the controls are what said so.** The F12 probe
+used a GET — no body, so `readBody()` settled synchronously, the continuation never left the
+original entry, and removing the arm changed nothing. The F2 probe allocated 64 MB, which
+hits the pre-existing runtime cap, so it also passed with the new allowance disabled. Fixed
+by sending the body LATE (a real suspension) and by sizing the allocation to sit above the
+16 MB allowance and below the 64 MB cap. **Neither mistake was visible in a green run; both
+were visible the moment the control failed to fire.**
+
+`t/js_host_request_deadline.t` (9), `t/comcon_fragment_memory.t` (6), one control each.
+
 **v5.71 (in place — F6: host JS is bounded by default, and the narrower gap that closing it
 exposed):** AUDIT_M-SES §3 carried this as OPEN *and as a deliberate scope choice* — "bind
 the guard to the confined path only, so host JS behaviour does not change." The cost of that

@@ -29,6 +29,7 @@ use strict;
 
 use Test::More;
 use Time::HiRes qw/time/;
+use IO::Socket::INET;
 
 BEGIN { use FindBin; chdir($FindBin::Bin); }
 
@@ -59,6 +60,7 @@ http {
         location /set    { }
         location /burn   { }
         location /work   { }
+        location /after-await { }
     }
 }
 EOF
@@ -93,6 +95,20 @@ at('/burn', function (req) {
     req.respond(200, {'content-type':'text/plain'}, 'MISSED s=' + s);
 });
 
+/* F12: a runaway in the CONTINUATION, after a real suspension. `await
+   req.readBody()` suspends the handler (the deadline is cleared), nginx reads
+   the body, and the continuation is re-entered from the body-read completion --
+   which is where the user's post-await code actually runs. Until F12 that
+   re-entry armed nothing, so an await was a way to opt out of the bound without
+   meaning to. */
+at('/after-await', function (req) {
+    return req.readBody().then(function () {
+        var s = 0, i;
+        for (i = 0; i < 4000000000; i++) { s += i % 7; }
+        req.respond(200, {'content-type':'text/plain'}, 'MISSED s=' + s);
+    });
+});
+
 /* bounded work that outlasts a 300 ms deadline but finishes quickly: the probe
    for the opt-out, which must not be able to hang the suite either. */
 at('/work', function (req) {
@@ -103,7 +119,7 @@ at('/work', function (req) {
 });
 JS
 
-$t->try_run('no js module')->plan(7);
+$t->try_run('no js module')->plan(9);
 
 ###############################################################################
 
@@ -161,3 +177,51 @@ like($w, qr/"completed":true/,
 like($w, qr/"ms":(?:[3-9]\d\d|[1-9]\d{3})/,
      'and it really did outlast that deadline, so the opt-out is what let it '
      . 'finish rather than a loop too fast to matter');
+
+# --- F12: the continuation after a REAL suspension -------------------------
+#
+# THE BODY MUST ARRIVE LATE, or there is no suspension to test. The first
+# version of this probe used http_get(): a GET has no body, readBody() settles
+# synchronously, and the continuation ran inside the ORIGINAL entry under the
+# content handler's own deadline. It passed -- and its control (removing the arm
+# from the body-read completion) did NOT fail, which is the only reason the
+# mistake was caught. A probe whose control cannot go red is measuring something
+# other than what it claims.
+#
+# So: send the headers, pause, then send the body. Now nginx must wait, the
+# handler genuinely suspends, and the continuation is re-entered from
+# ngx_js_body_done -- the site F12 is about.
+sub late_body_post {
+    my ($path, $body) = @_;
+    my $s = IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => port(8080),
+                                  Proto => 'tcp', Timeout => 10) or die "connect: $!";
+    $s->print("POST $path HTTP/1.0\r\nHost: localhost\r\n"
+            . "Content-Length: " . length($body) . "\r\n\r\n");
+    select(undef, undef, undef, 0.25);      # force a real wait for the body
+    $s->print($body);
+    my $t0 = time();
+    my $resp = '';
+    eval {
+        local $SIG{ALRM} = sub { die "timeout\n" };
+        alarm 8;
+        local $/;
+        $resp = <$s> // '';
+        alarm 0;
+    };
+    alarm 0;
+    close $s;
+    return (sprintf('%.2f', time() - $t0) + 0, $resp);
+}
+
+http_get('/set?ms=300');
+my ($fsec, $fresp) = late_body_post('/after-await', 'x' x 64);
+diag("after-await (late body): returned after ${fsec}s");
+unlike($fresp, qr/MISSED/,
+       'F12: A RUNAWAY IN THE CONTINUATION IS STOPPED. `await req.readBody()` '
+       . 'suspends the handler and clears the deadline; the continuation is '
+       . 're-entered from the body-read completion, which now arms it again. '
+       . 'Before this, an await was a way to opt out of the bound without '
+       . 'meaning to');
+cmp_ok($fsec, '<', 5,
+       'and it is stopped at about the 300 ms deadline rather than running to '
+       . 'completion (which would take minutes)');

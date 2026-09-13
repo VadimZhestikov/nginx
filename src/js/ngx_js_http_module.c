@@ -36,6 +36,70 @@ static void  ngx_js_response_hooks_run(ngx_js_worker_t *w,
     ngx_http_request_t *r, ngx_js_loc_conf_t *jlcf);
 
 
+/*
+ * F12: arm the per-request execution deadline for THIS entry into JS.
+ *
+ * F6 defaulted the deadline on, but it was armed in exactly one place -- the
+ * content handler -- and cleared whenever a handler suspended. Everything else
+ * that runs request JS (a header or body filter, a body-read completion and the
+ * microtask drain that follows it, the access phase) ran with no deadline at
+ * all, so `await`ing anything RESET the protection: the continuation could spin
+ * forever. That was the whole of finding F12.
+ *
+ * `w->current_request` is the honest chokepoint: it is set exactly when JS is
+ * about to run on behalf of a request, which is exactly when a request deadline
+ * applies. So this is called at each of those sites rather than around all
+ * nineteen JS_Call()s -- and NOT around the drains that run worker-level JS
+ * (broadcast acks, listener callbacks), which are not request-scoped and whose
+ * bound would be a different knob with a different name.
+ *
+ * NESTED ENTRIES INHERIT, they do not extend. A filter running inside a handler
+ * must not re-arm: that would hand a runaway a fresh budget every time it
+ * crossed a layer, which is the opposite of a bound. Returns 1 when this call
+ * armed it (and therefore owns clearing it), 0 when an outer entry already did.
+ */
+static ngx_int_t
+ngx_js_arm_request_deadline(ngx_js_worker_t *w)
+{
+    JSValue          global, nginx_obj, val;
+    int64_t          n;
+    struct timespec  ts;
+
+    if (w->current_request == NULL || w->ctx == NULL) {
+        return 0;                       /* not request JS: not our bound */
+    }
+
+    if (w->request_deadline_ms != 0) {
+        return 0;                       /* an outer entry owns it */
+    }
+
+    global    = JS_GetGlobalObject(w->ctx);
+    nginx_obj = JS_GetPropertyStr(w->ctx, global, "nginx");
+    JS_FreeValue(w->ctx, global);
+
+    val = JS_GetPropertyStr(w->ctx, nginx_obj, "workerRequestTimeout");
+
+    if (JS_IsException(val) || JS_ToInt64(w->ctx, &n, val) != 0 || n < 0
+        || JS_IsUndefined(val) || JS_IsNull(val))
+    {
+        n = NGX_JS_HOST_REQUEST_TIMEOUT_MS;
+    }
+
+    JS_FreeValue(w->ctx, val);
+    JS_FreeValue(w->ctx, nginx_obj);
+
+    if (n == 0) {
+        return 0;                       /* explicit opt-out */
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    w->request_deadline_ms = (uint64_t) ts.tv_sec * 1000
+                             + (uint64_t) ts.tv_nsec / 1000000
+                             + (uint64_t) n;
+    return 1;
+}
+
+
 static ngx_int_t
 ngx_js_header_filter(ngx_http_request_t *r)
 {
@@ -43,6 +107,7 @@ ngx_js_header_filter(ngx_http_request_t *r)
     ngx_js_loc_conf_t  *jlcf;
     ngx_js_worker_t    *w;
     int                 was_set;
+    ngx_int_t           armed = 0;   /* F12: did THIS entry arm the deadline */
 
     jlcf = ngx_http_get_module_loc_conf(r, ngx_js_http_module);
 
@@ -77,6 +142,7 @@ ngx_js_header_filter(ngx_http_request_t *r)
     was_set = (w->current_request == r);
     if (!was_set) {
         w->current_request = r;
+        armed = ngx_js_arm_request_deadline(w);   /* F12 */
     }
 
     if (jlcf->header_filters != NULL && jlcf->header_filters->nelts > 0) {
@@ -92,6 +158,9 @@ ngx_js_header_filter(ngx_http_request_t *r)
     }
 
     if (!was_set) {
+        if (armed) {
+            w->request_deadline_ms = 0;
+        }
         w->current_request = NULL;
     }
 
@@ -151,10 +220,12 @@ ngx_js_body_filter_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
     ngx_str_t  out_body;
     ngx_int_t  rc;
     int        was_set;
+    ngx_int_t  armed = 0;   /* F12 */
 
     was_set = (w->current_request == r);
     if (!was_set) {
         w->current_request = r;
+        armed = ngx_js_arm_request_deadline(w);   /* F12 */
     }
 
     out_body = rctx->wb_body;
@@ -165,6 +236,9 @@ ngx_js_body_filter_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
         rctx->wb_body = out_body;
 
         if (!was_set) {
+            if (armed) {
+                w->request_deadline_ms = 0;
+            }
             w->current_request = NULL;
         }
 
@@ -179,6 +253,9 @@ ngx_js_body_filter_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
         }
     } else {
         if (!was_set) {
+            if (armed) {
+                w->request_deadline_ms = 0;
+            }
             w->current_request = NULL;
         }
     }
@@ -256,16 +333,21 @@ ngx_js_streaming_run_from(ngx_js_worker_t *w, ngx_http_request_t *r,
 {
     ngx_int_t  rc;
     int        was_set;
+    ngx_int_t  armed = 0;   /* F12 */
 
     was_set = (w->current_request == r);
     if (!was_set) {
         w->current_request = r;
+        armed = ngx_js_arm_request_deadline(w);   /* F12 */
     }
 
     rc = ngx_js_streaming_filters_run(w->ctx, w->rt, r, jlcf,
                                       cur_data, cur_len, is_last, start_idx);
 
     if (!was_set) {
+        if (armed) {
+            w->request_deadline_ms = 0;
+        }
         w->current_request = NULL;
     }
 
@@ -1605,11 +1687,20 @@ ngx_js_body_done(ngx_http_request_t *r)
     ngx_js_body_ctx_t  *bctx;
     JSContext          *job_ctx;
     JSValue             body;
+    ngx_int_t           armed;
 
     bctx = ngx_http_get_module_ctx(r, ngx_js_http_module);
     ngx_http_set_ctx(r, bctx->rctx, ngx_js_http_module);  /* restore req ctx */
 
     bctx->w->current_request = r;
+
+    /*
+     * F12: THE continuation site. The drain below is where the user's code
+     * after `await req.body()` actually runs -- and until now it ran with no
+     * deadline at all, because the content handler cleared it when the handler
+     * suspended. An await was a way to opt out of the bound without meaning to.
+     */
+    armed = ngx_js_arm_request_deadline(bctx->w);
 
     body = ngx_js_collect_body(bctx->ctx, r);
 
@@ -1640,6 +1731,9 @@ ngx_js_body_done(ngx_http_request_t *r)
     ngx_js_l4_async_check(bctx->w);
     ngx_http_finalize_request(r, NGX_DONE);
 
+    if (armed) {
+        bctx->w->request_deadline_ms = 0;
+    }
     bctx->w->current_request = NULL;
 }
 
@@ -1766,12 +1860,14 @@ ngx_js_body_chunks_body_done(ngx_http_request_t *r)
     JSValue                     iter_result, value;
     ngx_chain_t                *cl;
     ngx_buf_t                  *b;
+    ngx_int_t                   armed;
 
     iter = ngx_http_get_module_ctx(r, ngx_js_http_module);
     ngx_http_set_ctx(r, iter->rctx, ngx_js_http_module);   /* restore */
 
     iter->body_ready = 1;
     iter->w->current_request = r;
+    armed = ngx_js_arm_request_deadline(iter->w);   /* F12 */
     ctx = iter->ctx;
 
     /* Skip empty/in-file buffers at head of chain */
@@ -1817,6 +1913,9 @@ ngx_js_body_chunks_body_done(ngx_http_request_t *r)
     ngx_js_l4_async_check(iter->w);
     ngx_http_finalize_request(r, NGX_DONE);
 
+    if (armed) {
+        iter->w->request_deadline_ms = 0;
+    }
     iter->w->current_request = NULL;
 }
 
@@ -6647,13 +6746,15 @@ ngx_js_http_access_handler(ngx_http_request_t *r)
     }
 
     w->current_request = r;
+    (void) ngx_js_arm_request_deadline(w);   /* F12: the access phase runs JS too */
 
     /* Build a single flat array: global hooks first, then server hooks */
     n_all     = n_global + n_server;
     all_hooks = ngx_palloc(r->pool, n_all * sizeof(uint32_t));
     if (all_hooks == NULL) {
         JS_FreeValue(ctx, req_obj);
-        w->current_request = NULL;
+        w->current_request     = NULL;
+        w->request_deadline_ms = 0;
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
     if (n_global) {
@@ -6797,38 +6898,18 @@ ngx_js_content_handler(ngx_http_request_t *r)
         JS_FreeValue(ctx, val);
 
         /*
-         * F6: the deadline is ON unless the operator turns it off.
-         *
-         *   a number > 0   that many milliseconds
-         *   exactly 0      NO deadline -- an explicit, deliberate opt-out
-         *   anything else  the default (absent, deleted, NaN, negative, a
-         *                  string): a setting nobody can read must not silently
-         *                  mean "unbounded", which is the direction every other
-         *                  malformed-contract decision in this codebase takes.
+         * F6/F12: the deadline itself is armed by ngx_js_arm_request_deadline()
+         * below, once w->current_request is set -- ONE definition of "read the
+         * knob and arm", shared with every other entry point that runs request
+         * JS. Two copies of that logic is how one of them stops matching the
+         * documented semantics.
          */
-        val = JS_GetPropertyStr(ctx, nginx_obj, "workerRequestTimeout");
-
-        if (JS_IsException(val) || JS_ToInt64(ctx, &n, val) != 0 || n < 0) {
-            n = NGX_JS_HOST_REQUEST_TIMEOUT_MS;
-        }
-        if (JS_IsUndefined(val) || JS_IsNull(val)) {
-            n = NGX_JS_HOST_REQUEST_TIMEOUT_MS;
-        }
-
-        if (n > 0) {
-            struct timespec  ts;
-
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            w->request_deadline_ms = (uint64_t) ts.tv_sec * 1000
-                                     + (uint64_t) ts.tv_nsec / 1000000
-                                     + (uint64_t) n;
-        }
-        JS_FreeValue(ctx, val);
 
         JS_FreeValue(ctx, nginx_obj);
     }
 
     w->current_request = r;
+    (void) ngx_js_arm_request_deadline(w);   /* F6: on by default; F12: one helper */
 
     /* ---- Hook phase (P1/P9 chain) ---- */
     if (!rctx->p1_chain_done

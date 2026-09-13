@@ -4431,9 +4431,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var h=C.__includeConfined(String(source),names,caps,pols,admit,deps);"
     "    var ms=(contract.meter&&contract.meter[METER]"
     "            &&contract.meter[METER].timeoutMs)|0;"
+    /* F2: the per-invocation memory allowance travels with the meter, like the
+       deadline, and like the deadline it may only NARROW the default (enforced
+       in C, so calling __invokeConfined directly cannot widen it). */
+    "    var mem=(contract.meter&&contract.meter[METER]"
+    "             &&contract.meter[METER].memoryBytes)|0;"
     "    var bound=function(arg){modeReconcile();"
-    "      return C.__invokeConfined(h,arg,ms);};"
-    "    bound.confined=true;bound.handle=h;bound.meterMs=ms;return bound;};"
+    "      return C.__invokeConfined(h,arg,ms,mem);};"
+    "    bound.confined=true;bound.handle=h;bound.meterMs=ms;"
+    "    bound.meterMemoryBytes=mem;return bound;};"
     /* pom(fragment): the reflective Program Object Model surface (increment D1).
        A lazy NodeView tree over a compiled fragment (module/function granularity
        — the bytecode tree; POM.md). Reads ALWAYS return quotations: text()/
@@ -5899,7 +5905,7 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                                           "__includeConfined", 6));
         JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
-                                          "__invokeConfined", 3));
+                                          "__invokeConfined", 4));
         /* D4a: free a superseded fragment (bounded rollback window). */
         JS_SetPropertyStr(ctx, comcon_obj, "__freeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_free_confined,

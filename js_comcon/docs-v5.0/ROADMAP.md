@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.71 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.72 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -74,6 +74,11 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **F12 CLOSED + F2 PARTLY CLOSED (2026-09-13, v5.72).** The host deadline is armed at
+>   every entry that runs request JS (`w->current_request`, 8 sites, one helper — an
+>   `await` no longer resets the bound), and a confined fragment gets a per-invocation
+>   memory allowance (16 MB default, contract may only narrow). F2's remainder — a slow
+>   leak across calls, which the shared runtime cap still backstops — stays open.
 > - **F6 CLOSED (2026-09-13, v5.71): host JS is bounded by default.**
 >   `nginx.workerRequestTimeout` now defaults to 10 s (0 = explicit opt-out, malformed =
 >   the default). The old default of 0 meant one accidental `while(true)` hung a worker

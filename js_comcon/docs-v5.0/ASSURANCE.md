@@ -340,7 +340,7 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T11, T6
 - **V:** V9
 
-#### G6.6 — HOST JS is bounded too, by default
+#### G6.5 — HOST JS is bounded too, by default
 - **CLAIM:** A host `location.handler` — operator code, not a tenant fragment — runs under a
   per-request execution deadline that is **on by default** (10 s). `0` is an explicit
   opt-out; a missing or malformed value reads as the default rather than as unbounded.
@@ -350,20 +350,26 @@ The primary control, and the one everything else is defence in depth for.
   JS is trusted and may legitimately spend real synchronous time in a request. The knob now
   reads as its own default, so its value is discoverable without a document.
 - **EV:** `t/js_host_request_deadline.t` — the default stops a runaway (evidenced in the error log, because the client gives up first); a 300 ms setting stops it in 0.3 s; `0` lets 1.7 s of work through.
-- **GAP:** The deadline bounds one **synchronous entry** and is cleared when a handler
-  suspends, so code re-entered from an event callback (a continuation after real I/O) runs
-  unbounded. **home:** finding F12.
+- **EV:** `t/js_host_request_deadline.t` — and F12: a runaway in the continuation after
+  `await req.readBody()` is stopped at the deadline, with the body sent LATE so the handler
+  genuinely suspends (a GET settles synchronously and would test nothing).
 - **THREAT:** T11
 - **V:** V6
 
-#### G6.5 — memory is bounded per RUNTIME, not per fragment
+#### G6.6 — memory: a per-invocation allowance, over a shared runtime cap
 - **CLAIM:** *(partial)* `JS_SetMemoryLimit(comcon_rt, 64MB)` bounds the runtime shared by
   every fragment. One fragment can exhaust the budget of its siblings — denial of service
   against peers, not an authority escape.
-- **GAP:** No per-fragment memory attribution, and nothing asserts a FRAGMENT hitting the
-  cap (`t/js_worker_memory_limit.t` proves the mechanism on the HOST runtime only).
-  **home:** HARDENING.md S5 · AUDIT_M-SES.md §3 · finding F2.
-- **EV:** `t/js_worker_memory_limit.t` — the mechanism, on the host runtime.
+- **CLAIM (added 2026-09-13):** a fragment also gets a per-INVOCATION allowance — 16 MB by
+  default, `contract.meter.memoryBytes` may only narrow it — enforced by narrowing the
+  runtime limit for the duration of one call and restoring it after. The invoke is
+  single-threaded, so growth in that window is attributable to that fragment, which is as
+  much attribution as one shared runtime can honestly give.
+- **EV:** `t/comcon_fragment_memory.t` — over-allowance is refused with `InternalError: out of memory`, the compartment survives it, a contract narrows but cannot widen, and the bound resets per call.
+- **GAP:** It bounds a **burst, not a leak**: a fragment retaining memory across calls still
+  walks the shared 64 MB runtime cap upward, and nothing attributes that to a fragment.
+  **home:** HARDENING.md S5 · finding F2.
+- **EV:** `t/js_worker_memory_limit.t` — the runtime-level mechanism, on the host runtime.
 - **THREAT:** T11, T4
 - **V:** V6
 
@@ -639,7 +645,7 @@ assurance case whose findings section is empty has not been built honestly.
 | # | Finding | Where | Status |
 |---|---|---|---|
 | **F1** | **20 of 83 evidence citations in the doc set pointed at files that do not exist** — pre-CONVERGENCE names, deleted in P6a/P6b. A reviewer following THREATS T11 to `t/comcon_gas.t` found nothing. | this document, §12 | **FIXED + now checked** (`check-assurance.py`) |
-| **F2** | No per-fragment memory attribution; nothing asserts a fragment hitting the 64 MB runtime cap | G6.4 | OPEN — deferred by design (S5) |
+| **F2** | No per-fragment memory attribution; nothing asserts a fragment hitting the 64 MB runtime cap | G6.6 | **PARTLY CLOSED 2026-09-13:** a per-INVOCATION allowance (16 MB default; `contract.meter.memoryBytes` may only narrow) enforced by narrowing the runtime limit for one call. **It bounds a BURST, not a leak** — a fragment retaining a little per call still walks the shared cap up, and that residue is the part of F2 still OPEN |
 | **F3** | Cross-compartment identity not probed | G7.6 | **PROBED 2026-09-12** — no channel found on eight shared surfaces, and removing the freeze opens five of them, so the mechanism is identified rather than assumed. **Residual:** declaring `Symbol` for two tenants gives them `Symbol.for` as a rendezvous, unwarned |
 | **F4** | `guarded` / `irreversible` COM members are excluded from the setter fuzz | AUDIT_M-SES.md §3 | OPEN — deliberate scope choice |
 | **F5** | AOT-compiled fragments not separately run against the escape battery | G7.5 | **CLOSED 2026-09-12** (after the §15 signature — see §16): the battery now runs against a fragment with 20 natively-lowered functions, the precondition is asserted, and the tiers agree probe by probe |
@@ -649,7 +655,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F9** | V-track items with no machinery yet: V5b, V6, V8, V9, V10, V13, V14 | VERIFICATION.md | OPEN — scheduled |
 | **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2 | ACCEPTED — stated in the audit |
-| **F12** | The host-JS deadline bounds one SYNCHRONOUS ENTRY. It is cleared when a handler suspends, so a continuation re-entered from an event callback (promise settle, timer, socket) runs unbounded — a runaway *after* an `await` still hangs the worker | G6.6 | **OPEN — named 2026-09-13.** Arming at every re-entry means touching 19 `JS_Call` sites; a time-gap heuristic was rejected because under sustained load the worker never idles, so a cumulative clock would abort every request. Not probed either: a content handler suspended on a `setTimeout`-resolved promise does not resume at all today (measured), so the path cannot be exercised that way |
+| **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
 
 ---
 
@@ -751,6 +757,8 @@ signature is never quietly credited with work it did not see.
 | **F10 CLOSED** — `E_CAP_FLAVOR` and `E_CAP_ESCALATE` ship, thrown by a JS `capRefuse()` that mirrors the C helper (code on `.code`, bracketed at the end of the message). E_CAP_ESCALATE has four raising sites: the two REACHABLE ones are pinned (`comcon_v4_monotonicity.t`, `comcon_budget_uses.t`), and the two that are defence-in-depth are recorded as unprobeable rather than given a dead probe. [TBD-2] is fully resolved; the two empty families are answers, not omissions. | **Strictly narrows what was signed.** A second accepted residual is now closed. |
 
 | **F6 CLOSED, F12 OPENED** — the host-JS request deadline now defaults ON (10 s; `0` opts out; malformed reads as the default), with `t/js_host_request_deadline.t` and two controls (the default reverted to 0; the interrupt handler made inert). Closing it exposed the narrower gap that F12 now names: the deadline covers one synchronous entry, not a continuation re-entered from an event callback. | **Narrows one residual and names a smaller one.** F6 as signed ("host JS is unbounded by default") is no longer true; the remainder is F12, which did not exist as a separate row when §15 was signed. |
+
+| **F12 CLOSED, F2 PARTLY CLOSED** — the host deadline is now armed at every entry that runs request JS (`w->current_request` is the chokepoint: 8 sites, one helper, nested entries inherit rather than extend), so a runaway after an `await` is stopped; and a confined fragment gets a per-invocation memory allowance (16 MB default, narrowable by contract, enforced by the engine). **Both probes were wrong first and their controls caught it:** the F12 probe used a GET (no body → no suspension → nothing tested) and the F2 probe allocated 64 MB (which hits the pre-existing runtime cap, so it passed with the new bound disabled). | **Narrows two residuals.** F2's remainder — a slow leak across calls — stays open and is named in its row. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

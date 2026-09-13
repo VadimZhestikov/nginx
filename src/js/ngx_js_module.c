@@ -1801,8 +1801,10 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     int64_t           handle = 0;
     int               nargs = 0;
     uint32_t          timeout = 0;
+    uint32_t          memory = 0;
     uint64_t          old_deadline = 0, now_ms, newd;
     ngx_uint_t        metered = 0;
+    JSMemoryUsage     mu;
     struct timespec   ts;
     ngx_js_compartment_t  prev;
 
@@ -1815,6 +1817,9 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     JS_ToInt64(hctx, &handle, argv[0]);
     if (argc > 2) {
         JS_ToUint32(hctx, &timeout, argv[2]);
+    }
+    if (argc > 3) {
+        JS_ToUint32(hctx, &memory, argv[3]);
     }
 
     if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
@@ -1873,11 +1878,33 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         metered = 1;
     }
 
+    /*
+     * F2: a per-INVOCATION memory allowance, enforced by narrowing the runtime
+     * limit for the duration of this call and restoring it afterwards. The
+     * invoke is single-threaded, so growth in that window is attributable to
+     * this fragment -- which is as much attribution as one shared runtime can
+     * honestly give.
+     *
+     * A contract may only NARROW: the min() is what stops __invokeConfined from
+     * being called directly with a larger allowance than the default, the same
+     * rule the deadline above follows.
+     */
+    if (memory == 0 || memory > NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES) {
+        memory = NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES;
+    }
+
+    JS_ComputeMemoryUsage(jcf->comcon_rt, &mu);
+    JS_SetMemoryLimit(jcf->comcon_rt,
+                      (size_t) mu.malloc_size + (size_t) memory);
+
     /* run the fragment as a confined compartment: the A1 reach gate denies the
        authority edges (e.g. a granted socket's .listener) even though the
        fragment legitimately holds the cap. */
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
     result = JS_Call(sctx, fn, JS_UNDEFINED, nargs, (JSValueConst *) &arg);
+
+    /* restore the compartment-wide cap: the allowance was for THAT call only */
+    JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
 
     if (JS_IsException(result)) {
         exc = JS_GetException(sctx);
