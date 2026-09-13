@@ -20,6 +20,7 @@
 #include <quickjs.h>
 #include "ngx_js.h"
 #include "ngx_js_com.h"
+#include "ngx_js_socket.h"   /* NginxOutbound: the class id it is keyed by */
 
 
 /* Convenience shorthands for table rows. */
@@ -838,6 +839,29 @@ static const ngx_js_member_class_t  ngx_js_request_members[] = {
 };
 
 
+/* ------------------------------------------------------------------ *
+ * NginxOutbound — the outbound capability (M-LIB `allowHosts`)         *
+ * ------------------------------------------------------------------ *
+ * Classified for the reason F13 gives: a surface a tenant holds should not be
+ * the one surface without a type and a class.  `request` is the tenant's half
+ * and `pending`/`clear` are the host's -- the A1 reach gate denies the latter
+ * two inside a compartment, so they are `guarded` rather than `safe`: they reach
+ * state that is not this fragment's.
+ */
+static const ngx_js_member_class_t  ngx_js_outbound_members[] = {
+    { "request", "function", SAFE, METH|RQS, WL,
+      "records an outbound INTENT, glob-checked in the compartment; the host "
+      "performs the I/O. Returns a ticket, or undefined when a gate denied it" },
+    { "pending", "function", GRD, METH, WL,
+      "the HOST's half: reads the recorded queue. Denied in a compartment "
+      "(out.drain) -- a fragment reading it would read what a sibling fragment "
+      "sharing the capability had recorded" },
+    { "clear",   "function", GRD, METH, WL,
+      "the HOST's half: empties the queue. Denied in a compartment (out.drain)" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+
 /* NginxPeer / NginxRrPeer — scalar setters; propagation is zoned-shared when
  * the upstream is zone-backed (resolved live by the refine hook below). */
 static const ngx_js_member_class_t  ngx_js_peer_members[] = {
@@ -1467,6 +1491,7 @@ static const ngx_js_member_registry_t  ngx_js_member_registry[] = {
 
     /* The request (F13) — the tenant-facing surface, classified 2026-09-13 */
     { &ngx_js_request_class_id,         ngx_js_request_members,         NULL },
+    { &ngx_js_outbound_class_id,        ngx_js_outbound_members,        NULL },
 
     /* Topology classes — follow-up #2 (close the describe() gaps) */
     { &ngx_js_upstream_class_id,        ngx_js_upstream_members,        NULL },
@@ -1555,6 +1580,7 @@ static const struct {
        instance -- which is the only way to ask about it at all outside a
        request, and what the M4 return-type binding needs. */
     { "NginxRequest",            ngx_js_request_members },
+    { "NginxOutbound",           ngx_js_outbound_members },
     { "NginxServer",             ngx_js_server_members },
     { "NginxProxy",              ngx_js_proxy_members },
     { "NginxGzip",               ngx_js_gzip_members },

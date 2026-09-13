@@ -1235,7 +1235,88 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             }
         }
 
-        if (kind == 1) {
+        if (kind == 3) {
+            /*
+             * M-LIB `allowHosts`: the outbound capability, attenuated by a host
+             * glob.  Only the C-backed handle crosses -- the glob, the budget
+             * and the lifetime are data, so the wrapper on the far side is built
+             * from a string and some numbers rather than from anything the host
+             * holds.
+             */
+            int32_t      oh = ngx_js_outbound_handle(cap_v);
+            const char  *hglob = NULL;
+            size_t       hglen = 0;
+            uint32_t     obttl = 0, oblimit = 0, obwindow = 0;
+            char         obkey[80];
+
+            if (oh < 0) {
+                JS_FreeValue(hctx, pol_v);
+                JS_FreeValue(hctx, cap_v);
+                goto grant_bad;
+            }
+
+            obkey[0] = '\0';
+            name_v = JS_GetPropertyStr(hctx, pol_v, "glob");
+            hglob = JS_ToCStringLen(hctx, &hglen, name_v);
+
+            /*
+             * A grant with an EMPTY glob is refused rather than wrapped.  An
+             * empty glob would reach the far side as "unmediated", which is the
+             * host's own shape -- exactly the fail-open that the mediation
+             * vocabulary's unknown-flavour refusal exists to prevent.
+             */
+            if (hglob == NULL || hglen == 0) {
+                if (hglob != NULL) {
+                    JS_FreeCString(hctx, hglob);
+                }
+                JS_FreeValue(hctx, name_v);
+                JS_FreeValue(hctx, pol_v);
+                JS_FreeValue(hctx, cap_v);
+                goto grant_bad;
+            }
+
+            {
+                JSValue  t_v = JS_GetPropertyStr(hctx, pol_v, "ttlSeconds");
+                if (!JS_IsUndefined(t_v)) {
+                    JS_ToUint32(hctx, &obttl, t_v);
+                }
+                JS_FreeValue(hctx, t_v);
+
+                JSValue  b_v = JS_GetPropertyStr(hctx, pol_v, "budget");
+                if (JS_IsObject(b_v)) {
+                    JSValue  k_v = JS_GetPropertyStr(hctx, b_v, "key");
+                    const char *k = JS_ToCString(hctx, k_v);
+                    if (k != NULL) {
+                        ngx_cpystrn((u_char *) obkey, (u_char *) k,
+                                    sizeof(obkey));
+                        JS_FreeCString(hctx, k);
+                    }
+                    JS_FreeValue(hctx, k_v);
+
+                    JSValue  l_v = JS_GetPropertyStr(hctx, b_v, "limit");
+                    JS_ToUint32(hctx, &oblimit, l_v);
+                    JS_FreeValue(hctx, l_v);
+
+                    JSValue  w_v = JS_GetPropertyStr(hctx, b_v, "window");
+                    JS_ToUint32(hctx, &obwindow, w_v);
+                    JS_FreeValue(hctx, w_v);
+                }
+                JS_FreeValue(hctx, b_v);
+            }
+
+            av[gi] = ngx_js_outbound_wrap(sctx, (uint32_t) oh, hglob, hglen,
+                                          obkey[0] ? obkey : NULL,
+                                          oblimit, obwindow, obttl);
+            JS_FreeCString(hctx, hglob);
+            JS_FreeValue(hctx, name_v);
+            JS_FreeValue(hctx, pol_v);
+            JS_FreeValue(hctx, cap_v);
+            if (JS_IsException(av[gi])) {
+                goto grant_bad;
+            }
+            continue;
+
+        } else if (kind == 1) {
             /* route facet over a granted server */
             void        *srv_op = ngx_js_server_srv_op(cap_v);
             const char  *glob = NULL;

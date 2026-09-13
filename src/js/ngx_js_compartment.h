@@ -94,6 +94,16 @@ typedef enum {
     NGX_JS_DENIAL_SOCK_MUTATE,         /* sock.close / sock.broadcast (SR-1)  */
     NGX_JS_DENIAL_BUDGET_USES,         /* a `uses` budget is exhausted (M-LIB) */
     NGX_JS_DENIAL_CAP_EXPIRED,         /* a `ttl` capability lifetime has passed  */
+    /*
+     * M-LIB `allowHosts`: the outbound capability.  `out.host` is the glob
+     * refusing a destination -- the mediation biting.  `out.drain` is the A1
+     * reach gate: reading or clearing the recorded intents is the HOST's half
+     * of this capability, and a fragment that could drain the queue would read
+     * what a sibling fragment sharing the same cap had recorded, which is a
+     * channel rather than an outbound request.
+     */
+    NGX_JS_DENIAL_OUT_HOST,            /* destination outside allowHosts()       */
+    NGX_JS_DENIAL_OUT_DRAIN,           /* pending()/clear() from a compartment   */
     NGX_JS_DENIAL_LAST
 } ngx_js_denial_code_t;
 

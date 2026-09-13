@@ -20,7 +20,8 @@
 # 2. THE MEDIATION VOCABULARY IS CLOSED, BECAUSE AN UNKNOWN WORD USED TO MEAN
 #    FULL AUTHORITY. include()'s flavor translation fell through to its default
 #    `{kind:0, mask:FULL}`, so a descriptor the enforcement layer does not
-#    implement (`allowHosts`) or a one-letter typo (`redcat` for `redact`)
+#    implement (`cosign`; the original example, `allowHosts`, shipped at v5.85)
+#    or a one-letter typo (`redcat` for `redact`)
 #    granted the capability IN FULL. Measured before the fix: the fragment read
 #    s.address as a string through both, where redact() hid it -- a misspelling
 #    that WIDENED authority. A library generates these descriptors mechanically,
@@ -159,11 +160,25 @@ l.handler = function (req) {
     try { comcon.std.profiles.tenant({}); }
     catch (e) { o.badEnv = 'refused'; }
 
-    /* THE CLOSED VOCABULARY: both spellings that used to mean FULL authority */
+    /* THE CLOSED VOCABULARY: both spellings that used to mean FULL authority.
+     *
+     * The example used to be `allowHosts`, which SHIPPED at v5.85 -- so this
+     * probe stopped testing an unimplemented word and started testing an
+     * implemented one, and the assertion failed as it should have.  `cosign` is
+     * named in MANUAL's vocabulary and is still unimplemented, which is exactly
+     * what this needs: a word an operator might plausibly write and the
+     * enforcement layer does not know. */
     o.unknownFlavor = 'ACCEPTED';
     try {
-        comcon.mediate(sock, { flavor: 'allowHosts', hosts: ['a.example'] });
+        comcon.mediate(sock, { flavor: 'cosign', signers: ['a@example'] });
     } catch (e) { o.unknownFlavor = 'refused'; }
+
+    /* And the shape that outlived the old probe: a descriptor built BY HAND for
+     * an implemented flavour, missing the field that flavour needs.  mediate()
+     * refuses it at the producer rather than letting it reach include(). */
+    o.handBuiltNoGlob = 'ACCEPTED';
+    try { comcon.mediate(sock, { flavor: 'allowHosts', hosts: ['a.example'] }); }
+    catch (e) { o.handBuiltNoGlob = 'refused'; }
 
     o.typoFlavor = 'ACCEPTED';
     try { comcon.mediate(sock, { flavor: 'redcat', fields: ['address'] }); }
@@ -200,7 +215,7 @@ l.handler = function (req) {
 };
 JS
 
-$t->try_run('no js module')->plan(21);
+$t->try_run('no js module')->plan(22);
 
 ###############################################################################
 
@@ -251,8 +266,11 @@ like($r, qr/"namesPostures":true/,
 like($r, qr/"badEnv":"refused"/, 'a profile refuses anything but a real env()');
 
 # --- the closed vocabulary (the fail-open this increment found) ----------
+like($r, qr/"handBuiltNoGlob":"refused"/,
+     'a HAND-BUILT descriptor for an implemented flavour, missing the field that '
+     . 'flavour needs, is refused at the producer rather than reaching include()');
 like($r, qr/"unknownFlavor":"refused"/,
-     'an unimplemented flavor (allowHosts) is REFUSED -- it used to grant the '
+     'an unimplemented flavor (cosign) is REFUSED -- it used to grant the '
      . 'capability in full');
 like($r, qr/"typoFlavor":"refused"/,
      'a one-letter typo of a real flavor is refused -- it used to grant MORE '

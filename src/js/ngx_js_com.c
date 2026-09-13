@@ -601,6 +601,14 @@ ngx_js_com_register_classes(JSRuntime *rt)
         return NGX_ERROR;
     }
 
+    /* M-LIB `allowHosts`: the outbound capability's class, registered beside the
+       socket's because a granted wrapper has to exist in the COMPARTMENT
+       runtime too -- a class registered in only one runtime makes a grant
+       unusable on the far side. */
+    if (ngx_js_outbound_register_class(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     if (ngx_js_socket_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
@@ -3869,7 +3877,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "  function capRefuse(code,msg){"
     "    var e=new TypeError(msg+' ['+code+']');"
     "    e.code=code;throw e;}"
-    "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1,uses:1,ttl:1};"
+    "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1,uses:1,ttl:1,"
+    "               allowHosts:1};"
     /* One definition of the socket field lattice, used by the meet here and by
        include()'s translation below -- two copies of a bitmask mapping is how a
        "narrower" membrane ends up wider than the one it attenuates. */
@@ -3900,8 +3909,9 @@ static const char  ngx_js_comcon_bootstrap[] =
                  "(revoke/redact/allow/routes)');"
     "    if(!FLAVORS[interceptor.flavor])capRefuse('E_CAP_FLAVOR',"
     "      'mediate: unknown interceptor flavor '+String(interceptor.flavor)+"
-    "      '; the vocabulary is closed (revoke, redact, allow, routes, uses) -- "
-                 "an unrecognized one used to mean FULL authority');"
+    "      '; the vocabulary is closed (revoke, redact, allow, routes, uses, "
+                 "ttl, allowHosts) -- an unrecognized one used to mean FULL "
+                 "authority');"
     /* SNAPSHOT, do not hold the caller's object.  Validating here and reading it
        at include() time is a time-of-check/time-of-use gap: the descriptor is an
        ordinary object the caller still holds, so
@@ -3935,6 +3945,21 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        'mediate: uses() needs an integer window >= 1 (seconds)');"
     "      snap={flavor:'allow',fields:maskFields(FMASK_FULL),"
     "            budget:{key:bk,limit:bl,window:bw}};}"
+    /* `allowHosts` is validated HERE for the same reason `uses` is: the
+       CONSTRUCTOR refuses an empty glob, but a caller can hand mediate() a
+       descriptor it built itself, and `{flavor:'allowHosts'}` with no glob would
+       then travel as far as include() before anything objected.  Checking at the
+       producer is what makes the constructor's refusal a property of the
+       vocabulary rather than a courtesy of one helper.  Found by
+       comcon_std_lib.t, whose unknown-flavour probe had used exactly that
+       hand-built shape while `allowHosts` was still unimplemented. */
+    "    if(snap.flavor==='allowHosts'){"
+    "      var hg=String(interceptor.glob||'');"
+    "      if(!hg)throw new TypeError('mediate: allowHosts() needs a host glob; "
+             "an empty glob is a mistake, not \\'*\\'');"
+    "      if(hg.length>120)throw new TypeError('mediate: allowHosts() glob too "
+             "long (max 120 chars)');"
+    "      snap={flavor:'allowHosts',glob:hg};}"
     "    if(snap.flavor==='ttl'){"
     "      var ts=Number(interceptor.seconds);"
     "      if(!(ts>=1)||ts!==Math.floor(ts))throw new TypeError("
@@ -3959,6 +3984,46 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      var ii=cap[FACET].interceptor,oi=snap;"
     "      if(ii.flavor==='revoke'||oi.flavor==='revoke'){"
     "        snap=Object.freeze({flavor:'revoke'});}"
+    /* allowHosts: two HOST GLOBS have no computable meet, for the reason routes
+       gives -- "*.example.com" and "api.*" have an intersection no glob can
+       spell, so picking one would widen the other.  An identical glob composes;
+       a different one is REFUSED.
+     *
+     * But a glob and a BUDGET or a LIFETIME attenuate ORTHOGONAL axes, and the
+     * composition an operator actually wants is "only these hosts, at most N
+     * times an hour".  So those compose: the glob is carried through and the
+     * budget/lifetime meet runs exactly as it does for a mask.  `routes` refuses
+     * that combination today, which is a narrower rule than its own reasoning
+     * supports; it is left alone here rather than changed under cover of a
+     * different feature.
+     *
+     * The FIRST version of this branch refused every mixed pair, which made the
+     * budget and lifetime plumbing on the outbound wrapper unreachable -- code no
+     * control could break.  The test asking for `allowHosts` + `uses` is what
+     * surfaced it. */
+    "      else if(ii.flavor==='allowHosts'||oi.flavor==='allowHosts'){"
+    "        var ag=(ii.flavor==='allowHosts')?ii.glob:oi.glob;"
+    "        if(ii.flavor==='allowHosts'&&oi.flavor==='allowHosts'"
+    "           &&ii.glob!==oi.glob)capRefuse("
+    "          'E_CAP_ESCALATE',"
+    "          'mediate: cannot re-mediate an allowHosts facet with a "
+                 "different glob -- a host-glob meet is not computable, and "
+                 "guessing would widen');"
+    "        var other=(ii.flavor==='allowHosts')?oi:ii;"
+    "        if(other.flavor!=='allowHosts'&&other.flavor!=='uses'"
+    "           &&other.flavor!=='ttl'&&other.flavor!=='allow')capRefuse("
+    "          'E_CAP_ESCALATE',"
+    "          'mediate: an allowHosts facet composes only with uses() or "
+                 "ttl() -- a mask means nothing to an outbound capability, and "
+                 "guessing what it should mean would widen');"
+    "        var ab=budgetMeet(ii.budget,oi.budget);"
+    "        var as={flavor:'allowHosts',glob:ag};"
+    "        if(ab)as.budget=ab;"
+    "        var at1=ii.ttlSeconds,at2=oi.ttlSeconds;"
+    "        if(at1!==undefined||at2!==undefined){"
+    "          as.ttlSeconds=(at1===undefined)?at2:"
+    "                        ((at2===undefined)?at1:(at1<at2?at1:at2));}"
+    "        snap=Object.freeze(as);}"
     "      else if(ii.flavor==='routes'||oi.flavor==='routes'){"
     "        if(ii.flavor!==oi.flavor||ii.glob!==oi.glob)capRefuse("
     "          'E_CAP_ESCALATE',"
@@ -4000,6 +4065,18 @@ static const char  ngx_js_comcon_bootstrap[] =
     /* routes(glob): attenuate a granted COM server to a route glob. The
        fragment receives a NginxComFacet (never the stateful server wrapper). */
     "  C.routes=function(glob){return {flavor:'routes',glob:String(glob)};};"
+    /* allowHosts(glob): the destination side of the OUTBOUND capability. A host
+       glob wildcards on the LEFT where a route glob wildcards on the right --
+       "*.example.com" against a path glob's trailing star -- which is why one
+       matcher in C knows both shapes: two matchers would be two places for the
+       same rule to be wrong.
+       Nothing is defaulted: an empty glob is refused rather than read as "*",
+       because a missing destination list is a mistake and not permission. */
+    "  C.allowHosts=function(glob){"
+    "    var g=String(glob||'');"
+    "    if(!g)capRefuse('E_CAP_FLAVOR','allowHosts: a host glob is required; "
+    "refusing rather than reading an empty glob as \\'*\\'');"
+    "    return {flavor:'allowHosts',glob:g};};"
     /* uses(key, limit, window): a fleet-wide FIXED-WINDOW budget on a capability.
        `key` NAMES the counter, so two capabilities share a budget exactly when
        the operator says they do -- deriving a key would make that unsayable and
@@ -4407,6 +4484,14 @@ static const char  ngx_js_comcon_bootstrap[] =
     "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;}"
     "        else if(it.flavor==='routes'){"
     "          pol={kind:1,glob:String(it.glob||'*')};}"
+    /* kind 3: the outbound capability, attenuated by a host glob. The glob
+       crosses as DATA exactly like the route glob and the budget -- no JSValue
+       from the host reaches the compartment, so the far side is built from a
+       string and some numbers. */
+    "        else if(it.flavor==='allowHosts'){"
+    "          pol={kind:3,glob:String(it.glob||'')};"
+    "          if(it.budget)pol.budget=it.budget;"
+    "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;}"
     /* No fall-through to the FULL default.  NOTE it is not reachable through the
        public API any more -- mediate() refuses an unknown flavor and snapshots
        the descriptor -- so no test drives this line, and it is kept anyway as a
@@ -5825,6 +5910,13 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     }
 
     /* nginx.createSocket('host:port') — Stage 52 */
+    /* nginx.outbound() — host-only; a tenant sees only mediate(cap, allowHosts) */
+    if (ngx_js_outbound_install(ctx, nginx_obj) != NGX_OK) {
+        JS_FreeValue(ctx, nginx_obj);
+        JS_FreeValue(ctx, global);
+        return NGX_ERROR;
+    }
+
     if (ngx_js_socket_install(ctx, nginx_obj) != NGX_OK) {
         JS_FreeValue(ctx, nginx_obj);
         JS_FreeValue(ctx, global);
@@ -6144,6 +6236,7 @@ ngx_js_com_install_protos(JSContext *ctx)
     if (ngx_js_mirror_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_events_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_socket_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
+    if (ngx_js_outbound_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_listener_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_stream_listener_install_protos(ctx) != NGX_OK) { return NGX_ERROR; }
     if (ngx_js_stream_access_install_proto(ctx) != NGX_OK) { return NGX_ERROR; }

@@ -113,7 +113,27 @@ var GOLDEN = [
         probe: "function(){ try { s.close(); return 'closed'; }"
              + " catch (e) { return 'denied'; } }",
         expect: 'denied'
-    }
+    },
+  /* M-LIB `allowHosts` — the outbound capability's two gates.
+   *
+   * `out.host` is the mediation biting: a destination outside the glob.
+   * `out.drain` is the A1 reach gate on the HOST's half of the capability --
+   * pending()/clear() read the recorded queue, and a fragment that could drain
+   * it would read what a sibling fragment sharing the cap had recorded.  Both
+   * rows carry their own probe rather than a written reason, because both are
+   * reachable from a fragment in one request. */
+  /* `cap: 'outbound'` selects which capability the harness grants, and `grant`
+   * names it.  Every earlier row is a socket granted as `s`; these are the first
+   * rows of a second kind, so the field had to exist rather than the probe text
+   * pretending a socket is an outbound cap. */
+  { code: 'out.host', cap: 'outbound', grant: 'out', mode: 'enforce',
+    probe: "function(a){ var r = out.request('https://evil.net/x');"
+         + " return (r === undefined) ? 'denied' : 'allowed'; }",
+    expect: 'denied' },
+  { code: 'out.drain', cap: 'outbound', grant: 'out', mode: 'enforce',
+    probe: "function(a){ var r = out.pending();"
+         + " return (r === undefined) ? 'denied' : 'drained'; }",
+    expect: 'denied' },
 ];
 
 /*

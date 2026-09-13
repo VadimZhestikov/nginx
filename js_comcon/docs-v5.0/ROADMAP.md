@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.84 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.85 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,13 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **M-LIB `allowHosts` SHIPPED (2026-09-13, v5.85): the OUTBOUND capability.** The last
+>   word blocked on a missing mechanism. **It is not a `fetch`, and that is a finding:**
+>   fragment invocation is synchronous, so the cap RECORDS INTENT and the host performs the
+>   I/O — M-CFG's "the tenant proposes what it cannot apply". Gates: `out.host` (destination)
+>   and `out.drain` (the host's half, reach-gated). Composes with `uses`/`ttl`; two globs are
+>   refused. **Seven of ten vocabulary words ship.** Remaining: `window`, `cosign`, `protocol`,
+>   `opaque.*`, the posture words — and a real `fetch` waits on ASYNC fragment invocation.
 > - **THE REVIEWER PACK (2026-09-13, v5.84): F11 is no longer expensive.** `reviewer-pack.sh`
 >   + `REVIEW.md` turn "read 1100 lines, extract the commands, know which builddirs are stale"
 >   into one command and a verdict table. **F11 stays OPEN — it needs a person** — but a
@@ -472,9 +479,10 @@ fallback) → the event dispatcher calls the C function pointer directly.
   crosses into the compartment, denial `cap.expired`, audit-first like every gate — and
   **lifetimes compose by `min` where budgets refuse**, because lifetimes are ordered and
   budgets are not. `t/comcon_cap_ttl.t` (11) + 3 controls.
-  Remaining: the posture vocabulary (needs enforcement), `allowHosts` (needs an outbound
-  capability to mediate — there is none yet), `cosign`/`protocol`, and the "raw operators
-  withheld" governance half.
+  **`allowHosts` SHIPPED 2026-09-13 (v5.85)** — see the position note above; the blocker was
+  not just "no outbound capability" but that fragment invocation is synchronous.
+  Remaining: the posture vocabulary (needs enforcement), `cosign`/`protocol`, `window`,
+  `opaque.*`, and the "raw operators withheld" governance half.
   *(Original scope, preserved:)* The user-facing
   surface is not the kernel but the combinators: `std.profiles.*` (tenant,
   pure_library, forensics/REL, marketplace, config_builder…) and the mediation

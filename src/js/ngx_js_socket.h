@@ -130,4 +130,61 @@ JSValue    ngx_js_socket_wrap_masked(JSContext *ctx, uint32_t handle,
                uint32_t mask);
 
 
+/* ------------------------------------------------------------------------- *
+ * COMCON M-LIB `allowHosts` — the OUTBOUND capability.
+ * ------------------------------------------------------------------------- *
+ * It lives in this file, not its own, for a build reason worth stating: adding
+ * a source to src/js/config means re-running auto/configure for all four build
+ * directories, two of which are hand-made sanitizer trees.  And it belongs near
+ * the socket capability on merit as well -- the mask, budget and lifetime
+ * plumbing an outbound wrapper needs is the same plumbing, and one copy of it is
+ * the point.
+ *
+ * WHAT THIS CAPABILITY IS, AND WHAT IT DELIBERATELY IS NOT.  A confined fragment
+ * is invoked SYNCHRONOUSLY: JS_Call, then JSON-stringify the result.  There is no
+ * promise detection and no pending-job drain, so a capability that performs
+ * network I/O cannot be handed to a fragment without making fragment invocation
+ * asynchronous -- which would touch the F6/F12 deadline and the F2 per-invocation
+ * memory allowance on the most safety-critical path in the system.  That is its
+ * own increment and it is not this one.
+ *
+ * So this capability RECORDS INTENT and the host performs the I/O, which is the
+ * pattern M-CFG already established for config: the tenant proposes what it
+ * cannot apply.  `request()` is synchronous, checks the destination against the
+ * `allowHosts` glob IN THE COMPARTMENT, and appends a descriptor; the host reads
+ * the queue afterwards and decides.  The mediation therefore bites where the
+ * capability is exercised rather than validating data after the fact, which is
+ * what makes `allowHosts` an attenuation of authority and not a filter.
+ */
+#define NGX_JS_OUTBOUND_REG_MAX   64
+#define NGX_JS_OUTBOUND_MAX_REC   32
+#define NGX_JS_OUTBOUND_URL_LEN   256
+#define NGX_JS_OUTBOUND_GLOB_LEN  128
+
+extern JSClassID  ngx_js_outbound_class_id;
+
+ngx_int_t  ngx_js_outbound_register_class(JSRuntime *rt);
+ngx_int_t  ngx_js_outbound_install_proto(JSContext *ctx);
+ngx_int_t  ngx_js_outbound_install(JSContext *ctx, JSValue nginx_obj);
+
+/* -1 when val is not an outbound capability (mirrors ngx_js_socket_handle) */
+int32_t    ngx_js_outbound_handle(JSValueConst val);
+
+/* Re-wrap a host outbound cap compartment-native, attenuated by a host glob and
+ * optionally by a `uses` budget and a `ttl` lifetime. */
+JSValue    ngx_js_outbound_wrap(JSContext *ctx, uint32_t handle,
+               const char *glob, size_t glob_len, const char *budget_key,
+               uint32_t budget_limit, uint32_t budget_window,
+               uint32_t ttl_seconds);
+
+/* Host-glob match, shared with the route facet so the two cannot drift:
+ *   "*"            matches everything
+ *   "*.suffix"     leading star   — any host ending in ".suffix"
+ *   "prefix*"      trailing star  — any host beginning "prefix"
+ *   otherwise      exact
+ */
+ngx_int_t  ngx_js_glob_match(const u_char *glob, size_t glob_len,
+               const u_char *s, size_t s_len);
+
+
 #endif /* _NGX_JS_SOCKET_H_INCLUDED_ */

@@ -396,8 +396,17 @@ def check_spec_currency():
     print("[7] SPEC.md names what the code enumerates")
     spec = read("js_comcon/docs-v5.0/SPEC.md")
 
-    # (a) the mediation vocabulary, from the JS bootstrap's FLAVORS table
-    com_c = read("src/js/ngx_js_com.c")
+    # (a) the mediation vocabulary, from the JS bootstrap's FLAVORS table.
+    #
+    # The bootstrap is C string literals, so a table long enough to wrap is split
+    # across two of them -- which is what happened when `allowHosts` was added,
+    # and this check reported "table not found".  It failed CLOSED, which is the
+    # right direction, but a checker that makes a source file unformattable is a
+    # checker people work around.  So the C string-concatenation seams are
+    # stitched shut before matching: `" ... "` followed by whitespace and another
+    # `"` is one JS string as far as the engine is concerned, and it should be one
+    # here too.
+    com_c = re.sub(r'"\s*\n\s*"', '', read("src/js/ngx_js_com.c"))
     m = re.search(r'var FLAVORS=\{([^"]*)\}', com_c)
     if not m:
         fails.append("[7] the FLAVORS table was not found in ngx_js_com.c")

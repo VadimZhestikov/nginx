@@ -81,6 +81,10 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
      * its grants at admission and would otherwise hold them forever.
      */
     "cap.expired",
+    /* M-LIB `allowHosts` — the outbound capability's two gates: the glob
+       refusing a destination, and the reach gate on the host's drain half. */
+    "out.host",
+    "out.drain",
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */

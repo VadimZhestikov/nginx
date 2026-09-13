@@ -340,6 +340,36 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T11, T6
 - **V:** V9
 
+#### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
+- **CLAIM:** A confined fragment can ask for an outbound request only through a granted
+  capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
+  (`out.host`), and the queue the host reads is the host's alone (`out.drain`).
+- **ARGUMENT:** `allowHosts` was the last vocabulary word blocked on a missing mechanism
+  rather than on enforcement — there was nothing outbound for it to mediate, because a
+  fragment held no way to reach the network at all. **It is not a fetch, and that is a
+  finding, not a shortcut:** fragment invocation is strictly synchronous (`JS_Call`, then
+  JSON-stringify), so a capability that performs I/O cannot be handed to a fragment without
+  making invocation asynchronous — which would touch the F6/F12 deadline and the F2
+  per-invocation allowance on the most safety-critical path here. So the capability RECORDS
+  INTENT and the host performs the I/O, which is M-CFG's pattern: *the tenant proposes what it
+  cannot apply.* The glob is checked **in the compartment**, where the capability is
+  exercised, so this is an attenuation of authority and not a filter over data.
+- **EV:** `t/comcon_outbound.t` — 19 assertions: the glob admits and denies, the denied
+  destination never reaches the host queue, the drain half is refused by the reach gate,
+  composition with `uses` and `ttl`, the glob meet, no default for an empty glob, credentials
+  in a URL refused outright, audit mode logging and allowing, and the capability's own
+  `describe()` rows. Four controls, each breaking a different assertion.
+- **EV:** `t/tools/golden-denials.js` — `out.host` and `out.drain` frozen, each with its own
+  probe rather than a written reason.
+- **GAP:** The host must still perform the queued requests itself; nothing here does I/O, so
+  a policy that needs a RESPONSE needs two fragment invocations (ask, then be given the
+  result). A real `fetch` capability waits on asynchronous fragment invocation, which is its
+  own increment. And a host glob cannot express "this host but not that path" — `allowHosts`
+  attenuates destination only.
+  **home:** ROADMAP M-LIB · VERIFICATION.md V8 (the classified surface).
+- **THREAT:** T5, T6, T11
+- **V:** V9
+
 #### G6.7 — a capability can be bounded by LIFETIME
 - **CLAIM:** `mediate(cap, ttl(seconds))` makes a capability stop working when its lifetime
   passes; composing two lifetimes takes the shorter, in either order; expiry is denied as
@@ -1052,6 +1082,8 @@ signature is never quietly credited with work it did not see.
 | **G11.10's instrument had a 4%-under-load flake, found by hunting and fixed.** `t/js_com_propagation.t` test 13 looked the sweeping worker up in a later fan-out that need not have reached it (measured: absent in 4 of 40 runs under load); it now reports its own count in the request that wrote. A second assertion in the same file required ≥2 distinct workers where the leak check only needs ≥1 OTHER than the writer. A/B under load: fixed 0/40, pre-fix 3/40. | **Makes an existing leaf's evidence trustworthy; changes no claim.** Worth recording for how it was missed: the original stability check was three runs, and sixty standalone runs of the broken code also pass — the condition needs full-suite load. A denominator means nothing except against the conditions the failure requires. |
 
 | **THE REVIEWER PACK — G11.14 added; F11 made cheap rather than closed.** `reviewer-pack.sh` runs everything §15 and the audit's §4 rest on, from one entry point, refusing on a dirty tree and rebuilding every builddir first because the committed binaries are stale artifacts. `REVIEW.md` is the procedure and the sign-off block, pointing into the canonical lists rather than copying them. | **Changes no claim and closes no finding.** F11 stays OPEN: it needs a second person, and this only makes their afternoon cheap. Worth noting what it deliberately does NOT do — it does not summarise the residuals a signer accepts, because a signature on a summary is worth less than no signature. |
+
+| **M-LIB `allowHosts` SHIPPED — G6.8 added.** The outbound capability: a fragment records an INTENT through a granted cap, the glob is checked in the compartment, and the host performs the I/O. Two new denial codes (`out.host`, `out.drain`), both frozen with probes. It composes with `uses` and `ttl`; two different host globs are refused rather than guessed. **Seven of the ten vocabulary words now ship.** | **Adds a leaf and a new authority surface.** The GAP in G6.8 is the honest part: this is not a `fetch`, because fragment invocation is synchronous, and a policy needing a response needs two invocations. Nothing §15 attested changes; a new capability is new surface, and its escape-relevant edges (the reach gate on the drain half) are evidenced rather than argued. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

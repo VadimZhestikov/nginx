@@ -635,6 +635,56 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.85 (in place — M-LIB `allowHosts`: a fragment's reach OUTWARD becomes a capability, and
+the reason it is not a `fetch` is a finding):** `allowHosts` was the last vocabulary word blocked
+on a missing MECHANISM rather than on enforcement. The roadmap said it "needs an outbound
+capability to mediate — there is none yet", which was true and understated the blocker.
+
+**A confined fragment is invoked SYNCHRONOUSLY** — `JS_Call`, then JSON-stringify the result. No
+promise detection, no pending-job drain. So a capability that performs network I/O cannot be
+handed to a fragment at all without making fragment invocation asynchronous, and that would touch
+the F6/F12 deadline and the F2 per-invocation memory allowance on the most safety-critical path
+in the system. That is its own increment, at least the size of F12 and F2 together, and pretending
+otherwise would have meant shipping a blocking connect inside an nginx worker.
+
+**So the capability RECORDS INTENT and the host performs the I/O** — M-CFG's pattern exactly:
+*the tenant proposes what it cannot apply.* `request(url)` is synchronous, checks the destination
+against the glob **in the compartment**, and appends a descriptor the host reads afterwards. The
+mediation therefore bites where the capability is exercised, which is what makes `allowHosts` an
+attenuation of authority rather than a filter over data — the distinction the kernel axiom turns on.
+
+**Two gates, two codes.** `out.host` is the glob refusing a destination; the refused request never
+reaches the queue, so the host cannot perform what the glob denied. `out.drain` is the A1 reach
+gate on `pending()`/`clear()`: those are the HOST's half, and a fragment able to drain the queue
+would read what a **sibling fragment sharing the same capability** had recorded — a channel
+between tenants, not an outbound request. Both frozen in the V12 corpus with their own probes.
+
+**Host globs wildcard on the LEFT where route globs wildcard on the right**, so one matcher in C
+knows both shapes. Two matchers would be two places for the same rule to be wrong — and this is
+the third time that argument has decided a design question here.
+
+**A glob and a budget compose; two globs do not.** Two host globs have no computable meet, so
+re-mediating with a different one is REFUSED, the `routes` rule for the identical reason. But
+`allowHosts` with `uses` or `ttl` attenuates orthogonal axes, and "only these hosts, at most N
+times an hour" is the composition an operator actually wants — so those compose. **The first
+version refused every mixed pair, which made the budget and lifetime plumbing on the outbound
+wrapper unreachable: code no control could break.** The test asking for that combination is what
+surfaced it.
+
+**A URL with credentials is refused outright rather than parsed around.** In an allowHosts world
+`https://api.example.com@evil.net/x` is an invitation to smuggle a host past a glob, and a parser
+that merely searches for `//` reads the wrong half as the host.
+
+**AND MY BUILD CHECK WAS BROKEN THE WHOLE TIME, which is the lesson of the day.** Classifying the
+new capability in `describe()` failed to compile — the class id was undeclared in that
+translation unit — and I did not notice, because I had been verifying builds with
+`grep -E " error |warnings being"`. GCC writes `: error:`, so a pattern requiring a space after
+"error" matched nothing, `make` reported failure only in its exit code, and the tests kept passing
+**against the last good binary.** Three earlier stale-artifact incidents this session were about
+trees I forgot to rebuild; this one was about a build that failed while I was watching. Verify by
+EXIT CODE, never by grepping for a pattern that can miss. Seven of the ten vocabulary words now
+ship.
+
 **v5.84 (in place — the reviewer pack: F11 is not closed, but it is no longer expensive):**
 F11 is the one finding in the ledger that no engineering closes. `AUDIT_M-SES.md` §5 and
 `ASSURANCE.md` §15 each carry a single signer, and both rows say so themselves — *"the §4

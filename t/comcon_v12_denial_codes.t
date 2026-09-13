@@ -70,6 +70,11 @@ $golden
 /* ===== end of the corpus ===== */
 
 var sock = nginx.createSocket("127.0.0.1:%%PORT_8091%%");
+/* The outbound capability the two `out.*` rows need.  Mediated with a glob that
+ * matches nothing the probes ask for, so `out.host` fires; `out.drain` fires on
+ * the reach gate regardless of the glob. */
+var outbound = comcon.mediate(nginx.outbound(),
+                              comcon.allowHosts("*.trusted.example"));
 nginx.http.attach(sock).addServer(nginx.http.servers[0]);
 
 var locs = nginx.http.servers[0].locations;
@@ -87,13 +92,23 @@ var deferred = {};
 
 /* ONE definition of "the capability this row asks for", used by both passes */
 function capFor(row) {
-    var cap = sock;
+    /* Which capability this row's probe needs.  Until `allowHosts` every row
+     * was a socket, so the harness simply assumed one; a second kind had to be
+     * named rather than smuggled in through probe text. */
+    var cap = (row.cap === 'outbound') ? outbound : sock;
     if (row.budget) {
         cap = comcon.mediate(cap, comcon.uses(row.budget.key, row.budget.limit,
                                               row.budget.window));
     }
     if (row.ttl) { cap = comcon.mediate(cap, comcon.ttl(row.ttl)); }
     return cap;
+}
+
+/* The grant object for a row: one capability, under the name its probe uses. */
+function grantsFor(row) {
+    var g = {};
+    g[row.grant || 's'] = capFor(row);
+    return g;
 }
 
 function fired(before, after) {
@@ -122,7 +137,7 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
         if (row.sleepBefore) {
             if (!/phase=2/.test(req.args)) {
                 deferred[row.code] = comcon.include(row.probe,
-                    { grants: { s: capFor(row) } });
+                    { grants: grantsFor(row) });
                 rec.deferred = true; o.rows.push(rec); continue;
             }
             var df = deferred[row.code];
@@ -144,7 +159,7 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
         /* a row may ask for its capability to be BUDGETED (the `uses`
            mediation); everything else is granted straight. */
         var cap = capFor(row);
-        var f = comcon.include(row.probe, { grants: { s: cap } });
+        var f = comcon.include(row.probe, { grants: grantsFor(row) });
         var before = counts();
         try { rec.result = f({}); } catch (e) { rec.result = 'threw'; }
         var after = counts();

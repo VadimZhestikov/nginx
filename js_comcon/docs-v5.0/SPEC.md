@@ -69,8 +69,9 @@ what is allowed).
   gate for a fragment.
 - **tier**: T1 (interpreted bytecode) or T2 (compiled C); a fragment may be hybrid.
 - **mediation flavor**: one word from the **closed** vocabulary
-  `revoke · redact · allow · routes · uses · ttl`, naming *how* `mediate` attenuates a
-  capability: by operation mask (`revoke`/`redact`/`allow`), by route glob (`routes`), by
+  `revoke · redact · allow · routes · uses · ttl · allowHosts`, naming *how* `mediate`
+  attenuates a capability: by operation mask (`revoke`/`redact`/`allow`), by route glob
+  (`routes`), by outbound destination (`allowHosts`), by
   rate over a window (`uses`), or by lifetime (`ttl`). An unrecognized flavor is REFUSED,
   never ignored — a typo that granted full authority is the failure this closure exists to
   prevent.
@@ -330,7 +331,8 @@ registry); the **intrinsics allowance**; and the **two code axes** below.
 
 **Two code axes, and they are not the same axis.** A **DENIAL code** names a gate that fired
 at RUN time on authority the fragment legitimately holds (`sock.listener`, `listener.read`,
-`listener.serverByName`, `enum.sockets`, `sock.mutate`, `budget.uses`, `cap.expired`); it is
+`listener.serverByName`, `enum.sockets`, `sock.mutate`, `budget.uses`, `cap.expired`,
+`out.host`, `out.drain`); it is
 counted in `nginx.tenantDenials().byOp` and, in audit mode, **logged and allowed**. A
 **REFUSAL code** names why a fragment was **never admitted** (`e.code`, enumerated by
 `comcon.refusalCodes()`). Both are frozen contracts: every code must have a row in the
@@ -388,7 +390,8 @@ admission front-end; the compiled tier T1/T2 through the SR-2 faithfulness gate;
 `realize`/`includeAt`); increment **E**'s config instance (`comcon.std.config`:
 propose → review → diff → apply → rollback, refusal by SAFETY CLASS, the proposal never
 executing); the `comcon.std` profiles and `std.ops`; **six of the ten mediation vocabulary
-words** (`revoke redact allow routes uses ttl`); the session registry (`std.sessions`); both
+words** (`revoke redact allow routes uses ttl allowHosts`); the session registry
+(`std.sessions`); both
 code axes as frozen contracts; and the resource bounds — a host-JS request deadline ON by
 default, a per-invocation fragment memory allowance, and fleet-wide rate budgets.
 

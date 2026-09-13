@@ -863,3 +863,517 @@ ngx_js_socket_install(JSContext *ctx, JSValue nginx_obj)
                                       "createSocket", 1));
     return NGX_OK;
 }
+
+
+/* ========================================================================= *
+ * COMCON M-LIB `allowHosts` — the OUTBOUND capability
+ * ========================================================================= *
+ * See the block comment in ngx_js_socket.h for why this lives here and why it
+ * records intent rather than performing I/O.
+ */
+
+typedef struct {
+    char      method[8];
+    char      url[NGX_JS_OUTBOUND_URL_LEN];
+} ngx_js_outbound_rec_t;
+
+typedef struct {
+    ngx_uint_t             nrec;
+    ngx_uint_t             dropped;   /* requests past the cap, counted not lost */
+    ngx_js_outbound_rec_t  rec[NGX_JS_OUTBOUND_MAX_REC];
+} ngx_js_outbound_state_t;
+
+typedef struct {
+    uint32_t  handle;
+    uint32_t  gen;
+    /*
+     * The allowHosts glob.  glob_len == 0 means UNMEDIATED, which is only ever
+     * the host's own wrapper: a granted wrapper is built by
+     * ngx_js_outbound_wrap() and always carries one, because include() refuses a
+     * grant whose flavour it cannot translate rather than defaulting to full
+     * authority.
+     */
+    char      glob[NGX_JS_OUTBOUND_GLOB_LEN];
+    size_t    glob_len;
+    uint32_t  budget_limit;
+    uint32_t  budget_window;
+    char      budget_key[64];
+    time_t    expires;
+} ngx_js_outbound_opaque_t;
+
+JSClassID  ngx_js_outbound_class_id;   /* described by ngx_js_com_describe.c */
+
+static ngx_js_outbound_state_t  *ngx_js_outbound_reg[NGX_JS_OUTBOUND_REG_MAX];
+/*
+ * A generation per slot, for the reason recorded in
+ * bug-socket-handle-reuse-alias: an index into a reusable table is NOT a
+ * capability.  A wrapper remembers the incarnation it was issued for, so a
+ * stale wrapper cannot address whatever later took its slot.
+ */
+static uint32_t                  ngx_js_outbound_gen[NGX_JS_OUTBOUND_REG_MAX];
+
+
+ngx_int_t
+ngx_js_glob_match(const u_char *glob, size_t glob_len, const u_char *s,
+    size_t s_len)
+{
+    size_t  p;
+
+    if (glob_len == 1 && glob[0] == '*') {
+        return 1;
+    }
+
+    /* leading star: "*.example.com" matches any host ending ".example.com".
+     * Hosts wildcard on the left where paths wildcard on the right, which is
+     * why one matcher has to know both -- two matchers would be two places for
+     * the same rule to be wrong. */
+    if (glob_len > 1 && glob[0] == '*') {
+        p = glob_len - 1;
+        return s_len >= p
+               && ngx_strncmp(s + (s_len - p), glob + 1, p) == 0;
+    }
+
+    if (glob_len > 0 && glob[glob_len - 1] == '*') {
+        p = glob_len - 1;
+        return s_len >= p && ngx_strncmp(s, glob, p) == 0;
+    }
+
+    return s_len == glob_len && ngx_strncmp(s, glob, glob_len) == 0;
+}
+
+
+static void
+ngx_js_outbound_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_outbound_opaque_t  *op;
+
+    op = JS_GetOpaque(val, ngx_js_outbound_class_id);
+    if (op) {
+        js_free_rt(rt, op);
+    }
+}
+
+
+static JSClassDef ngx_js_outbound_class = {
+    "NginxOutbound",
+    .finalizer = ngx_js_outbound_finalizer
+};
+
+
+int32_t
+ngx_js_outbound_handle(JSValueConst val)
+{
+    ngx_js_outbound_opaque_t  *op;
+
+    op = JS_GetOpaque(val, ngx_js_outbound_class_id);
+    if (op == NULL) {
+        return -1;
+    }
+
+    return (int32_t) op->handle;
+}
+
+
+static ngx_js_outbound_state_t *
+ngx_js_outbound_state(ngx_js_outbound_opaque_t *op)
+{
+    if (op->handle >= NGX_JS_OUTBOUND_REG_MAX) {
+        return NULL;
+    }
+
+    /* The generation check is the whole point of storing one. */
+    if (ngx_js_outbound_gen[op->handle] != op->gen) {
+        return NULL;
+    }
+
+    return ngx_js_outbound_reg[op->handle];
+}
+
+
+/*
+ * The host part of the URL, without scheme, port, path or credentials.  Parsed
+ * here rather than handed to a URL library because the glob is matched against
+ * exactly this substring and nothing else: a matcher that sometimes sees
+ * "example.com:8080" and sometimes "example.com" would make allowHosts mean two
+ * different things depending on how the caller spelled a default port.
+ */
+static ngx_int_t
+ngx_js_outbound_host(const char *url, size_t len, const char **host,
+    size_t *host_len)
+{
+    const char  *p, *end, *h;
+
+    end = url + len;
+    p = url;
+
+    /* scheme:// — required, so that "evil.com/?x=//good.com" cannot be read as
+     * a host of "good.com" by a parser that merely searches for "//". */
+    h = ngx_strlchr((u_char *) p, (u_char *) end, ':')
+        ? (const char *) ngx_strlchr((u_char *) p, (u_char *) end, ':') : NULL;
+    if (h == NULL || (size_t) (end - h) < 3 || h[1] != '/' || h[2] != '/') {
+        return NGX_ERROR;
+    }
+    p = h + 3;
+
+    /* credentials are refused rather than skipped: "user@host" in an allowHosts
+     * world is an invitation to smuggle a host past a glob. */
+    for (h = p; h < end; h++) {
+        if (*h == '@') {
+            return NGX_ERROR;
+        }
+        if (*h == '/' || *h == '?' || *h == '#') {
+            break;
+        }
+    }
+
+    *host = p;
+    *host_len = (size_t) (h - p);
+
+    /* strip an explicit port */
+    for (h = *host; h < *host + *host_len; h++) {
+        if (*h == ':') {
+            *host_len = (size_t) (h - *host);
+            break;
+        }
+    }
+
+    return (*host_len > 0) ? NGX_OK : NGX_ERROR;
+}
+
+
+/*
+ * request(url[, method]) — record an outbound intent.
+ *
+ * GATE ORDER: lifetime, then destination, then budget.  Both refusals come
+ * BEFORE the charge for the reason `ttl` established: spending budget on a
+ * request that cannot happen makes the audit read as though the tenant were
+ * still working.  A glob-refused destination is exactly as impossible as an
+ * expired capability, so it is charged for exactly as little.
+ */
+static JSValue
+ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_outbound_opaque_t  *op;
+    ngx_js_outbound_state_t   *st;
+    ngx_js_outbound_rec_t     *rec;
+    const char                *url, *host, *meth;
+    size_t                     len, host_len, mlen;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_outbound_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    st = ngx_js_outbound_state(op);
+    if (st == NULL) {
+        return JS_ThrowInternalError(ctx, "outbound: capability is closed");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "outbound.request: arg0 must be a URL");
+    }
+
+    url = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (url == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (op->expires != 0 && ngx_time() >= op->expires
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_EXPIRED, url))
+    {
+        JS_FreeCString(ctx, url);
+        return JS_UNDEFINED;
+    }
+
+    if (ngx_js_outbound_host(url, len, &host, &host_len) != NGX_OK) {
+        JS_FreeCString(ctx, url);
+        return JS_ThrowTypeError(ctx,
+            "outbound.request: arg0 must be an absolute scheme://host URL "
+            "with no credentials");
+    }
+
+    /*
+     * glob_len == 0 is the HOST's own wrapper, which is unmediated by
+     * construction.  A granted wrapper always carries a glob, so this is not a
+     * fall-through to full authority for a tenant -- include() refuses a grant
+     * it cannot translate rather than defaulting.
+     */
+    if (op->glob_len > 0
+        && !ngx_js_glob_match((u_char *) op->glob, op->glob_len,
+                              (u_char *) host, host_len))
+    {
+        if (ngx_js_compartment_denial(NGX_JS_DENIAL_OUT_HOST, url)) {
+            JS_FreeCString(ctx, url);
+            return JS_UNDEFINED;
+        }
+    }
+
+    if (op->budget_limit > 0
+        && ngx_js_shared_budget_charge(ctx, op->budget_key, op->budget_limit,
+                                       op->budget_window) != NGX_OK
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_BUDGET_USES, op->budget_key))
+    {
+        JS_FreeCString(ctx, url);
+        return JS_UNDEFINED;
+    }
+
+    /*
+     * Past the cap the request is DROPPED AND COUNTED, never silently lost: a
+     * queue that overflows quietly would let a fragment hide an intent behind
+     * thirty-two others.
+     */
+    if (st->nrec >= NGX_JS_OUTBOUND_MAX_REC) {
+        st->dropped++;
+        JS_FreeCString(ctx, url);
+        return JS_NewInt32(ctx, -1);
+    }
+
+    meth = "GET";
+    mlen = 3;
+    if (argc > 1 && JS_IsString(argv[1])) {
+        const char *m = JS_ToCStringLen(ctx, &mlen, argv[1]);
+        if (m != NULL) {
+            rec = &st->rec[st->nrec];
+            ngx_cpystrn((u_char *) rec->method, (u_char *) m,
+                        sizeof(rec->method));
+            JS_FreeCString(ctx, m);
+            meth = NULL;
+        }
+    }
+
+    rec = &st->rec[st->nrec];
+    if (meth != NULL) {
+        ngx_cpystrn((u_char *) rec->method, (u_char *) meth,
+                    sizeof(rec->method));
+    }
+    ngx_cpystrn((u_char *) rec->url, (u_char *) url, sizeof(rec->url));
+    st->nrec++;
+
+    JS_FreeCString(ctx, url);
+    return JS_NewInt32(ctx, (int32_t) st->nrec);
+}
+
+
+/*
+ * pending() / clear() — the HOST's half.
+ *
+ * Denied inside a compartment by the A1 reach gate.  A fragment that could
+ * drain the queue would read what a SIBLING fragment sharing the same cap had
+ * recorded, which is a channel between tenants and not an outbound request --
+ * the same reason a granted socket's `.listener` is denied even though the
+ * fragment legitimately holds the socket.
+ */
+static JSValue
+ngx_js_outbound_pending(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_outbound_opaque_t  *op;
+    ngx_js_outbound_state_t   *st;
+    JSValue                    out, arr, one;
+    ngx_uint_t                 i;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_outbound_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (!ngx_js_compartment_may_reach(NGX_JS_COMPARTMENT_HOST_ROOT)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_OUT_DRAIN, "pending"))
+    {
+        return JS_UNDEFINED;
+    }
+
+    st = ngx_js_outbound_state(op);
+    if (st == NULL) {
+        return JS_ThrowInternalError(ctx, "outbound: capability is closed");
+    }
+
+    out = JS_NewObject(ctx);
+    arr = JS_NewArray(ctx);
+
+    for (i = 0; i < st->nrec; i++) {
+        one = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, one, "method",
+                          JS_NewString(ctx, st->rec[i].method));
+        JS_SetPropertyStr(ctx, one, "url", JS_NewString(ctx, st->rec[i].url));
+        JS_SetPropertyUint32(ctx, arr, (uint32_t) i, one);
+    }
+
+    JS_SetPropertyStr(ctx, out, "requests", arr);
+    JS_SetPropertyStr(ctx, out, "dropped",
+                      JS_NewInt64(ctx, (int64_t) st->dropped));
+    return out;
+}
+
+
+static JSValue
+ngx_js_outbound_clear(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_outbound_opaque_t  *op;
+    ngx_js_outbound_state_t   *st;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_outbound_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (!ngx_js_compartment_may_reach(NGX_JS_COMPARTMENT_HOST_ROOT)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_OUT_DRAIN, "clear"))
+    {
+        return JS_UNDEFINED;
+    }
+
+    st = ngx_js_outbound_state(op);
+    if (st == NULL) {
+        return JS_ThrowInternalError(ctx, "outbound: capability is closed");
+    }
+
+    st->nrec = 0;
+    st->dropped = 0;
+    return JS_UNDEFINED;
+}
+
+
+static const JSCFunctionListEntry ngx_js_outbound_proto_funcs[] = {
+    JS_CFUNC_DEF("request", 2, ngx_js_outbound_request),
+    JS_CFUNC_DEF("pending", 0, ngx_js_outbound_pending),
+    JS_CFUNC_DEF("clear",   0, ngx_js_outbound_clear),
+};
+
+
+ngx_int_t
+ngx_js_outbound_register_class(JSRuntime *rt)
+{
+    if (ngx_js_outbound_class_id == 0) {
+        JS_NewClassID(&ngx_js_outbound_class_id);
+    }
+
+    return JS_NewClass(rt, ngx_js_outbound_class_id, &ngx_js_outbound_class) < 0
+           ? NGX_ERROR : NGX_OK;
+}
+
+
+ngx_int_t
+ngx_js_outbound_install_proto(JSContext *ctx)
+{
+    JSValue  proto;
+
+    if (ngx_js_outbound_class_id == 0) {
+        return NGX_OK;
+    }
+
+    proto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, proto, ngx_js_outbound_proto_funcs,
+                               (int) (sizeof(ngx_js_outbound_proto_funcs)
+                                      / sizeof(ngx_js_outbound_proto_funcs[0])));
+    JS_SetClassProto(ctx, ngx_js_outbound_class_id, proto);
+    return NGX_OK;
+}
+
+
+static JSValue
+ngx_js_outbound_new_obj(JSContext *ctx, uint32_t handle, const char *glob,
+    size_t glob_len, const char *budget_key, uint32_t budget_limit,
+    uint32_t budget_window, uint32_t ttl_seconds)
+{
+    JSValue                    obj;
+    ngx_js_outbound_opaque_t  *op;
+
+    op = js_mallocz(ctx, sizeof(ngx_js_outbound_opaque_t));
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    op->handle = handle;
+    op->gen = ngx_js_outbound_gen[handle];
+
+    if (glob != NULL && glob_len > 0) {
+        if (glob_len >= sizeof(op->glob)) {
+            glob_len = sizeof(op->glob) - 1;
+        }
+        ngx_memcpy(op->glob, glob, glob_len);
+        op->glob[glob_len] = '\0';
+        op->glob_len = glob_len;
+    }
+
+    if (budget_key != NULL && budget_limit > 0) {
+        ngx_cpystrn((u_char *) op->budget_key, (u_char *) budget_key,
+                    sizeof(op->budget_key));
+        op->budget_limit = budget_limit;
+        op->budget_window = budget_window ? budget_window : 1;
+    }
+
+    if (ttl_seconds > 0) {
+        op->expires = ngx_time() + (time_t) ttl_seconds;
+    }
+
+    obj = JS_NewObjectClass(ctx, ngx_js_outbound_class_id);
+    if (JS_IsException(obj)) {
+        js_free(ctx, op);
+        return JS_EXCEPTION;
+    }
+
+    JS_SetOpaque(obj, op);
+    return obj;
+}
+
+
+JSValue
+ngx_js_outbound_wrap(JSContext *ctx, uint32_t handle, const char *glob,
+    size_t glob_len, const char *budget_key, uint32_t budget_limit,
+    uint32_t budget_window, uint32_t ttl_seconds)
+{
+    if (handle >= NGX_JS_OUTBOUND_REG_MAX
+        || ngx_js_outbound_reg[handle] == NULL)
+    {
+        return JS_ThrowInternalError(ctx, "outbound: bad handle");
+    }
+
+    return ngx_js_outbound_new_obj(ctx, handle, glob, glob_len, budget_key,
+                                   budget_limit, budget_window, ttl_seconds);
+}
+
+
+/* nginx.outbound() — the host mints one.  Unmediated here; a tenant only ever
+ * sees the result of mediate(cap, allowHosts(glob)). */
+static JSValue
+ngx_js_create_outbound(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_outbound_state_t  *st;
+    uint32_t                  h;
+
+    for (h = 0; h < NGX_JS_OUTBOUND_REG_MAX; h++) {
+        if (ngx_js_outbound_reg[h] == NULL) {
+            break;
+        }
+    }
+
+    if (h == NGX_JS_OUTBOUND_REG_MAX) {
+        return JS_ThrowInternalError(ctx,
+            "nginx.outbound: no free slot (max %d)", NGX_JS_OUTBOUND_REG_MAX);
+    }
+
+    st = ngx_alloc(sizeof(ngx_js_outbound_state_t), ngx_cycle->log);
+    if (st == NULL) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ngx_memzero(st, sizeof(ngx_js_outbound_state_t));
+
+    ngx_js_outbound_reg[h] = st;
+    ngx_js_outbound_gen[h]++;      /* a new incarnation of this slot */
+
+    return ngx_js_outbound_new_obj(ctx, h, NULL, 0, NULL, 0, 0, 0);
+}
+
+
+ngx_int_t
+ngx_js_outbound_install(JSContext *ctx, JSValue nginx_obj)
+{
+    JS_SetPropertyStr(ctx, nginx_obj, "outbound",
+                      JS_NewCFunction(ctx, ngx_js_create_outbound,
+                                      "outbound", 0));
+    return NGX_OK;
+}
