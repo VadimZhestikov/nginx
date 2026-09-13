@@ -322,7 +322,22 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T11
 - **V:** V6
 
-#### G6.4 — memory is bounded per RUNTIME, not per fragment
+#### G6.4 — a capability can be bounded by RATE, fleet-wide
+- **CLAIM:** `mediate(cap, uses(key, limit, window))` limits how many times a capability
+  may be exercised, counted across every worker, denied as `budget.uses` when exhausted and
+  logged-and-allowed in audit mode.
+- **ARGUMENT:** The counter lives in `nginx.shared`, not on the wrapper, so the operator who
+  wrote `limit: 10` gets ten — not ten per worker, which is the defect the audit/enforce
+  mode switch shipped with. Charged on every gated operation (a redacted read is free,
+  because a field the membrane hides was never an exercise of the capability). Nothing is
+  defaulted: a budget with no limit is refused as a mistake rather than read as unlimited,
+  and re-mediating with a DIFFERENT budget is refused because budgets are not ordered.
+- **EV:** `t/comcon_budget_uses.t` — 4 workers, a limit of 10 spent exactly 10 times; the fixed window; the composition and validation rules.
+- **EV:** `t/comcon_v12_denial_codes.t` — `budget.uses` fires its own code and nothing undeclared.
+- **THREAT:** T11, T6
+- **V:** V9
+
+#### G6.5 — memory is bounded per RUNTIME, not per fragment
 - **CLAIM:** *(partial)* `JS_SetMemoryLimit(comcon_rt, 64MB)` bounds the runtime shared by
   every fragment. One fragment can exhaust the budget of its siblings — denial of service
   against peers, not an authority escape.
@@ -604,7 +619,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
 | **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 | ACCEPTED residual (post-M9) |
 | **F9** | V-track items with no machinery yet: V5b, V6, V8, V9, V10, V13, V14 | VERIFICATION.md | OPEN — scheduled |
-| **F10** | `E_BUDGET_*` and the JS layer's `E_CAP_FLAVOR` / `E_CAP_ESCALATE` have no members | MANUAL §3.2 [TBD-2] | OPEN — next tranche |
+| **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | OPEN — next tranche. **`E_BUDGET_*` is RESOLVED by placement (v5.67):** budget exhaustion is a DENIAL (`budget.uses`), not an admission refusal, so that family stays empty by design |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2 | ACCEPTED — stated in the audit |
 
 ---

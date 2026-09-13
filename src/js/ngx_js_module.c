@@ -1220,6 +1220,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     for (gi = 0; gi < gn; gi++) {
         JSValue      cap_v, pol_v;
         int32_t      kind = 0;
+        char         bkey[80];
+        uint32_t     blimit, bwindow;
 
         cap_v = JS_GetPropertyUint32(hctx, argv[2], gi);
 
@@ -1262,12 +1264,48 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                 goto grant_bad;
             }
             mask = NGX_JS_SOCKET_MASK_ALL;
+            bkey[0] = '\0';
+            blimit = 0;
+            bwindow = 0;
+
             if (JS_IsObject(pol_v)) {
+                JSValue  bud_v;
+
                 name_v = JS_GetPropertyStr(hctx, pol_v, "mask");
                 JS_ToUint32(hctx, &mask, name_v);
                 JS_FreeValue(hctx, name_v);
+
+                /* M-LIB `uses`: the budget rides the policy descriptor as DATA
+                   (key/limit/window), like the mask and the glob -- no JSValue
+                   crosses, so the wrapper on the far side is built from numbers
+                   and a string rather than from anything the host holds. */
+                bud_v = JS_GetPropertyStr(hctx, pol_v, "budget");
+                if (JS_IsObject(bud_v)) {
+                    const char  *bk;
+
+                    name_v = JS_GetPropertyStr(hctx, bud_v, "key");
+                    bk = JS_ToCString(hctx, name_v);
+                    if (bk != NULL) {
+                        ngx_snprintf((u_char *) bkey, sizeof(bkey) - 1,
+                                     "comcon.budget:%s%Z", bk);
+                        JS_FreeCString(hctx, bk);
+                    }
+                    JS_FreeValue(hctx, name_v);
+
+                    name_v = JS_GetPropertyStr(hctx, bud_v, "limit");
+                    JS_ToUint32(hctx, &blimit, name_v);
+                    JS_FreeValue(hctx, name_v);
+
+                    name_v = JS_GetPropertyStr(hctx, bud_v, "window");
+                    JS_ToUint32(hctx, &bwindow, name_v);
+                    JS_FreeValue(hctx, name_v);
+                }
+                JS_FreeValue(hctx, bud_v);
             }
-            av[gi] = ngx_js_socket_wrap_masked(sctx, (uint32_t) sh, mask);
+
+            av[gi] = ngx_js_socket_wrap_budgeted(sctx, (uint32_t) sh, mask,
+                                                 bkey[0] ? bkey : NULL,
+                                                 blimit, bwindow);
         }
 
         JS_FreeValue(hctx, pol_v);

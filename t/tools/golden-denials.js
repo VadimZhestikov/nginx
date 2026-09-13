@@ -73,6 +73,20 @@ var GOLDEN = [
           + 'day such a path is added, which is the point of leaving it in.'
     },
     {
+        code: 'budget.uses',
+        why: 'a `uses` budget is exhausted (M-LIB): the capability was real and '
+           + 'the caller was entitled to it, but not this many times. The only '
+           + 'denial here that is about RATE rather than REACH',
+        mode: 'enforce',
+        /* limit 2 over a 60s window, spent by three reads of a budgeted field;
+           the third is the one that must be denied. */
+        probe: "function(){ var seen = [];"
+             + " seen.push(typeof s.address); seen.push(typeof s.address);"
+             + " seen.push(typeof s.address); return seen.join(','); }",
+        expect: 'string,string,undefined',
+        budget: { key: 'v12-probe', limit: 2, window: 60 }
+    },
+    {
         code: 'sock.mutate',
         why: 'close() / broadcast() on a socket the compartment does not own '
            + '(SR-1 MEDIUM-4): mutating host state, not a scalar read',

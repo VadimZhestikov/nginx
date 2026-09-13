@@ -99,7 +99,14 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
         if (row.unreachable) { rec.unreachable = true; o.rows.push(rec); continue; }
 
         comcon.mode(row.mode);
-        var f = comcon.include(row.probe, { grants: { s: sock } });
+        /* a row may ask for its capability to be BUDGETED (the `uses`
+           mediation); everything else is granted straight. */
+        var cap = row.budget
+                  ? comcon.mediate(sock, comcon.uses(row.budget.key,
+                                                     row.budget.limit,
+                                                     row.budget.window))
+                  : sock;
+        var f = comcon.include(row.probe, { grants: { s: cap } });
         var before = counts();
         try { rec.result = f({}); } catch (e) { rec.result = 'threw'; }
         var after = counts();

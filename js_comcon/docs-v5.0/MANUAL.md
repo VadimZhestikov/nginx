@@ -165,7 +165,7 @@ fail differently and you fix them differently, so they are separate sets:
 
 | | what it means | where you read it | today's set |
 |---|---|---|---|
-| **denial** | a reach gate denied an operation at request time | `nginx.tenantDenials().byOp` (exact counters per code) | `sock.listener`, `listener.read`, `listener.serverByName`, `enum.sockets`, `sock.mutate` |
+| **denial** | a gate denied an operation at request time | `nginx.tenantDenials().byOp` (exact counters per code) | `sock.listener`, `listener.read`, `listener.serverByName`, `enum.sockets`, `sock.mutate`, `budget.uses` |
 | **refusal** | the fragment was not admitted — it never ran | `e.code` on the throw; `code` on an `admit()` verdict; `comcon.refusalCodes()` enumerates the set | `E_ADMIT_ARG`, `E_ADMIT_NOTBYTECODE`, `E_ADMIT_SOURCE`, `E_ADMIT_DYNCODE`, `E_ADMIT_FREENAME`, `E_ADMIT_INTRINSIC`, `E_ADMIT_SCHEMA`, `E_ADMIT_TEST`, `E_ADMIT_CONTRACT`, `E_ADMIT_DEP`, `E_CAP_GRANT`, `E_PIN_IDENTITY`, `E_EPOCH_STALE` |
 
 A refusal carries its code three ways: as `.code` on the thrown `Error` (**assert on
@@ -189,12 +189,15 @@ project's own suite before it breaks your CI. A code cannot be added to the runt
 without a probe or a written reason it is unreachable.
 
 **[TBD-2] — what is still missing.** The taxonomy above is the admission and runtime
-surface. Two families named in earlier drafts have **no members yet, deliberately**:
-`E_BUDGET_*` (the deadline abort is the engine's interrupt — there is no refusal of
-ours at that point to label) and the capability layer's own `E_CAP_FLAVOR` /
-`E_CAP_ESCALATE` (an unknown mediation flavor; a `realize()` that would widen
-authority) — those are thrown in the JS layer, deserve codes, and are the next tranche.
-Until then, match those two on message text and expect it to move.
+surface. On budgets, the family landed on the other axis and that is the right place:
+running out of a `uses` budget is a **denial** (`budget.uses`) — a gate refusing an
+operation at request time — not an admission refusal, so `E_BUDGET_*` stays empty by
+design rather than by omission. The deadline abort still has no code of ours at all: it
+is the engine's interrupt, and there is no refusal of ours at that point to label. Two
+capability-layer refusals do deserve codes and do not have them yet: `E_CAP_FLAVOR` (an
+unknown mediation flavor) and `E_CAP_ESCALATE` (a `realize()` that would widen
+authority), both thrown in the JS layer. Until then, match those on message text and
+expect it to move.
 
 ### 3.3 Your documentation is generated — and cannot lie
 

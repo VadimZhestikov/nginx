@@ -133,6 +133,15 @@ typedef struct {
     uint32_t  handle;   /* index into ngx_js_socket_reg[] */
     uint32_t  gen;      /* incarnation this handle was issued for */
     uint32_t  mask;     /* COMCON mediate: allowed fields, bit==magic (see get) */
+    /*
+     * COMCON M-LIB `uses`: a fleet-wide budget on this wrapper. limit == 0 means
+     * unbudgeted, which is every capability that was not mediated with uses().
+     * The key is the operator's name for the counter, so two capabilities can
+     * share one budget (or not) by naming.
+     */
+    uint32_t  budget_limit;
+    uint32_t  budget_window;   /* seconds; the window is FIXED, not sliding */
+    char      budget_key[64];
 } ngx_js_socket_opaque_t;
 
 
@@ -200,6 +209,32 @@ static JSClassDef  ngx_js_socket_class = {
 /* magic: 0=address, 1=port, 2=fd, 3=listener                         */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Spend one use. Denial goes through the SAME gate machinery as every other
+ * reach denial, which is what makes audit mode work here for free: in audit the
+ * event is logged and the operation ALLOWED, so an operator can watch a budget
+ * be exceeded before switching it on -- the audit-first rollout, applied to
+ * rate limits rather than re-invented for them.
+ */
+static ngx_int_t
+ngx_js_socket_budget_spend(JSContext *ctx, ngx_js_socket_opaque_t *op)
+{
+    if (ngx_js_shared_budget_charge(ctx, op->budget_key, op->budget_limit,
+                                    op->budget_window)
+        == NGX_OK)
+    {
+        return NGX_OK;
+    }
+
+    /* returns 0 in audit mode (log-and-allow), 1 when the gate should deny */
+    if (ngx_js_compartment_denial(NGX_JS_DENIAL_BUDGET_USES, op->budget_key)) {
+        return NGX_DECLINED;
+    }
+
+    return NGX_OK;
+}
+
+
 static JSValue
 ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
@@ -217,6 +252,23 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
      * remove authority a wrapper already had (A(cap′) ⊆ A(cap)).
      */
     if (magic >= 0 && magic < 32 && !(op->mask & (1u << magic))) {
+        return JS_UNDEFINED;
+    }
+
+    /*
+     * COMCON M-LIB `uses`: a USE is any gated operation on the capability -- a
+     * read of a mediated field as much as a method call. Charging only calls
+     * would make `s.address` free and let a tenant spend the interesting part
+     * of a capability without touching its budget; charging everything is the
+     * reading an operator can predict from the word "uses".
+     *
+     * Redacted reads are NOT charged: they happen above, before this point,
+     * because a field the membrane hides was never an exercise of the
+     * capability in the first place.
+     */
+    if (op->budget_limit > 0
+        && ngx_js_socket_budget_spend(ctx, op) != NGX_OK)
+    {
         return JS_UNDEFINED;
     }
 
@@ -462,6 +514,21 @@ ngx_js_socket_wrap_checked(JSContext *ctx, uint32_t handle, uint32_t gen)
 JSValue
 ngx_js_socket_wrap_masked(JSContext *ctx, uint32_t handle, uint32_t mask)
 {
+    return ngx_js_socket_wrap_budgeted(ctx, handle, mask, NULL, 0, 0);
+}
+
+
+/*
+ * COMCON M-LIB: the same wrapper, plus a `uses` budget. The budget travels on
+ * the WRAPPER, not on the socket: two fragments granted the same socket under
+ * different budgets get different wrappers, and neither can see or spend the
+ * other's -- unless the operator names the same counter, which is how budgets
+ * are shared on purpose.
+ */
+JSValue
+ngx_js_socket_wrap_budgeted(JSContext *ctx, uint32_t handle, uint32_t mask,
+    const char *budget_key, uint32_t budget_limit, uint32_t budget_window)
+{
     JSValue                  obj;
     ngx_js_socket_opaque_t  *op;
 
@@ -473,6 +540,13 @@ ngx_js_socket_wrap_masked(JSContext *ctx, uint32_t handle, uint32_t mask)
     op->handle = handle;
     op->gen = (handle < NGX_JS_SOCKET_REG_MAX) ? ngx_js_socket_gen[handle] : 0;
     op->mask = mask;
+
+    if (budget_key != NULL && budget_limit > 0) {
+        ngx_cpystrn((u_char *) op->budget_key, (u_char *) budget_key,
+                    sizeof(op->budget_key));
+        op->budget_limit = budget_limit;
+        op->budget_window = budget_window ? budget_window : 1;
+    }
 
     obj = JS_NewObjectClass(ctx, ngx_js_socket_class_id);
     if (JS_IsException(obj)) {

@@ -2632,6 +2632,94 @@ ngx_js_shared_insert(ngx_js_shared_entry_t *e, const char *key, uint32_t hash,
 }
 
 
+/*
+ * COMCON M-LIB: charge one use against a named budget (the `uses` mediation).
+ *
+ * A FIXED WINDOW, and that is a semantic choice worth stating rather than
+ * discovering: the counter is created on the first use with an expiry `window`
+ * seconds out, and every use until then charges against it. At the boundary a
+ * caller can therefore spend `limit` at the end of one window and `limit` again
+ * at the start of the next -- up to 2*limit across a straddling interval. A
+ * sliding window costs per-use timestamps in shared memory; the honest fix is to
+ * say which one this is, not to imply the other.
+ *
+ * The counter lives in nginx.shared, so it is FLEET-WIDE. A per-worker budget
+ * would be `limit` times the number of workers, which is not the number the
+ * operator wrote down -- the same class of defect as the per-process mode switch
+ * (v5.56). Cost: one hash probe under the store's spinlock per charged use,
+ * ~0.06 µs since HOST-PERF (v5.63); it was ~0.42 µs on a miss before that, which
+ * is the kind of per-request cost that decides whether a feature is affordable.
+ *
+ * Returns NGX_OK (within budget), NGX_DECLINED (exhausted), NGX_ERROR (no store).
+ */
+ngx_int_t
+ngx_js_shared_budget_charge(JSContext *ctx, const char *key, uint32_t limit,
+    uint32_t window)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    ngx_uint_t              i, slot;
+    uint32_t                hash;
+    int64_t                 cur;
+    time_t                  now;
+    u_char                  buf[32];
+    ngx_int_t               rc;
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return NGX_ERROR;
+    }
+
+    entries = (ngx_js_shared_entry_t *)(hdr + 1);
+    hash = ngx_js_shared_hash(key);
+    now = ngx_time();
+
+    ngx_spinlock(&hdr->lock, 1, 2048);
+
+    i = ngx_js_shared_find(hdr, entries, key, hash, now, &slot);
+
+    if (i != NGX_JS_SHARED_NOSLOT) {
+        cur = ngx_atoi((u_char *) entries[i].val,
+                       ngx_strlen(entries[i].val));
+        if (cur == NGX_ERROR) {
+            cur = 0;
+        }
+
+        /*
+         * CHARGE FIRST, THEN COMPARE. Counting the refused attempt too is
+         * deliberate: the audit wants to see how far over a tenant ran, and a
+         * counter that stops at the limit cannot tell "just reached it" from
+         * "hammering it a million times".
+         */
+        cur++;
+        ngx_snprintf((u_char *) entries[i].val, NGX_JS_SHARED_VAL_LEN - 1,
+                     "%L", cur);
+        entries[i].val[NGX_JS_SHARED_VAL_LEN - 1] = '\0';
+
+        rc = (cur <= (int64_t) limit) ? NGX_OK : NGX_DECLINED;
+
+    } else if (slot == NGX_JS_SHARED_NOSLOT) {
+        /*
+         * The store is full. FAIL CLOSED: a budget that cannot be counted is a
+         * budget that is not enforced, and the safe reading of "I cannot tell"
+         * is "no".
+         */
+        rc = NGX_DECLINED;
+
+    } else {
+        ngx_snprintf(buf, sizeof(buf) - 1, "1%Z");
+        ngx_js_shared_insert(&entries[slot], key, hash, (char *) buf,
+                             now + (time_t) window);
+        hdr->count++;
+        rc = (limit >= 1) ? NGX_OK : NGX_DECLINED;
+    }
+
+    ngx_unlock(&hdr->lock);
+
+    return rc;
+}
+
+
 static JSValue
 ngx_js_shared_fn_get(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
@@ -3770,7 +3858,10 @@ static const char  ngx_js_comcon_bootstrap[] =
        s.address as a string through both, where redact() correctly hid it.
        Adding a vocabulary word therefore means adding it in BOTH places -- the
        point of a closed set is that the two cannot drift silently. */
-    "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1};"
+    /* M-LIB: `uses` joins the closed vocabulary. It is normalized in mediate()
+       into an allow-everything mask PLUS a budget, so the field lattice and its
+       meet are untouched -- a budget attenuates HOW MANY TIMES, not WHAT. */
+    "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1,uses:1};"
     /* One definition of the socket field lattice, used by the meet here and by
        include()'s translation below -- two copies of a bitmask mapping is how a
        "narrower" membrane ends up wider than the one it attenuates. */
@@ -3787,6 +3878,14 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    for(k in FMASK)if(Object.prototype.hasOwnProperty.call(FMASK,k))"
     "      if(m&FMASK[k])out.push(k);"
     "    return out;}"
+    "  function budgetMeet(a,b){"
+    "    if(!a)return b||null;if(!b)return a;"
+    "    if(a.key!==b.key||a.limit!==b.limit||a.window!==b.window)"
+    "      throw new TypeError('mediate: cannot re-mediate a budgeted "
+               "capability with a DIFFERENT budget -- budgets are not ordered "
+               "(10/min vs 100/hour), so a meet would have to guess, and the "
+               "guess would widen one of them');"
+    "    return a;}"
     "  C.mediate=function(cap,interceptor){var f={};"
     "    if(!interceptor||typeof interceptor!=='object')throw new TypeError("
     "      'mediate: arg1 must be an interceptor descriptor "
@@ -3808,6 +3907,26 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(interceptor.fields!==undefined)"
     "      snap.fields=Array.prototype.slice.call(interceptor.fields);"
     "    if(interceptor.glob!==undefined)snap.glob=String(interceptor.glob);"
+    /* `uses` is validated HERE, at the producer, and normalized away: what the
+       rest of the pipeline sees is an allow-everything mask carrying a budget.
+       Every field is refused rather than defaulted -- a budget with a missing
+       limit is not "unlimited", it is a mistake, and the one direction a
+       mediation may never take is toward more authority. */
+    "    if(snap.flavor==='uses'){"
+    "      var bk=String(interceptor.key||''),"
+    "          bl=Number(interceptor.limit),bw=Number(interceptor.window);"
+    "      if(!bk)throw new TypeError('mediate: uses() needs a key naming the "
+                 "counter -- two capabilities share a budget only when the "
+                 "operator says so');"
+    "      if(bk.length>48)throw new TypeError('mediate: uses() key too long "
+                 "(max 48 chars)');"
+    "      if(!(bl>=1)||bl!==Math.floor(bl))throw new TypeError("
+    "        'mediate: uses() needs an integer limit >= 1; a missing limit is a "
+             "mistake, not `unlimited`');"
+    "      if(!(bw>=1)||bw!==Math.floor(bw))throw new TypeError("
+    "        'mediate: uses() needs an integer window >= 1 (seconds)');"
+    "      snap={flavor:'allow',fields:maskFields(FMASK_FULL),"
+    "            budget:{key:bk,limit:bl,window:bw}};}"
     /* V4 — ATTENUATION MEET, and the lattice inclusion asserted rather than
        argued.  Re-mediating an already-mediated capability used to fail with
        "grant is not a NginxSocket", because the translation unwraps one facet
@@ -3836,7 +3955,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        var mi=jsMask(ii),mo=jsMask(oi),mm=(mi&mo)>>>0;"
     "        if((mm&~mi)!==0||(mm&~mo)!==0)throw new Error("
     "          'mediate: attenuation meet widened authority (V4)');"
-    "        snap=Object.freeze({flavor:'allow',fields:maskFields(mm)});}"
+    /* Budgets do not form a computable meet either: 10-per-minute and
+       100-per-hour are not ordered, and picking the smaller of each field
+       yields 600-per-hour -- WIDER than one of the inputs. So the routes rule
+       applies unchanged: an identical budget composes, a different one is
+       REFUSED rather than guessed. */
+    "        var bb=budgetMeet(ii.budget,oi.budget);"
+    "        var ns={flavor:'allow',fields:maskFields(mm)};"
+    "        if(bb)ns.budget=bb;"
+    "        snap=Object.freeze(ns);}"
     "      cap=cap[FACET].cap;}"
     "    f[FACET]={cap:cap,interceptor:Object.freeze(snap)};return f;};"
     /* interceptor library — attenuation-only membranes over a cap. For a
@@ -3850,6 +3977,13 @@ static const char  ngx_js_comcon_bootstrap[] =
     /* routes(glob): attenuate a granted COM server to a route glob. The
        fragment receives a NginxComFacet (never the stateful server wrapper). */
     "  C.routes=function(glob){return {flavor:'routes',glob:String(glob)};};"
+    /* uses(key, limit, window): a fleet-wide FIXED-WINDOW budget on a capability.
+       `key` NAMES the counter, so two capabilities share a budget exactly when
+       the operator says they do -- deriving a key would make that unsayable and
+       make the counter's identity depend on wrapping order. */
+    "  C.uses=function(key,limit,window){"
+    "    return {flavor:'uses',key:String(key||''),"
+    "            limit:Number(limit),window:Number(window)};};"
     /* stone check (increment D3): a splice may carry only DEEP cap-free plain
        data — primitives + frozen records/arrays; no functions, no capabilities
        (facet/quote/confined), no getters/setters (a getter could mint a cap
@@ -4236,7 +4370,8 @@ static const char  ngx_js_comcon_bootstrap[] =
        two copies of a bitmask mapping is how a "narrower" membrane ends up
        wider than the one it attenuates. */
     "        else if(it.flavor==='allow'||it.flavor==='redact'){"
-    "          pol={kind:0,mask:jsMask(it)};}"
+    "          pol={kind:0,mask:jsMask(it)};"
+    "          if(it.budget)pol.budget=it.budget;}"
     "        else if(it.flavor==='routes'){"
     "          pol={kind:1,glob:String(it.glob||'*')};}"
     /* No fall-through to the FULL default.  NOTE it is not reachable through the

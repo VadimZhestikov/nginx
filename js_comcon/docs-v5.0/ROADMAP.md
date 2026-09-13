@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.66 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.67 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -57,6 +57,11 @@
 >   `E_CAP_ESCALATE` — the next tranche. It found a real defect: `contract.tests` was
 >   silently ignored unless it was a string, so `tests: [fn]` was admitted with the
 >   behavioural gate never run.
+> - **M-LIB STEP 3 SHIPPED (2026-09-12, v5.67): `uses` — the first enforced budget.**
+>   The mediation vocabulary's first attenuation of RATE rather than reach, fleet-wide in
+>   `nginx.shared` (measured: 4 workers, a limit of 10 spent exactly 10 times), +0.037 µs
+>   per charged use. It also settles where `E_BUDGET_*` belongs: exhaustion is a DENIAL
+>   (`budget.uses`), not an admission refusal, so that family stays empty by design.
 > - **F3 PROBED (2026-09-12, v5.66):** cross-compartment identity, the audit's
 >   NOT-EVIDENCED row. Host↔fragment turns out to be STRUCTURAL (separate
 >   `JS_NewRuntime()`s — a by-reference control kills the worker instead of leaking),
@@ -334,9 +339,19 @@ fallback) → the event dispatcher calls the C function pointer directly.
   once at config load, so an operator calling `enforce()` on a running server got "ok" and
   kept AUDITING — still allowing what they believed they had begun denying. Fixed without
   resetting the counters (the evidence that justified the switch must survive making it);
-  per process, no fleet-wide fan-out. `t/comcon_std_ops.t` (26) + 6 controls. Remaining:
-  the posture vocabulary (needs enforcement), `allowHosts`/`ttl`/`window`/… (need C-side
-  enforcement), the "raw operators withheld" governance half, and the mode fan-out.
+  per process, no fleet-wide fan-out. `t/comcon_std_ops.t` (26) + 6 controls.
+  **Step 3 — `uses`: the first ENFORCED budget (2026-09-12, v5.67).** The mediation
+  vocabulary shipped four words while the documents promised ten, and the remainder was
+  blocked on exactly that. `comcon.uses(key, limit, window)` attenuates **how many times**
+  rather than what: a fleet-wide fixed-window counter in `nginx.shared`, charged on every
+  gated operation (a redacted read is free), denied as `budget.uses`, logged-and-allowed
+  in audit mode. Measured `+0.037 µs` per charged use — affordable *because* HOST-PERF
+  fixed the store first (the same charge would have cost up to 0.42 µs a day earlier).
+  `t/comcon_budget_uses.t` (16) + 4 controls; **workers=4, spent=10 of a limit of 10**.
+  Remaining: the posture vocabulary (needs enforcement), `allowHosts` (needs an outbound
+  capability to mediate — there is none yet), `ttl` as a capability LIFETIME (distinct
+  from `uses`'s window), `cosign`/`protocol`, and the "raw operators withheld"
+  governance half.
   *(Original scope, preserved:)* The user-facing
   surface is not the kernel but the combinators: `std.profiles.*` (tenant,
   pure_library, forensics/REL, marketplace, config_builder…) and the mediation

@@ -65,6 +65,15 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
     "listener.serverByName",
     "enum.sockets",
     "sock.mutate",
+    /*
+     * The budget axis. MANUAL §3.2 named an `E_BUDGET_*` family alongside the
+     * refusal codes and [TBD-2] left it empty for want of anything to refuse.
+     * Building the mediation showed why it was empty and where it belongs: a
+     * budget is exhausted at RUN time, by a gate, which is the denial axis --
+     * not at admission. So it is a denial code, and the refusal family stays
+     * empty on purpose rather than by omission.
+     */
+    "budget.uses",
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */

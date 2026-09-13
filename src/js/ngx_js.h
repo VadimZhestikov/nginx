@@ -519,6 +519,11 @@ ngx_int_t ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn,
     JSValueConst imports, JSValueConst intrinsics, int check_request,
     char *reason, size_t reason_len, ngx_js_refusal_code_t *code);
 
+/* M-LIB `uses`: charge one use against a named fleet-wide budget (fixed window).
+   NGX_OK = within budget, NGX_DECLINED = exhausted, NGX_ERROR = no store. */
+ngx_int_t ngx_js_shared_budget_charge(JSContext *ctx, const char *key,
+    uint32_t limit, uint32_t window);
+
 /* [TBD-2]: throw a refusal carrying its code, in the message and as `.code` */
 JSValue ngx_js_comcon_refuse(JSContext *ctx, ngx_js_refusal_code_t code,
     const char *fmt, ...);

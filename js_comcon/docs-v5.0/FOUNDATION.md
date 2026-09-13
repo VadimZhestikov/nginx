@@ -635,6 +635,51 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.67 (in place — M-LIB step 3: `uses`, the first mediation that attenuates RATE):** the
+vocabulary shipped four words (`revoke`/`redact`/`allow`/`routes`) while the documents
+promised ten, and M-LIB's remainder was blocked on exactly that — *"shipping them as
+descriptors would be shipping policy that does nothing."* `comcon.uses(key, limit, window)`
+is the enforcement.
+
+**A use is any gated operation**, a read of a mediated field as much as a method call:
+charging only calls would make `s.address` free and let a tenant spend the interesting part
+of a capability without touching its budget. A **redacted read is not charged** — a field
+the membrane hides was never an exercise of the capability.
+
+**THE COUNTER IS FLEET-WIDE, and that is the property that decides whether the feature is
+real.** It lives in `nginx.shared`, so the operator who wrote `limit: 10` gets ten — not ten
+per worker, which is forty on this box and is not the number they wrote. The test spends a
+budget across concurrent connections on four workers and asserts the total: **workers=4,
+spent=10, denied=14**, with the worker count asserted from `nginx.shared.incr()` because a
+single-worker fixture cannot see this class of bug at all (v5.56's mode switch shipped with
+exactly it).
+
+**Measured `+0.037 µs` per charged use** (0.060 vs 0.023 for an unbudgeted read, 300k
+iterations) — one hash probe under the store's spinlock. Affordable *because* HOST-PERF
+fixed the store first: the same charge would have cost up to 0.42 µs on a miss a day
+earlier, which is the difference between a feature and a tax.
+
+**Refusals, not defaults.** A missing key, limit or window is refused — a budget with no
+limit is a mistake, not "unlimited", and the one direction a mediation may never take is
+toward more authority. **Re-mediating with a DIFFERENT budget is refused** on exactly the
+routes-glob grounds: 10/min and 100/hour are not ordered, so a meet would have to guess and
+the guess would widen one of them. An identical budget composes; a field mask composes
+freely, and the mask still attenuates.
+
+**The window is FIXED, not sliding, and the code says so** rather than leaving it to be
+discovered: the counter carries a TTL, so a caller may spend `limit` at the end of one
+window and `limit` at the start of the next. A sliding window costs per-use timestamps in
+shared memory.
+
+**It also settles where `E_BUDGET_*` belongs.** [TBD-2] left that family empty for want of
+anything to refuse; building the mediation showed the answer is that exhaustion is a
+**denial** — a gate refusing an operation at run time (`budget.uses`) — not an admission
+refusal. So the family stays empty **by design** rather than by omission, and the denial
+enumeration grows by one, with its V12 corpus row and check [5] demanding it before it could
+ship. Audit mode needed no new code at all: the charge goes through
+`ngx_js_compartment_denial()`, so a budget is logged-and-allowed in audit exactly like every
+other gate. `t/comcon_budget_uses.t` (16) + 4 controls.
+
 **v5.66 (in place — F3: cross-compartment identity, probed at last, and the claim turned
 out to be two claims):** AUDIT_M-SES §3 had it as **NOT EVIDENCED** with the note that
 *"cannot by construction" is an argument, not a test*. Probing it split it:

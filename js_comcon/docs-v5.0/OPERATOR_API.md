@@ -343,6 +343,41 @@ bound to ∅"** (Principle 9) — the propose-don't-hold policy that the operato
    (pre-M2)**, `admit` uses the existing C3 structural checks (free-name deny-list / no-dynamic-
    code / sealed-Request-fields) as the schema, upgrading to M2 types when available.
 
+## 8b. `uses(key, limit, window)` — a budgeted capability *(v5.67)*
+
+The first mediation flavor that attenuates **how many times** rather than **what**.
+
+```js
+var limited = comcon.mediate(sock, comcon.uses('acme-sock', 100, 60));
+// 100 uses per 60 seconds, fleet-wide, shared by anything naming 'acme-sock'
+```
+
+- **A use is any gated operation** on the capability — a read of a mediated field as much
+  as a method call. Charging only calls would make `s.address` free and let a tenant spend
+  the interesting part of a capability without touching its budget. A **redacted** read is
+  not charged: a field the membrane hides was never an exercise of the capability.
+- **The counter is fleet-wide**, in `nginx.shared`. A per-worker budget would give the
+  operator who wrote `100` four hundred on a four-worker box — the number they did not
+  write. Measured: `+0.037 µs` per charged use (0.060 vs 0.023 unbudgeted, 300k reads).
+- **The window is FIXED, not sliding.** The counter is created on first use with a TTL; at
+  a boundary a caller can spend `limit` at the end of one window and `limit` at the start
+  of the next. A sliding window costs per-use timestamps in shared memory; the honest move
+  is to say which one this is.
+- **The key names the counter**, so two capabilities share a budget exactly when you say
+  so. Deriving a key would make sharing unsayable and tie the counter's identity to
+  wrapping order.
+- **Nothing is defaulted.** A missing key, limit or window is refused: a budget with no
+  limit is a mistake, not "unlimited", and the one direction a mediation may never take is
+  toward more authority.
+- **Re-mediating with a different budget is refused** — 10/min and 100/hour are not
+  ordered, so a meet would have to guess, and the guess would widen one of them. Same rule
+  as a different route glob. An identical budget composes; a field mask composes freely.
+- **Exhaustion is a denial, not a refusal:** code `budget.uses`, counted in
+  `nginx.tenantDenials()`, and in **audit mode it is logged and ALLOWED** — so a limit can
+  be watched before it is switched on, like every other gate.
+
+---
+
 ## 8a. Sessions — turning an authenticated principal into an environment *(v5.65)*
 
 The operator-facing half of FOUNDATION §8b (which owns the design and the reasoning).
