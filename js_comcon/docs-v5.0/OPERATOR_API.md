@@ -343,6 +343,45 @@ bound to ∅"** (Principle 9) — the propose-don't-hold policy that the operato
    (pre-M2)**, `admit` uses the existing C3 structural checks (free-name deny-list / no-dynamic-
    code / sealed-Request-fields) as the schema, upgrading to M2 types when available.
 
+## 8a. Sessions — turning an authenticated principal into an environment *(v5.65)*
+
+The operator-facing half of FOUNDATION §8b (which owns the design and the reasoning).
+
+```js
+// Held by whoever may hand out sessions. No capability -> no verbs at all.
+var S = comcon.std.sessions({ sessions: nginx.shared });
+
+// A grant is a DESCRIPTOR: cap-free data, optionally leased.
+S.grant('ci@acme', { imports: ['JSON', 'fetchAcme'], routes: '/acme/*', ttl: 3600 });
+
+// Per USE, not per login. `env` is the environment YOU hold; the result is it,
+// narrowed. You cannot resolve authority you do not have.
+var s = S.resolve(principalTheHostAuthenticated, operatorEnv);
+s.env        // an env: operatorEnv ∩ the descriptor, mediated per `routes`
+s.granted    // the names it actually carries
+s.reason     // why it is empty, when it is
+
+S.revoke('ci@acme');   // the next resolve returns the empty env. No token to chase.
+```
+
+**Three rules an operator has to know:**
+
+1. **You authenticate; COMCON maps.** `principalTheHostAuthenticated` must come from
+   something you verified — an mTLS subject, a JWT you checked, a peer credential.
+   Passing a client-supplied string here hands the client the session, and nothing in
+   the platform can tell the difference.
+2. **A mapping can only narrow, and it narrows YOUR env.** If a descriptor names
+   something the env you passed does not grant, `resolve` **throws** rather than
+   returning a smaller session — because a mapping that silently grants less than it
+   says is one you cannot audit.
+3. **Unknown, revoked and expired are all the same answer:** an empty environment. Not
+   an error to catch, not a default role — nothing.
+
+`describe()` reports what the session holds and states `authenticates: false` in the
+surface itself, so the boundary shows up in a REPL rather than only in a document.
+
+---
+
 ## 9. Worked example — the whole fundament, end to end
 
 `nginx.conf`: **only** `js_source root.js;` — nothing else.

@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.64 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.65 — 2026-09-12).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -57,6 +57,12 @@
 >   `E_CAP_ESCALATE` — the next tranche. It found a real defect: `contract.tests` was
 >   silently ignored unless it was a string, so `tests: [fn]` was admitted with the
 >   behavioural gate never run.
+> - **TM-2 IS CLOSED (2026-09-12, v5.65):** the identity→environment mapping, the last
+>   unowned finding in THREATS.md and the one that had to exist *before the first real
+>   operator session*. FOUNDATION §8b owns it; `comcon.std.sessions` implements it as
+>   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
+>   and can only NARROW the env of whoever resolves a principal. The residual is stated
+>   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
 > - **SR-4 IS BUILT (2026-09-12): `ASSURANCE.md`, the V15 assurance case.** The claim →
 >   assumption → evidence tree, machine-checked by `t/comcon_assurance.t` so it cannot rot,
 >   with a findings ledger of eleven. **It is NOT SIGNED**, and signing it is the act that

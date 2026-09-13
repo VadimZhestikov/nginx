@@ -4780,7 +4780,13 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    broadcast:{doc:'class-F broadcast channel',"
     "               host:'nginx.shared (via bindShared)'},"
     "    provenance:{doc:'grant-chain registry',host:null},"
-    "    signing:{doc:'signing key',host:null}};"
+    "    signing:{doc:'signing key',host:null},"
+    /* The ninth (v5.65, TM-2 / FOUNDATION §8b): the session registry. It holds
+       DESCRIPTORS, never environments -- so it carries no authority, which is
+       what lets it live in nginx.shared and be fleet-wide. A session without
+       this resource has no grant/revoke verbs at all. */
+    "    sessions:{doc:'session registry (identity -> attenuation)',"
+    "              host:'nginx.shared (comcon.session:*)'}};"
     "  STD.ops=function(res){"
     "    res=res||{};"
     "    var have={},k;"
@@ -5096,6 +5102,118 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      if(owner){owner[segs[segs.length-1]]=s.was;n++;}}"
     "    return n;};"
     "  Object.freeze(STD.config);"
+    /* ---------------------------------------------------------------
+       std.sessions(res) — TM-2 / FOUNDATION §8b: identity -> environment.
+
+       THE HOST AUTHENTICATES; THIS MAPS. Nothing here validates a principal:
+       the caller asserts one (an mTLS subject, a verified JWT, a peer
+       credential) and that assertion IS the trust transfer. Passing a
+       client-supplied string here hands the client the session.
+
+       The registry stores a cap-free DESCRIPTOR per principal -- never an env,
+       never a capability -- so (a) stealing the table yields nothing, and
+       (b) it can live in nginx.shared, which makes it FLEET-WIDE. The mode
+       switch shipped per-process and put four workers in mixed modes (v5.56);
+       a session table with that bug would authenticate on one worker and not
+       on the next.
+
+       resolve(principal, env) ATTENUATES THE CALLER'S OWN env. The registry
+       cannot hand out authority the resolver did not hold, so a session env is
+       <= the env of whoever resolved it -- monotonicity at the identity
+       boundary, inherited rather than re-argued. An unknown or expired
+       principal resolves to the EMPTY env, the same answer an undeclared free
+       name gets. --------------------------------------------------------- */
+    "  var SESS_PREFIX='comcon.session:';"
+    "  STD.sessions=function(res){"
+    "    res=res||{};"
+    "    var store=res.sessions||null;"
+    "    var S={};"
+    "    function key(p){"
+    "      if(typeof p!=='string'||!p)throw new TypeError("
+    "        'std.sessions: principal must be a non-empty string');"
+    /* the shared store's key is 128 bytes; refuse rather than truncate, because
+       two principals that truncate to the same key are one principal. */
+    "      if(SESS_PREFIX.length+p.length>=120)throw new TypeError("
+    "        'std.sessions: principal too long (max '+(120-SESS_PREFIX.length)+"
+    "        ' chars); truncating would merge two principals into one');"
+    "      return SESS_PREFIX+p;}"
+    "    S.describe=function(){"
+    "      return Object.freeze({resource:'sessions',"
+    "        held:!!store,"
+    "        verbs:Object.keys(S).sort(),"
+    "        stores:'descriptors only -- no capability is ever written here',"
+    "        authenticates:false,"
+    "        note:'the HOST asserts the principal; this maps it to an "
+                 "attenuation of the env passed to resolve()'});};"
+    "    if(!store)return Object.freeze(S);"
+    "    S.grant=function(principal,descriptor){"
+    "      var d=descriptor||{};"
+    "      var rec={imports:[],routes:null};"
+    "      if(d.imports!==undefined){"
+    "        if(!d.imports||typeof d.imports.length!=='number')"
+    "          throw new TypeError('std.sessions.grant: imports must be an "
+                 "array of names');"
+    "        for(var i=0;i<d.imports.length;i++)rec.imports.push(String("
+    "          d.imports[i]));}"
+    "      if(d.routes!==undefined&&d.routes!==null)rec.routes=String(d.routes);"
+    /* A descriptor is DATA: anything function-shaped is a capability trying to
+       cross, and would be silently dropped by JSON.stringify -- so refuse it
+       where the caller can still see the mistake. */
+    "      for(var k in d)if(Object.prototype.hasOwnProperty.call(d,k)){"
+    "        if(typeof d[k]==='function')throw new TypeError("
+    "          'std.sessions.grant: descriptor field '+k+' is a function; the "
+               "registry holds DATA, never capabilities');}"
+    "      var ttl=(d.ttl===undefined||d.ttl===null)?0:Number(d.ttl);"
+    "      if(!(ttl>=0))throw new TypeError('std.sessions.grant: ttl must be "
+                 "a non-negative number of seconds');"
+    "      var json=JSON.stringify(rec);"
+    "      if(ttl>0)store.set(key(principal),json,ttl);"
+    "      else store.set(key(principal),json);"
+    "      return Object.freeze({principal:principal,descriptor:"
+    "        Object.freeze(rec),ttl:ttl});};"
+    "    S.revoke=function(principal){"
+    "      return store.delete(key(principal));};"
+    "    S.lookup=function(principal){"
+    "      var v=store.get(key(principal));"
+    "      if(v===undefined)return null;"
+    "      var rec;try{rec=JSON.parse(v);}catch(e){return null;}"
+    "      var ttl=store.ttl(key(principal));"
+    "      return Object.freeze({principal:principal,descriptor:"
+    "        Object.freeze(rec),ttl:(ttl===null?0:ttl)});};"
+    "    S.list=function(){"
+    "      var out=[],ks=store.keys(),i;"
+    "      for(i=0;i<ks.length;i++){"
+    "        if(ks[i].indexOf(SESS_PREFIX)===0)"
+    "          out.push(ks[i].slice(SESS_PREFIX.length));}"
+    "      return out.sort();};"
+    /* resolve(principal, env): the whole point. Deny-by-default, narrowing
+       only, and the narrowing is REFUSED rather than trimmed when it names
+       something the base env does not hold -- a mapping that quietly grants
+       less than it says is a mapping nobody can audit. */
+    "    S.resolve=function(principal,env){"
+    "      if(!env||!env[ENV])throw new TypeError("
+    "        'std.sessions.resolve: arg1 must be the comcon.env() to attenuate "
+             "-- the registry holds no authority of its own');"
+    "      var found=S.lookup(principal);"
+    "      var out=C.env();"
+    "      if(!found)return Object.freeze({principal:principal,env:out,"
+    "        granted:[],reason:'no mapping (or the lease expired)'});"
+    "      var want=found.descriptor.imports,i,n,cap;"
+    "      for(i=0;i<want.length;i++){"
+    "        n=want[i];"
+    "        if(!Object.prototype.hasOwnProperty.call(env.grants,n))"
+    "          throw new TypeError('std.sessions.resolve: the mapping for '+"
+    "            principal+' names '+n+', which the environment being "
+               "attenuated does not grant; refusing rather than granting less "
+               "than the mapping says');"
+    "        cap=env.grants[n];"
+    "        if(found.descriptor.routes)"
+    "          cap=C.mediate(cap,{flavor:'routes',glob:found.descriptor.routes});"
+    "        C.grant(out,n,cap);}"
+    "      return Object.freeze({principal:principal,env:out,"
+    "        granted:want.slice().sort(),reason:null});};"
+    "    return Object.freeze(S);};"
+
     "  C.std=Object.freeze(STD);"
     "  Object.freeze(STD.profiles);"
     "  C.pom=function(rootFn){"

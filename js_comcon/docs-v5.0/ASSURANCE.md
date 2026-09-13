@@ -473,6 +473,25 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T5
 - **V:** V13
 
+#### G10.3 — a principal becomes an environment by ATTENUATION, never by minting
+- **CLAIM:** The identity→environment mapping holds cap-free descriptors, resolves by
+  narrowing the env the caller passes in, answers an unknown or expired principal with the
+  EMPTY env, and refuses a mapping that names authority the base env does not hold.
+- **ARGUMENT:** The registry carries no authority at all, which is what lets it live in
+  `nginx.shared` and be fleet-wide (data crosses a process boundary; capabilities do not),
+  and what makes stealing the whole table worth nothing. Monotonicity at the identity
+  boundary is inherited from the kernel rather than re-argued: a session env is ≤ the env
+  of whoever resolved it. **COMCON does not authenticate** — the host asserts the
+  principal, and that assertion is the entire trust transfer (FOUNDATION §8b).
+- **EV:** `t/comcon_std_sessions.t` — deny-by-default, narrowing, refusal-not-trimming, leases, revocation, and the absent-verbs property.
+- **EV:** `t/comcon_std_ops.t` — `sessions` as the ninth ops-resource: no capability, no `grant`/`revoke` verb.
+- **GAP:** Authentication, the principal namespace, and the login transport are the HOST's
+  and are deliberately not provided; a deployment that passes a client-supplied identifier
+  as the principal has handed the client the session, and nothing here can detect that.
+  **home:** FOUNDATION §8b · P19 admin-shell substrate · finding F7.
+- **THREAT:** T5, T12
+- **V:** V13
+
 #### G11.1 — closed enumerations are GENERATED, never maintained
 - **CLAIM:** Six closed enumerations are derived from the source and break the suite on drift.
 - **EV:** `t/comcon_enumerations.t` — runs the checker; asserts the LAST check ran (no early exit).
@@ -566,7 +585,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F4** | `guarded` / `irreversible` COM members are excluded from the setter fuzz | AUDIT_M-SES.md §3 | OPEN — deliberate scope choice |
 | **F5** | AOT-compiled fragments not separately run against the escape battery | G7.5 | PARTIAL |
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 | OPEN — deliberate scope choice |
-| **F7** | **TM-2:** session identity → environment mapping is unspecified and unowned | THREATS.md | OPEN — must exist before the first real operator session |
+| **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
 | **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 | ACCEPTED residual (post-M9) |
 | **F9** | V-track items with no machinery yet: V5b, V6, V8, V9, V10, V13, V14 | VERIFICATION.md | OPEN — scheduled |
 | **F10** | `E_BUDGET_*` and the JS layer's `E_CAP_FLAVOR` / `E_CAP_ESCALATE` have no members | MANUAL §3.2 [TBD-2] | OPEN — next tranche |

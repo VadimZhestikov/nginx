@@ -238,12 +238,14 @@ like($inv, qr/"verbs":\["bindings","denials","describe","enforce","learn","learn
      'a fully-provisioned session exposes all fifteen shipped verbs');
 
 # --- the third closed enumeration ---------------------------------------
-like($inv, qr/"resourceCount":8/,
+like($inv, qr/"resourceCount":9/,
      "every ops resource FOUNDATION \x{a7}8a enumerates is enumerated here");
-like($inv, qr/"resources":\["log","learn","mode","bindings","snapshot","broadcast","provenance","signing"\]/,
+like($inv, qr/"resources":\["log","learn","mode","bindings","snapshot","broadcast","provenance","signing","sessions"\]/,
      '...by name. (V7\'s checker compares this table against \x{a7}8a itself: it '
      . 'caught that the mode switch shipped in the code while the document '
-     . 'listed seven resources without it.)');
+     . 'listed seven resources without it. The ninth, `sessions`, arrived with '
+     . 'TM-2 in v5.65 -- and THIS assertion is what noticed, which is the '
+     . 'enumeration doing its job in the other direction.)');
 like($inv, qr/"noHost":\["provenance","signing"\]/,
      'the two with NO host spelling are marked host:null, so the gap is '
      . 'checkable instead of invisible');

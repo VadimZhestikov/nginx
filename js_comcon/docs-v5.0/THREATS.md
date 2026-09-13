@@ -14,7 +14,8 @@
 > **every** js_com handler, not just the (removed) tenant content handler. The named residuals
 > are unchanged: **T8** engine memory safety (gated on maxim finalization for untrusted-native),
 > **T4/T9** IFC/side-channels (post-M9), **T6** availability-within-reach, **TM-2** session→env
-> mapping (still open/unowned).
+> mapping (**owned + built 2026-09-12**, §8b; the residual is authentication, which is
+> the host's).
 
 *The security-completeness check the four review passes structurally couldn't do: not
 "is this mechanism right?" but "against a structured adversary list, is the set of
@@ -81,8 +82,12 @@ dangerous verbs (scenario 31); least-authority realization (R6 — a proposal ca
 trojan the session); operator sessions audited like tenants (trust-report over
 sessions); leases/TTL on session grants.
 *Residual:* whatever the stolen env legitimately holds, within its windows — bounded,
-audited, revocable. **Gap found: TM-2** (session identity → environment mapping is
-unspecified; see below).
+audited, revocable. **Gap found: TM-2** (session identity → environment mapping) —
+**owned and built 2026-09-12** (FOUNDATION §8b; see below). Two of this row's claimed
+mitigations became real with it: **leases/TTL on session grants** now exist, and
+revocation needs no chase because resolution happens per use. What a stolen *session*
+yields is now bounded twice over — by the descriptor, and by the env of whoever resolves
+it.
 
 ### T6 — Rogue mid-tier controller (a reseller/policy author gone bad)
 *Blocked by:* monotonicity — it can only narrow within its own reach; it cannot widen
@@ -158,13 +163,27 @@ the record's counting stays exact (denial *counters* per code are cheap), full r
 are sampled once a fragment exceeds its quota, and quota-exceeded is itself a reported
 (and alertable) condition. Home: the M2.5 denial-schema deliverable.
 
-**TM-2 — Session identity → environment mapping is unspecified.** Everything about
-operator security assumes a session *has* an environment — but how an authenticated
-principal (human, CI job, AI agent) is mapped to a granted environment (who
-authenticates, where the identity→env table lives, how it is itself governed) is
-host-integration work that no document owns. It rides the P19 admin-shell substrate.
-Home: named as an increment-A integration deliverable (ROADMAP §13) — it must exist
-before the first real operator session, i.e., before dogfood.
+**TM-2 — Session identity → environment mapping.** *(found here; **OWNED AND BUILT
+2026-09-12, FOUNDATION §8b** — the last unowned finding in this model.)* Everything about
+operator security assumes a session *has* an environment; how an authenticated principal
+(human, CI job, AI agent) becomes one was host-integration work no document owned.
+
+**The answer, in one line: the registry maps a principal to an ATTENUATION, not to an
+environment.** A row is a cap-free descriptor, so (a) stealing the table yields no
+authority, (b) it lives in `nginx.shared` and is therefore fleet-wide — a per-process
+session table would authenticate on one worker and not the next, which is exactly how the
+mode switch shipped broken — and (c) `resolve(principal, env)` narrows the env the caller
+already holds, so a session can never exceed whoever resolved it. An unknown principal or
+an expired lease resolves to the EMPTY env; a descriptor naming something the base env
+does not grant is refused rather than trimmed. Leases are the shared store's TTL.
+`sessions` is the ninth ops-resource, so a session without it has no `grant`/`revoke`
+verb at all. `comcon.std.sessions`, `t/comcon_std_sessions.t` (20).
+
+**The residual is the trust transfer itself, and it is the host's: COMCON does not
+authenticate.** The host asserts the principal (mTLS subject, verified JWT, peer
+credentials); nothing here validates it, and a deployment that passes a *client-supplied*
+identifier has handed the client the session. Also still the host's: the principal
+namespace and the login transport (the P19 admin-shell substrate).
 
 ## Reading the residuals honestly
 

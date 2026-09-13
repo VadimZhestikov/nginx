@@ -226,6 +226,7 @@ def check_ops_resources():
         "snapshot": ["snapshot store"],
         "provenance": ["provenance/grant-chain registry", "grant-chain"],
         "signing": ["signing key"],
+        "sessions": ["session registry"],
     }
     for k in keys:
         alts = aliases.get(k, [k])

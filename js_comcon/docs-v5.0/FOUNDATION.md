@@ -442,7 +442,11 @@ denial/observation log · the binding/epoch store · the provenance/grant-chain 
 learning-recorder switch · **the audit/enforce/learn mode switch** *(added v5.53: the
 rollout verbs decompose over it, so it is a resource like the others; it was missing
 from this list while `std.ops` shipped it, which is the drift V7's checker now
-catches)*. *(Realization note: the snapshot store is the binding store's quotation
+catches)* · **the session registry** *(added v5.65: the identity→attenuation table of
+§8b. It is a resource like the others precisely so that the thing which HANDS OUT
+authority is itself held, not ambient — a session without it has no `grant`/`revoke`
+verb at all. It stores descriptors, never environments, so holding it is the right to
+map, not the right to grant.)*. *(Realization note: the snapshot store is the binding store's quotation
 record — "snapshot = quote" — rather than a separate host object.)* This joins the per-instance grammar enumerations and the
 compile portals as the third *kind* of closed enumeration (§13.2) whose *completeness*
 makes a safety claim checkable — here, "no backdoor."
@@ -453,6 +457,73 @@ CI, dashboards, and AI operators use the identical gate — comconctl is merely 
 among many, rebuildable by anyone from their granted slice; and M-SES loses an entire
 attack-surface class, since there is no separate management API to harden
 (`HARDENING.md`).
+
+---
+
+## 8b. The session boundary: identity → environment *(new in v5.65 — closes TM-2)*
+
+Everything in §8a assumes a session **has** an environment. THREATS.md's **TM-2** named the
+hole: *how an authenticated principal (human, CI job, AI agent) becomes a granted
+environment — who authenticates, where the identity→env table lives, and how that table is
+itself governed — was host-integration work that no document owned.* It was the last
+unowned finding in the threat model, and it had a deadline: it must exist before the first
+real operator session.
+
+**COMCON DOES NOT AUTHENTICATE, AND THAT IS THE WHOLE TRUST TRANSFER.** The host asserts a
+principal — an mTLS client certificate's subject, a JWT the host verified, a unix socket's
+peer credentials, an SSH-authenticated shell. COMCON never validates that string and cannot:
+it has no notion of a credential. Everything below is conditional on the host asserting the
+principal honestly, and any integration that passes a *client-supplied* identifier here has
+handed the client the session. This paragraph is the boundary; it is stated this loudly
+because a blurred version of it is how identity systems are actually broken.
+
+**The registry holds DESCRIPTORS, not environments.** A session grant records an
+*attenuation* — a cap-free descriptor table (`{imports, routes, ttl}`) — never a capability
+and never an env. Three things follow, and they are the reason the design is this shape:
+
+1. **Stealing the table yields nothing.** It contains no authority to steal. Compare the
+   obvious design (store an env per principal), where the table IS the keys to the building.
+2. **It can live in `nginx.shared`,** because data crosses a process boundary and
+   capabilities do not — so the registry is **fleet-wide by construction**. That is not a
+   nicety: the audit/enforce mode switch shipped as per-process and put a four-worker fleet
+   in mixed modes (v5.56). A session table with that bug would authenticate on one worker
+   and not on the next.
+3. **Leases are the shared store's TTL**, so an expired grant is reclaimed when it is
+   probed, by machinery that already exists and is tested (v5.63). A lease that nobody
+   sweeps still expires.
+
+**Resolution attenuates the RESOLVER's own environment.** `resolve(principal, env)` takes
+the env to narrow as an argument — no ambient authority, the same rule `std.ops` follows —
+and returns `env` restricted to the descriptor. The registry therefore cannot hand out
+authority the resolving side did not already hold: a session env is **≤ the env of whoever
+resolved it**, which is the kernel's monotonicity property applied at the identity boundary
+rather than a second rule to trust. A descriptor naming something the base env does not
+grant is **refused**, not silently dropped, because a mapping that quietly grants less than
+it says is a mapping nobody can audit.
+
+**Deny by default.** An unknown principal resolves to the empty environment — the same
+answer as an undeclared free name. Not an error, not a default role: nothing.
+
+**Where the chain is rooted.** The first environment is not granted by the registry; it is
+held by **host JS at configuration time**, which is the root that already exists. There is
+no new privilege and no bootstrap ceremony: an operator with `js_source` has the root env
+because they have the config file, and everything a session ever holds is a narrowing of
+that. A registry that could mint authority would be a management plane (§8a says there is
+none); a registry that can only narrow is a *lookup table for attenuations*.
+
+**Revocation needs no chase.** Resolution happens per use, not once at login, so `revoke`
+removes a row and the next resolve returns the empty env. There is no token to hunt, no
+cache to invalidate, and no session that outlives its grant.
+
+**The ninth ops-resource.** The session registry joins §8a's enumeration as `sessions`, so a
+session without that capability has no `grant`/`revoke` verbs *at all* (absent from
+`Object.keys()`, not present-and-throwing) — the no-backdoor property, extended to the thing
+that hands out authority.
+
+**What this deliberately does NOT provide**, recorded so the gap is visible rather than
+assumed: authentication (above); a principal *naming* policy (the host's namespace, not
+ours); transport and the login flow (the P19 admin-shell substrate); and any notion of a
+*role* — there are only attenuations, because a role is just a descriptor someone named.
 
 ---
 
@@ -563,6 +634,44 @@ one bytecode definition, one hardening surface); docs-v5.0 frozen as the single
 normative spec (in-place revisions only); compatibility principle (§1: no flag-day);
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
+
+**v5.65 (in place — TM-2 owned and built: a principal becomes an environment by
+ATTENUATION, never by minting):** the last unowned finding in the threat model, and the one
+with a deadline (*before the first real operator session*). Spec in **§8b**; mechanism in
+`comcon.std.sessions`; `sessions` joins §8a as the **ninth ops-resource**, so a session
+without it has no `grant`/`revoke` verb at all.
+
+**Three consequences follow from one decision — the registry stores DESCRIPTORS, never
+environments.** (1) Stealing the whole table yields no authority; compare the obvious
+design, where the table IS the keys to the building. (2) It can live in `nginx.shared`,
+because data crosses a process boundary and capabilities do not — so it is **fleet-wide by
+construction**, which is not a nicety: the mode switch shipped per-process and put four
+workers in mixed modes (v5.56), and a session table with that bug authenticates on one
+worker and not the next. (3) Leases are the shared store's TTL, so an expired grant is
+reclaimed when probed, by machinery that already exists and was just made fast (v5.63).
+
+**Resolution attenuates the CALLER's own env.** `resolve(principal, env)` narrows the env
+it is handed, so a session is **≤ the env of whoever resolved it** — monotonicity at the
+identity boundary, inherited from the kernel rather than argued again. An unknown principal
+or an expired lease resolves to the EMPTY env (the answer an undeclared free name gets). A
+descriptor naming something the base env does not grant is **refused, not trimmed**: a
+mapping that quietly grants less than it says is one nobody can audit. A function in a
+descriptor is refused where the caller can see it, rather than dropped silently by
+`JSON.stringify`.
+
+**COMCON DOES NOT AUTHENTICATE, and §8b says so at the top.** The host asserts the
+principal — mTLS subject, a JWT it verified, peer credentials — and that assertion is the
+entire trust transfer; a deployment passing a *client-supplied* identifier has handed the
+client the session, and nothing here can detect it. The principal namespace and the login
+transport stay the host's too. Recorded as the residual of ASSURANCE.md **F7**, which moves
+from OPEN to SPECIFIED + BUILT.
+
+`t/comcon_std_sessions.t` (20) + 5 controls, each aimed at a property that would be
+dangerous to lose: resolution that stops narrowing, an unknown principal falling back to
+the caller's env, a greedy mapping trimmed instead of refused, a capability accepted into a
+descriptor, and the verbs appearing without the capability. **`t/comcon_std_ops.t` caught
+the change by itself** — it pins the resource count at 8, and the ninth broke it, which is
+the closed enumeration working in the direction nobody plans for.
 
 **v5.64 (in place — V15 / SR-4: the assurance case exists, is machine-checked, and its
 first finding was that a quarter of the evidence was dead):** `ASSURANCE.md` — G0
