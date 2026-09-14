@@ -26,6 +26,17 @@
 # It lives in t/tools/ and is not part of `prove t/`: it is decision evidence,
 # re-run when the question comes up, not a gate.
 #
+# WHAT THE KNOWN-POSITIVE CONTROL ACTUALLY MEASURES (added 2026-09-13).  Its
+# `s = (s + i * 3) | 0` loop shows a big interpreted-to-compiled ratio because a
+# multiply-add accumulator has a CLOSED FORM and both compilers take it: measured
+# in t/tools/lowering-ceiling.t, that shape runs at ~0.2 ns/iter in C and ~0.4
+# lowered -- neither of them runs the loop.  The control still does its job here
+# (it proves this harness can see a win, so a 1.0x elsewhere is a property of the
+# policy) but it must NOT be read as "compute-bearing code gets 13x from
+# lowering": on arithmetic neither compiler can eliminate, lowering buys ~2.5x and
+# is still ~8x off hand-written C.  The shape maxim wins biggest on is the shape
+# gcc deletes.
+#
 # EXPERIMENT 2: how big is the minimum STUB SET? Every host member a policy
 # touches needs a typed C entry point before lowering is worth anything. The
 # count is extracted from the policy sources with the D5b-2 CST, and compared

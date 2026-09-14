@@ -635,6 +635,53 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.97 (in place — the LOWERING CEILING is measured, and it reframes M5):** a full proxy makes a
+new question askable: re-implement part of a hot path nginx implements in C -- a header filter, a
+body step -- in JS, purely to get extra functionality into it. Affordable if M5 shipped with types?
+
+`t/tools/policy-compute-split.t` answers the OLD question (are real policies compute-bound -- no)
+and does not answer this one, because a hot path is not policy code: IT MOVES DATA. So
+`nginx.bench` + `t/tools/lowering-ceiling.t`, in-process on objs_jit, with C offered at both -O and
+-O2 because nginx builds at -O while maxim compiles its output at -O2/-O3 -- an asymmetry that
+would have FLATTERED JS. Numbers in PERFORMANCE.md §2b.
+
+UNTYPED LOWERING IS 8.3x OFF HAND-WRITTEN C ON ARITHMETIC AND 17x ON A BYTE SCAN. And
+`--jit-dump-c` says why, which is the part that matters: the accumulator lives in a DOUBLE, and
+every operation materialises two JSValues, tag-checks both operands at run time, keeps a
+runtime-dispatch fallback, re-boxes, and writes a byte into a global type-feedback array. There is
+no type information, so every op is a tagged-value op. THE GAP IS BOXING, NOT CODE GENERATION.
+
+The test of that claim is a TYPED-SHAPE arm: the same algorithm with raw int32 locals and no
+boxing, still inside maxim's framing and still paying the BACK-EDGE GAS CHECK that R4 needs. It
+runs AT PARITY with hand-written C. So parity is reachable in principle and the entire prize is
+whether inference can drop the boxing -- which is the M5 risk, now precisely stated instead of
+assumed. The arm is a hand-written STAND-IN for typed output: it shows the framing costs nothing,
+not that inference can prove `h : int32`.
+
+THREE BELIEFS OF OUR OWN WERE CORRECTED BY MEASUREMENT.
+
+The zero-copy `ArrayBuffer` view over nginx memory WORKS -- and BUYS NOTHING. It measures the same
+as a copy, because the access path dominates and not the backing. One 16 KB copy is 0.2 us, i.e.
+0.012 ns/byte, against 12.65 ns/byte to scan it: THE COPY WAS NEVER THE PROBLEM, contrary to an
+estimate made from first principles before measuring.
+
+A HOST CALL PER BYTE COSTS ABOUT THE SAME as a compiled typed-array read (20.4 vs 12.7 ns/byte).
+An assertion written the other way round -- "a call must be several times a read, so the
+representation is the decision" -- was refuted by its own data. In this engine a per-element read
+is already priced like a crossing: the lever is not crossing less, it is not being boxed.
+
+AND `policy-compute-split.t`'s KNOWN-POSITIVE CONTROL IS LOOP ELIMINATION. Its `s + i*3` shape
+runs at 0.2 ns/iter in C and 0.4 lowered -- neither compiler runs the loop. That control still
+does its job (it proves the harness can see a win, so a 1.0x elsewhere is a property of the
+policy), but it must not be read as "compute-bearing code gets 13x from lowering". *An instrument
+whose control is stronger than the effect it certifies will make every negative result look like a
+property of the subject.* THE SHAPE MAXIM WINS BIGGEST ON IS THE SHAPE GCC DELETES.
+
+The engineering consequence, quantified: for one 16 KB buffer, C scan 12 us, JS scan 207 us, one
+host call 0.04 us. Letting C scan and handing JS the answer is ~17x cheaper than letting JS walk
+the bytes -- the same propose-don't-hold pattern `allowHosts` and `std.config` already use. Today
+that is not a stylistic preference, it is the only affordable shape.
+
 **v5.96 (in place — `cap.owner` denies in every mode: the audit-mode residual v5.95 stated):**
 v5.95 shipped the owner gate through the ordinary denial machinery, so in audit mode a foreign
 capability was logged and ALLOWED like every other gate, justified as consistency with

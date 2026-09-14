@@ -1291,6 +1291,16 @@ The primary control, and the one everything else is defence in depth for.
   re-run A/B on one box rather than compared against a remembered number.
 - **EV:** `t/tools/host-call-cost.t` — the per-call decomposition.
 - **EV:** `t/tools/policy-compute-split.t` — interpreted vs compiled, per policy.
+- **EV:** `t/tools/lowering-ceiling.t` — the lowering ceiling against hand-written C, both on
+  arithmetic and on a byte scan (PERFORMANCE.md §2b). It also **corrects the reading of the
+  instrument above**: that file's known-positive control is a multiply-add loop both compilers
+  eliminate, so its 13–23× is loop elimination and not code quality. An instrument whose control
+  is stronger than the effect it certifies will make every negative result look like a property
+  of the subject.
+- **GAP:** The typed arm is a hand-written STAND-IN for typed output: it shows maxim's framing
+  (gas check included) costs nothing, not that inference can prove `h : int32`. And the ceiling is
+  measured on one box at one moment — the numbers are an order, not a constant.
+  **home:** PERFORMANCE.md §2b · `nginx.bench`.
 - **THREAT:** T11
 - **V:** V6
 
@@ -1505,6 +1515,8 @@ signature is never quietly credited with work it did not see.
 | **THE OWED STRUCTURAL FIX, PAID — G6.17.** G6.16 closed the deferred-job escape with a best-effort drain and named what it could not do: a fragment outrunning the job budget leaves work behind. Every granted wrapper is now bound to its fragment and every gate refuses it to anyone else, so a leftover continuation runs and **obtains nothing**. `cap.owner` is the first denial code naming a structural invariant rather than a policy. | **Turns a named residual into a checked property, and the check's own negative case is forced rather than argued** — the probe deliberately outruns the budget so the leftover path is exercised, including for the COM facet, whose check would otherwise be code no control can break. What remains of G6.16's gap is accounting (a stranger's deadline and clock), not authority. |
 
 | **THE AUDIT-MODE RESIDUAL, CLOSED.** G6.17 shipped with `cap.owner` logged-and-allowed in audit like every other gate, justified as consistency. It is now unconditional. The line is not "structural vs policy" — the reach gates are structural too — but **whether an operator has anything to observe and then enable**: every other code answers "may this fragment do this?" (a question about the grant, which is their lever), and this one answers "is this even this fragment's capability?", which no grant can change. | **Removes a stated residual rather than re-describing it, and the test asserts the DISTINCTION** — a closed window allowed and a foreign capability denied, under the same audit mode in the same request, so it cannot pass on a build where audit stopped working. The exception is in the machinery, not the gates. `cap.owner` is now the one code that does not follow `comcon.mode()`; a second would force a list. |
+
+| **THE LOWERING CEILING IS MEASURED, and it reframes M5.** `t/tools/lowering-ceiling.t` + `nginx.bench`: untyped lowering is **8.3× off hand-written C on arithmetic and 17× on a byte scan**, and `--jit-dump-c` shows why — every operation boxes a `JSValue`, tag-checks both operands and writes a type-feedback byte, with the accumulator living in a `double`. A typed-SHAPE arm, gas check kept, is **at parity**. The zero-copy `ArrayBuffer` view over nginx memory **works and buys nothing** (the access path dominates; one 16 KB copy is 0.2 µs against 12.7 ns/byte to scan it). | **Turns the M5 commitment from a judgement into a measurement, and corrects two beliefs of our own** — that a host call per element is the thing to avoid (it costs about the same as a compiled typed-array read), and that `policy-compute-split.t`'s 13× control demonstrates lowering quality (it demonstrates loop elimination). Adds no assurance claim: this is decision evidence for a milestone, not a confinement property. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

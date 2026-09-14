@@ -91,9 +91,71 @@ optimization): stock 432k / pilgrim JS handler 321k (74%) / njs 283k (65%) / mir
 216k (50%). This locates today's *interpreted framework* baseline that compiled COMCON
 policies are measured against.
 
-**What is NOT yet measured:** every intermediate point — stage-1 declarative tables,
-membrane dispatch, compiler-produced (rather than hand-written) C. That is milestone
-M7's whole purpose; expectations below are models.
+**What is NOT yet measured:** every intermediate point — stage-1 declarative tables and
+membrane dispatch. That is milestone M7's whole purpose; expectations below are models.
+**Compiler-produced (rather than hand-written) C is now measured — §2b.**
+
+---
+
+## 2b. The lowering ceiling: can typed JS reach the C it would replace? *(v5.97)*
+
+The question a full proxy makes askable: re-implement part of a hot path nginx implements in
+C — a header filter, a body step — in JS, purely to get extra functionality into it. Would
+that be affordable if M5 shipped with types?
+
+`t/tools/lowering-ceiling.t` (against **objs_jit**; in-process, because a throughput
+benchmark on the dev box goes through WSL2's mirrored firewall and compresses every ratio
+toward 1.0). Every arm asserted to return the same hash; the compiled arm asserted compiled
+via `jitStatus`; C offered at both `-O` and `-O2` because nginx builds at `-O` while maxim
+compiles its output at `-O2/-O3`, which would otherwise **flatter JS**.
+
+**Arithmetic, ns per iteration (5M iterations, min of 3):**
+
+| arm | ns/iter | vs C(-O2) |
+|---|--:|--:|
+| C pointer-free integer chain, `-O2` | 2.0 | 1× |
+| **lowered JS, same algorithm** | 16.6 | **8.3×** |
+| interpreted | 42.2 | 21× |
+| kernel B (no `>>>`) lowered | 22.0 | 12.2× |
+| **typed-SHAPE arm** (raw int32 locals, no boxing, **gas check kept**) | **2.0** | **1.00×** |
+
+**Data plane, ns per BYTE (16 KB buffer, dependent chain so gcc cannot vectorise):**
+
+| arm | ns/byte | vs C |
+|---|--:|--:|
+| C pointer walk | 0.73 | 1× |
+| **zero-copy `Uint8Array` over nginx memory** | 12.65 | **17×** |
+| copy-backed `Uint8Array` (what pilgrim has today) | 12.82 | 18× |
+| one host call per byte | 20.35 | 28× |
+
+**What these say:**
+
+1. **The untyped gap is boxing, not code generation.** `--jit-dump-c` shows the accumulator
+   living in a `double` and *every* operation materialising two `JSValue`s, tag-checking both
+   operands, keeping a runtime-dispatch fallback, re-boxing, and writing a byte into a global
+   type-feedback array. The typed-shape arm — the same algorithm with raw `int32` locals,
+   still inside maxim's framing and still paying the back-edge gas check — is **at parity**.
+   So **parity is reachable in principle, and the whole prize is whether inference can drop
+   the boxing.** That is the M5 risk, now precisely stated.
+2. **The zero-copy view works and buys nothing.** `JS_NewArrayBuffer` over nginx memory with
+   a no-op free gives a real view, and it measures the same as a copy: the access path
+   dominates, not the backing. One 16 KB copy is **0.2 µs = 0.012 ns/byte** against **12.65
+   ns/byte to scan it** — the copy was never the problem.
+3. **A host call per byte costs about the same as a compiled typed-array read** (20.4 vs 12.7
+   ns/byte). "Avoid per-element crossings" is not the lever it looks like; in this engine a
+   per-element read is already priced like a crossing.
+4. **The data-plane gap (17×) is worse than the compute gap (8×)**, because the useful work
+   per operation is smaller. The "add functionality to a hot path" scenario is the *least*
+   favourable shape for untyped lowering.
+5. **Today the affordable shape is the coarse hook.** For one 16 KB buffer: C scan 12 µs, JS
+   scan 207 µs, one host call 0.04 µs. Letting C scan and handing JS the answer is ~17×
+   cheaper than letting JS walk the bytes — the same *propose-don't-hold* pattern
+   `allowHosts` and `std.config` already use.
+6. **And `policy-compute-split.t`'s known-positive control is loop elimination.** Its
+   `s + i*3` shape runs at 0.2 ns/iter in C and 0.4 lowered — neither compiler runs the loop.
+   The control still proves that harness can see a win; it must not be read as
+   "compute-bearing code gets 13× from lowering". **The shape maxim wins biggest on is the
+   shape gcc deletes.**
 
 ---
 

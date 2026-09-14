@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.96 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.97 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,15 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **THE LOWERING CEILING IS MEASURED (2026-09-13, v5.97) — AND IT REFRAMES M5.** `nginx.bench` +
+>   `t/tools/lowering-ceiling.t`, numbers in PERFORMANCE.md §2b. Untyped lowering is **8.3× off
+>   hand-written C on arithmetic, 17× on a byte scan**, and `--jit-dump-c` shows the cause: every
+>   op boxes a `JSValue` and tag-checks both operands, with the accumulator in a `double`. **A
+>   typed-SHAPE arm, gas check kept, is at parity** — so parity is reachable and the whole prize is
+>   whether inference can drop the boxing. Corrected three of our own beliefs: the zero-copy
+>   `ArrayBuffer` view **buys nothing**, a host call per byte ≈ a compiled typed-array read, and
+>   this file's own 13× control is **loop elimination**. **M5 stays parked** — but the commitment
+>   is now a measurement, not a judgement.
 > - **THE AUDIT-MODE RESIDUAL, CLOSED (2026-09-13, v5.96):** `cap.owner` denies in every mode. The
 >   line is not "structural vs policy" (the reach gates are structural too) but **whether an operator
 >   has anything to observe and then enable** — every other code asks "may this fragment do this?"

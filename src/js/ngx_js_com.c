@@ -6424,6 +6424,406 @@ static const char  ngx_js_comcon_bootstrap[] =
     "})();";
 
 
+
+/* ------------------------------------------------------------------ */
+/* nginx.bench — the lowering-ceiling instrument (PERFORMANCE.md §2b)  */
+/*                                                                     */
+/* Decision evidence for M5, in the same family as nginx.jitCompile /  */
+/* jitStatus / jsMemUsage / tenantDenials: host-only, outside the       */
+/* classified COM surface, and read by t/tools/lowering-ceiling.t.      */
+/*                                                                     */
+/* WHY IT IS IN THE MODULE AND NOT A SIDE PROJECT.  The question it     */
+/* answers -- can typed JS lowered to C reach parity with the C we      */
+/* would replace in a hot path -- decides a milestone, and the only     */
+/* honest comparison is IN-PROCESS on one box: a throughput benchmark   */
+/* here goes through WSL2's mirrored-mode firewall, which compresses    */
+/* every ratio toward 1.0 and manufactures the answer.  An A/B that has */
+/* to be reconstructed by hand each time it is asked is an A/B nobody   */
+/* re-runs, and this project's rule is that evidence is an instrument.  */
+/*                                                                     */
+/* WHY IT IS IN THIS FILE.  A new source file means editing src/js/     */
+/* config and reconfiguring four builddirs; the outbound capability was */
+/* placed in ngx_js_socket.c for exactly that reason.                   */
+/*                                                                     */
+/* FAIRNESS, built in: nginx is compiled at -O (objs/Makefile CFLAGS)   */
+/* while maxim compiles its generated C at -O2/-O3 (quickjs-jit.c), so  */
+/* a C arm inside nginx would be handicapped and the comparison would   */
+/* flatter JS.  Each kernel is therefore offered at both levels.        */
+/* ------------------------------------------------------------------ */
+
+#define NGX_JS_BENCH_MAX  (1024 * 1024)
+
+static uint8_t  *ngx_js_bench_buf;
+static size_t    ngx_js_bench_len;
+
+
+/*
+ * KERNEL A: ^, +, <<, >>>.  Every intermediate stays inside int32/uint32, so the
+ * JS spelling computes the SAME BITS -- `h + (h << 5)` is a sum of two int32s,
+ * exact in a double, and `| 0` takes the low 32 bits exactly as uint32 wrapping
+ * does.  The instrument asserts the hashes match; if they ever diverge the arms
+ * are not running the same algorithm and every ratio is meaningless.
+ */
+static uint32_t
+ngx_js_bench_a(uint32_t n)
+{
+    uint32_t  h = 0x811c9dc5, i;
+
+    for (i = 0; i < n; i++) {
+        h ^= i;
+        h = h + (h << 5);
+        h = h ^ (h >> 7);
+        h = h + (h << 3);
+        h = h ^ (h >> 17);
+    }
+
+    return h;
+}
+
+
+__attribute__((optimize("O2")))
+static uint32_t
+ngx_js_bench_a_o2(uint32_t n)
+{
+    uint32_t  h = 0x811c9dc5, i;
+
+    for (i = 0; i < n; i++) {
+        h ^= i;
+        h = h + (h << 5);
+        h = h ^ (h >> 7);
+        h = h + (h << 3);
+        h = h ^ (h >> 17);
+    }
+
+    return h;
+}
+
+
+/*
+ * KERNEL B: the same shape with NO logical right shift.  `h >>> 7` in JS yields a
+ * value above 2^31, which is not representable as int32 and so rides in a double;
+ * B avoids it.  Kept because the obvious hypothesis -- that this is where A's gap
+ * comes from -- was REFUTED by measurement: B is worse, not better.  A refuted
+ * hypothesis is worth keeping runnable.
+ */
+static uint32_t
+ngx_js_bench_b(uint32_t n)
+{
+    uint32_t  h = 0x811c9dc5, i;
+
+    for (i = 0; i < n; i++) {
+        h = h ^ i;
+        h = h + (h << 5);
+        h = h + (h << 3);
+        h = h ^ (h << 11);
+        h = h + (h << 7);
+    }
+
+    return h;
+}
+
+
+__attribute__((optimize("O2")))
+static uint32_t
+ngx_js_bench_b_o2(uint32_t n)
+{
+    uint32_t  h = 0x811c9dc5, i;
+
+    for (i = 0; i < n; i++) {
+        h = h ^ i;
+        h = h + (h << 5);
+        h = h + (h << 3);
+        h = h ^ (h << 11);
+        h = h + (h << 7);
+    }
+
+    return h;
+}
+
+
+/*
+ * KERNEL C: `s = s + i * 3`, the shape t/tools/policy-compute-split.t uses as its
+ * known-positive control at ~13-23x from lowering.
+ *
+ * IT IS HERE TO SHOW WHAT THAT CONTROL ACTUALLY MEASURES.  A multiply-add
+ * accumulator has a closed form and both compilers know it: this runs at ~0.2
+ * ns/iter in C and ~0.4 lowered, i.e. neither of them runs the loop.  So the 13x
+ * is LOOP ELIMINATION, not code quality -- the shape maxim wins biggest on is the
+ * shape gcc deletes.  The control still does its job (it proves the harness can
+ * see a win); it must not be read as "compute-bearing code gets 13x".
+ */
+static uint32_t
+ngx_js_bench_c(uint32_t n)
+{
+    uint32_t  s = 0, i;
+
+    for (i = 0; i < n; i++) {
+        s = s + i * 3;
+    }
+
+    return s;
+}
+
+
+__attribute__((optimize("O2")))
+static uint32_t
+ngx_js_bench_c_o2(uint32_t n)
+{
+    uint32_t  s = 0, i;
+
+    for (i = 0; i < n; i++) {
+        s = s + i * 3;
+    }
+
+    return s;
+}
+
+
+/*
+ * KERNEL T: WHAT A TYPED LOWERING COULD EMIT for kernel A.
+ *
+ * `--jit-dump-c` shows where the untyped 8x goes, and it is not code generation:
+ * the accumulator lives in a `double`, and EVERY operation materializes two
+ * JSValues, tag-checks both operands at run time, keeps a runtime-dispatch
+ * fallback, re-boxes, writes a byte into a global type-feedback array and
+ * converts back to double.  There is no type information, so every op is a
+ * tagged-value op.
+ *
+ * This arm is the same algorithm with raw int32 locals and no boxing -- but still
+ * inside maxim's framing, because a typed compiler does not get to drop that: the
+ * BACK-EDGE GAS CHECK stays (R4 needs it; it is what makes an 8-billion-iteration
+ * fragment interruptible).  It measures the ceiling M5-with-types is aiming at
+ * WITHOUT building M5, and separates "the compiler cannot generate good code"
+ * from "the compiler has no types to generate it from".
+ *
+ * It is a hand-written STAND-IN for typed output, not typed output: it shows the
+ * framing costs nothing, not that inference can prove `h : int32`.
+ */
+__attribute__((optimize("O2")))
+static uint32_t
+ngx_js_bench_typed(uint32_t n)
+{
+    int32_t  h = (int32_t) 0x811c9dc5;
+    int32_t  i;
+    int      gas = 256;
+
+    for (i = 0; (uint32_t) i < n; i++) {
+        if (--gas <= 0) {
+            gas = 256;                      /* the interrupt poll, kept */
+        }
+        h = h ^ i;
+        h = (int32_t) ((uint32_t) h + ((uint32_t) h << 5));
+        h = h ^ (int32_t) ((uint32_t) h >> 7);
+        h = (int32_t) ((uint32_t) h + ((uint32_t) h << 3));
+        h = h ^ (int32_t) ((uint32_t) h >> 17);
+    }
+
+    return (uint32_t) h;
+}
+
+
+/* nginx.bench.arith(kernel, n) -> hash.  The loop runs INSIDE C, so one call per
+ * measurement and the JS->C boundary is not in the number. */
+static JSValue
+ngx_js_bench_arith(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    const char  *k;
+    uint32_t     n = 0, h;
+
+    if (argc < 2 || !JS_IsString(argv[0])) {
+        return JS_ThrowTypeError(ctx,
+            "nginx.bench.arith(kernel, n): kernel must be a string "
+            "('A', 'A-O2', 'B', 'B-O2', 'C', 'C-O2', 'typed')");
+    }
+
+    JS_ToUint32(ctx, &n, argv[1]);
+
+    k = JS_ToCString(ctx, argv[0]);
+    if (k == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (ngx_strcmp(k, "A") == 0)          { h = ngx_js_bench_a(n);
+    } else if (ngx_strcmp(k, "A-O2") == 0) { h = ngx_js_bench_a_o2(n);
+    } else if (ngx_strcmp(k, "B") == 0)    { h = ngx_js_bench_b(n);
+    } else if (ngx_strcmp(k, "B-O2") == 0) { h = ngx_js_bench_b_o2(n);
+    } else if (ngx_strcmp(k, "C") == 0)    { h = ngx_js_bench_c(n);
+    } else if (ngx_strcmp(k, "C-O2") == 0) { h = ngx_js_bench_c_o2(n);
+    } else if (ngx_strcmp(k, "typed") == 0) { h = ngx_js_bench_typed(n);
+    } else {
+        JS_FreeCString(ctx, k);
+        return JS_ThrowTypeError(ctx, "nginx.bench.arith: unknown kernel");
+    }
+
+    JS_FreeCString(ctx, k);
+
+    return JS_NewUint32(ctx, h);
+}
+
+
+/*
+ * nginx.bench.buffer(len) — the data-plane buffer.
+ *
+ * ONE FIXED ALLOCATION, whose LENGTH is what changes.  The obvious
+ * implementation frees and re-allocates, and that is a use-after-free waiting to
+ * happen: view() hands out a ZERO-COPY ArrayBuffer over this memory, so a
+ * re-allocation would leave every live view pointing at freed pages.  A fixed
+ * block cannot dangle, and a view whose length no longer matches is merely
+ * uninteresting.
+ */
+static JSValue
+ngx_js_bench_buffer(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    uint32_t  len = 0;
+    size_t    i;
+
+    if (argc > 0) {
+        JS_ToUint32(ctx, &len, argv[0]);
+    }
+
+    if (len == 0 || len > NGX_JS_BENCH_MAX) {
+        return JS_ThrowRangeError(ctx,
+            "nginx.bench.buffer(len): 1..%d", NGX_JS_BENCH_MAX);
+    }
+
+    if (ngx_js_bench_buf == NULL) {
+        ngx_js_bench_buf = ngx_alloc(NGX_JS_BENCH_MAX, ngx_cycle->log);
+        if (ngx_js_bench_buf == NULL) {
+            return JS_ThrowOutOfMemory(ctx);
+        }
+    }
+
+    ngx_js_bench_len = len;
+
+    for (i = 0; i < len; i++) {
+        ngx_js_bench_buf[i] = (uint8_t) (i * 7 + 3);
+    }
+
+    return JS_NewUint32(ctx, len);
+}
+
+
+static ngx_flag_t
+ngx_js_bench_ready(JSContext *ctx)
+{
+    if (ngx_js_bench_buf != NULL && ngx_js_bench_len > 0) {
+        return 1;
+    }
+
+    (void) JS_ThrowTypeError(ctx,
+        "nginx.bench: call nginx.bench.buffer(len) first");
+    return 0;
+}
+
+
+/* nginx owns this memory: the engine must NOT free it when a view dies. */
+static void
+ngx_js_bench_nofree(JSRuntime *rt, void *opaque, void *ptr)
+{
+}
+
+
+/*
+ * nginx.bench.view() — a ZERO-COPY ArrayBuffer over nginx's own bytes.
+ *
+ * Host-only, like everything on this object.  It is not reachable from a confined
+ * fragment: `nginx` is not a capability and is never granted, and nothing
+ * mediates it -- which is the only reason handing out a window onto process
+ * memory is acceptable at all.  It must never be exposed through a mediated
+ * surface.
+ */
+static JSValue
+ngx_js_bench_view(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    if (!ngx_js_bench_ready(ctx)) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_NewArrayBuffer(ctx, ngx_js_bench_buf, ngx_js_bench_len,
+                             ngx_js_bench_nofree, NULL, 0);
+}
+
+
+/* nginx.bench.copy() — the same bytes, COPIED: what pilgrim's every other
+ * ArrayBuffer path does today (JS_NewArrayBufferCopy). */
+static JSValue
+ngx_js_bench_copy(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    if (!ngx_js_bench_ready(ctx)) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_NewArrayBufferCopy(ctx, ngx_js_bench_buf, ngx_js_bench_len);
+}
+
+
+/* nginx.bench.byteAt(i) — ONE host call per byte: the shape of walking a host
+ * structure element by element (a header list, a peer list). */
+static JSValue
+ngx_js_bench_byte_at(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    uint32_t  i = 0;
+
+    if (!ngx_js_bench_ready(ctx)) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc > 0) {
+        JS_ToUint32(ctx, &i, argv[0]);
+    }
+
+    return JS_NewUint32(ctx, i < ngx_js_bench_len ? ngx_js_bench_buf[i] : 0);
+}
+
+
+/*
+ * The pointer walk -- the thing a re-implemented hot path would be replacing.
+ *
+ * A DEPENDENT chain on purpose: a plain byte sum is vectorised by gcc, which
+ * would make this "JS scalar vs C SIMD" and overstate the gap.  This isolates the
+ * cost of GETTING AT the byte.
+ */
+__attribute__((optimize("O2")))
+static uint32_t
+ngx_js_bench_scan_c(uint32_t reps)
+{
+    uint32_t  h = 0x811c9dc5, r;
+    size_t    i;
+
+    for (r = 0; r < reps; r++) {
+        for (i = 0; i < ngx_js_bench_len; i++) {
+            h = h ^ ngx_js_bench_buf[i];
+            h = h + (h << 5);
+        }
+    }
+
+    return h;
+}
+
+
+static JSValue
+ngx_js_bench_scan(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    uint32_t  reps = 0;
+
+    if (!ngx_js_bench_ready(ctx)) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc > 0) {
+        JS_ToUint32(ctx, &reps, argv[0]);
+    }
+
+    return JS_NewUint32(ctx, ngx_js_bench_scan_c(reps));
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -6480,6 +6880,29 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
     /* nginx.log(level, msg) */
     JS_SetPropertyStr(ctx, nginx_obj, "log",
                       JS_NewCFunction(ctx, ngx_js_log, "log", 2));
+
+    /* nginx.bench — the lowering-ceiling instrument (see the definitions and
+       PERFORMANCE.md §2b).  ONE property on nginx, in the same host-only family
+       as jitCompile/jitStatus/jsMemUsage, and outside the classified COM surface
+       for the same reason they are. */
+    {
+        JSValue  bench = JS_NewObject(ctx);
+
+        JS_SetPropertyStr(ctx, bench, "arith",
+            JS_NewCFunction(ctx, ngx_js_bench_arith, "arith", 2));
+        JS_SetPropertyStr(ctx, bench, "buffer",
+            JS_NewCFunction(ctx, ngx_js_bench_buffer, "buffer", 1));
+        JS_SetPropertyStr(ctx, bench, "view",
+            JS_NewCFunction(ctx, ngx_js_bench_view, "view", 0));
+        JS_SetPropertyStr(ctx, bench, "copy",
+            JS_NewCFunction(ctx, ngx_js_bench_copy, "copy", 0));
+        JS_SetPropertyStr(ctx, bench, "byteAt",
+            JS_NewCFunction(ctx, ngx_js_bench_byte_at, "byteAt", 1));
+        JS_SetPropertyStr(ctx, bench, "scan",
+            JS_NewCFunction(ctx, ngx_js_bench_scan, "scan", 1));
+
+        JS_SetPropertyStr(ctx, nginx_obj, "bench", bench);
+    }
 
     /* nginx.gc() — force a QuickJS GC pass */
     JS_SetPropertyStr(ctx, nginx_obj, "gc",
