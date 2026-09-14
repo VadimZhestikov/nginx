@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.91 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.92 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,17 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **ASYNC FRAGMENTS SHIPPED (2026-09-13, v5.92) — AND THE BLOCKER WAS NOT WHERE THIS ROADMAP
+>   SAID.** It recorded the synchronous invoke. An async fragment never reached the invoke: it was
+>   refused at ADMISSION as "not a bytecode function", which is untrue of an async function — six
+>   COMCON analysis entry points tested one class id where the engine has a four-class helper, so
+>   the C3 analysis **refused to look** at async and generator bodies. Fixed at all six; the promise
+>   is settled by draining the compartment's OWN jobs, bounded by the deadline AND a job cap (which
+>   changes the MESSAGE: pending, not timed out), and an unsettleable promise is reported as
+>   `E_INVOKE_PENDING` rather than stringified into `{}`. **Still not `fetch`** — the blocker has
+>   moved from "the invoke is synchronous" to "the host cannot yet suspend the request across a
+>   fragment call", which is a smaller and better-specified problem. `t/comcon_async_fragment.t`
+>   (16) + 4 controls.
 > - **THE POSTURE WORDS SHIPPED (2026-09-13, v5.91): a posture belongs to the BINDING.**
 >   `onViolation` and `profile` were in MANUAL since v5.0 and read by nothing. The material find is
 >   granularity: the audit/enforce switch was FLEET-WIDE, so **shadowing one tenant's new policy

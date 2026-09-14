@@ -2125,6 +2125,8 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     uint32_t          timeout = 0;
     uint32_t          memory = 0;
     uint32_t          onviol = 0;
+    int               settled = 0;
+    ngx_uint_t        pending = 0;
     ngx_js_tenant_mode_e  saved_mode = NGX_JS_TENANT_ENFORCE;
     ngx_uint_t        mode_pushed = 0;
     uint64_t          old_deadline = 0, now_ms, newd;
@@ -2260,6 +2262,67 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
     result = JS_Call(sctx, fn, JS_UNDEFINED, nargs, (JSValueConst *) &arg);
 
+    /*
+     * AN ASYNC FRAGMENT RETURNS A PROMISE, and a promise has to be settled
+     * before anything can be marshalled out of it.
+     *
+     * The compartment has its OWN runtime, so draining its pending jobs runs the
+     * fragment's microtasks and nothing else -- no host job, no other tenant's
+     * continuation, can be scheduled by this loop.  That isolation is the reason
+     * this is safe to do at all, and it is worth stating because the same loop
+     * over the host runtime would be a very different thing.
+     *
+     * IT DRAINS MICROTASKS, NOT THE WORLD.  A promise that only a timer or an
+     * outbound response could settle stays PENDING however long this runs, and
+     * is reported as such rather than waited on: there is nothing to wait for.
+     * That is the honest shape of "async fragments" here, and it is exactly why
+     * `allowHosts` records intent instead of fetching.
+     *
+     * Two bounds, and both are needed. The DEADLINE is the real one -- the
+     * interrupt handler is the compartment runtime's, so a fragment that queues
+     * microtasks forever is stopped by the same clock that stops a `while(1)`.
+     * The job cap is the belt: it makes the loop's termination obvious to a
+     * reader without having to reason about where the interrupt fires.
+     */
+    if ((int) JS_PromiseState(sctx, result) != -1) {
+        ngx_uint_t  jobs = 0;
+
+        while (JS_PromiseState(sctx, result) == JS_PROMISE_PENDING
+               && JS_IsJobPending(jcf->comcon_rt)
+               && jobs < NGX_JS_COMCON_MAX_JOBS)
+        {
+            JSContext  *jctx = NULL;
+
+            if (JS_ExecutePendingJob(jcf->comcon_rt, &jctx) <= 0) {
+                break;          /* no job ran, or one threw: stop draining */
+            }
+            jobs++;
+        }
+
+        settled = (int) JS_PromiseState(sctx, result);
+
+        if (settled == JS_PROMISE_PENDING) {
+            JS_FreeValue(sctx, result);
+            result = JS_UNDEFINED;
+            pending = 1;
+
+        } else {
+            JSValue  v = JS_PromiseResult(sctx, result);
+
+            JS_FreeValue(sctx, result);
+
+            if (settled == JS_PROMISE_REJECTED) {
+                /* A rejection is the async spelling of a throw, so it takes the
+                 * throw's path -- including the fragment-origin extraction
+                 * below, which an operator needs more for an async fragment than
+                 * for a synchronous one. */
+                result = JS_Throw(sctx, v);
+            } else {
+                result = v;
+            }
+        }
+    }
+
     if (mode_pushed) {
         ngx_js_compartment_mode_set(saved_mode);
     }
@@ -2321,6 +2384,23 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
             JS_FreeCString(sctx, s);
         }
         JS_FreeValue(sctx, exc);
+
+    } else if (pending) {
+        /*
+         * The fragment's promise never settled, and running the compartment's
+         * own jobs is the only thing that could have settled it.
+         *
+         * Reported rather than waited on, because there is nothing to wait for:
+         * a compartment reaches no timer and no socket, so an await on anything
+         * outside it is an await on something that will never arrive.  Saying so
+         * is the useful answer -- the alternative was JSON.stringify on a
+         * pending promise, which is "{}", a plausible-looking empty object.
+         */
+        retv = ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_INVOKE_PENDING,
+                   "comcon: fragment returned a promise that is still pending "
+                   "after its own jobs have run -- a compartment reaches no "
+                   "timer and no socket, so nothing outside it can settle an "
+                   "await");
 
     } else {
         /* Materialize the result — INCLUDING any getters in the returned object

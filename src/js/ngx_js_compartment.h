@@ -202,6 +202,19 @@ typedef enum {
     NGX_JS_REFUSAL_CAP_PRINCIPAL,      /* cosign() with no acting principal */
     NGX_JS_REFUSAL_PIN_IDENTITY,       /* artifact identity pin mismatch    */
     NGX_JS_REFUSAL_EPOCH_STALE,        /* the fragment was freed (old epoch) */
+    /*
+     * An async fragment whose promise is still PENDING after the compartment's
+     * own jobs have all run.
+     *
+     * THIS IS THE ONE CODE ON THIS AXIS RAISED AFTER THE FRAGMENT RAN, and that
+     * is deliberate rather than a blurring of the two axes.  A DENIAL names a
+     * gate that refused authority the fragment reached for.  Nothing was
+     * refused here: the fragment awaited something that no amount of running it
+     * can settle, because the only things that could settle it -- host I/O, a
+     * timer -- are not reachable from a compartment.  What the tenant must
+     * change is in their fragment, which is what this axis names.
+     */
+    NGX_JS_REFUSAL_INVOKE_PENDING,     /* an await nothing in reach can settle */
     NGX_JS_REFUSAL_LAST
 } ngx_js_refusal_code_t;
 

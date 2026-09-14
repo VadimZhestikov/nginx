@@ -337,6 +337,23 @@ var REFUSALS = [
         msg: 'artifact identity mismatch'
     },
     {
+        code: 'E_INVOKE_PENDING',
+        why: 'an async fragment whose promise is still PENDING after the '
+           + 'compartment\'s own jobs have run. THE ONE CODE ON THIS AXIS '
+           + 'RAISED AFTER THE FRAGMENT RAN, and deliberately so: a DENIAL '
+           + 'names a gate that refused authority the fragment reached for, '
+           + 'and nothing was refused here. The fragment awaited something no '
+           + 'amount of running it can settle, because a compartment reaches '
+           + 'no timer and no socket. What the tenant must change is in their '
+           + 'fragment, which is what this axis names. The alternative was '
+           + 'JSON.stringify on a pending promise -- "{}", a '
+           + 'plausible-looking empty object',
+        via: 'call',
+        probe: "comcon.include('function(a){ return new Promise("
+             + "function(){}); }', {imports: ['Promise']})({})",
+        msg: 'still pending'
+    },
+    {
         code: 'E_EPOCH_STALE',
         why: 'calling a fragment whose epoch was superseded beyond the '
            + 'rollback window and freed -- an error, never a crash',

@@ -24676,7 +24676,17 @@ int js_comcon_collect_free_globals(JSContext *ctx, JSValueConst func,
     if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
         return -1;
     p = JS_VALUE_GET_OBJ(func);
-    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+    /*
+     * COMCON: js_class_has_bytecode(), not a bare JS_CLASS_BYTECODE_FUNCTION
+     * test.  An async function, a generator and an async generator are ALL
+     * bytecode functions -- the engine says so, in the helper right here -- they
+     * just carry a different class id.  Testing one id made every COMCON
+     * analysis entry point refuse to LOOK at them, and the admission gate then
+     * reported "arg0 not a bytecode function", which is not true of the thing in
+     * front of it.  A fragment the analysis cannot read must be refused; a
+     * fragment it will not read is a different and worse thing.
+     */
+    if (!js_class_has_bytecode(p->class_id))
         return -1;
     comcon_walk_fb(ctx, p->u.func.function_bytecode, cb, ud);
     return 0;
@@ -24719,7 +24729,7 @@ int js_comcon_uses_dynamic_code(JSValueConst func)
     if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
         return 0;
     p = JS_VALUE_GET_OBJ(func);
-    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+    if (!js_class_has_bytecode(p->class_id))
         return 0;
     return comcon_fb_uses_dynamic(p->u.func.function_bytecode);
 }
@@ -24756,7 +24766,7 @@ int js_comcon_check_request_fields(JSContext *ctx, JSValueConst func,
     if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
         return 0;
     p = JS_VALUE_GET_OBJ(func);
-    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+    if (!js_class_has_bytecode(p->class_id))
         return 0;
     b = p->u.func.function_bytecode;
 
@@ -24979,7 +24989,7 @@ JSValue js_comcon_pom_inspect(JSContext *ctx, JSValueConst func)
     if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
         return JS_UNDEFINED;
     p = JS_VALUE_GET_OBJ(func);
-    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+    if (!js_class_has_bytecode(p->class_id))
         return JS_UNDEFINED;
 
     return comcon_pom_node(ctx, p->u.func.function_bytecode, 1);
@@ -25002,7 +25012,7 @@ JSValue js_comcon_pom_node_at(JSContext *ctx, JSValueConst func,
     if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
         return JS_UNDEFINED;
     p = JS_VALUE_GET_OBJ(func);
-    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+    if (!js_class_has_bytecode(p->class_id))
         return JS_UNDEFINED;
 
     b = comcon_pom_walk(p->u.func.function_bytecode, path, pathlen);
@@ -25173,7 +25183,7 @@ JSValue js_comcon_pom_callsites(JSContext *ctx, JSValueConst func,
     if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
         return JS_UNDEFINED;
     p = JS_VALUE_GET_OBJ(func);
-    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+    if (!js_class_has_bytecode(p->class_id))
         return JS_UNDEFINED;
 
     arr = JS_NewArray(ctx);

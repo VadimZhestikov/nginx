@@ -34,6 +34,20 @@ typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
 #define NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS  5000
 
 /*
+ * How many of the compartment's own pending jobs one invocation will run while
+ * settling an async fragment's promise.
+ *
+ * The DEADLINE above is the real bound -- the interrupt handler belongs to the
+ * compartment runtime, so a fragment that queues microtasks forever is stopped
+ * by the same clock that stops a `while (1)`.  This cap exists so that the
+ * drain loop's termination is obvious to a reader without having to reason
+ * about where the interrupt fires, and so that a pathological fragment is
+ * reported as PENDING rather than as a deadline abort, which is the more useful
+ * of the two messages.
+ */
+#define NGX_JS_COMCON_MAX_JOBS             10000
+
+/*
  * The SYNTHETIC FILE ORIGIN of every confined fragment (POM.md §6 Q3): the name
  * include()'s eval is given, and therefore the name that appears in a fragment's
  * own stack frames.  One constant, because the eval site and the error-location

@@ -635,6 +635,50 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.92 (in place — ASYNC FRAGMENTS, and the blocker was not where the roadmap said it was):**
+ROADMAP has carried "async fragment invocation" as the prerequisite for a real `fetch`, with the
+blocker recorded as the SYNCHRONOUS INVOKE: JS_Call, then JSON-stringify, with no promise detection
+and no job drain. That is true, and it is not where an async fragment stopped. IT NEVER REACHED THE
+INVOKE:
+
+    comcon.include: admission refused: admit: arg0 not a bytecode function
+
+WHICH IS NOT TRUE OF THE THING IN FRONT OF IT. An async function, a generator and an async generator
+are ALL bytecode functions -- the engine says so, in `js_class_has_bytecode()` -- they simply carry a
+different class id. Six COMCON analysis entry points tested one id instead of asking the engine, so
+the whole C3 analysis (free names, dynamic code, the request-field seal) plus the POM surface
+REFUSED TO LOOK at an entire class of functions, and reported that refusal as a property of the
+function. A fragment the analysis CANNOT read must be refused. A fragment it WILL NOT read is a
+different and worse thing, because the message sends the operator to rewrite code that was never the
+problem. One defect, six sites, one engine helper.
+
+With that fixed the invoke half becomes reachable. An async fragment returns a promise, and a promise
+has to be settled before anything can be marshalled out of it, so the invoke drains THE
+COMPARTMENT'S OWN pending jobs. The compartment has its own runtime, which is the reason this is safe
+to do at all: the loop runs the fragment's microtasks and cannot schedule a host job or another
+tenant's continuation. The same loop over the host runtime would be a very different thing.
+
+IT DRAINS MICROTASKS, NOT THE WORLD. A promise that only a timer or an outbound response could settle
+stays pending however long the loop runs, and is REPORTED rather than waited on -- there is nothing
+to wait for. E_INVOKE_PENDING, the one code on the refusal axis raised AFTER the fragment ran, and
+deliberately so: a denial names a gate that refused authority the fragment reached for, and nothing
+was refused here; what the tenant must change is in their fragment, which is what the refusal axis
+names. The alternative was JSON.stringify on a pending promise, which is "{}" -- a
+plausible-looking empty object, and the worst of the three available answers.
+
+TWO BOUNDS, AND THEY ARE DIFFERENT BOUNDS. The DEADLINE is the real one: the interrupt handler
+belongs to the compartment runtime, so a fragment queueing microtasks forever is stopped by the same
+clock that stops a `while (1)`. The JOB CAP makes the loop's termination obvious without reasoning
+about where the interrupt fires -- and it changes the MESSAGE, which is the part that matters to an
+operator: the same runaway loop under a 30-second meter stops in under a second and is told its
+promise never settled, rather than being told, thirty seconds later, that it timed out.
+
+SO THIS IS NOT `fetch`, and it is now clear exactly why not. Nothing in a compartment can settle an
+await on real I/O; making one possible means suspending the nginx request handler across a fragment
+call, which touches the F6/F12 deadline and the F2 per-invocation allowance on the most
+safety-critical path here. The blocker has moved from "the invoke is synchronous" to "the host cannot
+yet suspend", which is a smaller and much better-specified problem than the one the roadmap recorded.
+
 **v5.91 (in place — the POSTURE words: a posture belongs to the BINDING, not the fleet):**
 MANUAL has written `{profile:'restrictive', onViolation:'audit'}` since v5.0 and nothing read either
 word. INCREMENT_MLIB §4 withheld them for a reason worth repeating: A POSTURE ASSEMBLED FROM IGNORED

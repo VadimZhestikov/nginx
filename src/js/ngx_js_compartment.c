@@ -332,6 +332,7 @@ static const char  *ngx_js_refusal_codes[NGX_JS_REFUSAL_LAST] = {
     "E_CAP_PRINCIPAL",
     "E_PIN_IDENTITY",
     "E_EPOCH_STALE",
+    "E_INVOKE_PENDING",
 };
 
 

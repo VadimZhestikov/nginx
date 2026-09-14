@@ -523,6 +523,46 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T6, T11
 - **V:** V9, V11
 
+#### G6.15 — an async fragment is ADMITTED, ANALYSED, and settled or reported
+- **CLAIM:** A fragment may be an `async function`; the C3 admission analysis runs on its body;
+  its promise is settled by draining the compartment's own jobs; a rejection takes the throw path;
+  and a promise nothing in reach can settle is reported as `E_INVOKE_PENDING` rather than
+  stringified. Both the deadline and a job cap bound the drain.
+- **ARGUMENT:** ROADMAP carried this as blocked on the SYNCHRONOUS INVOKE. That was true and it was
+  not where an async fragment stopped — it never reached the invoke, being refused at admission
+  with *"admit: arg0 not a bytecode function"*, **which is not true of the thing in front of it.**
+  An async function, a generator and an async generator are all bytecode functions — the engine says
+  so in `js_class_has_bytecode()` — carrying a different class id. Six COMCON analysis entry points
+  tested one id instead of asking the engine, so the whole analysis **refused to look** at a class of
+  functions and reported that as a property of the function. A fragment the analysis cannot read must
+  be refused; a fragment it *will not* read is a different and worse thing, because the message sends
+  the operator to rewrite code that was never the problem.
+  The drain is safe because the compartment has its OWN runtime: it runs the fragment's microtasks
+  and cannot schedule a host job or another tenant's continuation. **It drains microtasks, not the
+  world** — which is why `allowHosts` still records intent instead of fetching, and why a promise
+  only a timer or a response could settle is reported rather than waited on.
+- **EV:** `t/comcon_async_fragment.t` — 16 assertions: an async fragment admitted and settled; an
+  await and a chain of awaits; **an undeclared free name inside an async body still refused**, which
+  is the assertion that says the gate is reading the body rather than waving it through; a generator
+  body analysed too; a rejection carrying message and fragment origin; `E_INVOKE_PENDING` for an
+  unsettleable promise, from an async fragment and from a synchronous one that returns a promise; a
+  synchronous fragment untouched; and **the two bounds shown to be different bounds** — a runaway
+  microtask loop stopped by a 300ms meter, and the same loop under a 30s meter stopped by the job cap
+  in under a second, reporting the honest outcome instead of a timeout.
+- **EV:** `t/tools/golden-denials.js` — `E_INVOKE_PENDING` frozen, the one code on the refusal axis
+  raised after the fragment ran, with the reason that does not blur the two axes written in the row.
+- **GAP:** **This is not `fetch`, and it is now clear exactly why not.** Draining microtasks settles
+  only what the fragment itself queued; nothing in a compartment can settle an await on real I/O,
+  and making one possible means suspending the nginx request handler across a fragment call — which
+  touches the F6/F12 deadline and the F2 per-invocation allowance on the most safety-critical path.
+  Also: an async fragment's `await` does not extend the deadline (the interrupt is the compartment
+  runtime's), but nothing asserts the interaction with F12's inherit-don't-extend rule for a
+  fragment that awaits inside a host continuation, because that composition has no path yet.
+  **home:** ROADMAP.md (the fetch prerequisite) · `ngx_js_comcon_invoke_confined` ·
+  `js_comcon_collect_free_globals`.
+- **THREAT:** T3, T4
+- **V:** V13, V15
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1290,6 +1330,8 @@ signature is never quietly credited with work it did not see.
 | **M-LIB `protocol` SHIPPED — G6.13. THE MEDIATION VOCABULARY IS COMPLETE: ten of ten.** Enforced operation order, denial code `cap.protocol`. Its gate is the first here to **separate its decision from its effect** — checked before cosign, committed after the budget — because an operation another gate still refuses must not advance the conversation. **And its test found a defect in `cosign`:** an already-consenting principal was judged by its POSITION in the record rather than the record's LENGTH, so once a quorum was met the FIRST signer's retry was denied forever — breaking the actual ops-room sequence (alice tries, bob cosigns, **alice retries**). Every cosign assertion had the SECOND principal perform the operation, which is exactly the shape that passes with that bug present. | **Adds one leaf and corrects G6.11's evidence**, which now pins the retry. The `cosign` defect was FAIL-CLOSED — it denied an operation that should have been allowed — so nothing §15 attested about confinement becomes untrue; what was untrue was that the feature was usable as documented. |
 
 | **THE POSTURE WORDS SHIPPED — G6.14.** `onViolation` and `profile` were written in MANUAL since v5.0 and read by nothing; §4 withheld them because *a posture assembled from ignored keys would be believed by exactly the reader least able to check.* Both are read now. The material change is granularity: the audit/enforce switch was FLEET-WIDE, so **shadowing one tenant's new policy also stopped enforcing every other tenant's** — a strictly worse posture than the one being carefully reached. `profile` is read by being refused where it cannot be honoured. | **Adds one leaf, and closes a §4 abstention with the reason it was taken.** `onViolation` can WEAKEN, which is safe only because the contract is written on the trusted side — stated in the leaf rather than assumed. `std.postures.*` stays absent with a SHARPER reason: not "nothing enforces" but "what lockdown should narrow to is a decision nobody has made". |
+
+| **ASYNC FRAGMENTS SHIPPED — G6.15, and the blocker was not where the roadmap said.** ROADMAP recorded the synchronous invoke; an async fragment never reached it, being refused as *"not a bytecode function"* — **untrue of an async function**, which is a bytecode function with a different class id. Six COMCON analysis entry points tested one id where the engine has a four-class helper, so the C3 analysis **refused to look** at async and generator bodies. Fixed at all six; the promise is then settled by draining the compartment's own jobs, bounded by the deadline AND a job cap, and an unsettleable promise is reported as `E_INVOKE_PENDING` rather than stringified into `{}`. | **Adds one leaf and one refusal code, and WIDENS what admission accepts** — which is the one direction that needs saying out loud. It is not a weakening: the analysis now RUNS on bodies it previously refused to read, and the test pins that by asserting an undeclared free name inside an async body is still refused. The escape battery (§15/G11) has not been re-run against async fragment shapes; that is recorded in the leaf's GAP, not claimed. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with
