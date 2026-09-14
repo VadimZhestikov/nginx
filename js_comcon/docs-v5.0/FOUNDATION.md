@@ -635,6 +635,47 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.94 (in place — V10: the epoch machinery model-checked, and the defect it found):** the last
+V-track item that did not depend on the parked compiler track. The mode fan-out is a fleet-wide
+protocol over shared memory with concurrent writers, worker respawn and master reload; the formal
+semantics is single-threaded, so MONOTONE ROLLOUT WAS A SLOGAN WITH NOTHING BEHIND IT.
+
+Built as an exhaustive interleaving checker (`t/tools/check-epoch-model.py`) over the protocol READ
+OFF THE JS BOOTSTRAP rather than an idealisation of it, and run from the suite like every other
+standing checker, so drift is a build failure. Not a TLA+ or Spin spec: a model in a language nobody
+here runs in CI is a model that stops being true.
+
+THE MODEL FOUND A DEFECT. The epoch bump was three separate operations from JS -- `shared.get`, `+1`,
+`shared.set` -- so two operators switching concurrently both read epoch N and both wrote N+1 WITH
+THEIR OWN MODE. The second write won the cell; the first worker kept N+1 locally with the mode nobody
+else had. That would have been a transient lost update HAD THE RECONCILER NOT EARLY-RETURNED ON EPOCH
+EQUALITY. It did, so the worker and the cell agreed on the only thing the reader compares, and the
+divergence was PERMANENT AND SILENT: a fleet moved to `enforce` could leave one worker in `audit` for
+the rest of its life, unshielded, with nothing anywhere to say so.
+
+AND THE FIRST FIX WAS NOT ENOUGH -- THE MODEL SAID SO BEFORE ANY CODE WAS WRITTEN. Relaxing the early
+return from `==` to `<=` left the identical 168 violations, because no reading rule can repair a state
+where the worker and the cell hold the same epoch. The publish had to become ATOMIC:
+`ngx_js_shared_mode_publish()` does the read, the increment and the write in ONE critical section
+under the shared store's own lock, exactly as the budget charge and the consent record already did.
+The reconciler's change from "adopt on DIFFERENT" to "adopt on GREATER" is what makes the rollout
+monotone -- a real property, and a different one: it stops a stale publish from walking the fleet
+backwards.
+
+THE MODEL KEEPS ALL THREE ARMS -- pre-fix, reconciler-only, shipped -- so the claim "the atomic half
+is the necessary one" is CHECKED rather than asserted, and a model that reported no violation for a
+protocol nobody had changed would fail its own run. That is the M-SES battery's unconfined arm,
+applied to a model.
+
+The live half matters as much as the model: a model nobody compared against the code is a paper
+exercise. `t/comcon_v10_epoch_model.t` asserts the cell's SHAPE (`<epoch>:<mode>`, which the JS write
+path would not produce, so the model cannot quietly start describing a protocol the code no longer
+runs), and it plants an OLDER cell and a NEWER one -- the same probe both ways, so "an older cell is
+ignored" cannot pass because nothing is ever adopted.
+
+Still unmodelled, and said rather than implied: two-phase epoch groups (R10) and rollback, because
+neither ships.
+
 **v5.93 (in place — AN INVOCATION LEAVES THE COMPARTMENT QUIESCENT, closing a hole v5.92 opened
 one day earlier):** a fragment can queue a job and return without awaiting it --
 

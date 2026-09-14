@@ -307,11 +307,35 @@ every op they SHARE identically.
 
 ## Verifying the protocols
 
-**V10 — Model-check the epoch machinery.** The formal semantics is single-threaded;
-class-F fan-out, two-phase epoch groups (R10), rollback — and especially **worker
-crash/respawn mid-flip and master reload during a rollout** — have no model. One small
-TLA+/Spin spec; the monotone-rollout property ("partial meet = meet") becomes a
-checked invariant of that model rather than a slogan. Lands with M6.
+**V10 — Model-check the epoch machinery. ✅ BUILT 2026-09-13 — and it found a defect.**
+The formal semantics is single-threaded; class-F fan-out, worker crash/respawn mid-flip and
+master reload during a rollout had no model, and monotone rollout was a slogan.
+
+Built as `t/tools/check-epoch-model.py` — an exhaustive interleaving check over the protocol
+**read off the JS bootstrap**, not an idealisation of it — rather than a TLA+/Spin spec, so it
+runs in the suite like every other standing checker and drift is a build failure
+(`t/comcon_v10_epoch_model.t`). Not in M6: the mode fan-out ships, so the machinery to model
+was already there.
+
+**THE FINDING.** The epoch bump was three separate operations from JS — `shared.get`, `+1`,
+`shared.set` — so two operators switching concurrently both read epoch N and both wrote N+1
+with *their own* mode. The second write won the cell; the first worker kept N+1 locally with
+the mode nobody else had. That would have been a transient lost update **had the reconciler
+not early-returned on epoch EQUALITY** — it did, so the worker and the cell agreed on the only
+thing the reader compares, and the divergence was **permanent and silent**: a fleet moved to
+`enforce` could leave one worker in `audit` for the rest of its life, unshielded.
+
+**And the first fix was not enough, which the model said before any code was written.**
+Relaxing the early return from `==` to `<=` left the identical 168 violations: no reading rule
+can repair a state where the worker and the cell hold the same epoch. The publish had to become
+ATOMIC (`ngx_js_shared_mode_publish`, one critical section under the store's own lock, like the
+budget charge and the consent record); the reconciler change is what makes the rollout
+**monotone**, which is a different property. The checker keeps all three arms — pre-fix,
+reconciler-only, shipped — so "the atomic half is the necessary one" is checked rather than
+asserted.
+
+**Two-phase epoch groups (R10) and rollback are still unmodelled**, because neither ships; the
+model covers the protocol that does.
 
 ## Verifying the policies themselves
 
@@ -516,7 +540,7 @@ does not establish, and that statement is part of what was signed.
 
 | Now / M2–M3 | M5–M6 | M7 / M8 / M-SES |
 |---|---|---|
-| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · **V8 ✅ (2026-09-13, BOTH halves)** · **V9 ✅ (2026-09-13)** · **V13 ✅ (2026-09-13)** | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · **V14 ✅ (2026-09-13)** · V5b · V10 |
+| V1 ✅ decided · V2 ✅ decided · V3 ✅ · V4 ✅ · V7 ✅ (all 2026-09-12) | V5a · V6 · **V8 ✅ (2026-09-13, BOTH halves)** · **V9 ✅ (2026-09-13)** · **V10 ✅ (2026-09-13, and it found a defect)** · **V13 ✅ (2026-09-13)** | **V11 ✅ · V12 ✅ · V15 ✅ (2026-09-12, all built early)** · **V14 ✅ (2026-09-13)** · V5b |
 
 **Meta-observation:** the R-review's critical findings clustered at *tier boundaries*
 and *check-time↔use-time seams*; the V-track's biggest gaps cluster at **maintained-

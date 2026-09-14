@@ -2879,6 +2879,135 @@ ngx_js_shared_cosign_record(JSContext *ctx, const char *key,
 }
 
 
+/*
+ * V10: publish a new mode epoch ATOMICALLY.
+ *
+ * The fan-out used to bump the epoch with three separate operations from JS --
+ * shared.get, +1, shared.set -- and a model check over every interleaving
+ * (t/tools/check-epoch-model.py) found what that costs.  Two operators switching
+ * concurrently both read epoch N and both write N+1 with THEIR OWN mode; the
+ * second write wins the cell, and the first worker keeps N+1 locally with the
+ * mode nobody else has.
+ *
+ * WHICH WOULD HAVE BEEN A TRANSIENT LOST UPDATE IF THE RECONCILER DID NOT EARLY-
+ * RETURN ON EPOCH EQUALITY.  It did, so the worker and the cell agreed on the
+ * only thing the reader compares, and the divergence was PERMANENT AND SILENT: a
+ * fleet moved to `enforce` could leave one worker in `audit` for the rest of its
+ * life, unshielded, with nothing to say so.
+ *
+ * The reconciler now adopts on epoch GREATER rather than epoch DIFFERENT, which
+ * makes the rollout monotone -- but the model is explicit that this alone fixes
+ * nothing, because no reading rule can repair a state where the worker and the
+ * cell hold the same epoch.  The atomicity is the load-bearing half, and it
+ * belongs here for the reason the budget charge and the cosign record are here:
+ * a read-modify-write over the shared store must happen inside the store's own
+ * lock.
+ *
+ * The value is "<epoch>:<mode>" rather than JSON, so that ONE critical section
+ * can read the epoch without a JSON parser in C.  Both sides of the format are
+ * ours and change together; an unparsable value (a zone surviving from an older
+ * build) reads as epoch 0, which is the same fail-forward the JS had.
+ *
+ * Returns the new epoch, or NGX_ERROR if there is no store.
+ */
+ngx_int_t
+ngx_js_shared_mode_publish(JSContext *ctx, const char *key, const char *mode)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    ngx_uint_t              i, slot;
+    uint32_t                hash;
+    time_t                  now;
+    int64_t                 prev = 0, ep;
+    u_char                  buf[NGX_JS_SHARED_VAL_LEN];
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return NGX_ERROR;
+    }
+
+    entries = (ngx_js_shared_entry_t *)(hdr + 1);
+    hash = ngx_js_shared_hash(key);
+    now = ngx_time();
+
+    ngx_spinlock(&hdr->lock, 1, 2048);
+
+    i = ngx_js_shared_find(hdr, entries, key, hash, now, &slot);
+
+    if (i != NGX_JS_SHARED_NOSLOT) {
+        u_char  *p = (u_char *) entries[i].val;
+
+        for (prev = 0; *p >= '0' && *p <= '9'; p++) {
+            prev = prev * 10 + (*p - '0');
+        }
+
+        ep = prev + 1;
+        ngx_snprintf((u_char *) entries[i].val, NGX_JS_SHARED_VAL_LEN - 1,
+                     "%L:%s%Z", ep, mode);
+        entries[i].val[NGX_JS_SHARED_VAL_LEN - 1] = '\0';
+
+    } else if (slot == NGX_JS_SHARED_NOSLOT) {
+        /*
+         * The store is full.  Unlike a budget or a consent record there is no
+         * fail-closed reading available here: refusing to publish leaves the
+         * fleet on the mode it had, which is the only thing this can do.  The
+         * caller reports it.
+         */
+        ngx_unlock(&hdr->lock);
+        return NGX_ERROR;
+
+    } else {
+        ep = 1;
+        ngx_snprintf(buf, sizeof(buf) - 1, "%L:%s%Z", ep, mode);
+        ngx_js_shared_insert(&entries[slot], key, hash, (char *) buf, 0);
+        hdr->count++;
+    }
+
+    ngx_unlock(&hdr->lock);
+
+    return (ngx_int_t) ep;
+}
+
+
+/* comcon.__modePublish(key, mode) -> the new epoch.  The KEY comes from the JS
+ * side so that the cell's name has one definition, not two that can drift. */
+static JSValue
+ngx_js_comcon_mode_publish(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    const char  *key, *mode;
+    ngx_int_t    ep;
+
+    if (argc < 2 || !JS_IsString(argv[0]) || !JS_IsString(argv[1])) {
+        return JS_ThrowTypeError(ctx,
+            "comcon.__modePublish(key, mode): both must be strings");
+    }
+
+    key = JS_ToCString(ctx, argv[0]);
+    if (key == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    mode = JS_ToCString(ctx, argv[1]);
+    if (mode == NULL) {
+        JS_FreeCString(ctx, key);
+        return JS_EXCEPTION;
+    }
+
+    ep = ngx_js_shared_mode_publish(ctx, key, mode);
+
+    JS_FreeCString(ctx, key);
+    JS_FreeCString(ctx, mode);
+
+    if (ep == NGX_ERROR) {
+        return JS_ThrowInternalError(ctx,
+            "comcon.mode: the shared store could not record the switch");
+    }
+
+    return JS_NewInt64(ctx, (int64_t) ep);
+}
+
+
 static JSValue
 ngx_js_shared_fn_get(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
@@ -4893,27 +5022,28 @@ static const char  ngx_js_comcon_bootstrap[] =
     "  function modeShared(){"
     "    try{return (typeof nginx!=='undefined'&&nginx.shared)?nginx.shared:null;}"
     "    catch(e){return null;}}"
+    /* V10 (model-checked): adopt on epoch GREATER, never merely DIFFERENT.
+       Adopting on difference let the fleet move BACKWARDS to an older cell, and
+       equality was the early return that made a lost update permanent -- see
+       ngx_js_shared_mode_publish().  The model is explicit that this rule alone
+       fixes nothing; the atomic publish below is the load-bearing half. */
     "  function modeReconcile(){"
     "    var sh=modeShared();if(!sh)return;"
     "    var raw;try{raw=sh.get(MODEK);}catch(e){return;}"
     "    if(raw===undefined||raw===null)return;"
-    "    var st;try{st=JSON.parse(raw);}catch(e){return;}"
-    "    if(!st||st.epoch===modeEpoch)return;"
+    "    var t=String(raw),i=t.indexOf(':');if(i<0)return;"
+    "    var ep=parseInt(t.substring(0,i),10),md=t.substring(i+1);"
+    "    if(!(ep>modeEpoch))return;"
     /* Apply LOCALLY through the C setter, never through C.mode -- publishing
        here would bump the epoch on every reconcile and the fleet would chase
        its own tail. */
-    "    __modeC(st.mode);modeEpoch=st.epoch;}"
+    "    __modeC(md);modeEpoch=ep;}"
+    /* The switch is published in ONE critical section, in C.  It used to be
+       get/+1/set from here, and two operators switching concurrently could leave
+       one worker permanently on a mode the fleet had abandoned. */
     "  C.mode=function(m){"
     "    var eff=__modeC(m);"
-    "    var sh=modeShared();"
-    "    if(sh){try{"
-    "      var raw=sh.get(MODEK);"
-    "      var prev=0;"
-    "      if(raw!==undefined&&raw!==null){"
-    "        try{prev=(JSON.parse(raw).epoch|0);}catch(e2){prev=0;}}"
-    "      modeEpoch=prev+1;"
-    "      sh.set(MODEK,JSON.stringify({epoch:modeEpoch,mode:eff}));"
-    "    }catch(e){}}"
+    "    try{modeEpoch=C.__modePublish(MODEK,eff);}catch(e){}"
     "    return eff;};"
     "  C.__modeReconcile=modeReconcile;"
     "  C.include=function(source,contract){"
@@ -6608,6 +6738,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
            their per-fragment equivalents. */
         JS_SetPropertyStr(ctx, comcon_obj, "mode",
                           JS_NewCFunction(ctx, ngx_js_comcon_op_mode, "mode", 1));
+        /* V10: the epoch bump, atomic under the shared store's own lock. */
+        JS_SetPropertyStr(ctx, comcon_obj, "__modePublish",
+                          JS_NewCFunction(ctx, ngx_js_comcon_mode_publish,
+                                          "__modePublish", 2));
         /* increment D0 (POM substrate): diagnostic reflector — module/function
            node tree from a compiled fragment. Replaced by the lazy NodeView in
            D1. Internal (double-underscore), like __includeConfined. */

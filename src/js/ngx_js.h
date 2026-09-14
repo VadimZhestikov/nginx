@@ -589,6 +589,11 @@ ngx_int_t ngx_js_shared_budget_charge(JSContext *ctx, const char *key,
 ngx_int_t ngx_js_shared_cosign_record(JSContext *ctx, const char *key,
     const char *principal, uint32_t quorum, uint32_t within);
 
+/* V10: publish a new mode epoch atomically (read+increment+write in ONE
+   critical section). Returns the new epoch, or NGX_ERROR with no store. */
+ngx_int_t ngx_js_shared_mode_publish(JSContext *ctx, const char *key,
+    const char *mode);
+
 /* [TBD-2]: throw a refusal carrying its code, in the message and as `.code` */
 JSValue ngx_js_comcon_refuse(JSContext *ctx, ngx_js_refusal_code_t code,
     const char *fmt, ...);

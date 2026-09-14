@@ -619,6 +619,44 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T3, T4, T6, T9
 - **V:** V13, V15
 
+#### G10.4 — the fleet-wide mode protocol converges, and cannot be walked backwards
+- **CLAIM:** Under every interleaving of concurrent switches, reconciles and worker respawns, no
+  worker can be left holding the cell's epoch with a different mode; and a reconcile adopts only a
+  GREATER epoch, so a stale publish cannot move the fleet backwards.
+- **ARGUMENT:** This is V10, and it is the last V-item that did not depend on the parked compiler
+  track. The mode fan-out is a fleet-wide protocol over shared memory with concurrent writers,
+  worker respawn and master reload; the formal semantics is single-threaded, so "monotone rollout"
+  was a slogan with nothing behind it.
+  **The model found a defect.** The epoch bump was three operations from JS — `get`, `+1`, `set` —
+  so two operators switching concurrently both read epoch N and both wrote N+1 with their own mode.
+  The second write won the cell and the first worker kept N+1 locally with the mode nobody else had.
+  That would have been a transient lost update **had the reconciler not early-returned on epoch
+  EQUALITY**: it did, so the worker and the cell agreed on the only thing the reader compares, and
+  the divergence was **permanent and silent** — a fleet moved to `enforce` could leave one worker in
+  `audit` for the rest of its life, unshielded.
+  **The first fix was insufficient and the model said so before the code was written:** relaxing the
+  early return to `<=` left the identical violation count, because no reading rule repairs a state
+  where worker and cell hold the same epoch. The publish is now ONE critical section under the
+  store's own lock, as the budget charge and the consent record already were.
+- **EV:** `t/tools/check-epoch-model.py` — exhaustive interleaving over the protocol read off the JS
+  bootstrap, with **three arms**: pre-fix (168 violations), reconciler-only (still broken), shipped
+  (none). The control is built in, like the M-SES battery's unconfined arm: a model that reports no
+  violation for a protocol nobody changed is measuring nothing.
+- **EV:** `t/comcon_v10_epoch_model.t` — runs the checker (so drift is a build failure) and tests the
+  LIVE protocol, because a model nobody compared against the code is a paper exercise: the cell's
+  shape (`<epoch>:<mode>`, which a revert to the JS write path would not produce), monotone epochs,
+  an OLDER cell ignored and a NEWER cell adopted — the same probe both ways, so "ignored" cannot pass
+  by nothing ever being adopted. Three controls.
+- **GAP:** **Two-phase epoch groups (R10) and rollback are still unmodelled, because neither ships.**
+  The model covers the protocol that does, with three workers and one respawn — a defect needing four
+  workers would be a different defect. Master reload is modelled only as "the cell is absent"; the
+  real behaviour depends on whether nginx re-creates the shared zone, which is a question about
+  nginx's zone reuse rather than about this protocol. And the live half cannot force a concurrent
+  write, so the atomicity itself rests on the model plus the cell-shape assertion.
+  **home:** VERIFICATION.md §V10 · `ngx_js_shared_mode_publish`.
+- **THREAT:** T6, T11
+- **V:** V10
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1238,7 +1276,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 → G6.6 | **CLOSED 2026-09-13** (after the §15 signature — see §16): the deadline defaults ON at 10 s, `0` opts out, a malformed value reads as the default. Superseded in part by **F12** |
 | **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
 | **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 → G7.7 | **ACCEPTED — and now QUANTIFIED (2026-09-13):** a co-resident tenant's CPU burn moves a peer's latency from **0.3 ms to 347 ms** (1227× idle, ~2.9 bits/s) because the worker is single-threaded. Under a 50 ms execution deadline the separation falls to 49.8 ms. The deadline is the only mitigation in the tree and it narrows, never closes |
-| **F9** | V-track items with no machinery yet: **V5a, V5b, V6, V10** (four — **V14 built 2026-09-13**, and it found its claim FALSE; was six — this row said five until 2026-09-13, omitting V5a, which §Placement has always listed as unbuilt; a ledger that undercounts its own backlog is the quiet kind of wrong) | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7) **and V8 built COMPLETE** — both halves: G11.8 (read-only schema conformance) and G11.10 (the propagation column, across real workers). **V14 built 2026-09-13** (G11.12 — and its claim was FALSE: the same fragment compiled to different bytes). **V9 built 2026-09-13** (G11.13 — seven undescribed ops found). **Four remain, and ALL FOUR (V5a, V5b, V6, V10) sit on the parked compiler/protocol track** — the reachable V-track backlog is empty |
+| **F9** | V-track items with no machinery yet: **V5a, V5b, V6** (three — **V10 built 2026-09-13**, and it found a defect; was four — **V14 built 2026-09-13**, and it found its claim FALSE; was six — this row said five until 2026-09-13, omitting V5a, which §Placement has always listed as unbuilt; a ledger that undercounts its own backlog is the quiet kind of wrong) | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7) **and V8 built COMPLETE** — both halves: G11.8 (read-only schema conformance) and G11.10 (the propagation column, across real workers). **V14 built 2026-09-13** (G11.12 — and its claim was FALSE: the same fragment compiled to different bytes). **V9 built 2026-09-13** (G11.13 — seven undescribed ops found). **Four remain, and ALL FOUR (V5a, V5b, V6, V10) sit on the parked compiler/protocol track** — the reachable V-track backlog is empty |
 | **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2, G11.14 | **STILL OPEN, but no longer expensive (2026-09-13).** It needs a person, so it cannot be closed here — what has changed is the cost: `t/tools/reviewer-pack.sh` + `REVIEW.md` turn "read 1100 lines, extract the commands, know which builddirs are stale" into one command and a verdict table. **Reproduction is what a signature there buys; two attestations of the DESIGN would need a reviewer who disagrees and says where**, and the sign-off block says so rather than implying otherwise |
 | **F13** | The REQUEST was outside the registry: `nginx.describe(req)` returned **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carried no declared type and no class. The read-only descriptor hardcoded `requestScoped: false` for every row, unfalsifiable only *because* there were no request rows to be wrong about. | G11.8, G3.7 | **CLOSED 2026-09-13.** All **54** rows classified — 28 getters, 25 methods, one settable (`statusCode`) — as TABLE rows, which are per-class and carry their own `RQS`, rather than through the bare-name read-only map. **Every type was read off its getter, and none was wrong on the first run** (`startTime` is a number not a Date; `location` is a live handle, not a path string). The pin at zero is now the real count, plus an assertion that every request row declares `requestScoped` — so a getter added without a table row is emitted by the discovery pass with `false` and fails the day it lands. Three controls |
@@ -1390,6 +1428,8 @@ signature is never quietly credited with work it did not see.
 | **ASYNC FRAGMENTS SHIPPED — G6.15, and the blocker was not where the roadmap said.** ROADMAP recorded the synchronous invoke; an async fragment never reached it, being refused as *"not a bytecode function"* — **untrue of an async function**, which is a bytecode function with a different class id. Six COMCON analysis entry points tested one id where the engine has a four-class helper, so the C3 analysis **refused to look** at async and generator bodies. Fixed at all six; the promise is then settled by draining the compartment's own jobs, bounded by the deadline AND a job cap, and an unsettleable promise is reported as `E_INVOKE_PENDING` rather than stringified into `{}`. | **Adds one leaf and one refusal code, and WIDENS what admission accepts** — which is the one direction that needs saying out loud. It is not a weakening: the analysis now RUNS on bodies it previously refused to read, and the test pins that by asserting an undeclared free name inside an async body is still refused. The escape battery (§15/G11) has not been re-run against async fragment shapes; that is recorded in the leaf's GAP, not claimed. |
 
 | **THE DEFERRED-JOB ESCAPE, CLOSED — G6.16, and it was opened by G6.15 one day earlier.** A fragment could queue a job and return; nothing else drains the compartment runtime, so the job ran inside the NEXT unrelated invocation — on a stranger's deadline and memory allowance, gated at a stranger's wall-clock time, and under a stranger's `onViolation` posture. Every invocation now drains to quiescence inside its own compartment scope. Also: nothing in this process installed a promise-rejection tracker, on either runtime, so a failed continuation was silent everywhere. | **Closes a hole this project's own increment opened, found by probing that increment rather than by a report.** Two of the fix's first attempts were wrong and their controls said so: the "job threw" signal is unreachable (a promise reaction catches its own throw, so the failure is an unhandled rejection), and the posture assertion could not discriminate until the fleet and the binding were made to DISAGREE. Adds one leaf and corrects a v5.92 claim about which bound fires. |
+
+| **V10 BUILT — G10.4 — AND IT FOUND A DEFECT.** The last V-item independent of the parked compiler track. The mode fan-out's epoch bump was three operations from JS, so two concurrent switches both wrote the same epoch with different modes — and because the reconciler early-returned on epoch EQUALITY, the loser's divergence was **permanent and silent**: a fleet moved to `enforce` could leave one worker in `audit` for the rest of its life. The publish is now one critical section under the store's lock. | **Reduces F9 from four unmodelled V-items to three, and closes a silent-divergence hole in a rollout mechanism §15 relied on.** The model's own control is built in (three arms), and the model said the obvious one-line fix was insufficient *before* the code was written — which is the first time a model in this project has been ahead of the implementation. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

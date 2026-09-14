@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.93 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.94 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,15 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **V10 BUILT (2026-09-13, v5.94) — AND IT FOUND A DEFECT.** The last V-item independent of the
+>   parked compiler track. The mode fan-out's epoch bump was three JS operations, so two concurrent
+>   switches both wrote epoch N+1 with different modes — and the reconciler's early return on epoch
+>   EQUALITY made the loser's divergence **permanent and silent** (a fleet on `enforce` leaving one
+>   worker in `audit` for life). The publish is now one critical section under the store's lock; the
+>   reconciler adopts on GREATER, which is what makes the rollout monotone. **The model said the
+>   one-line fix was insufficient before the code was written.** F9 drops from four unmodelled
+>   V-items to three (V5a, V5b, V6 — all compiler-dependent). `t/tools/check-epoch-model.py` +
+>   `t/comcon_v10_epoch_model.t` (7) + 3 controls.
 > - **THE DEFERRED-JOB ESCAPE, CLOSED (2026-09-13, v5.93) — opened by v5.92 one day earlier.** A
 >   fragment could queue a job and return; nothing else drains the compartment runtime, so it ran
 >   inside the NEXT unrelated invocation — on a stranger's deadline and memory allowance, gated at a
