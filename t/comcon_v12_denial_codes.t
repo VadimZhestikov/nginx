@@ -95,6 +95,25 @@ function capFor(row) {
     /* Which capability this row's probe needs.  Until `allowHosts` every row
      * was a socket, so the harness simply assumed one; a second kind had to be
      * named rather than smuggled in through probe text. */
+    /* `windowClosed` is COMPUTED, not a constant: a window that is reliably
+     * closed cannot be written down, because days==0 is refused and a one-minute
+     * slot is a flake waiting to happen.  So the harness derives one from the
+     * clock -- today, an hour that has already passed -- which is closed whenever
+     * this runs. */
+    if (row.cap === 'windowClosed') {
+        var now = new Date();
+        var nm = now.getUTCHours() * 60 + now.getUTCMinutes();
+        var DN = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+        function hm(x) {
+            x = ((x % 1440) + 1440) % 1440;
+            var h = Math.floor(x / 60), m = x % 60;
+            return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
+        }
+        return comcon.mediate(sock,
+                   comcon.window({ days: DN[now.getUTCDay()],
+                                   from: hm(nm - 120), to: hm(nm - 60) }));
+    }
+
     var cap = (row.cap === 'outbound') ? outbound : sock;
     if (row.budget) {
         cap = comcon.mediate(cap, comcon.uses(row.budget.key, row.budget.limit,

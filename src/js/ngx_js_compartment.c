@@ -85,6 +85,8 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
        refusing a destination, and the reach gate on the host's drain half. */
     "out.host",
     "out.drain",
+    /* M-LIB `window` — a recurring lifetime; the sibling of cap.expired */
+    "cap.window",
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */

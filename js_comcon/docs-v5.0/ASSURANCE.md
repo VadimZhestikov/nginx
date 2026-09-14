@@ -340,6 +340,50 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T11, T6
 - **V:** V9
 
+#### G6.9 — a capability can be bounded by a RECURRING schedule
+- **CLAIM:** `mediate(cap, window(spec))` makes a capability work only on the named days between
+  the named UTC hours; outside them the operation is denied as `cap.window`, logged-and-allowed
+  in audit mode. Two different windows are refused rather than composed.
+- **ARGUMENT:** `ttl` bounds a capability by a countdown, which is the wrong shape for the thing
+  THREATS.md actually wants bounded — a signing key should be usable in hours, not for an hour.
+  It is a separate denial code from `cap.expired` on purpose: the two are different operational
+  facts. **UTC is a decision, not an oversight:** a gate reading the host's TZ cannot be tested
+  identically on two machines and shifts under daylight saving with nothing edited.
+- **EV:** `t/comcon_cap_window.t` — 16 assertions, every window computed FROM THE CURRENT TIME so
+  the file asserts the same thing at any hour: open, closed, the day mask tested **by its
+  complement** (every day but today, hours open — so the day list must really be read), a window
+  that WRAPS midnight open and closed, `from === to` as a whole day, composition with a lifetime
+  and a budget, the meet, five malformed specs, and audit mode.
+- **EV:** `t/tools/golden-denials.js` — `cap.window` frozen, with a capability the harness
+  COMPUTES (a window reliably closed cannot be written as a constant: an empty day mask is refused
+  and a one-minute slot is a flake).
+- **GAP:** UTC only — there is no per-capability timezone, so an operator with a genuine local
+  schedule converts by hand and re-converts when their offset changes. And a window cannot express
+  a date range ("until the end of the quarter"); that is `ttl`'s shape, and the two compose rather
+  than merging.
+  **home:** OPERATOR_API.md §8f · THREATS.md (the signing key).
+- **THREAT:** T5, T6, T11
+- **V:** V9
+
+#### G6.10 — a fragment returning `undefined` returns undefined, not a syntax error
+- **CLAIM:** A confined fragment whose result JSON cannot represent — `undefined`, a function —
+  yields `undefined` in the host, not a parse failure.
+- **ARGUMENT:** The invoke marshals results by stringifying in the compartment and re-parsing in
+  the host, because only data crosses. `JSON.stringify(undefined)` is `undefined` — not JSON text
+  — and handing that to the parser produced `SyntaxError: unexpected token: 'undefined' at
+  <result>:1:1`, naming neither the fragment nor the cause. **`undefined` is what every DENIED
+  GATE produces**, so the path an operator is most likely to hit while tightening a policy was the
+  one reporting an internal parse error.
+- **EV:** `t/comcon_invoke_undefined.t` — the literal, a function with no `return`, a value a
+  mediation redacted away, a function value, and the ordinary cases still marshalling — including
+  `null` staying NULL, which is the distinction the fix must not erase.
+- **GAP:** It survived because every existing probe wrapped its result in an object or a string.
+  Nothing systematically checks the invoke's value contract across types; this file covers the
+  values JSON declines plus the common ones, not the whole surface.
+  **home:** G6.9's evidence (whose probe found it) · `ngx_js_comcon_invoke_confined`.
+- **THREAT:** T3
+- **V:** V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1097,6 +1141,8 @@ signature is never quietly credited with work it did not see.
 | **M-LIB `allowHosts` SHIPPED — G6.8 added.** The outbound capability: a fragment records an INTENT through a granted cap, the glob is checked in the compartment, and the host performs the I/O. Two new denial codes (`out.host`, `out.drain`), both frozen with probes. It composes with `uses` and `ttl`; two different host globs are refused rather than guessed. **Seven of the ten vocabulary words now ship.** | **Adds a leaf and a new authority surface.** The GAP in G6.8 is the honest part: this is not a `fetch`, because fragment invocation is synchronous, and a policy needing a response needs two invocations. Nothing §15 attested changes; a new capability is new surface, and its escape-relevant edges (the reach gate on the drain half) are evidenced rather than argued. |
 
 | **The outbound ROUND TRIP is demonstrated, and the scheme can be pinned (v5.86).** `std.outbound.perform()` drains a capability through `req.fetch`, and `t/comcon_outbound_roundtrip.t` shows a policy asking, the host performing, and the policy deciding **from the responses**. `allowHosts` globs may be scheme-qualified, with the scheme matched exactly — which is NOT MANUAL's `protocol` (enforced operation order), still unbuilt. | **Closes the gap G6.8 named for itself.** Two of its four controls did not fire on the first run: one claim was false (`clear()` took no count) and one was unmeasured (exact vs globbed scheme). Both are now true and asserted — recorded because the lesson is about the claims, not the feature. |
+
+| **M-LIB `window` SHIPPED — G6.9 — and it found a defect in the INVOKE, G6.10.** A recurring lifetime beside `ttl`'s countdown, with its own code `cap.window`, UTC by decision, wrapping midnight, whole-day, and refusing two different schedules. **Eight of ten vocabulary words now ship.** Its probe returned a denied call directly — the most natural thing to write — and exposed that a fragment returning `undefined` produced `SyntaxError: unexpected token: 'undefined'`. `undefined` is what every denied gate returns. | **Adds two leaves; one of them is a pre-existing defect on the invoke path, which §15 attested.** The defect was never reachable by any existing test because every probe wrapped its result, so nothing §15 relied on was wrong — but an operator tightening a policy would have met it immediately. Recorded here rather than quietly fixed. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

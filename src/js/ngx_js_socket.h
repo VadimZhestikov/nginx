@@ -186,5 +186,22 @@ JSValue    ngx_js_outbound_wrap(JSContext *ctx, uint32_t handle,
 ngx_int_t  ngx_js_glob_match(const u_char *glob, size_t glob_len,
                const u_char *s, size_t s_len);
 
+/* M-LIB `window` — is a capability CLOSED right now?  `days` is a 7-bit mask
+ * (bit 0 = Sunday), `from`/`to` are minutes since midnight UTC.  days == 0 means
+ * no window.  from == to means the whole of an allowed day; from > to wraps past
+ * midnight.  UTC deliberately: a gate that depends on the host TZ cannot be
+ * tested identically on two machines and shifts under daylight saving without
+ * anything being edited. */
+ngx_int_t  ngx_js_window_closed(uint32_t days, uint32_t from, uint32_t to);
+
+/* Apply a window to an already-wrapped capability.  A setter rather than four
+ * more parameters on each wrap function: the window is optional, the wrap
+ * signatures are already long, and threading it through every call site would
+ * make three of them say `0, 0, 0` forever. */
+void  ngx_js_socket_set_window(JSValueConst obj, uint32_t days, uint32_t from,
+          uint32_t to);
+void  ngx_js_outbound_set_window(JSValueConst obj, uint32_t days,
+          uint32_t from, uint32_t to);
+
 
 #endif /* _NGX_JS_SOCKET_H_INCLUDED_ */

@@ -130,6 +130,14 @@ var GOLDEN = [
     probe: "function(a){ var r = out.request('https://evil.net/x');"
          + " return (r === undefined) ? 'denied' : 'allowed'; }",
     expect: 'denied' },
+  /* M-LIB `window` — the recurring sibling of cap.expired.  Its capability is
+   * COMPUTED by the harness (`windowClosed`): a window that is reliably closed
+   * cannot be written as a constant, since an empty day mask is refused and a
+   * one-minute slot would be a flake. */
+  { code: 'cap.window', cap: 'windowClosed', grant: 's', mode: 'enforce',
+    probe: "function(a){ var v = s.address;"
+         + " return (v === undefined) ? 'denied' : 'allowed'; }",
+    expect: 'denied' },
   { code: 'out.drain', cap: 'outbound', grant: 'out', mode: 'enforce',
     probe: "function(a){ var r = out.pending();"
          + " return (r === undefined) ? 'denied' : 'drained'; }",

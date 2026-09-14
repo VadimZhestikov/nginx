@@ -378,6 +378,41 @@ var limited = comcon.mediate(sock, comcon.uses('acme-sock', 100, 60));
 
 ---
 
+## 8f. `window(spec)` — a RECURRING lifetime (office hours) *(v5.87)*
+
+```js
+var signing = comcon.mediate(key, comcon.window({
+    days: 'Mon-Fri', from: '09:00', to: '17:00'    // UTC
+}));
+```
+
+`ttl` says "for the next N seconds"; `window` says "on these days, between these hours".
+THREATS.md wants exactly this for the signing key, where the useful attenuation is a schedule
+rather than a countdown. Denial code `cap.window` — **its own code, not `cap.expired`**, because
+"your capability has run out" and "your capability is outside its hours" are different
+operational facts and an operator paged at 02:00 needs to know which they are looking at.
+
+- **TIMES ARE UTC, and the operator converts.** "Office hours" is a local-time idea, but a gate
+  whose behaviour depends on the host's TZ cannot be tested identically on two machines and
+  shifts under a daylight-saving transition with nothing edited. Converting once, where you can
+  see what you are doing, is the lesser evil.
+- **`from` > `to` wraps midnight.** `22:00`–`02:00` is a real shift pattern, and a naive
+  `from <= now < to` makes it permanently closed.
+- **`from` === `to` means the WHOLE of an allowed day**, not "never". An operator writing
+  `00:00`–`00:00` means all day; a capability that is never open is spelled by granting nothing.
+- **Day ranges may wrap the week** — `Fri-Mon` is a weekend-plus schedule, and refusing it would
+  make that unspellable.
+- **Nothing is defaulted.** No days, no hours, an unknown day name, a time that is not `HH:MM`,
+  an hour past 23 — all refused with `E_CAP_FLAVOR`. A window with no days is a mistake, not
+  "always open".
+- **It composes with a mask, a budget, a lifetime and `allowHosts`** — "only these hosts, only in
+  hours, at most N an hour, for the next day." Two *different* windows are **refused**: two
+  schedules do not intersect in one schedule (Mon-Wed 08:00–12:00 ∩ Tue-Thu 10:00–14:00 is not
+  expressible as a single days/from/to), so a meet would guess, and guessing widens.
+- Audit mode logs and allows, like every gate.
+
+---
+
 ## 8e. `allowHosts(glob)` and `nginx.outbound()` — reach outward, as a capability *(v5.85, round trip v5.86)*
 
 ```js

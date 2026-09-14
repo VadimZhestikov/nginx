@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.86 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.87 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,13 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **M-LIB `window` SHIPPED (2026-09-13, v5.87) — and its probe found a defect in the INVOKE.**
+>   A recurring lifetime beside `ttl`'s countdown (`cap.window`, UTC by decision, wraps midnight,
+>   whole-day, two schedules refused). **Eight of ten vocabulary words ship.** Probing the word
+>   ALONE found a gap composition hid (a bare grant was refused), and the probe's natural shape
+>   found that a fragment returning `undefined` — **what every denied gate returns** — produced
+>   `SyntaxError: unexpected token: 'undefined'`. Remaining: `cosign`, `protocol` (operation
+>   ORDER), `opaque.*`, the posture words.
 > - **THE OUTBOUND ROUND TRIP (2026-09-13, v5.86).** `std.outbound.perform()` + a test where a
 >   policy asks, the host performs against a real backend, and the policy **decides from the
 >   responses**. `allowHosts` globs may pin the SCHEME (matched exactly) — which is NOT MANUAL's
@@ -487,8 +494,9 @@ fallback) → the event dispatcher calls the C function pointer directly.
   budgets are not. `t/comcon_cap_ttl.t` (11) + 3 controls.
   **`allowHosts` SHIPPED 2026-09-13 (v5.85)** — see the position note above; the blocker was
   not just "no outbound capability" but that fragment invocation is synchronous.
-  Remaining: the posture vocabulary (needs enforcement), `cosign`/`protocol`, `window`,
-  `opaque.*`, and the "raw operators withheld" governance half.
+  Remaining: the posture vocabulary (needs enforcement), `cosign` (needs an approval-recording
+  protocol), `protocol` (enforced operation ORDER — a session type, not a URL scheme),
+  `opaque.*` (engine-substrate track), and the "raw operators withheld" governance half.
   *(Original scope, preserved:)* The user-facing
   surface is not the kernel but the combinators: `std.profiles.*` (tenant,
   pure_library, forensics/REL, marketplace, config_builder…) and the mediation

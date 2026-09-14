@@ -635,6 +635,49 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.87 (in place — M-LIB `window`, and the defect its probe found in the INVOKE):** `ttl`
+bounds a capability by a countdown. THREATS.md wants the signing key bounded by a SCHEDULE, which
+is a different shape: usable in hours, not for an hour. `window({days:'Mon-Fri', from:'09:00',
+to:'17:00'})` is that, with its own denial code — `cap.window`, not `cap.expired`, because "has run
+out" and "is outside its hours" are different operational facts and an operator paged at 02:00
+needs to know which one they are reading. **Eight of the ten vocabulary words now ship.**
+
+**UTC is a decision, not an oversight.** "Office hours" is a local-time idea, and the temptation is
+to read the host's TZ. A gate that does cannot be tested identically on two machines and shifts
+under a daylight-saving transition with nothing edited. So the operator converts once, where they
+can see what they are doing, and the docs say so in those words.
+
+**The two shapes a schedule gate gets wrong are the ones tested hardest.** `from > to` WRAPS
+midnight — a 22:00–02:00 shift is real, and a naive `from <= now < to` makes it permanently closed.
+`from === to` means the WHOLE of an allowed day, not "never", because an operator writing
+00:00–00:00 means all day and a never-open capability is spelled by granting nothing. The day mask
+is tested **by its complement**: a window naming every day except today, with hours open right now,
+must still deny — otherwise a passing test could be ignoring the day list entirely. Every window in
+the test is computed from the current time, so the file asserts the same thing at any hour.
+
+**Probing each flavour ALONE found a gap that composition hid.** `mediate(cap, window(spec))` with
+no mask beside it fell through to the unknown-flavour refusal — the feature refusing its own
+simplest use — because the include translation only had branches for the shapes that arrive in
+composition. The normal way to reach `window` is composed with `allowHosts`, which worked from the
+start.
+
+**AND THE PROBE FOUND A DEFECT IN THE INVOKE, which is the better half of this entry.** The window
+probe returned a denied call directly — the most natural thing to write — and got
+`SyntaxError: unexpected token: 'undefined' at <result>:1:1`. The invoke marshals a result by
+stringifying it in the compartment and re-parsing it in the host, and `JSON.stringify(undefined)`
+is `undefined`: not the string, not JSON text at all. That value went to the parser.
+
+**`undefined` is not an exotic return value here — it is what EVERY DENIED GATE produces.** A policy
+whose last statement reads a redacted field, or calls an operation its mediation refuses, returns
+undefined by construction. So the one path an operator is most likely to hit *while tightening a
+policy* was the path that reported an internal parse failure against a pseudo-file they had never
+heard of. It survived because every existing probe happened to wrap its result: the V12 rows return
+the string `'denied'`, the outbound probes return an object. `null` still crosses as null, which is
+the distinction the fix must not erase.
+
+**A feature's own test found a bug in the machinery beneath it, because the test was written the
+way a user would write it rather than the way the machinery prefers.**
+
 **v5.86 (in place — the outbound ROUND TRIP, a scheme that can be pinned, and two properties
 that were documented before they were true):** v5.85 shipped the outbound capability and tested
 its mediation exhaustively — the glob admits and denies, the reach gate holds, composition works.

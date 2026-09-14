@@ -3878,7 +3878,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var e=new TypeError(msg+' ['+code+']');"
     "    e.code=code;throw e;}"
     "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1,uses:1,ttl:1,"
-    "               allowHosts:1};"
+    "               allowHosts:1,window:1};"
     /* One definition of the socket field lattice, used by the meet here and by
        include()'s translation below -- two copies of a bitmask mapping is how a
        "narrower" membrane ends up wider than the one it attenuates. */
@@ -3925,6 +3925,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(interceptor.fields!==undefined)"
     "      snap.fields=Array.prototype.slice.call(interceptor.fields);"
     "    if(interceptor.glob!==undefined)snap.glob=String(interceptor.glob);"
+    "    if(interceptor.days!==undefined){snap.days=interceptor.days|0;"
+    "      snap.from=interceptor.from|0;snap.to=interceptor.to|0;}"
     /* `uses` is validated HERE, at the producer, and normalized away: what the
        rest of the pipeline sees is an allow-everything mask carrying a budget.
        Every field is refused rather than defaulted -- a budget with a missing
@@ -3960,6 +3962,16 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      if(hg.length>120)throw new TypeError('mediate: allowHosts() glob too "
              "long (max 120 chars)');"
     "      snap={flavor:'allowHosts',glob:hg};}"
+    /* Validated at the producer like `uses` and `ttl`, so a HAND-BUILT
+       descriptor cannot travel further than mediate() -- the gap the
+       allowHosts work found. */
+    "    if(snap.flavor==='window'){"
+    "      if(!(snap.days>0)||snap.days>127)throw new TypeError("
+    "        'mediate: window() needs a day mask; build it with comcon.window()');"
+    "      if(!(snap.from>=0&&snap.from<1440)||!(snap.to>=0&&snap.to<1440))"
+    "        throw new TypeError('mediate: window() from/to must be minutes "
+                 "within a day');"
+    "      snap={flavor:'window',days:snap.days,from:snap.from,to:snap.to};}"
     "    if(snap.flavor==='ttl'){"
     "      var ts=Number(interceptor.seconds);"
     "      if(!(ts>=1)||ts!==Math.floor(ts))throw new TypeError("
@@ -4011,7 +4023,8 @@ static const char  ngx_js_comcon_bootstrap[] =
                  "guessing would widen');"
     "        var other=(ii.flavor==='allowHosts')?oi:ii;"
     "        if(other.flavor!=='allowHosts'&&other.flavor!=='uses'"
-    "           &&other.flavor!=='ttl'&&other.flavor!=='allow')capRefuse("
+    "           &&other.flavor!=='ttl'&&other.flavor!=='window'"
+    "           &&other.flavor!=='allow')capRefuse("
     "          'E_CAP_ESCALATE',"
     "          'mediate: an allowHosts facet composes only with uses() or "
                  "ttl() -- a mask means nothing to an outbound capability, and "
@@ -4023,6 +4036,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        if(at1!==undefined||at2!==undefined){"
     "          as.ttlSeconds=(at1===undefined)?at2:"
     "                        ((at2===undefined)?at1:(at1<at2?at1:at2));}"
+    "        var aw=(ii.days!==undefined)?ii:((oi.days!==undefined)?oi:null);"
+    "        if(aw){as.days=aw.days;as.from=aw.from;as.to=aw.to;}"
     "        snap=Object.freeze(as);}"
     "      else if(ii.flavor==='routes'||oi.flavor==='routes'){"
     "        if(ii.flavor!==oi.flavor||ii.glob!==oi.glob)capRefuse("
@@ -4051,6 +4066,22 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        if(t1!==undefined||t2!==undefined){"
     "          ns.ttlSeconds=(t1===undefined)?t2:"
     "                        ((t2===undefined)?t1:(t1<t2?t1:t2));}"
+    /* Two WINDOWS have no computable meet: Mon-Fri 09:00-17:00 and Sat-Sun
+       10:00-14:00 intersect in the empty schedule, and Mon-Wed 08:00-12:00 with
+       Tue-Thu 10:00-14:00 intersects in something no single (days, from, to)
+       triple can spell.  So the routes rule again -- an identical window
+       composes, a different one is REFUSED rather than guessed.  A window
+       composes freely with a mask, a budget and a lifetime, which are the
+       compositions that mean something. */
+    "        var w1=ii.days,w2=oi.days;"
+    "        if(w1!==undefined&&w2!==undefined){"
+    "          if(w1!==w2||ii.from!==oi.from||ii.to!==oi.to)capRefuse("
+    "            'E_CAP_ESCALATE','mediate: cannot re-mediate with a DIFFERENT "
+                   "window -- two schedules do not intersect in one schedule, "
+                   "and guessing would widen');"
+    "          ns.days=w1;ns.from=ii.from;ns.to=ii.to;}"
+    "        else if(w1!==undefined){ns.days=w1;ns.from=ii.from;ns.to=ii.to;}"
+    "        else if(w2!==undefined){ns.days=w2;ns.from=oi.from;ns.to=oi.to;}"
     "        snap=Object.freeze(ns);}"
     "      cap=cap[FACET].cap;}"
     "    f[FACET]={cap:cap,interceptor:Object.freeze(snap)};return f;};"
@@ -4072,6 +4103,58 @@ static const char  ngx_js_comcon_bootstrap[] =
        same rule to be wrong.
        Nothing is defaulted: an empty glob is refused rather than read as "*",
        because a missing destination list is a mistake and not permission. */
+    /* window(spec): a RECURRING lifetime -- office hours rather than `ttl`'s
+       countdown.  Spelled as data rather than parsed from a sentence, because a
+       schedule is exactly the kind of policy that must read back identically to
+       what was written:
+
+         comcon.window({ days: 'Mon-Fri', from: '09:00', to: '17:00' })
+
+       TIMES ARE UTC, and the operator converts.  A gate whose behaviour depends
+       on the host's TZ cannot be tested identically on two machines, and shifts
+       under a daylight-saving transition with nothing edited.
+       from === to means the WHOLE of an allowed day; from > to wraps midnight
+       (a 22:00-02:00 shift), which is otherwise inexpressible. */
+    "  var WDAYS={sun:1,mon:2,tue:4,wed:8,thu:16,fri:32,sat:64};"
+    "  var WORDER=['sun','mon','tue','wed','thu','fri','sat'];"
+    "  function winMinutes(v,what){"
+    "    var m=/^([0-9]{1,2}):([0-9]{2})$/.exec(String(v||''));"
+    "    if(!m)capRefuse('E_CAP_FLAVOR','window: '+what+' must be \\'HH:MM\\' "
+    "(UTC); got '+String(v));"
+    "    var h=Number(m[1]),mi=Number(m[2]);"
+    "    if(h>23||mi>59)capRefuse('E_CAP_FLAVOR','window: '+what+' is not a "
+    "time of day: '+String(v));"
+    "    return h*60+mi;}"
+    "  function winDays(spec){"
+    "    var out=0,i,parts=String(spec||'').toLowerCase().split(',');"
+    "    for(i=0;i<parts.length;i++){"
+    "      var p=parts[i].replace(/\\s+/g,'');"
+    "      if(!p)continue;"
+    "      var r=p.split('-');"
+    "      if(r.length===2){"
+    "        var a=WORDER.indexOf(r[0]),b=WORDER.indexOf(r[1]);"
+    "        if(a<0||b<0)capRefuse('E_CAP_FLAVOR','window: unknown day in "
+    "range '+p+'; days are sun..sat');"
+    /* A range that wraps the week (fri-mon) is accepted and means what it says:
+       refusing it would make a weekend-only schedule unspellable. */
+    "        var k=a;for(;;){out|=WDAYS[WORDER[k]];if(k===b)break;"
+    "          k=(k+1)%7;}"
+    "      } else {"
+    "        if(WDAYS[p]===undefined)capRefuse('E_CAP_FLAVOR','window: unknown "
+    "day '+p+'; days are sun..sat');"
+    "        out|=WDAYS[p];}}"
+    "    return out;}"
+    "  C.window=function(spec){"
+    "    spec=spec||{};"
+    "    if(spec.days===undefined)capRefuse('E_CAP_FLAVOR','window: needs days "
+    "(e.g. \\'Mon-Fri\\'); a window with no days is a mistake, not always-open');"
+    "    if(spec.from===undefined||spec.to===undefined)capRefuse("
+    "      'E_CAP_FLAVOR','window: needs from and to as \\'HH:MM\\' UTC');"
+    "    var d=winDays(spec.days);"
+    "    if(!d)capRefuse('E_CAP_FLAVOR','window: the day list selected no days');"
+    "    return {flavor:'window',days:d,"
+    "            from:winMinutes(spec.from,'from'),"
+    "            to:winMinutes(spec.to,'to')};};"
     "  C.allowHosts=function(glob){"
     "    var g=String(glob||'');"
     "    if(!g)capRefuse('E_CAP_FLAVOR','allowHosts: a host glob is required; "
@@ -4481,17 +4564,27 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        else if(it.flavor==='allow'||it.flavor==='redact'){"
     "          pol={kind:0,mask:jsMask(it)};"
     "          if(it.budget)pol.budget=it.budget;"
-    "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;}"
+    "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
+    "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};}"
     "        else if(it.flavor==='routes'){"
     "          pol={kind:1,glob:String(it.glob||'*')};}"
     /* kind 3: the outbound capability, attenuated by a host glob. The glob
        crosses as DATA exactly like the route glob and the budget -- no JSValue
        from the host reaches the compartment, so the far side is built from a
        string and some numbers. */
+    /* A BARE window: `mediate(cap, window(spec))` with no mask beside it is a
+       legitimate thing to write, and without this branch it fell through to the
+       unknown-flavour refusal -- the feature refusing its own simplest use.
+       Found by probing each flavour alone rather than only in composition, which
+       is how it is normally reached. */
+    "        else if(it.flavor==='window'){"
+    "          pol={kind:0,mask:FMASK_FULL,"
+    "               window:{days:it.days,from:it.from,to:it.to}};}"
     "        else if(it.flavor==='allowHosts'){"
     "          pol={kind:3,glob:String(it.glob||'')};"
     "          if(it.budget)pol.budget=it.budget;"
-    "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;}"
+    "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
+    "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};}"
     /* No fall-through to the FULL default.  NOTE it is not reachable through the
        public API any more -- mediate() refuses an unknown flavor and snapshots
        the descriptor -- so no test drives this line, and it is kept anyway as a

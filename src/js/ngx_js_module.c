@@ -1222,6 +1222,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         int32_t      kind = 0;
         char         bkey[80];
         uint32_t     blimit, bwindow, bttl;
+        uint32_t     wdays, wfrom, wto;
 
         cap_v = JS_GetPropertyUint32(hctx, argv[2], gi);
 
@@ -1233,6 +1234,27 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                 JS_ToInt32(hctx, &kind, name_v);
                 JS_FreeValue(hctx, name_v);
             }
+        }
+
+        /* M-LIB `window`: three numbers on the descriptor, read the same way for
+         * either capability kind -- one reader so the two cannot disagree about
+         * what a window is. */
+        wdays = 0; wfrom = 0; wto = 0;
+        if (JS_IsObject(pol_v)) {
+            JSValue  w_v = JS_GetPropertyStr(hctx, pol_v, "window");
+            if (JS_IsObject(w_v)) {
+                JSValue  f;
+                f = JS_GetPropertyStr(hctx, w_v, "days");
+                JS_ToUint32(hctx, &wdays, f);
+                JS_FreeValue(hctx, f);
+                f = JS_GetPropertyStr(hctx, w_v, "from");
+                JS_ToUint32(hctx, &wfrom, f);
+                JS_FreeValue(hctx, f);
+                f = JS_GetPropertyStr(hctx, w_v, "to");
+                JS_ToUint32(hctx, &wto, f);
+                JS_FreeValue(hctx, f);
+            }
+            JS_FreeValue(hctx, w_v);
         }
 
         if (kind == 3) {
@@ -1307,6 +1329,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             av[gi] = ngx_js_outbound_wrap(sctx, (uint32_t) oh, hglob, hglen,
                                           obkey[0] ? obkey : NULL,
                                           oblimit, obwindow, obttl);
+            ngx_js_outbound_set_window(av[gi], wdays, wfrom, wto);
             JS_FreeCString(hctx, hglob);
             JS_FreeValue(hctx, name_v);
             JS_FreeValue(hctx, pol_v);
@@ -1394,6 +1417,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             av[gi] = ngx_js_socket_wrap_bounded(sctx, (uint32_t) sh, mask,
                                                 bkey[0] ? bkey : NULL,
                                                 blimit, bwindow, bttl);
+            ngx_js_socket_set_window(av[gi], wdays, wfrom, wto);
         }
 
         JS_FreeValue(hctx, pol_v);
@@ -2057,12 +2081,42 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
            HOST_ROOT and bypass the A1 gate. */
         jstr = JS_JSONStringify(sctx, result, JS_UNDEFINED, JS_UNDEFINED);
         JS_FreeValue(sctx, result);
-        s = JS_ToCStringLen(sctx, &len, jstr);
-        retv = (s != NULL) ? JS_ParseJSON(hctx, s, len, "<result>") : JS_UNDEFINED;
-        if (s != NULL) {
-            JS_FreeCString(sctx, s);
+
+        /*
+         * A fragment that returns `undefined` returns UNDEFINED, not a syntax
+         * error.
+         *
+         * JSON.stringify(undefined) is undefined -- not the string "undefined",
+         * and not any JSON text -- so this used to hand `undefined` to
+         * JS_ParseJSON and the host saw
+         *
+         *     SyntaxError: unexpected token: 'undefined'   at <result>:1:1
+         *
+         * which names neither the fragment nor the cause.  And `undefined` is not
+         * an exotic return value here: it is what EVERY DENIED GATE produces.  A
+         * policy whose last statement reads a redacted field, or calls an
+         * operation the mediation refuses, returns it by construction -- so the
+         * one path an operator is most likely to hit while tightening a policy
+         * was the one that reported an internal parse failure.  Found while
+         * testing `window`, whose probe returned a denied call directly; every
+         * earlier probe happened to wrap its result in an object or a string.
+         *
+         * The same applies to a function or a symbol, which JSON also declines to
+         * represent: undefined crossing as undefined is the honest answer, since
+         * only data crosses and there is no data here.
+         */
+        if (JS_IsUndefined(jstr)) {
+            JS_FreeValue(sctx, jstr);
+            retv = JS_UNDEFINED;
+        } else {
+            s = JS_ToCStringLen(sctx, &len, jstr);
+            retv = (s != NULL) ? JS_ParseJSON(hctx, s, len, "<result>")
+                               : JS_UNDEFINED;
+            if (s != NULL) {
+                JS_FreeCString(sctx, s);
+            }
+            JS_FreeValue(sctx, jstr);
         }
-        JS_FreeValue(sctx, jstr);
     }
 
     ngx_js_compartment_leave(prev);

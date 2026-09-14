@@ -150,6 +150,15 @@ typedef struct {
      * than two that could disagree.
      */
     time_t    expires;
+    /*
+     * M-LIB `window`: a RECURRING lifetime beside `ttl`'s absolute one.  days ==
+     * 0 means no window, which is every capability that was not mediated with
+     * window(); the two compose, and a capability can be both expiring and
+     * scheduled.
+     */
+    uint32_t  win_days;
+    uint32_t  win_from;
+    uint32_t  win_to;
 } ngx_js_socket_opaque_t;
 
 
@@ -291,6 +300,15 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
      */
     if (op->expires != 0 && ngx_time() >= op->expires
         && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_EXPIRED, st_addr_of(op)))
+    {
+        return JS_UNDEFINED;
+    }
+
+    /* Beside the expiry, and for the same reason it precedes the budget charge:
+     * spending budget on an operation that cannot happen makes the audit read as
+     * though the tenant were still working. */
+    if (ngx_js_window_closed(op->win_days, op->win_from, op->win_to)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_WINDOW, st_addr_of(op)))
     {
         return JS_UNDEFINED;
     }
@@ -899,6 +917,9 @@ typedef struct {
     uint32_t  budget_window;
     char      budget_key[64];
     time_t    expires;
+    uint32_t  win_days;
+    uint32_t  win_from;
+    uint32_t  win_to;
 } ngx_js_outbound_opaque_t;
 
 JSClassID  ngx_js_outbound_class_id;   /* described by ngx_js_com_describe.c */
@@ -1131,6 +1152,13 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
 
     if (op->expires != 0 && ngx_time() >= op->expires
         && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_EXPIRED, url))
+    {
+        JS_FreeCString(ctx, url);
+        return JS_UNDEFINED;
+    }
+
+    if (ngx_js_window_closed(op->win_days, op->win_from, op->win_to)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_WINDOW, url))
     {
         JS_FreeCString(ctx, url);
         return JS_UNDEFINED;
@@ -1457,4 +1485,109 @@ ngx_js_outbound_install(JSContext *ctx, JSValue nginx_obj)
                       JS_NewCFunction(ctx, ngx_js_create_outbound,
                                       "outbound", 0));
     return NGX_OK;
+}
+
+
+/* ========================================================================= *
+ * COMCON M-LIB `window` — a RECURRING capability lifetime (office hours)
+ * ========================================================================= *
+ * `ttl` says "for the next N seconds"; `window` says "on these days, between
+ * these hours".  THREATS.md wants it for the signing key, where the useful
+ * attenuation is not a countdown but a schedule.
+ *
+ * TIMES ARE UTC, and that is a decision rather than an oversight.  "Office
+ * hours" is a local-time idea, but a gate whose behaviour depends on the host's
+ * TZ setting is a gate that cannot be tested identically on two machines and
+ * changes under a daylight-saving transition without anything being edited.  So
+ * the operator converts, once, where they can see what they are doing, and the
+ * spec carries what was meant.  The docs say so in the same words.
+ *
+ * The clock is ngx_time(), nginx's CACHED epoch -- the same clock `ttl` uses, so
+ * the two cannot disagree about when "now" is, and nothing inside one handler
+ * can cross a boundary mid-request.
+ */
+
+/* Minutes since Sunday 00:00 UTC, from nginx's cached clock. */
+static ngx_uint_t
+ngx_js_window_now(ngx_uint_t *wday)
+{
+    ngx_tm_t  tm;
+
+    ngx_gmtime(ngx_time(), &tm);
+    *wday = (ngx_uint_t) tm.ngx_tm_wday;          /* 0 = Sunday */
+    return (ngx_uint_t) tm.ngx_tm_hour * 60 + (ngx_uint_t) tm.ngx_tm_min;
+}
+
+
+/*
+ * Is the capability CLOSED right now?  days is a 7-bit mask (bit 0 = Sunday).
+ *
+ * from == to means "the whole day", not "no time at all": a window an operator
+ * wrote as 00:00-00:00 is far more likely to mean "all day on these days" than
+ * "never", and the direction that guesses must be the one that DENIES less only
+ * when it is also the one the writing plainly meant.  A window that is never
+ * open is spelled by granting nothing at all.
+ *
+ * from > to wraps past midnight (22:00-02:00), which is the shift pattern this
+ * would otherwise be unable to express.
+ */
+ngx_int_t
+ngx_js_window_closed(uint32_t days, uint32_t from, uint32_t to)
+{
+    ngx_uint_t  wday, now;
+
+    if (days == 0) {
+        return 0;                      /* no window configured */
+    }
+
+    now = ngx_js_window_now(&wday);
+
+    if (!(days & (1u << wday))) {
+        return 1;
+    }
+
+    if (from == to) {
+        return 0;                      /* the whole of an allowed day */
+    }
+
+    if (from < to) {
+        return !(now >= from && now < to);
+    }
+
+    /* wraps midnight: open from `from` to 24:00 and from 00:00 to `to` */
+    return !(now >= from || now < to);
+}
+
+
+void
+ngx_js_socket_set_window(JSValueConst obj, uint32_t days, uint32_t from,
+    uint32_t to)
+{
+    ngx_js_socket_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_socket_class_id);
+    if (op == NULL || days == 0) {
+        return;
+    }
+
+    op->win_days = days;
+    op->win_from = from;
+    op->win_to = to;
+}
+
+
+void
+ngx_js_outbound_set_window(JSValueConst obj, uint32_t days, uint32_t from,
+    uint32_t to)
+{
+    ngx_js_outbound_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_outbound_class_id);
+    if (op == NULL || days == 0) {
+        return;
+    }
+
+    op->win_days = days;
+    op->win_from = from;
+    op->win_to = to;
 }

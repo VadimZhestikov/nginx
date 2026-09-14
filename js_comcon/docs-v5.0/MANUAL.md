@@ -165,7 +165,7 @@ fail differently and you fix them differently, so they are separate sets:
 
 | | what it means | where you read it | today's set |
 |---|---|---|---|
-| **denial** | a gate denied an operation at request time | `nginx.tenantDenials().byOp` (exact counters per code) | `sock.listener`, `listener.read`, `listener.serverByName`, `enum.sockets`, `sock.mutate`, `budget.uses`, `cap.expired`, `out.host`, `out.drain` |
+| **denial** | a gate denied an operation at request time | `nginx.tenantDenials().byOp` (exact counters per code) | `sock.listener`, `listener.read`, `listener.serverByName`, `enum.sockets`, `sock.mutate`, `budget.uses`, `cap.expired`, `out.host`, `out.drain`, `cap.window` |
 | **refusal** | the fragment was not admitted — it never ran | `e.code` on the throw; `code` on an `admit()` verdict; `comcon.refusalCodes()` enumerates the set | `E_ADMIT_ARG`, `E_ADMIT_NOTBYTECODE`, `E_ADMIT_SOURCE`, `E_ADMIT_DYNCODE`, `E_ADMIT_FREENAME`, `E_ADMIT_INTRINSIC`, `E_ADMIT_SCHEMA`, `E_ADMIT_TEST`, `E_ADMIT_CONTRACT`, `E_ADMIT_DEP`, `E_CAP_GRANT`, `E_CAP_FLAVOR`, `E_CAP_ESCALATE`, `E_PIN_IDENTITY`, `E_EPOCH_STALE` |
 
 A refusal carries its code three ways: as `.code` on the thrown `Error` (**assert on

@@ -104,6 +104,14 @@ typedef enum {
      */
     NGX_JS_DENIAL_OUT_HOST,            /* destination outside allowHosts()       */
     NGX_JS_DENIAL_OUT_DRAIN,           /* pending()/clear() from a compartment   */
+    /*
+     * M-LIB `window`: a RECURRING lifetime -- office hours rather than an
+     * absolute expiry.  `ttl` and `window` are siblings and deliberately
+     * separate codes: "your capability has run out" and "your capability is
+     * outside its hours" are different operational facts, and an operator paged
+     * at 02:00 needs to know which one they are looking at.
+     */
+    NGX_JS_DENIAL_CAP_WINDOW,          /* outside an allowed time-of-day window  */
     NGX_JS_DENIAL_LAST
 } ngx_js_denial_code_t;
 
