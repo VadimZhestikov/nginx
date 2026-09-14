@@ -490,6 +490,39 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T5, T6, T11
 - **V:** V4, V9
 
+#### G6.14 — a posture is a property of the BINDING, not of the fleet
+- **CLAIM:** `include(src, {onViolation:'audit'|'deny'|'learn'})` sets the audit/enforce posture
+  for that binding's invocations only, in both directions, restored afterwards including on the
+  exception path. `profile` is read: `restrictive`/`declarative` are accepted, `adaptive` and any
+  unknown word are refused with `E_ADMIT_CONTRACT`.
+- **ARGUMENT:** INCREMENT_MLIB §4 withheld both words for a good reason — *nothing read them, and a
+  posture assembled from ignored keys would read like a policy and do nothing, which is worse than
+  its absence: it would be believed, and by exactly the reader least able to check.* What changed is
+  that there is now something to be a posture OF: ten mediation words enforce. The audit/enforce
+  switch existed but only FLEET-WIDE, which is the wrong granularity for MANUAL's rollout —
+  **shadowing one tenant's new policy by putting the fleet in audit also stops enforcing every other
+  tenant's**, a strictly worse posture than the one the operator is carefully trying to reach.
+  `onViolation` can WEAKEN as well as strengthen, and that is acceptable only because the contract
+  is written on the trusted side: the fragment's SOURCE is untrusted, the contract around it is the
+  operator's own configuration — the same argument `cosign`'s `as` rests on.
+  `profile` is read by being REFUSED where it cannot be honoured. Every mediation here attenuates
+  and none transforms, so `restrictive` means what it says; accepting `adaptive` would make "this
+  program runs standalone without COMCON" unfalsifiable for exactly the fragments where it matters.
+- **EV:** `t/comcon_posture.t` — 10 assertions. **One request, two postures**: with the fleet in
+  enforce, the `audit` binding is shadowed while the binding beside it enforces; with the fleet in
+  audit, the `deny` binding still enforces and a binding with no opinion inherits. That the mode
+  does not leak past the invocation, **including when the fragment throws**. Each profile value, and
+  separately the REASON each is refused, because both refusals share one code.
+- **GAP:** `std.postures.*` is still absent, and the reason has changed: it is no longer that
+  nothing enforces, but that *what `lockdown` should narrow to is a decision nobody has made* —
+  MANUAL says "writes: deny, exports: freeze", which needs a per-member mutating/reading split over
+  a whole env rather than one capability. Inventing that here would be inventing policy. Also
+  `onViolation` is per-BINDING, not per-TENANT: two bindings for one tenant carry their own, and
+  nothing groups them.
+  **home:** INCREMENT_MLIB.md §4 · OPERATOR_API.md §8i · MANUAL.md §4.3.
+- **THREAT:** T6, T11
+- **V:** V9, V11
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1255,6 +1288,8 @@ signature is never quietly credited with work it did not see.
 | **THREE DEFECTS FOUND BY ASKING `window`'s QUESTION ONE AXIS OVER — G6.12.** Probing each word ALONE found a `window` gap at v5.87; probing each word alone **on each capability KIND** found that a bare `uses`/`ttl`/`cosign` over an outbound capability was refused as "not a NginxSocket", that the outbound budget key was **not namespaced** so one `uses` name was two counters, and that `JS_ToCStringLen` on a missing property returns the string `"undefined"` — so a descriptor with no glob was wrapped with the literal host glob `undefined` and the refusal that claimed to catch that never ran for it. | **All three were FAIL-CLOSED**, so no authority was ever widened and nothing §15 attested becomes untrue. The budget one is the material find: a documented property (*one name, one counter*) was false across capability kinds. Adds one leaf. |
 
 | **M-LIB `protocol` SHIPPED — G6.13. THE MEDIATION VOCABULARY IS COMPLETE: ten of ten.** Enforced operation order, denial code `cap.protocol`. Its gate is the first here to **separate its decision from its effect** — checked before cosign, committed after the budget — because an operation another gate still refuses must not advance the conversation. **And its test found a defect in `cosign`:** an already-consenting principal was judged by its POSITION in the record rather than the record's LENGTH, so once a quorum was met the FIRST signer's retry was denied forever — breaking the actual ops-room sequence (alice tries, bob cosigns, **alice retries**). Every cosign assertion had the SECOND principal perform the operation, which is exactly the shape that passes with that bug present. | **Adds one leaf and corrects G6.11's evidence**, which now pins the retry. The `cosign` defect was FAIL-CLOSED — it denied an operation that should have been allowed — so nothing §15 attested about confinement becomes untrue; what was untrue was that the feature was usable as documented. |
+
+| **THE POSTURE WORDS SHIPPED — G6.14.** `onViolation` and `profile` were written in MANUAL since v5.0 and read by nothing; §4 withheld them because *a posture assembled from ignored keys would be believed by exactly the reader least able to check.* Both are read now. The material change is granularity: the audit/enforce switch was FLEET-WIDE, so **shadowing one tenant's new policy also stopped enforcing every other tenant's** — a strictly worse posture than the one being carefully reached. `profile` is read by being refused where it cannot be honoured. | **Adds one leaf, and closes a §4 abstention with the reason it was taken.** `onViolation` can WEAKEN, which is safe only because the contract is written on the trusted side — stated in the leaf rather than assumed. `std.postures.*` stays absent with a SHARPER reason: not "nothing enforces" but "what lockdown should narrow to is a decision nobody has made". |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

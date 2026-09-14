@@ -90,8 +90,16 @@ the fall-through decides whether that mistake means REFUSE or FULL AUTHORITY.
 
 ## 4. Not built — and why each is absent rather than pending
 
-- **`std.postures.*` / `onViolation` / `profile:'restrictive'`** — nothing enforces them.
-  They arrive with the enforcement, not before it.
+- **`onViolation` / `profile`** — SHIPPED at v5.91. They arrived with the enforcement, exactly as
+  this entry said they would: ten mediation words now enforce, so there is something to be a posture
+  OF. The material find was granularity — the audit/enforce switch was FLEET-WIDE, so shadowing one
+  tenant's new policy also stopped enforcing every other tenant's. `profile` is read by being
+  refused where it cannot be honoured (`adaptive` has no implementation).
+- **`std.postures.*`** — still absent, with a SHARPER reason than this section's original one. It is
+  no longer that nothing enforces. It is that *what `lockdown` should narrow to is a decision nobody
+  has made*: MANUAL says "writes: deny, exports: freeze", which needs a per-member
+  mutating/reading split across a whole environment rather than one capability. Assembling it from
+  the words that do exist would be inventing policy and calling it a bundle.
 - **`opaque.*`** — the one word still absent, and the only one that was never a MEDIATION: making
   a value usable-but-unreadable is an engine-substrate question (how a JSValue can be passed
   without being observed), not an attenuation of a capability's authority. It stays on that track.

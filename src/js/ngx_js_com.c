@@ -5014,10 +5014,48 @@ static const char  ngx_js_comcon_bootstrap[] =
        in C, so calling __invokeConfined directly cannot widen it). */
     "    var mem=(contract.meter&&contract.meter[METER]"
     "             &&contract.meter[METER].memoryBytes)|0;"
+    /* M-LIB `onViolation` + `profile`: the two contract fields MANUAL has always
+       written and nothing read.  They are read now.
+
+       `onViolation` is a PER-BINDING audit/enforce mode.  The fleet-wide switch
+       is the wrong granularity for the rollout MANUAL describes: shadowing one
+       tenant's new policy by putting the fleet in audit also stops enforcing
+       every other tenant's, which is a worse posture than the one the operator
+       is carefully trying to reach.  It is applied for the duration of one
+       invocation and restored, in C, so it cannot leak into the next request.
+
+       `profile` is read by being REFUSED where it cannot be honoured.
+       'restrictive' is what every mediation here already is -- the vocabulary
+       attenuates and never transforms -- so it is accepted and means what it
+       says.  'adaptive' is refused rather than ignored: a transforming profile
+       has no implementation, and accepting the word would make "this program
+       runs standalone without COMCON" unfalsifiable for exactly the fragments
+       where it matters.  E_ADMIT_CONTRACT, which is the code for a contract
+       field that is present but unusable. */
+    "    var ov=0;"
+    "    if(contract.onViolation!==undefined){"
+    "      var ovs=String(contract.onViolation);"
+    "      if(ovs==='audit')ov=1;"
+    "      else if(ovs==='deny'||ovs==='enforce')ov=2;"
+    "      else if(ovs==='learn')ov=3;"
+    "      else capRefuse('E_ADMIT_CONTRACT','include: onViolation must be "
+             "audit, deny or learn; got '+ovs);}"
+    "    if(contract.profile!==undefined){"
+    "      var pf=String(contract.profile);"
+    "      if(pf==='adaptive')capRefuse('E_ADMIT_CONTRACT','include: profile "
+             "adaptive is not implemented -- every mediation here attenuates and "
+             "none transforms, and accepting the word would make [runs standalone "
+             "without COMCON] unfalsifiable for exactly the fragments where it "
+             "matters');"
+    "      else if(pf!=='restrictive'&&pf!=='declarative')"
+    "        capRefuse('E_ADMIT_CONTRACT','include: unknown profile '+pf+"
+    "          '; the profiles are restrictive and declarative');}"
     "    var bound=function(arg){modeReconcile();"
-    "      return C.__invokeConfined(h,arg,ms,mem);};"
+    "      return C.__invokeConfined(h,arg,ms,mem,ov);};"
     "    bound.confined=true;bound.handle=h;bound.meterMs=ms;"
-    "    bound.meterMemoryBytes=mem;return bound;};"
+    "    bound.meterMemoryBytes=mem;bound.onViolation=ov;"
+    "    bound.profile=(contract.profile===undefined)?'restrictive':"
+    "                  String(contract.profile);return bound;};"
     /* pom(fragment): the reflective Program Object Model surface (increment D1).
        A lazy NodeView tree over a compiled fragment (module/function granularity
        — the bytecode tree; POM.md). Reads ALWAYS return quotations: text()/
@@ -6558,7 +6596,7 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
                                           "__includeConfined", 6));
         JS_SetPropertyStr(ctx, comcon_obj, "__invokeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_invoke_confined,
-                                          "__invokeConfined", 4));
+                                          "__invokeConfined", 5));
         /* D4a: free a superseded fragment (bounded rollback window). */
         JS_SetPropertyStr(ctx, comcon_obj, "__freeConfined",
                           JS_NewCFunction(ctx, ngx_js_comcon_free_confined,

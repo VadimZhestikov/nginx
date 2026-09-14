@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.90 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.91 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,14 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **THE POSTURE WORDS SHIPPED (2026-09-13, v5.91): a posture belongs to the BINDING.**
+>   `onViolation` and `profile` were in MANUAL since v5.0 and read by nothing. The material find is
+>   granularity: the audit/enforce switch was FLEET-WIDE, so **shadowing one tenant's new policy
+>   also stopped enforcing every other tenant's.** One request can now hold a shadowed binding
+>   beside an enforced one, in either direction relative to the fleet; restored in C including on
+>   the exception path. `profile` is read by being REFUSED where it cannot be honoured. Remaining
+>   from MANUAL: `std.postures.*` (a decision nobody has made, not a missing mechanism) and
+>   `opaque.*`. `t/comcon_posture.t` (10) + 3 controls.
 > - **M-LIB `protocol` SHIPPED (2026-09-13, v5.90) — THE MEDIATION VOCABULARY IS COMPLETE, ten of
 >   ten.** Enforced operation ORDER (`cap.protocol`); `protocol('fd')` is a ONE-SHOT capability,
 >   which `uses(1)` cannot express. **It enforces order, not completion** (a fragment can simply

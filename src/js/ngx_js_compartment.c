@@ -125,6 +125,13 @@ static ngx_uint_t  ngx_js_learn_n;
  * There is no fleet-wide mode fan-out (it would want the class-F transport, like
  * bindShared), and std.ops reports the scope rather than implying otherwise.
  */
+ngx_js_tenant_mode_e
+ngx_js_compartment_mode_get(void)
+{
+    return ngx_js_tenant_mode;
+}
+
+
 void
 ngx_js_compartment_mode_set(ngx_js_tenant_mode_e mode)
 {

@@ -236,6 +236,11 @@ void ngx_js_compartment_policy_init(ngx_js_tenant_mode_e mode);
  * silently inert at request time -- see the definition. */
 void ngx_js_compartment_mode_set(ngx_js_tenant_mode_e mode);
 
+/* M-LIB `onViolation`: read the mode back, so a per-binding override can be
+ * saved and restored around one invocation.  The fleet-wide switch stays where
+ * it was; this is what lets ONE fragment be shadowed while the rest enforce. */
+ngx_js_tenant_mode_e ngx_js_compartment_mode_get(void);
+
 /* B0: record a harvested access path (deny-by-default wishlist entry). */
 void         ngx_js_learn_record(const char *path);
 ngx_flag_t   ngx_js_compartment_learn_mode(void);

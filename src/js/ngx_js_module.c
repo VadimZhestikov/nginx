@@ -2124,6 +2124,9 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     int               nargs = 0;
     uint32_t          timeout = 0;
     uint32_t          memory = 0;
+    uint32_t          onviol = 0;
+    ngx_js_tenant_mode_e  saved_mode = NGX_JS_TENANT_ENFORCE;
+    ngx_uint_t        mode_pushed = 0;
     uint64_t          old_deadline = 0, now_ms, newd;
     ngx_uint_t        metered = 0;
     JSMemoryUsage     mu;
@@ -2142,6 +2145,9 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     }
     if (argc > 3) {
         JS_ToUint32(hctx, &memory, argv[3]);
+    }
+    if (argc > 4) {
+        JS_ToUint32(hctx, &onviol, argv[4]);
     }
 
     if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
@@ -2222,8 +2228,41 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     /* run the fragment as a confined compartment: the A1 reach gate denies the
        authority edges (e.g. a granted socket's .listener) even though the
        fragment legitimately holds the cap. */
+    /*
+     * M-LIB `onViolation`: a PER-BINDING audit/enforce mode, in force for the
+     * duration of this one invocation and restored afterwards.
+     *
+     * The fleet-wide switch (comcon.mode) is the wrong granularity for the
+     * rollout MANUAL describes: shadowing one tenant's new policy by putting the
+     * fleet in audit ALSO stops enforcing every other tenant's, which is a
+     * strictly worse posture than the one the operator is trying to reach
+     * carefully.  Observe-first has to be a property of the BINDING.
+     *
+     * It can WEAKEN as well as strengthen, and that is only acceptable because
+     * the contract is written on the trusted side -- the same argument cosign's
+     * `as` rests on.  The fragment's SOURCE is untrusted; the contract around it
+     * is the operator's own configuration, and an operator asking for shadow
+     * mode on one binding is asking for exactly what the word says.
+     *
+     * Restored unconditionally below, including on the exception path: a
+     * fragment that throws must not leave the worker in the mode its own
+     * contract asked for.
+     */
+    if (onviol > 0) {
+        saved_mode = ngx_js_compartment_mode_get();
+        ngx_js_compartment_mode_set(
+            (onviol == 1) ? NGX_JS_TENANT_AUDIT
+                          : ((onviol == 3) ? NGX_JS_TENANT_LEARN
+                                           : NGX_JS_TENANT_ENFORCE));
+        mode_pushed = 1;
+    }
+
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
     result = JS_Call(sctx, fn, JS_UNDEFINED, nargs, (JSValueConst *) &arg);
+
+    if (mode_pushed) {
+        ngx_js_compartment_mode_set(saved_mode);
+    }
 
     /* restore the compartment-wide cap: the allowance was for THAT call only */
     JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);

@@ -413,6 +413,51 @@ operational facts and an operator paged at 02:00 needs to know which they are lo
 
 ---
 
+## 8i. `onViolation` and `profile` — the posture is a property of the BINDING *(v5.91)*
+
+```js
+// phase 1: observe.  This binding is shadowed; every OTHER binding still enforces.
+var shadow  = comcon.include(src, { imports: [], grants: g,
+                                    profile: 'restrictive',
+                                    onViolation: 'audit' });
+// phase 2: the same policy, now biting
+var enforce = comcon.include(src, { imports: [], grants: g,
+                                    profile: 'restrictive',
+                                    onViolation: 'deny' });
+```
+
+**`onViolation` is per-BINDING, and that is the point.** `comcon.mode()` switches the whole
+worker, which is the wrong granularity for an observe-first rollout: shadowing one tenant's new
+policy by putting the fleet in audit **also stops enforcing every other tenant's**, which is a
+strictly worse posture than the one you are carefully trying to reach.
+
+- Values: `'audit'` (log and allow), `'deny'` (or `'enforce'`), `'learn'` (audit + harvest the
+  withheld host surface). Omit it and the binding **inherits** the fleet posture rather than
+  silently picking one. Anything else is refused — a posture word nobody enforces is worse than its
+  absence, because it would be believed.
+- **It wins in both directions**: a `deny` binding enforces while the fleet is in audit, and an
+  `audit` binding is shadowed while the fleet enforces. Which way is stricter is your call.
+- **It can WEAKEN**, and that is safe only because the contract is written on the TRUSTED side. The
+  fragment's *source* is untrusted; the contract around it is your own configuration — the same
+  argument `cosign`'s `as` rests on. Do not build a contract from tenant-supplied data.
+- The override is applied in C for the duration of one invocation and **restored afterwards,
+  including when the fragment throws** — otherwise one bad fragment would quietly unshield every
+  later request in that worker.
+
+**`profile` is read by being refused where it cannot be honoured.** `'restrictive'` (the default)
+is what every mediation here already is: the vocabulary attenuates and never transforms.
+`'declarative'` is the existing review profile. `'adaptive'` is **refused** with
+`E_ADMIT_CONTRACT` rather than ignored — a transforming profile has no implementation, and
+accepting the word would make *"this program runs standalone without COMCON"* unfalsifiable for
+exactly the fragments where that claim matters. An unknown profile is refused too.
+
+**`std.postures.*` is still absent**, and the reason has changed. It is no longer that nothing
+enforces — ten words do. It is that *what `lockdown` should narrow to is a decision nobody has
+made*: MANUAL says "writes: deny, exports: freeze", which needs a per-member mutating/reading split
+across a whole environment rather than one capability. Assembling it here would be inventing policy.
+
+---
+
 ## 8h. `protocol(step…)` — enforced operation order *(v5.90)*
 
 ```js

@@ -635,6 +635,40 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.91 (in place — the POSTURE words: a posture belongs to the BINDING, not the fleet):**
+MANUAL has written `{profile:'restrictive', onViolation:'audit'}` since v5.0 and nothing read either
+word. INCREMENT_MLIB §4 withheld them for a reason worth repeating: A POSTURE ASSEMBLED FROM IGNORED
+KEYS WOULD READ LIKE A POLICY AND DO NOTHING, WHICH IS WORSE THAN ITS ABSENCE -- it would be
+believed, and by exactly the reader least able to check.
+
+What changed is that there is now something to be a posture OF. Ten mediation words enforce, and the
+audit/enforce switch exists -- but only FLEET-WIDE, and that is the wrong granularity for the rollout
+MANUAL describes: SHADOWING ONE TENANT'S NEW POLICY BY PUTTING THE FLEET IN AUDIT ALSO STOPS
+ENFORCING EVERY OTHER TENANT'S, which is a strictly worse posture than the one the operator is
+carefully trying to reach. Observe-first has to be a property of the BINDING, and it now is: one
+request can hold a shadowed binding and an enforced binding at the same time, in either direction
+relative to the fleet.
+
+It can WEAKEN as well as strengthen, and that is acceptable only because THE CONTRACT IS WRITTEN ON
+THE TRUSTED SIDE -- the fragment's source is untrusted, the contract around it is the operator's own
+configuration. The same argument `cosign`'s `as` rests on, and the same warning attaches: do not
+build a contract out of tenant-supplied data. The override is applied in C for one invocation and
+restored afterwards INCLUDING ON THE EXCEPTION PATH, because otherwise one fragment that throws
+would quietly unshield every later request in that worker.
+
+`profile` IS READ BY BEING REFUSED where it cannot be honoured. 'restrictive' is what every
+mediation here already is -- the vocabulary attenuates and none of it transforms -- so it means what
+it says. 'adaptive' is refused rather than ignored: the transforming half has no implementation, and
+accepting the word would make "this program runs standalone without COMCON" unfalsifiable for
+exactly the fragments where that claim matters. E_ADMIT_CONTRACT, the code for a contract field that
+is present but unusable; no new code was invented for it.
+
+`std.postures.*` stays absent, with a sharper reason than §4's original. It is no longer that
+nothing enforces. It is that WHAT `lockdown` SHOULD NARROW TO IS A DECISION NOBODY HAS MADE: MANUAL
+says "writes: deny, exports: freeze", which needs a per-member mutating/reading split across a whole
+environment rather than over one capability. Assembling it from the words that do exist would be
+inventing policy and calling it a bundle.
+
 **v5.90 (in place — M-LIB `protocol`, and THE MEDIATION VOCABULARY IS COMPLETE):** the tenth and
 last of MANUAL's mediation words. A session type over a capability's own operations: `allow` says
 which operations exist, `uses` how often, `ttl`/`window` when, `cosign` by whom, and this one IN
