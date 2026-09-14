@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.88 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.89 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,13 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **THREE DEFECTS FROM ASKING v5.87's QUESTION ONE AXIS OVER (2026-09-13, v5.89).** Probing each
+>   word ALONE found a `window` gap; probing each word alone **on each capability KIND** found that
+>   a bare `uses`/`ttl`/`cosign` over an outbound cap was refused as "not a NginxSocket" (**the word
+>   carries no type**), that the outbound budget key was **not namespaced** so one `uses` name was
+>   two counters, and that `JS_ToCStringLen` on a missing property returns the STRING `"undefined"`.
+>   All fail-closed; the budget one falsified a documented property. `t/comcon_bare_mediation.t`
+>   (7) + 4 controls.
 > - **M-LIB `cosign` SHIPPED (2026-09-13, v5.88): the TWO-PERSON RULE.** The first word that
 >   bounds WHO rather than when or how often, and the only mediation a holder cannot satisfy
 >   alone (`cap.cosign`). **The hard part is not the counter, it is who is counting:** COMCON

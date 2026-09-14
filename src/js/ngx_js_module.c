@@ -1225,6 +1225,16 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         uint32_t     wdays, wfrom, wto;
         char         ckey[80], cas[48];
         uint32_t     cquorum, cwithin;
+        ngx_uint_t   promoted = 0;
+        /*
+         * Did the grant carry a MEDIATION at all?  The promotion below must not
+         * apply to a bare `grants: {out: nginx.outbound()}`: an unmediated
+         * outbound grant is refused today, and accepting one would be a widening
+         * smuggled in under a bug fix.  The unmediated and the mask-mediated
+         * descriptors are otherwise the same shape, so the JS marks the
+         * difference rather than the C guessing it.
+         */
+        int          pol_mediated = 0;
 
         cap_v = JS_GetPropertyUint32(hctx, argv[2], gi);
 
@@ -1234,6 +1244,10 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             if (JS_IsObject(pol_v)) {
                 name_v = JS_GetPropertyStr(hctx, pol_v, "kind");
                 JS_ToInt32(hctx, &kind, name_v);
+                JS_FreeValue(hctx, name_v);
+
+                name_v = JS_GetPropertyStr(hctx, pol_v, "mediated");
+                pol_mediated = JS_ToBool(hctx, name_v);
                 JS_FreeValue(hctx, name_v);
             }
         }
@@ -1299,6 +1313,35 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             JS_FreeValue(hctx, c_v);
         }
 
+        /*
+         * WHICH KIND OF CAPABILITY IS THIS REALLY?
+         *
+         * `kind` on the descriptor says what the MEDIATION was, and `uses`,
+         * `ttl` and `cosign` all normalize to an allow-everything MASK -- they
+         * attenuate how many times, how long, and by whom, never WHAT -- so they
+         * arrive as kind 0, which is the socket shape.  Applied on their own to
+         * an OUTBOUND capability that produced
+         *
+         *     comcon.include: grant is not a NginxSocket or NginxServer
+         *
+         * for a grant that was a perfectly good outbound capability.  Fail
+         * closed, so nothing was ever widened by it -- but the operator was told
+         * their capability was the wrong type when the real answer is that the
+         * WORD carries no type at all.
+         *
+         * The kind belongs to the CAPABILITY, not to the word, so it is read
+         * back from the capability here rather than trusted from the descriptor.
+         * This is the same question `window`'s probe asked one axis over: try
+         * each word ALONE, not only in the composition it normally arrives in.
+         */
+        if (kind == 0 && pol_mediated
+            && ngx_js_socket_handle(cap_v) < 0
+            && ngx_js_outbound_handle(cap_v) >= 0)
+        {
+            kind = 3;
+            promoted = 1;
+        }
+
         if (kind == 3) {
             /*
              * M-LIB `allowHosts`: the outbound capability, attenuated by a host
@@ -1312,6 +1355,16 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             size_t       hglen = 0;
             uint32_t     obttl = 0, oblimit = 0, obwindow = 0;
             char         obkey[80];
+            /*
+             * The glob is copied out of the JS string so that the ONE lifetime
+             * rule here stays simple: everything below reads `obglob`, which the
+             * C stack owns, and the JS string is released as soon as it has been
+             * copied.  The promoted case has no JS string at all, and a shared
+             * `const char *` would have made the free at the end conditional on
+             * which branch produced it -- a free that depends on provenance is
+             * how a literal ends up handed to JS_FreeCString.
+             */
+            char         obglob[NGX_JS_OUTBOUND_GLOB_LEN];
 
             if (oh < 0) {
                 JS_FreeValue(hctx, pol_v);
@@ -1320,8 +1373,44 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             }
 
             obkey[0] = '\0';
+            obglob[0] = '\0';
             name_v = JS_GetPropertyStr(hctx, pol_v, "glob");
-            hglob = JS_ToCStringLen(hctx, &hglen, name_v);
+            /*
+             * JS_IsString FIRST.  JS_ToCStringLen on a MISSING property does not
+             * return NULL, it returns the nine-character string "undefined" --
+             * so a descriptor with no glob was wrapped with the literal host glob
+             * `undefined`, which matches only a host of that name.  Fail-closed
+             * by accident, and the refusal below claimed to be the thing that
+             * caught it while in fact it never ran for that case.
+             */
+            if (JS_IsString(name_v)) {
+                hglob = JS_ToCStringLen(hctx, &hglen, name_v);
+            }
+
+            /*
+             * A PROMOTED grant has no glob, because the word that mediated it
+             * was not about destinations.  It gets "*", which matches every
+             * host -- NOT the empty glob, which the wrapper reads as "this is
+             * the host's own unmediated capability".  The difference matters:
+             * "*" is a mediated wrapper whose destination set happens to be
+             * everything, and it keeps the budget/lifetime/cosignature gates on
+             * the path.  An unmediated wrapper would skip them.
+             */
+            if (promoted && (hglob == NULL || hglen == 0)) {
+                if (hglob != NULL) {
+                    JS_FreeCString(hctx, hglob);
+                }
+                JS_FreeValue(hctx, name_v);
+                name_v = JS_UNDEFINED;
+                hglob = NULL;
+                ngx_cpystrn((u_char *) obglob, (u_char *) "*",
+                            sizeof(obglob));
+            } else if (hglob != NULL && hglen > 0
+                       && hglen < sizeof(obglob))
+            {
+                ngx_cpystrn((u_char *) obglob, (u_char *) hglob,
+                            hglen + 1);
+            }
 
             /*
              * A grant with an EMPTY glob is refused rather than wrapped.  An
@@ -1329,15 +1418,19 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
              * host's own shape -- exactly the fail-open that the mediation
              * vocabulary's unknown-flavour refusal exists to prevent.
              */
-            if (hglob == NULL || hglen == 0) {
-                if (hglob != NULL) {
-                    JS_FreeCString(hctx, hglob);
-                }
-                JS_FreeValue(hctx, name_v);
+            if (hglob != NULL) {
+                JS_FreeCString(hctx, hglob);
+                hglob = NULL;
+            }
+            JS_FreeValue(hctx, name_v);
+            name_v = JS_UNDEFINED;
+
+            if (obglob[0] == '\0') {
                 JS_FreeValue(hctx, pol_v);
                 JS_FreeValue(hctx, cap_v);
                 goto grant_bad;
             }
+            hglen = ngx_strlen(obglob);
 
             {
                 JSValue  t_v = JS_GetPropertyStr(hctx, pol_v, "ttlSeconds");
@@ -1351,8 +1444,17 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                     JSValue  k_v = JS_GetPropertyStr(hctx, b_v, "key");
                     const char *k = JS_ToCString(hctx, k_v);
                     if (k != NULL) {
-                        ngx_cpystrn((u_char *) obkey, (u_char *) k,
-                                    sizeof(obkey));
+                        /*
+                         * NAMESPACED, exactly as the socket path namespaces it.
+                         * It was not, which made uses('k') on a socket and
+                         * uses('k') on an outbound capability TWO DIFFERENT
+                         * COUNTERS -- against the documented rule that two
+                         * capabilities share a budget exactly when the operator
+                         * names the same counter.  A budget an operator believed
+                         * was one limit of 10 was two limits of 10.
+                         */
+                        ngx_snprintf((u_char *) obkey, sizeof(obkey) - 1,
+                                     "comcon.budget:%s%Z", k);
                         JS_FreeCString(hctx, k);
                     }
                     JS_FreeValue(hctx, k_v);
@@ -1368,13 +1470,11 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                 JS_FreeValue(hctx, b_v);
             }
 
-            av[gi] = ngx_js_outbound_wrap(sctx, (uint32_t) oh, hglob, hglen,
+            av[gi] = ngx_js_outbound_wrap(sctx, (uint32_t) oh, obglob, hglen,
                                           obkey[0] ? obkey : NULL,
                                           oblimit, obwindow, obttl);
             ngx_js_outbound_set_window(av[gi], wdays, wfrom, wto);
             ngx_js_outbound_set_cosign(av[gi], ckey, cas, cquorum, cwithin);
-            JS_FreeCString(hctx, hglob);
-            JS_FreeValue(hctx, name_v);
             JS_FreeValue(hctx, pol_v);
             JS_FreeValue(hctx, cap_v);
             if (JS_IsException(av[gi])) {

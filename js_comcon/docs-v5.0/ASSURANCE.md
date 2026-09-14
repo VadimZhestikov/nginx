@@ -425,6 +425,35 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T5, T6, T11
 - **V:** V9
 
+#### G6.12 — a mediation word carries no capability KIND, and a budget name is one counter
+- **CLAIM:** Every mediation word works applied ALONE to every capability kind it is meaningful
+  for; and `uses(key, …)` names ONE fleet-wide counter regardless of which kind of capability
+  carries it.
+- **ARGUMENT:** `uses`, `ttl` and `cosign` normalize to an allow-everything MASK — they attenuate
+  how many times, how long and by whom, never WHAT — and a mask is the socket shape. So a bare one
+  of those over an OUTBOUND capability reached the translation as kind 0 and was refused with
+  *"grant is not a NginxSocket or NginxServer"* for a grant that was a perfectly good outbound
+  capability. **Fail closed, so nothing was ever widened** — but the operator was told their
+  capability was the wrong type when the real answer is that the WORD carries no type at all.
+  The kind belongs to the capability, so it is read back from the capability.
+  Separately, the outbound path did not namespace its budget key the way the socket path did, so
+  `uses('k')` on a socket and `uses('k')` on an outbound capability were **two counters** — against
+  the documented rule that two capabilities share a budget exactly when the operator names the same
+  name. A budget an operator believed was one limit of 10 was two limits of 10.
+- **EV:** `t/comcon_bare_mediation.t` — the matrix: five words × two capability kinds, each word
+  ALONE; that a promoted grant is a MEDIATED wrapper whose destination set is everything (its
+  budget gate still bites) and not the host's own unmediated capability; that an UNMEDIATED
+  outbound grant is still refused, so the fix smuggles in no widening; and four spends across two
+  capability KINDS against one named counter of 3.
+- **GAP:** The matrix covers the five words that are meaningful on both kinds. `routes` (a COM
+  facet) and `allowHosts` (outbound only) are each meaningful on one kind, and applying one to the
+  other is refused rather than promoted — correct, but the file asserts the promotion rule, not the
+  whole cross-product of word × kind.
+  **home:** G6.9's evidence (the probe whose question this repeats one axis over) ·
+  `ngx_js_comcon_include` (the grant loop).
+- **THREAT:** T6, T11
+- **V:** V4, V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1186,6 +1215,8 @@ signature is never quietly credited with work it did not see.
 | **M-LIB `window` SHIPPED — G6.9 — and it found a defect in the INVOKE, G6.10.** A recurring lifetime beside `ttl`'s countdown, with its own code `cap.window`, UTC by decision, wrapping midnight, whole-day, and refusing two different schedules. **Eight of ten vocabulary words now ship.** Its probe returned a denied call directly — the most natural thing to write — and exposed that a fragment returning `undefined` produced `SyntaxError: unexpected token: 'undefined'`. `undefined` is what every denied gate returns. | **Adds two leaves; one of them is a pre-existing defect on the invoke path, which §15 attested.** The defect was never reachable by any existing test because every probe wrapped its result, so nothing §15 relied on was wrong — but an operator tightening a policy would have met it immediately. Recorded here rather than quietly fixed. |
 
 | **M-LIB `cosign` SHIPPED — G6.11.** The two-person rule, and the ninth of ten vocabulary words. The interesting property is that **distinctness is structural**: `as` is written on the trusted side and unreachable from inside a compartment, so a fragment holds one identity and casts one vote, and the quorum assembles across invocations. `cap.cosign` is the first denial that is a waiting state rather than a verdict, and the first **with a side effect** — the denied attempt records consent. `E_CAP_PRINCIPAL` is the 14th refusal code. **A control caught a wrong instrument again:** the expiry probe read `req.args.as`, but `req.args` is the raw query string, so both requests voted as the same principal and the test passed identically whether the `within` meet took the shorter window or the longer one. | **Adds one leaf and one refusal code.** Nothing signed becomes untrue; the new code is appended, which the frozen-contract rule permits, and §15's evidence table gains one row it did not see. |
+
+| **THREE DEFECTS FOUND BY ASKING `window`'s QUESTION ONE AXIS OVER — G6.12.** Probing each word ALONE found a `window` gap at v5.87; probing each word alone **on each capability KIND** found that a bare `uses`/`ttl`/`cosign` over an outbound capability was refused as "not a NginxSocket", that the outbound budget key was **not namespaced** so one `uses` name was two counters, and that `JS_ToCStringLen` on a missing property returns the string `"undefined"` — so a descriptor with no glob was wrapped with the literal host glob `undefined` and the refusal that claimed to catch that never ran for it. | **All three were FAIL-CLOSED**, so no authority was ever widened and nothing §15 attested becomes untrue. The budget one is the material find: a documented property (*one name, one counter*) was false across capability kinds. Adds one leaf. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

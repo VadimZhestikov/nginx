@@ -4844,7 +4844,14 @@ static const char  ngx_js_comcon_bootstrap[] =
        authority, so the default direction is the whole point. */
     "        else throw new TypeError("
     "          'include: unknown mediation flavor '+String(it.flavor)+"
-    "          ' for grant '+k+'; refusing rather than granting in full');}"
+    "          ' for grant '+k+'; refusing rather than granting in full');"
+    /* MARK IT MEDIATED.  `uses`, `ttl` and `cosign` normalize to a mask, which
+       is the socket shape, so the C side has to read the KIND back from the
+       capability -- and it must not do that for a grant that carried no
+       mediation at all, because an unmediated outbound grant is refused and
+       accepting one would be a widening.  The two descriptors are otherwise
+       identical, so the difference is marked here rather than guessed there. */
+    "        pol.mediated=true;}"
     "      names.push(String(k));caps.push(cap);pols.push(pol);}}"
     /* P1 (CONVERGE): opt-in C3 admission + identity pin — present iff the
        contract asks (imports/identity/checkRequest). Absent => no admission

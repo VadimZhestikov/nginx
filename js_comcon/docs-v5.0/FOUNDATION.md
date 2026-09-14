@@ -635,6 +635,37 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.89 (in place — three defects found by asking v5.87's question one axis over):** probing each
+mediation word ALONE, rather than only in the composition it normally arrives in, found a `window`
+gap at v5.87. Asking the same question of each word ON EACH CAPABILITY KIND found three more.
+
+ONE: `uses`, `ttl` and `cosign` normalize to an allow-everything MASK — they attenuate how many
+times, how long and by whom, never WHAT — and a mask is the socket shape. So a bare one of those
+over an OUTBOUND capability arrived at include()'s translation as kind 0 and was refused with
+"grant is not a NginxSocket or NginxServer" for a grant that was a perfectly good outbound
+capability. Fail closed, so nothing was ever widened, but the operator was told their capability
+was the wrong type when the real answer is THE WORD CARRIES NO TYPE AT ALL. The kind belongs to the
+CAPABILITY and is now read back from it. The promotion is scoped to grants that carry a mediation:
+an unmediated outbound grant stays refused, because accepting one would be a widening smuggled in
+under a bug fix, and the promoted wrapper gets the glob "*" (a mediated wrapper whose destination
+set is everything) rather than the empty glob, which the wrapper reads as "this is the host's own
+unmediated capability" and which would take the gates off the path.
+
+TWO, and the material one: the outbound path did NOT namespace its budget key the way the socket
+path did, so `uses('k')` on a socket and `uses('k')` on an outbound capability were TWO COUNTERS.
+That contradicts a documented property — two capabilities share a budget exactly when the operator
+names the same counter — so a budget an operator believed was one limit of 10 was two limits of 10.
+
+THREE: `JS_ToCStringLen` on a MISSING property does not return NULL, it returns the nine-character
+string "undefined". So a descriptor with no glob was wrapped with the literal host glob `undefined`,
+matching only a host of that name — fail-closed by accident — while the refusal a few lines below
+claimed to be what caught an absent glob and in fact never ran for that case. A guard that cannot
+fire is indistinguishable from one that works until something needs it to.
+
+The lesson is about the SHAPE of the question, not any of the three: *try the feature in the
+position nobody writes it in.* v5.87 asked "alone instead of composed" and found one. v5.89 asked
+"alone, on each kind" and found three.
+
 **v5.88 (in place — M-LIB `cosign`, the two-person rule):** the ninth of the ten vocabulary
 words, and the first that bounds WHO rather than when or how often — the only mediation a holder
 cannot satisfy alone. `cosign({key, quorum, within, as})`; denial code `cap.cosign`.
