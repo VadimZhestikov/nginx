@@ -62,6 +62,7 @@ http {
         server_name  localhost;
 
         location /owner      { }
+        location /audit      { }
         location /facetowner { }
         location /normal     { }
     }
@@ -120,6 +121,74 @@ if (l.path === '/owner') {
             o.driverError = String(e && e.message)
                              + ' @ ' + String(e && e.stack).split('\n')[0];
         }
+        req.respond(200, { 'content-type': 'application/json' },
+                    JSON.stringify(o));
+    };
+}
+
+/* AUDIT MODE DOES NOT APPLY TO THIS ONE, and the file asserts the DISTINCTION
+ * rather than just the behaviour.
+ *
+ * Audit exists so an operator can observe what their policy would deny before it
+ * denies, and every other gate answers "may this fragment do this?" -- a question
+ * about the GRANT, which is the operator's lever.  `cap.owner` answers "is this
+ * even this fragment's capability?", and no grant can change that answer: the
+ * only ways to trip it are a leftover continuation spending another fragment's
+ * capability, or a bug in the binding.  Allowing it in audit would hand out
+ * authority no configuration asked for.
+ *
+ * So both halves run under the SAME audit mode, in the same request: a closed
+ * WINDOW (a policy) is logged and allowed, and a foreign capability is denied
+ * anyway.  Asserting only the second would pass on a build where audit mode had
+ * stopped working at all. */
+if (l.path === '/audit') {
+    l.handler = function (req) {
+        var o = {};
+        try {
+            comcon.mode('audit');
+            o.mode = nginx.tenantDenials().mode;
+
+            /* (1) a POLICY gate under audit: a closed window is logged+allowed */
+            var now = new Date();
+            var nm = now.getUTCHours() * 60 + now.getUTCMinutes();
+            var DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+            function hhmm(m) {
+                m = ((m % 1440) + 1440) % 1440;
+                var h = Math.floor(m / 60), mm = m % 60;
+                return (h < 10 ? '0' : '') + h + ':' + (mm < 10 ? '0' : '') + mm;
+            }
+            var wc = nginx.outbound();
+            var wm = comcon.mediate(wc, comcon.allowHosts('https://*.example.com'));
+            wm = comcon.mediate(wm, comcon.window({ days: DAYS[now.getUTCDay()],
+                                    from: hhmm(nm - 120), to: hhmm(nm - 60) }));
+            var wf = comcon.include(
+                "function(a){ return out.request('https://a.example.com/w'); }",
+                { imports: [], grants: { out: wm } });
+            o.windowUnderAudit = (wf({}) > 0) ? 'allowed' : 'denied';
+
+            /* (2) the OWNER gate under the same audit mode */
+            var cap = nginx.outbound();
+            var m = comcon.mediate(cap, comcon.allowHosts('https://*.example.com'));
+            var A = comcon.include(
+                "function(a){ var i; for (i = 0; i < a.n; i++) {"
+              + " Promise.resolve().then(function(){"
+              + "   out.request('https://a.example.com/x'); }); }"
+              + " return 'queued'; }",
+                { imports: ['Promise'], grants: { out: m } });
+            A({ n: 10100 });
+            var q1 = cap.pending();
+            o.afterA = q1.dropped || 0;
+
+            var b1 = counts();
+            var B = comcon.include("async function(b){ return await 1; }",
+                                   { imports: [] });
+            B({});
+            var q2 = cap.pending();
+            o.afterB = q2.dropped || 0;
+            o.ownerDuringB = delta(b1, counts(), 'cap.owner');
+
+            comcon.mode('enforce');
+        } catch (e) { o.driverError = String(e && e.message); }
         req.respond(200, { 'content-type': 'application/json' },
                     JSON.stringify(o));
     };
@@ -208,7 +277,7 @@ if (l.path === '/normal') {
 });
 JS
 
-$t->try_run('no js module')->plan(12);
+$t->try_run('no js module')->plan(18);
 
 sub get_json {
     my ($path) = @_;
@@ -249,6 +318,33 @@ cmp_ok($o->{ownerDuringB}, '>', 0,
    . 'observable rather than a silent nothing-happened. The drain decides who is '
    . 'charged; this decides who can spend')
     or diag("cap.owner during B: " . ($o->{ownerDuringB} // 'undef'));
+
+# --- audit mode does not apply to this one ----------------------------------
+my $a = get_json('/audit');
+is($a->{driverError}, undef, 'the audit probe ran') or diag($a->{driverError});
+is($a->{mode}, 'audit', 'the fleet is in AUDIT for this probe');
+is($a->{windowUnderAudit}, 'allowed',
+   'A POLICY GATE UNDER AUDIT IS LOGGED AND ALLOWED: a closed window lets the '
+   . 'request through, which is what audit mode is for. Asserted here so that '
+   . 'the next assertion cannot pass on a build where audit stopped working')
+    or diag('audit: ' . encode_json($a));
+is($a->{afterB}, $a->{afterA},
+   'AND cap.owner DENIES ANYWAY, in the same request and the same mode. Every '
+   . 'other gate answers "may this fragment do this?" -- a question about the '
+   . 'GRANT, which is the operator\'s lever, so observing it and then changing '
+   . 'the grant is a real workflow. This one answers "is this even this '
+   . "fragment's capability?\", and no grant can change that answer: allowing it "
+   . 'in audit would hand out authority no configuration asked for, which is not '
+   . 'observation but a different policy, silently')
+    or diag('audit: ' . encode_json($a));
+cmp_ok($a->{ownerDuringB}, '>', 0, '...and is counted while doing it');
+
+my $alog = $t->read_file('error.log');
+like($alog, qr/op=cap\.owner .*mode=audit .*unconditional=1/,
+     '...and the LOG says so: mode=audit with unconditional=1, so an operator '
+     . 'reading it is not left to wonder why a denial happened in a mode that '
+     . 'does not deny. A log line that reports the mode and not the action would '
+     . 'be telling them the opposite of what occurred');
 
 # --- the facet, negatively --------------------------------------------------
 my $f = get_json('/facetowner');

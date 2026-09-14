@@ -255,24 +255,62 @@ ngx_js_tenant_mode_name(void)
 }
 
 
+/*
+ * A DENIAL CODE THAT IGNORES THE MODE.
+ *
+ * Audit mode exists so an operator can OBSERVE what their policy would deny
+ * before it denies.  The A1 reach gates are audit-able for exactly that reason
+ * and the whole onboarding story rests on it, so the test cannot be "is this
+ * structural" -- those gates are structural too.  The test is:
+ *
+ *     IS THERE ANYTHING HERE FOR AN OPERATOR TO OBSERVE AND THEN ENABLE?
+ *
+ * Every other code in the set answers "MAY THIS FRAGMENT DO THIS?", which is a
+ * question about the grant -- and the grant is the operator's lever, so watching
+ * the denial and then narrowing or widening the grant is a real workflow.
+ * `sock.listener` and `out.drain` are both that: the fragment reached somewhere
+ * its grant does not cover, and the operator can change the grant.
+ *
+ * `cap.owner` answers a different question: IS THIS EVEN THIS FRAGMENT'S
+ * CAPABILITY?  No grant can change that answer.  The only ways to trip it are a
+ * leftover continuation spending another fragment's capability, or a bug in the
+ * binding, and neither is something an operator tunes.  Allowing it in audit
+ * would hand out authority no configuration asked for, which is not observation
+ * -- it is a different policy, silently.
+ *
+ * So it is logged and counted like every other denial, and it DENIES in every
+ * mode.  The exception lives here with the machinery rather than at the gates:
+ * one place says which codes are unconditional, and a reader of this function
+ * does not have to go looking for gates that quietly ignore its return value.
+ */
+static ngx_flag_t
+ngx_js_denial_unconditional(ngx_js_denial_code_t code)
+{
+    return code == NGX_JS_DENIAL_CAP_OWNER;
+}
+
+
 ngx_flag_t
 ngx_js_compartment_denial(ngx_js_denial_code_t code, const char *obj)
 {
-    const char  *mode;
+    const char  *mode, *extra;
+    ngx_flag_t   uncond;
 
     ngx_js_denial_counts[code]++;      /* exact, always (TM-1) */
     ngx_js_denials_total++;
 
     mode = ngx_js_tenant_mode_name();
+    uncond = ngx_js_denial_unconditional(code);
+    extra = uncond ? " unconditional=1" : "";
 
     if (ngx_js_denial_records < NGX_JS_DENIAL_QUOTA) {
         ngx_js_denial_records++;
 
         ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
-                      "js denial: comp=%ui op=%s obj=\"%s\" mode=%s n=%ui",
+                      "js denial: comp=%ui op=%s obj=\"%s\" mode=%s n=%ui%s",
                       (ngx_uint_t) ngx_js_cur_compartment,
                       ngx_js_denial_names[code],
-                      obj ? obj : "-", mode, ngx_js_denials_total);
+                      obj ? obj : "-", mode, ngx_js_denials_total, extra);
 
         if (ngx_js_denial_records == NGX_JS_DENIAL_QUOTA) {
             ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
@@ -287,14 +325,15 @@ ngx_js_compartment_denial(ngx_js_denial_code_t code, const char *obj)
     } else if (ngx_js_denials_total % NGX_JS_DENIAL_SAMPLE == 0) {
         ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
                       "js denial: comp=%ui op=%s obj=\"%s\" mode=%s n=%ui "
-                      "sampled=1",
+                      "sampled=1%s",
                       (ngx_uint_t) ngx_js_cur_compartment,
                       ngx_js_denial_names[code],
-                      obj ? obj : "-", mode, ngx_js_denials_total);
+                      obj ? obj : "-", mode, ngx_js_denials_total, extra);
     }
 
-    /* enforce denies; audit and learn log-and-allow */
-    return ngx_js_tenant_mode == NGX_JS_TENANT_ENFORCE ? 1 : 0;
+    /* enforce denies; audit and learn log-and-allow -- except the codes that
+       have nothing for an operator to observe (see above) */
+    return (uncond || ngx_js_tenant_mode == NGX_JS_TENANT_ENFORCE) ? 1 : 0;
 }
 
 

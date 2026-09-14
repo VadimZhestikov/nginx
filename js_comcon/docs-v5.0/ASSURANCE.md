@@ -700,13 +700,30 @@ The primary control, and the one everything else is defence in depth for.
   (the reach gate denying) from `undefined` (something else denying) and got the wrong one. The
   identity, the posture and the allowance now all end where the COMPARTMENT does; `t/comcon_posture.t`
   pins the posture half of the same boundary in both directions.
-- **GAP:** **In audit mode a foreign capability is logged and ALLOWED**, like every other gate.
-  That is deliberate consistency rather than an oversight — `sock.mutate`'s ownership check behaves
-  the same way and an operator in audit has asked to see denials rather than have them — but it
-  means the one code here that is not a policy still bends to a policy switch. Also: the binding is
-  per WRAPPER, so a capability granted to two fragments is two wrappers and neither can reach the
-  other's; there is no notion of a capability deliberately SHARED between fragments, and adding one
-  would need a different mechanism than an owner id.
+- **CLAIM (added):** `cap.owner` **denies in every mode**, audit and learn included, and says so in
+  the log (`mode=audit … unconditional=1`).
+- **ARGUMENT (added):** Audit exists so an operator can OBSERVE what their policy would deny before
+  it denies, so the test cannot be "is this structural" — the A1 reach gates are structural too and
+  are audit-able for exactly that reason. The test is **is there anything here for an operator to
+  observe and then enable?** Every other code answers *"may this fragment do this?"*, a question
+  about the GRANT — and the grant is the operator's lever, so watching a denial and then changing the
+  grant is a real workflow (`sock.listener` and `out.drain` are both that). `cap.owner` answers *"is
+  this even this fragment's capability?"*, and **no grant can change that answer**: the only ways to
+  trip it are a leftover continuation or a bug in the binding. Allowing it in audit would hand out
+  authority no configuration asked for — not observation, a different policy, silently. The exception
+  lives with the denial machinery rather than at the gates, so one place says which codes are
+  unconditional and a reader of that function need not hunt for gates ignoring its return value.
+- **EV (added):** `t/comcon_cap_owner.t` — the DISTINCTION, both halves under the same audit mode in
+  the same request: a closed window (a policy) is logged and allowed, and a foreign capability is
+  denied anyway. Asserting only the second would pass on a build where audit had stopped working at
+  all. Plus the log line, because one reporting the mode and not the action would tell an operator
+  the opposite of what occurred. Three further controls: the residual restored, every code made
+  unconditional, and the action dropped from the log.
+- **GAP:** The binding is per WRAPPER, so a capability granted to two fragments is two wrappers and
+  neither can reach the other's; there is no notion of a capability deliberately SHARED between
+  fragments, and adding one would need a different mechanism than an owner id. And `cap.owner` is now
+  the one code whose behaviour does not follow `comcon.mode()`, which is a special case however well
+  argued: a second such code should force a list rather than another `if`.
   **home:** G6.16's GAP (which named this fix) · `ngx_js_cap_foreign`.
 - **THREAT:** T3, T4, T6, T9
 - **V:** V4, V13
@@ -1486,6 +1503,8 @@ signature is never quietly credited with work it did not see.
 | **V10 BUILT — G10.4 — AND IT FOUND A DEFECT.** The last V-item independent of the parked compiler track. The mode fan-out's epoch bump was three operations from JS, so two concurrent switches both wrote the same epoch with different modes — and because the reconciler early-returned on epoch EQUALITY, the loser's divergence was **permanent and silent**: a fleet moved to `enforce` could leave one worker in `audit` for the rest of its life. The publish is now one critical section under the store's lock. | **Reduces F9 from four unmodelled V-items to three, and closes a silent-divergence hole in a rollout mechanism §15 relied on.** The model's own control is built in (three arms), and the model said the obvious one-line fix was insufficient *before* the code was written — which is the first time a model in this project has been ahead of the implementation. |
 
 | **THE OWED STRUCTURAL FIX, PAID — G6.17.** G6.16 closed the deferred-job escape with a best-effort drain and named what it could not do: a fragment outrunning the job budget leaves work behind. Every granted wrapper is now bound to its fragment and every gate refuses it to anyone else, so a leftover continuation runs and **obtains nothing**. `cap.owner` is the first denial code naming a structural invariant rather than a policy. | **Turns a named residual into a checked property, and the check's own negative case is forced rather than argued** — the probe deliberately outruns the budget so the leftover path is exercised, including for the COM facet, whose check would otherwise be code no control can break. What remains of G6.16's gap is accounting (a stranger's deadline and clock), not authority. |
+
+| **THE AUDIT-MODE RESIDUAL, CLOSED.** G6.17 shipped with `cap.owner` logged-and-allowed in audit like every other gate, justified as consistency. It is now unconditional. The line is not "structural vs policy" — the reach gates are structural too — but **whether an operator has anything to observe and then enable**: every other code answers "may this fragment do this?" (a question about the grant, which is their lever), and this one answers "is this even this fragment's capability?", which no grant can change. | **Removes a stated residual rather than re-describing it, and the test asserts the DISTINCTION** — a closed window allowed and a foreign capability denied, under the same audit mode in the same request, so it cannot pass on a build where audit stopped working. The exception is in the machinery, not the gates. `cap.owner` is now the one code that does not follow `comcon.mode()`; a second would force a list. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

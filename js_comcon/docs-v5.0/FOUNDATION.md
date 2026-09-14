@@ -635,6 +635,46 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.96 (in place — `cap.owner` denies in every mode: the audit-mode residual v5.95 stated):**
+v5.95 shipped the owner gate through the ordinary denial machinery, so in audit mode a foreign
+capability was logged and ALLOWED like every other gate, justified as consistency with
+`sock.mutate`'s ownership check. That residual is now closed rather than re-described.
+
+THE LINE IS NOT "STRUCTURAL VERSUS POLICY". The A1 reach gates are structural too, and they are
+audit-able on purpose: the onboarding story is that an operator switches to audit, watches the full
+would-be-denied reach, and then enforces. The test is narrower:
+
+    IS THERE ANYTHING HERE FOR AN OPERATOR TO OBSERVE AND THEN ENABLE?
+
+Every other code in the set answers "MAY THIS FRAGMENT DO THIS?" -- a question about the GRANT. The
+grant is the operator's lever, so watching a denial and then narrowing or widening the grant is a
+real workflow. `sock.listener` and `out.drain` are both of that kind: the fragment reached outside
+what its grant covers, and the operator can change the grant.
+
+`cap.owner` answers a different question: IS THIS EVEN THIS FRAGMENT'S CAPABILITY? No grant can
+change that answer. The only ways to trip it are a leftover continuation spending another fragment's
+capability, or a bug in the binding, and neither is something an operator tunes. Allowing it in audit
+hands out authority that no configuration asked for -- which is not observation, it is a different
+policy, silently.
+
+So it is counted and logged like every other denial and DENIES in every mode, and the LOG SAYS SO:
+`mode=audit ... unconditional=1`. A line that reported the mode and not the action would tell an
+operator the opposite of what happened.
+
+The exception lives with the denial machinery rather than at the gates. One place says which codes
+are unconditional, so a reader of `ngx_js_compartment_denial()` does not have to go looking for gates
+that quietly ignore its return value -- and a future gate that needs the same treatment has somewhere
+to say so.
+
+THE TEST ASSERTS THE DISTINCTION, NOT THE BEHAVIOUR. Both halves run under the same audit mode in the
+same request: a closed WINDOW (a policy) is logged and allowed, and a foreign capability is denied
+anyway. Asserting only the second would pass on a build where audit mode had stopped working
+altogether -- which is the shape of test this project has been caught by before.
+
+`cap.owner` is now the one code whose behaviour does not follow `comcon.mode()`. That is a special
+case, however well argued, and it is recorded as one: a second such code should force a list rather
+than another `if`.
+
 **v5.95 (in place — A GRANTED CAPABILITY BELONGS TO ONE FRAGMENT: the structural half v5.93 owed):**
 v5.93 closed the deferred-job escape by draining every invocation's queued jobs, and said plainly
 what that drain cannot do. It is BEST-EFFORT: a fragment which outruns the job budget leaves work

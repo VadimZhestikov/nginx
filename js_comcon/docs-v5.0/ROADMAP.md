@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.95 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.96 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,12 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **THE AUDIT-MODE RESIDUAL, CLOSED (2026-09-13, v5.96):** `cap.owner` denies in every mode. The
+>   line is not "structural vs policy" (the reach gates are structural too) but **whether an operator
+>   has anything to observe and then enable** — every other code asks "may this fragment do this?"
+>   (about the GRANT, their lever), this one asks "is this even this fragment's capability?", which
+>   no grant can change. Logged as `mode=audit … unconditional=1`. The test asserts the DISTINCTION —
+>   a closed window allowed and a foreign capability denied in the same audit request. 3 controls.
 > - **A GRANTED CAPABILITY BELONGS TO ONE FRAGMENT (2026-09-13, v5.95)** — the structural half
 >   v5.93 named and owed. Its drain is best-effort, so a fragment outrunning the job budget leaves
 >   work behind; **the question changes from stopping the code to stopping its AUTHORITY.** Every

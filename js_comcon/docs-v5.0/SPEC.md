@@ -346,7 +346,11 @@ refuse the operation and committed only after them, because an operation that ne
 must not advance the conversation. **`cap.owner` is the only one that names a STRUCTURAL
 invariant rather than a policy the operator wrote:** a granted capability belongs to one
 fragment, and no other fragment's code may exercise it — including that fragment's own leftover
-continuation. Nobody configures it and nothing legitimate trips it. Both are frozen contracts: every code must have a row in the
+continuation. Nobody configures it and nothing legitimate trips it, and it is **the one code that
+denies in every mode** — audit exists so an operator can observe what their *policy* would deny,
+and every other code answers "may this fragment do this?", a question about the grant they can
+change; this one answers "is this even this fragment's capability?", which no grant can change.
+The log says so: `mode=audit … unconditional=1`. Both are frozen contracts: every code must have a row in the
 golden corpus and every corpus row must name a code the runtime can still emit, or the
 enumeration check fails. `E_BUDGET_*` is empty **by placement, not by omission** —
 exhausting a budget is a denial, because the fragment was admitted and then hit a gate.
