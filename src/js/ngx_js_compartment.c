@@ -89,6 +89,8 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
     "cap.window",
     /* M-LIB `cosign` — one signature short, not forbidden (see the header) */
     "cap.cosign",
+    /* M-LIB `protocol` — out of the declared operation order (see the header) */
+    "cap.protocol",
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */

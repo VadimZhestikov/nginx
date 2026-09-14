@@ -166,13 +166,17 @@ l.handler = function (req) {
      * `allowHosts` until v5.85 and `cosign` until v5.88, and each time the word
      * shipped the assertion failed exactly as it should have -- an implemented
      * word is no longer a test of what happens to an unimplemented one.
-     * `protocol` is next, and after it MANUAL's vocabulary has only `opaque.*`
-     * left, which is on the engine-substrate track.  When that ships too, this
-     * probe must be rewritten around a word that is not in the vocabulary at
-     * all rather than one that is merely not built yet. */
+     * `protocol` shipped at v5.90 -- the tenth and last of the MEDIATION words --
+     * so the probe has moved again, to `opaque`.  That is the last name MANUAL
+     * offers it: `opaque.*` is on the engine-substrate track rather than the
+     * mediation one, so it is a word an operator might plausibly write and the
+     * enforcement layer does not know.  WHEN IT SHIPS, THIS PROBE CANNOT MOVE
+     * AGAIN and must be rewritten around a name that is not in the vocabulary at
+     * all -- which is a weaker test, and worth noticing rather than discovering:
+     * the strong version of this assertion has a finite supply of subjects. */
     o.unknownFlavor = 'ACCEPTED';
     try {
-        comcon.mediate(sock, { flavor: 'protocol', order: ['open', 'close'] });
+        comcon.mediate(sock, { flavor: 'opaque', pass_to: ['upstream'] });
     } catch (e) { o.unknownFlavor = 'refused'; }
 
     /* And the shape that outlived the old probe: a descriptor built BY HAND for
@@ -272,7 +276,7 @@ like($r, qr/"handBuiltNoGlob":"refused"/,
      'a HAND-BUILT descriptor for an implemented flavour, missing the field that '
      . 'flavour needs, is refused at the producer rather than reaching include()');
 like($r, qr/"unknownFlavor":"refused"/,
-     'an unimplemented flavor (protocol) is REFUSED -- it used to grant the '
+     'an unimplemented flavor (opaque) is REFUSED -- it used to grant the '
      . 'capability in full');
 like($r, qr/"typoFlavor":"refused"/,
      'a one-letter typo of a real flavor is refused -- it used to grant MORE '

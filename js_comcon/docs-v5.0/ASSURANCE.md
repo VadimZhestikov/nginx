@@ -454,6 +454,42 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T6, T11
 - **V:** V4, V13
 
+#### G6.13 — a capability can require its operations IN ORDER
+- **CLAIM:** `mediate(cap, protocol(step…))` makes the capability's operations legal only in the
+  declared sequence; a step out of order is denied as `cap.protocol`, logged-and-allowed in audit
+  mode. Once the last step is consumed every further operation is denied. The cursor is per
+  WRAPPER, and a denied operation does not advance it.
+- **ARGUMENT:** The tenth and last of MANUAL's mediation words — a session type over the
+  capability's own operations, where `allow` says which exist, `uses` how often, `ttl`/`window`
+  when and `cosign` by whom. Two consequences are worth stating because they are not obvious:
+  **`protocol('fd')` is a ONE-SHOT capability**, which `uses(1)` cannot express (a budget is
+  fleet-wide and resets with its window; a protocol is per-wrapper and never resets); and the
+  cursor is deliberately **not** fleet-wide the way a cosign record is, because a session type
+  describes ONE conversation and two holders sharing a cursor would interleave into nonsense.
+  **THE GATE'S POSITION IS THE DESIGN.** Every other gate's decision is also its effect — a budget
+  charge happens when it is decided, and a cosign consent *is* the decision — so each of them can
+  only ever be last. A protocol's effect can be DEFERRED, and must be: an operation a later gate
+  still refuses did not happen and must not move the conversation on. So the transition is CHECKED
+  before cosign and COMMITTED after the budget.
+- **EV:** `t/comcon_cap_protocol.t` — 19 assertions: the declared order; a step out of order; a
+  starred step taken zero times; the one-shot; that a violation does not advance the cursor; the
+  per-wrapper cursor; **the check/commit split measured on ONE wrapper** (denied for want of a
+  cosignature, the signature arrives elsewhere, and the retry of the same step is legal); a
+  budget-denied step; the outbound one-shot; the meet; six malformed protocols; the wrong
+  capability kind in both directions; and audit mode.
+- **EV:** `t/tools/golden-denials.js` — `cap.protocol` frozen, with a computed capability whose
+  single step is `port` and whose probe reads `address`: out of order on the first operation, with
+  no clock, quorum or budget involved.
+- **GAP:** **It enforces ORDER, not COMPLETION.** "You cannot take the fd before looking at the
+  address" is checkable at the moment of the call; "you must eventually close" is not — a fragment
+  can simply return and there is no event at which the host could notice. The grammar is also
+  deliberately tiny (distinct names, each required once or starred), so an alternation or a loop
+  over two operations is inexpressible; the meet refuses rather than approximating. And the
+  outbound namespace has one member, because `pending`/`clear` are the host's reach-gated half.
+  **home:** OPERATOR_API.md §8h · MANUAL.md (the vocabulary) · G6.11's evidence.
+- **THREAT:** T5, T6, T11
+- **V:** V4, V9
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1217,6 +1253,8 @@ signature is never quietly credited with work it did not see.
 | **M-LIB `cosign` SHIPPED — G6.11.** The two-person rule, and the ninth of ten vocabulary words. The interesting property is that **distinctness is structural**: `as` is written on the trusted side and unreachable from inside a compartment, so a fragment holds one identity and casts one vote, and the quorum assembles across invocations. `cap.cosign` is the first denial that is a waiting state rather than a verdict, and the first **with a side effect** — the denied attempt records consent. `E_CAP_PRINCIPAL` is the 14th refusal code. **A control caught a wrong instrument again:** the expiry probe read `req.args.as`, but `req.args` is the raw query string, so both requests voted as the same principal and the test passed identically whether the `within` meet took the shorter window or the longer one. | **Adds one leaf and one refusal code.** Nothing signed becomes untrue; the new code is appended, which the frozen-contract rule permits, and §15's evidence table gains one row it did not see. |
 
 | **THREE DEFECTS FOUND BY ASKING `window`'s QUESTION ONE AXIS OVER — G6.12.** Probing each word ALONE found a `window` gap at v5.87; probing each word alone **on each capability KIND** found that a bare `uses`/`ttl`/`cosign` over an outbound capability was refused as "not a NginxSocket", that the outbound budget key was **not namespaced** so one `uses` name was two counters, and that `JS_ToCStringLen` on a missing property returns the string `"undefined"` — so a descriptor with no glob was wrapped with the literal host glob `undefined` and the refusal that claimed to catch that never ran for it. | **All three were FAIL-CLOSED**, so no authority was ever widened and nothing §15 attested becomes untrue. The budget one is the material find: a documented property (*one name, one counter*) was false across capability kinds. Adds one leaf. |
+
+| **M-LIB `protocol` SHIPPED — G6.13. THE MEDIATION VOCABULARY IS COMPLETE: ten of ten.** Enforced operation order, denial code `cap.protocol`. Its gate is the first here to **separate its decision from its effect** — checked before cosign, committed after the budget — because an operation another gate still refuses must not advance the conversation. **And its test found a defect in `cosign`:** an already-consenting principal was judged by its POSITION in the record rather than the record's LENGTH, so once a quorum was met the FIRST signer's retry was denied forever — breaking the actual ops-room sequence (alice tries, bob cosigns, **alice retries**). Every cosign assertion had the SECOND principal perform the operation, which is exactly the shape that passes with that bug present. | **Adds one leaf and corrects G6.11's evidence**, which now pins the retry. The `cosign` defect was FAIL-CLOSED — it denied an operation that should have been allowed — so nothing §15 attested about confinement becomes untrue; what was untrue was that the feature was usable as documented. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

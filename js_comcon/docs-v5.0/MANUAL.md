@@ -321,7 +321,7 @@ library:
 | `uses(1)`, `ttl("10m")`, `window("Sat 02:00-04:00")`, `cosign({quorum,as})` | grants with a fuse / office hours / a second pair of hands |
 | `rateLimit(n)`, `budgets({...})` | metering |
 | `opaque.str({pass_to: [...]})` | usable-but-unreadable values |
-| `protocol("handshake", "frames*", "close")` | enforced operation order |
+| `protocol("address", "port*", "fd")` | enforced operation order |
 | `stone(value)` | deep-freeze plain *data* once — membrane-free sharing across boundaries (membranes for authority, stone for data) |
 | `pattern { 1-32 (alpha, digit, "-") }` | readable, composable validation — bounded quantifiers ⇒ ReDoS impossible; static patterns compile through |
 | `wasm.admit(path, {imports, budgets, pin})` *(v5.3)* | admit a foreign (non-JS-born) module: its imports are your grants, its fuel your budgets; hot modules ingest via wasm2c into the native funnel (scenario 50) |

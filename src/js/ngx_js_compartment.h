@@ -125,6 +125,19 @@ typedef enum {
      * meaning is "nothing happened" would be a lie.
      */
     NGX_JS_DENIAL_CAP_COSIGN,          /* awaiting a second principal's consent  */
+    /*
+     * M-LIB `protocol`: enforced operation ORDER -- a session type over the
+     * capability's own operations.  The tenth and last of MANUAL's vocabulary
+     * words (`opaque.*` is an engine-substrate track, not a mediation).
+     *
+     * Its own code for the reason cap.window has one: "you called this out of
+     * order" and "you called it too often" send an operator to different places.
+     * And unlike every other gate here, this one's decision is separated from its
+     * effect -- the transition is CHECKED before the gates that can still refuse
+     * the operation and COMMITTED only after all of them pass, so an operation
+     * that never happened never advances the conversation.
+     */
+    NGX_JS_DENIAL_CAP_PROTOCOL,        /* operation out of the declared order    */
     NGX_JS_DENIAL_LAST
 } ngx_js_denial_code_t;
 

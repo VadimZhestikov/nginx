@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.89 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.90 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,15 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **M-LIB `protocol` SHIPPED (2026-09-13, v5.90) — THE MEDIATION VOCABULARY IS COMPLETE, ten of
+>   ten.** Enforced operation ORDER (`cap.protocol`); `protocol('fd')` is a ONE-SHOT capability,
+>   which `uses(1)` cannot express. **It enforces order, not completion** (a fragment can simply
+>   return). **Its gate is the first to separate its DECISION from its EFFECT** — checked before
+>   cosign, committed after the budget. **And its test found a defect in `cosign`:** an
+>   already-consenting principal was judged by POSITION in the record, not the record's LENGTH, so
+>   the first signer's RETRY was denied forever — breaking the real ops-room sequence. Remaining
+>   from MANUAL's list: `opaque.*` (never a mediation — an engine-substrate question) and the
+>   posture words. `t/comcon_cap_protocol.t` (19) + 4 controls.
 > - **THREE DEFECTS FROM ASKING v5.87's QUESTION ONE AXIS OVER (2026-09-13, v5.89).** Probing each
 >   word ALONE found a `window` gap; probing each word alone **on each capability KIND** found that
 >   a bare `uses`/`ttl`/`cosign` over an outbound cap was refused as "not a NginxSocket" (**the word

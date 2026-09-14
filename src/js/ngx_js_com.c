@@ -2763,7 +2763,7 @@ ngx_js_shared_cosign_record(JSContext *ctx, const char *key,
 {
     ngx_js_shared_hdr_t    *hdr;
     ngx_js_shared_entry_t  *entries;
-    ngx_uint_t              i, slot, n, plen, vlen;
+    ngx_uint_t              i, slot, n, plen, vlen, found;
     uint32_t                hash;
     time_t                  now;
     ngx_int_t               rc;
@@ -2793,8 +2793,20 @@ ngx_js_shared_cosign_record(JSContext *ctx, const char *key,
          * segments: a substring test would make "bob" a member of a record
          * holding "bobby", so one principal whose name is a prefix of another's
          * would silently satisfy the other's quorum.
+         *
+         * THE WHOLE SCAN RUNS EVEN AFTER THE MATCH, and that is the fix to a
+         * defect the `protocol` work found.  Returning at the match compared the
+         * quorum against the matched principal's POSITION in the list rather than
+         * the list's LENGTH -- so once "alice,bob" had reached a quorum of two,
+         * alice retrying was still denied, because she is first.
+         *
+         * Which broke the actual two-person workflow.  The ops-room sequence is
+         * "alice tries, is told to find a cosigner, bob cosigns, ALICE RETRIES";
+         * the word was only usable if the SECOND person happened to be the one
+         * who performed the operation.
          */
         n = 0;
+        found = 0;
         p = (u_char *) entries[i].val;
         last = p + ngx_strlen(entries[i].val);
 
@@ -2810,16 +2822,20 @@ ngx_js_shared_cosign_record(JSContext *ctx, const char *key,
             if ((ngx_uint_t) (e - p) == plen
                 && ngx_strncmp(p, principal, plen) == 0)
             {
-                /*
-                 * ALREADY CONSENTED.  Not an error and not a second vote: the
-                 * same operator retrying sees the same answer, which is what
-                 * makes the retry safe to suggest in the denial message.
-                 */
-                ngx_unlock(&hdr->lock);
-                return (n >= quorum) ? NGX_OK : NGX_DECLINED;
+                found = 1;
             }
 
             p = (e < last) ? e + 1 : e;
+        }
+
+        if (found) {
+            /*
+             * ALREADY CONSENTED: not an error and not a second vote.  The same
+             * operator retrying sees the answer the RECORD gives, which is what
+             * makes "retry once your colleague has signed" true advice.
+             */
+            ngx_unlock(&hdr->lock);
+            return (n >= quorum) ? NGX_OK : NGX_DECLINED;
         }
 
         vlen = ngx_strlen(entries[i].val);
@@ -4013,7 +4029,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var e=new TypeError(msg+' ['+code+']');"
     "    e.code=code;throw e;}"
     "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1,uses:1,ttl:1,"
-    "               allowHosts:1,window:1,cosign:1};"
+    "               allowHosts:1,window:1,cosign:1,protocol:1};"
     /* One definition of the socket field lattice, used by the meet here and by
        include()'s translation below -- two copies of a bitmask mapping is how a
        "narrower" membrane ends up wider than the one it attenuates. */
@@ -4030,6 +4046,63 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    for(k in FMASK)if(Object.prototype.hasOwnProperty.call(FMASK,k))"
     "      if(m&FMASK[k])out.push(k);"
     "    return out;}"
+    /* `protocol` -- the operation NAMESPACES, one per capability kind, and the
+       only place they are written down on this side.  The socket's four are the
+       gated field reads; the outbound one has a SINGLE member, which is a
+       statement rather than an omission: `pending` and `clear` are the HOST's
+       half of that capability and are reach-gated, so a fragment can never
+       perform them and they are not part of the conversation a fragment can
+       have.  Listing them would let an operator write a protocol that can never
+       advance. */
+    "  var POPS={sock:{address:1,port:1,fd:1,listener:1},out:{request:1}};"
+    /* ONE validator, called by the constructor for the message an operator wants
+       to read and again by mediate() for the descriptor built by hand. */
+    "  function protoTerms(list){"
+    "    var i,out=[],seen={},ns=null;"
+    "    if(!list||typeof list.length!=='number'||list.length<1)"
+    "      capRefuse('E_CAP_FLAVOR','protocol: needs at least one operation "
+             "name; a protocol over nothing would make the capability dead, "
+             "which is spelled revoke()');"
+    "    if(list.length>8)capRefuse('E_CAP_FLAVOR','protocol: at most 8 steps -- "
+             "the cursor into them lives in every wrapper, and a conversation "
+             "nobody can read back is not a policy');"
+    "    for(i=0;i<list.length;i++){"
+    "      var t=String(list[i]),star=(t.charAt(t.length-1)==='*');"
+    "      var nm=star?t.substring(0,t.length-1):t;"
+    "      if(!/^[a-zA-Z]+$/.test(nm))capRefuse('E_CAP_FLAVOR','protocol: "
+             "'+t+' is not an operation name (optionally starred)');"
+    /* The namespace is decided by the FIRST name and every later one must agree.
+       A mixture is refused rather than partly applied: a protocol naming both a
+       socket field and an outbound operation describes no capability that
+       exists, and enforcing the half that matches would be enforcing a policy
+       nobody wrote. */
+    "      var here=POPS.sock[nm]?'sock':(POPS.out[nm]?'out':null);"
+    "      if(!here)capRefuse('E_CAP_FLAVOR','protocol: no capability has an "
+             "operation named '+nm+'; a socket has address/port/fd/"
+             "listener and an outbound capability has request');"
+    "      if(ns===null)ns=here;"
+    "      else if(ns!==here)capRefuse('E_CAP_FLAVOR','protocol: '+nm+' "
+             "belongs to a different capability kind than '+out[0]+'; one "
+             "protocol describes one capability');"
+    /* DISTINCT names, which is what makes the greedy match unambiguous and the
+       whole state a cursor.  `read* read` has two readings and the one the
+       implementation happens to pick is not a policy anyone wrote. */
+    "      if(seen[nm])capRefuse('E_CAP_FLAVOR','protocol: '+nm+' appears "
+             "twice; the steps must be distinct, or the order it enforces "
+             "depends on which reading the matcher happens to take');"
+    "      seen[nm]=1;out.push(star?(nm+'*'):nm);}"
+    "    return {steps:out,ns:ns};}"
+    /* Two session types have no computable meet: ('a','b') and ('b','a')
+       intersect in nothing a single sequence can spell, and ('a*','b') with
+       ('a','b') intersects in something that is expressible only by accident.
+       So the routes rule again -- an identical protocol composes, a different one
+       is REFUSED rather than guessed. */
+    "  function protoMeet(a,b){"
+    "    if(!a)return b||null;if(!b)return a;"
+    "    if(a.join('|')!==b.join('|'))capRefuse('E_CAP_ESCALATE','mediate: "
+             "cannot re-mediate with a DIFFERENT protocol -- two session types "
+             "do not intersect in one session type, and guessing would widen');"
+    "    return a;}"
     /* `cosign` -- ONE validator, called by the constructor (for the message an
        operator wants to read) and again by mediate() (for the descriptor built
        by hand, which is the gap the allowHosts work found).  Two copies of these
@@ -4114,7 +4187,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(!FLAVORS[interceptor.flavor])capRefuse('E_CAP_FLAVOR',"
     "      'mediate: unknown interceptor flavor '+String(interceptor.flavor)+"
     "      '; the vocabulary is closed (revoke, redact, allow, routes, uses, "
-                 "ttl, allowHosts, window, cosign) -- an unrecognized one "
+                 "ttl, allowHosts, window, cosign, protocol) -- an "
+                 "unrecognized one "
                  "used to mean FULL "
                  "authority');"
     /* SNAPSHOT, do not hold the caller's object.  Validating here and reading it
@@ -4192,6 +4266,24 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(snap.flavor==='cosign'){"
     "      snap={flavor:'allow',fields:maskFields(FMASK_FULL),"
     "            cosign:cosignCheck(interceptor)};}"
+    /* Normalized like `uses`, `ttl` and `cosign`, and validated AGAINST THE
+       CAPABILITY as well as on its own: a socket protocol applied to an outbound
+       capability names operations that capability does not have, and every step
+       would be a violation -- a dead capability reported as a run-time denial
+       instead of the policy error it is.  mediate() is the first point that holds
+       both the words and the thing they are about, so it is where that is
+       caught. */
+    "    if(snap.flavor==='protocol'){"
+    "      var pc=protoTerms(interceptor.steps);"
+    "      var raw=cap;while(raw&&raw[FACET])raw=raw[FACET].cap;"
+    "      var isOut=!!(raw&&typeof raw.request==='function');"
+    "      if((pc.ns==='out')!==isOut)capRefuse('E_CAP_FLAVOR','mediate: this "
+             "protocol names '+(pc.ns==='out'?'outbound':'socket')+' operations, "
+             "but the capability is '+(isOut?'an outbound capability':'not')+' -- "
+             "every step would be a violation, which is a policy error and not a "
+             "run-time denial');"
+    "      snap={flavor:'allow',fields:maskFields(FMASK_FULL),"
+    "            proto:pc.steps};}"
     /* V4 — ATTENUATION MEET, and the lattice inclusion asserted rather than
        argued.  Re-mediating an already-mediated capability used to fail with
        "grant is not a NginxSocket", because the translation unwraps one facet
@@ -4254,6 +4346,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        if(aw){as.days=aw.days;as.from=aw.from;as.to=aw.to;}"
     "        var ac=cosignMeet(ii.cosign,oi.cosign);"
     "        if(ac)as.cosign=ac;"
+    "        var ap=protoMeet(ii.proto,oi.proto);"
+    "        if(ap)as.proto=ap;"
     "        snap=Object.freeze(as);}"
     "      else if(ii.flavor==='routes'||oi.flavor==='routes'){"
     "        if(ii.flavor!==oi.flavor||ii.glob!==oi.glob)capRefuse("
@@ -4276,6 +4370,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        if(bb)ns.budget=bb;"
     "        var cc=cosignMeet(ii.cosign,oi.cosign);"
     "        if(cc)ns.cosign=cc;"
+    "        var pp=protoMeet(ii.proto,oi.proto);"
+    "        if(pp)ns.proto=pp;"
     /* Lifetimes, unlike budgets, DO have a computable meet: the shorter one is
        strictly narrower than both, so composing is min() rather than a refusal.
        Worth saying out loud next to budgetMeet, which refuses for the opposite
@@ -4422,6 +4518,29 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var c=cosignCheck(spec);"
     "    return {flavor:'cosign',key:c.key,quorum:c.quorum,"
     "            within:c.within,as:c.as};};"
+    /* protocol(step...): ENFORCED OPERATION ORDER -- a session type over the
+       capability's own operations, and the tenth of MANUAL's vocabulary words.
+
+         comcon.protocol('address', 'port*', 'fd')   // look, poll, then take
+         comcon.protocol('request')                  // one outbound intent, ever
+
+       A starred step may happen any number of times including zero; a bare step
+       must happen exactly once, in place.  Once the last step is consumed the
+       conversation is OVER and every further operation is denied, which is what
+       makes `protocol('fd')` a ONE-SHOT capability -- a different attenuation
+       from uses(1), because a budget is fleet-wide and resets with its window
+       while a protocol is per-wrapper and never resets.
+
+       IT ENFORCES ORDER, NOT COMPLETION, and that is a limit rather than an
+       oversight: "you cannot take the fd before you have looked at the address"
+       is checkable at the moment of the call, but "you must eventually close"
+       is not -- a fragment can simply return, and there is no event at which the
+       host could notice.  Stated here because a session type that silently
+       enforced only half of what session types usually mean would be worse than
+       one that says which half. */
+    "  C.protocol=function(){"
+    "    var a=Array.prototype.slice.call(arguments);"
+    "    return {flavor:'protocol',steps:protoTerms(a).steps};};"
     /* stone check (increment D3): a splice may carry only DEEP cap-free plain
        data — primitives + frozen records/arrays; no functions, no capabilities
        (facet/quote/confined), no getters/setters (a getter could mint a cap
@@ -4812,7 +4931,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "          if(it.budget)pol.budget=it.budget;"
     "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
     "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};"
-    "          if(it.cosign)pol.cosign=it.cosign;}"
+    "          if(it.cosign)pol.cosign=it.cosign;"
+    "          if(it.proto)pol.protocol=it.proto;}"
     "        else if(it.flavor==='routes'){"
     "          pol={kind:1,glob:String(it.glob||'*')};}"
     /* kind 3: the outbound capability, attenuated by a host glob. The glob
@@ -4832,7 +4952,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "          if(it.budget)pol.budget=it.budget;"
     "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
     "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};"
-    "          if(it.cosign)pol.cosign=it.cosign;}"
+    "          if(it.cosign)pol.cosign=it.cosign;"
+    "          if(it.proto)pol.protocol=it.proto;}"
     /* No fall-through to the FULL default.  NOTE it is not reachable through the
        public API any more -- mediate() refuses an unknown flavor and snapshots
        the descriptor -- so no test drives this line, and it is kept anyway as a

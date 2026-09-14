@@ -1225,6 +1225,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         uint32_t     wdays, wfrom, wto;
         char         ckey[80], cas[48];
         uint32_t     cquorum, cwithin;
+        uint8_t      pterm[NGX_JS_PROTO_MAX];
+        ngx_uint_t   pn;
         ngx_uint_t   promoted = 0;
         /*
          * Did the grant carry a MEDIATION at all?  The promotion below must not
@@ -1334,6 +1336,68 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
          * This is the same question `window`'s probe asked one axis over: try
          * each word ALONE, not only in the composition it normally arrives in.
          */
+        /* M-LIB `protocol`: the third reader shared by both kinds.  The NAMES
+         * cross as data, like every other descriptor field, and are mapped to
+         * this capability kind's operation ids here -- the one place that knows
+         * which kind the grant turned out to be.  A name this kind does not have
+         * cannot arrive (mediate() validates the protocol against the capability,
+         * where the operator can be told which word is wrong); the grant is
+         * refused rather than partly applied if one ever does, because half a
+         * session type enforces an order nobody wrote. */
+        pn = 0;
+        if (JS_IsObject(pol_v)) {
+            JSValue  p_v = JS_GetPropertyStr(hctx, pol_v, "protocol");
+            if (JS_IsArray(hctx, p_v)) {
+                JSValue     l_v = JS_GetPropertyStr(hctx, p_v, "length");
+                uint32_t    pcount = 0, pi;
+
+                JS_ToUint32(hctx, &pcount, l_v);
+                JS_FreeValue(hctx, l_v);
+
+                for (pi = 0; pi < pcount && pi < NGX_JS_PROTO_MAX; pi++) {
+                    JSValue      t_v = JS_GetPropertyUint32(hctx, p_v, pi);
+                    const char  *t = JS_ToCString(hctx, t_v);
+                    char         nm[32];
+                    size_t       tl;
+                    ngx_uint_t   star = 0;
+                    ngx_int_t    id;
+
+                    JS_FreeValue(hctx, t_v);
+                    if (t == NULL) {
+                        break;
+                    }
+
+                    tl = ngx_strlen(t);
+                    if (tl > 0 && t[tl - 1] == '*') {
+                        star = 1;
+                        tl--;
+                    }
+                    if (tl == 0 || tl >= sizeof(nm)) {
+                        JS_FreeCString(hctx, t);
+                        break;
+                    }
+                    ngx_memcpy(nm, t, tl);
+                    nm[tl] = '\0';
+                    JS_FreeCString(hctx, t);
+
+                    id = (kind == 3 || ngx_js_outbound_handle(cap_v) >= 0)
+                         ? ngx_js_outbound_op_id(nm)
+                         : ngx_js_socket_op_id(nm);
+                    if (id == NGX_ERROR) {
+                        pn = 0;
+                        break;
+                    }
+
+                    pterm[pn++] = (uint8_t) (((uint32_t) id << 1) | star);
+                }
+
+                if (pn != pcount) {
+                    pn = 0;                 /* all or nothing, never half */
+                }
+            }
+            JS_FreeValue(hctx, p_v);
+        }
+
         if (kind == 0 && pol_mediated
             && ngx_js_socket_handle(cap_v) < 0
             && ngx_js_outbound_handle(cap_v) >= 0)
@@ -1475,6 +1539,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                                           oblimit, obwindow, obttl);
             ngx_js_outbound_set_window(av[gi], wdays, wfrom, wto);
             ngx_js_outbound_set_cosign(av[gi], ckey, cas, cquorum, cwithin);
+            ngx_js_outbound_set_protocol(av[gi], pterm, pn);
             JS_FreeValue(hctx, pol_v);
             JS_FreeValue(hctx, cap_v);
             if (JS_IsException(av[gi])) {
@@ -1562,6 +1627,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                                                 blimit, bwindow, bttl);
             ngx_js_socket_set_window(av[gi], wdays, wfrom, wto);
             ngx_js_socket_set_cosign(av[gi], ckey, cas, cquorum, cwithin);
+            ngx_js_socket_set_protocol(av[gi], pterm, pn);
         }
 
         JS_FreeValue(hctx, pol_v);

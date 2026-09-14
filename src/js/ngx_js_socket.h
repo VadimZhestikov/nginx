@@ -207,10 +207,27 @@ void  ngx_js_outbound_set_window(JSValueConst obj, uint32_t days,
  * `as` is the principal this wrapper ACTS FOR -- written on the trusted side as
  * the capability crosses, never reachable from inside the compartment, which is
  * what makes one wrapper exactly one vote. quorum == 0 leaves it uncosigned. */
+/* M-LIB `protocol`: at most this many terms in a session type.  Small on
+ * purpose -- the state is a cursor into it, it lives in every wrapper, and a
+ * conversation nobody can read back is not a policy. */
+#define NGX_JS_PROTO_MAX  8
+
 void  ngx_js_socket_set_cosign(JSValueConst obj, const char *key,
           const char *as, uint32_t quorum, uint32_t within);
 void  ngx_js_outbound_set_cosign(JSValueConst obj, const char *key,
           const char *as, uint32_t quorum, uint32_t within);
+
+/* M-LIB `protocol`: map an operation NAME to this capability kind's id, or
+ * NGX_ERROR. The socket ids are the property getter's own `magic` values. */
+ngx_int_t  ngx_js_socket_op_id(const char *name);
+ngx_int_t  ngx_js_outbound_op_id(const char *name);
+
+/* Apply a session type to an already-wrapped capability. Each term is
+ * (op id << 1) | starred; n == 0 leaves it unsequenced. */
+void  ngx_js_socket_set_protocol(JSValueConst obj, const uint8_t *term,
+          ngx_uint_t n);
+void  ngx_js_outbound_set_protocol(JSValueConst obj, const uint8_t *term,
+          ngx_uint_t n);
 
 
 #endif /* _NGX_JS_SOCKET_H_INCLUDED_ */

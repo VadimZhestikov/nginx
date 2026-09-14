@@ -123,6 +123,13 @@ function capFor(row) {
                                    as: 'solo' }));
     }
 
+    /* `protoWrong`: a one-step protocol over `port`, probed by reading
+     * `address`.  Out of order on the very first operation, so it is denied
+     * however often the row runs -- a violation does not advance the cursor. */
+    if (row.cap === 'protoWrong') {
+        return comcon.mediate(sock, comcon.protocol('port'));
+    }
+
     var cap = (row.cap === 'outbound') ? outbound : sock;
     if (row.budget) {
         cap = comcon.mediate(cap, comcon.uses(row.budget.key, row.budget.limit,

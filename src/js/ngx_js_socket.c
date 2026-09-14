@@ -169,6 +169,16 @@ typedef struct {
     uint32_t  cosign_within;   /* seconds; anchored at the FIRST consent */
     char      cosign_key[64];
     char      cosign_as[48];
+    /*
+     * M-LIB `protocol`: a session type over this capability's operations.
+     * proto_n == 0 means unsequenced.  Each term is (op id << 1) | starred, and
+     * `proto_pos` is the cursor -- PER WRAPPER, deliberately not fleet-wide the
+     * way a cosign record is: a session type describes ONE conversation, and two
+     * holders sharing a cursor would interleave into nonsense.
+     */
+    uint8_t   proto_term[NGX_JS_PROTO_MAX];
+    uint8_t   proto_n;
+    uint8_t   proto_pos;
 } ngx_js_socket_opaque_t;
 
 
@@ -302,11 +312,89 @@ ngx_js_cosign_gate(JSContext *ctx, const char *key, const char *as,
 }
 
 
+/*
+ * M-LIB `protocol`: the transition, in ONE place for both capability kinds.
+ *
+ * The grammar is deliberately tiny -- a sequence of DISTINCT operation names,
+ * each required once or starred for any number -- because that is what makes
+ * greedy matching unambiguous and the whole state a cursor.  A term that does not
+ * match may be SKIPPED only if it is starred (a starred step may happen zero
+ * times); a required step that has not happened yet is a violation, and so is any
+ * operation at all once the cursor has run off the end.
+ *
+ * Returns the NEW cursor, or NGX_ERROR for a violation.  It does not write the
+ * cursor back: see the call sites, where the decision is separated from the
+ * effect so that an operation another gate still refuses does not advance the
+ * conversation.
+ */
+static ngx_int_t
+ngx_js_protocol_step(const uint8_t *term, ngx_uint_t n, ngx_uint_t pos,
+    ngx_uint_t opid)
+{
+    while (pos < n) {
+        if ((ngx_uint_t) (term[pos] >> 1) == opid) {
+            /* a starred term stays under the cursor; a required one is consumed */
+            return (term[pos] & 1) ? (ngx_int_t) pos : (ngx_int_t) (pos + 1);
+        }
+
+        if (!(term[pos] & 1)) {
+            return NGX_ERROR;          /* a required step has not happened yet */
+        }
+
+        pos++;                         /* a starred step may match zero times */
+    }
+
+    return NGX_ERROR;                  /* past the end: the conversation is over */
+}
+
+
+/*
+ * The operation namespaces, one per capability kind.  The socket ids are the
+ * getter's own `magic` values, so the gate needs no second mapping -- two
+ * numberings of the same four operations is how a protocol ends up enforcing an
+ * order over the wrong fields.
+ */
+ngx_int_t
+ngx_js_socket_op_id(const char *name)
+{
+    static const char  *ops[] = { "address", "port", "fd", "listener" };
+    ngx_uint_t          i;
+
+    for (i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+        if (ngx_strcmp(name, ops[i]) == 0) {
+            return (ngx_int_t) i;
+        }
+    }
+
+    return NGX_ERROR;
+}
+
+
+/*
+ * The outbound namespace has ONE member, and that is a statement rather than an
+ * omission: `pending` and `clear` are the HOST's half of this capability and are
+ * reach-gated (out.drain), so a fragment can never perform them and they are not
+ * part of the conversation a fragment can have.  Listing them would let an
+ * operator write a protocol that can never advance.
+ *
+ * So on an outbound capability `protocol('request')` means ONE outbound intent,
+ * ever -- which is a real attenuation and a different one from uses(1): a budget
+ * is fleet-wide and resets with its window, a protocol is per-wrapper and never
+ * resets.
+ */
+ngx_int_t
+ngx_js_outbound_op_id(const char *name)
+{
+    return (ngx_strcmp(name, "request") == 0) ? 0 : NGX_ERROR;
+}
+
+
 static JSValue
 ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
     ngx_js_socket_opaque_t  *op;
     ngx_js_socket_state_t   *st;
+    ngx_int_t                pstep = NGX_ERROR;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_socket_class_id);
     if (!op) {
@@ -354,6 +442,33 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
     }
 
     /*
+     * `protocol` is CHECKED here and COMMITTED at the bottom, and that split is
+     * the one interesting thing about this gate.
+     *
+     * Every other gate's decision is also its effect: a budget charge happens
+     * when it is decided, and a cosign consent IS the decision.  A protocol's
+     * effect -- advancing the cursor -- can be deferred, and it MUST be, because
+     * an operation that a later gate still refuses did not happen and must not
+     * move the conversation on.  Checking after cosign would record a signature
+     * for an operation about to be refused for being out of order; committing
+     * before the budget would advance a conversation whose operation was never
+     * performed.  So the check goes first and the commit goes last.
+     *
+     * A gate that mutates state has to separate its decision from its effect, or
+     * it can only ever be last.
+     */
+    if (op->proto_n > 0) {
+        pstep = ngx_js_protocol_step(op->proto_term, op->proto_n,
+                                    op->proto_pos, (ngx_uint_t) magic);
+        if (pstep == NGX_ERROR
+            && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_PROTOCOL,
+                                         st_addr_of(op)))
+        {
+            return JS_UNDEFINED;
+        }
+    }
+
+    /*
      * `cosign` sits AFTER the expiry and the window and BEFORE the budget.
      *
      * After, because consent must not be bankable outside the hours the
@@ -377,6 +492,14 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
         && ngx_js_socket_budget_spend(ctx, op) != NGX_OK)
     {
         return JS_UNDEFINED;
+    }
+
+    /* Every gate passed: the operation is happening, so the conversation moves.
+     * In audit mode pstep may be NGX_ERROR and the operation was allowed anyway;
+     * the cursor then stays where it was, because a violation that was logged
+     * rather than denied is still not a legal transition. */
+    if (op->proto_n > 0 && pstep != NGX_ERROR) {
+        op->proto_pos = (uint8_t) pstep;
     }
 
     st = ngx_js_socket_state_of(op);
@@ -985,6 +1108,16 @@ typedef struct {
     uint32_t  cosign_within;
     char      cosign_key[64];
     char      cosign_as[48];
+    /*
+     * M-LIB `protocol`: a session type over this capability's operations.
+     * proto_n == 0 means unsequenced.  Each term is (op id << 1) | starred, and
+     * `proto_pos` is the cursor -- PER WRAPPER, deliberately not fleet-wide the
+     * way a cosign record is: a session type describes ONE conversation, and two
+     * holders sharing a cursor would interleave into nonsense.
+     */
+    uint8_t   proto_term[NGX_JS_PROTO_MAX];
+    uint8_t   proto_n;
+    uint8_t   proto_pos;
 } ngx_js_outbound_opaque_t;
 
 JSClassID  ngx_js_outbound_class_id;   /* described by ngx_js_com_describe.c */
@@ -1202,6 +1335,7 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
     ngx_js_outbound_rec_t     *rec;
     const char                *url, *host, *meth, *scheme;
     size_t                     len, host_len, mlen, scheme_len;
+    ngx_int_t                  pstep = NGX_ERROR;
 
     op = JS_GetOpaque2(ctx, this_val, ngx_js_outbound_class_id);
     if (op == NULL) {
@@ -1262,6 +1396,19 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
         }
     }
 
+    /* CHECKED here, COMMITTED after the budget -- see the socket getter for why
+     * this gate is the one that has to split its decision from its effect. */
+    if (op->proto_n > 0) {
+        pstep = ngx_js_protocol_step(op->proto_term, op->proto_n,
+                                     op->proto_pos, 0 /* request */);
+        if (pstep == NGX_ERROR
+            && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_PROTOCOL, url))
+        {
+            JS_FreeCString(ctx, url);
+            return JS_UNDEFINED;
+        }
+    }
+
     if (op->cosign_quorum > 0
         && ngx_js_cosign_gate(ctx, op->cosign_key, op->cosign_as,
                               op->cosign_quorum, op->cosign_within, url)
@@ -1278,6 +1425,10 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
     {
         JS_FreeCString(ctx, url);
         return JS_UNDEFINED;
+    }
+
+    if (op->proto_n > 0 && pstep != NGX_ERROR) {
+        op->proto_pos = (uint8_t) pstep;
     }
 
     /*
@@ -1704,6 +1855,44 @@ ngx_js_socket_set_cosign(JSValueConst obj, const char *key, const char *as,
                 sizeof(op->cosign_as));
     op->cosign_quorum = quorum;
     op->cosign_within = within ? within : 1;
+}
+
+
+/*
+ * Apply a session type.  n == 0 leaves the wrapper unsequenced, which is every
+ * capability nobody wrote a protocol for; the terms themselves were validated at
+ * the producer, where the operator can be told which word they got wrong.
+ */
+void
+ngx_js_socket_set_protocol(JSValueConst obj, const uint8_t *term, ngx_uint_t n)
+{
+    ngx_js_socket_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_socket_class_id);
+    if (op == NULL || n == 0 || n > NGX_JS_PROTO_MAX) {
+        return;
+    }
+
+    ngx_memcpy(op->proto_term, term, n);
+    op->proto_n = (uint8_t) n;
+    op->proto_pos = 0;
+}
+
+
+void
+ngx_js_outbound_set_protocol(JSValueConst obj, const uint8_t *term,
+    ngx_uint_t n)
+{
+    ngx_js_outbound_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_outbound_class_id);
+    if (op == NULL || n == 0 || n > NGX_JS_PROTO_MAX) {
+        return;
+    }
+
+    ngx_memcpy(op->proto_term, term, n);
+    op->proto_n = (uint8_t) n;
+    op->proto_pos = 0;
 }
 
 

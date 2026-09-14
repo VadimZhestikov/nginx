@@ -92,12 +92,12 @@ the fall-through decides whether that mistake means REFUSE or FULL AUTHORITY.
 
 - **`std.postures.*` / `onViolation` / `profile:'restrictive'`** — nothing enforces them.
   They arrive with the enforcement, not before it.
-- **`protocol` / `opaque.*`** — the two words still absent. Each needs C-side enforcement, and
-  shipping one as a descriptor would be shipping policy that does nothing. `protocol` is enforced
-  operation ORDER (a session type over a capability's methods) and **is not a URL scheme** —
-  pinning a scheme is an attenuation of the destination and lives inside `allowHosts`. `opaque.*`
-  is on the engine-substrate track. (`allowHosts` shipped at v5.85, `uses` at v5.67, `ttl` at
-  v5.74, `window` at v5.87 and `cosign` at v5.88 — nine of ten.)
+- **`opaque.*`** — the one word still absent, and the only one that was never a MEDIATION: making
+  a value usable-but-unreadable is an engine-substrate question (how a JSValue can be passed
+  without being observed), not an attenuation of a capability's authority. It stays on that track.
+  **THE MEDIATION VOCABULARY IS COMPLETE: ten of ten** — `uses` (v5.67), `ttl` (v5.74),
+  `allowHosts` (v5.85), `window` (v5.87), `cosign` (v5.88), `protocol` (v5.90), beside the original
+  four (`revoke`, `redact`, `allow`, `routes`).
 - **`std.ops`** (the comconctl verbs as library programs over ops-resource caps,
   FOUNDATION §8a) — not started; the natural step 2, and it needs the ops-resource caps
   first.

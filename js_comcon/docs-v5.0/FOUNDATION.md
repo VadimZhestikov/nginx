@@ -635,6 +635,49 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.90 (in place — M-LIB `protocol`, and THE MEDIATION VOCABULARY IS COMPLETE):** the tenth and
+last of MANUAL's mediation words. A session type over a capability's own operations: `allow` says
+which operations exist, `uses` how often, `ttl`/`window` when, `cosign` by whom, and this one IN
+WHAT ORDER. `comcon.protocol('address','port*','fd')`; denial code `cap.protocol`.
+
+Two consequences are not obvious and are therefore written down. `protocol('fd')` IS A ONE-SHOT
+CAPABILITY -- once the last step is consumed the conversation is over -- and that is an attenuation
+`uses(1)` cannot express: a budget is fleet-wide and resets with its window, a protocol is
+per-wrapper and never resets. And the cursor is deliberately NOT fleet-wide the way a cosign record
+is: a session type describes ONE conversation, and two holders sharing a cursor would interleave
+into nonsense.
+
+IT ENFORCES ORDER, NOT COMPLETION, and that is a limit rather than an oversight. "You cannot take
+the fd before you have looked at the address" is checkable at the moment of the call; "you must
+eventually close" is not, because a fragment can simply return and there is no event at which the
+host could notice. A session type that silently enforced half of what session types usually mean
+would be worse than one that says which half.
+
+THE GATE'S POSITION IS THE DESIGN, and it is the first gate here that has to SEPARATE ITS DECISION
+FROM ITS EFFECT. Every other gate's decision is also its effect: a budget charge happens when it is
+decided, and a cosign consent IS the decision. So each of those can only ever be last. A protocol's
+effect -- advancing the cursor -- can be deferred, and must be: an operation that a later gate still
+refuses did not happen and must not move the conversation on. Checking after cosign would record a
+signature for an operation about to be refused for being out of order; committing before the budget
+would advance a conversation whose operation was never performed. So the transition is CHECKED
+before cosign and COMMITTED after the budget. *A gate that mutates state must separate its decision
+from its effect, or it can only ever be last.*
+
+AND ITS TEST FOUND A DEFECT IN `cosign`. The first probe for the check/commit split could not see
+it -- two principals meant two WRAPPERS with two cursors, and a control that moved the commit up to
+the check passed. Rewriting it so ONE wrapper attempts twice, with the cosignature arriving in
+between, exposed that an already-consenting principal was judged by its POSITION in the record
+rather than the record's LENGTH: once "alice,bob" reached a quorum of two, ALICE RETRYING WAS STILL
+DENIED, because she is first. That breaks the sequence an operations room actually performs --
+alice tries, is told to find a cosigner, bob cosigns, ALICE RETRIES -- and the word was only usable
+if the second person happened to be the one who performed the operation. Every cosign assertion had
+the second principal perform it, which is exactly the shape that passes with the bug present. Found
+by the test for a different word.
+
+The mediation vocabulary is now closed and complete: ten of ten. `opaque.*` remains, and is the one
+name that was never a mediation -- making a value usable-but-unreadable is an engine-substrate
+question, not an attenuation of authority.
+
 **v5.89 (in place — three defects found by asking v5.87's question one axis over):** probing each
 mediation word ALONE, rather than only in the composition it normally arrives in, found a `window`
 gap at v5.87. Asking the same question of each word ON EACH CAPABILITY KIND found three more.

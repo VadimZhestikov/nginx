@@ -413,6 +413,53 @@ operational facts and an operator paged at 02:00 needs to know which they are lo
 
 ---
 
+## 8h. `protocol(step…)` — enforced operation order *(v5.90)*
+
+```js
+var handle = comcon.mediate(sock, comcon.protocol('address', 'port*', 'fd'));
+var once   = comcon.mediate(cap,  comcon.protocol('request'));   // one intent, ever
+```
+
+A session type over the capability's own operations. `allow`/`redact` say **which** operations
+exist, `uses` **how often**, `ttl`/`window` **when**, `cosign` **by whom** — this says **in what
+order**. Denial code `cap.protocol`. With it, the mediation vocabulary is complete: **ten of ten.**
+
+- **A starred step may happen any number of times including zero; a bare step must happen exactly
+  once, in place.** Once the last step is consumed the conversation is **over** and every further
+  operation is denied — which is what makes `protocol('fd')` a **one-shot capability**. That is a
+  different attenuation from `uses(1)`: a budget is fleet-wide and resets with its window, a
+  protocol is per-wrapper and never resets.
+- **IT ENFORCES ORDER, NOT COMPLETION.** "You cannot take the fd before you have looked at the
+  address" is checkable at the moment of the call. "You must eventually close" is not — a fragment
+  can simply return, and there is no event at which the host could notice. Stated because a
+  session type that silently enforced half of what session types usually mean would be worse than
+  one that says which half.
+- **The cursor is PER WRAPPER**, deliberately not fleet-wide the way a cosign record is: a session
+  type describes ONE conversation, and two holders sharing a cursor would interleave into nonsense.
+  Each `include()` of a fragment starts a fresh conversation; repeated calls to the same bound
+  fragment continue it.
+- **A violation does not advance the cursor**, so a fragment that calls out of order and then
+  proceeds correctly still works. Nor does an operation another gate refuses: the transition is
+  **checked** before the cosignature and **committed** only after the budget. *A gate whose
+  decision is also its effect can only ever be last; one whose effect can be deferred must be.*
+- **The operations.** A socket has `address`, `port`, `fd`, `listener` (its gated field reads). An
+  outbound capability has `request` — and only that, because `pending`/`clear` are the host's half
+  and are reach-gated, so a fragment can never perform them. Listing them would let you write a
+  protocol that can never advance.
+- **Nothing is defaulted.** No steps (a dead capability is spelled `revoke()`), an operation no
+  capability has, a **mixture** of two capability kinds, a **repeated** step (whose enforced order
+  would depend on which reading the matcher takes), more than 8 steps, a name that is not one: all
+  `E_CAP_FLAVOR`. A protocol naming the **wrong capability kind** is refused at `mediate()` in both
+  directions — every step would be a violation, so the capability would be dead, and that is a
+  policy error rather than a run-time denial.
+- **Composition.** An identical protocol composes; a different order or a different starring is
+  **refused** — two session types do not intersect in one session type. It composes freely with a
+  mask, `uses`, `ttl`, `window`, `cosign` and `allowHosts`.
+- Audit mode logs and allows, like every gate — and the cursor does not advance on a violation that
+  was merely logged, because a transition that was not legal is not a transition.
+
+---
+
 ## 8g. `cosign(spec)` — the two-person rule *(v5.88)*
 
 ```js

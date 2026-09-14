@@ -146,6 +146,22 @@ if (l.path === '/cosign') {
              * above recorded exactly one consent between them. */
             o.thenBob = attempt(b2);
 
+            /* --- THE RETRY, which is the actual ops-room sequence ---
+             *
+             * alice tries, is told to find a cosigner, bob cosigns, and ALICE
+             * RETRIES.  Every assertion above has the SECOND principal perform
+             * the operation, which is the one shape that works if the record's
+             * membership test is wrong -- and it was: the first implementation
+             * compared the quorum against the matched principal's POSITION in the
+             * record rather than the record's LENGTH, so once the quorum was met
+             * alice was still denied, forever, because she is first in the list.
+             * Found by a test for a different word entirely. */
+            var KR = k();
+            var ra = arm({ key: KR, quorum: 2, within: 60, as: 'alice' });
+            var rb = arm({ key: KR, quorum: 2, within: 60, as: 'bob' });
+            o.retry = [attempt(ra).result, attempt(rb).result,
+                       attempt(ra).result];
+
             /* --- quorum 3 --- */
             var K3 = k();
             var t3 = ['alice', 'bob', 'carol'].map(function (p) {
@@ -355,7 +371,7 @@ if (l.path === '/fleet') {
 });
 JS
 
-$t->try_run('no js module')->plan(25);
+$t->try_run('no js module')->plan(26);
 
 sub get_json {
     my ($path) = @_;
@@ -394,6 +410,17 @@ is($o->{twiceB}{result}, undef,
 cmp_ok($o->{thenBob}{result}, '>', 0,
    '...and a different principal then executes it, so those two denials had '
    . 'recorded exactly one consent between them');
+
+# --- the retry ---
+is_deeply($o->{retry}, [undef, 1, 1],
+   'THE RETRY: alice is denied, bob cosigns, and ALICE RETRIES SUCCESSFULLY -- '
+   . 'which is the sequence an operations room actually performs. The first '
+   . 'implementation denied it forever, because it compared the quorum against '
+   . "the matched principal's POSITION in the record rather than the record's "
+   . 'LENGTH, and alice is first. Every other assertion here has the SECOND '
+   . 'principal perform the operation, which is exactly the shape that passes '
+   . 'with that bug present')
+    or diag('retry: ' . encode_json($o->{retry}));
 
 # --- quorum 3 ---
 is_deeply($o->{three}, [undef, undef, 1],

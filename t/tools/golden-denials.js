@@ -148,6 +148,14 @@ var GOLDEN = [
     probe: "function(a){ var v = s.address;"
          + " return (v === undefined) ? 'denied' : 'allowed'; }",
     expect: 'denied' },
+  /* M-LIB `protocol` — enforced operation ORDER.  Its capability is COMPUTED
+   * (`protoWrong`) and reliably denied for the simplest possible reason: the
+   * protocol's only step is `port`, and the probe reads `address`.  No clock, no
+   * quorum, no budget -- the order alone. */
+  { code: 'cap.protocol', cap: 'protoWrong', grant: 's', mode: 'enforce',
+    probe: "function(a){ var v = s.address;"
+         + " return (v === undefined) ? 'denied' : 'allowed'; }",
+    expect: 'denied' },
   { code: 'out.drain', cap: 'outbound', grant: 'out', mode: 'enforce',
     probe: "function(a){ var r = out.pending();"
          + " return (r === undefined) ? 'denied' : 'drained'; }",
