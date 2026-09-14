@@ -635,6 +635,59 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.95 (in place — A GRANTED CAPABILITY BELONGS TO ONE FRAGMENT: the structural half v5.93 owed):**
+v5.93 closed the deferred-job escape by draining every invocation's queued jobs, and said plainly
+what that drain cannot do. It is BEST-EFFORT: a fragment which outruns the job budget leaves work
+behind, and no bounded loop can fix that, because the leftover jobs are ordinary JS and nothing can
+un-queue them.
+
+SO THE QUESTION CHANGES. Not *can we stop the code running* -- we cannot, in general -- but *can we
+stop it having authority*, which is answerable cheaply. Every granted wrapper (socket, outbound, COM
+facet) now records the fragment it was granted to, and every gate asks that first. A leftover
+continuation runs and OBTAINS NOTHING. THE DRAIN DECIDES WHO IS CHARGED; THIS DECIDES WHO CAN SPEND.
+
+`cap.owner` is the first denial code in the set that names a STRUCTURAL INVARIANT rather than a
+policy the operator wrote. Nobody configures it and nothing legitimate trips it: the host's own
+wrappers are unbound, and a fragment's own wrappers match while it is running. It is checked BEFORE
+the mask and before every other gate, because a capability that is not yours is not yours redacted,
+budgeted or scheduled -- it is not yours at all, and that is the only question here whose answer does
+not depend on what anyone configured.
+
+THE BINDING IS A PREDICTION, AND THEREFORE ASSERTED. The wrappers are built in the grant loop while
+the fragment's handle is not assigned until the push at the end -- by which time the wrapper values
+have been released and live only inside the closure. So the handle is predicted, and then CHECKED
+against the real one: a mismatch kills the fragment instead of publishing it. A wrapper bound to the
+WRONG fragment would be worse than one bound to none, because the gate would then be enforcing an
+invariant nobody holds while looking like it was working.
+
+THE PROBE FORCES THE RESIDUAL RATHER THAN ARGUING ABOUT IT. A fragment queues 10,100 deferred
+requests; the budget lets 10,000 through, attributed to it (32 recorded and 9,968 dropped, which the
+outbound queue counts exactly); the remainder run inside the next fragment and add NOTHING while
+counting as `cap.owner`. The same shape is run for a COM facet, because a facet is only ever holdable
+by a foreign fragment through a leftover job -- so without that arm the facet's check would be code
+no control can break, in a change whose whole subject is that.
+
+And the other half of the control, which matters as much: the host reading its own socket, the host
+spending its own outbound capability, ONE mediated capability granted to TWO fragments working for
+both (each include builds its own wrapper), and a facet -- with `cap.owner` firing exactly zero
+times. *A gate that fires on correct use is not a gate, it is an outage.*
+
+AND THE BOUNDARY WAS IN THE WRONG PLACE, which a test from another increment caught. The identity
+was restored when the CALL returned -- but SR-1 deliberately materializes the result INSIDE the tenant
+compartment, so a getter on the returned object is fragment code running during JS_JSONStringify.
+With the identity already restored, such a getter held capabilities that were no longer "its own",
+and a fragment could not read its own grant from its own return value.
+`t/comcon_include_sr1.t` found it because its escape probe distinguishes `null` (the reach gate
+denying) from `undefined` (something else denying), and it suddenly got the wrong one. The identity,
+the posture and the per-invocation allowance now all end where the COMPARTMENT does. *A boundary that
+is in three places is a boundary you have to be reminded of by a test.*
+
+What remains of v5.93's gap is ACCOUNTING, not authority: leftover work is still charged to a
+stranger's deadline and budget, and still runs at a stranger's wall-clock time. And in AUDIT mode a
+foreign capability is logged and allowed, like every other gate -- deliberate consistency with
+`sock.mutate`'s ownership check rather than an oversight, but it does mean the one code here that is
+not a policy still bends to a policy switch.
+
 **v5.94 (in place — V10: the epoch machinery model-checked, and the defect it found):** the last
 V-track item that did not depend on the parked compiler track. The mode fan-out is a fleet-wide
 protocol over shared memory with concurrent writers, worker respawn and master reload; the formal

@@ -493,7 +493,8 @@ The primary control, and the one everything else is defence in depth for.
 #### G6.14 — a posture is a property of the BINDING, not of the fleet
 - **CLAIM:** `include(src, {onViolation:'audit'|'deny'|'learn'})` sets the audit/enforce posture
   for that binding's invocations only, in both directions, restored afterwards including on the
-  exception path. `profile` is read: `restrictive`/`declarative` are accepted, `adaptive` and any
+  exception path — and covering the whole invocation, **result marshalling included**, because a
+  getter on the returned object is fragment code (G6.17). `profile` is read: `restrictive`/`declarative` are accepted, `adaptive` and any
   unknown word are refused with `E_ADMIT_CONTRACT`.
 - **ARGUMENT:** INCREMENT_MLIB §4 withheld both words for a good reason — *nothing read them, and a
   posture assembled from ignored keys would read like a policy and do nothing, which is worse than
@@ -601,12 +602,13 @@ The primary control, and the one everything else is defence in depth for.
   accepted no async function before G6.15, so the gate had never seen the shape it now admits, and
   the question worth asking is not "is anything open" but "does the shape change what the cage
   allows".
-- **GAP:** **A fragment that outruns the job budget still leaves work behind**, and that work runs
+- **GAP:** A fragment that outruns the job budget still leaves work behind, and that work runs
   inside a later invocation, on its deadline and under its posture. The drain reports it loudly and
-  cannot remove it, so refusing the invocation would punish the caller without removing the hazard.
-  **The structural fix is owed and named:** bind each granted capability wrapper to the fragment it
-  was granted to and have the gates refuse when the fragment being invoked is not that one — then a
-  leftover job cannot use authority whenever it runs, and this drain is about attribution only.
+  cannot remove it. **The structural half was owed here and is now PAID — see G6.17:** every granted
+  wrapper is bound to its fragment and the gates refuse it to anyone else, so a leftover job runs
+  and gets nothing. What remains of this gap is the accounting, not the authority: leftover work is
+  still *charged* to a stranger's deadline and budget, and still runs at a stranger's wall-clock
+  time.
   **A bound nobody measured is a bound nobody knows the order of.** G6.15's commit claimed the
   deadline was the real bound and the job cap the belt; measurement says a `.then` chain exhausts the
   **memory allowance** after 354,885 promises, while an `await` chain reaches the **request**
@@ -656,6 +658,58 @@ The primary control, and the one everything else is defence in depth for.
   **home:** VERIFICATION.md §V10 · `ngx_js_shared_mode_publish`.
 - **THREAT:** T6, T11
 - **V:** V10
+
+#### G6.17 — a granted capability belongs to ONE fragment
+- **CLAIM:** Every granted wrapper — socket, outbound, COM facet — records the fragment it was
+  granted to, and every gate refuses it to any other fragment's code (`cap.owner`). A leftover
+  continuation therefore runs and obtains nothing. The host's own wrappers are unbound and always
+  usable; one mediated capability granted to two fragments works for both.
+- **ARGUMENT:** This is the structural half G6.16 named and owed. That drain is best-effort: a
+  fragment which outruns the job budget leaves work behind, and no bounded loop can fix that,
+  because the jobs are ordinary JS and nothing can un-queue them. So the question changes from *can
+  we stop the code running* to *can we stop it having authority* — and the second is answerable
+  cheaply. **The drain decides who is charged; this decides who can spend.**
+  `cap.owner` is the first denial code that names a STRUCTURAL invariant rather than a policy the
+  operator wrote. It is checked FIRST, before the mask and before every other gate: a capability
+  that is not yours is not yours redacted, budgeted or scheduled — it is not yours at all.
+  The binding uses the handle the fragment *will* be given, because wrappers are built before the
+  handle is assigned; the prediction is **asserted** against the real handle after the push, and a
+  mismatch kills the fragment rather than publishing it. A wrapper bound to the WRONG fragment
+  would be worse than one bound to none, because the gate would look like it was working.
+  **And the fragment's identity ends where the COMPARTMENT does, not where its call does** — a
+  distinction the first version got wrong: the result marshalling runs inside the compartment by
+  SR-1's design, so a getter on the returned object is fragment code. The posture and the
+  per-invocation allowance move with it: *a boundary that is in three places is a boundary you have
+  to be reminded of by a test.*
+- **EV:** `t/comcon_cap_owner.t` — 12 assertions, and the probe **forces the residual rather than
+  arguing about it**: a fragment queues 10,100 deferred requests, the budget lets 10,000 through
+  (32 recorded + 9,968 dropped, attributed to it), and the leftovers run inside the next fragment
+  adding **nothing** while counting as `cap.owner`. The same shape for a COM facet, because
+  otherwise the facet's check would be code no control can break. Plus the other half of the
+  control: the host's own socket and outbound capability, one mediated capability granted to TWO
+  fragments working for both, and a facet — with `cap.owner` firing **exactly zero** times. *A gate
+  that fires on correct use is not a gate, it is an outage.* Five controls.
+- **EV:** `t/tools/golden-denials.js` — `cap.owner` frozen, with a row shape of its own
+  (`leftover`) because its only reachable path needs two invocations, as the `ttl` row's
+  `sleepBefore` needed two requests.
+- **EV:** `t/comcon_include_sr1.t` — **it caught the boundary being in the wrong place.** SR-1
+  deliberately materializes the result INSIDE the tenant compartment, so a getter on the returned
+  object is fragment code running during `JS_JSONStringify`. With the identity restored before the
+  marshal, such a getter held capabilities that were no longer "its own" and was refused — a
+  fragment could not read its own grant from its own return value. That test distinguishes `null`
+  (the reach gate denying) from `undefined` (something else denying) and got the wrong one. The
+  identity, the posture and the allowance now all end where the COMPARTMENT does; `t/comcon_posture.t`
+  pins the posture half of the same boundary in both directions.
+- **GAP:** **In audit mode a foreign capability is logged and ALLOWED**, like every other gate.
+  That is deliberate consistency rather than an oversight — `sock.mutate`'s ownership check behaves
+  the same way and an operator in audit has asked to see denials rather than have them — but it
+  means the one code here that is not a policy still bends to a policy switch. Also: the binding is
+  per WRAPPER, so a capability granted to two fragments is two wrappers and neither can reach the
+  other's; there is no notion of a capability deliberately SHARED between fragments, and adding one
+  would need a different mechanism than an owner id.
+  **home:** G6.16's GAP (which named this fix) · `ngx_js_cap_foreign`.
+- **THREAT:** T3, T4, T6, T9
+- **V:** V4, V13
 
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
@@ -1430,6 +1484,8 @@ signature is never quietly credited with work it did not see.
 | **THE DEFERRED-JOB ESCAPE, CLOSED — G6.16, and it was opened by G6.15 one day earlier.** A fragment could queue a job and return; nothing else drains the compartment runtime, so the job ran inside the NEXT unrelated invocation — on a stranger's deadline and memory allowance, gated at a stranger's wall-clock time, and under a stranger's `onViolation` posture. Every invocation now drains to quiescence inside its own compartment scope. Also: nothing in this process installed a promise-rejection tracker, on either runtime, so a failed continuation was silent everywhere. | **Closes a hole this project's own increment opened, found by probing that increment rather than by a report.** Two of the fix's first attempts were wrong and their controls said so: the "job threw" signal is unreachable (a promise reaction catches its own throw, so the failure is an unhandled rejection), and the posture assertion could not discriminate until the fleet and the binding were made to DISAGREE. Adds one leaf and corrects a v5.92 claim about which bound fires. |
 
 | **V10 BUILT — G10.4 — AND IT FOUND A DEFECT.** The last V-item independent of the parked compiler track. The mode fan-out's epoch bump was three operations from JS, so two concurrent switches both wrote the same epoch with different modes — and because the reconciler early-returned on epoch EQUALITY, the loser's divergence was **permanent and silent**: a fleet moved to `enforce` could leave one worker in `audit` for the rest of its life. The publish is now one critical section under the store's lock. | **Reduces F9 from four unmodelled V-items to three, and closes a silent-divergence hole in a rollout mechanism §15 relied on.** The model's own control is built in (three arms), and the model said the obvious one-line fix was insufficient *before* the code was written — which is the first time a model in this project has been ahead of the implementation. |
+
+| **THE OWED STRUCTURAL FIX, PAID — G6.17.** G6.16 closed the deferred-job escape with a best-effort drain and named what it could not do: a fragment outrunning the job budget leaves work behind. Every granted wrapper is now bound to its fragment and every gate refuses it to anyone else, so a leftover continuation runs and **obtains nothing**. `cap.owner` is the first denial code naming a structural invariant rather than a policy. | **Turns a named residual into a checked property, and the check's own negative case is forced rather than argued** — the probe deliberately outruns the budget so the leftover path is exercised, including for the COM facet, whose check would otherwise be code no control can break. What remains of G6.16's gap is accounting (a stranger's deadline and clock), not authority. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

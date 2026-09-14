@@ -190,6 +190,35 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
             o.rows.push(rec); continue;
         }
 
+        /*
+         * A LEFTOVER row is measured during a DIFFERENT fragment's invocation,
+         * because that is the only place its code can fire: the probe queues more
+         * jobs than the drain's budget, and what is left runs inside the next
+         * fragment -- holding capabilities that are not that fragment's. Same
+         * reason the `ttl` row has a two-phase shape: a code whose only reachable
+         * path needs two invocations cannot be pinned by one.
+         */
+        if (row.leftover) {
+            comcon.mode(row.mode);
+            var lcap = capFor(row);
+            var lf = comcon.include(row.probe, { grants: grantsFor(row) });
+            try { rec.result = lf({}); } catch (el) { rec.result = 'threw'; }
+
+            var lb = counts();
+            var bystander = comcon.include(
+                "async function(x){ return await 1; }", {});
+            try { bystander({}); } catch (eb) { /* not the subject */ }
+            rec.fired = fired(lb, counts());
+            rec.firedOwn = (rec.fired.indexOf(row.code) >= 0);
+            rec.undeclared = rec.fired.filter(function (c) {
+                return [row.code].concat(row.also || []).indexOf(c) < 0; });
+            if (row.expect !== null && row.expect !== undefined) {
+                rec.expectOk = (rec.result === row.expect);
+            }
+            if (lcap) { /* held so the wrapper is not collected mid-row */ }
+            o.rows.push(rec); continue;
+        }
+
         comcon.mode(row.mode);
         /* a row may ask for its capability to be BUDGETED (the `uses`
            mediation); everything else is granted straight. */

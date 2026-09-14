@@ -219,6 +219,12 @@ void  ngx_js_outbound_set_cosign(JSValueConst obj, const char *key,
 
 /* M-LIB `protocol`: map an operation NAME to this capability kind's id, or
  * NGX_ERROR. The socket ids are the property getter's own `magic` values. */
+/* Bind a granted wrapper to the fragment it was granted to (0 = unbound, the
+ * host's own).  A wrapper held by another fragment's code -- a leftover
+ * continuation -- is refused as cap.owner. */
+void  ngx_js_socket_set_owner(JSValueConst obj, uint32_t frag);
+void  ngx_js_outbound_set_owner(JSValueConst obj, uint32_t frag);
+
 ngx_int_t  ngx_js_socket_op_id(const char *name);
 ngx_int_t  ngx_js_outbound_op_id(const char *name);
 

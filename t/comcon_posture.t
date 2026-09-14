@@ -176,6 +176,26 @@ if (l.path === '/leak') {
                 { imports: [], onViolation: 'audit' });
             try { boom({}); o.threw = 'NO'; } catch (e) { o.threw = 'yes'; }
             o.modeAfterThrow = nginx.tenantDenials().mode;
+
+            /* THE POSTURE COVERS THE MARSHALLING, because the marshalling is part
+             * of the invocation: SR-1 deliberately materializes the result INSIDE
+             * the tenant compartment, so a getter on the returned object is
+             * fragment code and its gates are the fragment's.  The fleet is in
+             * ENFORCE and this binding asks for AUDIT, so the getter's closed
+             * window must be logged and ALLOWED -- which it can only be if the
+             * posture had not already been restored when the getter ran. */
+            var g = comcon.include(
+                "function(a){ return { get v(){ return s.port; } }; }",
+                { imports: [], grants: { s: closed() }, onViolation: 'audit' });
+            o.marshalAudit = g({}).v;
+
+            /* ...and the same shape with the binding in DENY is undefined, so the
+             * assertion above is the posture doing it and not the window being
+             * open after all. */
+            var g2 = comcon.include(
+                "function(a){ return { get v(){ return s.port; } }; }",
+                { imports: [], grants: { s: closed() }, onViolation: 'deny' });
+            o.marshalDeny = g2({}).v;
         } catch (e) { o.driverError = String(e && e.message); }
         req.respond(200, { 'content-type': 'application/json' },
                     JSON.stringify(o));
@@ -185,7 +205,7 @@ if (l.path === '/leak') {
 });
 JS
 
-$t->try_run('no js module')->plan(10);
+$t->try_run('no js module')->plan(12);
 
 sub get_json {
     my ($path) = @_;
@@ -259,6 +279,18 @@ is($o->{defaultOnViolation}, 0,
 
 # --- the exception path ---
 my $l = get_json('/leak');
+cmp_ok($l->{marshalAudit}, '>', 0,
+   'THE POSTURE COVERS THE MARSHALLING. SR-1 materializes the result inside the '
+   . 'tenant compartment, so a getter on the returned object is fragment code: '
+   . 'with the fleet in ENFORCE and this binding in AUDIT, its closed window is '
+   . 'logged and ALLOWED -- which it can only be if the posture had not already '
+   . 'been restored when the getter ran. The identity and the allowance end at '
+   . 'the same boundary, and an SR-1 assertion caught it when they did not')
+    or diag('marshalAudit: ' . ($l->{marshalAudit} // 'undef'));
+is($l->{marshalDeny}, undef,
+   '...and the same shape with the binding in DENY reads undefined, so what is '
+   . 'being measured is the POSTURE and not a window that was open anyway');
+
 is_deeply([$l->{threw}, $l->{modeAfterThrow}], ['yes', 'enforce'],
    'a fragment that THROWS under a shadow posture does not leave the worker in '
    . 'audit mode: the restore happens on the exception path too, or one bad '

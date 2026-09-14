@@ -34,6 +34,8 @@ extern JSClassID  ngx_js_com_facet_class_id;
  * (as void* — the struct is private to ngx_js_com_http.c) from a server value.
  */
 void      *ngx_js_server_srv_op(JSValueConst val);
+/* Bind a granted facet to the fragment it was granted to (0 = the host's own). */
+void       ngx_js_com_facet_set_owner(JSValueConst obj, uint32_t frag);
 JSValue    ngx_js_com_facet_wrap(JSContext *ctx, void *srv_op,
                const char *glob, size_t glob_len);
 ngx_int_t  ngx_js_com_facet_register_class(JSRuntime *rt);

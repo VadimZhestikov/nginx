@@ -156,6 +156,24 @@ var GOLDEN = [
     probe: "function(a){ var v = s.address;"
          + " return (v === undefined) ? 'denied' : 'allowed'; }",
     expect: 'denied' },
+  /* A capability used by a fragment it was not granted to.
+   *
+   * The only reachable way to hold one is a LEFTOVER CONTINUATION: a job queued
+   * by fragment A and run inside B's invocation holds A's wrappers.  So this row
+   * has a shape of its own (`leftover`), like the `ttl` row's two-phase
+   * `sleepBefore`: the probe deliberately queues MORE jobs than the drain's
+   * budget, and what fires is measured during the NEXT fragment's invocation.
+   *
+   * It is the first code in this corpus that names a STRUCTURAL invariant rather
+   * than a policy the operator wrote -- nobody configures it, and nothing
+   * legitimate trips it. */
+  { code: 'cap.owner', cap: 'outbound', grant: 'out', mode: 'enforce',
+    leftover: true,
+    probe: "function(a){ var i; for (i = 0; i < 10100; i++) {"
+         + " Promise.resolve().then(function(){"
+         + "   out.request('https://a.example.com/x'); }); }"
+         + " return 'queued'; }",
+    expect: 'queued' },
   { code: 'out.drain', cap: 'outbound', grant: 'out', mode: 'enforce',
     probe: "function(a){ var r = out.pending();"
          + " return (r === undefined) ? 'denied' : 'drained'; }",

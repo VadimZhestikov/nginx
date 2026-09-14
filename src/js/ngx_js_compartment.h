@@ -138,6 +138,19 @@ typedef enum {
      * that never happened never advances the conversation.
      */
     NGX_JS_DENIAL_CAP_PROTOCOL,        /* operation out of the declared order    */
+    /*
+     * A capability exercised by a fragment it was not granted to.
+     *
+     * Every other code here names a POLICY the operator wrote.  This one names a
+     * STRUCTURAL invariant: a granted wrapper belongs to one fragment, and no
+     * other fragment's code may use it -- including that fragment's own leftover
+     * continuation, which is the case this exists for.  A job queued by A and run
+     * during B's invocation holds A's wrappers, and without this it would spend
+     * A's authority on B's deadline, at B's wall-clock time and under B's
+     * posture.  The drain (G6.16) keeps that from arising in the normal case; this
+     * keeps it from mattering when the drain cannot.
+     */
+    NGX_JS_DENIAL_CAP_OWNER,           /* a capability used by another fragment  */
     NGX_JS_DENIAL_LAST
 } ngx_js_denial_code_t;
 
@@ -253,6 +266,23 @@ void ngx_js_compartment_mode_set(ngx_js_tenant_mode_e mode);
  * saved and restored around one invocation.  The fleet-wide switch stays where
  * it was; this is what lets ONE fragment be shadowed while the rest enforce. */
 ngx_js_tenant_mode_e ngx_js_compartment_mode_get(void);
+
+/*
+ * WHICH FRAGMENT IS BEING INVOKED (0 = none, i.e. host code).
+ *
+ * Set around a confined invocation and restored afterwards, so that a granted
+ * capability wrapper -- which records the fragment it was granted to -- can be
+ * refused when some OTHER fragment's code holds it.  The predicate lives here,
+ * in one place, because three files ask the question and three copies of it is
+ * how one of them ends up asking a different one.
+ */
+void      ngx_js_compartment_frag_set(uint32_t frag);
+uint32_t  ngx_js_compartment_frag_get(void);
+
+/* Is `owner` a capability that does NOT belong to the fragment now running?
+ * owner == 0 means the wrapper was never bound to a fragment (the host's own),
+ * which is always usable. */
+ngx_flag_t ngx_js_cap_foreign(uint32_t owner);
 
 /* B0: record a harvested access path (deny-by-default wishlist entry). */
 void         ngx_js_learn_record(const char *path);

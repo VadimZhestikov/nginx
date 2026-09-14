@@ -1141,6 +1141,7 @@ JSValue
 ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
+    uint32_t  frag_pred;
     ngx_js_conf_t  *jcf;
     JSContext      *sctx;
     JSValue         fn, outer, thrown, exc, name_v, av[16];
@@ -1288,6 +1289,24 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         JS_FreeValue(sctx, exc);
         return thrown;
     }
+
+    /*
+     * THE HANDLE THIS FRAGMENT WILL BE GIVEN, predicted here because the wrappers
+     * are built now and the handle is not assigned until the push at the end --
+     * by which time `av[]` has been freed and the wrappers live only inside the
+     * closure.
+     *
+     * A prediction is a coupling, so it is ASSERTED against the real handle after
+     * the push rather than trusted: a wrapper bound to the WRONG fragment would
+     * be worse than one bound to none, because it would hand one fragment's
+     * authority to another under a check that looks like it is working.  If the
+     * two ever disagree the fragment is killed rather than published.
+     *
+     * +1 so that 0 keeps meaning "not bound to any fragment" -- the host's own
+     * wrappers, which every gate must keep accepting.
+     */
+    frag_pred = (jcf->comcon_frags == NULL)
+                ? 0 : (uint32_t) jcf->comcon_frags->nelts;
 
     /* re-wrap each granted cap compartment-native and apply the closure.
        argv[3] is a parallel array of mediate policy descriptors:
@@ -1619,6 +1638,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             ngx_js_outbound_set_window(av[gi], wdays, wfrom, wto);
             ngx_js_outbound_set_cosign(av[gi], ckey, cas, cquorum, cwithin);
             ngx_js_outbound_set_protocol(av[gi], pterm, pn);
+            ngx_js_outbound_set_owner(av[gi], frag_pred + 1);
             JS_FreeValue(hctx, pol_v);
             JS_FreeValue(hctx, cap_v);
             if (JS_IsException(av[gi])) {
@@ -1641,6 +1661,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             glob = JS_ToCStringLen(hctx, &glen, name_v);
             av[gi] = ngx_js_com_facet_wrap(sctx, srv_op, glob ? glob : "*",
                                            glob ? glen : 1);
+            ngx_js_com_facet_set_owner(av[gi], frag_pred + 1);
             if (glob != NULL) {
                 JS_FreeCString(hctx, glob);
             }
@@ -1707,6 +1728,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             ngx_js_socket_set_window(av[gi], wdays, wfrom, wto);
             ngx_js_socket_set_cosign(av[gi], ckey, cas, cquorum, cwithin);
             ngx_js_socket_set_protocol(av[gi], pterm, pn);
+            ngx_js_socket_set_owner(av[gi], frag_pred + 1);
         }
 
         JS_FreeValue(hctx, pol_v);
@@ -2108,6 +2130,27 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     *(JSValue *) slot = fn;                          /* the array owns fn */
     handle = jcf->comcon_frags->nelts - 1;
 
+    /*
+     * The prediction, checked.  Nothing between the grant loop and here pushes to
+     * this array today, so this cannot fire -- which is exactly why it is written
+     * down: if some future path does, every wrapper this include built is bound to
+     * a DIFFERENT fragment's handle, and the owner gate would then be enforcing an
+     * invariant nobody holds.  The fragment is killed rather than published, and
+     * the handle refuses as a stale epoch.
+     */
+    if ((uint32_t) handle != frag_pred) {
+        ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0,
+                      "js comcon: fragment handle %L is not the predicted %uD; "
+                      "its granted capabilities are bound to the wrong fragment "
+                      "and it has been discarded",
+                      (int64_t) handle, frag_pred);
+        JS_FreeValue(sctx, fn);
+        *(JSValue *) slot = JS_UNDEFINED;
+        return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_CAP_GRANT,
+                   "comcon.include: granted capabilities could not be bound to "
+                   "this fragment");
+    }
+
     return JS_NewInt64(hctx, (int64_t) handle);
 }
 
@@ -2210,6 +2253,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     ngx_uint_t        job_errors = 0;
     ngx_uint_t        job_failed = 0;
     JSValue           irq = JS_UNDEFINED;
+    uint32_t          saved_frag = 0;
     ngx_js_tenant_mode_e  saved_mode = NGX_JS_TENANT_ENFORCE;
     ngx_uint_t        mode_pushed = 0;
     uint64_t          old_deadline = 0, now_ms, newd;
@@ -2341,6 +2385,18 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
                                            : NGX_JS_TENANT_ENFORCE));
         mode_pushed = 1;
     }
+
+    /*
+     * WHICH FRAGMENT IS RUNNING, for the whole call INCLUDING THE DRAIN.  A
+     * granted wrapper records the fragment it was granted to, and the gates
+     * refuse it to anyone else -- so a continuation that outlives its own
+     * invocation and runs inside a stranger's holds capabilities it cannot use.
+     *
+     * Saved and restored rather than assigned, so a nested invoke would inherit
+     * correctly; nothing reaches one today, and this costs one word either way.
+     */
+    saved_frag = ngx_js_compartment_frag_get();
+    ngx_js_compartment_frag_set((uint32_t) handle + 1);
 
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
     result = JS_Call(sctx, fn, JS_UNDEFINED, nargs, (JSValueConst *) &arg);
@@ -2625,13 +2681,6 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         result = JS_Throw(sctx, exc);        /* consumes exc */
     }
 
-    if (mode_pushed) {
-        ngx_js_compartment_mode_set(saved_mode);
-    }
-
-    /* restore the compartment-wide cap: the allowance was for THAT call only */
-    JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
-
     if (JS_IsException(result)) {
         exc = JS_GetException(sctx);
         s = JS_ToCString(sctx, exc);
@@ -2749,6 +2798,34 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
             JS_FreeValue(sctx, jstr);
         }
     }
+
+    /*
+     * ONE BOUNDARY FOR ALL OF IT, and the fragment's identity, posture and
+     * allowance all end where the COMPARTMENT does.
+     *
+     * These three restores used to sit above the marshalling, which looks
+     * harmless until you remember that SR-1 deliberately materializes the result
+     * INSIDE the tenant compartment: a getter on the returned object is fragment
+     * code, and it runs during JS_JSONStringify.  With the identity already
+     * restored, such a getter held capabilities that were no longer "its own" and
+     * was refused as cap.owner -- so a fragment's own return value could not read
+     * its own grant.  t/comcon_include_sr1.t caught it, because its escape probe
+     * distinguishes `null` (the reach gate denying) from `undefined` (something
+     * else denying) and suddenly got the wrong one.
+     *
+     * The same argument applies to the posture and the allowance, so they move
+     * with it: work that happens inside the compartment is the fragment's work,
+     * and it is gated, metered and charged as such.  A boundary that is in three
+     * places is a boundary you have to be reminded of by a test.
+     */
+    if (mode_pushed) {
+        ngx_js_compartment_mode_set(saved_mode);
+    }
+
+    ngx_js_compartment_frag_set(saved_frag);
+
+    /* the allowance was for THAT call only */
+    JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
 
     ngx_js_compartment_leave(prev);
 

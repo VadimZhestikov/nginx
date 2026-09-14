@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.94 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.95 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,16 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **A GRANTED CAPABILITY BELONGS TO ONE FRAGMENT (2026-09-13, v5.95)** — the structural half
+>   v5.93 named and owed. Its drain is best-effort, so a fragment outrunning the job budget leaves
+>   work behind; **the question changes from stopping the code to stopping its AUTHORITY.** Every
+>   granted wrapper (socket, outbound, COM facet) records its fragment; every gate asks first;
+>   `cap.owner` is the first denial code naming a structural invariant rather than a policy. The
+>   probe FORCES the residual (10,100 deferred requests) instead of arguing about it, and the facet
+>   gets the same treatment so its check is not code no control can break. **The boundary was in
+>   the wrong place and a test from another increment caught it:** SR-1 materializes the result
+>   INSIDE the compartment, so a getter on the returned object is fragment code — identity, posture
+>   and allowance now all end where the compartment does. `t/comcon_cap_owner.t` (12) + 6 controls.
 > - **V10 BUILT (2026-09-13, v5.94) — AND IT FOUND A DEFECT.** The last V-item independent of the
 >   parked compiler track. The mode fan-out's epoch bump was three JS operations, so two concurrent
 >   switches both wrote epoch N+1 with different modes — and the reconciler's early return on epoch

@@ -91,6 +91,8 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
     "cap.cosign",
     /* M-LIB `protocol` — out of the declared operation order (see the header) */
     "cap.protocol",
+    /* A capability used by a fragment it was not granted to (see the header) */
+    "cap.owner",
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */
@@ -129,6 +131,35 @@ ngx_js_tenant_mode_e
 ngx_js_compartment_mode_get(void)
 {
     return ngx_js_tenant_mode;
+}
+
+
+/*
+ * The fragment now being invoked.  A plain per-process value: the invoke is
+ * single-threaded and saves/restores it around the call, so nesting inherits
+ * correctly without a stack.
+ */
+static uint32_t  ngx_js_cur_frag;
+
+
+void
+ngx_js_compartment_frag_set(uint32_t frag)
+{
+    ngx_js_cur_frag = frag;
+}
+
+
+uint32_t
+ngx_js_compartment_frag_get(void)
+{
+    return ngx_js_cur_frag;
+}
+
+
+ngx_flag_t
+ngx_js_cap_foreign(uint32_t owner)
+{
+    return owner != 0 && owner != ngx_js_cur_frag;
 }
 
 

@@ -7902,7 +7902,41 @@ typedef struct {
     ngx_js_server_opaque_t  *srv_op;      /* borrowed — the host keeps it alive */
     size_t                   glob_len;
     u_char                   glob[128];
+    /*
+     * Which fragment this facet was granted to; 0 = the host's own.  A facet held
+     * by some OTHER fragment's code -- a leftover continuation queued by the
+     * fragment it was granted to -- is refused as cap.owner, the same structural
+     * check the socket and outbound wrappers make.
+     */
+    uint32_t                 owner;
 } ngx_js_com_facet_opaque_t;
+
+
+/*
+ * ONE owner check for every facet entry point, readers included.
+ *
+ * A route glob is an attenuation the operator wrote; this is not -- it is the
+ * invariant that a granted wrapper belongs to one fragment.  Reads are gated too,
+ * because `paths()` over a foreign facet is a foreign fragment's view of the
+ * configuration, which is exactly what the membrane exists to withhold.
+ */
+static ngx_flag_t
+ngx_js_facet_owner_ok(JSContext *ctx, ngx_js_com_facet_opaque_t *fop)
+{
+    if (!ngx_js_cap_foreign(fop->owner)) {
+        return 1;
+    }
+
+    if (!ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER,
+                                   (const char *) fop->glob))
+    {
+        return 1;                    /* audit mode: logged and allowed */
+    }
+
+    (void) JS_ThrowTypeError(ctx,
+        "NginxComFacet: this facet was granted to another fragment");
+    return 0;
+}
 
 
 static void
@@ -7988,6 +8022,10 @@ ngx_js_com_facet_fn_paths(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
 
+    if (!ngx_js_facet_owner_ok(ctx, fop)) {
+        return JS_EXCEPTION;
+    }
+
     root = fop->srv_op->cscf->ctx->loc_conf[ngx_http_core_module.ctx_index];
 
     arr = JS_NewArray(ctx);
@@ -8031,6 +8069,10 @@ ngx_js_com_facet_fn_allowed(JSContext *ctx, JSValueConst this_val,
 
     fop = JS_GetOpaque2(ctx, this_val, ngx_js_com_facet_class_id);
     if (!fop) {
+        return JS_EXCEPTION;
+    }
+
+    if (!ngx_js_facet_owner_ok(ctx, fop)) {
         return JS_EXCEPTION;
     }
 
@@ -8092,6 +8134,10 @@ ngx_js_facet_gate_spec(JSContext *ctx, ngx_js_com_facet_opaque_t *fop,
     const u_char  *path;
     size_t         slen, plen;
     ngx_int_t      ok;
+
+    if (!ngx_js_facet_owner_ok(ctx, fop)) {
+        return 0;
+    }
 
     spec = JS_ToCStringLen(ctx, &slen, spec_val);
     if (spec == NULL) {
@@ -8181,6 +8227,10 @@ ngx_js_com_facet_get_route(JSContext *ctx, JSValueConst this_val)
         return JS_EXCEPTION;
     }
 
+    if (!ngx_js_facet_owner_ok(ctx, fop)) {
+        return JS_EXCEPTION;
+    }
+
     return JS_NewStringLen(ctx, (const char *) fop->glob, fop->glob_len);
 }
 
@@ -8244,6 +8294,18 @@ ngx_js_server_srv_op(JSValueConst val)
 }
 
 
+void
+ngx_js_com_facet_set_owner(JSValueConst obj, uint32_t frag)
+{
+    ngx_js_com_facet_opaque_t  *fop;
+
+    fop = JS_GetOpaque(obj, ngx_js_com_facet_class_id);
+    if (fop != NULL) {
+        fop->owner = frag;
+    }
+}
+
+
 JSValue
 ngx_js_com_facet_wrap(JSContext *ctx, void *srv_op, const char *glob,
     size_t glob_len)
@@ -8257,6 +8319,7 @@ ngx_js_com_facet_wrap(JSContext *ctx, void *srv_op, const char *glob,
     }
 
     fop->srv_op = srv_op;
+    fop->owner = 0;
     if (glob_len > sizeof(fop->glob) - 1) {
         glob_len = sizeof(fop->glob) - 1;
     }

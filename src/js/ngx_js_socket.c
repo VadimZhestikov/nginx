@@ -179,6 +179,12 @@ typedef struct {
     uint8_t   proto_term[NGX_JS_PROTO_MAX];
     uint8_t   proto_n;
     uint8_t   proto_pos;
+    /*
+     * WHICH FRAGMENT THIS WRAPPER WAS GRANTED TO; 0 = the host's own, always
+     * usable.  Checked before every other gate: a capability that is not yours
+     * is not yours redacted, budgeted or scheduled -- it is not yours at all.
+     */
+    uint32_t  owner;
 } ngx_js_socket_opaque_t;
 
 
@@ -402,6 +408,23 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
     }
 
     /*
+     * BEFORE THE MASK, BEFORE EVERYTHING: is this capability even this
+     * fragment's?
+     *
+     * A job queued by fragment A and run during B's invocation holds A's
+     * wrappers.  The drain (v5.93) keeps that from arising while A's
+     * continuations fit its job budget; this keeps it from MATTERING when they
+     * do not.  A capability that is not yours is not yours redacted, budgeted or
+     * scheduled -- it is not yours at all, so this is the first question and the
+     * only one whose answer does not depend on what the operator wrote.
+     */
+    if (ngx_js_cap_foreign(op->owner)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER, st_addr_of(op)))
+    {
+        return JS_UNDEFINED;
+    }
+
+    /*
      * COMCON mediate: a redacted field (mask bit clear for this magic) reads as
      * undefined — the membrane hides it. Attenuation-only: a mask can only
      * remove authority a wrapper already had (A(cap′) ⊆ A(cap)).
@@ -578,6 +601,14 @@ ngx_js_socket_close(JSContext *ctx, JSValueConst this_val,
             "sock.close: socket already closed or invalid");
     }
 
+    /* And the same first question the getter asks: a leftover continuation must
+     * not close a socket on behalf of the fragment now running. */
+    if (ngx_js_cap_foreign(op->owner)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER, st->addr))
+    {
+        return JS_ThrowTypeError(ctx, "sock.close: denied (not this fragment's)");
+    }
+
     /* COMCON SR-1 MEDIUM-4: close() destroys host state — a mutating op, not a
      * scalar read. A tenant handed this socket via grantToTenant may not close
      * a socket it does not own. */
@@ -647,6 +678,13 @@ ngx_js_socket_broadcast(JSContext *ctx, JSValueConst this_val,
     if (ngx_process != NGX_PROCESS_WORKER) {
         return JS_ThrowInternalError(ctx,
             "sock.broadcast: only valid in worker processes");
+    }
+
+    if (ngx_js_cap_foreign(op->owner)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER, st->addr))
+    {
+        return JS_ThrowTypeError(ctx,
+            "sock.broadcast: denied (not this fragment's)");
     }
 
     /* COMCON SR-1 MEDIUM-4: broadcast distributes the fd fleet-wide — mutating;
@@ -1118,6 +1156,8 @@ typedef struct {
     uint8_t   proto_term[NGX_JS_PROTO_MAX];
     uint8_t   proto_n;
     uint8_t   proto_pos;
+    /* see the socket opaque */
+    uint32_t  owner;
 } ngx_js_outbound_opaque_t;
 
 JSClassID  ngx_js_outbound_class_id;   /* described by ngx_js_com_describe.c */
@@ -1354,6 +1394,13 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
     url = JS_ToCStringLen(ctx, &len, argv[0]);
     if (url == NULL) {
         return JS_EXCEPTION;
+    }
+
+    if (ngx_js_cap_foreign(op->owner)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER, url))
+    {
+        JS_FreeCString(ctx, url);
+        return JS_UNDEFINED;
     }
 
     if (op->expires != 0 && ngx_time() >= op->expires
@@ -1863,6 +1910,36 @@ ngx_js_socket_set_cosign(JSValueConst obj, const char *key, const char *as,
  * capability nobody wrote a protocol for; the terms themselves were validated at
  * the producer, where the operator can be told which word they got wrong.
  */
+/*
+ * Bind a wrapper to the fragment it was granted to.  Applied after the wrapper
+ * exists, like the window/cosign/protocol setters, and for the same reason: the
+ * wrap signatures are long enough already and this is optional -- the host's own
+ * wrappers are never bound.
+ */
+void
+ngx_js_socket_set_owner(JSValueConst obj, uint32_t frag)
+{
+    ngx_js_socket_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_socket_class_id);
+    if (op != NULL) {
+        op->owner = frag;
+    }
+}
+
+
+void
+ngx_js_outbound_set_owner(JSValueConst obj, uint32_t frag)
+{
+    ngx_js_outbound_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_outbound_class_id);
+    if (op != NULL) {
+        op->owner = frag;
+    }
+}
+
+
 void
 ngx_js_socket_set_protocol(JSValueConst obj, const uint8_t *term, ngx_uint_t n)
 {
