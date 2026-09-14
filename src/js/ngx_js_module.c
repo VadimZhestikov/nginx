@@ -933,6 +933,60 @@ ngx_js_comcon_harden_cap_protos(JSContext *ctx)
 
 
 /*
+ * A FRAGMENT'S CONTINUATION CAN FAIL, and until this existed nothing said so.
+ *
+ * The obvious place to catch it was the return value of JS_ExecutePendingJob --
+ * and that is wrong, which is worth recording because it looked right and the
+ * test written against it passed for the wrong reason.  A promise reaction job
+ * that throws does not FAIL: the promise machinery catches the throw and rejects
+ * the derived promise, so the job returns success and the failure becomes an
+ * UNHANDLED REJECTION.  `.then(function(){ throw x; })` takes that path, which
+ * is the shape a deferred continuation actually has.
+ *
+ * So the report comes from the rejection tracker instead.  Nothing in this
+ * process installed one, on either runtime, so an unhandled rejection was
+ * silent everywhere; this covers the compartment, where async fragments made
+ * continuations reachable in the first place.
+ *
+ * ONE LINE PER INVOCATION plus a count, the same discipline the denial log uses:
+ * a fragment that queues ten thousand rejecting jobs must not be able to turn
+ * its own bug into a log flood.
+ */
+static ngx_uint_t  ngx_js_comcon_rejections;
+static ngx_uint_t  ngx_js_comcon_rejections_logged;
+
+
+static void
+ngx_js_comcon_rejection_tracker(JSContext *ctx, JSValueConst promise,
+    JSValueConst reason, JS_BOOL is_handled, void *opaque)
+{
+    const char  *s;
+
+    if (is_handled) {
+        return;                 /* somebody caught it; not our business */
+    }
+
+    ngx_js_comcon_rejections++;
+
+    if (ngx_js_comcon_rejections_logged > 0) {
+        return;
+    }
+
+    ngx_js_comcon_rejections_logged = 1;
+
+    s = JS_ToCString(ctx, reason);
+
+    ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                  "js comcon: a fragment's queued job threw after the fragment "
+                  "returned (unhandled rejection): %s", s ? s : "error");
+
+    if (s != NULL) {
+        JS_FreeCString(ctx, s);
+    }
+}
+
+
+/*
  * COMCON M-CFG (scope isolation). The confined-fragment compartment mirrors the
  * tenant compartment, on its OWN runtime (jcf->comcon_rt) so JS_FreeRuntime
  * tears it down cleanly — a second context on the host runtime leaked
@@ -940,6 +994,29 @@ ngx_js_comcon_harden_cap_protos(JSContext *ctx)
  * C-side (jcf->comcon_frags) and invoked IN the compartment; only JSON strings
  * cross the boundary (runtime-agnostic), so no JSValue crosses realms/runtimes.
  */
+/*
+ * Has this request's deadline already passed?  The authoritative test for "the
+ * interrupt fired", used instead of matching the exception's message: the
+ * message is prose and the deadline is a number, and one of those two is a
+ * contract.
+ */
+static ngx_uint_t
+ngx_js_comcon_deadline_passed(ngx_js_worker_t *w)
+{
+    struct timespec  ts;
+    uint64_t         now_ms;
+
+    if (w->request_deadline_ms == 0) {
+        return 0;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
+
+    return now_ms >= w->request_deadline_ms ? 1 : 0;
+}
+
+
 static JSContext *
 ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
 {
@@ -955,6 +1032,8 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
         return NULL;
     }
     JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
+    JS_SetHostPromiseRejectionTracker(jcf->comcon_rt,
+                                      ngx_js_comcon_rejection_tracker, NULL);
     (void) ngx_js_com_register_classes(jcf->comcon_rt);  /* mirror tenant_rt setup */
 
     /* learn mode: the recorder class must exist in the compartment runtime so
@@ -2127,6 +2206,10 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     uint32_t          onviol = 0;
     int               settled = 0;
     ngx_uint_t        pending = 0;
+    ngx_uint_t        jobs = 0;
+    ngx_uint_t        job_errors = 0;
+    ngx_uint_t        job_failed = 0;
+    JSValue           irq = JS_UNDEFINED;
     ngx_js_tenant_mode_e  saved_mode = NGX_JS_TENANT_ENFORCE;
     ngx_uint_t        mode_pushed = 0;
     uint64_t          old_deadline = 0, now_ms, newd;
@@ -2278,14 +2361,18 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
      * That is the honest shape of "async fragments" here, and it is exactly why
      * `allowHosts` records intent instead of fetching.
      *
-     * Two bounds, and both are needed. The DEADLINE is the real one -- the
-     * interrupt handler is the compartment runtime's, so a fragment that queues
-     * microtasks forever is stopped by the same clock that stops a `while(1)`.
-     * The job cap is the belt: it makes the loop's termination obvious to a
-     * reader without having to reason about where the interrupt fires.
+     * Two bounds, and both are needed -- and which of them fires was written
+     * down wrongly at v5.92 and corrected by measurement at v5.93.  The claim
+     * was that the DEADLINE is the real one and the job cap is the belt.  For a
+     * promise-chain runaway it is the other way round: 354,885 promises exhaust
+     * the F2 per-invocation MEMORY ALLOWANCE long before a 300 ms deadline
+     * elapses, and with no cap that is what ends the loop.  So the cap is what
+     * makes THIS loop terminate promptly with a usable message ("your promise
+     * never settled" rather than a timeout), the allowance is what stops an
+     * uncapped one, and the deadline is the outer bound on all of it.  A bound
+     * nobody measured is a bound nobody knows the order of.
      */
     if ((int) JS_PromiseState(sctx, result) != -1) {
-        ngx_uint_t  jobs = 0;
 
         while (JS_PromiseState(sctx, result) == JS_PROMISE_PENDING
                && JS_IsJobPending(jcf->comcon_rt)
@@ -2321,6 +2408,221 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
                 result = v;
             }
         }
+    }
+
+    /*
+     * QUIESCENCE, AND WHY IT IS AN INVARIANT RATHER THAN A TIDY-UP.
+     *
+     * A fragment can queue a job and return without awaiting it:
+     *
+     *     function(a){ Promise.resolve().then(function(){
+     *                      out.request('https://a.example.com/LATE'); });
+     *                  return 'returned'; }
+     *
+     * Nothing else in this process drains `comcon_rt` -- the host runtime's
+     * drains are a different runtime -- so that job used to sit pending until
+     * some LATER, UNRELATED invocation returned a promise, and then ran inside
+     * it.  Measured: the capability was untouched when the fragment returned and
+     * exercised during the next fragment's settle loop.
+     *
+     * Everything an invocation bounds was therefore the wrong invocation's.  The
+     * deferred use ran on a stranger's DEADLINE and MEMORY ALLOWANCE; it was
+     * gated at a stranger's wall-clock time, so `ttl` and `window` were
+     * evaluated at the wrong moment; and it ran under a stranger's `onViolation`
+     * POSTURE, so a shadowed fragment's deferred work could execute under an
+     * enforcing binding, or an enforced fragment's under audit.  It is also a
+     * channel: the first fragment spends the second one's job budget.
+     *
+     * This was unreachable before async fragments were admitted, because a
+     * fragment that could not name `Promise` could not queue a job.  Widening
+     * admission opened it, so closing it belongs with that change.
+     *
+     * So: every invocation drains to QUIESCENCE, here, inside the compartment
+     * scope and before the posture and the memory limit are restored.  A
+     * fragment's continuations are then charged to, and gated at, the fragment
+     * that created them.
+     *
+     * BOUNDED BY THE SAME JOB BUDGET AS THE SETTLE LOOP -- one budget for the
+     * whole invocation, so a fragment cannot draw twice the allowance by
+     * returning a promise.  No test distinguishes one shared budget from two
+     * today, because both stop promptly; recorded here rather than implied.
+     *
+     * The first version of this deliberately had no cap,
+     * on the argument that an invariant with a cap is not an invariant.
+     *
+     * That argument is correct, and the consequence was not affordable.  A
+     * self-queueing chain that does not exhaust memory quickly then drains until
+     * the REQUEST's deadline: measured, a fragment that used to be refused in
+     * milliseconds became a ten-second request the client abandoned, caught by
+     * the full suite rather than by the test written for this change.
+     *
+     * So quiescence here is BEST-EFFORT, and that is stated rather than implied.
+     * The budget is large enough that any fragment whose continuations are
+     * bounded is fully attributed, which is every fragment that is not
+     * deliberately pathological; one that exceeds it is REPORTED, loudly, and its
+     * leftover jobs can still run inside a later invocation.
+     *
+     * THE STRUCTURAL FIX IS OWED AND NAMED: bind each granted capability wrapper
+     * to the fragment it was granted to, and have the gates refuse when the
+     * fragment being invoked is not that one.  Then a leftover job cannot use
+     * authority no matter when it runs, and this loop is about ATTRIBUTION only
+     * -- which is all a best-effort loop can honestly promise.
+     *
+     * A job that THROWS does not fail the invocation: the fragment's value was
+     * already computed and returned legitimately.  It is logged -- once, with a
+     * count -- because a fragment whose continuations fail is a fragment whose
+     * author needs to know, and because one line per invocation cannot be turned
+     * into a log flood by queueing ten thousand throwing jobs.
+     *
+     * Draining continues past a throwing job rather than breaking: stopping
+     * there would leave the rest pending, which is the escape again.
+     */
+    if (JS_IsException(result)) {
+        /*
+         * Stash the exception across the drain.  A job runs arbitrary fragment
+         * code on this context and would otherwise clobber the pending
+         * exception, turning a fragment that threw into one that returned.
+         */
+        exc = JS_GetException(sctx);
+    } else {
+        exc = JS_UNDEFINED;
+    }
+
+    ngx_js_comcon_rejections = 0;
+    ngx_js_comcon_rejections_logged = 0;
+
+    while (JS_IsJobPending(jcf->comcon_rt)
+           && jobs < NGX_JS_COMCON_MAX_JOBS)
+    {
+        JSContext  *jctx = NULL;
+        int         jrc;
+
+        jrc = JS_ExecutePendingJob(jcf->comcon_rt, &jctx);
+
+        if (jrc == 0) {
+            break;                          /* nothing left to run */
+        }
+
+        jobs++;
+
+        if (jrc < 0 && jctx != NULL) {
+            JSValue  jexc = JS_GetException(jctx);
+
+            /*
+             * A JOB THAT COULD NOT RUN MEANS THE FRAGMENT DID NOT FINISH, and
+             * the invocation says so.  The first version of this loop logged and
+             * carried on, and then returned the value the fragment had already
+             * computed -- so a fragment stopped by its own meter reported
+             * SUCCESS.  Found by the `/forever` probe reporting `returned` where
+             * it had to report `stopped`.
+             *
+             * THE RULE IS "COULD NOT RUN", NOT "THREW", and the difference is the
+             * thing that was got wrong twice.  A promise reaction that throws
+             * does NOT fail: the promise machinery catches it and rejects the
+             * derived promise, so the job succeeds and the failure surfaces as an
+             * unhandled rejection (reported by the tracker, and NOT fatal -- the
+             * fragment's value was computed legitimately).  A negative return is
+             * something else entirely: the platform stopped the fragment.  In
+             * this compartment the only jobs are promise reactions, so that means
+             * the deadline or the memory allowance -- both of which the operator
+             * set, and neither of which may be reported as success.
+             *
+             * Draining CONTINUES rather than breaking, deliberately: a job that
+             * could not run cannot enqueue another, so the queue still drains to
+             * empty and quiescence holds.  Breaking here would leave jobs pending
+             * for a later, unrelated invocation, which is the escape this loop
+             * exists to close.  Both properties are kept by finishing the drain
+             * and re-raising afterwards.
+             */
+            /*
+             * NO REACHABLE JOB PRODUCES THIS TODAY, and the code stays anyway --
+             * a deliberate exception to "delete what no control can break", for
+             * the reason the include-translation fall-through is kept.
+             *
+             * Every job in this compartment is a promise reaction, and a promise
+             * reaction that throws does NOT return failure: the machinery catches
+             * it and rejects the derived promise, so the failure surfaces as an
+             * unhandled rejection instead (the tracker reports those, and they
+             * are NOT fatal -- the fragment's value was computed legitimately).
+             * Measured: a promise chain that exhausts its memory allowance ran
+             * 354,885 jobs and then ended with ONE unhandled rejection and zero
+             * failed jobs.
+             *
+             * What this guards is a future job source that is not a promise
+             * reaction -- a timer, a queueMicrotask, a worker message.  For such
+             * a job a negative return means the platform stopped the fragment,
+             * and the invocation must not report success: the first version of
+             * this loop logged and carried on, and a fragment stopped by its own
+             * meter reported the value it had already computed.
+             */
+            if (!job_failed) {
+                const char  *jm = JS_ToCString(jctx, jexc);
+
+                job_failed = 1;
+                irq = jexc;                  /* re-raised after the drain */
+
+                ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                              "js comcon: a fragment's queued job could not run "
+                              "(%s): %s",
+                              (metered && w != NULL
+                               && ngx_js_comcon_deadline_passed(w))
+                              ? "its deadline had passed"
+                              : "the fragment's allowance was exhausted",
+                              jm ? jm : "error");
+
+                if (jm != NULL) {
+                    JS_FreeCString(jctx, jm);
+                }
+
+            } else {
+                job_errors++;
+                JS_FreeValue(jctx, jexc);
+            }
+        }
+    }
+
+    if (job_errors > 0) {
+        ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                      "js comcon: %ui more of this fragment's queued jobs could "
+                      "not run", job_errors);
+    }
+
+    /*
+     * The loud half of "best effort".  A fragment that outran the job budget
+     * leaves work behind, and that work will run inside a later invocation --
+     * under its posture, on its deadline, at its wall-clock time.  Silence here
+     * would be the original defect with extra steps.
+     */
+    if (JS_IsJobPending(jcf->comcon_rt)) {
+        ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                      "js comcon: a fragment outran the %ui-job budget and left "
+                      "queued jobs behind; they will run inside a later "
+                      "invocation, on its deadline and under its posture",
+                      (ngx_uint_t) NGX_JS_COMCON_MAX_JOBS);
+    }
+
+    if (ngx_js_comcon_rejections > 1) {
+        ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                      "js comcon: %ui of this fragment's queued jobs rejected "
+                      "unhandled after it returned",
+                      ngx_js_comcon_rejections);
+    }
+
+    if (job_failed) {
+        /*
+         * The fragment did not finish: that outranks whatever it had managed to
+         * compute, and it outranks an exception it threw on its way out too.
+         */
+        if (!JS_IsUndefined(exc)) {
+            JS_FreeValue(sctx, exc);
+        }
+        if (!JS_IsException(result)) {
+            JS_FreeValue(sctx, result);
+        }
+        result = JS_Throw(sctx, irq);        /* consumes irq */
+
+    } else if (!JS_IsUndefined(exc)) {
+        result = JS_Throw(sctx, exc);        /* consumes exc */
     }
 
     if (mode_pushed) {

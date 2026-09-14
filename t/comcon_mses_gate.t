@@ -70,6 +70,26 @@ var confined = comcon.include(
     "function(req){ var probes = (" + PROBES + ")(); " +
     "  return { status: 200, body: JSON.stringify(probes) }; }");
 
+/* ASYNC: the identical battery in an ASYNC fragment.
+ *
+ * Admission accepted no async function at all until v5.92 -- six COMCON analysis
+ * entry points tested one bytecode class id where the engine has a four-class
+ * helper -- so THIS BATTERY HAD NEVER SEEN THE SHAPE.  Widening what admission
+ * accepts obliges the gate to be re-run against what it now accepts, and the
+ * assertion is not merely that nothing is open but that the async arm's result is
+ * IDENTICAL to the synchronous arm's: the question is whether the SHAPE changes
+ * what the cage allows, and only a comparison answers that.
+ *
+ * A generator fragment gets no arm here, and the reason is mechanical rather than
+ * an omission: a generator returns a generator object, which is not JSON, so a
+ * generator fragment cannot report a battery's results at all.  What a generator
+ * body newly needs -- that the admission analysis reads it -- is asserted where it
+ * belongs, in comcon_async_fragment.t.  Its escape surface (the
+ * GeneratorFunction constructor ladder) is already probe c_gen_ctor here. */
+var confinedAsync = comcon.include(
+    "async function(req){ var probes = (" + PROBES + ")(); " +
+    "  return { status: 200, body: JSON.stringify(probes) }; }");
+
 /* UNCONFINED: the identical battery in host JS. This is the control -- the
  * routes a confinement closes must be demonstrably OPEN here, or the probe is
  * measuring nothing. */
@@ -106,11 +126,13 @@ for (var i = 0; i < locs.length; i++) {
     if (locs[i].path === "/gate") {
         locs[i].handler = function (req) {
             var conf = JSON.parse(confined({ method: req.method }).body);
+            var asyn = JSON.parse(confinedAsync({ method: req.method }).body);
             var host;
             try { host = hostProbes(); }
             catch (e) { host = { error: String(e.message || e) }; }
             req.respond(200, {'content-type':'application/json'},
-                        JSON.stringify({ confined: conf, host: host }));
+                        JSON.stringify({ confined: conf, asyncArm: asyn,
+                                         host: host }));
         };
     }
     if (locs[i].path === "/gas") {
@@ -133,7 +155,7 @@ JS
 $root_js =~ s/%%PROBES%%/$probes/;
 $t->write_file('root.js', $root_js);
 
-$t->try_run('no js module')->plan(9);
+$t->try_run('no js module')->plan(12);
 
 ###############################################################################
 
@@ -151,6 +173,7 @@ sub probes {
 }
 
 my $conf = probes($json, 'confined');
+my $asyn = probes($json, 'asyncArm');
 my $host = probes($json, 'host');
 
 diag("confined: " . join(' ', map { "$_=$conf->{$_}" } sort keys %$conf));
@@ -181,6 +204,25 @@ cmp_ok(scalar(@discriminating), '>=', 4,
 
 # Named explicitly so a regression points at the class, not just a count.
 is($conf->{c_fn_ctor}, 'closed', 'gate (c): Function-constructor ladder is closed');
+
+# --- THE ASYNC ARM (v5.92 widened admission; the gate had never seen the shape) --
+diag("async:    " . join(' ', map { "$_=$asyn->{$_}" } sort keys %$asyn));
+
+cmp_ok(scalar(keys %$asyn), '>=', 12,
+       'an ASYNC fragment ran the whole probe battery -- admission accepted no '
+       . 'async function at all before v5.92, so this gate had never seen the '
+       . 'shape it now admits');
+my @async_open = sort grep { $asyn->{$_} eq 'open' } keys %$asyn;
+is(scalar(@async_open), 0,
+   'M-SES gate: no escape route is open in an ASYNC confined fragment either')
+    or diag("OPEN in async context: @async_open");
+is_deeply($asyn, $conf,
+   'AND THE ASYNC ARM AGREES WITH THE SYNCHRONOUS ONE, probe by probe. That is '
+   . 'the question worth asking -- not "is anything open" but "does the SHAPE '
+   . 'change what the cage allows" -- and only a comparison answers it. With the '
+   . 'sync arm already known to differ from unconfined, this makes the async arm '
+   . 'differ from unconfined too, transitively')
+    or diag("async vs sync differ");
 
 # (e) the resource guard. Armed via nginx.workerRequestTimeout = 300ms; the
 # fragment's loop is sized to run for seconds unguarded, so "interrupted" is not

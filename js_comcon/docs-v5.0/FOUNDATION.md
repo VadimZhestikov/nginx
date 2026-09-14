@@ -635,6 +635,73 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.93 (in place — AN INVOCATION LEAVES THE COMPARTMENT QUIESCENT, closing a hole v5.92 opened
+one day earlier):** a fragment can queue a job and return without awaiting it --
+
+    function(a){ Promise.resolve().then(function(){
+                     out.request('https://a.example.com/LATE'); });
+                 return 'returned'; }
+
+-- and nothing else in this process drains the compartment runtime, because the host's drains are a
+different runtime. So that job sat pending until some LATER, UNRELATED invocation returned a promise,
+and then ran inside it. Measured: the capability was untouched when the fragment returned and
+exercised during the next fragment's settle loop.
+
+EVERYTHING AN INVOCATION BOUNDS WAS THEREFORE THE WRONG INVOCATION'S. The deferred use ran on a
+stranger's DEADLINE and MEMORY ALLOWANCE. It was gated at a stranger's wall-clock time, so `ttl` and
+`window` were evaluated at the wrong moment. And it ran under a stranger's `onViolation` POSTURE --
+so a shadowed fragment's deferred work could execute under an enforcing binding, or an enforced
+fragment's under audit, which makes it a security property and not an accounting one. It is also a
+channel: the first fragment spends the second one's job budget.
+
+It was unreachable until v5.92 admitted async fragments, because a fragment that cannot name
+`Promise` cannot queue a job. Widening admission opened it, so closing it belongs with that change
+rather than in a backlog -- and it was found by probing the increment, not by a report.
+
+So every invocation now drains inside the compartment scope, before the posture and the memory limit
+are restored. THE FIRST VERSION CARRIED NO JOB CAP, on the argument that an invariant with a cap is
+not an invariant -- and the argument is correct while the consequence was not affordable. An uncapped
+drain over a self-queueing chain runs until a bound the operator set, and measurement says which one
+is reached first: a `.then` chain exhausts the 16 MB per-invocation MEMORY allowance after 354,885
+promises, long before a 300 ms deadline, while an `await` chain allocates slowly enough to reach the
+REQUEST deadline instead -- turning a fragment that was refused in milliseconds into a ten-second
+request the client abandoned. That was caught by the full suite rather than by the test written for
+the change.
+
+So QUIESCENCE HERE IS BEST-EFFORT, stated rather than implied. The drain shares the settle loop's job
+budget, which is large enough to attribute every fragment whose continuations are bounded -- every
+fragment that is not deliberately pathological -- and one that outruns it is REPORTED, loudly, with
+its leftover jobs still able to run inside a later invocation. THE STRUCTURAL FIX IS OWED AND NAMED:
+bind each granted capability wrapper to the fragment it was granted to, and have the gates refuse
+when the fragment being invoked is not that one. Then a leftover job cannot use authority no matter
+when it runs, and this loop is about attribution only -- which is all a best-effort loop can honestly
+promise.
+
+TWO OF THE FIX'S FIRST ATTEMPTS WERE WRONG, AND THEIR CONTROLS SAID SO.
+
+The first logged a "job that threw", which cannot happen: every job in this compartment is a promise
+reaction, and a promise reaction that throws does NOT fail -- the machinery catches it and rejects the
+derived promise, so the job SUCCEEDS and the failure becomes an unhandled rejection. The assertion
+written against the job's return value never fired. The report now comes from a rejection tracker,
+and installing one revealed that NOTHING in this process had installed one on either runtime: every
+unhandled rejection anywhere was silent.
+
+The second restored the posture before the drain, and the posture assertion passed anyway -- because
+the binding asked for `deny` while the fleet was in `enforce`, and restoring `enforce` over a `deny`
+binding changes nothing. The two postures have to DISAGREE for the assertion to mean anything. A
+control that cannot tell the fixed code from the broken code is not a control.
+
+AND A v5.92 CLAIM WAS WRONG. It said the deadline is the real bound on the drain and the job cap the
+belt. Measurement: a self-queueing promise chain ran 354,885 jobs and was stopped by the F2
+per-invocation MEMORY ALLOWANCE, long before a 300 ms deadline could elapse. All three bounds are
+real; the order was written down without being measured. *A bound nobody measured is a bound nobody
+knows the order of.*
+
+The S6 escape battery gains an ASYNC arm for the same reason the fix does: admission accepted no async
+function before v5.92, so the gate had never seen the shape it now admits. The assertion is not that
+nothing is open but that the async arm is IDENTICAL to the synchronous one, probe by probe -- the
+question is whether the SHAPE changes what the cage allows, and only a comparison answers it.
+
 **v5.92 (in place — ASYNC FRAGMENTS, and the blocker was not where the roadmap said it was):**
 ROADMAP has carried "async fragment invocation" as the prerequisite for a real `fetch`, with the
 blocker recorded as the SYNCHRONOUS INVOKE: JS_Call, then JSON-stringify, with no promise detection
@@ -666,12 +733,16 @@ was refused here; what the tenant must change is in their fragment, which is wha
 names. The alternative was JSON.stringify on a pending promise, which is "{}" -- a
 plausible-looking empty object, and the worst of the three available answers.
 
-TWO BOUNDS, AND THEY ARE DIFFERENT BOUNDS. The DEADLINE is the real one: the interrupt handler
-belongs to the compartment runtime, so a fragment queueing microtasks forever is stopped by the same
-clock that stops a `while (1)`. The JOB CAP makes the loop's termination obvious without reasoning
-about where the interrupt fires -- and it changes the MESSAGE, which is the part that matters to an
-operator: the same runaway loop under a 30-second meter stops in under a second and is told its
-promise never settled, rather than being told, thirty seconds later, that it timed out.
+TWO BOUNDS, AND THEY ARE DIFFERENT BOUNDS. *(v5.93 — corrected by measurement:* this paragraph said
+the DEADLINE is the real bound and the job cap the belt. For a promise-chain runaway it is the other
+way round — 354,885 promises exhaust the per-invocation MEMORY allowance long before a 300 ms
+deadline elapses. The cap is what makes the settle loop terminate promptly with a usable message; the
+allowance is what stops an uncapped drain; the deadline is the outer bound on all of it. *A bound
+nobody measured is a bound nobody knows the order of.)* The JOB CAP makes the loop's termination
+obvious without reasoning about where the interrupt fires -- and it changes the MESSAGE, which is the
+part that matters to an operator: the same runaway loop under a 30-second meter stops in under a
+second and is told its promise never settled, rather than being told, thirty seconds later, that it
+timed out.
 
 SO THIS IS NOT `fetch`, and it is now clear exactly why not. Nothing in a compartment can settle an
 await on real I/O; making one possible means suspending the nginx request handler across a fragment

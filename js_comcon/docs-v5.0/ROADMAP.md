@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.92 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.93 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,6 +75,16 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **THE DEFERRED-JOB ESCAPE, CLOSED (2026-09-13, v5.93) — opened by v5.92 one day earlier.** A
+>   fragment could queue a job and return; nothing else drains the compartment runtime, so it ran
+>   inside the NEXT unrelated invocation — on a stranger's deadline and memory allowance, gated at a
+>   stranger's wall-clock time, and under a stranger's `onViolation` POSTURE. Every invocation now
+>   drains to quiescence. **Two of the fix's first attempts were wrong and their controls said so**
+>   (the "job threw" signal cannot fire — it is an unhandled rejection, and nothing had installed a
+>   tracker on either runtime; and the posture assertion could not discriminate until the fleet and
+>   the binding disagreed). **A v5.92 claim was wrong:** the drain's real bound is the MEMORY
+>   ALLOWANCE, not the clock. The S6 battery gains an ASYNC arm. `t/comcon_deferred_jobs.t` (14) +
+>   3 controls.
 > - **ASYNC FRAGMENTS SHIPPED (2026-09-13, v5.92) — AND THE BLOCKER WAS NOT WHERE THIS ROADMAP
 >   SAID.** It recorded the synchronous invoke. An async fragment never reached the invoke: it was
 >   refused at ADMISSION as "not a bytecode function", which is untrue of an async function — six

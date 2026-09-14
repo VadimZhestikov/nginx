@@ -563,6 +563,62 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T3, T4
 - **V:** V13, V15
 
+#### G6.16 — an invocation leaves the compartment QUIESCENT
+- **CLAIM:** Every invocation drains the compartment's pending jobs to quiescence before it
+  returns, inside the same compartment scope and before the posture and memory limit are restored.
+  A fragment's continuations are therefore charged to, and gated at, the fragment that created
+  them. A continuation that fails is reported (unhandled-rejection tracker); a job that cannot RUN
+  is fatal to the invocation.
+- **ARGUMENT:** A fragment can queue a job and return without awaiting it, and nothing else in the
+  process drains the compartment runtime — the host's drains are a different runtime. So the job
+  sat pending until some LATER, UNRELATED invocation returned a promise, and ran inside it.
+  Measured before the fix: the capability was untouched when the fragment returned and exercised
+  during the next fragment's settle loop.
+  **Everything an invocation bounds was therefore the wrong invocation's.** The deferred use ran on
+  a stranger's deadline and memory allowance; it was gated at a stranger's wall-clock time, so
+  `ttl` and `window` were evaluated at the wrong moment; and it ran under a stranger's
+  `onViolation` POSTURE — so a shadowed fragment's deferred work could execute under an enforcing
+  binding, or an enforced fragment's under audit. It is also a channel: the first fragment spends
+  the second one's job budget. **This was unreachable until async fragments were admitted (G6.15),
+  because a fragment that cannot name `Promise` cannot queue a job** — so closing it belongs with
+  that change rather than in a backlog.
+  **Quiescence here is BEST-EFFORT, and the first version of the fix was not.** It ran the drain with
+  no job cap, on the argument that an invariant with a cap is not an invariant. The argument is
+  correct and the consequence was not affordable: an uncapped drain over a self-queueing chain runs
+  until a bound the operator set, and a fragment refused in milliseconds became a ten-second request
+  the client abandoned — caught by the full suite, not by the test written for the change. The drain
+  now shares the settle loop's job budget, which fully attributes every fragment whose continuations
+  are bounded and **reports** one that outruns it.
+- **EV:** `t/comcon_deferred_jobs.t` — 14 assertions. The deferred use attributed to the fragment
+  that deferred it, and the bystander changing nothing; **volume attributed exactly** (100 deferred
+  requests land as 32 recorded + 68 dropped against the right fragment); **the posture the job is
+  gated under**, with the fleet in AUDIT and the binding in DENY so the two disagree — a control
+  that restored the posture before the drain passed while they agreed; a continuation that throws
+  not failing the invocation but being logged; a self-queueing chain terminating promptly; and the
+  loud report when a fragment outruns the budget.
+- **EV:** `t/comcon_mses_gate.t` — the S6 escape battery gains an ASYNC arm: the same 12 probes in
+  an async fragment, asserted **identical to the synchronous arm probe by probe**. Admission
+  accepted no async function before G6.15, so the gate had never seen the shape it now admits, and
+  the question worth asking is not "is anything open" but "does the shape change what the cage
+  allows".
+- **GAP:** **A fragment that outruns the job budget still leaves work behind**, and that work runs
+  inside a later invocation, on its deadline and under its posture. The drain reports it loudly and
+  cannot remove it, so refusing the invocation would punish the caller without removing the hazard.
+  **The structural fix is owed and named:** bind each granted capability wrapper to the fragment it
+  was granted to and have the gates refuse when the fragment being invoked is not that one — then a
+  leftover job cannot use authority whenever it runs, and this drain is about attribution only.
+  **A bound nobody measured is a bound nobody knows the order of.** G6.15's commit claimed the
+  deadline was the real bound and the job cap the belt; measurement says a `.then` chain exhausts the
+  **memory allowance** after 354,885 promises, while an `await` chain reaches the **request**
+  deadline. Corrected in place at v5.93. Also: the `jrc < 0` path — a job that cannot run at all — is
+  unreachable today, because every job here is a promise reaction and those catch their own throws
+  (the deadline interrupt included, which is why it surfaces as a rejection); it is kept as a guard
+  for a future non-reaction job source, with that written down. And a generator fragment gets no
+  battery arm, because a generator returns a generator object and cannot report results as JSON.
+  **home:** G6.15's evidence (the increment that opened it) · `ngx_js_comcon_invoke_confined`.
+- **THREAT:** T3, T4, T6, T9
+- **V:** V13, V15
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1332,6 +1388,8 @@ signature is never quietly credited with work it did not see.
 | **THE POSTURE WORDS SHIPPED — G6.14.** `onViolation` and `profile` were written in MANUAL since v5.0 and read by nothing; §4 withheld them because *a posture assembled from ignored keys would be believed by exactly the reader least able to check.* Both are read now. The material change is granularity: the audit/enforce switch was FLEET-WIDE, so **shadowing one tenant's new policy also stopped enforcing every other tenant's** — a strictly worse posture than the one being carefully reached. `profile` is read by being refused where it cannot be honoured. | **Adds one leaf, and closes a §4 abstention with the reason it was taken.** `onViolation` can WEAKEN, which is safe only because the contract is written on the trusted side — stated in the leaf rather than assumed. `std.postures.*` stays absent with a SHARPER reason: not "nothing enforces" but "what lockdown should narrow to is a decision nobody has made". |
 
 | **ASYNC FRAGMENTS SHIPPED — G6.15, and the blocker was not where the roadmap said.** ROADMAP recorded the synchronous invoke; an async fragment never reached it, being refused as *"not a bytecode function"* — **untrue of an async function**, which is a bytecode function with a different class id. Six COMCON analysis entry points tested one id where the engine has a four-class helper, so the C3 analysis **refused to look** at async and generator bodies. Fixed at all six; the promise is then settled by draining the compartment's own jobs, bounded by the deadline AND a job cap, and an unsettleable promise is reported as `E_INVOKE_PENDING` rather than stringified into `{}`. | **Adds one leaf and one refusal code, and WIDENS what admission accepts** — which is the one direction that needs saying out loud. It is not a weakening: the analysis now RUNS on bodies it previously refused to read, and the test pins that by asserting an undeclared free name inside an async body is still refused. The escape battery (§15/G11) has not been re-run against async fragment shapes; that is recorded in the leaf's GAP, not claimed. |
+
+| **THE DEFERRED-JOB ESCAPE, CLOSED — G6.16, and it was opened by G6.15 one day earlier.** A fragment could queue a job and return; nothing else drains the compartment runtime, so the job ran inside the NEXT unrelated invocation — on a stranger's deadline and memory allowance, gated at a stranger's wall-clock time, and under a stranger's `onViolation` posture. Every invocation now drains to quiescence inside its own compartment scope. Also: nothing in this process installed a promise-rejection tracker, on either runtime, so a failed continuation was silent everywhere. | **Closes a hole this project's own increment opened, found by probing that increment rather than by a report.** Two of the fix's first attempts were wrong and their controls said so: the "job threw" signal is unreachable (a promise reaction catches its own throw, so the failure is an unhandled rejection), and the posture assertion could not discriminate until the fleet and the binding were made to DISAGREE. Adds one leaf and corrects a v5.92 claim about which bound fires. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with
