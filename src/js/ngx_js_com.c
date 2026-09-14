@@ -2728,6 +2728,141 @@ ngx_js_shared_budget_charge(JSContext *ctx, const char *key, uint32_t limit,
 }
 
 
+/*
+ * COMCON M-LIB `cosign`: record one principal's consent against a named
+ * decision, and report whether the quorum is now met.
+ *
+ * THE RECORD IS THE SET, NOT A COUNTER.  A counter cannot tell one principal
+ * pressing the button twice from two principals agreeing, and that distinction
+ * is the entire feature -- a two-person rule that counts attempts is a
+ * one-person rule with extra steps.  So the value is the comma-joined list of
+ * principals that have consented, and a principal already in it does not
+ * increase the count.  (That is also why the value must be read and rewritten
+ * under the lock rather than incremented: the check and the append are one
+ * operation.)
+ *
+ * THE WINDOW IS ANCHORED AT THE FIRST CONSENT and is FIXED, the same shape and
+ * the same disclosure as the `uses` budget: the entry is created with an expiry
+ * `within` seconds out, and every later consent joins that entry rather than
+ * extending it.  So a quorum must assemble within `within` seconds of the FIRST
+ * signature, not of the last -- which is the conservative direction, and the one
+ * an operator would pick if asked: an approval gathered an hour ago is not
+ * consent to an operation attempted now.
+ *
+ * Fleet-wide, because the two principals land on whichever workers accept their
+ * connections; a per-worker record would make the quorum unreachable except by
+ * luck.  Store full -> FAIL CLOSED, as the budget does: a consent that cannot
+ * be recorded has not been given.
+ *
+ * Returns NGX_OK (quorum met -- proceed), NGX_DECLINED (short of quorum, the
+ * caller's consent is now recorded), NGX_ERROR (no store).
+ */
+ngx_int_t
+ngx_js_shared_cosign_record(JSContext *ctx, const char *key,
+    const char *principal, uint32_t quorum, uint32_t within)
+{
+    ngx_js_shared_hdr_t    *hdr;
+    ngx_js_shared_entry_t  *entries;
+    ngx_uint_t              i, slot, n, plen, vlen;
+    uint32_t                hash;
+    time_t                  now;
+    ngx_int_t               rc;
+    u_char                 *p, *last;
+
+    hdr = ngx_js_shared_get_hdr(ctx);
+    if (hdr == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (principal == NULL || *principal == '\0') {
+        return NGX_ERROR;
+    }
+
+    plen = ngx_strlen(principal);
+    entries = (ngx_js_shared_entry_t *)(hdr + 1);
+    hash = ngx_js_shared_hash(key);
+    now = ngx_time();
+
+    ngx_spinlock(&hdr->lock, 1, 2048);
+
+    i = ngx_js_shared_find(hdr, entries, key, hash, now, &slot);
+
+    if (i != NGX_JS_SHARED_NOSLOT) {
+        /*
+         * Count the members, and look for this one.  The scan compares WHOLE
+         * segments: a substring test would make "bob" a member of a record
+         * holding "bobby", so one principal whose name is a prefix of another's
+         * would silently satisfy the other's quorum.
+         */
+        n = 0;
+        p = (u_char *) entries[i].val;
+        last = p + ngx_strlen(entries[i].val);
+
+        while (p < last) {
+            u_char  *e = p;
+
+            while (e < last && *e != ',') {
+                e++;
+            }
+
+            n++;
+
+            if ((ngx_uint_t) (e - p) == plen
+                && ngx_strncmp(p, principal, plen) == 0)
+            {
+                /*
+                 * ALREADY CONSENTED.  Not an error and not a second vote: the
+                 * same operator retrying sees the same answer, which is what
+                 * makes the retry safe to suggest in the denial message.
+                 */
+                ngx_unlock(&hdr->lock);
+                return (n >= quorum) ? NGX_OK : NGX_DECLINED;
+            }
+
+            p = (e < last) ? e + 1 : e;
+        }
+
+        vlen = ngx_strlen(entries[i].val);
+
+        if (vlen + 1 + plen >= NGX_JS_SHARED_VAL_LEN) {
+            /*
+             * The record is full of principals.  FAIL CLOSED for the store's
+             * reason: consent that cannot be recorded has not been given.  The
+             * admission check caps `quorum` well below this, so reaching here
+             * means far more principals attempted than the quorum needs.
+             */
+            ngx_unlock(&hdr->lock);
+            return NGX_DECLINED;
+        }
+
+        ngx_snprintf((u_char *) entries[i].val + vlen,
+                     NGX_JS_SHARED_VAL_LEN - vlen - 1, ",%s%Z", principal);
+        entries[i].val[NGX_JS_SHARED_VAL_LEN - 1] = '\0';
+
+        rc = (n + 1 >= quorum) ? NGX_OK : NGX_DECLINED;
+
+    } else if (slot == NGX_JS_SHARED_NOSLOT) {
+        rc = NGX_DECLINED;                       /* store full: fail closed */
+
+    } else {
+        ngx_js_shared_insert(&entries[slot], key, hash, principal,
+                             now + (time_t) within);
+        hdr->count++;
+
+        /*
+         * quorum == 1 would mean "one signature is enough", which is not a
+         * two-person rule; admission refuses it, so this is OK only in the
+         * sense that the arithmetic says so.
+         */
+        rc = (quorum <= 1) ? NGX_OK : NGX_DECLINED;
+    }
+
+    ngx_unlock(&hdr->lock);
+
+    return rc;
+}
+
+
 static JSValue
 ngx_js_shared_fn_get(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
@@ -3878,7 +4013,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var e=new TypeError(msg+' ['+code+']');"
     "    e.code=code;throw e;}"
     "  var FLAVORS={revoke:1,redact:1,allow:1,routes:1,uses:1,ttl:1,"
-    "               allowHosts:1,window:1};"
+    "               allowHosts:1,window:1,cosign:1};"
     /* One definition of the socket field lattice, used by the meet here and by
        include()'s translation below -- two copies of a bitmask mapping is how a
        "narrower" membrane ends up wider than the one it attenuates. */
@@ -3895,6 +4030,75 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    for(k in FMASK)if(Object.prototype.hasOwnProperty.call(FMASK,k))"
     "      if(m&FMASK[k])out.push(k);"
     "    return out;}"
+    /* `cosign` -- ONE validator, called by the constructor (for the message an
+       operator wants to read) and again by mediate() (for the descriptor built
+       by hand, which is the gap the allowHosts work found).  Two copies of these
+       rules is how a hand-built cosign ends up weaker than a constructed one. */
+    "  function cosignCheck(o){"
+    "    var k=(o.key===undefined)?'':String(o.key),"
+    "        q=Number(o.quorum),w=Number(o.within),"
+    "        as=(o.as===undefined||o.as===null)?'':String(o.as);"
+    "    if(!k)capRefuse('E_CAP_FLAVOR','cosign: needs a key naming the "
+             "DECISION -- two capabilities cosign each other exactly when the "
+             "operator gives them the same key, the way uses() names a "
+             "counter');"
+    "    if(k.length>48)capRefuse('E_CAP_FLAVOR','cosign: key too long "
+             "(max 48 chars)');"
+    /* quorum 1 is refused rather than accepted as a no-op: "one signature is
+       enough" is not a weak two-person rule, it is the absence of one, and a
+       capability that needs no cosignature is spelled by not cosigning it --
+       the same argument the never-open window makes. */
+    "    if(!(q>=2)||q!==Math.floor(q))capRefuse('E_CAP_FLAVOR','cosign: "
+             "quorum must be an integer >= 2; a quorum of 1 is not a weak "
+             "two-person rule, it is no rule -- a capability needing no "
+             "cosignature is spelled by not cosigning it');"
+    "    if(q>8)capRefuse('E_CAP_FLAVOR','cosign: quorum too large (max 8) -- "
+             "the fleet-wide record holds the consenting principals, not a "
+             "count, and it is bounded');"
+    /* A missing `within` is refused for the reason a missing budget limit is:
+       the dangerous reading of "no expiry" is "consent lasts forever", and an
+       approval gathered last month is not consent to an operation attempted
+       today. */
+    "    if(!(w>=1)||w!==Math.floor(w))capRefuse('E_CAP_FLAVOR','cosign: needs "
+             "an integer within (seconds) >= 1; a missing window would mean "
+             "consent never expires, which is not what anyone means');"
+    /* No acting principal is E_CAP_PRINCIPAL, its own code: nothing was
+       misspelled and nothing composed, the policy is simply incoherent. */
+    "    if(!as)capRefuse('E_CAP_PRINCIPAL','cosign: needs `as`, the principal "
+             "this capability acts for -- the HOST asserts it (std.sessions "
+             "resolve()), and a two-person rule with nobody identified cannot "
+             "be one');"
+    "    if(as.length>48)capRefuse('E_CAP_PRINCIPAL','cosign: `as` too long "
+             "(max 48 chars)');"
+    /* REFUSED, not sanitized.  The fleet-wide record joins principals with
+       commas, so stripping one would merge two principals into one -- the same
+       defect the session registry refuses a truncating key for. */
+    "    if(as.indexOf(',')>=0)capRefuse('E_CAP_PRINCIPAL','cosign: `as` may "
+             "not contain a comma; the consent record separates principals with "
+             "one, and rewriting the name would merge two principals into one');"
+    "    return {key:k,quorum:q,within:w,as:as};}"
+    /* The quorum meets by MAX and the window by MIN -- both narrowing, in
+       OPPOSITE directions, which is why they are written out rather than left to
+       a shared helper: needing MORE signatures is stricter, having LESS time to
+       gather them is stricter too.  That is a third lattice shape beside the
+       mask AND and the lifetime MIN.
+       The key and the acting principal must be IDENTICAL or the meet is refused:
+       merging two keys would let consent given for one decision authorize
+       another, and a capability with two acting principals would have to vote as
+       somebody -- both are widenings wearing a composition. */
+    "  function cosignMeet(a,b){"
+    "    if(!a)return b||null;if(!b)return a;"
+    "    if(a.key!==b.key)capRefuse('E_CAP_ESCALATE','mediate: cannot "
+             "re-mediate a cosigned capability with a DIFFERENT cosign key -- "
+             "the key names the decision, and merging two would let consent "
+             "given for one authorize the other');"
+    "    if(a.as!==b.as)capRefuse('E_CAP_ESCALATE','mediate: cannot re-mediate "
+             "a cosigned capability as a DIFFERENT principal -- one capability "
+             "acts for one principal, and picking either would be voting as "
+             "somebody');"
+    "    return {key:a.key,as:a.as,"
+    "            quorum:(a.quorum>b.quorum)?a.quorum:b.quorum,"
+    "            within:(a.within<b.within)?a.within:b.within};}"
     "  function budgetMeet(a,b){"
     "    if(!a)return b||null;if(!b)return a;"
     "    if(a.key!==b.key||a.limit!==b.limit||a.window!==b.window)"
@@ -3910,7 +4114,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(!FLAVORS[interceptor.flavor])capRefuse('E_CAP_FLAVOR',"
     "      'mediate: unknown interceptor flavor '+String(interceptor.flavor)+"
     "      '; the vocabulary is closed (revoke, redact, allow, routes, uses, "
-                 "ttl, allowHosts) -- an unrecognized one used to mean FULL "
+                 "ttl, allowHosts, window, cosign) -- an unrecognized one "
+                 "used to mean FULL "
                  "authority');"
     /* SNAPSHOT, do not hold the caller's object.  Validating here and reading it
        at include() time is a time-of-check/time-of-use gap: the descriptor is an
@@ -3978,6 +4183,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        'mediate: ttl() needs an integer number of seconds >= 1; a missing "
              "or zero lifetime is a mistake, not `forever`');"
     "      snap={flavor:'allow',fields:maskFields(FMASK_FULL),ttlSeconds:ts};}"
+    /* NORMALIZED into an allow-everything mask carrying the cosign record, the
+       way `uses` and `ttl` are -- and deliberately NOT kept as its own flavour
+       the way `window` is.  A flavour that survives into include() needs a
+       translation branch of its own for the BARE case, and the one `window`
+       needed was missing until its probe found it.  Normalizing means there is
+       no bare case to forget. */
+    "    if(snap.flavor==='cosign'){"
+    "      snap={flavor:'allow',fields:maskFields(FMASK_FULL),"
+    "            cosign:cosignCheck(interceptor)};}"
     /* V4 — ATTENUATION MEET, and the lattice inclusion asserted rather than
        argued.  Re-mediating an already-mediated capability used to fail with
        "grant is not a NginxSocket", because the translation unwraps one facet
@@ -4038,6 +4252,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "                        ((at2===undefined)?at1:(at1<at2?at1:at2));}"
     "        var aw=(ii.days!==undefined)?ii:((oi.days!==undefined)?oi:null);"
     "        if(aw){as.days=aw.days;as.from=aw.from;as.to=aw.to;}"
+    "        var ac=cosignMeet(ii.cosign,oi.cosign);"
+    "        if(ac)as.cosign=ac;"
     "        snap=Object.freeze(as);}"
     "      else if(ii.flavor==='routes'||oi.flavor==='routes'){"
     "        if(ii.flavor!==oi.flavor||ii.glob!==oi.glob)capRefuse("
@@ -4058,6 +4274,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        var bb=budgetMeet(ii.budget,oi.budget);"
     "        var ns={flavor:'allow',fields:maskFields(mm)};"
     "        if(bb)ns.budget=bb;"
+    "        var cc=cosignMeet(ii.cosign,oi.cosign);"
+    "        if(cc)ns.cosign=cc;"
     /* Lifetimes, unlike budgets, DO have a computable meet: the shorter one is
        strictly narrower than both, so composing is min() rather than a refusal.
        Worth saying out loud next to budgetMeet, which refuses for the opposite
@@ -4176,6 +4394,34 @@ static const char  ngx_js_comcon_bootstrap[] =
        and a fragment would otherwise hold them forever. */
     "  C.ttl=function(seconds){"
     "    return {flavor:'ttl',seconds:Number(seconds)};};"
+    /* cosign(spec): the TWO-PERSON RULE.
+
+         comcon.cosign({ key:'rotate-signing-key', quorum:2, within:900,
+                         as: resolved.principal })
+
+       `as` is written on the TRUSTED side, by the operator's own configuration,
+       from the principal the HOST asserted -- COMCON authenticates nothing
+       (TM-2), it maps.  The fragment never sees or names it, so it holds exactly
+       one identity per invocation and can cast exactly one vote: DISTINCTNESS IS
+       STRUCTURAL rather than checked.
+
+       Which means a quorum assembles ACROSS INVOCATIONS: alice runs the policy
+       and is denied pending a cosignature, bob runs the same policy and it
+       executes.  That is what a two-person rule looks like in an operations
+       room, and it is why there is no approve() verb -- THE ATTEMPT IS THE
+       CONSENT.  The corollary is worth saying out loud because it is the one
+       surprising thing here: a cap.cosign DENIAL IS NOT "nothing happened".
+       The denied attempt recorded the caller's consent.
+
+       No `of:[...]` allow-list, deliberately: HOLDING THE CAPABILITY IS THE
+       MEMBERSHIP.  Only a principal the operator chose to hand a cosigned cap to
+       can attempt at all, so a list inside the descriptor would re-state in a
+       weaker place what the grant already decided. */
+    "  C.cosign=function(spec){"
+    "    spec=spec||{};"
+    "    var c=cosignCheck(spec);"
+    "    return {flavor:'cosign',key:c.key,quorum:c.quorum,"
+    "            within:c.within,as:c.as};};"
     /* stone check (increment D3): a splice may carry only DEEP cap-free plain
        data — primitives + frozen records/arrays; no functions, no capabilities
        (facet/quote/confined), no getters/setters (a getter could mint a cap
@@ -4565,7 +4811,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "          pol={kind:0,mask:jsMask(it)};"
     "          if(it.budget)pol.budget=it.budget;"
     "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
-    "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};}"
+    "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};"
+    "          if(it.cosign)pol.cosign=it.cosign;}"
     "        else if(it.flavor==='routes'){"
     "          pol={kind:1,glob:String(it.glob||'*')};}"
     /* kind 3: the outbound capability, attenuated by a host glob. The glob
@@ -4584,7 +4831,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "          pol={kind:3,glob:String(it.glob||'')};"
     "          if(it.budget)pol.budget=it.budget;"
     "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
-    "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};}"
+    "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};"
+    "          if(it.cosign)pol.cosign=it.cosign;}"
     /* No fall-through to the FULL default.  NOTE it is not reachable through the
        public API any more -- mediate() refuses an unknown flavor and snapshots
        the descriptor -- so no test drives this line, and it is kept anyway as a

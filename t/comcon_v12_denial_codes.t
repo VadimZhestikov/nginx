@@ -114,6 +114,15 @@ function capFor(row) {
                                    from: hm(nm - 120), to: hm(nm - 60) }));
     }
 
+    /* `cosignSolo`: one acting principal against a quorum of two.  Reliably
+     * denied however often it runs -- the record is the SET of principals, so
+     * `solo` joins it once and the count never reaches two. */
+    if (row.cap === 'cosignSolo') {
+        return comcon.mediate(sock,
+                   comcon.cosign({ key: 'v12solo', quorum: 2, within: 300,
+                                   as: 'solo' }));
+    }
+
     var cap = (row.cap === 'outbound') ? outbound : sock;
     if (row.budget) {
         cap = comcon.mediate(cap, comcon.uses(row.budget.key, row.budget.limit,

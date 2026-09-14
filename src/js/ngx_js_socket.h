@@ -203,5 +203,14 @@ void  ngx_js_socket_set_window(JSValueConst obj, uint32_t days, uint32_t from,
 void  ngx_js_outbound_set_window(JSValueConst obj, uint32_t days,
           uint32_t from, uint32_t to);
 
+/* M-LIB `cosign`: apply a two-person rule to an already-wrapped capability.
+ * `as` is the principal this wrapper ACTS FOR -- written on the trusted side as
+ * the capability crosses, never reachable from inside the compartment, which is
+ * what makes one wrapper exactly one vote. quorum == 0 leaves it uncosigned. */
+void  ngx_js_socket_set_cosign(JSValueConst obj, const char *key,
+          const char *as, uint32_t quorum, uint32_t within);
+void  ngx_js_outbound_set_cosign(JSValueConst obj, const char *key,
+          const char *as, uint32_t quorum, uint32_t within);
+
 
 #endif /* _NGX_JS_SOCKET_H_INCLUDED_ */

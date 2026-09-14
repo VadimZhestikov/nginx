@@ -635,6 +635,58 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.88 (in place — M-LIB `cosign`, the two-person rule):** the ninth of the ten vocabulary
+words, and the first that bounds WHO rather than when or how often — the only mediation a holder
+cannot satisfy alone. `cosign({key, quorum, within, as})`; denial code `cap.cosign`.
+
+THE HARD PART IS NOT THE COUNTER, IT IS WHO IS COUNTING. COMCON does not authenticate (§8b): the
+host asserts the principal and COMCON maps it. So `as` is written by the operator's own
+configuration on the trusted side, and there is NO PATH FROM INSIDE A COMPARTMENT THAT SETS IT. A
+fragment therefore holds exactly one identity per invocation and can cast exactly one vote —
+DISTINCTNESS IS STRUCTURAL, not checked. Had `as` been a string a fragment could write, the word
+would have been theatre: one fragment voting twice under two names.
+
+Which is why the quorum assembles ACROSS INVOCATIONS rather than within one: alice runs the policy
+and is denied pending a cosignature, bob runs the same policy and it executes. That is what a
+two-person rule looks like in an operations room, and it is why there is no `approve()` verb — THE
+ATTEMPT IS THE CONSENT. The corollary has to be said out loud because it is the one surprising
+thing here: a `cap.cosign` DENIAL IS NOT "NOTHING HAPPENED". The denied attempt recorded a
+signature. It is the only denial in the set that is a WAITING STATE rather than a verdict, and the
+only one with a SIDE EFFECT.
+
+The record is the SET of consenting principals, never a count of attempts: one operator pressing
+the button twice is still one signature, and a rule that counted attempts would be a one-person
+rule with extra steps. It lives in `nginx.shared`, so it is FLEET-WIDE — two operators land on
+whichever workers accept their connections, and a per-worker record would make the quorum
+unreachable except by luck (the per-process mode switch of v5.56, repeated). `within` is FIXED and
+ANCHORED AT THE FIRST SIGNATURE, the same shape and the same disclosure the `uses` budget makes
+about its window.
+
+NO `of:[...]` ALLOW-LIST, DELIBERATELY: HOLDING THE CAPABILITY IS THE MEMBERSHIP. Only a principal
+the operator chose to hand a cosigned capability to can attempt at all, so a list inside the
+descriptor would re-state in a weaker place what the grant already decided — and it would invent an
+unsatisfiable-meet case (quorum greater than the intersected set) for nothing.
+
+A THIRD LATTICE SHAPE. Masks meet by AND and lifetimes by MIN; `quorum` meets by MAX — needing MORE
+signatures is the narrower authority — while `within` meets by MIN. Two narrowing directions in one
+word, which is why they are written out rather than routed through a shared helper. The `key` and
+the acting principal must be IDENTICAL or the meet is refused: merging two keys would let consent
+given for one decision authorize another, and a capability with two acting principals would have to
+vote as somebody. `E_CAP_PRINCIPAL` is the 14th refusal code and deliberately not folded into the
+other two — a `cosign` with no `as` spelled the flavour correctly and composed nothing; it is
+simply incoherent policy, and a tenant's CI wants to tell that from a typo.
+
+GATE ORDER IS A DECISION: expiry, window, destination, cosignature, budget. Consent is never
+recorded for an operation another gate would refuse — otherwise signatures could be gathered at
+02:00, or against a destination this capability can never reach, and spent where it can.
+
+AND A CONTROL CAUGHT A WRONG INSTRUMENT AGAIN. The expiry probe read `req.args.as`, but `req.args`
+is the RAW QUERY STRING, not a parsed object — so both requests voted as the same principal, and
+the probe passed identically whether the `within` meet took the shorter window or the longer one.
+Five controls were run against this word; four failed as designed and the fifth passed, which is
+the only reason the defect was found. *The measurement was fine. The thing doing the measuring was
+not.*
+
 **v5.87 (in place — M-LIB `window`, and the defect its probe found in the INVOKE):** `ttl`
 bounds a capability by a countdown. THREATS.md wants the signing key bounded by a SCHEDULE, which
 is a different shape: usable in hours, not for an hour. `window({days:'Mon-Fri', from:'09:00',

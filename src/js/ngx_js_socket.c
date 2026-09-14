@@ -159,6 +159,16 @@ typedef struct {
     uint32_t  win_days;
     uint32_t  win_from;
     uint32_t  win_to;
+    /*
+     * M-LIB `cosign`: the two-person rule.  quorum == 0 means uncosigned.
+     * `cosign_as` is the principal this wrapper ACTS FOR, written on the trusted
+     * side when the capability crosses; there is no path from inside the
+     * compartment that sets it, which is what makes one wrapper one vote.
+     */
+    uint32_t  cosign_quorum;
+    uint32_t  cosign_within;   /* seconds; anchored at the FIRST consent */
+    char      cosign_key[64];
+    char      cosign_as[48];
 } ngx_js_socket_opaque_t;
 
 
@@ -262,6 +272,36 @@ ngx_js_socket_budget_spend(JSContext *ctx, ngx_js_socket_opaque_t *op)
 }
 
 
+/*
+ * M-LIB `cosign`: the two-person gate, in ONE place for both capability kinds.
+ *
+ * Returns NGX_OK when the quorum is met and the operation may proceed.  A
+ * shortfall goes through the same denial machinery as every other gate, so audit
+ * mode works here for free -- and audit mode is unusually interesting for this
+ * word: an operator can watch which operations WOULD have needed a second
+ * signature before switching the rule on.
+ *
+ * The consent is recorded even when the gate denies.  That is the feature, not a
+ * leak: the first operator's attempt IS their signature, and the second
+ * operator's identical attempt is what executes it.
+ */
+static ngx_int_t
+ngx_js_cosign_gate(JSContext *ctx, const char *key, const char *as,
+    uint32_t quorum, uint32_t within, const char *obj)
+{
+    if (ngx_js_shared_cosign_record(ctx, key, as, quorum, within) == NGX_OK) {
+        return NGX_OK;
+    }
+
+    /* returns 0 in audit mode (log-and-allow), 1 when the gate should deny */
+    if (ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_COSIGN, obj)) {
+        return NGX_DECLINED;
+    }
+
+    return NGX_OK;
+}
+
+
 static JSValue
 ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
 {
@@ -309,6 +349,26 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
      * though the tenant were still working. */
     if (ngx_js_window_closed(op->win_days, op->win_from, op->win_to)
         && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_WINDOW, st_addr_of(op)))
+    {
+        return JS_UNDEFINED;
+    }
+
+    /*
+     * `cosign` sits AFTER the expiry and the window and BEFORE the budget.
+     *
+     * After, because consent must not be bankable outside the hours the
+     * capability is usable: a principal who could sign at 03:00 for an operation
+     * the window forbids would have moved the decision out of the window the
+     * operator wrote down.
+     *
+     * Before, for the reason `ttl` established -- an operation that cannot
+     * happen must not spend budget, or the audit reads as though the tenant were
+     * still working.
+     */
+    if (op->cosign_quorum > 0
+        && ngx_js_cosign_gate(ctx, op->cosign_key, op->cosign_as,
+                              op->cosign_quorum, op->cosign_within,
+                              st_addr_of(op)) != NGX_OK)
     {
         return JS_UNDEFINED;
     }
@@ -920,6 +980,11 @@ typedef struct {
     uint32_t  win_days;
     uint32_t  win_from;
     uint32_t  win_to;
+    /* M-LIB `cosign` -- see the socket opaque; quorum == 0 means uncosigned */
+    uint32_t  cosign_quorum;
+    uint32_t  cosign_within;
+    char      cosign_key[64];
+    char      cosign_as[48];
 } ngx_js_outbound_opaque_t;
 
 JSClassID  ngx_js_outbound_class_id;   /* described by ngx_js_com_describe.c */
@@ -1115,11 +1180,18 @@ ngx_js_outbound_host(const char *url, size_t len, const char **scheme,
 /*
  * request(url[, method]) — record an outbound intent.
  *
- * GATE ORDER: lifetime, then destination, then budget.  Both refusals come
- * BEFORE the charge for the reason `ttl` established: spending budget on a
+ * GATE ORDER: lifetime, window, destination, cosignature, budget.  Every refusal
+ * comes BEFORE the charge for the reason `ttl` established: spending budget on a
  * request that cannot happen makes the audit read as though the tenant were
  * still working.  A glob-refused destination is exactly as impossible as an
  * expired capability, so it is charged for exactly as little.
+ *
+ * `cosign` sits after the DESTINATION check here, one step later than in the
+ * socket getter, and for the same reason the socket puts it after the window: a
+ * signature must not be recorded for a request the mediation would refuse
+ * outright.  Otherwise an operator could gather consent against
+ * https://evil.example -- a destination this capability can never reach -- and
+ * have it count toward the quorum for the destination it can.
  */
 static JSValue
 ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
@@ -1188,6 +1260,15 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
             JS_FreeCString(ctx, url);
             return JS_UNDEFINED;
         }
+    }
+
+    if (op->cosign_quorum > 0
+        && ngx_js_cosign_gate(ctx, op->cosign_key, op->cosign_as,
+                              op->cosign_quorum, op->cosign_within, url)
+           != NGX_OK)
+    {
+        JS_FreeCString(ctx, url);
+        return JS_UNDEFINED;
     }
 
     if (op->budget_limit > 0
@@ -1590,4 +1671,59 @@ ngx_js_outbound_set_window(JSValueConst obj, uint32_t days, uint32_t from,
     op->win_days = days;
     op->win_from = from;
     op->win_to = to;
+}
+
+
+/*
+ * Apply a cosignature requirement to an already-wrapped capability.
+ *
+ * quorum == 0, an empty key or an empty principal all leave the wrapper
+ * UNCOSIGNED.  That looks like a fail-open and is not: nothing reaches here
+ * except a policy descriptor that mediate() already validated, and mediate()
+ * refuses a quorum below 2, an empty key and a missing principal with codes of
+ * their own -- E_CAP_PRINCIPAL exists precisely so that "who is signing" is
+ * settled at admission rather than defaulted here.  The guard is the same shape
+ * as set_window's `days == 0`: this function does not invent policy.
+ */
+void
+ngx_js_socket_set_cosign(JSValueConst obj, const char *key, const char *as,
+    uint32_t quorum, uint32_t within)
+{
+    ngx_js_socket_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_socket_class_id);
+    if (op == NULL || quorum == 0 || key == NULL || *key == '\0'
+        || as == NULL || *as == '\0')
+    {
+        return;
+    }
+
+    ngx_cpystrn((u_char *) op->cosign_key, (u_char *) key,
+                sizeof(op->cosign_key));
+    ngx_cpystrn((u_char *) op->cosign_as, (u_char *) as,
+                sizeof(op->cosign_as));
+    op->cosign_quorum = quorum;
+    op->cosign_within = within ? within : 1;
+}
+
+
+void
+ngx_js_outbound_set_cosign(JSValueConst obj, const char *key, const char *as,
+    uint32_t quorum, uint32_t within)
+{
+    ngx_js_outbound_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_outbound_class_id);
+    if (op == NULL || quorum == 0 || key == NULL || *key == '\0'
+        || as == NULL || *as == '\0')
+    {
+        return;
+    }
+
+    ngx_cpystrn((u_char *) op->cosign_key, (u_char *) key,
+                sizeof(op->cosign_key));
+    ngx_cpystrn((u_char *) op->cosign_as, (u_char *) as,
+                sizeof(op->cosign_as));
+    op->cosign_quorum = quorum;
+    op->cosign_within = within ? within : 1;
 }

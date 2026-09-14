@@ -384,6 +384,47 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T3
 - **V:** V13
 
+#### G6.11 — a capability can require TWO PRINCIPALS
+- **CLAIM:** `mediate(cap, cosign({key, quorum, within, as}))` makes an operation execute only
+  once `quorum` **distinct** principals have attempted it; short of that it is denied as
+  `cap.cosign`, logged-and-allowed in audit mode. The consent record is fleet-wide; the quorum
+  meets by MAX and `within` by MIN; a different key or a different acting principal is refused.
+- **ARGUMENT:** `ttl` and `window` bound WHEN and `uses` bounds HOW OFTEN; this is the first that
+  bounds WHO, and the only mediation in the vocabulary that **the holder cannot satisfy alone**.
+  The hard part is not the counter, it is who is counting. COMCON does not authenticate (TM-2) —
+  the host asserts the principal — so `as` is written by the operator's configuration on the
+  trusted side and there is **no path from inside a compartment that sets it**. A fragment
+  therefore holds exactly one identity per invocation and can cast exactly one vote:
+  **distinctness is structural, not checked.** Had `as` been a string the fragment could write,
+  the word would be theatre — one fragment voting twice under two names.
+  Consequently the quorum assembles **across invocations**, which is what a two-person rule looks
+  like in an operations room: alice runs the policy and is denied pending a cosignature, bob runs
+  the same policy and it executes. There is no `approve()` verb because **the attempt is the
+  consent** — so `cap.cosign` is the one denial in the set that is a WAITING STATE rather than a
+  verdict, and the one **with a side effect**. There is deliberately no `of:[...]` allow-list:
+  **holding the capability is the membership**, and a list inside the descriptor would re-state in
+  a weaker place what the grant already decided.
+- **EV:** `t/comcon_cap_cosign.t` — 25 assertions. The rule (first denied, second executes); the
+  distinctness control (**one principal attempting twice is still denied**, then a different one
+  executes it, so those two denials recorded exactly one consent between them); quorum 3; the
+  **meet's direction measured by behaviour** rather than by not-throwing; gate order (a
+  destination the glob refuses records NO consent); the meet's refusals; seven malformed specs; a
+  hand-built descriptor; composition with `allowHosts` + `ttl` + `uses` + `window` at once; the
+  socket kind as well as the outbound one; audit mode; expiry across a real sleep; and
+  fleet-wideness proved **without naming a worker** — the principal is the worker index, so no
+  single worker can cast two votes and a success anywhere is itself the proof.
+- **EV:** `t/tools/golden-denials.js` — `cap.cosign` and `E_CAP_PRINCIPAL` frozen; the cosign
+  capability is COMPUTED by the harness, relying on distinctness for its own determinism.
+- **GAP:** The record is keyed by the operator's `key`, so two capabilities given the same key
+  cosign each other — the same naming residual a shared `uses` counter has, and the same
+  mitigation (it is a deliberate act). The `within` window is FIXED and **anchored at the first
+  consent**, not sliding, which is the `uses` disclosure repeated: a quorum must assemble within
+  `within` seconds of the FIRST signature. And nothing records WHICH operation was cosigned —
+  the key names a decision, not a call, so two operations under one key are one decision.
+  **home:** OPERATOR_API.md §8g · MANUAL.md (the vocabulary) · THREATS.md (the signing key).
+- **THREAT:** T5, T6, T11
+- **V:** V9
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1143,6 +1184,8 @@ signature is never quietly credited with work it did not see.
 | **The outbound ROUND TRIP is demonstrated, and the scheme can be pinned (v5.86).** `std.outbound.perform()` drains a capability through `req.fetch`, and `t/comcon_outbound_roundtrip.t` shows a policy asking, the host performing, and the policy deciding **from the responses**. `allowHosts` globs may be scheme-qualified, with the scheme matched exactly — which is NOT MANUAL's `protocol` (enforced operation order), still unbuilt. | **Closes the gap G6.8 named for itself.** Two of its four controls did not fire on the first run: one claim was false (`clear()` took no count) and one was unmeasured (exact vs globbed scheme). Both are now true and asserted — recorded because the lesson is about the claims, not the feature. |
 
 | **M-LIB `window` SHIPPED — G6.9 — and it found a defect in the INVOKE, G6.10.** A recurring lifetime beside `ttl`'s countdown, with its own code `cap.window`, UTC by decision, wrapping midnight, whole-day, and refusing two different schedules. **Eight of ten vocabulary words now ship.** Its probe returned a denied call directly — the most natural thing to write — and exposed that a fragment returning `undefined` produced `SyntaxError: unexpected token: 'undefined'`. `undefined` is what every denied gate returns. | **Adds two leaves; one of them is a pre-existing defect on the invoke path, which §15 attested.** The defect was never reachable by any existing test because every probe wrapped its result, so nothing §15 relied on was wrong — but an operator tightening a policy would have met it immediately. Recorded here rather than quietly fixed. |
+
+| **M-LIB `cosign` SHIPPED — G6.11.** The two-person rule, and the ninth of ten vocabulary words. The interesting property is that **distinctness is structural**: `as` is written on the trusted side and unreachable from inside a compartment, so a fragment holds one identity and casts one vote, and the quorum assembles across invocations. `cap.cosign` is the first denial that is a waiting state rather than a verdict, and the first **with a side effect** — the denied attempt records consent. `E_CAP_PRINCIPAL` is the 14th refusal code. **A control caught a wrong instrument again:** the expiry probe read `req.args.as`, but `req.args` is the raw query string, so both requests voted as the same principal and the test passed identically whether the `within` meet took the shorter window or the longer one. | **Adds one leaf and one refusal code.** Nothing signed becomes untrue; the new code is appended, which the frozen-contract rule permits, and §15's evidence table gains one row it did not see. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

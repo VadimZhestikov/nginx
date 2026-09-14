@@ -112,6 +112,19 @@ typedef enum {
      * at 02:00 needs to know which one they are looking at.
      */
     NGX_JS_DENIAL_CAP_WINDOW,          /* outside an allowed time-of-day window  */
+    /*
+     * M-LIB `cosign`: the two-person rule.  Its own code and not a reuse of
+     * cap.expired or cap.window, because it is the only denial in the set that
+     * is a WAITING state rather than a verdict -- the operation is not
+     * forbidden, it is one signature short, and the same call by a second
+     * principal executes it.  An operator reading cap.cosign should go find a
+     * colleague, which is not what any other code here means.
+     *
+     * And it is the only denial WITH A SIDE EFFECT: the denied attempt records
+     * the caller's consent (see ngx_js_shared_cosign_record).  A code whose
+     * meaning is "nothing happened" would be a lie.
+     */
+    NGX_JS_DENIAL_CAP_COSIGN,          /* awaiting a second principal's consent  */
     NGX_JS_DENIAL_LAST
 } ngx_js_denial_code_t;
 
@@ -164,6 +177,16 @@ typedef enum {
     NGX_JS_REFUSAL_CAP_GRANT,          /* a grant is not a mediatable cap   */
     NGX_JS_REFUSAL_CAP_FLAVOR,         /* a mediation flavor outside the closed set */
     NGX_JS_REFUSAL_CAP_ESCALATE,       /* a composition that cannot be shown to narrow */
+    /*
+     * M-LIB `cosign`: a cosigned capability whose descriptor names no acting
+     * principal.  It is a REFUSAL and not a denial because the operator wrote
+     * an incoherent policy -- "two people must agree" with nobody identified is
+     * not a weak two-person rule, it is no rule at all, and the one thing it
+     * must never do is degrade to single-signed.  Refusing at admission puts
+     * the failure where the operator can see it instead of at 02:00 in a
+     * denial counter.
+     */
+    NGX_JS_REFUSAL_CAP_PRINCIPAL,      /* cosign() with no acting principal */
     NGX_JS_REFUSAL_PIN_IDENTITY,       /* artifact identity pin mismatch    */
     NGX_JS_REFUSAL_EPOCH_STALE,        /* the fragment was freed (old epoch) */
     NGX_JS_REFUSAL_LAST

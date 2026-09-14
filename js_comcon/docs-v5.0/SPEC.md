@@ -332,10 +332,15 @@ registry); the **intrinsics allowance**; and the **two code axes** below.
 **Two code axes, and they are not the same axis.** A **DENIAL code** names a gate that fired
 at RUN time on authority the fragment legitimately holds (`sock.listener`, `listener.read`,
 `listener.serverByName`, `enum.sockets`, `sock.mutate`, `budget.uses`, `cap.expired`,
-`out.host`, `out.drain`, `cap.window`); it is
+`out.host`, `out.drain`, `cap.window`, `cap.cosign`); it is
 counted in `nginx.tenantDenials().byOp` and, in audit mode, **logged and allowed**. A
 **REFUSAL code** names why a fragment was **never admitted** (`e.code`, enumerated by
-`comcon.refusalCodes()`). Both are frozen contracts: every code must have a row in the
+`comcon.refusalCodes()`; `E_CAP_PRINCIPAL` is the third of the capability layer's own, and
+is deliberately not folded into the other two — a `cosign` that names no acting principal
+spelled the flavour correctly and composed nothing, it is simply incoherent policy).
+`cap.cosign` is the one denial in the set that is a **waiting state rather than a verdict**,
+and the one **with a side effect**: the denied attempt records the caller's consent, so the
+same call by a second principal executes it. Both are frozen contracts: every code must have a row in the
 golden corpus and every corpus row must name a code the runtime can still emit, or the
 enumeration check fails. `E_BUDGET_*` is empty **by placement, not by omission** —
 exhausting a budget is a denial, because the fragment was admitted and then hit a gate.

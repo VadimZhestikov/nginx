@@ -1223,6 +1223,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         char         bkey[80];
         uint32_t     blimit, bwindow, bttl;
         uint32_t     wdays, wfrom, wto;
+        char         ckey[80], cas[48];
+        uint32_t     cquorum, cwithin;
 
         cap_v = JS_GetPropertyUint32(hctx, argv[2], gi);
 
@@ -1255,6 +1257,46 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                 JS_FreeValue(hctx, f);
             }
             JS_FreeValue(hctx, w_v);
+        }
+
+        /* M-LIB `cosign`: likewise ONE reader for both kinds.  The key is
+         * namespaced here rather than in the JS, the way the budget key is: the
+         * operator names a DECISION and the C side decides which table that
+         * lives in, so a tenant cannot address another subsystem's rows by
+         * choosing a clever name. */
+        ckey[0] = '\0'; cas[0] = '\0'; cquorum = 0; cwithin = 0;
+        if (JS_IsObject(pol_v)) {
+            JSValue  c_v = JS_GetPropertyStr(hctx, pol_v, "cosign");
+            if (JS_IsObject(c_v)) {
+                JSValue      f;
+                const char  *cs;
+
+                f = JS_GetPropertyStr(hctx, c_v, "key");
+                cs = JS_ToCString(hctx, f);
+                if (cs != NULL) {
+                    ngx_snprintf((u_char *) ckey, sizeof(ckey) - 1,
+                                 "comcon.cosign:%s%Z", cs);
+                    JS_FreeCString(hctx, cs);
+                }
+                JS_FreeValue(hctx, f);
+
+                f = JS_GetPropertyStr(hctx, c_v, "as");
+                cs = JS_ToCString(hctx, f);
+                if (cs != NULL) {
+                    ngx_cpystrn((u_char *) cas, (u_char *) cs, sizeof(cas));
+                    JS_FreeCString(hctx, cs);
+                }
+                JS_FreeValue(hctx, f);
+
+                f = JS_GetPropertyStr(hctx, c_v, "quorum");
+                JS_ToUint32(hctx, &cquorum, f);
+                JS_FreeValue(hctx, f);
+
+                f = JS_GetPropertyStr(hctx, c_v, "within");
+                JS_ToUint32(hctx, &cwithin, f);
+                JS_FreeValue(hctx, f);
+            }
+            JS_FreeValue(hctx, c_v);
         }
 
         if (kind == 3) {
@@ -1330,6 +1372,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                                           obkey[0] ? obkey : NULL,
                                           oblimit, obwindow, obttl);
             ngx_js_outbound_set_window(av[gi], wdays, wfrom, wto);
+            ngx_js_outbound_set_cosign(av[gi], ckey, cas, cquorum, cwithin);
             JS_FreeCString(hctx, hglob);
             JS_FreeValue(hctx, name_v);
             JS_FreeValue(hctx, pol_v);
@@ -1418,6 +1461,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                                                 bkey[0] ? bkey : NULL,
                                                 blimit, bwindow, bttl);
             ngx_js_socket_set_window(av[gi], wdays, wfrom, wto);
+            ngx_js_socket_set_cosign(av[gi], ckey, cas, cquorum, cwithin);
         }
 
         JS_FreeValue(hctx, pol_v);

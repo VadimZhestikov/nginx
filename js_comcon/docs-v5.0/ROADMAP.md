@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.87 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.88 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -75,13 +75,25 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **M-LIB `cosign` SHIPPED (2026-09-13, v5.88): the TWO-PERSON RULE.** The first word that
+>   bounds WHO rather than when or how often, and the only mediation a holder cannot satisfy
+>   alone (`cap.cosign`). **The hard part is not the counter, it is who is counting:** COMCON
+>   does not authenticate, so `as` is written on the trusted side and is unreachable from inside a
+>   compartment — one identity per invocation, one vote, so **distinctness is structural**. The
+>   quorum therefore assembles ACROSS INVOCATIONS and there is no `approve()` verb: **the attempt
+>   is the consent**, so a `cap.cosign` denial is the only one in the set that is a waiting state
+>   and the only one with a SIDE EFFECT. Fleet-wide record (the SET of principals, not a count);
+>   a third lattice shape (`quorum` MAX, `within` MIN); `E_CAP_PRINCIPAL` is the 14th refusal
+>   code. **NINE OF TEN VOCABULARY WORDS SHIP.** A control caught a wrong instrument again — the
+>   expiry probe read `req.args.as`, which is a raw query STRING, so both requests voted as the
+>   same principal. Remaining: `protocol` (enforced operation ORDER), `opaque.*` (engine
+>   substrate), the posture words.
 > - **M-LIB `window` SHIPPED (2026-09-13, v5.87) — and its probe found a defect in the INVOKE.**
 >   A recurring lifetime beside `ttl`'s countdown (`cap.window`, UTC by decision, wraps midnight,
 >   whole-day, two schedules refused). **Eight of ten vocabulary words ship.** Probing the word
 >   ALONE found a gap composition hid (a bare grant was refused), and the probe's natural shape
 >   found that a fragment returning `undefined` — **what every denied gate returns** — produced
->   `SyntaxError: unexpected token: 'undefined'`. Remaining: `cosign`, `protocol` (operation
->   ORDER), `opaque.*`, the posture words.
+>   `SyntaxError: unexpected token: 'undefined'`.
 > - **THE OUTBOUND ROUND TRIP (2026-09-13, v5.86).** `std.outbound.perform()` + a test where a
 >   policy asks, the host performs against a real backend, and the policy **decides from the
 >   responses**. `allowHosts` globs may pin the SCHEME (matched exactly) — which is NOT MANUAL's

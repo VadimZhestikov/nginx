@@ -569,6 +569,12 @@ ngx_int_t ngx_js_comcon_admit_check(JSContext *ctx, JSValueConst fn,
 ngx_int_t ngx_js_shared_budget_charge(JSContext *ctx, const char *key,
     uint32_t limit, uint32_t window);
 
+/* M-LIB `cosign`: record one principal's consent against a named decision.
+   NGX_OK = quorum met, NGX_DECLINED = short of it (consent now recorded),
+   NGX_ERROR = no store. The record is the SET of principals, not a count. */
+ngx_int_t ngx_js_shared_cosign_record(JSContext *ctx, const char *key,
+    const char *principal, uint32_t quorum, uint32_t within);
+
 /* [TBD-2]: throw a refusal carrying its code, in the message and as `.code` */
 JSValue ngx_js_comcon_refuse(JSContext *ctx, ngx_js_refusal_code_t code,
     const char *fmt, ...);

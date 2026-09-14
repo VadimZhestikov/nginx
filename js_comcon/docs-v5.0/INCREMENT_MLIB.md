@@ -92,9 +92,12 @@ the fall-through decides whether that mistake means REFUSE or FULL AUTHORITY.
 
 - **`std.postures.*` / `onViolation` / `profile:'restrictive'`** — nothing enforces them.
   They arrive with the enforcement, not before it.
-- **`allowHosts` / `uses` / `ttl` / `window` / `cosign` / `protocol` / `opaque.*`** — each
-  needs C-side enforcement (the current membrane is a socket field mask or a route glob).
-  Shipping them as descriptors would be shipping policy that does nothing.
+- **`protocol` / `opaque.*`** — the two words still absent. Each needs C-side enforcement, and
+  shipping one as a descriptor would be shipping policy that does nothing. `protocol` is enforced
+  operation ORDER (a session type over a capability's methods) and **is not a URL scheme** —
+  pinning a scheme is an attenuation of the destination and lives inside `allowHosts`. `opaque.*`
+  is on the engine-substrate track. (`allowHosts` shipped at v5.85, `uses` at v5.67, `ttl` at
+  v5.74, `window` at v5.87 and `cosign` at v5.88 — nine of ten.)
 - **`std.ops`** (the comconctl verbs as library programs over ops-resource caps,
   FOUNDATION §8a) — not started; the natural step 2, and it needs the ops-resource caps
   first.

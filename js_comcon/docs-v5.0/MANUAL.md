@@ -318,7 +318,7 @@ library:
 |---|---|
 | `routes("/acme/*")`, `allowHosts([...])` | scope a facet to a slice |
 | `readOnly()`, `redact("bodies")` | weaken what a handle shows |
-| `uses(1)`, `ttl("10m")`, `window("Sat 02:00-04:00")`, `cosign([...])` | grants with a fuse / office hours |
+| `uses(1)`, `ttl("10m")`, `window("Sat 02:00-04:00")`, `cosign({quorum,as})` | grants with a fuse / office hours / a second pair of hands |
 | `rateLimit(n)`, `budgets({...})` | metering |
 | `opaque.str({pass_to: [...]})` | usable-but-unreadable values |
 | `protocol("handshake", "frames*", "close")` | enforced operation order |

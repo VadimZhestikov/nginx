@@ -87,6 +87,8 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
     "out.drain",
     /* M-LIB `window` — a recurring lifetime; the sibling of cap.expired */
     "cap.window",
+    /* M-LIB `cosign` — one signature short, not forbidden (see the header) */
+    "cap.cosign",
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */
@@ -310,6 +312,15 @@ static const char  *ngx_js_refusal_codes[NGX_JS_REFUSAL_LAST] = {
      */
     "E_CAP_FLAVOR",
     "E_CAP_ESCALATE",
+    /*
+     * The third, added with `cosign`. It is deliberately NOT folded into
+     * E_CAP_FLAVOR: the flavour is known and spelled correctly, and it is not
+     * an ESCALATE either -- nothing composed and nothing widened. What happened
+     * is that the policy is incoherent on its own terms, and a tenant's CI
+     * wants to tell "I typo'd a word" from "I asked for a two-person rule and
+     * never said who the people are".
+     */
+    "E_CAP_PRINCIPAL",
     "E_PIN_IDENTITY",
     "E_EPOCH_STALE",
 };

@@ -160,17 +160,19 @@ l.handler = function (req) {
     try { comcon.std.profiles.tenant({}); }
     catch (e) { o.badEnv = 'refused'; }
 
-    /* THE CLOSED VOCABULARY: both spellings that used to mean FULL authority.
+    /* THE CLOSED VOCABULARY: a spelling that used to mean FULL authority.
      *
-     * The example used to be `allowHosts`, which SHIPPED at v5.85 -- so this
-     * probe stopped testing an unimplemented word and started testing an
-     * implemented one, and the assertion failed as it should have.  `cosign` is
-     * named in MANUAL's vocabulary and is still unimplemented, which is exactly
-     * what this needs: a word an operator might plausibly write and the
-     * enforcement layer does not know. */
+     * This probe is a COUNTDOWN, and its history is the record of one: it named
+     * `allowHosts` until v5.85 and `cosign` until v5.88, and each time the word
+     * shipped the assertion failed exactly as it should have -- an implemented
+     * word is no longer a test of what happens to an unimplemented one.
+     * `protocol` is next, and after it MANUAL's vocabulary has only `opaque.*`
+     * left, which is on the engine-substrate track.  When that ships too, this
+     * probe must be rewritten around a word that is not in the vocabulary at
+     * all rather than one that is merely not built yet. */
     o.unknownFlavor = 'ACCEPTED';
     try {
-        comcon.mediate(sock, { flavor: 'cosign', signers: ['a@example'] });
+        comcon.mediate(sock, { flavor: 'protocol', order: ['open', 'close'] });
     } catch (e) { o.unknownFlavor = 'refused'; }
 
     /* And the shape that outlived the old probe: a descriptor built BY HAND for
@@ -270,7 +272,7 @@ like($r, qr/"handBuiltNoGlob":"refused"/,
      'a HAND-BUILT descriptor for an implemented flavour, missing the field that '
      . 'flavour needs, is refused at the producer rather than reaching include()');
 like($r, qr/"unknownFlavor":"refused"/,
-     'an unimplemented flavor (cosign) is REFUSED -- it used to grant the '
+     'an unimplemented flavor (protocol) is REFUSED -- it used to grant the '
      . 'capability in full');
 like($r, qr/"typoFlavor":"refused"/,
      'a one-letter typo of a real flavor is refused -- it used to grant MORE '

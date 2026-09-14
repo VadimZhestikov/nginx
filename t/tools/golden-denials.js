@@ -138,6 +138,16 @@ var GOLDEN = [
     probe: "function(a){ var v = s.address;"
          + " return (v === undefined) ? 'denied' : 'allowed'; }",
     expect: 'denied' },
+  /* M-LIB `cosign` — the two-person rule.  Its capability is also COMPUTED
+   * (`cosignSolo`), for a reason unlike the window's: a cosigned capability with
+   * ONE acting principal is denied no matter how many times this row runs, since
+   * the record is the SET of consenting principals and a principal joins it once.
+   * So the row is reliably denied without needing a fresh key each time -- the
+   * distinctness rule doing double duty as the test's determinism. */
+  { code: 'cap.cosign', cap: 'cosignSolo', grant: 's', mode: 'enforce',
+    probe: "function(a){ var v = s.address;"
+         + " return (v === undefined) ? 'denied' : 'allowed'; }",
+    expect: 'denied' },
   { code: 'out.drain', cap: 'outbound', grant: 'out', mode: 'enforce',
     probe: "function(a){ var r = out.pending();"
          + " return (r === undefined) ? 'denied' : 'drained'; }",
@@ -296,6 +306,19 @@ var REFUSALS = [
         probe: "comcon.mediate(comcon.mediate(nginx.http.servers[0], "
              + "comcon.routes('/a/*')), comcon.routes('/b/*'))",
         msg: 'a glob meet is not computable'
+    },
+    {
+        code: 'E_CAP_PRINCIPAL',
+        why: 'a cosign() with no acting principal. Deliberately NOT folded '
+           + 'into E_CAP_FLAVOR: the flavour is spelled correctly and nothing '
+           + 'composed, so neither of the capability layer\'s other two codes '
+           + 'fits -- what happened is that the policy is incoherent on its own '
+           + 'terms. A two-person rule with nobody identified is not a weak '
+           + 'two-person rule, it is no rule, and the one direction it must '
+           + 'never take is degrading to single-signed',
+        via: 'call',
+        probe: "comcon.cosign({key: 'k', quorum: 2, within: 60})",
+        msg: 'needs `as`'
     },
     {
         code: 'E_PIN_IDENTITY',

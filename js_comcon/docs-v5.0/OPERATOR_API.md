@@ -413,6 +413,70 @@ operational facts and an operator paged at 02:00 needs to know which they are lo
 
 ---
 
+## 8g. `cosign(spec)` — the two-person rule *(v5.88)*
+
+```js
+var rotate = comcon.mediate(key, comcon.cosign({
+    key:    'rotate-signing-key',   // names the DECISION
+    quorum: 2,                      // distinct principals required
+    within: 900,                    // seconds, from the FIRST signature
+    as:     resolved.principal      // who THIS capability acts for
+}));
+```
+
+`ttl` and `window` bound *when* a capability may be used and `uses` bounds *how often*. `cosign`
+bounds **who**, and it is the only mediation in the vocabulary that the holder cannot satisfy
+alone. Denial code `cap.cosign`.
+
+- **THE ATTEMPT IS THE CONSENT — there is no `approve()` verb.** Calling the gated operation
+  records the caller's principal and, if the quorum is not yet met, denies. The second operator
+  simply **retries the same operation**, which is what a two-person rule looks like in an
+  operations room. So: **a `cap.cosign` denial is not "nothing happened"** — the denied attempt
+  recorded a signature. This is the one denial in the set with a side effect, and the one that
+  means "go find a colleague" rather than "no".
+- **`as` is written on the TRUSTED side and cannot be set from inside a compartment.** COMCON does
+  not authenticate (§8b): the host asserts the principal and this maps it, so `as` comes from your
+  own configuration — typically `std.sessions.resolve()`'s resolved principal. A fragment
+  therefore holds exactly one identity per invocation and can cast exactly one vote:
+  **distinctness is structural.** Had `as` been something the fragment could write, the word
+  would be theatre.
+- **The quorum assembles ACROSS INVOCATIONS**, not within one: alice runs the policy and is denied
+  pending a cosignature; bob runs the same policy and it executes. The record is **fleet-wide**
+  (`nginx.shared`), because your two operators land on whichever workers accept their connections.
+- **The record is the SET of principals, not a count of attempts.** One operator pressing the
+  button twice is still one signature — a rule that counted attempts would be a one-person rule
+  with extra steps.
+- **`within` is FIXED and anchored at the FIRST signature**, the same shape and the same
+  disclosure as a `uses` window: a quorum must assemble within `within` seconds of the first
+  consent, not of the last. A missing `within` is refused — the dangerous reading of "no expiry"
+  is "consent lasts forever", and an approval gathered last month is not consent to an operation
+  attempted today.
+- **`key` names the DECISION, not the capability.** Two capabilities given the same key cosign
+  each other — the same deliberate act as two capabilities sharing a `uses` counter, and the same
+  residual if done by accident.
+- **There is no `of:[...]` allow-list, deliberately: holding the capability is the membership.**
+  Only a principal you chose to hand a cosigned capability to can attempt at all, so a list inside
+  the descriptor would re-state in a weaker place what the grant already decided.
+- **Nothing is defaulted.** No key, no quorum, no `within`, a quorum of 1 (which is not a weak
+  two-person rule but the absence of one — spell that by not cosigning at all), a quorum past 8:
+  all `E_CAP_FLAVOR`. A missing or comma-bearing `as` is **`E_CAP_PRINCIPAL`**, its own refusal
+  code, because nothing was misspelled and nothing composed — the policy is simply incoherent.
+  A comma is refused rather than stripped: rewriting the name would merge two principals into one.
+- **Composition.** `quorum` meets by **MAX** and `within` by **MIN** — both narrowing, in opposite
+  directions, which is a third lattice shape beside the mask AND and the lifetime MIN. A different
+  `key` or a different `as` is **refused**: merging keys would let consent given for one decision
+  authorize another, and a capability with two acting principals would have to vote as somebody.
+  It composes freely with `allowHosts`, `ttl`, `uses`, `window` and a field mask.
+- **Gate order matters and is deliberate:** expiry and window first, then (for an outbound cap)
+  the destination glob, then the cosignature, then the budget. Consent is never recorded for an
+  operation another gate would refuse — otherwise signatures could be gathered against a
+  destination the capability can never reach and spent on the one it can — and a denied operation
+  never spends budget.
+- Audit mode logs and allows, like every gate, which is unusually useful here: you can see which
+  operations *would* need a second pair of hands before the rule bites.
+
+---
+
 ## 8e. `allowHosts(glob)` and `nginx.outbound()` — reach outward, as a capability *(v5.85, round trip v5.86)*
 
 ```js
