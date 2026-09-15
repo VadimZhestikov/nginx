@@ -187,6 +187,53 @@ host handler 87% of stock, one confined call 68% — is the real cost of the bou
 JSON round trip, the compartment enter/leave, the posture and identity bookkeeping, and the
 two drains. That is the number any future tier (including M5) now has to be measured against.
 
+## 2e. M5.0 — the go/no-go benchmark for typed lowering *(v5.114)*
+
+M5 was unparked 2026-09-15 on an evidence-first order, and this is the measurement that
+decides whether the codegen (M5.1) starts. The record going in (§2b): compiling a host-call-
+dominated policy buys ~1.0×; untyped lowering is 8.3× off C on arithmetic and 17× on a byte
+scan; a hand-written typed-shape arm reaches parity on arithmetic. Instrument:
+`t/tools/m5-go-nogo.t` against `objs_jit`, in-process, the controls of §2b (same hash in every
+arm — which caught a JS `*` that was not a 32-bit multiply, fixed with `Math.imul` in the
+benchmark and in the SR-2 case alike — compiled arm proven compiled, interpreted arm proven
+not, MIN of three).
+
+Two candidate classes, the ones `t/comcon_include_faithfulness.t` already holds under the SR-2
+differential. Four arms each; **the decision is the middle pair**, `lowered / typed`, with the
+rule stated before the numbers: **≥ 3 → GO**. `typed` is the ACHIEVABLE typed-shape bound, not
+the floor: for a byte scan, a C pointer walk with the back-edge gas check kept
+(`nginx.bench.scanTyped`); for string code, one engine read per character (the K arm of §2b) —
+because typed string code still reads its characters through the engine, and that is where a
+typed lowering of class B would land. `floor` is C with nothing kept, for scale.
+
+| class | floor | **typed (achievable)** | **lowered (today)** | interp | lowered/typed | decision |
+|---|--:|--:|--:|--:|--:|---|
+| **A** byte-scan validation, ns/byte (16 KB) | 0.57 | **0.61** | **11.72** | 16.48 | **19.2×** | **GO** |
+| **B** token check (split · FNV · toString), ns/char | 0.47 | **20.16** | **50.00** | 53.13 | **2.5×** | **NO-GO** |
+
+**What the numbers say.**
+
+1. **The gas check costs nothing** (typed 0.61 vs floor 0.57 on the scan) — the resource gate
+   the compiled tier must keep (G7.18) is not what stands between lowered JS and C. Boxing is,
+   as §2b found for arithmetic: the untyped lowered scan is 11.72 ns/byte, 19× off a typed
+   walk of the same bytes.
+2. **Untyped lowering barely helps the data plane** — 11.72 lowered vs 16.48 interpreted, 1.4×.
+   The tier tenants run on today buys the byte-scan shape almost nothing; the whole prize is
+   in the typed shape.
+3. **String-heavy code has no typed prize.** Class B's achievable bound is 20 ns/char — an
+   engine read per character — and today's lowered arm is 50; a perfect typed lowering could
+   buy 2.5×, below the rule, and the `split`/`toString` allocations around the loop are engine
+   work no lowering removes. The JWT-check result of AOT-A (0.92×) was the same fact from the
+   other side.
+4. **So M5.1's target is narrow and specific**: typed-array element access and integer
+   accumulators — the shape where `u8[i]` and `h ^ u8[i]` can be emitted as a byte load and an
+   int32 op with the gas check kept. Not "typed policies" in general, and not strings. That is
+   a smaller compiler than M5 was first drawn as (M1–M9), and a checkable one: every case it
+   lowers is under the SR-2 differential, and every gate it could erase is under G7.18.
+
+**Re-parked with its number:** class B, and with it the "compile the policy" reading of M5.
+**GO with its number:** class A, the data-plane hook.
+
 ## 2d. The nested invocation, measured *(v5.108)*
 
 The authoring tier (v5.106) adds a second boundary INSIDE the compartment: a parent fragment

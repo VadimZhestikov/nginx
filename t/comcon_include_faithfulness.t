@@ -74,7 +74,7 @@ my @cases = (
     expect_re => qr/^bad=0 h=-?\d+$/m },
 
   { name => 'token check, string-heavy (M5.0 class B)',
-    frag => q{function(req){ var tok = "eyJhbGciOiJIUzI1NiJ9." + (req.args || "") + ".sig"; var parts = tok.split("."); var h = 2166136261; for (var p = 0; p < parts.length; p++) { var part = parts[p]; for (var i = 0; i < part.length; i++) { h = ((h ^ part.charCodeAt(i)) * 16777619) >>> 0; } } var ok = parts.length === 3 && parts[0].length > 0 && (h % 7) < 7; return (ok ? "accept " : "reject ") + h.toString(16) + " " + parts[1].length + "\n"; }},
+    frag => q{function(req){ var tok = "eyJhbGciOiJIUzI1NiJ9." + (req.args || "") + ".sig"; var parts = tok.split("."); var h = 2166136261; for (var p = 0; p < parts.length; p++) { var part = parts[p]; for (var i = 0; i < part.length; i++) { h = Math.imul(h ^ part.charCodeAt(i), 16777619) >>> 0; } } var ok = parts.length === 3 && parts[0].length > 0 && (h % 7) < 7; return (ok ? "accept " : "reject ") + h.toString(16) + " " + parts[1].length + "\n"; }},
     paths => ['/t/tok?sub=alice', '/t/tok?sub=bob&exp=1'], expect_denials => 0,
     expect_re => qr/^accept [0-9a-f]+ \d+$/m },
 );

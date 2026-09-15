@@ -635,6 +635,25 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.114 (in place — M5.0, the go/no-go benchmark: class A GO at 19×, class B NO-GO at 2.5× —
+M5.1's target is the byte-scan shape, not policies):** the measurement the M5 order was built
+to reach. `t/tools/m5-go-nogo.t` (against `objs_jit`, in-process, §2b's controls) measures the
+two classes SR-2 already holds, four arms each, with the rule stated before the numbers:
+`lowered / typed ≥ 3 → GO`, where `typed` is the ACHIEVABLE typed-shape bound — a gas-checked C
+pointer walk for a byte scan, one engine read per character for string code — and never the
+floor. Class A, byte-scan validation: typed 0.61 ns/byte, lowered 11.72, **19.2×, GO**. Class B,
+the token check: typed 20.16 ns/char, lowered 50.00, **2.5×, NO-GO** — string code reads its
+characters through the engine whatever its types, and the allocations around the loop are
+engine work no lowering removes. Two things the numbers settle: the gas check costs nothing
+(0.61 vs 0.57), so G7.18's gate is not the price; and untyped lowering buys the data plane only
+1.4× over the interpreter, so the prize is entirely in the typed shape. **M5.1 is therefore a
+narrow compiler** — typed-array element access and int32 accumulators, the byte load and the
+int op with the gas check kept — under the SR-2 differential for every case it lowers and under
+G7.18 for every gate it could erase. The "compile the policy" reading of M5 is re-parked with
+its number, as the record said it would be. One control fired on the way: a JS `*` is a double
+multiply, so class B's FNV was not the C kernel's until `Math.imul` — fixed in the benchmark
+and in the SR-2 case alike. PERFORMANCE §2e; two `nginx.bench` kernels (`scanTyped`, `fnv`).
+
 **v5.113 (in place — M5 step 3: M8's harness is the SR-2 differential, and it gains M5.0's two
 fragment classes — and a hole):** "T2 refines T1" (SEMANTICS §3 (F), SPEC §8) already had its
 instrument: `t/comcon_include_faithfulness.t`, SR-2 for include — every representative fragment

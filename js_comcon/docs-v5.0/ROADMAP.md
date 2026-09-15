@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.113 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.114 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,18 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **M5.0 DECIDED (2026-09-15, v5.114): class A GO at 19.2×, class B NO-GO at 2.5×.**
+>   `t/tools/m5-go-nogo.t`, rule stated first (`lowered / typed ≥ 3`), `typed` = the
+>   achievable typed-shape bound (gas-checked C walk for bytes; per-char engine access for
+>   strings). Byte-scan validation: typed 0.61 ns/byte vs lowered 11.72 → **GO**. Token
+>   check: typed 20.16 ns/char vs lowered 50.00 → **NO-GO**, re-parked with its number.
+>   The gas check costs nothing; untyped lowering buys the data plane only 1.4×. **M5.1 is
+>   therefore narrow: typed-array element access and int32 accumulators** — the byte load
+>   and the int op with the gas check kept — every lowered case under SR-2
+>   (`t/comcon_include_faithfulness.t`), every erasable gate under G7.18
+>   (`t/comcon_compiled_resource_gates.t`). PERFORMANCE §2e. **Next: M5.1's first cut —
+>   the scope decision (which typed shapes, how types are proved: M4's admission IR vs
+>   maxim's own inference) before any codegen.**
 > - **M5 STEP 3 (2026-09-15, v5.113): M8's harness is SR-2's differential, now holding M5.0's
 >   two fragment classes** (byte-scan validation; a string-heavy token check) — both lower,
 >   both agree — **and a hole in it is closed**: the first version's cases failed identically

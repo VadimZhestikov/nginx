@@ -6885,6 +6885,106 @@ ngx_js_bench_scan(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 
+/*
+ * M5.0 (the go/no-go benchmark, PERFORMANCE §2e) -- two more kernels.
+ *
+ * scanTyped: the ACHIEVABLE typed-shape bound for a byte scan.  The same
+ * pointer walk as scan_c, with the back-edge gas check kept, exactly as
+ * ngx_js_bench_typed keeps it for arithmetic: a hand-written stand-in for what
+ * typed lowering of a Uint8Array scan could emit, not that emission.
+ */
+__attribute__((optimize("O2")))
+static uint32_t
+ngx_js_bench_scan_typed_c(uint32_t reps)
+{
+    uint32_t  h = 0x811c9dc5, r;
+    size_t    i;
+    int       gas = 256;
+
+    for (r = 0; r < reps; r++) {
+        for (i = 0; i < ngx_js_bench_len; i++) {
+            if (--gas <= 0) {
+                gas = 256;                  /* the interrupt poll, kept */
+            }
+            h = h ^ ngx_js_bench_buf[i];
+            h = h + (h << 5);
+        }
+    }
+
+    return h;
+}
+
+
+static JSValue
+ngx_js_bench_scan_typed(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    uint32_t  reps = 0;
+
+    if (!ngx_js_bench_ready(ctx)) {
+        return JS_EXCEPTION;
+    }
+
+    if (argc > 0) {
+        JS_ToUint32(ctx, &reps, argv[0]);
+    }
+
+    return JS_NewUint32(ctx, ngx_js_bench_scan_typed_c(reps));
+}
+
+
+/*
+ * fnv: class B's C FLOOR.  FNV-1a over the characters of a fixed token, the
+ * '.' separators skipped -- the hash the JS token check computes over its
+ * split() parts, without the split() and toString(16) the JS does around it.
+ * The floor is what no lowering can beat; the JS arms are measured against it
+ * and against the per-char engine-access bound (the K arm), which is where a
+ * typed lowering of STRING code would actually land.
+ */
+static const char  ngx_js_bench_token[] = "eyJhbGciOiJIUzI1NiJ9.sub=alice.sig";
+
+static uint32_t
+ngx_js_bench_fnv_c(uint32_t reps)
+{
+    uint32_t  h = 2166136261u, r;
+    size_t    i, n = sizeof(ngx_js_bench_token) - 1;
+
+    for (r = 0; r < reps; r++) {
+        h = 2166136261u;
+        for (i = 0; i < n; i++) {
+            if (ngx_js_bench_token[i] == '.') {
+                continue;
+            }
+            h = (h ^ (uint8_t) ngx_js_bench_token[i]) * 16777619u;
+        }
+    }
+
+    return h;
+}
+
+
+static JSValue
+ngx_js_bench_fnv(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    uint32_t  reps = 0;
+
+    if (argc > 0) {
+        JS_ToUint32(ctx, &reps, argv[0]);
+    }
+
+    return JS_NewUint32(ctx, ngx_js_bench_fnv_c(reps));
+}
+
+
+static JSValue
+ngx_js_bench_token_get(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    return JS_NewString(ctx, ngx_js_bench_token);
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -6955,6 +7055,13 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
             JS_NewCFunction(ctx, ngx_js_bench_byte_at, "byteAt", 1));
         JS_SetPropertyStr(ctx, bench, "scan",
             JS_NewCFunction(ctx, ngx_js_bench_scan, "scan", 1));
+        /* M5.0 (PERFORMANCE §2e) */
+        JS_SetPropertyStr(ctx, bench, "scanTyped",
+            JS_NewCFunction(ctx, ngx_js_bench_scan_typed, "scanTyped", 1));
+        JS_SetPropertyStr(ctx, bench, "fnv",
+            JS_NewCFunction(ctx, ngx_js_bench_fnv, "fnv", 1));
+        JS_SetPropertyStr(ctx, bench, "token",
+            JS_NewCFunction(ctx, ngx_js_bench_token_get, "token", 0));
 
         JS_SetPropertyStr(ctx, nginx_obj, "bench", bench);
     }
