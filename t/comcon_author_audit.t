@@ -109,8 +109,8 @@ var T = null;
 function ttlSource() {
     return "function(a){" +
     "  try { var before = author.used;" +
-    "    author.include('function(){ return 1; }', {imports: []});" +
-    "    return { result: 'admitted', moved: author.used - before }; }" +
+    "    var f = author.include('function(){ return 1; }', {imports: []});" +
+    "    return { result: 'admitted', moved: author.used - before, held: typeof f }; }" +
     "  catch (e) { return { result: String(e.message || e), moved: 0 }; }" +
     "}";
 }
@@ -160,7 +160,7 @@ locs.forEach(function (l) {
 });
 JS
 
-$t->try_run('no js module')->plan(15);
+$t->try_run('no js module')->plan(16);
 
 sub js { my ($raw) = @_; $raw =~ s/^.*?\r\n\r\n//s; my $o;
          eval { $o = decode_json($raw); 1 } or do { diag("non-JSON: " . substr($raw, 0, 400)); $o = {}; }; $o }
@@ -173,18 +173,21 @@ diag("owner/enforce: " . encode_json($e));
 is($e->{error}, undef, 'enforce: the round trip ran');
 cmp_ok($e->{ownerFired}, '>=', 10,
        'enforce: each leftover include() on the author capability fired cap.owner');
-is($e->{usedAfter}, $e->{usedBefore},
-   'enforce: none was admitted -- author.used did not move');
+is($e->{usedAfter}, $e->{usedBefore}, 'enforce: author.used did not move');
 
 my $a = js(http_get('/owner?mode=audit'));
 diag("owner/audit: " . encode_json($a));
 is($a->{error}, undef, 'audit: the round trip ran');
 cmp_ok($a->{ownerFired}, '>=', 10,
        'audit: each leftover include() still fired cap.owner');
-is($a->{usedAfter}, $a->{usedBefore},
-   'audit: and NONE was admitted either -- cap.owner is unconditional, so audit logs it and denies it');
+is($a->{usedAfter}, $a->{usedBefore}, 'audit: author.used did not move either');
 
+# `used` is a LIVE count (a leftover's callable would be dropped at once
+# anyway), so the witness that NOTHING was admitted is the include's own log
+# line, which a leftover under either posture never produced
 my $log = $t->read_file('error.log');
+unlike($log, qr/sub-fragment \d+ authored by fragment/,
+       'and NONE was admitted under either posture -- cap.owner is unconditional: audit logs it and denies it');
 like($log, qr/op=cap\.owner obj="author" mode=audit n=\d+ unconditional=1/,
      'the audit-mode denial record says so: op=cap.owner ... mode=audit ... unconditional=1');
 like($log, qr/NginxComconAuthor: this capability was granted to another fragment/,

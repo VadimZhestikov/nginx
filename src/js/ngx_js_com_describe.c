@@ -876,9 +876,10 @@ static const ngx_js_member_class_t  ngx_js_author_members[] = {
       "holding fragment; returns its callable. Refuses beyond subFragments or "
       "at the nesting depth limit (E_AUTHOR_LIMIT)" },
     { "subFragments", "number",   SAFE, 0, WL,
-      "how many sub-fragments this capability may author, worker-lifetime" },
+      "how many sub-fragments this capability may hold at once; a callable "
+      "the parent drops releases its slot and refunds the count" },
     { "used",         "number",   SAFE, 0, WL,
-      "how many it has authored" },
+      "how many it holds now" },
     { NULL, NULL, 0, 0, 0, NULL }
 };
 

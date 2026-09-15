@@ -246,7 +246,7 @@ is($o->{subSeesGrant}{ok}, 'object', 'the sub-fragment sees its grant as a bound
 is($o->{subNamesAuthor}{code}, 'E_ADMIT_FREENAME', 'the sub-fragment still cannot name the parent\'s author cap');
 like($o->{noWrapperBack}{ok}, qr/^object:\{"s":\{\}\}:undefined$/,
    'a wrapper returned by the sub-fragment does not cross back (JSON drops it)');
-is($o->{used}, 5, 'five sub-fragments admitted; every refusal was free');
+is($o->{used}, 0, 'a LIVE count: every callable above was dropped, so nothing is held; refusals never counted');
 
 ###############################################################################
 # /conform: both arms agree
@@ -299,7 +299,7 @@ is_deeply($f->{outTtl}{ok}, $f->{both}{ok}, 'ttlSeconds on an outbound re-grant 
 is($f->{outMask}{code}, 'E_CAP_FLAVOR', 'a field mask on an outbound cap is E_CAP_FLAVOR');
 is($f->{facetTtl}{code}, 'E_CAP_FLAVOR', 'a ttl on a facet is E_CAP_FLAVOR');
 is($f->{protocol}{code}, 'E_CAP_ESCALATE', 'a session-typed wrapper is not re-grantable (its cursor is one conversation)');
-is($f->{used}, 2, 'two admitted, three refused for free');
+is($f->{used}, 0, 'nothing held afterwards: the two admitted callables were dropped and refunded');
 
 # Test::Nginx's DESTROY runs the two standing checks (no alerts, no sanitizer
 # errors); destroyed here so they run before Test::Builder's END counts the plan.

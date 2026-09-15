@@ -4632,8 +4632,9 @@ static const char  ngx_js_comcon_bootstrap[] =
     /* author({subFragments, ttlSeconds?}): the authoring tier's capability.
        Not a mediation word (it attenuates nothing) and not a host object (it
        wraps nothing): a descriptor that include() grants, whose far side is a
-       NginxComconAuthor able to run the admission pipeline `subFragments`
-       times, as the fragment it was granted to, for the life of the worker.
+       NginxComconAuthor able to HOLD `subFragments` admitted sub-fragments at
+       once, as the fragment it was granted to -- a callable the parent drops
+       releases its slot and refunds the count (a LIVE count, v5.111).
        Every field is refused rather than defaulted, for the reason `uses` is:
        a budget with a missing count is not a small budget, it is no budget. */
     "  C.author=function(spec){"
@@ -4643,7 +4644,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(typeof n!=='number'||!(n>=1)||n!==Math.floor(n)||n>65535)"
     "      capRefuse('E_CAP_GRANT','author: subFragments must be an integer "
                  "from 1 to 65535 -- the number of sub-fragments this "
-                 "capability may author, for the life of the worker');"
+                 "capability may hold at once');"
     "    var d={subFragments:n};"
     "    if(spec.ttlSeconds!==undefined){var t=spec.ttlSeconds;"
     "      if(typeof t!=='number'||!(t>=1)||t!==Math.floor(t))"

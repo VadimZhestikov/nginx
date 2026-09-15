@@ -635,6 +635,24 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.111 (in place — `subFragments` becomes a LIVE count: a dropped sub-fragment releases its
+slot):** the plan's D8 deferred sub-fragment slot release with `subFragments` as a lifetime
+count; the user chose the live count. The callable a sub-fragment is returned as is now an
+object of its own class — a `call` handler, so `typeof` says "function" and `f()` works, and a
+FINALIZER, which is the reason: when the parent drops its last reference, the fragment's slot is
+freed and the count refunded, immediately (QuickJS is reference-counted; no collection is
+waited for). The callable holds a reference to its author capability, so the refund always lands
+on live memory; the slot release checks the compartment is still there, because at worker exit
+`ngx_js_comcon_teardown()` empties the frags array before the runtime's finalizers run. A parent
+that authors per request and drops the callable spends nothing lasting; one that caches eight
+holds eight; `author.used` reads what is held now. Every test that relied on the lifetime
+semantics had to change — which is the right kind of evidence that the word changed: the budget
+arm holds its callables in an array to exhaust the count and then drops the array to watch it
+refund; the golden `E_AUTHOR_LIMIT` probe must HOLD its first callable to be refused a second;
+the audit file's witness that a leftover admitted nothing moved from the counter (now trivially
+still) to the include's own log line. SPEC §8a, OPERATOR_API §8j, MANUAL §3.8, SHOWCASE17 §8,
+THREATS T13, ASSURANCE G7.14 re-worded; §16 row.
+
 **v5.110 (in place — F17, found by turning leak detection on: a worker never freed the
 compartment, and the compartment's COM node classes had no finalizer — the sanitizer corpus
 now detects leaks):** step 2 of the remaining items was run once under ASAN with

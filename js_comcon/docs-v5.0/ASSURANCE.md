@@ -1048,7 +1048,12 @@ The primary control, and the one everything else is defence in depth for.
   aborts the whole invocation (the interrupt is uncatchable, and its deadline is at most the
   parent's remaining time); one past its ALLOWANCE raises an ordinary exception, which is what
   the host boundary does too — a sub-fragment may catch its own, a parent may catch its
-  sub's. The budget is spent by admissions only; `E_AUTHOR_LIMIT` names exhaustion and the
+  sub's. The budget is a LIVE count *(v5.111; it was a lifetime count until then)*: a
+  callable is an object of a class with a `call` handler and a FINALIZER, holds a reference to
+  its author capability, and the parent dropping its last reference releases the fragment's slot
+  and refunds the count at once — reference counting, not a later collection, which is why
+  `author.used` reads 1 while `add` is held and 8 while seven more are, and 1 again the statement
+  after they are dropped; `E_AUTHOR_LIMIT` names a full count and the
   depth cap (`NGX_JS_COMCON_MAX_DEPTH`, 2), and a string `code` raised inside a fragment now
   survives to the host as `e.code`. **Found while writing the evidence, both mine:** `%uD` is
   an nginx format, not the engine's (a message read "sub-fragment 7D"); and a grant and the
@@ -1059,7 +1064,7 @@ The primary control, and the one everything else is defence in depth for.
   describe() registry — 0 is `JS_INVALID_CLASS_ID`, a primitive's answer — so
   `nginx.describe('a string')` returned the author's table; the ID is now allocated with every
   other, and the registry refuses an unallocated one.
-- **EV:** `t/comcon_author_basic.t` — 45 assertions: the parent's whole view (budget, the
+- **EV:** `t/comcon_author_basic.t` — 50 assertions: the parent's whole view (budget, the
   refused contract words, admission phases i–iii through the new entrance, the wrapper
   breakout refused, promise refused, text-only exceptions with `code` and nothing else, toJSON
   on the sub-fragment's side, a returned function dropped), the two bound paths one per
@@ -1078,7 +1083,7 @@ The primary control, and the one everything else is defence in depth for.
   (with and without the one row an admitted fragment cannot carry), never copied.
 - **EV:** `t/tools/golden-denials.js` — the `E_AUTHOR_LIMIT` row; `t/comcon_v12_denial_codes.t`
   keeps the corpus complete against the enumerator.
-- **EV:** `t/comcon_author_audit.t` — 15 assertions *(v5.109)*: the two gates every
+- **EV:** `t/comcon_author_audit.t` — 16 assertions *(v5.109; 16 at v5.111)*: the two gates every
   `author.*` entry point asks first, in both postures. `cap.owner` is reached through the one
   path that runs a fragment's code as someone else — a LEFTOVER, drained as nobody by the next
   invocation (G6.16) — and is UNCONDITIONAL (v5.96): ten leftover `author.include()` calls fire
@@ -2066,6 +2071,7 @@ signature is never quietly credited with work it did not see.
 | **THE AUTHORING TIER, PHASE 3 — RE-GRANTING (G7.16, v5.107).** A parent re-grants only its own wrappers, by COPY of the opaque with the owner changed and the mask/expiry moved downward; never by re-wrapping the handle, which would launder a fresh wrapper from a stale parent. Both arms agree with the host-side meet. | **Extends the No-Amplification claim (SEMANTICS §3) to a boundary the signature never saw**, by construction rather than by a check; the theorem's text still states one boundary, and its induction step is phase 4's. |
 | **THE AUTHORING TIER, PHASE 4 — THE CLOSE-OUT (v5.108).** SEMANTICS §3 carries the nested induction step and names F16's class under assumption (F); PERFORMANCE §2d measures the nested boundary (≈ 0.59 µs, less than the outer one); SPEC §8a, OPERATOR_API §8j, MANUAL §3.8, THREATS T13, SHOWCASE17 §8 and INCREMENT_MLIB §4 describe what shipped; `t/tools/verify-negative-controls.sh` gains one automated row (phase 3) and five MANUAL rows (phases 1–2, copy-vs-rewrap, the marshal, F16); the nested bounds and the parent-owned jobs are pinned. | **Nothing new is claimed; what was claimed is now stated where a reader looks for it, and its controls are named.** The tier remains a change after the signature (the two rows above); this row records that its documentation and controls are complete, not that it is attested. |
 | **F17 FOUND AND CLOSED — G7.17; THE SANITIZER CORPUS NOW DETECTS LEAKS (v5.110).** A worker never freed the compartment at exit, and the COM node classes had no definition in the compartment runtime, so a wrapper minted inside a fragment leaked its opaque and pool — unboundedly, under audit. Both invisible to a corpus that ran `detect_leaks=0`; both fixed; the corpus runs leaks-on with one named suppression. | **Strengthens the instrument the signature relied on.** §15 attested a corpus that could not see a leak. It now can, and the first thing it saw was two of ours. A signature over a weaker instrument is not wrong, but a reader relying on "ASAN+UBSAN clean" for leak-freedom should know that claim dates from here. |
+| **`subFragments` BECOMES A LIVE COUNT (v5.111).** The sub-fragment callable is now an object with a finalizer; dropping it releases the slot and refunds the count. A semantic change to a word SPEC §8a stated ("for the life of the worker"), made on the user's decision; pinned by the basic test's hold/drop arm and re-worded across SPEC, OPERATOR_API, MANUAL, SHOWCASE17, THREATS. | **No effect on §15**: the tier post-dates it. Recorded because a documented word changed meaning. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

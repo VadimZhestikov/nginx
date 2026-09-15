@@ -321,9 +321,10 @@ var answer = bob({ order: 12 });                     // JSON in, JSON out, synch
 What you cannot do, and the code you will see: hand over something you do not hold
 (`E_CAP_GRANT`), keep a field the host redacted from you (`E_CAP_ESCALATE`), write an
 attenuation word other than `allow`/`redact`/`ttlSeconds` (`E_CAP_FLAVOR`), skip admission or
-set a posture (`E_ADMIT_CONTRACT`), author more than your `subFragments` (`E_AUTHOR_LIMIT`).
+set a posture (`E_ADMIT_CONTRACT`), hold more than your `subFragments` at once
+(`E_AUTHOR_LIMIT` — drop one and the slot comes back; the count is live, not for ever).
 A customer's `try/catch` cannot save your invocation from its deadline: a sub-fragment that
-outruns it takes you with it, by design. Read `author.used` to see what you have spent.
+outruns it takes you with it, by design. Read `author.used` to see how many you hold.
 
 ---
 

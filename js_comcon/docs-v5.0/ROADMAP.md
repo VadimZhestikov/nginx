@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.110 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.111 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,11 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **`subFragments` IS A LIVE COUNT (2026-09-15, v5.111 — D8, decided by the user).** The
+>   sub-fragment callable is an object with a `call` handler and a finalizer: drop it and the
+>   slot is released, the count refunded, immediately. A parent authoring per request spends
+>   nothing lasting. The remaining open items: `uses`/`window`/`cosign`/`protocol` not writable
+>   by a sub-fragment; facets not narrowable from inside; depth two; the design-level backlog.
 > - **F17 FOUND AND CLOSED — THE SANITIZER CORPUS NOW DETECTS LEAKS (2026-09-15, v5.110).**
 >   Step 2 below, run once with `detect_leaks=1`, reported 4 KB the gate had never seen: a
 >   WORKER never freed the compartment at exit (`exit_process` tore down the tenant and host

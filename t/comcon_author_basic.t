@@ -156,12 +156,16 @@ var parent = comcon.include(
     "    return f(); });" +
     /* the budget: refused ones did not count; the last admitted spends it */
     "  out.usedMid = author.used;" +
-    "  var spent = [];" +
+    /* a LIVE count: only callables the parent still HOLDS count, so the
+       budget is spent by holding them, and refunded by dropping them */
+    "  var spent = [], held = [];" +
     "  for (var i = 0; i < 20; i++) {" +
-    "    try { author.include('function(){ return ' + i + '; }', {imports: []}); spent.push('ok'); }" +
+    "    try { held.push(author.include('function(){ return ' + i + '; }', {imports: []})); spent.push('ok'); }" +
     "    catch (e) { spent.push(e.code); out.spentMsg = String(e.message); break; } }" +
     "  out.spent = spent;" +
     "  out.usedEnd = author.used;" +
+    "  held = null;" +
+    "  out.afterRelease = author.used;" +
     "  return { status: 200, body: JSON.stringify(out) };" +
     "}",
     {imports: ['JSON', 'String', 'Promise'],
@@ -234,9 +238,9 @@ var jobber = comcon.include(
 /* a refusal the parent does not catch reaches the host with its code intact */
 var careless = comcon.include(
     "function(req){" +
-    "  author.include('function(){ return 1; }', {imports: []});" +
+    "  var held = author.include('function(){ return 1; }', {imports: []});" +
     "  author.include('function(){ return 2; }', {imports: []});" +
-    "  return { status: 200, body: 'both admitted' };" +
+    "  return { status: 200, body: 'both admitted ' + typeof held };" +
     "}",
     {imports: [], grants: {author: comcon.author({subFragments: 1})}});
 
@@ -287,7 +291,7 @@ for (var i = 0; i < locs.length; i++) {
 }
 JS
 
-$t->try_run('no js module')->plan(49);
+$t->try_run('no js module')->plan(50);
 
 sub body { my ($raw) = @_; $raw =~ s/^.*?\r\n\r\n//s; return $raw; }
 sub js   { my ($raw) = @_; my $o; eval { $o = decode_json(body($raw)); 1 }
@@ -336,12 +340,14 @@ ok($th->{isError}, 'what the parent catches is a real Error of its own');
 is($o->{returnsFn}{ok}, 'undefined', 'a returned function does not cross (JSON drops it)');
 is($o->{toJSON}{ok}, 'marshalled', 'toJSON runs on the sub-fragment\'s side; its result crosses');
 
-is($o->{usedMid}, 6, 'refused sub-fragments did not spend the budget (6 admitted so far)');
-is_deeply($o->{spent}, [('ok') x 2, 'E_AUTHOR_LIMIT'],
-   'the budget is spent by exactly subFragments admissions, then E_AUTHOR_LIMIT');
-like($o->{spentMsg}, qr/sub-fragment budget \(subFragments: 8\) is spent \[E_AUTHOR_LIMIT\]/,
-   'the refusal names the budget and carries its code in the message');
-is($o->{usedEnd}, 8, 'author.used equals the budget once it is spent');
+is($o->{usedMid}, 1,
+   'a LIVE count: one callable is held (add); every other one was dropped and refunded, refused ones never counted');
+is_deeply($o->{spent}, [('ok') x 7, 'E_AUTHOR_LIMIT'],
+   'holding callables spends the budget: 1 held + 7 more = subFragments, then E_AUTHOR_LIMIT');
+like($o->{spentMsg}, qr/sub-fragment budget \(subFragments: 8\) is fully held; drop one to author another \[E_AUTHOR_LIMIT\]/,
+   'the refusal names the budget, says what to do, and carries its code');
+is($o->{usedEnd}, 8, 'author.used equals the budget while all are held');
+is($o->{afterRelease}, 1, 'dropping the seven refunds them at once (reference counts, not a later GC): back to the one still held');
 
 ###############################################################################
 # the fatal paths
@@ -369,7 +375,7 @@ my $unc = body(http_get('/uncaught'));
 diag("uncaught: $unc");
 like($unc, qr/^HOST CAUGHT \d+ms code=E_AUTHOR_LIMIT /,
    'a refusal the parent does not catch reaches the host with e.code intact');
-like($unc, qr/sub-fragment budget \(subFragments: 1\) is spent \[E_AUTHOR_LIMIT\]/,
+like($unc, qr/sub-fragment budget \(subFragments: 1\) is fully held; drop one to author another \[E_AUTHOR_LIMIT\]/,
    '... and with its message and bracketed code, so an error log carries it');
 
 ###############################################################################

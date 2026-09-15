@@ -388,17 +388,18 @@ var REFUSALS = [
            + 'author.include() call; a parent that does not catch it hands '
            + 'it to the host as its failure, and the code survives that '
            + 'boundary as `e.code` because the host copies a string code off '
-           + 'the compartment exception. The probe grants a budget of ONE and '
-           + 'spends it twice',
+           + 'the compartment exception. The probe grants a budget of ONE, holds '
+           + 'one callable, and asks for a second: subFragments is a LIVE count, '
+           + 'so the first must be HELD for the second to refuse',
         via: 'call',
         /* the grant is `author` and the fragment takes no parameter: a grant
            and the invocation argument sharing one name is the argument
            shadowing the grant, which the first version of this probe did */
         probe: "comcon.include("
-             + "'function(){ author.include(\"function(){ return 1; }\", "
+             + "'function(){ var held = author.include(\"function(){ return 1; }\", "
              + "{imports: []}); "
              + "author.include(\"function(){ return 2; }\", {imports: []}); "
-             + "return 0; }', "
+             + "return typeof held; }', "
              + "{imports: [], grants: {author: comcon.author({subFragments: 1})}})"
              + "({})",
         msg: 'sub-fragment budget'

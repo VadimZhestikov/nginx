@@ -461,7 +461,7 @@ across a whole environment rather than one capability. Assembling it here would 
 ## 8j. `author({subFragments, ttlSeconds?})` — a fragment that authors fragments *(v5.106–v5.107)*
 
 ```js
-// the host: a reseller may author up to 8 sub-fragments, for the life of the worker
+// the host: a reseller may HOLD up to 8 sub-fragments at once (a live count, v5.111)
 var acme = comcon.include(src, {
     imports: [],
     grants: { sock:   comcon.mediate(sock, comcon.allow(['address', 'port'])),
@@ -499,8 +499,11 @@ child — the handle is never re-wrapped, because that would mint a fresh one.
 a new error carrying message and string `code`. A nested call is synchronous (a promise is
 `E_INVOKE_PENDING`) and drains nothing: a sub-fragment's queued jobs are the parent's. A
 sub-fragment past its deadline aborts the whole invocation; past its allowance it throws an
-ordinary exception, as the host boundary does. `subFragments` is spent by admissions only;
-exhaustion is `E_AUTHOR_LIMIT`, and so is nesting deeper than two.
+ordinary exception, as the host boundary does. `subFragments` is a LIVE count *(v5.111)*: a
+callable is an object with a finalizer, and the parent dropping its last reference releases the
+slot and refunds the count at once — so a parent that authors per request and drops the callable
+spends nothing lasting, and one that caches eight holds eight. Holding the full count and asking
+for another is `E_AUTHOR_LIMIT`, and so is nesting deeper than two.
 
 **Reading it back:** `author.subFragments`, `author.used`; `nginx.describeType('NginxComconAuthor')`.
 

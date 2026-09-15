@@ -199,7 +199,7 @@ whole invocation, uncatchable — on the compiled tier too since F16); nested in
 synchronous and draining nothing (a promise is `E_INVOKE_PENDING`; a sub-fragment's jobs
 are the parent's, run in the host's drain under the parent's identity); mandatory admission
 (`imports` required, `onViolation`/`profile`/`deps`/`identity`/`meter` refused,
-`E_ADMIT_CONTRACT`); `subFragments` spent by admissions only, `E_AUTHOR_LIMIT`; depth capped
+`E_ADMIT_CONTRACT`); `subFragments` a live count of callables HELD (refunded when dropped), `E_AUTHOR_LIMIT`; depth capped
 at two and the author kind not re-grantable.
 *Residual:* a sub-fragment's queued jobs run in the parent's trailing drain — bounded by the
 parent's budget and identity, so a reseller pays for its sub-tenant's leftovers; the

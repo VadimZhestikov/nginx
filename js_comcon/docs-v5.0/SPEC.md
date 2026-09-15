@@ -307,9 +307,12 @@ author.include(source, {imports, intrinsics?, checkRequest?, tests?,
   what is in force. A sub-fragment past its deadline aborts the whole invocation
   (uncatchable); past its allowance it raises an ordinary exception, as at the host boundary.
   The posture is the parent's. A sub-fragment's queued jobs are the parent's.
-- `subFragments` is spent by admissions only, for the life of the worker; exhaustion, and a
-  sub-fragment authoring sub-fragments (depth is capped at two; the author kind is not
-  re-grantable), is `E_AUTHOR_LIMIT`.
+- `subFragments` is a LIVE count *(v5.111)*: how many admitted sub-fragments the capability may
+  HOLD at once. A callable is an object with a finalizer; the parent dropping its last reference
+  releases the fragment's slot and refunds the count immediately (reference counting, not a
+  later collection). Holding `subFragments` callables and asking for another, or a sub-fragment
+  authoring sub-fragments (depth is capped at two; the author kind is not re-grantable), is
+  `E_AUTHOR_LIMIT`. `author.used` reads the count held now.
 - The S6 escape battery answers at depth 2 exactly as at depth 1 (`t/comcon_author_depth2_gate.t`
   is the standing gate; `globalThis` is a denied name, so the admissible composition of the
   battery runs at both depths and the full battery is shown refused identically).

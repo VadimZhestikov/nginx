@@ -34,7 +34,7 @@ The platform grants ACME an author capability once; from then on ACME does to it
 customers what you did to ACME:
 
 ```js
-// the platform, once: ACME may author up to 50 sub-tenants for the life of the worker
+// the platform, once: ACME may hold up to 50 sub-tenants at once (drop one, get the slot back)
 var acme = comcon.include(acmeSource, {
     imports: [],
     grants: { http:   comcon.mediate(srv, comcon.routes('/acme/*')),

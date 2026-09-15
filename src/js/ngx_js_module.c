@@ -2877,8 +2877,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
 
 typedef struct {
     uint32_t  owner;          /* the fragment this capability was granted to */
-    uint32_t  max_subs;       /* sub-fragments it may author, worker-lifetime */
-    uint32_t  subs_used;
+    uint32_t  max_subs;       /* sub-fragments it may HOLD at once */
+    uint32_t  subs_used;      /* held now: refunded when a callable is dropped */
     time_t    expires;        /* `ttl`: 0 = never */
 } ngx_js_author_opaque_t;
 
@@ -2960,13 +2960,76 @@ ngx_js_author_owner_ok(JSContext *ctx, ngx_js_author_opaque_t *op)
 
 
 /*
- * The sub-fragment's callable.  func_data: [handle, timeoutMs, memoryBytes,
- * owner].  See the header above for what is and is not allowed to cross.
+ * THE SUB-FRAGMENT'S CALLABLE is an object of its own class (a JSClassDef with
+ * a `call` handler, so `typeof` says "function" and `f()` works) rather than
+ * a bare C function, for one reason: it needs a FINALIZER.  `subFragments`
+ * is a LIVE count -- how many sub-fragments a capability may hold at once,
+ * not for ever -- and the parent dropping its last reference to a callable
+ * is what releases the fragment's slot and refunds the count.  QuickJS is
+ * reference-counted, so that happens the moment the reference goes, not at
+ * some later collection; a parent that authors per request and drops the
+ * callable spends nothing lasting, and a parent that keeps eight holds eight.
+ *
+ * The callable holds a reference to its author capability, so the refund
+ * always lands on live memory (the author cannot be freed before its last
+ * callable), and the slot release checks the compartment is still there: at
+ * worker exit ngx_js_comcon_teardown() empties the frags array BEFORE the
+ * runtime is freed, and the finalizers run after.
  */
-static JSValue
-ngx_js_author_invoke(JSContext *ctx, JSValueConst this_val, int argc,
-    JSValueConst *argv, int magic, JSValue *func_data)
+typedef struct {
+    uint32_t  handle;
+    uint32_t  timeout;
+    uint32_t  memory;
+    uint32_t  owner;
+    JSValue   author;               /* the capability whose count this holds */
+} ngx_js_sub_opaque_t;
+
+static JSClassID  ngx_js_sub_class_id;
+
+
+static void
+ngx_js_sub_finalizer(JSRuntime *rt, JSValue val)
 {
+    ngx_js_sub_opaque_t     *sop;
+    ngx_js_author_opaque_t  *aop;
+    ngx_js_conf_t           *jcf;
+    JSValue                 *fv;
+
+    sop = JS_GetOpaque(val, ngx_js_sub_class_id);
+    if (sop == NULL) {
+        return;
+    }
+
+    /* release the slot: the fragment is dropped and the handle stays
+       unusable (a later invoke would be EPOCH_STALE, but nothing can invoke
+       it -- this callable was the only way) */
+    jcf = ngx_js_comcon_jcf;
+    if (jcf != NULL && jcf->comcon_ctx != NULL && jcf->comcon_frags != NULL
+        && sop->handle < jcf->comcon_frags->nelts)
+    {
+        fv = jcf->comcon_frags->elts;
+        if (!JS_IsUndefined(fv[sop->handle])) {
+            JS_FreeValueRT(rt, fv[sop->handle]);
+            fv[sop->handle] = JS_UNDEFINED;
+        }
+    }
+
+    /* refund the count */
+    aop = JS_GetOpaque(sop->author, ngx_js_author_class_id);
+    if (aop != NULL && aop->subs_used > 0) {
+        aop->subs_used--;
+    }
+    JS_FreeValueRT(rt, sop->author);
+
+    js_free_rt(rt, sop);
+}
+
+
+static JSValue
+ngx_js_sub_call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_val,
+    int argc, JSValueConst *argv, int flags)
+{
+    ngx_js_sub_opaque_t  *sop;
     ngx_js_conf_t  *jcf;
     JSValueConst    fn;
     JSValue         arg, result, jstr, retv, exc, cv;
@@ -2985,10 +3048,14 @@ ngx_js_author_invoke(JSContext *ctx, JSValueConst this_val, int argc,
         return JS_ThrowInternalError(ctx, "sub-fragment: no compartment");
     }
 
-    JS_ToUint32(ctx, &handle, func_data[0]);
-    JS_ToUint32(ctx, &timeout, func_data[1]);
-    JS_ToUint32(ctx, &memory, func_data[2]);
-    JS_ToUint32(ctx, &owner, func_data[3]);
+    sop = JS_GetOpaque(func_obj, ngx_js_sub_class_id);
+    if (sop == NULL) {
+        return JS_ThrowInternalError(ctx, "sub-fragment: not a sub-fragment");
+    }
+    handle = sop->handle;
+    timeout = sop->timeout;
+    memory = sop->memory;
+    owner = sop->owner;
 
     /* whose call is this?  The callable belongs to the fragment that authored
        it, exactly as a granted wrapper belongs to the fragment it was granted
@@ -3545,7 +3612,8 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
 {
     ngx_js_conf_t           *jcf;
     ngx_js_author_opaque_t  *op;
-    JSValue                  outer, fn, v, imp_s, intr_s, callable, data[4];
+    JSValue                  outer, fn, v, imp_s, intr_s, callable;
+    ngx_js_sub_opaque_t     *sop;
     JSValue                  av[16];
     JSValueConst             spec;
     const char              *source, *tsrc, *iname, *names[16];
@@ -3591,7 +3659,8 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
     if (op->subs_used >= op->max_subs) {
         return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_AUTHOR_LIMIT,
                    "author.include: this capability's sub-fragment budget "
-                   "(subFragments: %uD) is spent", op->max_subs);
+                   "(subFragments: %uD) is fully held; drop one to author "
+                   "another", op->max_subs);
     }
 
     if (argc < 1 || !JS_IsString(argv[0])) {
@@ -3792,19 +3861,30 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
         return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");
     }
 
+    sop = js_mallocz(ctx, sizeof(ngx_js_sub_opaque_t));
+    if (sop == NULL) {
+        return JS_EXCEPTION;                 /* the slot stays, unusable */
+    }
+
+    callable = JS_NewObjectClass(ctx, ngx_js_sub_class_id);
+    if (JS_IsException(callable)) {
+        js_free(ctx, sop);
+        return JS_EXCEPTION;
+    }
+
+    sop->handle = (uint32_t) handle;
+    sop->timeout = timeout;
+    sop->memory = memory;
+    sop->owner = op->owner;
+    sop->author = JS_DupValue(ctx, this_val);
+    JS_SetOpaque(callable, sop);
+
     op->subs_used++;
 
     ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
                   "js comcon: sub-fragment %ui authored by fragment %uD "
-                  "(%uD of %uD)", handle, op->owner - 1, op->subs_used,
+                  "(%uD of %uD held)", handle, op->owner - 1, op->subs_used,
                   op->max_subs);
-
-    data[0] = JS_NewUint32(ctx, (uint32_t) handle);
-    data[1] = JS_NewUint32(ctx, timeout);
-    data[2] = JS_NewUint32(ctx, memory);
-    data[3] = JS_NewUint32(ctx, op->owner);
-
-    callable = JS_NewCFunctionData(ctx, ngx_js_author_invoke, 1, 0, 4, data);
 
     return callable;
 }
@@ -3846,6 +3926,13 @@ ngx_js_author_get_used(JSContext *ctx, JSValueConst this_val)
 }
 
 
+static JSClassDef  ngx_js_sub_class = {
+    "NginxComconSubFragment",
+    .finalizer = ngx_js_sub_finalizer,
+    .call = ngx_js_sub_call
+};
+
+
 static const JSCFunctionListEntry  ngx_js_author_proto_funcs[] = {
     JS_CFUNC_DEF   ("include",      2, ngx_js_author_include),
     JS_CGETSET_DEF ("subFragments",    ngx_js_author_get_sub_fragments, NULL),
@@ -3861,6 +3948,14 @@ ngx_js_author_register(JSRuntime *rt)
     }
 
     if (JS_NewClass(rt, ngx_js_author_class_id, &ngx_js_author_class) < 0) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_sub_class_id == 0) {
+        JS_NewClassID(&ngx_js_sub_class_id);
+    }
+
+    if (JS_NewClass(rt, ngx_js_sub_class_id, &ngx_js_sub_class) < 0) {
         return NGX_ERROR;
     }
 
