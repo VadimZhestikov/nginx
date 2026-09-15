@@ -1,0 +1,38 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..01ed95f64 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -3167,12 +3167,7 @@ ngx_js_sub_call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_val,
+         /* THE RESULT, AS TEXT -- marshalled under the SUB-fragment's identity,
+            so a toJSON the sub-fragment wrote runs as the sub-fragment.  The
+            string is a plain value and survives the identity restore below. */
+-        jstr = JS_JSONStringify(ctx, result, JS_UNDEFINED, JS_UNDEFINED);
+-        JS_FreeValue(ctx, result);
+-        if (JS_IsException(jstr)) {
+-            jstr = JS_UNDEFINED;
+-            failed = 1;
+-        }
++        jstr = result;   /* the control: the value itself crosses */
+     }
+ 
+     if (failed) {
+@@ -3244,17 +3239,8 @@ ngx_js_sub_call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_val,
+                    handle);
+     }
+ 
+-    if (!JS_IsString(jstr)) {                /* JSON.stringify(undefined) */
+-        JS_FreeValue(ctx, jstr);
+-        return JS_UNDEFINED;
+-    }
+-
+-    s = JS_ToCStringLen(ctx, &len, jstr);
+-    retv = (s != NULL) ? JS_ParseJSON(ctx, s, len, "<result>") : JS_UNDEFINED;
+-    if (s != NULL) {
+-        JS_FreeCString(ctx, s);
+-    }
+-    JS_FreeValue(ctx, jstr);
++    s = NULL; len = 0; (void) s; (void) len;
++    retv = jstr;
+ 
+     return retv;
+ }

@@ -1,0 +1,15 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..659291073 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -1368,8 +1368,10 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
+      * worker's copy-on-write page holds its OWN comcon_deadline_ms, and the
+      * handler installed here before fork keeps working correctly after it.
+      */
++    if (jcf->worker != NULL) {
+     JS_SetInterruptHandler(jcf->comcon_rt, ngx_js_comcon_interrupt_handler,
+                            jcf);
++    }
+ 
+     return sctx;
+ }

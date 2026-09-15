@@ -1,0 +1,13 @@
+diff --git a/quickjs/quickjs-jit.c b/quickjs/quickjs-jit.c
+index c34ffe21a..03732eeaf 100644
+--- a/quickjs/quickjs-jit.c
++++ b/quickjs/quickjs-jit.c
+@@ -3468,7 +3468,7 @@ static void gen_footer(JSJITCodeBuf *cb, int var_count,
+      * interpreter does too. */
+     if (sr && sr->has_try && stack_size > 0) {
+         jit_buf_str(cb,
+-            "    if(_catch_depth>0 && !JS_IsUncatchableException(ctx)){\n"
++            "    if(_catch_depth>0){\n"
+             "        _catch_depth--;\n"
+             "        { int _cs=_catch_sp[_catch_depth];\n"
+             "          int _ch=_catch_h[_catch_depth]; int _j;\n"

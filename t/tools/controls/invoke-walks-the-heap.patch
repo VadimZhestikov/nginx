@@ -1,0 +1,12 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..fab08e0a5 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -1126,6 +1126,7 @@ ngx_js_comcon_mem_push(ngx_js_conf_t *jcf, size_t allowance)
+ 
+     old = jcf->comcon_mem_limit;
+     newl = JS_GetMallocSize(jcf->comcon_rt) + allowance;
++    { JSMemoryUsage mu; JS_ComputeMemoryUsage(jcf->comcon_rt, &mu); (void) mu; }
+ 
+     if (old != 0 && old < newl) {
+         newl = old;

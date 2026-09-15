@@ -1,0 +1,33 @@
+diff --git a/src/js/ngx_js_com.c b/src/js/ngx_js_com.c
+index 7fb63a7ef..b22732c4a 100644
+--- a/src/js/ngx_js_com.c
++++ b/src/js/ngx_js_com.c
+@@ -659,13 +659,6 @@ ngx_js_com_register_classes(JSRuntime *rt)
+      * A fragment could grow a worker without bound in audit mode.  Found by
+      * running the S6 corpus with leak detection ON (t/run_sanitizers.sh).
+      */
+-    if (ngx_js_http_register_classes(rt) != NGX_OK) {
+-        return NGX_ERROR;
+-    }
+-
+-    if (ngx_js_upstream_register_classes(rt) != NGX_OK) {
+-        return NGX_ERROR;
+-    }
+ 
+     return NGX_OK;
+ }
+@@ -7000,6 +6993,14 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
+         return NGX_ERROR;
+     }
+ 
++    if (ngx_js_http_register_classes(rt) != NGX_OK) {
++        return NGX_ERROR;
++    }
++
++    if (ngx_js_upstream_register_classes(rt) != NGX_OK) {
++        return NGX_ERROR;
++    }
++
+     if (ngx_js_stream_upstream_register_classes(rt) != NGX_OK) {
+         return NGX_ERROR;
+     }

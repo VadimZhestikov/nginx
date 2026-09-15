@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..e2c3ea678 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -1329,7 +1329,7 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
+             "  for (i = 0; i < names.length; i++) {"
+             "    d = Object.getOwnPropertyDescriptor(globalThis, names[i]);"
+             "    if (!d) { continue; }"
+-            "    if ('value' in d) {"
++            "    if (false && 'value' in d) {"
+             "      Object.defineProperty(globalThis, names[i], {"
+             "        value: d.value, writable: false,"
+             "        enumerable: d.enumerable, configurable: false });"

@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..c2073abf6 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -4300,7 +4300,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
+      * this fragment's job budget, deadline, allowance or rejection report.  See
+      * ngx_js_comcon_drain_leftovers() for why they run as nobody.
+      */
+-    ngx_js_comcon_drain_leftovers(jcf);
++    if (0) { ngx_js_comcon_drain_leftovers(jcf); }   /* the control: leftovers stay for the caller */
+ 
+     /*
+      * A confined fragment ALWAYS runs under a deadline.

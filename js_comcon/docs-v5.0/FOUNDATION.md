@@ -635,6 +635,31 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.120 (in place — the negative-control debt paid; every row automated):** twenty rows both
+signatures accepted as manual — inverse patches that no longer applied because later commits
+rewrote the lines, controls that were never a commit revert, and fixes in `quickjs/` outside
+what the script reverted — are now MAINTAINED reverse patches under `t/tools/controls/`, each
+the smallest change that brings its defect back (a generation check dropped, a range check
+skipped, a freeze made a no-op, the drain of leftovers commented out, the heap walk restored,
+the bounds' `min()` removed, `author.include` refused, the marshal letting an object cross,
+the JIT's catch dispatch ignoring the flag, the compartment teardown skipped, the COM classes
+unregistered in the compartment, the backtrace annotation holding no reference, the half-typed
+xor emitted as or). `verify-negative-controls.sh` applies and verifies them exactly like the
+commit rows, rebuilds the engine for a `quickjs/` patch, runs a leak row under `objs_asan`
+looking for the named frame, treats a skipped test as INCONCLUSIVE, and fails the run when a
+patch no longer applies — so the debt cannot accumulate silently again. F19's row is a commit
+revert over both binaries. The reviewer pack prints INCONCLUSIVE rows instead of a MANUAL list.
+**29 rows, 29 verified** on the first full run (three re-crafted on the way: a patch that
+commented a call out and hit `-Werror=unused-function`; F18's, which needs BOTH halves of the
+fix absent — the `stack` guard alone keeps the freed object untouched; and copy-vs-rewrap,
+whose by-hand row COULD NOT FAIL: the `/stale` arm never reused the closed socket's slot, so a
+re-wrap and a copy both threw — the arm now hands the slot to a new socket and a re-wrap reads
+the stranger).
+Also, from step 4 of the same plan: maxim's warm element hint, which substituted 0 for the
+value on a type miss, is switched off in the vendored engine — unreachable here twice over
+(include-time compile, no compile thread in a worker), so hygiene, not a fix, and no test can
+reach it; carried to the fork. REVIEW.md §3, AUDIT_M-SES §5, ASSURANCE G7.19–G7.21's GAPs, §16.
+
 **v5.119 (in place — the residue sweep as a battery, and F19):** F18's class lives in a byte
 window a sanitizer moves, so no sanitizer corpus covers it; `t/comcon_oom_sweep.t` makes the
 sweep a standing instrument on both tiers — seven places the allowance can bite (inside

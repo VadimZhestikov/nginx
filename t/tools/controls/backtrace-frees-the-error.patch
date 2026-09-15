@@ -1,0 +1,22 @@
+diff --git a/quickjs/quickjs.c b/quickjs/quickjs.c
+index 916d30ac3..a94f03b79 100644
+--- a/quickjs/quickjs.c
++++ b/quickjs/quickjs.c
+@@ -7441,8 +7441,6 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_obj,
+     else
+         str = JS_NewString(ctx, (char *)dbuf.buf);
+     dbuf_free(&dbuf);
+-    if (JS_IsException(str))
+-        return; /* out of memory: no 'stack', not an exception-tagged one */
+     JS_DefinePropertyValue(ctx, error_obj, JS_ATOM_stack, str,
+                            JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+ }
+@@ -23065,7 +23063,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
+            before if the exception happens in a bytecode
+            operation */
+         sf->cur_pc = pc;
+-        build_backtrace_pending(ctx, NULL, 0, 0, 0);
++        build_backtrace(ctx, rt->current_exception, NULL, 0, 0, 0);
+     }
+     if (!rt->current_exception_is_uncatchable) {
+         while (sp > stack_buf) {

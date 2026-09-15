@@ -1201,8 +1201,12 @@ The primary control, and the one everything else is defence in depth for.
   the parent's environment restricted to the grants and narrowed per name, so (MEDIATE) per
   name + (ADMIT) + (EXEC) bound the sub-fragment by `A*(ρ_parent)`; the automated negative
   control `37b3c2057` (revert phase 3's `src/js` half, `t/comcon_author_regrant.t` fails) is a
-  row in `t/tools/verify-negative-controls.sh`, and the copy-vs-rewrap control is a MANUAL row
-  there (re-wrap the handle in `ngx_js_socket_narrow()`, the `/stale` arm fails).
+  row in `t/tools/verify-negative-controls.sh`, and the copy-vs-rewrap control is a maintained
+  patch there (`t/tools/controls/regrant-rewraps.patch`, since v5.120). **Making that patch
+  mechanical showed the by-hand row could not fail:** the `/stale` arm closed the socket but
+  never reused its slot, so a re-wrap and a copy both pointed at an empty slot and both threw.
+  The arm now hands the slot to a new socket at `/close`; a re-wrap reads the stranger
+  (`string`) where the copy stays as stale as its parent (`threw`), and the row holds.
   **home:** `ngx_js_author_grants` · `ngx_js_socket_narrow` · `ngx_js_outbound_narrow` ·
   `ngx_js_com_facet_copy`.
 - **THREAT:** T4, T6, T9, T13
@@ -1310,6 +1314,9 @@ The primary control, and the one everything else is defence in depth for.
   put the original error AND its flag back, minus `stack`; and `build_backtrace` no longer
   stores an exception-tagged value as `stack`. The parser's two annotation sites (a
   `SyntaxError`, a regexp compile error, either at the allowance) go through the same helper.
+  The two halves do different work, and the control (v5.120) says which: the `stack` guard
+  alone keeps the freed object from being touched, so the crash needs both halves absent;
+  the held reference is what keeps the error and its flag for whoever catches.
 - **EV:** `t/comcon_oom_backtrace.t` — 5 assertions. Where the allowance bites is a matter
   of residue, so the probe SWEEPS it: the fragment fills memory in exact 1 KB strings and the
   allowance steps by 32 bytes across one such string, walking the failing allocation through
@@ -1321,10 +1328,10 @@ The primary control, and the one everything else is defence in depth for.
   `t/comcon_author_basic.t` `/nestmemory`, the case that found it.
 - **GAP:** The flag restore has no dedicated test — it needs the deadline to fire exactly
   when the annotation's allocation fails, a window of a few hundred bytes coincident with a
-  timer — and rests on inspection of one branch. The negative control is a MANUAL row in
-  `t/tools/verify-negative-controls.sh` (the fix lives in `quickjs/`, outside what the script
-  reverts). The same patch is carried to the engine fork (`pilgrim-quickjs`); until it is
-  pushed, the fork is behind pilgrim by this fix.
+  timer — and rests on inspection of one branch. The negative control is a maintained reverse
+  patch (`t/tools/controls/backtrace-frees-the-error.patch`, since v5.120; a MANUAL row before
+  that), verified by the script like every other row. The same patch is carried to the engine
+  fork (`pilgrim-quickjs`), pushed.
   **home:** finding F18 · `build_backtrace_pending` · `t/comcon_oom_backtrace.t`'s header.
 - **THREAT:** T1, T11, T13
 - **V:** V13
@@ -1362,8 +1369,9 @@ The primary control, and the one everything else is defence in depth for.
 - **GAP:** `>>>`, `~` and `Math.imul` results stay untyped (uint32 and a call); typed-array
   WRITES, `.length` on a typed array, and `Uint32`/float element reads take the runtime. The
   remaining 2.1× on class A is boxing and checks, accepted under the M5.0 rule, not scheduled.
-  The negative control is a MANUAL row in `t/tools/verify-negative-controls.sh` (the change
-  lives in `quickjs/`). The same patch is carried to the engine fork.
+  The negative control is a maintained reverse patch
+  (`t/tools/controls/half-typed-bitops-wrong.patch`, since v5.120), verified by the script.
+  The same patch is carried to the engine fork, pushed.
   **home:** M5.1a (ROADMAP POSITION) · PERFORMANCE §2f · `JIT_CODEGEN_VERSION` 18.
 - **THREAT:** T6, T9, T11
 - **V:** V13
@@ -1398,8 +1406,8 @@ The primary control, and the one everything else is defence in depth for.
   stepped over (F18's was a few hundred). Not swept: an allowance hit inside include itself
   (admission runs under the host's allowance), inside `checkRequest` or `tests`, inside the
   drain of a rejected promise's job, and on the stream surface. The negative control for the
-  battery's crash claim is F18's MANUAL row (the fix lives in `quickjs/`); F19's is an
-  automated row.
+  battery's crash claim is F18's maintained patch; F19's is a commit-revert row
+  (`60e6d5585`), run over both binaries.
   **home:** `t/comcon_oom_sweep.t`'s header · finding F19 · `ngx_js_comcon_exc_text`.
 - **THREAT:** T1, T11, T13
 - **V:** V13
@@ -2272,6 +2280,7 @@ signature is never quietly credited with work it did not see.
 | **M5.1a — THE NARROW COMPILER'S FIRST CUT (v5.117).** Two codegen changes in the engine (`JIT_CODEGEN_VERSION` 18): a bit op with one provably-numeric operand yields a typed int32, and an in-bounds element of an integer typed array is read in place. Class A's lowered scan 11.72 → 1.26 ns/byte, within 2.1× of the typed bound; class B unmoved. Four SR-2 cases with the spec's values written out, validated by breaking both paths; the resource gates and the uncatchable-abort probe unchanged. G7.20. | **Touches the compiled tier the signature attests through G7.5/G7.18 and (F).** Every value the compiled tier can now produce differently is enumerated and pinned to the interpreter and to the spec; nothing is speculated. The codegen version bump retires every cached artifact, so no signed-era `.so` runs under the new rules. |
 | **M5.1b PARKED WITH ITS NUMBERS; THE M5 TRACK CLOSES AT M5.1a (v5.118).** Declared shapes at the boundary would cut a 2.1× gap, below the M5.0 rule's 3×, and add a second source of truth for a value's type; a host typed view of request bytes gains 12.5 ns/byte over a string scan, noise for a uri and 200 µs for a 16 KB body, and no measured policy scans bodies in JS. PERFORMANCE §2f.1 fixes the shape should the use case appear: one capability word, copy-backed, never a zero-copy view. | **No bearing on the signature.** A decision not to build; nothing the case attests changes. Recorded so that G7.20's GAP — typed-array writes, `.length`, `>>>`, `Math.imul` untyped — reads as accepted by decision, not as pending work. |
 | **THE RESIDUE SWEEP AS A BATTERY; F19 FOUND AND CLOSED (v5.119).** Seven places the allowance can bite, 32 alignments each, both tiers (`t/comcon_oom_sweep.t`, 54 assertions): no worker died anywhere, and the compiled arm ran lowered where it can. First run found F19: the host's ToString of a fragment's error ran out of memory itself, reported `error` and left its exception pending on the compartment; fixed in one function. | **Adds an instrument the signature could not have had.** ASAN and UBSAN move the point where the allowance bites, so no sanitizer corpus covers this class; the sweep is now standing evidence on both tiers. F19 narrows nothing the case attests — a label and a stale object, no escape — but it is the second defect this instrument found in two files, which is the point of having it. |
+| **THE NEGATIVE-CONTROL DEBT PAID (v5.120): 29 rows, 29 verified.** Twenty rows both signatures accepted as manual — inverse patches that no longer applied, controls that were never a commit, fixes in `quickjs/` — are maintained reverse patches under `t/tools/controls/`, each the smallest change that brings its defect back, verified by the same script as the commit rows (an engine patch rebuilds the library; a leak row runs under `objs_asan` and looks for the named frame; a skipped test is INCONCLUSIVE, never a pass). A patch that stops applying fails the run and is re-based on purpose. **Making the rows mechanical found two things the by-hand descriptions had not:** the copy-vs-rewrap control (G7.16) could not fail — the `/stale` arm closed the socket but never reused its slot, so a re-wrap and a copy both pointed at an empty slot; the test now hands the slot to a new socket, and a re-wrap reads the stranger; and F18's crash (G7.19) needs BOTH halves of the fix absent — the `stack` guard alone keeps the freed object from being touched — so its patch removes both. Also: maxim's warm element hint, which substituted 0 on a type miss, is off (unreachable here; hygiene). | **Strengthens what the reviewer pack attests.** §15's second signature accepted nineteen rows it could not check; the pack now checks every row, and the number a reader sees is the whole set. One of those rows turned out to be a probe that could not fail — the class `check-dead-probes.py` exists for — and is now live. Nothing the case claims changes; what changes is that "verified N" covers every control there is. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

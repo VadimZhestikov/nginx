@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..708a8c978 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -1642,7 +1642,7 @@ ngx_js_comcon_compile_wrapper(ngx_js_conf_t *jcf, JSContext *sctx,
+         return NGX_ERROR;
+     }
+ 
+-    if (!js_comcon_is_single_toplevel_closure(o)) {
++    if (0 && !js_comcon_is_single_toplevel_closure(o)) {
+         /*
+          * Fail closed WITHOUT running it.  `o` here is a raw compiled unit
+          * (JS_TAG_FUNCTION_BYTECODE), never turned into a callable, so freeing

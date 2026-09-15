@@ -254,9 +254,13 @@ bash t/tools/verify-negative-controls.sh 67bc359e9  # one row
 It reverts only the `src/js` half of each fix (the tests stay, or there would be
 nothing to run), rebuilds, and requires the named test to FAIL without the fix
 and PASS with it. It refuses to start on a dirty tree and restores on any exit.
-**Eight of the twelve rows verify this way; four need a manual revert** because
-later commits rewrote the same lines — the script names them and says why rather
-than skipping them quietly.
+**Every row verifies this way since v5.120.** Eight are commit reverts; the rest
+— rows whose lines later commits rewrote, controls that were never a commit, and
+fixes in `quickjs/` — are maintained reverse patches under `t/tools/controls/`,
+applied and checked by the same script (an engine patch rebuilds the library; a
+leak row runs under `objs_asan` and looks for the named frame). A patch that no
+longer applies makes its row INCONCLUSIVE and fails the run; it is re-based, not
+listed.
 
 Running that script is not a substitute for reading the code. It checks that the
 tests can tell the difference, not that the fixes are the right ones.

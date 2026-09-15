@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..aa5fdacbb 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -1438,7 +1438,7 @@ ngx_js_comcon_exc_text(JSContext *sctx, JSValueConst exc, uint32_t oom_before,
+ {
+     *to_free = NULL;
+ 
+-    if (!JS_IsObject(exc)
++    if (0 && !JS_IsObject(exc)
+         && JS_GetOutOfMemoryCount(JS_GetRuntime(sctx)) != oom_before)
+     {
+         return oom_text;

@@ -1,0 +1,12 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..af7597c21 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -3652,6 +3652,7 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
+     if (jcf == NULL || jcf->comcon_ctx != ctx) {
+         return JS_ThrowInternalError(ctx, "author.include: no compartment");
+     }
++    return JS_ThrowTypeError(ctx, "author.include: refused (negative control)");
+ 
+     op = JS_GetOpaque2(ctx, this_val, ngx_js_author_class_id);
+     if (op == NULL) {

@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_com.c b/src/js/ngx_js_com.c
+index 7fb63a7ef..4ed019831 100644
+--- a/src/js/ngx_js_com.c
++++ b/src/js/ngx_js_com.c
+@@ -1264,7 +1264,7 @@ ngx_js_com_num_range(JSContext *ctx, JSValueConst val, int64_t min,
+         return -1;
+     }
+ 
+-    if (d < (double) min || d > (double) max) {
++    if (0) {
+         JS_ThrowRangeError(ctx, "%s must be between %lld and %lld, got %g",
+                            name, (long long) min, (long long) max, d);
+         return -1;

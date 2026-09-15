@@ -1,0 +1,12 @@
+diff --git a/src/js/ngx_js_socket.c b/src/js/ngx_js_socket.c
+index 9a405c45d..544358be6 100644
+--- a/src/js/ngx_js_socket.c
++++ b/src/js/ngx_js_socket.c
+@@ -879,6 +879,7 @@ ngx_js_socket_narrow(JSContext *ctx, JSValueConst parent, uint32_t keep_mask,
+     }
+ 
+     *child = *op;                              /* gen, budget, window, cosign */
++    child->gen = ngx_js_socket_gen[op->handle];  /* re-stamped: a re-wrap, the control */
+     child->mask = op->mask & keep_mask;
+     child->owner = child_owner;
+ 

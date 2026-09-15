@@ -1,0 +1,22 @@
+diff --git a/src/js/ngx_js_socket.c b/src/js/ngx_js_socket.c
+index 9a405c45d..cb1c7d285 100644
+--- a/src/js/ngx_js_socket.c
++++ b/src/js/ngx_js_socket.c
+@@ -117,7 +117,7 @@ ngx_js_socket_state_checked(uint32_t handle, uint32_t gen)
+         return NULL;
+     }
+ 
+-    if (gen != 0 && ngx_js_socket_gen[handle] != gen) {
++    if (0 && gen != 0 && ngx_js_socket_gen[handle] != gen) {
+         return NULL;
+     }
+ 
+@@ -201,7 +201,7 @@ ngx_js_socket_state_of(ngx_js_socket_opaque_t *op)
+     }
+ 
+     if (ngx_js_socket_reg[op->handle] == NULL
+-        || ngx_js_socket_gen[op->handle] != op->gen)
++        || (0 && ngx_js_socket_gen[op->handle] != op->gen))
+     {
+         return NULL;
+     }

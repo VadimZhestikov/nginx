@@ -1,0 +1,22 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..a4f5ea7c5 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -1090,7 +1090,7 @@ ngx_js_comcon_deadline_push(ngx_js_conf_t *jcf, uint32_t timeout_ms)
+         newd = w->request_deadline_ms;
+     }
+ 
+-    if (old != 0 && old < newd) {
++    if (0 && old != 0 && old < newd) {
+         newd = old;
+     }
+ 
+@@ -1127,7 +1127,7 @@ ngx_js_comcon_mem_push(ngx_js_conf_t *jcf, size_t allowance)
+     old = jcf->comcon_mem_limit;
+     newl = JS_GetMallocSize(jcf->comcon_rt) + allowance;
+ 
+-    if (old != 0 && old < newl) {
++    if (0 && old != 0 && old < newl) {
+         newl = old;
+     }
+ 

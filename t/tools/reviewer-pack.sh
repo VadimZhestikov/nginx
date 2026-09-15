@@ -187,9 +187,14 @@ else
     gate "every automated negative control holds" "$rc" \
          "$(grep -E '^verified [0-9]+' "$OUT/controls.log" | tail -1)"
     report "negative controls" "$(grep -E '^verified [0-9]+' "$OUT/controls.log" | tail -1)"
-    say "  MANUAL rows (inverse patch no longer applies — revert by hand to check):"
-    say "  These are the ones a full reproduction still cannot check for you."
-    sed -n '/^MANUAL/,$p' "$OUT/controls.log" | tail -n +3 | sed 's/^/        /' | tee -a "$LOG"
+    # Since v5.120 every control is automated: a commit revert or a MAINTAINED
+    # reverse patch under t/tools/controls/.  A row whose patch no longer
+    # applies is INCONCLUSIVE and FAILS the gate above -- the patch has to be
+    # re-based, not listed.  Print any such row so the reader sees which.
+    if grep -q INCONCLUSIVE "$OUT/controls.log"; then
+        say "  INCONCLUSIVE rows (a patch that no longer applies, or a test that did not run):"
+        grep -B2 INCONCLUSIVE "$OUT/controls.log" | grep -E '^===|INCONCLUSIVE' | sed 's/^/        /' | tee -a "$LOG"
+    fi
 fi
 
 # ─────────────────────────────────────────────── reported measurements ───

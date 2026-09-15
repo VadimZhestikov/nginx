@@ -1,0 +1,22 @@
+diff --git a/src/js/ngx_js_listener.c b/src/js/ngx_js_listener.c
+index cef937487..efb8cb71e 100644
+--- a/src/js/ngx_js_listener.c
++++ b/src/js/ngx_js_listener.c
+@@ -416,7 +416,7 @@ ngx_js_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
+      * retired listener report the new socket's address and, via `socket`, hand
+      * out a live handle that could close it.
+      */
+-    sock = ngx_js_socket_state_checked(st->socket_handle, st->socket_gen);
++    sock = ngx_js_socket_state_checked(st->socket_handle, 0);
+ 
+     if (!ngx_js_compartment_may_reach(sock != NULL
+                                       ? sock->owner
+@@ -435,7 +435,7 @@ ngx_js_listener_get(JSContext *ctx, JSValueConst this_val, int magic)
+ 
+     case 1: /* socket — NginxSocket back-reference */
+         return ngx_js_socket_wrap_checked(ctx, st->socket_handle,
+-                                          st->socket_gen);
++                                          0);
+ 
+     case 2: /* serverNames[] — array of server name strings */
+     {

@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_com.c b/src/js/ngx_js_com.c
+index 7fb63a7ef..c86e18b3d 100644
+--- a/src/js/ngx_js_com.c
++++ b/src/js/ngx_js_com.c
+@@ -5182,7 +5182,7 @@ static const char  ngx_js_comcon_bootstrap[] =
+        there: a contract that narrows the allowance has asked for admission, and
+        a narrowing with the gate switched off would be a policy word that does
+        nothing. */
+-    "    if(contract.imports!==undefined||contract.identity"
++    "    if(contract.imports||contract.identity"
+     "       ||contract.checkRequest||contract.tests"
+     "       ||contract.intrinsics!==undefined){"
+     "      admit={imports:contract.imports||[],"

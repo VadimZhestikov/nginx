@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_socket.c b/src/js/ngx_js_socket.c
+index 9a405c45d..0c5b2aa2e 100644
+--- a/src/js/ngx_js_socket.c
++++ b/src/js/ngx_js_socket.c
+@@ -863,7 +863,7 @@ ngx_js_socket_narrow(JSContext *ctx, JSValueConst parent, uint32_t keep_mask,
+        `redact` and "no word" only ever remove, and are ANDed without the
+        assertion -- redacting a field the parent never had is not asking for
+        anything. */
+-    if (assert_subset && (keep_mask & ~op->mask)) {
++    if (0 && assert_subset && (keep_mask & ~op->mask)) {
+         *code = NGX_JS_REFUSAL_CAP_ESCALATE;
+         ngx_snprintf((u_char *) reason, rlen,
+                      "attenuation names a field the parent's capability does "

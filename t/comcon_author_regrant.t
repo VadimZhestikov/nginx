@@ -19,9 +19,11 @@
 #              with a control arm made to DIFFER, so the comparison can fail
 #   /ttl       the expiry meets by MIN: a 1-second re-grant expires while the
 #              parent's own (3600 s) and a 7200-second re-grant do not
-#   /stale     the host closes the socket: the parent's wrapper goes stale, the
-#              sub-fragment's copy goes stale with it, and a re-grant made from
-#              the stale parent is stale too (the laundering path, closed)
+#   /stale     the host closes the socket AND hands its slot to a new one: the
+#              parent's wrapper goes stale, the sub-fragment's copy goes stale
+#              with it, and a re-grant made from the stale parent is stale too
+#              (the laundering path, closed -- a re-wrap would read the
+#              stranger now occupying the slot)
 #   /outfacet  the other two kinds: an outbound capability keeps its host glob,
 #              a route facet keeps its route glob; the words that do not apply
 #              to them are refused; a session-typed wrapper is not re-grantable
@@ -76,6 +78,7 @@ var srv  = nginx.http.servers[0];
 
 var sock  = nginx.createSocket("127.0.0.1:%%PORT_8091%%");
 var sock2 = nginx.createSocket("127.0.0.1:%%PORT_8092%%");
+var stranger = null;   /* takes sock2's slot after /close (see there) */
 var out   = nginx.outbound();
 
 /* what a sub-fragment sees of a socket wrapper `s`: the four fields' types */
@@ -206,6 +209,16 @@ for (var i = 0; i < locs.length; i++) {
         } else if (path === '/close') {
             locs[i].handler = function (req) {
                 sock2.close();
+                /* and REUSE the slot: the next createSocket() is handed the
+                   freed index, so a re-grant that re-wrapped the handle instead
+                   of copying the parent's opaque would mint a VALID handle to
+                   this stranger (it reads 'string'), where a copy stays as
+                   stale as its parent (it throws).  Without the reuse, a
+                   re-wrap and a copy are indistinguishable here -- both point
+                   at an empty slot -- and the negative control for
+                   copy-then-narrow (t/tools/controls/regrant-rewraps.patch)
+                   could not fail. */
+                stranger = nginx.createSocket("127.0.0.1:%%PORT_8093%%");
                 req.respond(200, {'content-type': 'text/plain'}, 'closed');
             };
         }

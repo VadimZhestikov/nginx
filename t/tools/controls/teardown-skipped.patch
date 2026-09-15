@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2cc885eb8..cccf52510 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -6173,7 +6173,7 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
+ 
+     /* M-CFG: and the compartment, likewise this process's copy -- the one
+        place fragments actually ran, so this is also where a leak would show */
+-    ngx_js_comcon_teardown(jcf);
++    /* ngx_js_comcon_teardown(jcf); */
+ 
+     w = jcf->worker;
+     if (w == NULL) {

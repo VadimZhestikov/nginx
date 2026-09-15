@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.119 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.120 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -61,6 +61,14 @@
 >   unmoved (its loop is a call and a `>>>`), and its "typed bound" was lowered JS — corrected
 >   in PERFORMANCE §2f. By the M5.0 rule the remaining 2.1× (boxing and checks) is NOT worth a
 >   further cut: **M5.1 is complete as measured.** ASSURANCE G7.20.
+> - **THE NEGATIVE-CONTROL DEBT PAID (2026-09-15, v5.120).** Twenty rows both signatures had
+>   accepted as manual are maintained reverse patches under `t/tools/controls/` — each the
+>   smallest change that brings its defect back — verified by the same script as the commit
+>   rows: an engine patch rebuilds the library, a leak row runs under `objs_asan` and looks
+>   for the named frame, a skipped test is INCONCLUSIVE, and a patch that stops applying fails
+>   the run and is re-based on purpose. The reviewer pack prints INCONCLUSIVE rows instead of
+>   a MANUAL list. Step 4 of the same plan: maxim's warm element hint that substituted 0 on a
+>   type miss is off in the vendored engine (unreachable here; hygiene; carried to the fork).
 > - **THE RESIDUE SWEEP AS A BATTERY; F19 (2026-09-15, v5.119).** F18's class lives in a byte
 >   window a sanitizer MOVES, so the S6 corpus cannot see it; `t/comcon_oom_sweep.t` sweeps
 >   seven places the allowance can bite (catch, finally, generator, a job after await, a

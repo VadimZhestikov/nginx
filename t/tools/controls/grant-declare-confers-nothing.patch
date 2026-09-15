@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_com.c b/src/js/ngx_js_com.c
+index 7fb63a7ef..a81f49353 100644
+--- a/src/js/ngx_js_com.c
++++ b/src/js/ngx_js_com.c
+@@ -3550,7 +3550,7 @@ ngx_js_grant_to_tenant(JSContext *ctx, JSValueConst this_val, int argc,
+     ngx_js_tenant_grant_t  *grant;
+     const char             *s;
+ 
+-    if (argc < 1 || !JS_IsString(argv[0])) {
++    if (argc < 1) {
+         return JS_ThrowTypeError(ctx,
+             "nginx.grantToTenant(name): a name string is required");
+     }
