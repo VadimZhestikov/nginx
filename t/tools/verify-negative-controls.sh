@@ -54,6 +54,7 @@ ROWS=(
 "e246cc347|t/js_com_numeric_range.t|objs|numbers cast instead of checked"
 "a321849fa|t/js_com_lb_select.t|objs|balancer with no return pinned peer 0"
 "335dc0956|t/js_com_filter_nongenerator.t|objs|filter with no return dropped the response"
+"ed74d3dd2|t/js_pilgrim_p17_l4_window.t|objs|the L4 window armed no timer, so it was a wait state with no deadline"
 )
 
 MANUAL=(

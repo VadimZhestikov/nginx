@@ -1502,6 +1502,151 @@ ngx_js_l4_chain_next_filter(JSContext *ctx, JSRuntime *rt,
 
 
 /*
+ * P17/P6: the L4 window is a WAIT STATE, and nginx's wait states carry a timer.
+ *
+ * Between accept and ngx_http_init_connection() the L4 filter path owns the
+ * connection itself: c->read->handler is ngx_js_l4_read_handler and the http
+ * module has never seen it.  It used to own it with no deadline of any kind,
+ * and that is two defects wearing one coat.
+ *
+ * MEASURED, both with the control run beside them:
+ *
+ *   1. A CONNECTION CAN BE HELD FOREVER.  With `client_header_timeout 1s` and
+ *      one pass-through L4 filter armed, a client that connects and sends
+ *      nothing is still connected 5 s later; with the filter removed nginx gives
+ *      up in 1 s.  An unauthenticated peer therefore pins a connection slot and
+ *      its pool until the worker is reloaded, by sending zero bytes -- the
+ *      classic slow-loris shape, except cheaper, because there is no header to
+ *      dribble.
+ *
+ *   2. THE WORKER ABORTS AT GRACEFUL SHUTDOWN.  ngx_worker_process_exit() walks
+ *      the connection array and alerts "open socket #N left in connection M" for
+ *      any non-accept connection still open.  Stock nginx never trips it for a
+ *      connection awaiting its first request because that connection holds a
+ *      NON-CANCELABLE client_header_timeout: ngx_event_no_timers_left() then
+ *      returns NGX_AGAIN and the worker declines to exit until the timer is gone.
+ *      A timerless L4 window has nothing to hold the worker, so a FIN still in
+ *      flight loses the race to SIGQUIT.  That was the ~2.8% flake in
+ *      t/js_pilgrim_p17_server_accept.t -- connection #10 is waitforsocket()'s
+ *      probe, which connects and closes at once.  With one parked connection the
+ *      alert is 100%, and it does not happen at all without the filter.
+ *
+ * The fix is to stop inventing a lifecycle: arm the same timeout nginx's own
+ * wait state arms, honour the same two give-up signals it honours (rev->timedout
+ * and c->close), and mark the connection reusable so ngx_drain_connections() can
+ * reclaim it under connection pressure like any other waiting connection.
+ *
+ * ONE DEADLINE FOR THE WHOLE WINDOW, not one per read.  The timer is armed on
+ * entry and not extended when a chunk arrives, so a filter that never finishes
+ * cannot be kept alive by a peer dribbling bytes.  That is stricter than
+ * client_header_timeout, deliberately: the window is our code's, not the
+ * client's, and the budget is for completing the filter chain.
+ */
+static ngx_msec_t
+ngx_js_l4_window_timeout(ngx_connection_t *c, ngx_js_http_listener_state_t *st)
+{
+    ngx_http_port_t           *port;
+    ngx_http_in_addr_t        *addr;
+    ngx_http_core_srv_conf_t  *cscf;
+#if (NGX_HAVE_INET6)
+    ngx_http_in6_addr_t       *addr6;
+#endif
+
+    cscf = st->default_server;
+
+    if (cscf == NULL && c->listening != NULL && c->listening->servers != NULL) {
+        /*
+         * addrs[0], not the address this connection actually arrived on.  Only
+         * a TIMEOUT is being read off it, so picking the default server of the
+         * first address on the port is close enough to be right and not worth
+         * the local-sockaddr round trip; the accept handler already does the
+         * exact lookup where it matters (which server's hooks to run).
+         */
+        port = c->listening->servers;
+
+        if (port->addrs != NULL && port->naddrs >= 1) {
+#if (NGX_HAVE_INET6)
+            if (c->local_sockaddr != NULL
+                && c->local_sockaddr->sa_family == AF_INET6)
+            {
+                addr6 = port->addrs;
+                cscf = addr6[0].conf.default_server;
+
+            } else
+#endif
+            {
+                addr = port->addrs;
+                cscf = addr[0].conf.default_server;
+            }
+        }
+    }
+
+    if (cscf != NULL && cscf->client_header_timeout > 0) {
+        return cscf->client_header_timeout;
+    }
+
+    return 60000;  /* nginx's own client_header_timeout default */
+}
+
+
+/*
+ * Free the pending struct's JSValues given only the connection.  The two give-up
+ * paths at the top of the read handler run before the JSContext has been looked
+ * up, and inside the window c->data is always the pending struct (the accept
+ * handler pre-allocates it for both the P17 and the P4/P6 listener shapes).
+ */
+static void
+ngx_js_l4_pending_free_jsvals_c(ngx_connection_t *c)
+{
+    ngx_js_conf_t        *jcf;
+    ngx_js_l4_pending_t  *p;
+
+    p = (ngx_js_l4_pending_t *) c->data;
+    if (p == NULL) {
+        return;
+    }
+
+    jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
+    if (jcf == NULL || jcf->ctx == NULL) {
+        return;
+    }
+
+    ngx_js_l4_pending_free_jsvals(jcf->ctx, p);
+}
+
+
+/* Entering (or continuing) the wait for raw TCP data inside the L4 window. */
+static void
+ngx_js_l4_wait_arm(ngx_connection_t *c, ngx_js_http_listener_state_t *st)
+{
+    if (!c->read->timer_set) {
+        ngx_add_timer(c->read, ngx_js_l4_window_timeout(c, st));
+    }
+
+    ngx_reusable_connection(c, 1);
+}
+
+
+/*
+ * Leaving the wait: either handing the connection to the http module, or
+ * parking it on w->l4_pending while an async filter runs.  The parked case must
+ * disarm too -- a timer that fires there would close a connection whose pending
+ * struct is still on the worker's list, and ngx_js_l4_drain_exit() is what
+ * closes those.  Close paths need no call at all: ngx_close_connection() already
+ * deletes both timers and clears reusable.
+ */
+static void
+ngx_js_l4_wait_disarm(ngx_connection_t *c)
+{
+    if (c->read->timer_set) {
+        ngx_del_timer(c->read);
+    }
+
+    ngx_reusable_connection(c, 0);
+}
+
+
+/*
  * All filters done: install the recv shim so HTTP sees filtered bytes,
  * then prepare the connection for ngx_http_init_connection.
  * Returns NGX_OK on success or NGX_ERROR on alloc failure (connection
@@ -1515,7 +1660,7 @@ ngx_js_l4_finish(ngx_connection_t *c, ngx_js_l4_pending_t *p)
 
     lctx = ngx_palloc(c->pool, sizeof(ngx_js_l4_state_t));
     if (lctx == NULL) {
-        ngx_close_connection(c);
+        ngx_http_close_connection(c);  /* the L4 window owns c->pool */
         return NGX_ERROR;
     }
 
@@ -1526,7 +1671,7 @@ ngx_js_l4_finish(ngx_connection_t *c, ngx_js_l4_pending_t *p)
 
     b = ngx_create_temp_buf(c->pool, p->out_len + 8192);
     if (b == NULL) {
-        ngx_close_connection(c);
+        ngx_http_close_connection(c);  /* the L4 window owns c->pool */
         return NGX_ERROR;
     }
 
@@ -1535,6 +1680,9 @@ ngx_js_l4_finish(ngx_connection_t *c, ngx_js_l4_pending_t *p)
     c->recv   = ngx_js_l4_recv;
     c->read->ready = 1;
     c->data   = NULL;
+
+    /* The window is over; the http module arms its own timer from here. */
+    ngx_js_l4_wait_disarm(c);
 
     return NGX_OK;
 }
@@ -1560,6 +1708,26 @@ ngx_js_l4_read_handler(ngx_event_t *rev)
 
     c  = rev->data;
 
+    /*
+     * The two ways nginx tells a wait state to give up, answered exactly as
+     * ngx_http_wait_request_handler answers them.  Without the first one the
+     * window has no deadline; without the second, marking the connection
+     * reusable would let ngx_drain_connections() set c->close and spin.
+     */
+    if (rev->timedout) {
+        ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT,
+                      "js l4: client timed out inside the filter window");
+        ngx_js_l4_pending_free_jsvals_c(c);
+        ngx_http_close_connection(c);
+        return;
+    }
+
+    if (c->close) {
+        ngx_js_l4_pending_free_jsvals_c(c);
+        ngx_http_close_connection(c);
+        return;
+    }
+
     /* Recover listener state (same trick as the accept handler) */
     st = (ngx_js_http_listener_state_t *)
              ((u_char *) c->listening->servers
@@ -1567,6 +1735,7 @@ ngx_js_l4_read_handler(ngx_event_t *rev)
 
     jcf = (ngx_js_conf_t *) ngx_get_conf(ngx_cycle->conf_ctx, ngx_js_module);
     if (jcf == NULL || jcf->ctx == NULL) {
+        ngx_js_l4_wait_disarm(c);
         ngx_http_init_connection(c);
         return;
     }
@@ -1579,7 +1748,7 @@ ngx_js_l4_read_handler(ngx_event_t *rev)
 
     if (n == NGX_AGAIN) {
         if (ngx_handle_read_event(rev, 0) != NGX_OK) {
-            ngx_close_connection(c);
+            ngx_http_close_connection(c);  /* the L4 window owns c->pool */
         }
         return;
     }
@@ -1589,7 +1758,7 @@ ngx_js_l4_read_handler(ngx_event_t *rev)
         if (p != NULL) {
             ngx_js_l4_pending_free_jsvals(ctx, p);
         }
-        ngx_close_connection(c);
+        ngx_http_close_connection(c);  /* the L4 window owns c->pool */
         return;
     }
 
@@ -1600,7 +1769,7 @@ ngx_js_l4_read_handler(ngx_event_t *rev)
         if (p == NULL) {
             p = ngx_pcalloc(c->pool, sizeof(ngx_js_l4_pending_t));
             if (p == NULL) {
-                ngx_close_connection(c);
+                ngx_http_close_connection(c);  /* the window owns c->pool */
                 return;
             }
             p->c          = c;
@@ -1616,7 +1785,7 @@ ngx_js_l4_read_handler(ngx_event_t *rev)
 
         if (ngx_js_l4_start_filter(ctx, rt, p) != NGX_OK) {
             ngx_js_l4_pending_free_jsvals(ctx, p);
-            ngx_close_connection(c);
+            ngx_http_close_connection(c);  /* the window owns c->pool */
             return;
         }
     }
@@ -1634,10 +1803,14 @@ ngx_js_l4_read_handler(ngx_event_t *rev)
         break;
 
     case NGX_AGAIN:
-        /* Generator waiting for more TCP data — re-arm read event */
+        /*
+         * Generator waiting for more TCP data — re-arm the read event.  The
+         * window timer is left as it was armed on entry, NOT extended: see the
+         * "one deadline for the whole window" note above.
+         */
         if (ngx_handle_read_event(rev, 0) != NGX_OK) {
             ngx_js_l4_pending_free_jsvals(ctx, p);
-            ngx_close_connection(c);
+            ngx_http_close_connection(c);  /* the window owns c->pool */
         }
         break;
 
@@ -1647,21 +1820,27 @@ ngx_js_l4_read_handler(ngx_event_t *rev)
             ngx_log_error(NGX_LOG_ERR, c->log, 0,
                           "js l4: NGX_DONE in master process context");
             ngx_js_l4_pending_free_jsvals(ctx, p);
-            ngx_close_connection(c);
+            ngx_http_close_connection(c);  /* the window owns c->pool */
             return;
         }
         if (ngx_del_event(c->read, NGX_READ_EVENT, 0) != NGX_OK) {
             ngx_js_l4_pending_free_jsvals(ctx, p);
-            ngx_close_connection(c);
+            ngx_http_close_connection(c);  /* the window owns c->pool */
             return;
         }
+        /*
+         * Parked: from here the connection belongs to w->l4_pending and
+         * ngx_js_l4_drain_exit() is what closes it, so the window timer must go
+         * — firing it would close a connection still on that list.
+         */
+        ngx_js_l4_wait_disarm(c);
         p->next       = w->l4_pending;
         w->l4_pending = p;
         break;
 
     default:
         ngx_js_l4_pending_free_jsvals(ctx, p);
-        ngx_close_connection(c);
+        ngx_http_close_connection(c);  /* the window owns c->pool */
         break;
     }
 }
@@ -1713,10 +1892,13 @@ ngx_js_l4_async_check(ngx_js_worker_t *w)
                     ngx_http_init_connection(p->c);
                 }
             } else if (rc == NGX_AGAIN) {
-                /* Waiting for TCP data — re-enable read event */
+                /* Waiting for TCP data — re-enable read event and the window
+                 * deadline, which the async park had disarmed. */
                 if (ngx_add_event(p->c->read, NGX_READ_EVENT, 0) != NGX_OK) {
                     ngx_js_l4_pending_free_jsvals(ctx, p);
-                    ngx_close_connection(p->c);
+                    ngx_http_close_connection(p->c);
+                } else {
+                    ngx_js_l4_wait_arm(p->c, p->st);
                 }
             } else if (rc == NGX_DONE) {
                 /* Still async-parked — re-add to list */
@@ -1724,7 +1906,7 @@ ngx_js_l4_async_check(ngx_js_worker_t *w)
                 w->l4_pending = p;
             } else {
                 ngx_js_l4_pending_free_jsvals(ctx, p);
-                ngx_close_connection(p->c);
+                ngx_http_close_connection(p->c);
             }
             break;
         }
@@ -1759,7 +1941,7 @@ ngx_js_l4_drain_exit(ngx_js_worker_t *w)
                       "js: drain L4 pending connection on worker exit");
 
         ngx_js_l4_pending_free_jsvals(ctx, p);
-        ngx_close_connection(p->c);
+        ngx_http_close_connection(p->c);
     }
 
     w->l4_pending = NULL;
@@ -1877,7 +2059,28 @@ ngx_js_run_accept_handler(ngx_connection_t *c,
 
     if (op->rejected) {
         JS_FreeValue(ctx, conn_obj);
-        ngx_close_connection(c);
+        /*
+         * ngx_http_close_connection(), not ngx_close_connection().
+         *
+         * THE BARE FORM LEAKS THE CONNECTION POOL.  ngx_event_accept() creates
+         * c->pool before calling this handler, and ngx_close_connection() never
+         * touches it -- nginx's own teardown is
+         *
+         *     c->destroyed = 1; pool = c->pool;
+         *     ngx_close_connection(c); ngx_destroy_pool(pool);
+         *
+         * which is exactly what ngx_http_close_connection() does, plus the SSL
+         * shutdown and the stat_active decrement.  Measured under ASAN before the
+         * fix: 199 rejected connections leaked 101,888 bytes -- 512 bytes each,
+         * the default connection_pool_size -- with the allocation stack landing
+         * in ngx_event_accept -> ngx_create_pool.
+         *
+         * AND REJECT IS THE WORST PLACE TO LEAK.  It is a policy decision an
+         * operator reaches for under attack, so the leak rate is chosen by the
+         * attacker: at ten thousand rejects a second a worker sheds ~5 MB/s until
+         * it is reloaded.
+         */
+        ngx_http_close_connection(c);
         return;
     }
 
@@ -1890,7 +2093,7 @@ ngx_js_run_accept_handler(ngx_connection_t *c,
 
         cln = ngx_pool_cleanup_add(c->pool, sizeof(ngx_js_l4_send_state_t));
         if (cln == NULL) {
-            ngx_close_connection(c);
+            ngx_http_close_connection(c);      /* destroys c->pool; see above */
             return;
         }
 
@@ -1918,7 +2121,7 @@ ngx_js_run_accept_handler(ngx_connection_t *c,
          */
         p = ngx_pcalloc(c->pool, sizeof(ngx_js_l4_pending_t));
         if (p == NULL) {
-            ngx_close_connection(c);
+            ngx_http_close_connection(c);      /* destroys c->pool; see above */
             return;
         }
         p->c          = c;
@@ -1932,11 +2135,18 @@ ngx_js_run_accept_handler(ngx_connection_t *c,
         c->data       = p;
 
         c->read->handler = ngx_js_l4_read_handler;
+
+        /*
+         * Arm the window BEFORE dispatching: the read handler may hand the
+         * connection straight to the http module, and that path disarms.
+         */
+        ngx_js_l4_wait_arm(c, st);
+
         if (c->read->ready) {
             ngx_js_l4_read_handler(c->read);
         } else {
             if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
-                ngx_close_connection(c);
+                ngx_http_close_connection(c);  /* destroys c->pool; see above */
             }
         }
         return;

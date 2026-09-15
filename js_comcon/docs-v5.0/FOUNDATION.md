@@ -635,6 +635,59 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.99 (in place — the L4 filter window was not a wait state, and that was two defects):**
+a flake hunt that found the flake, and found something worse on the way to it.
+
+THE FLAKE. `t/js_pilgrim_p17_server_accept.t` failed about 2.8% of the time (7 in 250) with
+`[alert] *10 open socket #3 left in connection 2` and `aborting` at graceful shutdown. Two wrong
+theories were paid for first: that it was the COMCON work (it is not — the test uses no `comcon.*`
+at all and every new gate no-ops when `owner == 0`), and that it was the L4 filters as such (an A/B
+gave 2/250 without them against 7/250 with, which is not a refutation and was written down as one:
+n=250 cannot separate 0.8% from 2.8%).
+
+THE MECHANISM, and it is nginx's own design read correctly. Between `ngx_event_accept()` and
+`ngx_http_init_connection()` a connection with an L4 filter armed belongs to `src/js`:
+`c->read->handler` is `ngx_js_l4_read_handler` and the http module has never seen it. Stock nginx
+never trips that shutdown alert for a connection awaiting its first request because such a connection
+holds a NON-CANCELABLE `client_header_timeout`, and `ngx_event_no_timers_left()` makes the worker
+DECLINE TO EXIT while one exists. The L4 window armed no timer, so nothing held the worker and a FIN
+still in flight lost the race to SIGQUIT. `ngx_close_idle_connections()` is not the mechanism —
+it only touches `c->idle`, which a waiting connection is not.
+
+AND THE SAME MISSING TIMER IS AN UNBOUNDED HOLD. With `client_header_timeout 1s` and one
+pass-through filter armed, a client that connects and sends NOTHING is still connected 5 s later;
+remove the filter and nginx gives up in 1 s. So an unauthenticated peer pinned a connection slot and
+its pool until reload by sending zero bytes — slow-loris with no loris, no header to dribble. That is
+the more serious half, and it was invisible because the flake is what complained.
+
+THE FIX IS TO STOP INVENTING A LIFECYCLE: arm the timeout nginx's own wait state arms, answer the
+same two give-up signals it answers (`rev->timedout`, `c->close`), and mark the connection reusable
+so `ngx_drain_connections()` can reclaim it. ONE deadline for the whole window, not one per read, so
+a peer cannot extend a never-finishing filter by dribbling bytes. Result: **0 failures in 250 runs**,
+and the deliberate version of the flake — park one connection and stop nginx — went from 100% to 0.
+
+A THIRD DEFECT, FOUND BY THE ASAN LEAK STAGE WRITTEN FOR THE FIRST. Thirteen call sites in the two
+pre-http windows closed with `ngx_close_connection()`, which does not destroy `c->pool` —
+`ngx_event_accept()` creates it, so nothing else owns it there. Measured: 199 rejected connections
+leaked 101,888 bytes, 512 each. The general rule now stated in `t/run_sanitizers.sh`: **code of ours
+that closes a connection before `ngx_http_init_connection()` must use
+`ngx_http_close_connection()`.** Reject is the worst possible place for it — an operator reaches for
+it under attack, so the leak rate is the attacker's to choose.
+
+THE INSTRUMENT WAS WRONG TWICE, both times caught only by a control that failed to fire, which is by
+now the recurring shape of this work rather than an anecdote. An RSS-based leak test moved 0 KB over
+3000 rejects (1.5 MB of 512-byte chunks comes out of already-mapped heap) and was deleted as a dead
+probe. Its ASAN replacement then reported CLEAN with the fix reverted, because it grepped one line
+either side of the `ngx_event_accept` frame while `in N object(s)` is the block header four frames
+above — it summed nothing. And the L4 half of the widened stage did not fire either, because the new
+test never reached the EOF path; 50 connect-and-vanish clients were added so the corpus reaches it.
+Every control now fires: 300 pools on the reject path, 49 on the L4 EOF path, 1 on the timeout path.
+
+Tests: `t/js_pilgrim_p17_l4_window.t` (8, with the control arm BUILT IN — `:8080` has no filter, so
+it is stock nginx's own wait state and cannot be broken by a change to `src/js`; the assertion is
+that the filtered arm AGREES), `t/js_pilgrim_p17_reject_leak.t` (7), and a leak stage in
+`t/run_sanitizers.sh`.
+
 **v5.98 (in place — a NOT-BUILT list is now enforced, and "cages nest for free" is measured):**
 two halves of one habit: a doc set that IS the normative spec must not describe what is absent from
 memory.

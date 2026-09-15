@@ -121,6 +121,67 @@ run_one() {  # name, builddir, envvar, prefix
         | sort -rn | head -5 | sed 's/^/    site: /'
 }
 
+# ---------------------------------------------------------------------------
+# A LEAK STAGE, because the corpus runs above are detect_leaks=0.
+#
+# They have to be: a full leak report on this tree is dominated by one-off
+# allocations that live for the process (the SharedWorker manager thread's 16
+# bytes, for one), so leaks-on over the whole corpus would be noise nobody reads.
+# But that left the tree with NO leak instrument at all, and it cost something:
+# P17's `conn.reject()` closed a freshly accepted connection with
+# ngx_close_connection(), which does not destroy c->pool -- ngx_event_accept()
+# had just created it -- so every rejected connection leaked 512 bytes.  Found
+# only by running leaks-on by hand.
+#
+# So this stage is narrow on purpose: the two tests that drive a connection
+# through src/js's own pre-http teardown paths, and an assertion that greps for a
+# leak whose allocation stack lands in ngx_event_accept.  That is specific enough
+# to ignore the pre-existing noise and still fail the day one of those paths
+# forgets the pool again.
+#
+# THE GENERAL RULE THIS STAGE GUARDS.  Between ngx_event_accept() and
+# ngx_http_init_connection() the connection pool has no other owner, so any code
+# of ours that closes a connection in that window must use
+# ngx_http_close_connection().  There are two such windows -- the accept hook's
+# reject path, and the L4 filter window -- and BOTH had it wrong: 13 call sites.
+#
+# AN RSS TEST WAS TRIED FIRST AND THROWN AWAY: with the fix reverted, 3000
+# rejected connections moved worker RSS by 0 KB, because 1.5 MB of leaked
+# 512-byte chunks comes out of heap the warm-up had already mapped.  Its control
+# did not fire, so it proved nothing.
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== leak stage: a connection closed before http init must not leak its pool ==="
+rm -f /tmp/s6_leak.*
+env ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/s6_leak:abort_on_error=0" \
+    TEST_NGINX_BINARY="$PWD/objs_asan/nginx" \
+    prove t/js_pilgrim_p17_reject_leak.t t/js_pilgrim_p17_l4_window.t >/dev/null 2>&1
+# Parse leak BLOCKS, not lines.  The first version grepped -B1 around the
+# ngx_event_accept frame, but "in N object(s)" is the block HEADER four frames
+# above it -- so it summed nothing and reported clean with the fix reverted.  Its
+# control not firing is the only reason that was caught.
+leak_objs=$(cat /tmp/s6_leak.* 2>/dev/null | awk '
+    /^(Direct|Indirect) leak of/ { hdr = $0; inblk = 1; hit = 0; next }
+    inblk && /ngx_event_accept/  { hit = 1 }
+    inblk && /^[[:space:]]*$/    { if (hit) print hdr; inblk = 0 }
+    END                          { if (inblk && hit) print hdr }
+  ' | grep -oE "in [0-9]+ object" | grep -oE "[0-9]+" | paste -sd+ - | bc 2>/dev/null)
+leak_objs=${leak_objs:-0}
+if [ "$(ls /tmp/s6_leak.* 2>/dev/null | wc -l)" -lt 1 ]; then
+    echo "  REFUSING: leaks-on produced no report at all, so a clean result here"
+    echo "  would be meaningless (the same guard the control above applies)."
+    rc=1
+elif [ "$leak_objs" -gt 0 ]; then
+    echo "  FAIL  $leak_objs connection pool(s) leaked from ngx_event_accept --"
+    echo "        something in src/js is closing a connection BEFORE"
+    echo "        ngx_http_init_connection() with ngx_close_connection(), which"
+    echo "        does not destroy c->pool.  Use ngx_http_close_connection()."
+    rc=1
+else
+    echo "  ok — 300 rejects + the L4 window paths, no pool leaked from accept"
+fi
+
 run_one ASAN  objs_asan  ASAN_OPTIONS  /tmp/s6_asan
 run_one UBSAN objs_ubsan UBSAN_OPTIONS /tmp/s6_ubsan
 
