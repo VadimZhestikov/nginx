@@ -1081,6 +1081,101 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
         JS_FreeValue(sctx, cglobal);
     }
 
+    /*
+     * F15, PHASE 1: FREEZE THE SHARED GLOBAL BINDINGS.
+     *
+     * The compartment context is ONE runtime and ONE global object shared by
+     * every fragment for the life of the worker -- `jcf->comcon_ctx` is built
+     * once and cached, and every `include()` call reuses it.  M-SES-1 already
+     * freezes the intrinsic VALUES (Object.prototype, Array.prototype, ...) so
+     * a tenant cannot pollute a shared prototype.  It deliberately never
+     * freezes globalThis itself, so a granted capability or a learn-mode
+     * recorder can still be added afterwards -- but that also left every
+     * BINDING (the name `Promise` points to `Promise`, not `Promise`'s own
+     * properties) writable and configurable.
+     *
+     * MEASURED: an ordinary, PROPERLY ADMITTED fragment body --
+     * `imports: ['Promise']`, nothing exotic, no wrapper tricks -- can do
+     * `Promise = function(){ return 'EVIL'; }`, and every OTHER fragment that
+     * reads `Promise` afterwards gets the attacker's function.  `imports`
+     * governs whether a name may be REFERENCED at all; it was never asked
+     * whether the reference was a read or a write, and admission's own
+     * "INTRINSIC" category is spelled "a value to compute with, not authority
+     * it acts through" -- true of reading Math or JSON, false of reassigning
+     * them for every co-resident tenant.  The same failure reaches
+     * UN-ADMITTED fragments too (`comcon.include(src, {})` skips admission
+     * entirely by design, so `JSON = {...}` needs no declaration at all) --
+     * this fix is a runtime, value-level protection, so it closes both paths
+     * with one mechanism, orthogonal to whether admission ran.
+     *
+     * WHAT TO FREEZE: everything already present on globalThis at this exact
+     * point -- the last line of trusted compartment setup, after the intrinsic
+     * freeze, the prototypes, the cap-proto hardening and (in learn mode) the
+     * recorder seed, and BEFORE the first dependency or fragment ever runs.
+     * Enumerating what is actually there (`Object.getOwnPropertyNames`)
+     * rather than hand-listing names avoids a second list that the admission
+     * intrinsics table (`ngx_js_admit_name_intrinsic`) would have to be kept
+     * in sync with -- V7's rule applies to this list too.
+     *
+     * globalThis stays EXTENSIBLE, deliberately: `ngx_js_comcon_eval_dep()`
+     * still needs to declare each dependency's OWN names (e.g. `greet`) via a
+     * plain global-code eval, repeated on every `include()` call that names
+     * it, for as long as the worker lives -- caching by hash is not done, so
+     * this can happen thousands of times.  Those names are NOT in the frozen
+     * set (they do not exist yet at this point), so redeclaring them keeps
+     * working exactly as before.  A dependency that collides with a frozen
+     * name (naming a top-level function `Promise`) fails
+     * GlobalDeclarationInstantiation before any of its code runs, which
+     * `ngx_js_comcon_eval_dep()` already reports as "dependency is not a pure
+     * library" -- no new handling needed.
+     *
+     * What this does NOT close: a fragment that explicitly imports
+     * `globalThis` and plants a brand-new name on it as a rendezvous with
+     * another fragment.  Freezing cannot prevent a NEW property, only protect
+     * an EXISTING one -- but `globalThis` (like `eval`/`Function`/`self`) is
+     * already on admission's DENY list, refused even when listed in
+     * `imports` (`t/comcon_include_admit.t`), so that channel does not open
+     * through admission.  It remains open for UN-ADMITTED fragments, which
+     * have no free-name gate of any kind by design; recorded as a residual
+     * rather than solved here, since closing it needs an architectural
+     * change (a private scope per fragment, not a property on a shared
+     * object) that belongs with the runtime-per-tenant question, not this
+     * patch.
+     */
+    {
+        static const char  freeze_script[] =
+            "(function () {"
+            "  var names = Object.getOwnPropertyNames(globalThis), i, d;"
+            "  for (i = 0; i < names.length; i++) {"
+            "    d = Object.getOwnPropertyDescriptor(globalThis, names[i]);"
+            "    if (!d) { continue; }"
+            "    if ('value' in d) {"
+            "      Object.defineProperty(globalThis, names[i], {"
+            "        value: d.value, writable: false,"
+            "        enumerable: d.enumerable, configurable: false });"
+            "    } else {"
+            "      Object.defineProperty(globalThis, names[i], {"
+            "        get: d.get, set: d.set,"
+            "        enumerable: d.enumerable, configurable: false });"
+            "    }"
+            "  }"
+            "})();";
+        JSValue  fv = JS_Eval(sctx, freeze_script, sizeof(freeze_script) - 1,
+                              "<comcon-global-freeze>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(fv)) {
+            /* Must not run a compartment whose bindings did not lock: better
+             * to refuse the whole worker than serve tenants under a freeze
+             * that silently did not take. */
+            ngx_js_log_exception(sctx, ngx_cycle->log);
+            JS_FreeValue(sctx, fv);
+            JS_FreeContext(sctx);
+            JS_FreeRuntime(jcf->comcon_rt);
+            jcf->comcon_rt = NULL;
+            return NULL;
+        }
+        JS_FreeValue(sctx, fv);
+    }
+
     jcf->comcon_ctx = sctx;
 
     /* gas interrupt handler: wire now if the worker exists (post-fork include);

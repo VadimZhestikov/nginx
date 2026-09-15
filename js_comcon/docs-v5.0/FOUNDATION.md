@@ -635,6 +635,49 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.102 (in place — F15, phase 1: a fragment cannot reassign a shared global for every
+OTHER fragment):** measuring F15's original finding (an unmetered top-level eval) before fixing it
+turned up something worse.
+
+M-SES-1 freezes intrinsic VALUES (`Object.prototype`, `Array.prototype`, ...) so a tenant cannot
+pollute a shared prototype, and it deliberately never freezes globalThis itself — recorded, at the
+time, as leaving room to add capabilities afterwards. What that also left was every BINDING
+writable and configurable: the name `Promise` pointing at `Promise`, not `Promise`'s own
+properties.
+
+MEASURED: an ordinary, PROPERLY ADMITTED fragment body — `imports: ['Promise']`, no wrapper
+tricks — did `Promise = function(){ return 'EVIL'; }`, and every OTHER fragment reading `Promise`
+afterwards got the attacker's function. `imports` governs whether a name may be REFERENCED at all;
+nothing asked whether the reference was a read or a write, and admission's own INTRINSIC category
+is spelled "a value to compute with, not authority it acts through" — true of READING Math or
+JSON, false of REASSIGNING them for every co-resident tenant. The same failure reached UN-ADMITTED
+fragments too: `comcon.include(src, {})` skips admission entirely by design, so `JSON = {...}`
+needed no declaration at all.
+
+**AND A CLAIM §15 SIGNED WAS INCOMPLETE, NOT FALSE.** G7.6's cross-identity battery — evidenced
+the same day as the signature — probed eight shared surfaces for cross-fragment channels, every
+one a VALUE mutation (`JSON.__chan = 'x'`). None tried a BINDING reassignment (`JSON = evil`),
+which is the ninth operation and the one that was open. Recorded in ASSURANCE §16 and in G7.6
+itself, on the same model as the `Symbol.for` erratum it already carries: a battery measuring a
+real mechanism against an incomplete set of operations.
+
+THE FIX is a runtime, value-level protection: every binding present on the compartment's
+globalThis is frozen (non-writable, non-configurable) once, at compartment creation, before any
+dependency or fragment has ever run — closing both the admitted and the un-admitted path with one
+mechanism, orthogonal to whether admission ran. globalThis stays EXTENSIBLE, deliberately:
+dependency loading declares its own names via a plain global-code eval, repeated on every
+`include()` call that names it for as long as the worker lives (no caching), and none of those
+names exist yet at freeze time so nothing about that path changes — measured, five repeated loads
+of the same dependency keep working identically. WHAT THIS DOES NOT CLOSE: a fragment that
+explicitly imports `globalThis` and plants a brand-new name as a rendezvous — but `globalThis` is
+already denied by admission even when listed in `imports`, so this residual only reaches
+UN-ADMITTED fragments, which have no free-name gate of any kind by design; closing it needs a
+private scope per fragment, which belongs with the runtime-per-tenant question, not this patch.
+
+`t/comcon_global_binding_freeze.t` (8, one control) · ASSURANCE G7.11, G7.6 corrected in place,
+F15 re-scoped and part closed · enumeration check [2] gained one PORTALS row for the fixed,
+host-authored freeze script.
+
 **v5.101 (in place — a confined invocation no longer costs what the rest of the compartment holds):**
 step 1 of the proposal written after v5.100, and the first item in a while that was found by
 reading code for a plan rather than by a test.

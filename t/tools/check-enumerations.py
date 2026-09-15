@@ -128,6 +128,10 @@ PORTALS = {
         "contract's admission TEST function, compiled in the compartment",
     ("ngx_js_module.c", "ngx_js_comcon_eval_dep"):
         "a pinned pure-library dependency, sha256-checked before it compiles",
+    ("ngx_js_module.c", "ngx_js_comcon_compartment"):
+        "F15 phase 1: a fixed, host-authored script that freezes the "
+        "compartment's global bindings once, at compartment creation -- no "
+        "fragment or dependency text is an input to it",
     ("ngx_js_module.c", "ngx_js_comcon_parse"):
         "the vendored acorn parser, evaluated once on first use",
     ("ngx_js_com.c", "ngx_js_com_init"):

@@ -876,6 +876,49 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T4, T9, T6
 - **V:** V13
 
+#### G7.11 — a fragment cannot reassign a shared global binding for every OTHER fragment
+- **CLAIM:** No fragment, admitted or not, can change what identifier ANOTHER fragment resolves a
+  shared intrinsic name to. Every binding present on the compartment's globalThis at the moment the
+  compartment is built is non-writable and non-configurable before any dependency or fragment ever
+  runs; ordinary reads and computation with those intrinsics are unaffected.
+- **ARGUMENT:** F15's first measurement turned up something worse than an unmetered top-level eval
+  (its original finding, still open — see F15's row below). M-SES-1 freezes intrinsic VALUES
+  (`Object.prototype`, ...) but deliberately never freezes globalThis itself, so every BINDING
+  stayed writable and configurable: the name `Promise` pointing at `Promise`, not `Promise`'s own
+  properties. **An ordinary, PROPERLY ADMITTED fragment body — `imports: ['Promise']`, no wrapper
+  tricks — did `Promise = function(){ return 'EVIL'; }`, and every other fragment reading `Promise`
+  afterwards got the attacker's function.** `imports` governs whether a name may be REFERENCED at
+  all; nothing asked whether the reference was a read or a write, and admission's own INTRINSIC
+  category is spelled "a value to compute with, not authority it acts through" — true of reading
+  Math or JSON, false of reassigning them for every co-resident tenant. **The same failure reached
+  UN-ADMITTED fragments too** (`comcon.include(src, {})` skips admission entirely by design, so
+  `JSON = {...}` needed no declaration at all) — this is a runtime, value-level protection,
+  orthogonal to admission, so it closes both paths with one mechanism.
+  What is frozen is EVERYTHING PRESENT on globalThis at that one point — enumerated
+  (`Object.getOwnPropertyNames`) rather than hand-listed, so there is no second name list to drift
+  out of sync with admission's own intrinsics table (V7's rule). globalThis stays EXTENSIBLE:
+  dependency loading (`ngx_js_comcon_eval_dep`) still declares each dependency's OWN names via a
+  plain global-code eval, repeated on every `include()` call that names it for as long as the
+  worker lives (no caching), and those names are not in the frozen set because they do not exist
+  yet at freeze time — measured, five repeated loads of the same dependency file keep working
+  identically. A dependency that collides with a frozen name fails
+  GlobalDeclarationInstantiation before any of its code runs, reported by the existing "dependency
+  is not a pure library" path with no new handling needed.
+- **EV:** `t/comcon_global_binding_freeze.t` — 8 assertions: the admitted overwrite refused and its
+  victim intact, the un-admitted overwrite refused and its victim intact, ordinary reads and
+  `typeof` unaffected, and the residual below unchanged. One control (the freeze removed) fails
+  exactly the four assertions that depend on it and none of the other four.
+- **GAP:** Freezing protects an EXISTING binding, not a NEW one. A fragment that explicitly imports
+  `globalThis` and does `globalThis.newName = X` can still plant a brand-new rendezvous point —
+  but `globalThis` (like `eval`/`Function`/`self`) is already on admission's DENY list, refused even
+  when listed in `imports` (`t/comcon_include_admit.t`), so this does not open through admission. It
+  remains open for UN-ADMITTED fragments, which have no free-name gate of any kind by design.
+  Closing it needs an architectural change (a private scope per fragment, not a property on a
+  shared object), which belongs with the runtime-per-tenant question rather than this patch.
+  **home:** finding F15 (phase 1 of its fix) · `ngx_js_comcon_compartment`.
+- **THREAT:** T3, T4, T6, T9
+- **V:** V13, V4
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1077,6 +1120,21 @@ The primary control, and the one everything else is defence in depth for.
   **erasure (G11.7)** — two fragments of one program calling `Symbol.for('k')` would get
   different symbols under COMCON than in plain node, an annotation changing what code
   computes — to close something no probe can show is open.
+- **A NINTH SURFACE WAS MISSING, FOUND 2026-09-14, NOW CLOSED — see G7.11.** The eight
+  surfaces above all probe VALUE MUTATION on a shared object (`JSON.__chan = 'x'`,
+  writing an own property). None of them probed BINDING REASSIGNMENT (`JSON = evil`,
+  replacing what the NAME points to) — and that channel was wide open: an admitted
+  fragment declaring `imports: ['Promise']` (for READ, the only reason `imports`
+  documents) could do `Promise = evil`, and a co-resident fragment reading `Promise`
+  afterwards got the attacker's function. So "separated by ... an admission gate that
+  refuses a fragment naming a neighbour" was TRUE of every mutation this leaf tested and
+  INCOMPLETE as a description of the boundary: admission gates whether a name may be
+  REFERENCED, not whether the reference is a read or a write. Closed by freezing every
+  binding on globalThis, independent of admission (`t/comcon_global_binding_freeze.t`).
+  This is the same shape of gap the `Symbol.for` erratum above records — a battery
+  measuring a real mechanism against an incomplete set of operations — and is recorded
+  here for the same reason: the eight-surface count in this leaf's own EV should not be
+  read as nine were tried and eight held.
 - **THREAT:** T4, T9
 - **V:** V5b
 
@@ -1515,7 +1573,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F13** | The REQUEST was outside the registry: `nginx.describe(req)` returned **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carried no declared type and no class. The read-only descriptor hardcoded `requestScoped: false` for every row, unfalsifiable only *because* there were no request rows to be wrong about. | G11.8, G3.7 | **CLOSED 2026-09-13.** All **54** rows classified — 28 getters, 25 methods, one settable (`statusCode`) — as TABLE rows, which are per-class and carry their own `RQS`, rather than through the bare-name read-only map. **Every type was read off its getter, and none was wrong on the first run** (`startTime` is a number not a Date; `location` is a live handle, not a path string). The pin at zero is now the real count, plus an assertion that every request row declares `requestScoped` — so a getter added without a table row is emitted by the discovery pass with `false` and fails the day it lands. Three controls |
 | **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
 | **F14** | Every confined invocation walked the WHOLE shared compartment heap (`JS_ComputeMemoryUsage`, twice per call) to read one counter — so one tenant's retained memory set every other tenant's per-request cost, persistently and beyond the execution deadline's reach | G7.10, G7.7 | **FOUND AND CLOSED 2026-09-14.** Measured before: a handler making one trivial confined invocation ran at **22.0% of stock** with an idle compartment and **0.2% (476 req/s)** while another fragment retained 200,000 objects. After: 68.0% and 66.6%. The same counter is now read in O(1) (`JS_GetMallocSize`). Found by reading the invoke path for a proposal, not by any test — nothing had measured invocation cost against heap size, and PERFORMANCE.md had no confined-invocation number at all |
-| **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered | G6.19 | **OPEN (found 2026-09-14).** `include()` compiles the source as `(function(grants){ return ( SRC ) })` and calls it with no `ngx_js_compartment_enter` and no per-invocation deadline or allowance; admission then inspects the RESULTING function, not the expression that produced it. Measured: an expression that loops **hung `nginx -t` until killed** (config phase, no worker, so no deadline exists), and at request time was stopped only by the host's 10 s request deadline. **No authority leaked** — a grant read at top level is `undefined`, not the listener (`cap.owner` refuses it: every grant is bound to the fragment's future handle and `cur_frag` is 0 there), and the compartment's globals are locked down. But that is `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. Not fixed in the change that found it: running the evaluation under the tenant scope with a deadline changes what a config-phase include may do, and deserves its own decision and controls |
+| **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered — AND a shared global binding was reassignable across fragments | G6.19, G7.11 | **RE-SCOPED 2026-09-14, part CLOSED.** Investigating this turned up a second, more serious defect than the one it was opened for: a normal ADMITTED fragment body (`imports:['Promise']`) could do `Promise = evil` and corrupt every co-resident fragment's view of it, and an UN-ADMITTED fragment (`{}`, no admission at all) could do the same to any intrinsic with zero gating. **CLOSED — see G7.11:** every binding on the compartment's globalThis is frozen once, at compartment creation. **STILL OPEN, as originally found:** `include()` compiles the source as `(function(grants){ return ( SRC ) })` and calls it with no `ngx_js_compartment_enter` and no per-invocation deadline or allowance; admission then inspects the RESULTING function, not the expression that produced it. Measured: an expression that loops **hung `nginx -t` until killed** (config phase, no worker, so no deadline exists), and at request time was stopped only by the host's 10 s request deadline. And a THIRD, related defect found alongside: the wrapper is built by string concatenation, so a source can close it and run script-level code before admission ever runs, even under `imports: []` — planting on an (now frozen, but still EXTENSIBLE) global or reading/writing another fragment's declared names. **No authority leaked** through any of these — a grant read at top level is `undefined` (`cap.owner` refuses it; every grant is bound to the fragment's future handle and `cur_frag` is 0 there) — but that is `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. The unmetered evaluation and the wrapper breakout are phases 2–3 of this fix, not done here |
 
 ---
 
@@ -1675,6 +1733,8 @@ signature is never quietly credited with work it did not see.
 | **"CAGES NEST FOR FREE" MEASURED — G7.9 — and half of it is not built.** SHOWCASE17 §8's reseller scenario has ACME caging its own customers by calling the kernel operators; measured, `comcon` reads `undefined` in a fragment, declaring it changes nothing, and granting it is `E_CAP_GRANT`. **Attenuation nests without limit; authoring does not nest at all.** Also: enumeration **check [8]** now enforces that a NOT-BUILT list cannot name a word the code ships — the rot that let the ROADMAP's POSITION block call four shipped words unbuilt for three days. | **Adds one leaf and one checker, and corrects a scenario in place rather than leaving it to be discovered.** The security half was already asserted by the S6 gate (a fragment reaching `comcon` is an escape); what was missing was saying that this *also* means the reseller story is unbuilt. Nothing signed becomes untrue — the boundary moved in the docs, not in the code. |
 
 | **F14 FOUND AND CLOSED, F15 FOUND AND OPEN — G7.10, G6.19** — every confined invocation walked the whole shared heap to read one counter: measured 22.0% of stock throughput idle and **0.2%** while a peer retained 200,000 objects; now 68.0% / 66.6%, gated as a ratio (1.01×, control 173.57×). Out of memory now reads as out of memory rather than `null`, and an exception during `include()` reaches the host with its value instead of none. The investigation found F15 — the top-level expression is evaluated before admission, outside the compartment scope, unmetered at config phase — and records it rather than fixing it in passing. | **Closes a cross-tenant channel the signature did not know about, and opens a finding it did not know about.** Neither changes what was attested; both are recorded so the signature is not credited with either. |
+
+| **F15 PHASE 1 CLOSED — G7.11, and a §15-SIGNED CLAIM WAS INCOMPLETE.** Investigating F15's original finding (an unmetered top-level eval) turned up a worse one: G7.6 — signed 2026-09-12, same date as §15 — probed eight shared surfaces for cross-fragment channels and found none, but every probe mutated a VALUE (`JSON.__chan = 'x'`); none tried REASSIGNING a binding (`JSON = evil`). That ninth operation was wide open: an admitted fragment declaring `imports: ['Promise']` for READ could overwrite `Promise` for every co-resident fragment, and an UN-ADMITTED fragment (`{}`, no admission at all) could do the same to any intrinsic. Closed by freezing every binding on the compartment's globalThis once, at creation, independent of admission. | **A claim §15 attested (G7.6's "separated by ... an admission gate") was TRUE of every operation its own battery tried and INCOMPLETE as a description of the boundary — not forged, not fabricated, but narrower than the prose read.** §15's invalidation list (end of that section) does not name this case; recorded here on the same model as F14's row, and G7.6 itself now carries the correction in place, parallel to the `Symbol.for` erratum it already carries. F15 stays open for its original finding plus a wrapper-breakout defect found alongside (phases 2–3). |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with
