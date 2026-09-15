@@ -1368,6 +1368,42 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T6, T9, T11
 - **V:** V13
 
+#### G7.21 — wherever the allowance bites, on either tier, the worker lives: the residue sweep as a battery
+- **CLAIM:** For seven places the memory allowance can bite — inside `try/catch`, unwinding
+  through `finally`, inside a generator's `next()`, inside a microtask after `await`, inside
+  a sub-fragment with the parent catching what crosses, inside the host's JSON marshal of the
+  result, inside the catch handler's own allocation — and on both tiers, every one of 32
+  allowance alignments ends in an outcome the shape allows (the fragment's catch received the
+  error; received `null` because even the error could not be built; the host reported an
+  ordinary out-of-memory failure; the parent caught the sub-fragment's), the window was
+  reached wherever a catch exists, and no worker died.
+- **ARGUMENT:** F18's class lives in a byte window that a sanitizer MOVES, so the corpus the
+  signatures rest on cannot see it; one test sweeps F18's own shape (G7.19). This battery
+  sweeps the other places the allowance can bite, with the same instrument: fill in exact
+  1 KB strings, step the allowance by 32 bytes across one string, 32 alignments, so the
+  failing allocation walks through every residue. Every alignment's fragment is authored at
+  CONFIG PHASE so the compiled arm lowers it — a request-time include runs interpreted, since
+  the compile thread does not exist in a worker; the battery's first version authored them
+  per request, reported `compiled = 0`, and its own tier assertion said so. The two arms are
+  held to the same allowed set of outcomes, not compared alignment by alignment: their
+  footprints differ, so the same alignment lands elsewhere. **First run found F19:** the
+  `catch_alloc` shape returned a failure labelled `error` on 3 of 64 alignments — the host's
+  ToString of the error had itself run out of memory.
+- **EV:** `t/comcon_oom_sweep.t` — 54 assertions: two arms × (seven shapes × answered all 32
+  / every outcome allowed / tier precondition, plus the window reached for the five shapes
+  with a catch) and no alert or signal in either log. On the compiled arm every synchronous
+  shape reports 32 lowered fragments (64 for the generator, two functions each), the async
+  shape 0 (G7.18). A run: the catch shape's error caught in 23–27 of 32 alignments per arm.
+- **GAP:** The step is 32 bytes over a 1 KB fill: a window narrower than 32 bytes could be
+  stepped over (F18's was a few hundred). Not swept: an allowance hit inside include itself
+  (admission runs under the host's allowance), inside `checkRequest` or `tests`, inside the
+  drain of a rejected promise's job, and on the stream surface. The negative control for the
+  battery's crash claim is F18's MANUAL row (the fix lives in `quickjs/`); F19's is an
+  automated row.
+  **home:** `t/comcon_oom_sweep.t`'s header · finding F19 · `ngx_js_comcon_exc_text`.
+- **THREAT:** T1, T11, T13
+- **V:** V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -2037,6 +2073,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F16** | A fragment lowered to native C (the compiled tier) could CATCH ITS OWN DEADLINE: the interrupt is thrown uncatchable, the interpreter's exception path honours the flag, and maxim's generated catch dispatch never asked — so a compiled `try { for(;;){} } catch(e){}` swallowed the interrupt and ran on, and the hostile form (`for(;;){ try{ for(;;){} } catch(e){} }`) would loop forever | G7.15 | **CLOSED 2026-09-15** (after the §15 signature — see §16). Found by the authoring tier's basic test, whose PARENT fragment caught its sub-fragment's abort on the JIT build only; probed directly (`t/comcon_jit_uncatchable.t`: "SURVIVED the interrupt" on objs_jit, stopped on objs). Fixed in the engine: `JS_IsUncatchableException()` (new public getter) and one guard in the generated catch dispatch, `JIT_CODEGEN_VERSION` 16→17. The S6 AOT arm (F5) never saw this because its runaway probe has no try/catch — the battery tests what a fragment can REACH, and this was what a fragment can REFUSE TO STOP DOING. |
 | **F17** | (a) A WORKER never freed the compartment at exit — `exit_process` tore down the tenant and host runtimes and not `comcon_rt`; (b) the COM node classes (`NginxServer`, the per-module nodes, the upstream classes) had IDs and prototypes in the compartment runtime but NO CLASS DEFINITION there, so a wrapper minted inside a fragment (`listener.serverByName()` under audit) was freed without its finalizer — opaque + 4 KB pool per call, unboundedly, from a fragment | G7.17 | **CLOSED 2026-09-15** (after the §15 signature — see §16). Found by running one new test under ASAN with leak detection ON, then the whole corpus: both were invisible to a corpus that ran `detect_leaks=0`. Fixed: one `ngx_js_comcon_teardown()` for all three exit paths; `ngx_js_http_register_classes` + `ngx_js_upstream_register_classes` moved into `ngx_js_com_register_classes` for every runtime. The corpus now runs leaks-on with a one-line suppression, and `JS_FreeRuntime`'s assertion at worker exit held over 84 files: the invocation paths leak no JS reference. |
 | **F18** | An out-of-memory INSIDE the engine's backtrace annotation freed the pending exception under its own feet: `build_backtrace(ctx, rt->current_exception, …)` held no reference, a failed allocation in it threw, `JS_Throw` released the error being annotated, and the annotation went on to define `stack` on a freed object — a fragment-reachable worker SIGSEGV at the memory allowance; on the same path an uncatchable deadline abort would have lost its flag | G7.19 | **FOUND AND CLOSED 2026-09-15 (v5.115).** Found by the M5.0 commit's gate: `t/comcon_author_basic.t` `/nestmemory` killed the worker 3/3 on this layout and never under ASAN or valgrind, because a sanitizer moves where the allowance bites. Fixed in the engine (`build_backtrace_pending`: hold a reference; if the attempt threw, put the original error and its flag back, minus `stack`), the parser's two sites included. `t/comcon_oom_backtrace.t` sweeps the allowance across 32 alignments of a 1 KB fill so the window is hit whatever the layout; validated against the unfixed engine (the worker dies, three of five fail). The same patch is carried to the engine fork. |
+| **F19** | Reporting a fragment's failure, the host called ToString on the error under the fragment's allowance; when that itself ran out of memory it reported `error` for an out-of-memory it could have named, and left ToString's own exception pending on the compartment, alive until the next throw replaced it | G7.21 | **FOUND AND CLOSED 2026-09-15 (v5.119)** by the residue-sweep battery's `catch_alloc` shape on its first run (3 of 64 alignments across the arms). Fixed in `ngx_js_comcon_exc_text`: the pending exception is taken off, and a moved out-of-memory counter names the cause. Not a crash and not an escape; a label a tenant could not act on, and a stale object on the compartment. |
 
 ---
 
@@ -2234,6 +2271,7 @@ signature is never quietly credited with work it did not see.
 | **A SECOND SIGNATURE (v5.116).** The reviewer pack run in full, twice, on `4a86d2a62`; run 1 tripped the broadcast-fuzz flake on one automated control, run 2 passed every gate; both transcripts committed under `reviews/`; a second signer, Dick Hardman, accepted the evidence and the residuals (§15's second table, `REVIEW.md` §4). | **Adds a second acceptance to §15; does not reproduce it.** The pack was executed by the authoring session, so F11's reproduction half is still open and the sign-off row says so in a struck clause. The first signature is unchanged; what a reader gains is a second name on the same residuals and a transcript of the whole evidence on a tree that includes everything in this section through v5.115. |
 | **M5.1a — THE NARROW COMPILER'S FIRST CUT (v5.117).** Two codegen changes in the engine (`JIT_CODEGEN_VERSION` 18): a bit op with one provably-numeric operand yields a typed int32, and an in-bounds element of an integer typed array is read in place. Class A's lowered scan 11.72 → 1.26 ns/byte, within 2.1× of the typed bound; class B unmoved. Four SR-2 cases with the spec's values written out, validated by breaking both paths; the resource gates and the uncatchable-abort probe unchanged. G7.20. | **Touches the compiled tier the signature attests through G7.5/G7.18 and (F).** Every value the compiled tier can now produce differently is enumerated and pinned to the interpreter and to the spec; nothing is speculated. The codegen version bump retires every cached artifact, so no signed-era `.so` runs under the new rules. |
 | **M5.1b PARKED WITH ITS NUMBERS; THE M5 TRACK CLOSES AT M5.1a (v5.118).** Declared shapes at the boundary would cut a 2.1× gap, below the M5.0 rule's 3×, and add a second source of truth for a value's type; a host typed view of request bytes gains 12.5 ns/byte over a string scan, noise for a uri and 200 µs for a 16 KB body, and no measured policy scans bodies in JS. PERFORMANCE §2f.1 fixes the shape should the use case appear: one capability word, copy-backed, never a zero-copy view. | **No bearing on the signature.** A decision not to build; nothing the case attests changes. Recorded so that G7.20's GAP — typed-array writes, `.length`, `>>>`, `Math.imul` untyped — reads as accepted by decision, not as pending work. |
+| **THE RESIDUE SWEEP AS A BATTERY; F19 FOUND AND CLOSED (v5.119).** Seven places the allowance can bite, 32 alignments each, both tiers (`t/comcon_oom_sweep.t`, 54 assertions): no worker died anywhere, and the compiled arm ran lowered where it can. First run found F19: the host's ToString of a fragment's error ran out of memory itself, reported `error` and left its exception pending on the compartment; fixed in one function. | **Adds an instrument the signature could not have had.** ASAN and UBSAN move the point where the allowance bites, so no sanitizer corpus covers this class; the sweep is now standing evidence on both tiers. F19 narrows nothing the case attests — a label and a stale object, no escape — but it is the second defect this instrument found in two files, which is the point of having it. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

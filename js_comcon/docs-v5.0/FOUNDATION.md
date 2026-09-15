@@ -635,6 +635,18 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.119 (in place — the residue sweep as a battery, and F19):** F18's class lives in a byte
+window a sanitizer moves, so no sanitizer corpus covers it; `t/comcon_oom_sweep.t` makes the
+sweep a standing instrument on both tiers — seven places the allowance can bite (inside
+try/catch, through finally, inside a generator, inside a microtask after await, inside a
+sub-fragment with the parent catching, inside the host's marshal of the result, inside the
+catch handler's own allocation), 32 alignments each, every fragment authored at config phase so
+the compiled arm lowers it (the first version authored them per request, ran interpreted, and
+its own tier assertion said so), 54 assertions: no worker died anywhere. **First run found F19:**
+the host's ToString of a fragment's error ran out of memory itself, reported `error` for an
+out-of-memory it could have named, and left ToString's exception pending on the compartment;
+fixed in `ngx_js_comcon_exc_text`. ASSURANCE G7.21, F19's row, §16; AUDIT_M-SES §2b.
+
 **v5.118 (in place — M5.1b PARKED with its numbers; the M5 track closes at M5.1a):** user
 decision 2026-09-15 on the analysis in PERFORMANCE §2f.1. (B) declared parameter shapes at the
 boundary: class A's remaining gap is 2.1×, below the rule's 3×, and the word would add a second

@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.118 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.119 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -61,6 +61,15 @@
 >   unmoved (its loop is a call and a `>>>`), and its "typed bound" was lowered JS — corrected
 >   in PERFORMANCE §2f. By the M5.0 rule the remaining 2.1× (boxing and checks) is NOT worth a
 >   further cut: **M5.1 is complete as measured.** ASSURANCE G7.20.
+> - **THE RESIDUE SWEEP AS A BATTERY; F19 (2026-09-15, v5.119).** F18's class lives in a byte
+>   window a sanitizer MOVES, so the S6 corpus cannot see it; `t/comcon_oom_sweep.t` sweeps
+>   seven places the allowance can bite (catch, finally, generator, a job after await, a
+>   sub-fragment with the parent catching, the host's marshal, the catch handler's own
+>   allocation), 32 alignments each, both tiers, every fragment authored at config phase so the
+>   compiled arm lowers it: no worker died anywhere (54 assertions). Its first run found
+>   **F19**: the host's ToString of a fragment's error ran out of memory itself, reported
+>   `error` for an out-of-memory it could name and left its exception pending — fixed in
+>   `ngx_js_comcon_exc_text`. ASSURANCE G7.21.
 > - **M5.1b PARKED WITH ITS NUMBERS (2026-09-15, v5.118) — THE M5 TRACK CLOSES AT M5.1a.**
 >   (B) declared shapes at the boundary: the remaining gap is 2.1×, below the 3× rule, and it
 >   would add a second source of truth for a value's type. (A) a host typed view of request

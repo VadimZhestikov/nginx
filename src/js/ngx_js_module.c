@@ -1446,7 +1446,26 @@ ngx_js_comcon_exc_text(JSContext *sctx, JSValueConst exc, uint32_t oom_before,
 
     *to_free = JS_ToCString(sctx, exc);
 
-    return (*to_free != NULL) ? *to_free : "error";
+    if (*to_free == NULL) {
+        /*
+         * ToString of the error itself failed, and left its own exception
+         * pending on the compartment.  Take that exception off, so it cannot
+         * surface as the NEXT operation's failure, and name the likeliest
+         * cause: at the allowance an error object can exist while the string
+         * of its message cannot, and the fragment then deserves "out of
+         * memory", not "error".  Found by the residue sweep
+         * (t/comcon_oom_sweep.t, the catch_alloc shape).
+         */
+        JS_FreeValue(sctx, JS_GetException(sctx));
+
+        if (JS_GetOutOfMemoryCount(JS_GetRuntime(sctx)) != oom_before) {
+            return oom_text;
+        }
+
+        return "error";
+    }
+
+    return *to_free;
 }
 
 
