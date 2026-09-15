@@ -635,6 +635,48 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.98 (in place — a NOT-BUILT list is now enforced, and "cages nest for free" is measured):**
+two halves of one habit: a doc set that IS the normative spec must not describe what is absent from
+memory.
+
+CHECK [8]: A NOT-BUILT LIST MAY NOT NAME A WORD THE CODE SHIPS. The rot it catches happened and
+nothing caught it for three days -- the ROADMAP's POSITION block, the most-read paragraph here, went
+on saying the posture vocabulary and `allowHosts`/`ttl`/`window` "need C-side enforcement" and that
+`cosign` "needs an approval-recording protocol" after all five had shipped. Check [7] already fails
+when SPEC.md is MISSING a word the code has; this is the same V7 rule from the other side.
+
+IT PARSES ONE CANONICAL LINE PER DOCUMENT, NOT PROSE, and the first version did the opposite. That
+version scanned the whole "what is not built" region for backticked words and asked whether each
+line also said "shipped". It found the real drift -- and it also flagged a DATED bullet that
+correctly recorded "seven of ten words ship" as of v5.85. That is history, and A CHECKER THAT ARGUES
+WITH HISTORY TEACHES PEOPLE TO DISABLE IT. The POSITION block genuinely mixes current status with
+dated records inside single bullets, so no rule over that prose can be exact. So the DOCUMENTS were
+changed instead -- each carries one machine-readable line and the prose around it is free, because
+it is no longer the list. That is the V7 move: a derived comparison, not a heuristic. (An earlier
+version also swallowed the paragraph after the line, because a blockquote's continuation ends at the
+next BULLET rather than at a blank line, and reported six drifts that were not there. A span that
+grows silently is worse than no span.)
+
+AND SHOWCASE17 §8's "CAGES NEST FOR FREE" IS HALF TRUE. Its reseller scenario has ACME caging its
+own customers by calling env/grant/mediate/include from inside its own code. Measured
+(`t/comcon_nesting.t`): `comcon` and `nginx` both read `undefined` inside a fragment -- with NO
+contract, so a real read of the compartment global and not a free-name refusal -- declaring `comcon`
+in `imports` does not conjure it, and granting it is refused with E_CAP_GRANT, because what may
+cross into a compartment is exactly what the host can WRAP and the operator table is not a C-backed
+capability.
+
+It is in fact the OPPOSITE of something already asserted: a fragment reaching `comcon` is an escape,
+and the S6 gate requires that probe CLOSED. So the boundary is:
+
+    ATTENUATION NESTS, WITHOUT LIMIT.   AUTHORING DOES NOT NEST AT ALL.
+
+A host can build cages as deep as it likes -- measured three levels, each only narrowing -- and hand
+the innermost to a fragment. A fragment can build none, attenuate nothing it holds, and pass nothing
+to anybody. The positive control matters as much as the refusals: without it they would read as
+"nothing works here" rather than as a precise line. Until a second compartment tier exists (the
+"raw operators withheld" increment), a platform must write a reseller's policy on their behalf --
+the cages are real and nest properly, only the authorship is centralised.
+
 **v5.97 (in place — the LOWERING CEILING is measured, and it reframes M5):** a full proxy makes a
 new question askable: re-implement part of a hot path nginx implements in C -- a header filter, a
 body step -- in JS, purely to get extra functionality into it. Affordable if M5 shipped with types?

@@ -44,7 +44,7 @@ BEGIN { use FindBin; chdir($FindBin::Bin); }
 use lib 'lib';
 use Test::Nginx;
 
-plan(tests => 9);
+plan(tests => 10);
 
 my $tool = "tools/check-enumerations.py";
 ok(-f $tool, "the enumeration checker exists ($tool)");
@@ -63,5 +63,10 @@ like($out, qr/\[4\] C3 intrinsics/,   'check 4 ran (C3 intrinsics allowance)');
 like($out, qr/\[5\] denial codes/,    'check 5 ran (denial codes vs the V12 corpus)');
 like($out, qr/\[6\] refusal codes/,   'check 6 ran (refusal codes vs the V12 corpus)');
 like($out, qr/\[7\] SPEC.md names/,   'check 7 ran (SPEC.md currency)');
+like($out, qr/\[8\] a NOT-BUILT list/,
+     'check 8 ran (a NOT-BUILT list does not name a shipped word) -- the rot that '
+     . 'went uncaught for three days: the POSITION block said four shipped words '
+     . 'still "need C-side enforcement". Check [7] catches SPEC.md missing a word '
+     . 'the code HAS; this catches an absence list naming one it has');
 
 is($rc, 0, "no enumeration drift\n" . $out);

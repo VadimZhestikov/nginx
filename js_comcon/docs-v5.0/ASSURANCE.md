@@ -728,6 +728,33 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T3, T4, T6, T9
 - **V:** V4, V13
 
+#### G7.9 — the kernel operators are not reachable from a fragment, so authoring does not nest
+- **CLAIM:** `comcon` and `nginx` are absent from a fragment's global; declaring either in
+  `imports` does not produce them; granting `comcon` is refused with `E_CAP_GRANT`. Attenuation,
+  by contrast, nests without limit from the host side and each level only narrows.
+- **ARGUMENT:** SHOWCASE17 §8 headlines *"Resellers: your tenant becomes a host — cages nest for
+  free"*, with a sample in which ACME calls `env`/`grant`/`mediate`/`include` on its own customers.
+  That is worth measuring rather than assuming, because a reader plans around it — and it turns out
+  to be **the opposite of something the S6 escape gate asserts**: a fragment reaching `comcon` is an
+  escape, and `t/comcon_mses_gate.t` requires that probe CLOSED. So nesting authorship cannot be
+  "free"; it needs the operators deliberately re-exposed to a confined fragment, which is
+  INCREMENT_MLIB §4's *"raw operators withheld"* and is not built.
+  The security half is a claim we make; the capability half is a limitation we now state instead of
+  implying its opposite. **Attenuation nests without limit; authoring does not nest at all.**
+- **EV:** `t/comcon_nesting.t` — 8 assertions. `comcon`/`nginx` read `undefined` with **no contract
+  at all**, so it is a real read of the compartment global rather than a free-name refusal;
+  declaring the name changes nothing; granting it is `E_CAP_GRANT`. And the **positive control**,
+  without which the refusals would read as "nothing works here": a three-level host-built chain
+  (`allow(port,address)` → `allow(port)` → `uses`) whose innermost fragment still reads what each
+  level left it, with `address` — hidden at level 2 — invisible at level 3.
+- **GAP:** This measures today's boundary, not a decision. A second compartment tier that holds
+  `comcon.std.*` without the raw kernel operators would move it, and that tier is unbuilt and
+  unscoped. Until then the platform must write a reseller's policy on their behalf: the cages are
+  real and nest properly, only the authorship is centralised.
+  **home:** SHOWCASE17.md §8 (corrected in place) · INCREMENT_MLIB.md §4.
+- **THREAT:** T4, T9
+- **V:** V4
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1517,6 +1544,8 @@ signature is never quietly credited with work it did not see.
 | **THE AUDIT-MODE RESIDUAL, CLOSED.** G6.17 shipped with `cap.owner` logged-and-allowed in audit like every other gate, justified as consistency. It is now unconditional. The line is not "structural vs policy" — the reach gates are structural too — but **whether an operator has anything to observe and then enable**: every other code answers "may this fragment do this?" (a question about the grant, which is their lever), and this one answers "is this even this fragment's capability?", which no grant can change. | **Removes a stated residual rather than re-describing it, and the test asserts the DISTINCTION** — a closed window allowed and a foreign capability denied, under the same audit mode in the same request, so it cannot pass on a build where audit stopped working. The exception is in the machinery, not the gates. `cap.owner` is now the one code that does not follow `comcon.mode()`; a second would force a list. |
 
 | **THE LOWERING CEILING IS MEASURED, and it reframes M5.** `t/tools/lowering-ceiling.t` + `nginx.bench`: untyped lowering is **8.3× off hand-written C on arithmetic and 17× on a byte scan**, and `--jit-dump-c` shows why — every operation boxes a `JSValue`, tag-checks both operands and writes a type-feedback byte, with the accumulator living in a `double`. A typed-SHAPE arm, gas check kept, is **at parity**. The zero-copy `ArrayBuffer` view over nginx memory **works and buys nothing** (the access path dominates; one 16 KB copy is 0.2 µs against 12.7 ns/byte to scan it). | **Turns the M5 commitment from a judgement into a measurement, and corrects two beliefs of our own** — that a host call per element is the thing to avoid (it costs about the same as a compiled typed-array read), and that `policy-compute-split.t`'s 13× control demonstrates lowering quality (it demonstrates loop elimination). Adds no assurance claim: this is decision evidence for a milestone, not a confinement property. |
+
+| **"CAGES NEST FOR FREE" MEASURED — G7.9 — and half of it is not built.** SHOWCASE17 §8's reseller scenario has ACME caging its own customers by calling the kernel operators; measured, `comcon` reads `undefined` in a fragment, declaring it changes nothing, and granting it is `E_CAP_GRANT`. **Attenuation nests without limit; authoring does not nest at all.** Also: enumeration **check [8]** now enforces that a NOT-BUILT list cannot name a word the code ships — the rot that let the ROADMAP's POSITION block call four shipped words unbuilt for three days. | **Adds one leaf and one checker, and corrects a scenario in place rather than leaving it to be discovered.** The security half was already asserted by the S6 gate (a fragment reaching `comcon` is an escape); what was missing was saying that this *also* means the reseller story is unbuilt. Nothing signed becomes untrue — the boundary moved in the docs, not in the code. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

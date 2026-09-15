@@ -7,6 +7,29 @@
 
 ## 8. Resellers: your tenant becomes a host — cages nest for free
 
+> **MEASURED 2026-09-14 (v5.98): the first half of that heading is true, the second
+> half is not built — and the code sample below is the half that is not.**
+> `t/comcon_nesting.t` pins the boundary:
+>
+> - **ATTENUATION nests, without limit.** A host can build a chain of cages as deep as it
+>   likes — `allow(port,address)` → `allow(port)` → `uses()` — each level only narrowing
+>   (V4's meet), and hand the innermost to a fragment. Measured three levels deep.
+> - **AUTHORING does not nest at all.** `comcon` and `nginx` both read `undefined` inside a
+>   fragment — a real read of the compartment global, not an admission refusal. Declaring
+>   `comcon` in `imports` does not conjure it (`imports` whitelists free NAMES, not
+>   capabilities), and granting it is refused with **`E_CAP_GRANT`**: what may cross into a
+>   compartment is exactly what the host can WRAP, and the kernel operator table is not a
+>   C-backed capability.
+>
+> So ACME cannot run the code below. Worse for the scenario as written: a fragment reaching
+> `comcon` is something **`t/comcon_mses_gate.t` asserts is CLOSED** — it is an escape, by
+> design. Nesting authoring is therefore not a configuration choice anyone has today; it
+> needs the operators deliberately re-exposed to a confined fragment through a mechanism
+> that does not exist, which is what INCREMENT_MLIB.md §4 calls **"raw operators withheld"**.
+>
+> What the platform *can* do today is write the reseller's policy on their behalf — the
+> cages are real and nest properly; only the authorship is centralised.
+
 **Problem:** ACME (your tenant) resells to *its own* customers. ACME wants to cage
 them; you don't want to know or care.
 

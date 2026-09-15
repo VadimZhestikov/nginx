@@ -90,6 +90,13 @@ the fall-through decides whether that mistake means REFUSE or FULL AUTHORITY.
 
 ## 4. Not built — and why each is absent rather than pending
 
+**NOT BUILT (canonical list — enforced by check [8]):** `opaque.*` · `std.postures.*` ·
+raw operators withheld
+
+That line is the machine-readable one: enumeration check [8] parses it and fails if it names a
+word the code ships. The entries below are the reasons, and they keep their history — an entry
+that says "SHIPPED at v5.91" is a record of a prediction that came true, not a claim about now.
+
 - **`onViolation` / `profile`** — SHIPPED at v5.91. They arrived with the enforcement, exactly as
   this entry said they would: ten mediation words now enforce, so there is something to be a posture
   OF. The material find was granularity — the audit/enforce switch was FLEET-WIDE, so shadowing one
@@ -109,7 +116,13 @@ the fall-through decides whether that mistake means REFUSE or FULL AUTHORITY.
 - **`std.ops`** (the comconctl verbs as library programs over ops-resource caps,
   FOUNDATION §8a) — not started; the natural step 2, and it needs the ops-resource caps
   first.
-- **"raw operators withheld"** — the governance half. Today `comcon.*` is HOST_ROOT-only, so
+- **"raw operators withheld"** — the governance half. **MEASURED at v5.98** (`t/comcon_nesting.t`):
+  it is not merely unbuilt, it is currently *unreachable by configuration*. `comcon` reads
+  `undefined` inside a fragment, declaring it in `imports` does not conjure it, and granting it is
+  refused with `E_CAP_GRANT` because the operator table is not a C-backed capability. A fragment
+  reaching `comcon` is also something the S6 escape gate asserts is CLOSED. So this needs a new
+  mechanism — a second compartment tier holding `comcon.std.*` without the raw kernel operators —
+  and SHOWCASE17 §8's reseller scenario is the thing waiting on it. Today `comcon.*` is HOST_ROOT-only, so
   a library user *is* the operator; withholding requires a second compartment for library
   consumers, which is its own increment.
 - **Interceptor certification criteria** — ROADMAP calls interceptors TCB-adjacent because

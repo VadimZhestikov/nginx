@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.97 — 2026-09-13).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.98 — 2026-09-14).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -38,11 +38,15 @@
 > **THE CONFINEMENT TRACK IS CLOSED. THE LIBRARY IS STARTED AND ITS REMAINDER IS BLOCKED.
 > THE COMPILER TRACK IS PARKED, AND NOW HAS THE EVIDENCE TO STAY THAT WAY.**
 >
-> - **M-LIB is IN PROGRESS, not next.** Steps 1–2 shipped 2026-09-12 (`comcon.std.profiles`,
->   `std.ops`). Everything left in it is blocked on something else: the posture vocabulary and
->   `allowHosts`/`ttl`/`window` need **C-side enforcement** (shipping them as descriptors
->   would be shipping policy that does nothing), and "raw operators withheld" needs a second
->   compartment for library consumers.
+> - **M-LIB IS NEARLY COMPLETE.** Steps 1–2 shipped 2026-09-12 (`comcon.std.profiles`,
+>   `std.ops`); **the mediation vocabulary is ten of ten** and the posture fields are read
+>   (v5.67 → v5.91). *(This bullet said the opposite for three days — that the posture
+>   vocabulary and `allowHosts`/`ttl`/`window` still "need C-side enforcement" — after all
+>   four had shipped. Nothing caught it, which is why the line below is now enforced.)*
+>   What is left needs a DECISION or a new mechanism, not enforcement:
+>
+>   **NOT BUILT (canonical list — enforced by check [8]):** `opaque.*` · `std.postures.*` ·
+>   raw operators withheld
 > - **M-CFG's config instance SHIPPED 2026-09-12 (v5.60)** — *one tenant subtree onboarded
 >   through admit end-to-end*, the last named deliverable of increment E, and the first thing
 >   to compose D5b-1's sound rejecter, D3's quotations, M4's typed registry and `std.ops`.
@@ -75,6 +79,14 @@
 >   **descriptors, not environments** — so the table carries no authority, is fleet-wide,
 >   and can only NARROW the env of whoever resolves a principal. The residual is stated
 >   rather than hidden: **COMCON does not authenticate**; the host asserts the principal.
+> - **A NOT-BUILT LIST IS NOW ENFORCED, AND "CAGES NEST FOR FREE" IS MEASURED (2026-09-14,
+>   v5.98).** Enumeration **check [8]**: a canonical NOT-BUILT line may not name a word the code
+>   ships — the rot that let this very block call four shipped words unbuilt for three days. It
+>   parses one machine-readable line per document rather than prose, because the first version
+>   flagged a DATED bullet that was true when written. And SHOWCASE17 §8's reseller scenario is
+>   half unbuilt: **attenuation nests without limit, authoring does not nest at all** — `comcon`
+>   reads `undefined` in a fragment and granting it is `E_CAP_GRANT`, which the S6 gate already
+>   asserted as an escape. `t/comcon_nesting.t` (8).
 > - **THE LOWERING CEILING IS MEASURED (2026-09-13, v5.97) — AND IT REFRAMES M5.** `nginx.bench` +
 >   `t/tools/lowering-ceiling.t`, numbers in PERFORMANCE.md §2b. Untyped lowering is **8.3× off
 >   hand-written C on arithmetic, 17× on a byte scan**, and `--jit-dump-c` shows the cause: every
@@ -585,9 +597,11 @@ fallback) → the event dispatcher calls the C function pointer directly.
   budgets are not. `t/comcon_cap_ttl.t` (11) + 3 controls.
   **`allowHosts` SHIPPED 2026-09-13 (v5.85)** — see the position note above; the blocker was
   not just "no outbound capability" but that fragment invocation is synchronous.
-  Remaining: the posture vocabulary (needs enforcement), `cosign` (needs an approval-recording
-  protocol), `protocol` (enforced operation ORDER — a session type, not a URL scheme),
-  `opaque.*` (engine-substrate track), and the "raw operators withheld" governance half.
+  Remaining *(as of v5.97; the canonical list lives in the POSITION block and is enforced by
+  enumeration check [8])*: `opaque.*` (engine-substrate track, never a mediation),
+  `std.postures.*` (a decision plus member-level facet attenuation), and the "raw operators
+  withheld" governance half. The posture FIELDS shipped at v5.91, `cosign` at v5.88 and
+  `protocol` at v5.90 — this sentence named all three as absent until v5.97.
   *(Original scope, preserved:)* The user-facing
   surface is not the kernel but the combinators: `std.profiles.*` (tenant,
   pure_library, forensics/REL, marketplace, config_builder…) and the mediation

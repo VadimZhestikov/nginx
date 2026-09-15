@@ -15,7 +15,7 @@ suite rather than waiting for someone to re-read a document.
 
     python3 t/tools/check-enumerations.py [--verbose]
 
-Exit 0 = the six enumerations agree with the code. Exit 1 = drift, printed.
+Exit 0 = every enumeration agrees with the code. Exit 1 = drift, printed.
 """
 
 import re
@@ -392,27 +392,44 @@ def check_refusal_codes():
 # instead, so a reader is sent to the one authority rather than a stale copy.
 # Demanding the list here would trade one staleness for another.
 # ---------------------------------------------------------------------------
+def shipped_flavors(tag):
+    """
+    The mediation vocabulary that SHIPS, from the JS bootstrap's FLAVORS table.
+
+    ONE extraction, read by checks [7] and [8].  Two copies of this regex would be
+    the very drift this file exists to catch -- and [8] was written second, which
+    is exactly when a second copy gets made.
+
+    The bootstrap is C string literals, so a table long enough to wrap is split
+    across two of them -- which is what happened when `allowHosts` was added, and
+    the check reported "table not found".  It failed CLOSED, which is the right
+    direction, but a checker that makes a source file unformattable is a checker
+    people work around.  So the C string-concatenation seams are stitched shut
+    before matching: `" ... "` followed by whitespace and another `"` is one JS
+    string as far as the engine is concerned, and it should be one here too.
+    """
+    com_c = re.sub(r'"\s*\n\s*"', '', read("src/js/ngx_js_com.c"))
+    m = re.search(r'var FLAVORS=\{([^"]*)\}', com_c)
+    if not m:
+        fails.append("%s the FLAVORS table was not found in ngx_js_com.c" % tag)
+        return set()
+
+    flavors = set(re.findall(r"([a-zA-Z]+):1", m.group(1)))
+    note("flavors: %s" % sorted(flavors))
+    return flavors
+
+
 def check_spec_currency():
     print("[7] SPEC.md names what the code enumerates")
     spec = read("js_comcon/docs-v5.0/SPEC.md")
 
-    # (a) the mediation vocabulary, from the JS bootstrap's FLAVORS table.
-    #
-    # The bootstrap is C string literals, so a table long enough to wrap is split
-    # across two of them -- which is what happened when `allowHosts` was added,
-    # and this check reported "table not found".  It failed CLOSED, which is the
-    # right direction, but a checker that makes a source file unformattable is a
-    # checker people work around.  So the C string-concatenation seams are
-    # stitched shut before matching: `" ... "` followed by whitespace and another
-    # `"` is one JS string as far as the engine is concerned, and it should be one
-    # here too.
+    # the bootstrap, with the C string-concatenation seams stitched shut (see
+    # shipped_flavors(), which needs the same treatment for the same reason)
     com_c = re.sub(r'"\s*\n\s*"', '', read("src/js/ngx_js_com.c"))
-    m = re.search(r'var FLAVORS=\{([^"]*)\}', com_c)
-    if not m:
-        fails.append("[7] the FLAVORS table was not found in ngx_js_com.c")
-    else:
-        flavors = set(re.findall(r"([a-zA-Z]+):1", m.group(1)))
-        note("flavors: %s" % sorted(flavors))
+
+    # (a) the mediation vocabulary, from the JS bootstrap's FLAVORS table.
+    flavors = shipped_flavors("[7]")
+    if flavors:
         for f in sorted(flavors):
             if ("`%s`" % f) not in spec:
                 fails.append("[7] SPEC.md never names the mediation flavor %r, "
@@ -461,6 +478,95 @@ def check_spec_currency():
                      "go to")
 
 
+# ---------------------------------------------------------------------------
+# [8] A "NOT BUILT" LIST MAY NOT NAME A WORD THAT SHIPPED
+# ---------------------------------------------------------------------------
+
+def check_absent_lists():
+    """
+    The rot this catches happened, and nothing caught it for three days: the
+    ROADMAP's POSITION block -- the most-read paragraph in the doc set -- went on
+    saying that the posture vocabulary and `allowHosts`/`ttl`/`window` "need
+    C-side enforcement" and that `cosign` "needs an approval-recording protocol",
+    after all five had shipped.
+
+    Check [7] fails when SPEC.md is missing a word the code HAS.  This is the same
+    rot from the other side: a list of what is ABSENT going on naming what is
+    PRESENT.  Both are the V7 rule -- a hand-maintained list rots silently,
+    because nothing fails when it stops matching the code.
+
+    IT PARSES ONE CANONICAL LINE PER DOCUMENT, NOT PROSE.  The first version of
+    this check scanned the whole "what is not built" region for backticked words
+    and asked whether each line also said "shipped".  It found the real drift --
+    and it also flagged a DATED bullet inside the POSITION block that correctly
+    recorded "seven of ten words ship" as of v5.85.  That is history, and a
+    checker that argues with history teaches people to disable it.  The block
+    genuinely mixes current status with dated records in the same bullets, so no
+    rule over that prose can be exact.
+
+    So the documents were changed instead, which is the V7 move: each carries ONE
+    machine-readable line, and the prose around it is free to say whatever it
+    says because it is no longer the list.  That turns this from a heuristic into
+    a derived comparison like checks [1]-[6].
+
+    NOT CHECKED, and worth saying: the other direction.  Nothing here proves the
+    canonical list is COMPLETE -- that every word of the intended vocabulary is
+    either shipped or listed as absent -- because the intended ten live in a prose
+    table in MANUAL.md and deriving them would re-introduce exactly the parsing
+    this check just stopped doing.
+    """
+    print("[8] a NOT-BUILT list does not name a word that shipped")
+
+    flavors = shipped_flavors("[8]")
+    if not flavors:
+        return
+
+    docs = ["js_comcon/docs-v5.0/ROADMAP.md",
+            "js_comcon/docs-v5.0/INCREMENT_MLIB.md"]
+
+    for rel in docs:
+        text = read(rel)
+
+        # The line, plus its continuations: these documents wrap near 100 columns,
+        # so the canonical list may spill onto following lines and all of them are
+        # read -- but it STOPS at a blank line.  The first version used one regex
+        # with re.S and swallowed the paragraph after it, which mentions every
+        # shipped word, so the check reported six drifts that were not there.  A
+        # span that grows silently is worse than no span.
+        lines = text.splitlines()
+        span, seen = None, False
+        for line in lines:
+            if not seen:
+                m = re.search(r"NOT BUILT \(canonical list[^)]*\):\*\*(.*)$", line)
+                if m:
+                    seen, span = True, m.group(1)
+                continue
+            # A continuation ends at a blank line, a new bullet, a heading, or a
+            # new emphasised paragraph.  "Blank line" alone is not enough: in the
+            # ROADMAP the list sits inside a blockquote whose next line is the
+            # next BULLET, so the first version ran on to the end of the document
+            # and reported six drifts from prose it should never have read.
+            body = line.lstrip("> ").strip()
+            if body == "" or body.startswith(("- ", "#", "**", "| ")):
+                break
+            span += " " + body
+
+        if not seen:
+            fails.append("[8] %s has no 'NOT BUILT (canonical list ...)' line -- "
+                         "this check must not pass by failing to find its subject"
+                         % os.path.basename(rel))
+            continue
+        named = set(w.rstrip(".*") for w in re.findall(r"`([^`]+)`", span))
+        note("%s absent-list: %s" % (os.path.basename(rel), sorted(named)))
+
+        for w in sorted(named):
+            if w in flavors:
+                fails.append("[8] %s's canonical NOT-BUILT list names `%s`, which "
+                             "the code SHIPS (it is in the FLAVORS table) -- a "
+                             "list of what is absent is naming what is present"
+                             % (os.path.basename(rel), w))
+
+
 check_p_symbols()
 check_portals()
 check_ops_resources()
@@ -468,6 +574,7 @@ check_intrinsics()
 check_denial_codes()
 check_refusal_codes()
 check_spec_currency()
+check_absent_lists()
 
 print("")
 if fails:
@@ -475,5 +582,5 @@ if fails:
     for f in fails:
         print("  - " + f)
     sys.exit(1)
-print("all seven enumeration checks agree with the code")
+print("all eight enumeration checks agree with the code")
 sys.exit(0)
