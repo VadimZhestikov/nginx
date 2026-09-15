@@ -59,6 +59,7 @@ ROWS=(
 "ffd76ed84|t/comcon_invoke_heap_independence.t|objs|every invocation walked the shared heap, so a peer's memory set its cost"
 "ffd76ed84|t/comcon_fragment_error_report.t|objs|out of memory read as null, and include() errors arrived with no value"
 "0317e8b90|t/comcon_global_binding_freeze.t|objs|a fragment could reassign a shared global binding for every other fragment"
+"1618dce79|t/comcon_wrapper_breakout.t|objs|a fragment could escape its wrapper and defeat admission entirely, even under imports: []"
 )
 
 MANUAL=(
