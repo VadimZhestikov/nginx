@@ -862,6 +862,27 @@ static const ngx_js_member_class_t  ngx_js_outbound_members[] = {
 };
 
 
+/* ------------------------------------------------------------------ *
+ * NginxComconAuthor — the authoring tier's capability                   *
+ * ------------------------------------------------------------------ *
+ * Held only inside a compartment.  `include` runs the shared admission
+ * pipeline as the holding fragment, `subFragments` times; it is guarded
+ * (owner, lifetime, budget, depth) and what it publishes is a fragment slot
+ * that lives for the worker -- not reversible.
+ */
+static const ngx_js_member_class_t  ngx_js_author_members[] = {
+    { "include",      "function", GRD, METH, WL,
+      "compiles, admits and publishes a SUB-fragment from source, as the "
+      "holding fragment; returns its callable. Refuses beyond subFragments or "
+      "at the nesting depth limit (E_AUTHOR_LIMIT)" },
+    { "subFragments", "number",   SAFE, 0, WL,
+      "how many sub-fragments this capability may author, worker-lifetime" },
+    { "used",         "number",   SAFE, 0, WL,
+      "how many it has authored" },
+    { NULL, NULL, 0, 0, 0, NULL }
+};
+
+
 /* NginxPeer / NginxRrPeer — scalar setters; propagation is zoned-shared when
  * the upstream is zone-backed (resolved live by the refine hook below). */
 static const ngx_js_member_class_t  ngx_js_peer_members[] = {
@@ -1492,6 +1513,7 @@ static const ngx_js_member_registry_t  ngx_js_member_registry[] = {
     /* The request (F13) — the tenant-facing surface, classified 2026-09-13 */
     { &ngx_js_request_class_id,         ngx_js_request_members,         NULL },
     { &ngx_js_outbound_class_id,        ngx_js_outbound_members,        NULL },
+    { &ngx_js_author_class_id,          ngx_js_author_members,          NULL },
 
     /* Topology classes — follow-up #2 (close the describe() gaps) */
     { &ngx_js_upstream_class_id,        ngx_js_upstream_members,        NULL },
@@ -1581,6 +1603,7 @@ static const struct {
        request, and what the M4 return-type binding needs. */
     { "NginxRequest",            ngx_js_request_members },
     { "NginxOutbound",           ngx_js_outbound_members },
+    { "NginxComconAuthor",       ngx_js_author_members },
     { "NginxServer",             ngx_js_server_members },
     { "NginxProxy",              ngx_js_proxy_members },
     { "NginxGzip",               ngx_js_gzip_members },
@@ -1680,8 +1703,12 @@ ngx_js_describe_resolve(JSContext *ctx, JSValueConst obj,
 
     cid = JS_GetClassID(obj);
 
+    /* A row whose class ID is still 0 is a class nothing has allocated yet,
+       and 0 is also JS_INVALID_CLASS_ID -- what a primitive answers.  Found
+       when a lazily-registered class (the authoring tier's, allocated with the
+       first compartment) made describe('a string') return its table. */
     for (r = ngx_js_member_registry; r->cid != NULL; r++) {
-        if (*r->cid == cid) {
+        if (*r->cid != 0 && *r->cid == cid) {
             *table_out  = r->table;
             *refine_out = r->refine;
             return NGX_OK;

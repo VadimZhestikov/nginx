@@ -3437,10 +3437,19 @@ static void gen_footer(JSJITCodeBuf *cb, int var_count,
     }
     jit_buf_str(cb, "_ex:\n");
     /* P14: catch dispatch — if there is an active catch handler, redirect to it
-     * instead of doing full cleanup.  _tsvp[] allows runtime-indexed slot access. */
+     * instead of doing full cleanup.  _tsvp[] allows runtime-indexed slot access.
+     *
+     * pilgrim: UNLESS the pending exception is uncatchable.  The interpreter's
+     * `exception:` path (JS_CallInternal) unwinds to a catch handler only when
+     * rt->current_exception_is_uncatchable is clear; this dispatch did not ask,
+     * so a compiled `try { for(;;){} } catch(e){}` caught the deadline
+     * interrupt and ran on -- measured: a fragment that returned "SURVIVED the
+     * interrupt" on the JIT build and was stopped on the interpreter.  The
+     * guard falls through to the ordinary exception exit, which is what the
+     * interpreter does too. */
     if (sr && sr->has_try && stack_size > 0) {
         jit_buf_str(cb,
-            "    if(_catch_depth>0){\n"
+            "    if(_catch_depth>0 && !JS_IsUncatchableException(ctx)){\n"
             "        _catch_depth--;\n"
             "        { int _cs=_catch_sp[_catch_depth];\n"
             "          int _ch=_catch_h[_catch_depth]; int _j;\n"

@@ -635,6 +635,57 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.106 (in place — the authoring tier, phase 2: a fragment can author fragments — and F16,
+found by it: compiled code could catch its own deadline):** `comcon.author({subFragments: N,
+ttlSeconds?})` is a capability like any other that `include()` grants; inside the fragment it is
+a NginxComconAuthor whose one operation, `author.include(source, {imports, intrinsics?,
+checkRequest?, tests?, timeoutMs?, memoryBytes?})`, returns a callable SUB-fragment. The
+sub-fragment is a real fragment — its own handle and identity, its own deadline and allowance
+nested inside the parent's (v5.105 is what made that a push), the parent's posture — and it is
+admitted by the SAME pipeline the host uses.
+
+ONE PIPELINE, TWO ENTRANCES. `comcon.include()` was split into four stages that operate on
+compartment values only — compile the wrapper without running it and check its shape (F15 phase
+2), call it under a deadline (F15 phase 3), run the contract's tests, lower and publish with the
+prediction check — and `author.include()` is a second entrance to those stages from inside the
+compartment. There is no second copy of admission to drift. What a sub-fragment may NOT do is
+refused rather than ignored: admission is mandatory (no contract, no `imports` — the author is
+less trusted than the host); `grants` (phase 3), `deps`, `identity`, `onViolation`/`profile`
+(the posture is the parent's), `meter` are each `E_ADMIT_CONTRACT`; a sub-fragment cannot even
+NAME its parent's grant (`E_ADMIT_FREENAME`). WHAT CROSSES THE NESTED BOUNDARY IS TEXT — the
+argument in, the result out, an exception as a fresh error carrying message and string `code`
+only — because an object is a channel: a returned or thrown closure called by the parent would
+run sub-fragment code under the parent's identity. A nested invocation is SYNCHRONOUS and drains
+nothing (a promise is `E_INVOKE_PENDING`): the job FIFO is shared. A sub-fragment past its
+DEADLINE aborts the whole invocation (the interrupt is uncatchable); one past its ALLOWANCE
+raises an ordinary exception, as at the host boundary. `E_AUTHOR_LIMIT` names the budget and the
+depth cap (2), and a string `code` raised inside a fragment now survives to the host as
+`e.code`.
+
+THE STOP CONDITION HELD. The S6 battery, one definition now composed two ways (`globalThis` is a
+denied name no manifest re-admits, so an admitted fragment at either depth cannot carry that one
+row), answers at depth 2 exactly as at depth 1, probe by probe, and the full battery is refused
+identically by both entrances.
+
+F16, FOUND ON THE WAY. On the JIT build the parent CAUGHT its sub-fragment's deadline abort.
+Probed directly: a fragment lowered to native C could catch its OWN deadline — the interrupt is
+thrown uncatchable, the interpreter's exception path honours the flag, and maxim's generated
+catch dispatch never asked, so `try { for(;;){} } catch(e){}` swallowed the interrupt and ran on
+(and the hostile form would loop forever). Fixed in the engine with a public getter,
+`JS_IsUncatchableException()`, one guard in the generated dispatch, and `JIT_CODEGEN_VERSION`
+16→17. The F5 battery could not see it: its runaway probe has no `try/catch`. Three of my own
+mistakes were found by the evidence rather than by me — `%uD` is an nginx format, not the
+engine's; a grant and the invocation argument sharing one name is the argument shadowing the
+grant, which looked like a post-fork prototype bug for an hour; and a class ID allocated
+lazily (with the first compartment) sat at 0 in the describe() registry, where 0 is also what a
+primitive answers, so `nginx.describe('a string')` returned the author's table — the full
+suite caught it, the registry now refuses an unallocated ID, and the ID is allocated with
+every other.
+
+`t/comcon_author_basic.t` (43), `t/comcon_author_depth2_gate.t` (13),
+`t/comcon_jit_uncatchable.t` (5, both builds), the `E_AUTHOR_LIMIT` golden row. ASSURANCE G7.14,
+G7.15, F16's ledger row. Phase 3 (re-granting by copy-then-narrow) is next.
+
 **v5.105 (in place — nesting readiness: a confined invocation's bounds are a STACK, not a
 constant — phase 1 of the authoring tier):** the second compartment tier (a fragment that
 includes and invokes SUB-fragments through a granted `author` capability; the five-phase plan

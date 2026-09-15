@@ -627,6 +627,9 @@ JSValue ngx_js_comcon_invoke_confined(JSContext *ctx, JSValueConst this_val,
 /* COMCON D4a: free a superseded confined fragment (rebuild-on-write epochs). */
 JSValue ngx_js_comcon_free_confined(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
+/* The authoring tier: the `author` capability's class (NginxComconAuthor),
+ * instantiated only in the compartment; described by ngx_js_com_describe.c. */
+extern JSClassID  ngx_js_author_class_id;
 JSValue ngx_js_comcon_op_mode(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 /* COMCON increment D0: reflect a compiled fragment as a POM node tree

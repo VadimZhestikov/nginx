@@ -609,6 +609,16 @@ ngx_js_com_register_classes(JSRuntime *rt)
         return NGX_ERROR;
     }
 
+    /* The authoring tier's class is REGISTERED only in the compartment runtime
+       (ngx_js_module.c), but its ID is allocated here, with every other class
+       ID, so it is never 0 while the describe() registry is consulted: 0 is
+       JS_INVALID_CLASS_ID, what JS_GetClassID() answers for a primitive, and
+       a registry row holding 0 matched `nginx.describe('a string')` to the
+       author's table until the first compartment was built. */
+    if (ngx_js_author_class_id == 0) {
+        JS_NewClassID(&ngx_js_author_class_id);
+    }
+
     if (ngx_js_socket_register_class(rt) != NGX_OK) {
         return NGX_ERROR;
     }
@@ -4128,7 +4138,8 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
 static const char  ngx_js_comcon_bootstrap[] =
     "(function(){"
     "  var C=comcon, ENV='__comconEnv__', METER='__comconMeter__',"
-    "      FACET='__comconFacet__', QUOTE='__comconQuote__';"
+    "      FACET='__comconFacet__', QUOTE='__comconQuote__',"
+    "      AUTHOR='__comconAuthor__';"
     "  C.env=function(){var e={grants:Object.create(null)};"
     "    Object.defineProperty(e,ENV,{value:true});return e;};"
     "  C.grant=function(env,name,cap){"
@@ -4598,6 +4609,28 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    return {flavor:'window',days:d,"
     "            from:winMinutes(spec.from,'from'),"
     "            to:winMinutes(spec.to,'to')};};"
+    /* author({subFragments, ttlSeconds?}): the authoring tier's capability.
+       Not a mediation word (it attenuates nothing) and not a host object (it
+       wraps nothing): a descriptor that include() grants, whose far side is a
+       NginxComconAuthor able to run the admission pipeline `subFragments`
+       times, as the fragment it was granted to, for the life of the worker.
+       Every field is refused rather than defaulted, for the reason `uses` is:
+       a budget with a missing count is not a small budget, it is no budget. */
+    "  C.author=function(spec){"
+    "    if(!spec||typeof spec!=='object')capRefuse('E_CAP_GRANT',"
+    "      'author: a spec {subFragments, ttlSeconds?} is required');"
+    "    var n=spec.subFragments;"
+    "    if(typeof n!=='number'||!(n>=1)||n!==Math.floor(n)||n>65535)"
+    "      capRefuse('E_CAP_GRANT','author: subFragments must be an integer "
+                 "from 1 to 65535 -- the number of sub-fragments this "
+                 "capability may author, for the life of the worker');"
+    "    var d={subFragments:n};"
+    "    if(spec.ttlSeconds!==undefined){var t=spec.ttlSeconds;"
+    "      if(typeof t!=='number'||!(t>=1)||t!==Math.floor(t))"
+    "        capRefuse('E_CAP_GRANT','author: ttlSeconds must be a positive "
+                 "integer');"
+    "      d.ttlSeconds=t;}"
+    "    var a={};a[AUTHOR]=Object.freeze(d);return Object.freeze(a);};"
     "  C.allowHosts=function(glob){"
     "    var g=String(glob||'');"
     "    if(!g)capRefuse('E_CAP_FLAVOR','allowHosts: a host glob is required; "
@@ -5051,7 +5084,14 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var g=contract.grants||{},names=[],caps=[],pols=[];"
     "    for(var k in g){if(Object.prototype.hasOwnProperty.call(g,k)){"
     "      var v=g[k],cap=v,pol={kind:0,mask:FMASK_FULL};"
-    "      if(v&&v[FACET]){var it=v[FACET].interceptor||{};cap=v[FACET].cap;"
+    /* kind 4: the authoring tier. No host object stands behind it, so `cap`
+       is null and the descriptor carries the whole grant -- two numbers. It is
+       not mediatable: a mediate()d author descriptor reaches the FACET branch
+       below with a cap that is neither socket nor server, and is refused
+       there (E_CAP_GRANT), which is the fail-closed direction. */
+    "      if(v&&v[AUTHOR]){pol={kind:4,subFragments:v[AUTHOR].subFragments,"
+    "        ttlSeconds:v[AUTHOR].ttlSeconds,mediated:true};cap=null;}"
+    "      else if(v&&v[FACET]){var it=v[FACET].interceptor||{};cap=v[FACET].cap;"
     "        if(it.flavor==='revoke')continue;"       /* narrow to zero: withhold */
     /* ONE mask definition (jsMask), shared with mediate()'s attenuation meet:
        two copies of a bitmask mapping is how a "narrower" membrane ends up

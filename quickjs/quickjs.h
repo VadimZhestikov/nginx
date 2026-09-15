@@ -687,6 +687,10 @@ static inline JS_BOOL JS_IsObject(JSValueConst v)
 
 JSValue JS_Throw(JSContext *ctx, JSValue obj);
 void JS_SetUncatchableException(JSContext *ctx, JS_BOOL flag);
+/* pilgrim: is the PENDING exception uncatchable (an interrupt, or a host
+   throw flagged so)?  Read by JIT-compiled code at its catch dispatch, which
+   must skip its handlers exactly as the interpreter's exception path does. */
+JS_BOOL JS_IsUncatchableException(JSContext *ctx);
 JSValue JS_GetException(JSContext *ctx);
 JS_BOOL JS_HasException(JSContext *ctx);
 JS_BOOL JS_IsError(JSContext *ctx, JSValueConst val);

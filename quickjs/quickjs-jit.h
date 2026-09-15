@@ -1027,7 +1027,7 @@ int  js_jit_get_threshold(void);
  *         11=get_var_ref_check TDZ fix: emits UNINITIALIZED check (generated C changes).
  *         12=P51: OP_add warm vt_hints + speculative INT add (array layout change).
  *         13=P52: put/set_var_ref* old-value INT hint: skip JS_VALUE_HAS_REF_COUNT. */
-#define JIT_CODEGEN_VERSION 16u  /* JIT fns take a 7th arg: the per-bytecode atom table */
+#define JIT_CODEGEN_VERSION 17u  /* catch dispatch honours the uncatchable flag (was 16: 7th arg, the per-bytecode atom table) */
 void js_jit_set_max_bc_len(int n);
 int  js_jit_get_max_bc_len(void);
 

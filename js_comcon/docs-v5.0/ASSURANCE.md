@@ -1023,6 +1023,106 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T6, T9, T11
 - **V:** V13
 
+#### G7.14 — a fragment can author fragments, and a sub-fragment's cage is its parent's cage
+- **CLAIM:** A fragment granted `comcon.author({subFragments: N})` can include and invoke up
+  to N SUB-fragments through `author.include(source, {imports, ...})`; each is a real fragment
+  (own handle, own identity, own deadline and allowance nested inside the parent's, the
+  parent's posture), admitted by the SAME pipeline the host uses, holding NOTHING the parent
+  did not hold — and every S6 escape probe answers at depth 2 exactly as it answers at depth 1.
+- **ARGUMENT:** ONE PIPELINE, TWO ENTRANCES. `comcon.include()` was split into four stages that
+  operate on compartment values only (compile the wrapper without running it and shape-check
+  it — F15 phase 2; call it under a deadline — F15 phase 3; run the contract's tests; lower and
+  publish with the prediction check), and `author.include()` is a second entrance to those
+  stages from inside the compartment. There is no second copy of admission to drift; check [2]
+  now enumerates the two stage functions as the only compile portals. What a sub-fragment may
+  NOT do is refused rather than ignored: no contract, no `imports`, `grants` (the next phase),
+  `deps`, `identity`, `onViolation`/`profile`, `meter` — each `E_ADMIT_CONTRACT`; admission is
+  mandatory (the author is less trusted than the host); a sub-fragment cannot even NAME its
+  parent's grant (`E_ADMIT_FREENAME`). WHAT CROSSES THE NESTED BOUNDARY IS TEXT: the argument
+  in and the result out are JSON-marshalled as at the host boundary, and an exception reaches
+  the parent as a fresh error carrying message and string `code` only — because an OBJECT is a
+  channel (a returned or thrown closure called by the parent would run sub-fragment code under
+  the parent's identity). A nested invocation is SYNCHRONOUS and drains nothing (a promise is
+  `E_INVOKE_PENDING`): the job FIFO is shared, and a nested frame draining it would run the
+  parent's continuations under the sub-fragment's identity. A sub-fragment past its DEADLINE
+  aborts the whole invocation (the interrupt is uncatchable, and its deadline is at most the
+  parent's remaining time); one past its ALLOWANCE raises an ordinary exception, which is what
+  the host boundary does too — a sub-fragment may catch its own, a parent may catch its
+  sub's. The budget is spent by admissions only; `E_AUTHOR_LIMIT` names exhaustion and the
+  depth cap (`NGX_JS_COMCON_MAX_DEPTH`, 2), and a string `code` raised inside a fragment now
+  survives to the host as `e.code`. **Found while writing the evidence, both mine:** `%uD` is
+  an nginx format, not the engine's (a message read "sub-fragment 7D"); and a grant and the
+  invocation argument sharing one name is the argument shadowing the grant — the first golden
+  probe and the first request-time probe both did that and reported "not a function", which
+  looked like a post-fork prototype bug for an hour and was two probes naming `a` twice. A
+  third, found by the full suite: the author class ID was allocated lazily and sat at 0 in the
+  describe() registry — 0 is `JS_INVALID_CLASS_ID`, a primitive's answer — so
+  `nginx.describe('a string')` returned the author's table; the ID is now allocated with every
+  other, and the registry refuses an unallocated one.
+- **EV:** `t/comcon_author_basic.t` — 45 assertions: the parent's whole view (budget, the
+  refused contract words, admission phases i–iii through the new entrance, the wrapper
+  breakout refused, promise refused, text-only exceptions with `code` and nothing else, toJSON
+  on the sub-fragment's side, a returned function dropped), the two bound paths one per
+  request (a 200 ms sub-fragment deadline aborts the invocation at ~200 ms, uncatchable; out of
+  memory caught by the sub-fragment and, uncaught, by the parent), a refusal uncaught by the
+  parent reaching the host with `e.code`, a request-time (post-fork) include, and the host side
+  (`comcon.author()` refusals, a mediate()d descriptor refused as a grant, the class on the
+  classified table).
+- **EV:** `t/comcon_author_depth2_gate.t` — 13 assertions: the S6 battery run at depth 1, at
+  depth 2 (the battery source handed to the parent AS DATA and authored by it), and
+  unconfined; depth 2 equals depth 1 probe by probe, nothing open, the control open. The
+  admissible composition (`PROBES_ADMISSIBLE`) runs at both depths because `globalThis` is a
+  denied name no manifest re-admits — and the FULL battery is shown refused identically at
+  both depths, code and reason.
+- **EV:** `t/tools/mses-probes.js` — the one definition of every probe, now composed two ways
+  (with and without the one row an admitted fragment cannot carry), never copied.
+- **EV:** `t/tools/golden-denials.js` — the `E_AUTHOR_LIMIT` row; `t/comcon_v12_denial_codes.t`
+  keeps the corpus complete against the enumerator.
+- **GAP:** Phase 2 grants a sub-fragment NOTHING: re-granting (copy-then-narrow of the parent's
+  own wrappers, `mask`/`ttl` only) is phase 3, so the No-Amplification argument at depth 2 is
+  today the trivial case A(sub) = ∅. A sub-fragment's queued jobs run in the parent's drain
+  under the parent's identity — stated, charged to the parent, but not yet pinned by a test.
+  The foreign-owner gates on the author capability and its callables are structural (nothing
+  can carry them to another fragment) and are not probed in audit mode.
+  **home:** ROADMAP POSITION (the five-phase plan) · `ngx_js_author_include`,
+  `ngx_js_author_invoke` · the four stage functions above `ngx_js_comcon_include_confined`.
+- **THREAT:** T4, T6, T9
+- **V:** V13
+
+#### G7.15 — compiled code cannot catch what the interpreter cannot catch
+- **CLAIM:** A fragment lowered to native C by maxim honours the engine's uncatchable flag at its
+  catch dispatch exactly as the interpreter's exception path does, so the deadline interrupt
+  (and any host throw flagged uncatchable — a sub-fragment's abort, G7.14) passes through every
+  `try/catch` in compiled code as it does in interpreted code.
+- **ARGUMENT:** JS_CallInternal's `exception:` path unwinds to a catch handler only while
+  `rt->current_exception_is_uncatchable` is clear. Generated code has its own dispatch (`_ex:`,
+  `if(_catch_depth>0){...goto handler}`), which did not ask — MEASURED: the fragment in
+  `t/comcon_jit_uncatchable.t` returned "SURVIVED the interrupt" on objs_jit (`compiled=1`) and
+  was stopped on the interpreter. The fix is one guard in that dispatch reading a new public
+  getter, `JS_IsUncatchableException(ctx)` (the field is private to `quickjs.c`; generated code
+  includes only `quickjs.h`), and the codegen version bumped so no cached `.so` keeps the old
+  dispatch. The guard falls through to the ordinary exception exit, which is what the
+  interpreter does. Found by G7.14's evidence: the authoring-tier parent caught its
+  sub-fragment's abort on the JIT build only — the interrupt was uncatchable in the interpreter
+  and not in compiled code, a difference between tiers that the F5 battery could not see
+  because its runaway probe has no `try/catch`: the battery asks what a fragment can REACH,
+  and this was what a fragment can REFUSE TO STOP DOING. Engine change; owed upstream to the
+  pilgrim-quickjs fork with the other engine additions.
+- **EV:** `t/comcon_jit_uncatchable.t` — 5 assertions, run on BOTH builds by the gate: the
+  polite form (catch once, return) is stopped at the deadline and its handler did not run; the
+  hostile form (catch forever) is stopped at the first interrupt, promptly; the build reports
+  whether the fragment was in fact compiled, so a pass on a build with no compiler is not read
+  as a pass of the compiled tier (F5's lesson).
+- **EV:** `t/comcon_author_basic.t` — the parent-catches-sub-abort case that found it, now
+  passing on both builds.
+- **GAP:** The fix is tested through the two forms above and the authoring case; the generated
+  dispatch has no other consumer of the flag. A negative control (revert the guard, watch the
+  hostile form hang) was run by hand while writing the test and is not yet a row in
+  `t/tools/verify-negative-controls.sh`.
+  **home:** finding F16 · `JS_IsUncatchableException` · quickjs-jit.c `_ex:` dispatch.
+- **THREAT:** T6, T9
+- **V:** V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1689,6 +1789,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
 | **F14** | Every confined invocation walked the WHOLE shared compartment heap (`JS_ComputeMemoryUsage`, twice per call) to read one counter — so one tenant's retained memory set every other tenant's per-request cost, persistently and beyond the execution deadline's reach | G7.10, G7.7 | **FOUND AND CLOSED 2026-09-14.** Measured before: a handler making one trivial confined invocation ran at **22.0% of stock** with an idle compartment and **0.2% (476 req/s)** while another fragment retained 200,000 objects. After: 68.0% and 66.6%. The same counter is now read in O(1) (`JS_GetMallocSize`). Found by reading the invoke path for a proposal, not by any test — nothing had measured invocation cost against heap size, and PERFORMANCE.md had no confined-invocation number at all |
 | **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered — AND a shared global binding was reassignable across fragments — AND a source could escape the wrapper it was compiled inside, defeating admission entirely | G6.19, G7.11, G7.12, G7.13 | **CLOSED 2026-09-14, ALL THREE PARTS.** Investigating the original finding turned up two defects worse than it, closed alongside it. **G7.11:** an ADMITTED fragment body (`imports:['Promise']`) could do `Promise = evil` and corrupt every co-resident fragment; an UN-ADMITTED fragment (`{}`) could do the same to any intrinsic with zero gating — fixed by freezing every binding on the compartment's globalThis once, at creation. **G7.12:** the wrapper is built by string concatenation, so a source could close it and run script-level code before admission ever ran, even under `imports: []` — fixed by compiling with `JS_EVAL_FLAG_COMPILE_ONLY` and checking the compiled unit's own bytecode is exactly "create one closure, return it" before ever running it. **G7.13, the originally-found defect:** the wrapper's body — where a looping `source` actually runs — had no deadline independent of a worker existing, so it (and a confined invocation, and an admission test that calls its fragment) hung indefinitely at CONFIG PHASE. Fixed by giving comcon_rt a deadline of its own (`jcf->comcon_deadline_ms`), pushed and restored around every place fragment-adjacent code runs on it, installed once at compartment creation rather than re-wired post-fork. **No authority leaked** through any of this — a grant read at top level is `undefined` (`cap.owner` refuses it; every grant is bound to the fragment's future handle and `cur_frag` is 0 there) — but that was `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. |
+| **F16** | A fragment lowered to native C (the compiled tier) could CATCH ITS OWN DEADLINE: the interrupt is thrown uncatchable, the interpreter's exception path honours the flag, and maxim's generated catch dispatch never asked — so a compiled `try { for(;;){} } catch(e){}` swallowed the interrupt and ran on, and the hostile form (`for(;;){ try{ for(;;){} } catch(e){} }`) would loop forever | G7.15 | **CLOSED 2026-09-15** (after the §15 signature — see §16). Found by the authoring tier's basic test, whose PARENT fragment caught its sub-fragment's abort on the JIT build only; probed directly (`t/comcon_jit_uncatchable.t`: "SURVIVED the interrupt" on objs_jit, stopped on objs). Fixed in the engine: `JS_IsUncatchableException()` (new public getter) and one guard in the generated catch dispatch, `JIT_CODEGEN_VERSION` 16→17. The S6 AOT arm (F5) never saw this because its runaway probe has no try/catch — the battery tests what a fragment can REACH, and this was what a fragment can REFUSE TO STOP DOING. |
 
 ---
 
@@ -1850,6 +1951,8 @@ signature is never quietly credited with work it did not see.
 | **F14 FOUND AND CLOSED, F15 FOUND AND OPEN — G7.10, G6.19** — every confined invocation walked the whole shared heap to read one counter: measured 22.0% of stock throughput idle and **0.2%** while a peer retained 200,000 objects; now 68.0% / 66.6%, gated as a ratio (1.01×, control 173.57×). Out of memory now reads as out of memory rather than `null`, and an exception during `include()` reaches the host with its value instead of none. The investigation found F15 — the top-level expression is evaluated before admission, outside the compartment scope, unmetered at config phase — and records it rather than fixing it in passing. | **Closes a cross-tenant channel the signature did not know about, and opens a finding it did not know about.** Neither changes what was attested; both are recorded so the signature is not credited with either. |
 
 | **F15 PHASE 1 CLOSED — G7.11, and a §15-SIGNED CLAIM WAS INCOMPLETE.** Investigating F15's original finding (an unmetered top-level eval) turned up a worse one: G7.6 — signed 2026-09-12, same date as §15 — probed eight shared surfaces for cross-fragment channels and found none, but every probe mutated a VALUE (`JSON.__chan = 'x'`); none tried REASSIGNING a binding (`JSON = evil`). That ninth operation was wide open: an admitted fragment declaring `imports: ['Promise']` for READ could overwrite `Promise` for every co-resident fragment, and an UN-ADMITTED fragment (`{}`, no admission at all) could do the same to any intrinsic. Closed by freezing every binding on the compartment's globalThis once, at creation, independent of admission. | **A claim §15 attested (G7.6's "separated by ... an admission gate") was TRUE of every operation its own battery tried and INCOMPLETE as a description of the boundary — not forged, not fabricated, but narrower than the prose read.** §15's invalidation list (end of that section) does not name this case; recorded here on the same model as F14's row, and G7.6 itself now carries the correction in place, parallel to the `Symbol.for` erratum it already carries. F15 stays open for its original finding plus a wrapper-breakout defect found alongside (phases 2–3). |
+| **THE AUTHORING TIER, PHASES 1–2 — G7.14, and G7.13's addendum (v5.105–v5.106).** A fragment can now author fragments: `comcon.author({subFragments: N})` grants a capability whose `include()` runs the SAME admission pipeline the host runs — `comcon.include()` split into four stages on compartment values, two entrances, no second copy — and returns a callable sub-fragment with its own identity, its deadline and allowance nested inside the parent's (phase 1 made both bounds a stack), the parent's posture, and nothing the parent did not hold. Text crosses the nested boundary, never objects; nested invocation is synchronous. The S6 battery answers at depth 2 exactly as at depth 1. | **A second tier the signature never saw.** Nothing it attested changes — the host boundary, admission, the gates — but a NEW boundary exists inside the compartment, and its evidence (G7.14) is dated after §15. A reader relying on the signature for "how many confinement boundaries exist" should read this row first. |
+| **F16 FOUND AND CLOSED — G7.15.** A fragment lowered to native C could catch its own deadline interrupt: the engine throws it uncatchable, the interpreter honours the flag, maxim's generated catch dispatch never asked. Found because the authoring tier's parent caught its sub-fragment's abort on the JIT build only; fixed in the engine (a public getter, one guard, codegen version 17) and pinned on both builds. | **Weakens what the signature attested about the compiled tier (F5, G7.5).** The S6 AOT arm was run and passed, honestly — but its runaway probe has no `try/catch`, so "the tiers agree probe by probe" was true of what the battery ASKED, and the battery did not ask whether a fragment can refuse to stop. Recorded here so the signature is not credited with a property it did not test. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

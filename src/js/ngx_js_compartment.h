@@ -228,6 +228,15 @@ typedef enum {
      * change is in their fragment, which is what this axis names.
      */
     NGX_JS_REFUSAL_INVOKE_PENDING,     /* an await nothing in reach can settle */
+    /*
+     * The authoring tier: a fragment holding an `author` capability asked it
+     * for more than it carries -- more sub-fragments than `subFragments`
+     * allowed for, or a sub-fragment authored from inside a sub-fragment
+     * (NGX_JS_COMCON_MAX_DEPTH).  A REFUSAL, raised inside the parent
+     * fragment at its include() call, because what must change is the
+     * parent's contract or its code, not a gate's verdict on a request.
+     */
+    NGX_JS_REFUSAL_AUTHOR_LIMIT,       /* author cap: sub-fragment budget or depth */
     NGX_JS_REFUSAL_LAST
 } ngx_js_refusal_code_t;
 

@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.105 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.106 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,28 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **THE AUTHORING TIER, PHASE 2 — A FRAGMENT CAN AUTHOR FRAGMENTS (2026-09-15, v5.106) —
+>   AND F16, FOUND BY IT.** `comcon.author({subFragments: N})` is granted like any capability;
+>   `author.include(source, {imports, ...})` runs the SAME admission pipeline the host runs
+>   (`comcon.include()` split into four stages on compartment values; two entrances, no second
+>   copy to drift — check [2] now lists the two stage functions as the only compile portals)
+>   and returns a callable sub-fragment: own handle and identity, own deadline and allowance
+>   nested inside the parent's, the parent's posture. Text crosses the nested boundary, never
+>   objects (a closure returned or thrown to the parent would run under the parent's
+>   identity); nested invocation is synchronous and drains nothing (the job FIFO is shared);
+>   a sub-fragment past its deadline aborts the whole invocation, one past its allowance
+>   raises an ordinary exception as at the host boundary; `E_AUTHOR_LIMIT` names the budget
+>   and the depth cap. **The stop condition held:** the S6 battery answers at depth 2 exactly
+>   as at depth 1, probe by probe (`t/comcon_author_depth2_gate.t`; the battery is one
+>   definition composed two ways, because `globalThis` is a denied name no admitted fragment
+>   can carry). **F16:** the parent CAUGHT its sub-fragment's abort on the JIT build only —
+>   a maxim-compiled fragment could catch its own deadline interrupt, because the generated
+>   catch dispatch never checked the engine's uncatchable flag; the hostile form would loop
+>   forever. Fixed in the engine (`JS_IsUncatchableException()`, one guard, codegen version
+>   17), pinned on both builds by `t/comcon_jit_uncatchable.t`. The F5 battery could not see
+>   it: it asks what a fragment can REACH, and this was what a fragment can REFUSE TO STOP
+>   DOING. ASSURANCE G7.14, G7.15, F16. **Phase 3 (re-granting) and phase 4 (docs, controls)
+>   remain.**
 > - **THE AUTHORING TIER IS STARTED — PHASE 1, NESTING READINESS (2026-09-15, v5.105).**
 >   The v5.98 bullet below measured that "authoring does not nest at all"; the decision taken
 >   is to BUILD it — a granted `author` capability whose one operation is `include(src,

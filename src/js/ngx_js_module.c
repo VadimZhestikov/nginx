@@ -356,6 +356,14 @@ static char *ngx_js_init_conf(ngx_cycle_t *cycle, void *conf);
  * ngx_cycle->conf_ctx would be stale/NULL). COW-inherited by workers. */
 static ngx_js_conf_t  *ngx_js_comcon_jcf;
 
+/* The authoring tier (NginxComconAuthor): defined after include/invoke below,
+   registered at compartment creation above them. */
+JSClassID  ngx_js_author_class_id;
+static ngx_int_t ngx_js_author_register(JSRuntime *rt);
+static ngx_int_t ngx_js_author_install_proto(JSContext *sctx);
+static JSValue ngx_js_author_wrap(JSContext *sctx, uint32_t max_subs,
+    uint32_t ttl_seconds, uint32_t owner);
+
 static int       ngx_js_interrupt_handler(JSRuntime *rt, void *opaque);
 static ngx_int_t ngx_js_init_module(ngx_cycle_t *cycle);
 static ngx_int_t ngx_js_init_process(ngx_cycle_t *cycle);
@@ -920,7 +928,8 @@ ngx_js_comcon_harden_cap_protos(JSContext *ctx)
     JSClassID   ids[] = { ngx_js_socket_class_id,
                           ngx_js_http_listener_class_id,
                           ngx_js_stream_listener_class_id,
-                          ngx_js_com_facet_class_id };
+                          ngx_js_com_facet_class_id,
+                          ngx_js_author_class_id };
 
     for (i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
         proto = JS_GetClassProto(ctx, ids[i]);
@@ -1164,6 +1173,12 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
     }
     JS_NewClass(jcf->comcon_rt, ngx_js_recorder_class_id, &ngx_js_recorder_class);
 
+    /* the authoring tier's capability class exists ONLY in the compartment:
+       nothing on the host ever holds one, so nothing registers it there */
+    if (ngx_js_author_register(jcf->comcon_rt) != NGX_OK) {
+        return NULL;
+    }
+
     sctx = ngx_js_tenant_context_new(jcf->comcon_rt);
     if (sctx == NULL) {
         JS_FreeRuntime(jcf->comcon_rt);
@@ -1184,6 +1199,7 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
        (e.g. a re-wrapped socket) is usable in the compartment. Mirrors the
        tenant compartment; installed AFTER lockdown, exactly as the tenant. */
     (void) ngx_js_com_install_protos(sctx);
+    (void) ngx_js_author_install_proto(sctx);
 
     /* M-SES-1b: freeze the grantable cap prototypes (install_protos runs after
        the lockdown freeze; without this a granted socket exposes a mutable
@@ -1391,27 +1407,494 @@ ngx_js_comcon_exc_text(JSContext *sctx, JSValueConst exc, uint32_t oom_before,
 }
 
 
+/*
+ * ONE ADMISSION PIPELINE, TWO ENTRANCES.
+ *
+ * `comcon.include()` on the host and `author.include()` inside a fragment (the
+ * authoring tier) compile, admit and publish a fragment the same way, and they
+ * must: two copies of the pipeline is how the sub-fragment path quietly stops
+ * checking something the host path still does.  So the stages below operate
+ * on COMPARTMENT values only -- a source string, C-string parameter names, an
+ * sctx function -- and know nothing about which context asked.  The host
+ * entrance decodes its arguments from hctx and the fragment entrance from
+ * sctx; everything after that is shared.
+ *
+ * A stage reports failure through ngx_js_comcon_fail_t rather than throwing,
+ * because the throw belongs on the ENTRANCE's context (host or compartment)
+ * and only the entrance knows which.  `code` NONE means an engine or compile
+ * error (a SyntaxError or TypeError on the caller's side, per `syntax`);
+ * anything else is a coded refusal.  `to_free` is owned by the compartment.
+ */
+typedef struct {
+    ngx_js_refusal_code_t  code;
+    unsigned               syntax:1;
+    const char            *text;
+    const char            *to_free;      /* JS_FreeCString(sctx, ...) when set */
+    char                   buf[512];
+} ngx_js_comcon_fail_t;
+
+
+static void
+ngx_js_comcon_fail_engine(JSContext *sctx, ngx_js_comcon_fail_t *fail,
+    uint32_t oom0, const char *oom_text, unsigned syntax)
+{
+    JSValue  exc;
+
+    exc = JS_GetException(sctx);
+    fail->code = NGX_JS_REFUSAL_NONE;
+    fail->syntax = syntax;
+    fail->text = ngx_js_comcon_exc_text(sctx, exc, oom0, oom_text,
+                                        &fail->to_free);
+    /*
+     * The text is either the static OOM sentence or `to_free` itself; copy it
+     * into the buffer so the exception object can be released now rather than
+     * kept alive across the entrance's own error handling.
+     */
+    ngx_cpystrn((u_char *) fail->buf, (u_char *) fail->text, sizeof(fail->buf));
+    fail->text = fail->buf;
+    if (fail->to_free != NULL) {
+        JS_FreeCString(sctx, fail->to_free);
+        fail->to_free = NULL;
+    }
+    JS_FreeValue(sctx, exc);
+}
+
+
+static void
+ngx_js_comcon_fail_refuse(ngx_js_comcon_fail_t *fail,
+    ngx_js_refusal_code_t code, const char *text)
+{
+    fail->code = code;
+    fail->syntax = 0;
+    fail->to_free = NULL;
+    ngx_cpystrn((u_char *) fail->buf, (u_char *) text, sizeof(fail->buf));
+    fail->text = fail->buf;
+}
+
+
+/*
+ * Throw a stage's failure on `ctx` -- the host context for comcon.include(),
+ * the compartment itself for author.include() -- under the entrance's name.
+ */
+static JSValue
+ngx_js_comcon_fail_throw(JSContext *ctx, ngx_js_comcon_fail_t *fail,
+    const char *who)
+{
+    if (fail->code != NGX_JS_REFUSAL_NONE) {
+        return ngx_js_comcon_refuse(ctx, fail->code, "%s: %s", who, fail->text);
+    }
+
+    if (fail->syntax) {
+        return JS_ThrowSyntaxError(ctx, "%s: %s", who, fail->text);
+    }
+
+    return JS_ThrowTypeError(ctx, "%s: %s", who, fail->text);
+}
+
+
+/*
+ * Stage 1: "(function(<names>){"use strict";return(<source>);})" -> the
+ * wrapper closure, compiled WITHOUT running (F15 phase 2), shape-checked, and
+ * only then materialized (F15 phase 3 bounds even that).  `*outer` is a
+ * function on success; calling it with the grant values is stage 2.
+ */
+static ngx_int_t
+ngx_js_comcon_compile_wrapper(ngx_js_conf_t *jcf, JSContext *sctx,
+    const char *source, size_t slen, const char **names, const size_t *nlens,
+    ngx_uint_t nn, JSValue *outer, ngx_js_comcon_fail_t *fail)
+{
+    u_char      *buf, *p;
+    size_t       total;
+    uint32_t     oom0;
+    uint64_t     saved_deadline;
+    ngx_uint_t   i;
+    JSValue      o;
+
+    /*
+     * The three pieces are ONE definition each (at the top of this file)
+     * because the allocation size and the copies used to be separate literals
+     * of the same text: editing the wrapper without editing the sizeof
+     * overflows this buffer by exactly the difference, and nothing would say
+     * so.  Found while writing the D5b-4 negative control that adds a newline.
+     */
+    total = sizeof(NGX_JS_COMCON_WRAP_HEAD NGX_JS_COMCON_WRAP_MID
+                   NGX_JS_COMCON_WRAP_TAIL) + slen;
+    for (i = 0; i < nn; i++) {
+        total += nlens[i] + 1;
+    }
+
+    buf = ngx_alloc(total, ngx_cycle->log);
+    if (buf == NULL) {
+        ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_NONE,
+                                  "out of memory building the wrapper");
+        fail->syntax = 0;
+        return NGX_ERROR;
+    }
+
+    p = ngx_cpymem(buf, NGX_JS_COMCON_WRAP_HEAD,
+                   sizeof(NGX_JS_COMCON_WRAP_HEAD) - 1);
+    for (i = 0; i < nn; i++) {
+        if (i > 0) {
+            *p++ = ',';
+        }
+        p = ngx_cpymem(p, names[i], nlens[i]);
+    }
+    p = ngx_cpymem(p, NGX_JS_COMCON_WRAP_MID,
+                   sizeof(NGX_JS_COMCON_WRAP_MID) - 1);
+    p = ngx_cpymem(p, source, slen);
+    p = ngx_cpymem(p, NGX_JS_COMCON_WRAP_TAIL,
+                   sizeof(NGX_JS_COMCON_WRAP_TAIL) - 1);
+    *p = '\0';                    /* JS_Eval requires a NUL-terminated buffer */
+
+    oom0 = JS_GetOutOfMemoryCount(JS_GetRuntime(sctx));
+
+    /*
+     * F15 PHASE 2: COMPILE FIRST, RUN ONLY IF THE SHAPE IS RIGHT.
+     *
+     * `buf` is source TEXT concatenated around the fragment.  A fragment whose
+     * own text closes that function expression early -- an unbalanced `)}`
+     * sitting inside what looks like a string, comment or template literal --
+     * and supplies more script-level code afterward used to have that code
+     * run with NO admission gate ever applied to it, REGARDLESS of how strict
+     * the contract asked to be: admission only ever inspected the RESULT
+     * (`fn`), never the rest of the script that produced it.  Measured:
+     * `imports: []` admitted a fragment whose escaped text read another
+     * fragment's declared free names and (before F15 phase 1 froze bindings)
+     * reassigned a shared intrinsic for every fragment, not just its own.
+     *
+     * COMPILE_ONLY compiles the whole buffer WITHOUT running any of it, so a
+     * syntax error is still caught here exactly as before, but nothing --
+     * including a breakout's injected code -- has executed yet.  The shape
+     * check runs on that unexecuted result; only if it passes does
+     * JS_EvalFunction() actually create the wrapper's closure.
+     */
+    o = JS_Eval(sctx, (const char *) buf, p - buf,
+                NGX_JS_COMCON_FRAGMENT_ORIGIN,
+                JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    ngx_free(buf);
+
+    if (JS_IsException(o)) {
+        ngx_js_comcon_fail_engine(sctx, fail, oom0,
+                    "out of memory while compiling the fragment -- the "
+                    "compartment's memory limit was reached", 1);
+        return NGX_ERROR;
+    }
+
+    if (!js_comcon_is_single_toplevel_closure(o)) {
+        /*
+         * Fail closed WITHOUT running it.  `o` here is a raw compiled unit
+         * (JS_TAG_FUNCTION_BYTECODE), never turned into a callable, so freeing
+         * it discards the compiled form without ever creating -- let alone
+         * calling -- any closure the escaped text tried to produce.
+         */
+        JS_FreeValue(sctx, o);
+        ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_ADMIT_SOURCE,
+                   "source must be a single function expression -- no "
+                   "statements or additional top-level code may accompany it");
+        return NGX_ERROR;
+    }
+
+    /*
+     * F15 PHASE 3: JS_EvalFunction() here only CREATES the wrapper's own
+     * closure (the root "eval" unit's whole job, per its 3-opcode shape, is
+     * "make one closure and return it") -- it does not call it, so no
+     * fragment-adjacent code runs yet.  A push here is defence in depth for
+     * closure allocation itself, not the fix for a looping SOURCE -- that runs
+     * later, when the wrapper is actually CALLED (stage 2).
+     */
+    saved_deadline = ngx_js_comcon_deadline_push(jcf,
+                                    NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS);
+    o = JS_EvalFunction(sctx, o);
+    ngx_js_comcon_deadline_pop(jcf, saved_deadline);
+
+    if (JS_IsException(o)) {
+        ngx_js_comcon_fail_engine(sctx, fail, oom0,
+                    "out of memory while creating the fragment's closure -- "
+                    "the compartment's memory limit was reached", 1);
+        return NGX_ERROR;
+    }
+
+    *outer = o;
+    return NGX_OK;
+}
+
+
+/*
+ * Stage 2: call the wrapper with its grant values.  THIS is where the
+ * wrapper's body actually runs -- `"use strict"; return( source )` -- and
+ * therefore where a looping IIFE given as `source` loops (F15's original
+ * finding), so it carries its own deadline.  `outer` and every `av[]` are
+ * released here whatever happens; `*fn` is the fragment on success.
+ */
+static ngx_int_t
+ngx_js_comcon_call_wrapper(ngx_js_conf_t *jcf, JSContext *sctx, JSValue outer,
+    JSValue *av, ngx_uint_t n, JSValue *fn, ngx_js_comcon_fail_t *fail)
+{
+    uint32_t    oom0;
+    uint64_t    call_deadline;
+    ngx_uint_t  i;
+    JSValue     f;
+
+    oom0 = JS_GetOutOfMemoryCount(JS_GetRuntime(sctx));
+
+    call_deadline = ngx_js_comcon_deadline_push(jcf,
+                                   NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS);
+    f = JS_Call(sctx, outer, JS_UNDEFINED, (int) n, (JSValueConst *) av);
+    ngx_js_comcon_deadline_pop(jcf, call_deadline);
+
+    for (i = 0; i < n; i++) {
+        JS_FreeValue(sctx, av[i]);
+    }
+    JS_FreeValue(sctx, outer);
+
+    if (JS_IsException(f)) {
+        /*
+         * CARRY THE EXCEPTION ACROSS, do not return it.  JS_EXCEPTION means
+         * "an exception is pending ON THIS CONTEXT", and the host entrance
+         * returns to a different one: it used to see an exception with no
+         * value at all (`typeof e === "unknown"`, no message, no code) while
+         * the real one stayed pending in the compartment.
+         */
+        ngx_js_comcon_fail_engine(sctx, fail, oom0,
+                    "out of memory while evaluating the fragment -- the "
+                    "compartment's memory limit was reached", 0);
+        return NGX_ERROR;
+    }
+
+    if (!JS_IsFunction(sctx, f)) {
+        JS_FreeValue(sctx, f);
+        ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_ADMIT_SOURCE,
+                                  "source must be a function expression");
+        return NGX_ERROR;
+    }
+
+    *fn = f;
+    return NGX_OK;
+}
+
+
+/*
+ * Stage 3 (admission phase iii): run the contract's tests against the
+ * fragment IN the compartment, under the TENANT reach gate, so its behaviour
+ * is verified with ZERO BLAST RADIUS -- the compartment holds no host
+ * authority and IO is denied.  `tsrc` is a function(fragment){...} source.
+ * Any test that throws refuses admission; a source that does not compile to a
+ * single function expression is a HARD refusal (F15 phase 2), because `tests`
+ * already has one silent-skip path (a string that compiles to a non-function)
+ * and a breakout must not become a second one.
+ */
+static ngx_int_t
+ngx_js_comcon_run_tests(ngx_js_conf_t *jcf, JSContext *sctx, JSValueConst fn,
+    const char *tsrc, size_t tlen, ngx_js_comcon_fail_t *fail)
+{
+    u_char                *tbuf;
+    JSValue                testfn, tret;
+    uint64_t               test_deadline;
+    ngx_js_compartment_t   tprev;
+
+    tbuf = ngx_alloc(tlen + 3, ngx_cycle->log);
+    if (tbuf == NULL) {
+        return NGX_OK;         /* the pre-existing silent-skip on allocation */
+    }
+    tbuf[0] = '(';
+    ngx_memcpy(tbuf + 1, tsrc, tlen);
+    tbuf[tlen + 1] = ')';
+    tbuf[tlen + 2] = '\0';
+
+    testfn = JS_Eval(sctx, (const char *) tbuf, tlen + 2, "<comcon-tests>",
+                     JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    ngx_free(tbuf);
+
+    if (!JS_IsException(testfn)
+        && !js_comcon_is_single_toplevel_closure(testfn))
+    {
+        JS_FreeValue(sctx, testfn);
+        ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                   "admission refused: contract `tests` must be a single "
+                   "function expression -- no statements or additional "
+                   "top-level code may accompany it");
+        return NGX_ERROR;
+    }
+
+    /*
+     * F15 PHASE 3: one push spans materializing the test closure AND calling
+     * it -- the call is what runs arbitrary contract-authored code against
+     * the fragment (which itself runs, since `tests` exists precisely to
+     * invoke `fn` and inspect what it does).
+     */
+    test_deadline = ngx_js_comcon_deadline_push(jcf,
+                                    NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS);
+
+    if (!JS_IsException(testfn)) {
+        testfn = JS_EvalFunction(sctx, testfn);
+    }
+
+    if (JS_IsFunction(sctx, testfn)) {
+        tprev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
+        tret = JS_Call(sctx, testfn, JS_UNDEFINED, 1, &fn);
+        ngx_js_compartment_leave(tprev);
+
+        if (JS_IsException(tret)) {
+            JSValue      exc2 = JS_GetException(sctx);
+            const char  *es = JS_ToCString(sctx, exc2);
+
+            ngx_snprintf((u_char *) fail->buf, sizeof(fail->buf) - 1,
+                         "admission refused: test failed: %s%Z",
+                         es ? es : "threw");
+            fail->buf[sizeof(fail->buf) - 1] = '\0';
+            fail->code = NGX_JS_REFUSAL_ADMIT_TEST;
+            fail->syntax = 0;
+            fail->to_free = NULL;
+            fail->text = fail->buf;
+
+            if (es != NULL) {
+                JS_FreeCString(sctx, es);
+            }
+            JS_FreeValue(sctx, exc2);
+            JS_FreeValue(sctx, tret);
+            JS_FreeValue(sctx, testfn);
+            ngx_js_comcon_deadline_pop(jcf, test_deadline);
+            return NGX_ERROR;
+        }
+        JS_FreeValue(sctx, tret);
+    }
+
+    /* one pop covers both remaining paths: the test ran and did not throw,
+       or testfn was never a function (the pre-existing silent-skip for a
+       malformed contract.tests string that compiles to something else) */
+    ngx_js_comcon_deadline_pop(jcf, test_deadline);
+    JS_FreeValue(sctx, testfn);
+
+    return NGX_OK;
+}
+
+
+/*
+ * Stage 4: lower the admitted fragment to native C where a compiler exists
+ * (CONVERGE P5, best-effort), then publish it: push it into jcf->comcon_frags
+ * and hand back its handle.  The array owns `fn` on success; on failure `fn`
+ * is released here.
+ *
+ * `frag_pred` is the handle the caller PREDICTED when it bound the grant
+ * wrappers to this fragment (owner = handle + 1).  A prediction is a coupling,
+ * so it is asserted against the real handle rather than trusted: a wrapper
+ * bound to the WRONG fragment would be worse than one bound to none, because
+ * it would hand one fragment's authority to another under a check that looks
+ * like it is working.  If the two ever disagree the fragment is discarded
+ * rather than published.
+ */
+static ngx_int_t
+ngx_js_comcon_publish(ngx_js_conf_t *jcf, JSContext *sctx, JSValue fn,
+    uint32_t frag_pred, ngx_uint_t *handle_out, ngx_js_comcon_fail_t *fail)
+{
+    void        *slot;
+    ngx_uint_t   handle;
+#ifdef CONFIG_JIT
+    int          aot_c, aot_n;
+
+    /* The invoke's JS_Call then dispatches to the compiled jit_func.
+       Confinement is preserved by construction -- the compiled code calls the
+       same gated host functions under the same host-set compartment.  On
+       failure the fragment runs interpreted (maxim skips-to-interpreter). */
+    if (js_comcon_aot_compile(sctx, fn) == 0) {
+        /*
+         * D4c: SAY WHAT HAPPENED, not what was attempted.  aot_compile()
+         * returns 0 for any bytecode function -- "eligible", never "compiled"
+         * -- so this used to log "lowered to native C" on every include,
+         * including the request-time epoch switches of a live rewrite, where
+         * the gcc thread does not exist because it does not survive fork().
+         * The two messages share no substring: a log reader grepping for one
+         * can never match the other.
+         */
+        aot_n = 0;
+        aot_c = js_comcon_aot_status(sctx, fn, &aot_n);
+        if (aot_c > 0) {
+            ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                          "js comcon: include fragment NATIVE "
+                          "(COMCON C5 server-AOT: %d of %d functions)",
+                          aot_c, aot_n);
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                          "js comcon: include fragment BYTECODE "
+                          "(%d functions, nothing lowered: no compiler in "
+                          "this process)", aot_n);
+        }
+    }
+#endif
+
+    if (jcf->comcon_frags == NULL) {
+        /* Own the backing on a dedicated pool: this array grows at REQUEST
+           time (D4a rebuild-on-write), but the first include may run during
+           host-JS eval (config time) when ngx_cycle->pool is a transient
+           config pool -- growing it later on that stale pool corrupts memory.
+           A standalone pool lives until teardown, independent of the cycle. */
+        jcf->comcon_frags_pool = ngx_create_pool(4096, ngx_cycle->log);
+        if (jcf->comcon_frags_pool == NULL) {
+            goto oom;
+        }
+        jcf->comcon_frags = ngx_array_create(jcf->comcon_frags_pool, 8,
+                                             sizeof(JSValue));
+        if (jcf->comcon_frags == NULL) {
+            goto oom;
+        }
+    }
+    slot = ngx_array_push(jcf->comcon_frags);
+    if (slot == NULL) {
+        goto oom;
+    }
+    *(JSValue *) slot = fn;                          /* the array owns fn */
+    handle = jcf->comcon_frags->nelts - 1;
+
+    /*
+     * The prediction, checked.  Nothing between the grant loop and here
+     * pushes to this array, so this cannot fire -- which is exactly why it is
+     * written down: if some future path does, every wrapper this include
+     * built is bound to a DIFFERENT fragment's handle, and the owner gate
+     * would then be enforcing an invariant nobody holds.  The slot keeps its
+     * index (handles are never reused) but is emptied, so invoking the handle
+     * refuses as a stale epoch.
+     */
+    if ((uint32_t) handle != frag_pred) {
+        ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0,
+                      "js comcon: fragment handle %ui is not the predicted "
+                      "%uD; its granted capabilities are bound to the wrong "
+                      "fragment and it has been discarded", handle, frag_pred);
+        JS_FreeValue(sctx, fn);
+        *(JSValue *) slot = JS_UNDEFINED;
+        ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_CAP_GRANT,
+                   "granted capabilities could not be bound to this fragment");
+        return NGX_ERROR;
+    }
+
+    *handle_out = handle;
+    return NGX_OK;
+
+oom:
+
+    JS_FreeValue(sctx, fn);
+    ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_NONE,
+                              "out of memory publishing the fragment");
+    fail->syntax = 0;
+    return NGX_ERROR;
+}
+
+
 JSValue
 ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     uint32_t  frag_pred;
-    uint32_t  oom0;
     ngx_js_conf_t  *jcf;
     JSContext      *sctx;
-    JSValue         fn, outer, thrown, exc, name_v, av[16];
-#ifdef CONFIG_JIT
-    int             aot_c, aot_n;
-#endif
-    const char     *source, *estr, *name;
-    u_char         *buf, *p;
-    void           *slot;
-    size_t          slen, nlen, total;
-    ngx_uint_t      handle;
-    uint32_t        gi, gn, dn, di, idx, mask;
+    JSValue         fn, outer, name_v, av[16];
+    const char     *source, *name, *names[16];
+    size_t          slen, nlen, nlens[16];
+    ngx_uint_t      handle, nn, ni;
+    ngx_int_t       rc;
+    uint32_t        gi, gn, dn, di, mask;
     int32_t         sh;
     char            depreason[256];
-    ngx_js_compartment_t  tprev;
+    ngx_js_comcon_fail_t  fail;
 
     jcf = ngx_js_comcon_jcf;
     if (jcf == NULL) {
@@ -1454,172 +1937,45 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     }
 
     /*
-     * Build "(function(<grant names><dep names>){\"use strict\";return(...);})".
-     *
-     * The three pieces are ONE definition each (below, at the top of this file)
-     * because the allocation size and the copies used to be separate literals of
-     * the same text: editing the wrapper without editing the sizeof overflows
-     * this buffer by exactly the difference, and nothing would say so.  Found
-     * while writing the D5b-4 negative control that adds a newline here.
+     * The wrapper's parameter list: the grant names, then the dep names.  The
+     * C strings are held until the wrapper is built (stage 1) and released
+     * together; the entrance is the only part of the pipeline that knows they
+     * came from the host context.
      */
-    total = sizeof(NGX_JS_COMCON_WRAP_HEAD NGX_JS_COMCON_WRAP_MID
-                   NGX_JS_COMCON_WRAP_TAIL) + slen;
+    nn = 0;
     for (gi = 0; gi < gn; gi++) {
         name_v = JS_GetPropertyUint32(hctx, argv[1], gi);
-        name = JS_ToCString(hctx, name_v);
-        total += (name ? ngx_strlen(name) : 0) + 1;
-        if (name) {
-            JS_FreeCString(hctx, name);
-        }
+        name = JS_ToCStringLen(hctx, &nlen, name_v);
         JS_FreeValue(hctx, name_v);
+        if (name != NULL) {
+            names[nn] = name;
+            nlens[nn] = nlen;
+            nn++;
+        }
     }
     for (di = 0; di < dn; di++) {
         JSValue dv = JS_GetPropertyUint32(hctx, argv[5], di);
         name_v = JS_GetPropertyStr(hctx, dv, "name");
-        name = JS_ToCString(hctx, name_v);
-        total += (name ? ngx_strlen(name) : 0) + 1;
-        if (name) {
-            JS_FreeCString(hctx, name);
-        }
+        name = JS_ToCStringLen(hctx, &nlen, name_v);
         JS_FreeValue(hctx, name_v);
         JS_FreeValue(hctx, dv);
+        if (name != NULL) {
+            names[nn] = name;
+            nlens[nn] = nlen;
+            nn++;
+        }
     }
 
-    buf = ngx_alloc(total, ngx_cycle->log);
-    if (buf == NULL) {
-        JS_FreeCString(hctx, source);
-        return JS_ThrowOutOfMemory(hctx);
+    rc = ngx_js_comcon_compile_wrapper(jcf, sctx, source, slen, names, nlens,
+                                       nn, &outer, &fail);
+
+    for (ni = 0; ni < nn; ni++) {
+        JS_FreeCString(hctx, names[ni]);
     }
-    p = ngx_cpymem(buf, NGX_JS_COMCON_WRAP_HEAD,
-                   sizeof(NGX_JS_COMCON_WRAP_HEAD) - 1);
-    idx = 0;
-    for (gi = 0; gi < gn; gi++) {
-        name_v = JS_GetPropertyUint32(hctx, argv[1], gi);
-        name = JS_ToCStringLen(hctx, &nlen, name_v);
-        if (name != NULL) {
-            if (idx > 0) {
-                *p++ = ',';
-            }
-            p = ngx_cpymem(p, name, nlen);
-            idx++;
-            JS_FreeCString(hctx, name);
-        }
-        JS_FreeValue(hctx, name_v);
-    }
-    for (di = 0; di < dn; di++) {
-        JSValue dv = JS_GetPropertyUint32(hctx, argv[5], di);
-        name_v = JS_GetPropertyStr(hctx, dv, "name");
-        name = JS_ToCStringLen(hctx, &nlen, name_v);
-        if (name != NULL) {
-            if (idx > 0) {
-                *p++ = ',';
-            }
-            p = ngx_cpymem(p, name, nlen);
-            idx++;
-            JS_FreeCString(hctx, name);
-        }
-        JS_FreeValue(hctx, name_v);
-        JS_FreeValue(hctx, dv);
-    }
-    p = ngx_cpymem(p, NGX_JS_COMCON_WRAP_MID,
-                   sizeof(NGX_JS_COMCON_WRAP_MID) - 1);
-    p = ngx_cpymem(p, source, slen);
-    p = ngx_cpymem(p, NGX_JS_COMCON_WRAP_TAIL,
-                   sizeof(NGX_JS_COMCON_WRAP_TAIL) - 1);
-    *p = '\0';                    /* JS_Eval requires a NUL-terminated buffer */
     JS_FreeCString(hctx, source);
 
-    oom0 = JS_GetOutOfMemoryCount(JS_GetRuntime(sctx));
-
-    /*
-     * F15 PHASE 2: COMPILE FIRST, RUN ONLY IF THE SHAPE IS RIGHT.
-     *
-     * `buf` is source TEXT concatenated around the fragment: "(function(g0,
-     * ...){"use strict";return(" + source + ")})".  A fragment whose own text
-     * closes that function expression early -- an unbalanced `)}` sitting
-     * inside what looks like a string, comment or template literal -- and
-     * supplies more script-level code afterward used to have that code run
-     * with NO admission gate ever applied to it, REGARDLESS of how strict the
-     * contract asked to be: `imports: []` bought nothing, because admission
-     * only ever inspected the RESULT (`fn`), never the rest of the script that
-     * produced it.  Measured: `imports: []` admitted a fragment whose escaped
-     * text read another fragment's declared free names and (before F15 phase 1
-     * froze bindings) reassigned a shared intrinsic for every fragment, not
-     * just its own.
-     *
-     * COMPILE_ONLY compiles the whole buffer WITHOUT running any of it, so a
-     * syntax error is still caught here exactly as before, but nothing --
-     * including a breakout's injected code -- has executed yet.  The shape
-     * check runs on that unexecuted result; only if it passes does
-     * JS_EvalFunction() actually create the wrapper's closure and hand back
-     * `outer`, identical to what the single-step JS_Eval() used to return for
-     * a fragment that never attempted a breakout.
-     */
-    outer = JS_Eval(sctx, (const char *) buf, p - buf,
-                    NGX_JS_COMCON_FRAGMENT_ORIGIN,
-                    JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
-    ngx_free(buf);
-
-    if (JS_IsException(outer)) {
-        const char  *etext;
-
-        exc = JS_GetException(sctx);
-        etext = ngx_js_comcon_exc_text(sctx, exc, oom0,
-                    "out of memory while compiling the fragment -- the "
-                    "compartment's memory limit was reached", &estr);
-        thrown = JS_ThrowSyntaxError(hctx, "comcon.include: %s", etext);
-        if (estr != NULL) {
-            JS_FreeCString(sctx, estr);
-        }
-        JS_FreeValue(sctx, exc);
-        return thrown;
-    }
-
-    if (!js_comcon_is_single_toplevel_closure(outer)) {
-        /*
-         * Fail closed WITHOUT running it.  `outer` here is a raw compiled unit
-         * (JS_TAG_FUNCTION_BYTECODE), never turned into a callable, so freeing
-         * it discards the compiled form without ever creating -- let alone
-         * calling -- any closure the escaped text tried to produce.
-         */
-        JS_FreeValue(sctx, outer);
-        return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_ADMIT_SOURCE,
-                   "comcon.include: source must be a single function "
-                   "expression -- no statements or additional top-level code "
-                   "may accompany it");
-    }
-
-    /*
-     * F15 PHASE 3: JS_EvalFunction() here only CREATES the wrapper's own
-     * closure (the root "eval" unit's whole job, per its 3-opcode shape, is
-     * "make one closure and return it") -- it does not call it, so no
-     * fragment-adjacent code runs yet.  A push here is defence in depth for
-     * closure allocation itself (the OOM path the exception check below
-     * already names), not the fix for a looping SOURCE -- that runs later,
-     * when the wrapper is actually CALLED.
-     */
-    {
-    uint64_t  saved_deadline = ngx_js_comcon_deadline_push(jcf,
-                                    NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS);
-
-    outer = JS_EvalFunction(sctx, outer);
-
-    ngx_js_comcon_deadline_pop(jcf, saved_deadline);
-    }
-
-    if (JS_IsException(outer)) {
-        const char  *etext;
-
-        exc = JS_GetException(sctx);
-        etext = ngx_js_comcon_exc_text(sctx, exc, oom0,
-                    "out of memory while creating the fragment's closure -- "
-                    "the compartment's memory limit was reached", &estr);
-        thrown = JS_ThrowSyntaxError(hctx, "comcon.include: %s", etext);
-        if (estr != NULL) {
-            JS_FreeCString(sctx, estr);
-        }
-        JS_FreeValue(sctx, exc);
-        return thrown;
+    if (rc != NGX_OK) {
+        return ngx_js_comcon_fail_throw(hctx, &fail, "comcon.include");
     }
 
     /*
@@ -1834,6 +2190,44 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         {
             kind = 3;
             promoted = 1;
+        }
+
+        if (kind == 4) {
+            /*
+             * The authoring tier: `comcon.author({subFragments, ttlSeconds?})`.
+             * NOTHING crosses -- there is no host object behind this
+             * capability at all; the wrapper on the far side is built from
+             * two numbers, and its whole authority is "may run the shared
+             * admission pipeline this many times, as this fragment".  The
+             * count is checked in the JS producer (C.author refuses 0); here
+             * a zero is refused again rather than granting a capability that
+             * can do nothing and reads as if it could.
+             */
+            uint32_t  a_subs = 0, a_ttl = 0;
+            JSValue   f;
+
+            f = JS_GetPropertyStr(hctx, pol_v, "subFragments");
+            JS_ToUint32(hctx, &a_subs, f);
+            JS_FreeValue(hctx, f);
+
+            f = JS_GetPropertyStr(hctx, pol_v, "ttlSeconds");
+            if (!JS_IsUndefined(f)) {
+                JS_ToUint32(hctx, &a_ttl, f);
+            }
+            JS_FreeValue(hctx, f);
+
+            JS_FreeValue(hctx, pol_v);
+            JS_FreeValue(hctx, cap_v);
+
+            if (a_subs == 0) {
+                goto grant_bad;
+            }
+
+            av[gi] = ngx_js_author_wrap(sctx, a_subs, a_ttl, frag_pred + 1);
+            if (JS_IsException(av[gi])) {
+                goto grant_bad;
+            }
+            continue;
         }
 
         if (kind == 3) {
@@ -2149,63 +2543,20 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         }
     }
 
-    oom0 = JS_GetOutOfMemoryCount(JS_GetRuntime(sctx));
-
     /*
-     * F15 PHASE 3: THIS is where the wrapper's body actually runs --
+     * F15 PHASE 3: stage 2 is where the wrapper's body actually runs --
      * `"use strict"; return( source )` -- and therefore where the original
      * finding's IIFE (`"(function(){ for(;;){} })()"` as `source`) loops.
-     * Measured before this push existed: it hung config-phase evaluation
+     * Measured before its push existed: it hung config-phase evaluation
      * (`nginx -t`) until killed, because no worker exists yet at that point
      * and the compartment's interrupt handler used to require one; at
      * request time it was bounded only by whichever ambient deadline
      * happened to be running, not by a budget of its own.
      */
+    if (ngx_js_comcon_call_wrapper(jcf, sctx, outer, av, gn + dn, &fn, &fail)
+        != NGX_OK)
     {
-    uint64_t  call_deadline = ngx_js_comcon_deadline_push(jcf,
-                                   NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS);
-
-    fn = JS_Call(sctx, outer, JS_UNDEFINED, (int) (gn + dn),
-                 (JSValueConst *) av);
-
-    ngx_js_comcon_deadline_pop(jcf, call_deadline);
-    }
-
-    for (gi = 0; gi < gn + dn; gi++) {
-        JS_FreeValue(sctx, av[gi]);
-    }
-    JS_FreeValue(sctx, outer);
-
-    if (JS_IsException(fn)) {
-        /*
-         * CARRY THE EXCEPTION ACROSS, do not return it.  This used to be
-         * `return fn`, and JS_EXCEPTION means "an exception is pending ON THIS
-         * CONTEXT" -- but the exception was pending on the COMPARTMENT context
-         * and this returns to the HOST.  So the host saw an exception with no
-         * value at all: `typeof e === "unknown"`, `String(e)` = "[unsupported
-         * type]", no message, no code.  Anything that throws while the fragment's
-         * expression is being evaluated took that path -- found through an
-         * include that ran out of memory, but a top-level `throw` did the same --
-         * and the real exception stayed pending in the compartment, holding its
-         * references until something else overwrote it.
-         */
-        const char  *etext;
-
-        exc = JS_GetException(sctx);
-        etext = ngx_js_comcon_exc_text(sctx, exc, oom0,
-                    "out of memory while evaluating the fragment -- the "
-                    "compartment's memory limit was reached", &estr);
-        thrown = JS_ThrowTypeError(hctx, "comcon.include: %s", etext);
-        if (estr != NULL) {
-            JS_FreeCString(sctx, estr);
-        }
-        JS_FreeValue(sctx, exc);
-        return thrown;
-    }
-    if (!JS_IsFunction(sctx, fn)) {
-        JS_FreeValue(sctx, fn);
-        return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_ADMIT_SOURCE,
-                   "comcon.include: source must be a function expression");
+        return ngx_js_comcon_fail_throw(hctx, &fail, "comcon.include");
     }
 
     /* P1 (CONVERGE): compose C3 admission + optional identity pin when the
@@ -2395,199 +2746,725 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         if (JS_IsString(tv)) {
             const char  *tsrc;
             size_t       tlen;
-            u_char      *tbuf;
-            JSValue      testfn, tret;
-            uint64_t     test_deadline;
 
             tsrc = JS_ToCStringLen(hctx, &tlen, tv);
             if (tsrc != NULL) {
-                tbuf = ngx_alloc(tlen + 3, ngx_cycle->log);
-                if (tbuf != NULL) {
-                    tbuf[0] = '(';
-                    ngx_memcpy(tbuf + 1, tsrc, tlen);
-                    tbuf[tlen + 1] = ')';
-                    tbuf[tlen + 2] = '\0';
-
-                    /*
-                     * F15 PHASE 2, same reasoning as the fragment wrapper
-                     * above: compile without running, so a `tests` source that
-                     * closes its own "(" early and supplies extra top-level
-                     * code cannot run that code before (or instead of) being
-                     * refused.  Unlike the fragment wrapper this is a HARD
-                     * REFUSAL rather than admission failing open: `tests`
-                     * already has one silent-skip path (a string that does not
-                     * compile to a function), and turning a breakout into a
-                     * SECOND silent skip would make a test that looks like it
-                     * validates something quietly not run at all -- worse than
-                     * refusing loudly, and the opposite of a zero-blast-radius
-                     * test phase.
-                     */
-                    testfn = JS_Eval(sctx, (const char *) tbuf, tlen + 2,
-                                     "<comcon-tests>",
-                                     JS_EVAL_TYPE_GLOBAL
-                                     | JS_EVAL_FLAG_COMPILE_ONLY);
-                    ngx_free(tbuf);
-
-                    if (!JS_IsException(testfn)
-                        && !js_comcon_is_single_toplevel_closure(testfn))
-                    {
-                        JS_FreeValue(sctx, testfn);
-                        JS_FreeCString(hctx, tsrc);
-                        JS_FreeValue(hctx, tv);
-                        JS_FreeValue(sctx, fn);
-                        return ngx_js_comcon_refuse(hctx,
-                            NGX_JS_REFUSAL_ADMIT_CONTRACT,
-                            "comcon.include: admission refused: contract "
-                            "`tests` must be a single function expression -- "
-                            "no statements or additional top-level code may "
-                            "accompany it");
-                    }
-
-                    /*
-                     * F15 PHASE 3: one push spans materializing the test
-                     * closure AND calling it -- the call is what runs
-                     * arbitrary contract-authored code against the fragment
-                     * (which itself runs, since `tests` exists precisely to
-                     * invoke `fn` and inspect what it does), so it needs the
-                     * same bound the wrapper's own evaluation just got, not
-                     * only the ambient request deadline that used to be the
-                     * sole protection here (and none at all at config phase).
-                     */
-                    test_deadline = ngx_js_comcon_deadline_push(
-                                    jcf, NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS);
-
-                    if (!JS_IsException(testfn)) {
-                        testfn = JS_EvalFunction(sctx, testfn);
-                    }
-
-                    if (JS_IsFunction(sctx, testfn)) {
-                        tprev = ngx_js_compartment_enter(
-                                    NGX_JS_COMPARTMENT_TENANT);
-                        tret = JS_Call(sctx, testfn, JS_UNDEFINED, 1,
-                                       (JSValueConst *) &fn);
-                        ngx_js_compartment_leave(tprev);
-
-                        if (JS_IsException(tret)) {
-                            JSValue      exc2 = JS_GetException(sctx);
-                            const char  *es = JS_ToCString(sctx, exc2);
-
-                            JS_FreeValue(sctx, tret);
-                            JS_FreeValue(sctx, testfn);
-                            JS_FreeCString(hctx, tsrc);
-                            JS_FreeValue(hctx, tv);
-                            thrown = ngx_js_comcon_refuse(hctx,
-                                NGX_JS_REFUSAL_ADMIT_TEST,
-                                "comcon.include: admission refused: "
-                                "test failed: %s", es ? es : "threw");
-                            if (es != NULL) {
-                                JS_FreeCString(sctx, es);
-                            }
-                            JS_FreeValue(sctx, exc2);
-                            JS_FreeValue(sctx, fn);
-                            ngx_js_comcon_deadline_pop(jcf, test_deadline);
-                            return thrown;
-                        }
-                        JS_FreeValue(sctx, tret);
-                    }
-
-                    /*
-                     * F15 PHASE 3: one pop covers both remaining paths -- the
-                     * test ran and did not throw, or testfn was never a
-                     * function at all (the pre-existing silent-skip path for
-                     * a malformed contract.tests string) -- the early-return
-                     * exception path above pops for itself.
-                     */
-                    ngx_js_comcon_deadline_pop(jcf, test_deadline);
-
-                    JS_FreeValue(sctx, testfn);
-                }
+                rc = ngx_js_comcon_run_tests(jcf, sctx, fn, tsrc, tlen, &fail);
                 JS_FreeCString(hctx, tsrc);
+
+                if (rc != NGX_OK) {
+                    JS_FreeValue(hctx, tv);
+                    JS_FreeValue(sctx, fn);
+                    return ngx_js_comcon_fail_throw(hctx, &fail,
+                                                    "comcon.include");
+                }
             }
         }
         JS_FreeValue(hctx, tv);
     }
 
-#ifdef CONFIG_JIT
-    /* CONVERGE P5: lower the admitted fragment to native C (server-AOT). The
-       invoke's JS_Call then dispatches to the compiled jit_func. Confinement is
-       preserved by construction — the compiled code calls the same gated host
-       functions under the same host-set compartment (the invoke enters TENANT,
-       and getters materialize under it). Best-effort: on failure the fragment
-       runs interpreted (maxim skips-to-interpreter). */
-    if (js_comcon_aot_compile(sctx, fn) == 0) {
-        /*
-         * D4c: SAY WHAT HAPPENED, not what was attempted.  aot_compile()
-         * returns 0 for any bytecode function -- "eligible", never "compiled"
-         * (see its header) -- so this used to log "lowered to native C" on
-         * every include, including the request-time epoch switches of a live
-         * rewrite, where the gcc thread does not exist because it does not
-         * survive fork().  The two messages share no substring: a log reader
-         * grepping for one can never match the other.
-         */
-        aot_n = 0;
-        aot_c = js_comcon_aot_status(sctx, fn, &aot_n);
-        if (aot_c > 0) {
-            ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
-                          "js comcon: include fragment NATIVE "
-                          "(COMCON C5 server-AOT: %d of %d functions)",
-                          aot_c, aot_n);
-        } else {
-            ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
-                          "js comcon: include fragment BYTECODE "
-                          "(%d functions, nothing lowered: no compiler in "
-                          "this process)", aot_n);
-        }
-    }
-#endif
-
-    if (jcf->comcon_frags == NULL) {
-        /* Own the backing on a dedicated pool: this array grows at REQUEST time
-           (D4a rebuild-on-write), but the first include may run during host-JS
-           eval (config time) when ngx_cycle->pool is a transient config pool —
-           growing it later on that stale pool corrupts memory. A standalone pool
-           lives until teardown, independent of the cycle. */
-        jcf->comcon_frags_pool = ngx_create_pool(4096, ngx_cycle->log);
-        if (jcf->comcon_frags_pool == NULL) {
-            JS_FreeValue(sctx, fn);
-            return JS_ThrowOutOfMemory(hctx);
-        }
-        jcf->comcon_frags = ngx_array_create(jcf->comcon_frags_pool, 8,
-                                             sizeof(JSValue));
-        if (jcf->comcon_frags == NULL) {
-            JS_FreeValue(sctx, fn);
-            return JS_ThrowOutOfMemory(hctx);
-        }
-    }
-    slot = ngx_array_push(jcf->comcon_frags);
-    if (slot == NULL) {
-        JS_FreeValue(sctx, fn);
-        return JS_ThrowOutOfMemory(hctx);
-    }
-    *(JSValue *) slot = fn;                          /* the array owns fn */
-    handle = jcf->comcon_frags->nelts - 1;
-
-    /*
-     * The prediction, checked.  Nothing between the grant loop and here pushes to
-     * this array today, so this cannot fire -- which is exactly why it is written
-     * down: if some future path does, every wrapper this include built is bound to
-     * a DIFFERENT fragment's handle, and the owner gate would then be enforcing an
-     * invariant nobody holds.  The fragment is killed rather than published, and
-     * the handle refuses as a stale epoch.
-     */
-    if ((uint32_t) handle != frag_pred) {
-        ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0,
-                      "js comcon: fragment handle %L is not the predicted %uD; "
-                      "its granted capabilities are bound to the wrong fragment "
-                      "and it has been discarded",
-                      (int64_t) handle, frag_pred);
-        JS_FreeValue(sctx, fn);
-        *(JSValue *) slot = JS_UNDEFINED;
-        return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_CAP_GRANT,
-                   "comcon.include: granted capabilities could not be bound to "
-                   "this fragment");
+    /* CONVERGE P5 (lower to native C where a compiler exists) + the push into
+       jcf->comcon_frags + the prediction check: stage 4. */
+    if (ngx_js_comcon_publish(jcf, sctx, fn, frag_pred, &handle, &fail)
+        != NGX_OK)
+    {
+        return ngx_js_comcon_fail_throw(hctx, &fail, "comcon.include");
     }
 
     return JS_NewInt64(hctx, (int64_t) handle);
+}
+
+
+/*
+ * ======================================================================
+ * THE AUTHORING TIER -- a fragment that authors fragments.
+ * ======================================================================
+ *
+ * `comcon.author({subFragments: N, ttlSeconds?})` on the host produces a
+ * descriptor that `include()` grants like any other capability.  Inside the
+ * fragment it arrives as a NginxComconAuthor whose one operation is
+ *
+ *     author.include(source, {imports, intrinsics?, checkRequest?, tests?,
+ *                             timeoutMs?, memoryBytes?})  ->  callable
+ *
+ * The callable runs the SUB-fragment as a real fragment: its own handle in
+ * jcf->comcon_frags, its own identity (handle + 1, so its wrappers -- none
+ * yet; re-granting is the next phase -- would be its own and not its
+ * parent's), its own deadline and allowance NESTED inside the parent's
+ * (the push/pop pairs can only narrow what they find), and the parent's
+ * posture, which it cannot change.  It is the same pipeline the host runs --
+ * the four stages above -- reached from the other side of the membrane,
+ * which is what makes "cages nest" a property rather than a slogan: the
+ * sub-fragment is admitted by the same gate, bounded by the same clocks,
+ * and holds NOTHING the parent did not hold.
+ *
+ * WHAT CROSSES THE NESTED BOUNDARY IS TEXT.  The argument in and the result
+ * out are JSON-marshalled exactly as the host boundary marshals them, and a
+ * sub-fragment's exception reaches the parent as a fresh error carrying its
+ * message and its `code` -- never the object.  Not because a JSValue would
+ * be a different runtime's (it is not; parent and sub share the
+ * compartment) but because an OBJECT is a channel: a returned closure called
+ * by the parent runs sub-fragment code under the PARENT's identity, and a
+ * thrown one does the same from the catch block.  The marshal makes the
+ * absence of that channel structural.
+ *
+ * A NESTED INVOCATION IS SYNCHRONOUS AND DRAINS NOTHING.  The compartment's
+ * job queue is one FIFO shared by every fragment; a nested frame that ran it
+ * would run the ENCLOSING fragment's continuations under the inner one's
+ * identity -- the deferred-job escape with the roles reversed.  So a sub-
+ * fragment that returns a promise is refused (E_INVOKE_PENDING), and any job
+ * a sub-fragment queues is the PARENT's job: it runs in the parent's settle
+ * loop or trailing drain, under the parent's identity, and is charged to the
+ * parent -- which authored the sub-fragment and is answerable for it.
+ *
+ * A SUB-FRAGMENT PAST ITS DEADLINE TAKES THE PARENT WITH IT; ONE PAST ITS
+ * ALLOWANCE DOES NOT.  The engine's interrupt is uncatchable, and a sub-
+ * fragment's deadline is at most the parent's remaining time, so a sub-
+ * fragment hitting it is the parent hitting it through code it chose to run:
+ * re-raised uncatchable.  Out of memory is an ORDINARY exception at the host
+ * boundary -- a fragment may catch its own and return normally, the
+ * allowance is restored either way -- and the nested boundary keeps that:
+ * a sub-fragment may catch its own, and a parent may catch its sub's, as
+ * text.  Two bounds, two behaviours, each the one the host boundary has.
+ *
+ * NO SUB-SUB-FRAGMENTS: the depth is capped (NGX_JS_COMCON_MAX_DEPTH), and
+ * an author capability is not itself re-grantable, so the cap is structural
+ * and the check is the belt.
+ */
+
+typedef struct {
+    uint32_t  owner;          /* the fragment this capability was granted to */
+    uint32_t  max_subs;       /* sub-fragments it may author, worker-lifetime */
+    uint32_t  subs_used;
+    time_t    expires;        /* `ttl`: 0 = never */
+} ngx_js_author_opaque_t;
+
+
+static void
+ngx_js_author_finalizer(JSRuntime *rt, JSValue val)
+{
+    ngx_js_author_opaque_t  *op;
+
+    op = JS_GetOpaque(val, ngx_js_author_class_id);
+    if (op) {
+        js_free_rt(rt, op);
+    }
+}
+
+
+static JSClassDef  ngx_js_author_class = {
+    "NginxComconAuthor",
+    .finalizer = ngx_js_author_finalizer
+};
+
+
+static JSValue
+ngx_js_author_wrap(JSContext *sctx, uint32_t max_subs, uint32_t ttl_seconds,
+    uint32_t owner)
+{
+    JSValue                  obj;
+    ngx_js_author_opaque_t  *op;
+
+    op = js_mallocz(sctx, sizeof(ngx_js_author_opaque_t));
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    op->owner = owner;
+    op->max_subs = max_subs;
+    op->subs_used = 0;
+    op->expires = ttl_seconds ? ngx_time() + (time_t) ttl_seconds : 0;
+
+    obj = JS_NewObjectClass(sctx, ngx_js_author_class_id);
+    if (JS_IsException(obj)) {
+        js_free(sctx, op);
+        return JS_EXCEPTION;
+    }
+
+    JS_SetOpaque(obj, op);
+    return obj;
+}
+
+
+/*
+ * The two gates every entry point shares: this is the holder's capability,
+ * and it has not expired.  The same structural check the socket, outbound
+ * and facet wrappers make, with the same audit-mode behaviour (logged and
+ * allowed).  Returns 1 when the caller may proceed.
+ */
+static ngx_int_t
+ngx_js_author_owner_ok(JSContext *ctx, ngx_js_author_opaque_t *op)
+{
+    if (ngx_js_cap_foreign(op->owner)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER, "author"))
+    {
+        (void) JS_ThrowTypeError(ctx,
+            "NginxComconAuthor: this capability was granted to another "
+            "fragment");
+        return 0;
+    }
+
+    if (op->expires != 0 && ngx_time() >= op->expires
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_EXPIRED, "author"))
+    {
+        (void) JS_ThrowTypeError(ctx,
+            "NginxComconAuthor: this capability has expired");
+        return 0;
+    }
+
+    return 1;
+}
+
+
+/*
+ * The sub-fragment's callable.  func_data: [handle, timeoutMs, memoryBytes,
+ * owner].  See the header above for what is and is not allowed to cross.
+ */
+static JSValue
+ngx_js_author_invoke(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv, int magic, JSValue *func_data)
+{
+    ngx_js_conf_t  *jcf;
+    JSValueConst    fn;
+    JSValue         arg, result, jstr, retv, exc, cv;
+    const char     *s, *text, *to_free;
+    size_t          len;
+    int             nargs = 0;
+    uint32_t        handle = 0, timeout = 0, memory = 0, owner = 0, oom0;
+    uint32_t        saved_frag;
+    uint64_t        old_deadline;
+    size_t          old_mem;
+    ngx_uint_t      failed = 0, pending = 0, fatal = 0;
+    char            tbuf[512], codebuf[64];
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx != ctx || jcf->comcon_frags == NULL) {
+        return JS_ThrowInternalError(ctx, "sub-fragment: no compartment");
+    }
+
+    JS_ToUint32(ctx, &handle, func_data[0]);
+    JS_ToUint32(ctx, &timeout, func_data[1]);
+    JS_ToUint32(ctx, &memory, func_data[2]);
+    JS_ToUint32(ctx, &owner, func_data[3]);
+
+    /* whose call is this?  The callable belongs to the fragment that authored
+       it, exactly as a granted wrapper belongs to the fragment it was granted
+       to; nothing can carry it elsewhere (JSON out, frozen globals), so this
+       is the belt. */
+    if (ngx_js_cap_foreign(owner)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER, "sub-fragment"))
+    {
+        return JS_ThrowTypeError(ctx,
+            "NginxComconAuthor: this sub-fragment was authored by another "
+            "fragment");
+    }
+
+    if (jcf->comcon_depth >= NGX_JS_COMCON_MAX_DEPTH) {
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_AUTHOR_LIMIT,
+                   "sub-fragment: confined invocations nest at most %ui deep",
+                   (ngx_uint_t) NGX_JS_COMCON_MAX_DEPTH);
+    }
+
+    if (handle >= jcf->comcon_frags->nelts) {
+        return JS_ThrowTypeError(ctx, "sub-fragment: bad fragment handle");
+    }
+    fn = ((JSValue *) jcf->comcon_frags->elts)[handle];   /* borrowed */
+
+    if (JS_IsUndefined(fn)) {
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_EPOCH_STALE,
+                   "sub-fragment: fragment was freed (stale epoch)");
+    }
+
+    /*
+     * THE ARGUMENT, AS TEXT -- marshalled under the PARENT's identity, so a
+     * toJSON the parent wrote runs as the parent.  A value JSON cannot carry
+     * (a function, undefined) arrives as no argument, the way the host
+     * boundary treats it.
+     */
+    arg = JS_UNDEFINED;
+    if (argc > 0 && !JS_IsUndefined(argv[0])) {
+        jstr = JS_JSONStringify(ctx, argv[0], JS_UNDEFINED, JS_UNDEFINED);
+        if (JS_IsException(jstr)) {
+            return JS_EXCEPTION;              /* the parent's own toJSON threw */
+        }
+        if (JS_IsString(jstr)) {
+            s = JS_ToCStringLen(ctx, &len, jstr);
+            if (s != NULL) {
+                arg = JS_ParseJSON(ctx, s, len, "<arg>");
+                JS_FreeCString(ctx, s);
+                if (JS_IsException(arg)) {
+                    JS_FreeValue(ctx, JS_GetException(ctx));
+                    arg = JS_UNDEFINED;
+                } else {
+                    nargs = 1;
+                }
+            }
+        }
+        JS_FreeValue(ctx, jstr);
+    }
+
+    /* the sub-fragment's own bounds, which the pushes then min against the
+       parent's: a contract may only narrow, here as at the host boundary */
+    if (timeout == 0 || timeout > NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS) {
+        timeout = NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS;
+    }
+    if (memory == 0 || memory > NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES) {
+        memory = NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES;
+    }
+
+    old_deadline = ngx_js_comcon_deadline_push(jcf, timeout);
+    old_mem = ngx_js_comcon_mem_push(jcf, (size_t) memory);
+
+    saved_frag = ngx_js_compartment_frag_get();
+    ngx_js_compartment_frag_set(handle + 1);
+    jcf->comcon_depth++;
+
+    oom0 = JS_GetOutOfMemoryCount(jcf->comcon_rt);
+    result = JS_Call(ctx, fn, JS_UNDEFINED, nargs, (JSValueConst *) &arg);
+    JS_FreeValue(ctx, arg);
+
+    tbuf[0] = '\0';
+    codebuf[0] = '\0';
+    jstr = JS_UNDEFINED;
+
+    if (JS_IsException(result)) {
+        failed = 1;
+
+    } else if ((int) JS_PromiseState(ctx, result) != -1) {
+        JS_FreeValue(ctx, result);
+        pending = 1;
+
+    } else {
+        /* THE RESULT, AS TEXT -- marshalled under the SUB-fragment's identity,
+           so a toJSON the sub-fragment wrote runs as the sub-fragment.  The
+           string is a plain value and survives the identity restore below. */
+        jstr = JS_JSONStringify(ctx, result, JS_UNDEFINED, JS_UNDEFINED);
+        JS_FreeValue(ctx, result);
+        if (JS_IsException(jstr)) {
+            jstr = JS_UNDEFINED;
+            failed = 1;
+        }
+    }
+
+    if (failed) {
+        exc = JS_GetException(ctx);
+
+        /* fatal = the deadline fired; decided BEFORE the parent's deadline is
+           restored, which is the only moment the question can be asked */
+        if (ngx_js_comcon_deadline_passed_jcf(jcf)) {
+            fatal = 1;
+        }
+
+        text = ngx_js_comcon_exc_text(ctx, exc, oom0,
+                   "out of memory -- the sub-fragment exhausted its memory "
+                   "allowance", &to_free);
+        ngx_cpystrn((u_char *) tbuf, (u_char *) text, sizeof(tbuf));
+        if (to_free != NULL) {
+            JS_FreeCString(ctx, to_free);
+        }
+
+        if (JS_IsObject(exc)) {
+            cv = JS_GetPropertyStr(ctx, exc, "code");
+            if (JS_IsString(cv)) {
+                s = JS_ToCString(ctx, cv);
+                if (s != NULL) {
+                    ngx_cpystrn((u_char *) codebuf, (u_char *) s,
+                                sizeof(codebuf));
+                    JS_FreeCString(ctx, s);
+                }
+            }
+            JS_FreeValue(ctx, cv);
+        }
+        JS_FreeValue(ctx, exc);
+    }
+
+    /* restore, in the reverse order of the push */
+    jcf->comcon_depth--;
+    ngx_js_compartment_frag_set(saved_frag);
+    ngx_js_comcon_mem_pop(jcf, old_mem);
+    ngx_js_comcon_deadline_pop(jcf, old_deadline);
+
+    if (failed) {
+        if (fatal) {
+            ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                          "js comcon: sub-fragment %uD (of fragment %uD) "
+                          "outran its bounds: %s -- the invocation is aborted",
+                          handle, saved_frag ? saved_frag - 1 : 0, tbuf);
+            (void) JS_ThrowInternalError(ctx, "sub-fragment %u: %s",
+                                         (unsigned) handle, tbuf);
+            JS_SetUncatchableException(ctx, 1);
+            return JS_EXCEPTION;
+        }
+
+        (void) JS_ThrowTypeError(ctx, "sub-fragment %u: %s", (unsigned) handle,
+                                 tbuf);
+        if (codebuf[0] != '\0') {
+            exc = JS_GetException(ctx);
+            if (JS_IsObject(exc)) {
+                JS_SetPropertyStr(ctx, exc, "code", JS_NewString(ctx, codebuf));
+            }
+            return JS_Throw(ctx, exc);
+        }
+        return JS_EXCEPTION;
+    }
+
+    if (pending) {
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_INVOKE_PENDING,
+                   "sub-fragment %uD returned a promise: a sub-fragment is "
+                   "invoked synchronously, and nothing in reach can settle it",
+                   handle);
+    }
+
+    if (!JS_IsString(jstr)) {                /* JSON.stringify(undefined) */
+        JS_FreeValue(ctx, jstr);
+        return JS_UNDEFINED;
+    }
+
+    s = JS_ToCStringLen(ctx, &len, jstr);
+    retv = (s != NULL) ? JS_ParseJSON(ctx, s, len, "<result>") : JS_UNDEFINED;
+    if (s != NULL) {
+        JS_FreeCString(ctx, s);
+    }
+    JS_FreeValue(ctx, jstr);
+
+    return retv;
+}
+
+
+/*
+ * author.include(source, spec) -> callable.  The fragment-side entrance to
+ * the shared pipeline: decode the spec from COMPARTMENT values, then stages
+ * 1-4 exactly as the host runs them.
+ */
+static JSValue
+ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_conf_t           *jcf;
+    ngx_js_author_opaque_t  *op;
+    JSValue                  outer, fn, v, imp_s, intr_s, callable, data[4];
+    JSValueConst             spec;
+    const char              *source, *tsrc, *iname;
+    size_t                   slen, tlen;
+    uint32_t                 frag_pred, ilen = 0, nlen = 0, k;
+    uint32_t                 timeout = 0, memory = 0;
+    int                      check;
+    ngx_uint_t               handle;
+    ngx_int_t                rc;
+    ngx_js_comcon_fail_t     fail;
+    static const char       *forbidden[] = { "grants", "deps", "identity",
+                                             "onViolation", "profile",
+                                             "meter", NULL };
+    ngx_uint_t               i;
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx != ctx) {
+        return JS_ThrowInternalError(ctx, "author.include: no compartment");
+    }
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_author_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (!ngx_js_author_owner_ok(ctx, op)) {
+        return JS_EXCEPTION;
+    }
+
+    /*
+     * The two limits, before anything is compiled: a refusal here costs the
+     * parent nothing but the call.  Depth first -- a sub-fragment holding an
+     * author capability cannot happen today (the kind is not re-grantable),
+     * so this is the belt for the cap that already holds.
+     */
+    if (jcf->comcon_depth >= NGX_JS_COMCON_MAX_DEPTH) {
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_AUTHOR_LIMIT,
+                   "author.include: a sub-fragment cannot author sub-fragments "
+                   "of its own (confined invocations nest at most %ui deep)",
+                   (ngx_uint_t) NGX_JS_COMCON_MAX_DEPTH);
+    }
+
+    if (op->subs_used >= op->max_subs) {
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_AUTHOR_LIMIT,
+                   "author.include: this capability's sub-fragment budget "
+                   "(subFragments: %uD) is spent", op->max_subs);
+    }
+
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_ADMIT_ARG,
+                   "author.include: arg0 must be the sub-fragment's source");
+    }
+
+    /*
+     * ADMISSION IS NOT OPTIONAL FOR A SUB-FRAGMENT.  The host may include a
+     * fragment with no contract at all; a fragment authoring one may not --
+     * the author is less trusted than the host, and `imports` is the one
+     * word that makes "holds nothing the parent did not hold" checkable by
+     * construction (a free name is refused, not resolved).  Every word the
+     * host contract has that a sub-fragment must not have -- grants (the
+     * next phase), deps, identity, onViolation/profile (the posture is the
+     * parent's), meter (the bounds are plain numbers here) -- is refused
+     * rather than ignored, for the reason `tests` is: a contract that looks
+     * stricter than it is, is worse than an absent one.
+     */
+    spec = (argc > 1) ? argv[1] : JS_UNDEFINED;
+    if (!JS_IsObject(spec)) {
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                   "author.include: a sub-fragment needs a contract "
+                   "{imports: [...]}");
+    }
+
+    for (i = 0; forbidden[i] != NULL; i++) {
+        v = JS_GetPropertyStr(ctx, spec, forbidden[i]);
+        if (!JS_IsUndefined(v)) {
+            JS_FreeValue(ctx, v);
+            return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                       "author.include: `%s` is not a sub-fragment contract "
+                       "word -- a sub-fragment declares imports, intrinsics, "
+                       "checkRequest, tests, timeoutMs and memoryBytes only",
+                       forbidden[i]);
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    v = JS_GetPropertyStr(ctx, spec, "imports");
+    if (!JS_IsArray(ctx, v)) {
+        JS_FreeValue(ctx, v);
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                   "author.include: `imports` must be an array of names -- a "
+                   "sub-fragment is always admitted");
+    }
+    JS_FreeValue(ctx, v);
+
+    v = JS_GetPropertyStr(ctx, spec, "tests");
+    if (!JS_IsUndefined(v) && !JS_IsNull(v) && !JS_IsString(v)
+        && !JS_IsFunction(ctx, v))
+    {
+        JS_FreeValue(ctx, v);
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                   "author.include: admission refused: contract `tests` must "
+                   "be a function(fragment) or its source string; refusing "
+                   "rather than skipping the test phase");
+    }
+    JS_FreeValue(ctx, v);
+
+    v = JS_GetPropertyStr(ctx, spec, "timeoutMs");
+    if (!JS_IsUndefined(v)) {
+        JS_ToUint32(ctx, &timeout, v);
+    }
+    JS_FreeValue(ctx, v);
+
+    v = JS_GetPropertyStr(ctx, spec, "memoryBytes");
+    if (!JS_IsUndefined(v)) {
+        JS_ToUint32(ctx, &memory, v);
+    }
+    JS_FreeValue(ctx, v);
+
+    source = JS_ToCStringLen(ctx, &slen, argv[0]);
+    if (source == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    frag_pred = (jcf->comcon_frags == NULL)
+                ? 0 : (uint32_t) jcf->comcon_frags->nelts;
+
+    /* stage 1 + 2: no parameters, no grant values -- a sub-fragment holds
+       nothing in this phase */
+    rc = ngx_js_comcon_compile_wrapper(jcf, ctx, source, slen, NULL, NULL, 0,
+                                       &outer, &fail);
+    JS_FreeCString(ctx, source);
+    if (rc != NGX_OK) {
+        return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");
+    }
+
+    if (ngx_js_comcon_call_wrapper(jcf, ctx, outer, NULL, 0, &fn, &fail)
+        != NGX_OK)
+    {
+        return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");
+    }
+
+    /*
+     * Admission phases (i)-(ii), on fresh copies of the name lists: the spec
+     * is a fragment-authored object, and the gate must read plain strings,
+     * not whatever an exotic `length` or index getter chooses to answer on
+     * the second read.  Learn mode skips admission here exactly as the host
+     * entrance skips it -- the posture is the parent's, and under it free
+     * names are harvested rather than refused.
+     */
+    if (ngx_js_compartment_mode_get() != NGX_JS_TENANT_LEARN) {
+        JSValue                imp_v, intr_v, lv, e;
+        char                   reason[256];
+        ngx_js_refusal_code_t  rcode;
+
+        imp_v = JS_GetPropertyStr(ctx, spec, "imports");
+        intr_v = JS_GetPropertyStr(ctx, spec, "intrinsics");
+
+        imp_s = JS_NewArray(ctx);
+        lv = JS_GetPropertyStr(ctx, imp_v, "length");
+        JS_ToUint32(ctx, &ilen, lv);
+        JS_FreeValue(ctx, lv);
+        for (k = 0; k < ilen && k < 256; k++) {
+            e = JS_GetPropertyUint32(ctx, imp_v, k);
+            iname = JS_ToCString(ctx, e);
+            JS_SetPropertyUint32(ctx, imp_s, k,
+                                 JS_NewString(ctx, iname ? iname : ""));
+            if (iname != NULL) {
+                JS_FreeCString(ctx, iname);
+            }
+            JS_FreeValue(ctx, e);
+        }
+
+        intr_s = JS_IsUndefined(intr_v) || JS_IsNull(intr_v)
+                 ? JS_UNDEFINED : JS_NewArray(ctx);
+        if (!JS_IsUndefined(intr_s) && JS_IsObject(intr_v)) {
+            lv = JS_GetPropertyStr(ctx, intr_v, "length");
+            JS_ToUint32(ctx, &nlen, lv);
+            JS_FreeValue(ctx, lv);
+            for (k = 0; k < nlen && k < 256; k++) {
+                e = JS_GetPropertyUint32(ctx, intr_v, k);
+                iname = JS_ToCString(ctx, e);
+                JS_SetPropertyUint32(ctx, intr_s, k,
+                                     JS_NewString(ctx, iname ? iname : ""));
+                if (iname != NULL) {
+                    JS_FreeCString(ctx, iname);
+                }
+                JS_FreeValue(ctx, e);
+            }
+        }
+        JS_FreeValue(ctx, imp_v);
+        JS_FreeValue(ctx, intr_v);
+
+        v = JS_GetPropertyStr(ctx, spec, "checkRequest");
+        check = JS_ToBool(ctx, v);
+        JS_FreeValue(ctx, v);
+
+        rc = ngx_js_comcon_admit_check(ctx, fn, imp_s, intr_s, check,
+                                       reason, sizeof(reason), &rcode);
+        JS_FreeValue(ctx, imp_s);
+        JS_FreeValue(ctx, intr_s);
+
+        if (rc != NGX_OK) {
+            JS_FreeValue(ctx, fn);
+            return ngx_js_comcon_refuse(ctx, rcode,
+                       "author.include: admission refused: %s", reason);
+        }
+    }
+
+    /* phase (iii): the contract's tests, stage 3 */
+    v = JS_GetPropertyStr(ctx, spec, "tests");
+    if (JS_IsString(v) || JS_IsFunction(ctx, v)) {
+        tsrc = JS_ToCStringLen(ctx, &tlen, v);
+        if (tsrc != NULL) {
+            rc = ngx_js_comcon_run_tests(jcf, ctx, fn, tsrc, tlen, &fail);
+            JS_FreeCString(ctx, tsrc);
+            if (rc != NGX_OK) {
+                JS_FreeValue(ctx, v);
+                JS_FreeValue(ctx, fn);
+                return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");
+            }
+        }
+    }
+    JS_FreeValue(ctx, v);
+
+    /* stage 4 */
+    if (ngx_js_comcon_publish(jcf, ctx, fn, frag_pred, &handle, &fail)
+        != NGX_OK)
+    {
+        return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");
+    }
+
+    op->subs_used++;
+
+    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                  "js comcon: sub-fragment %ui authored by fragment %uD "
+                  "(%uD of %uD)", handle, op->owner - 1, op->subs_used,
+                  op->max_subs);
+
+    data[0] = JS_NewUint32(ctx, (uint32_t) handle);
+    data[1] = JS_NewUint32(ctx, timeout);
+    data[2] = JS_NewUint32(ctx, memory);
+    data[3] = JS_NewUint32(ctx, op->owner);
+
+    callable = JS_NewCFunctionData(ctx, ngx_js_author_invoke, 1, 0, 4, data);
+
+    return callable;
+}
+
+
+static JSValue
+ngx_js_author_get_sub_fragments(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_author_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_author_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (!ngx_js_author_owner_ok(ctx, op)) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_NewUint32(ctx, op->max_subs);
+}
+
+
+static JSValue
+ngx_js_author_get_used(JSContext *ctx, JSValueConst this_val)
+{
+    ngx_js_author_opaque_t  *op;
+
+    op = JS_GetOpaque2(ctx, this_val, ngx_js_author_class_id);
+    if (op == NULL) {
+        return JS_EXCEPTION;
+    }
+
+    if (!ngx_js_author_owner_ok(ctx, op)) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_NewUint32(ctx, op->subs_used);
+}
+
+
+static const JSCFunctionListEntry  ngx_js_author_proto_funcs[] = {
+    JS_CFUNC_DEF   ("include",      2, ngx_js_author_include),
+    JS_CGETSET_DEF ("subFragments",    ngx_js_author_get_sub_fragments, NULL),
+    JS_CGETSET_DEF ("used",            ngx_js_author_get_used, NULL),
+};
+
+
+static ngx_int_t
+ngx_js_author_register(JSRuntime *rt)
+{
+    if (ngx_js_author_class_id == 0) {
+        JS_NewClassID(&ngx_js_author_class_id);
+    }
+
+    if (JS_NewClass(rt, ngx_js_author_class_id, &ngx_js_author_class) < 0) {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_js_author_install_proto(JSContext *sctx)
+{
+    JSValue  proto;
+
+    proto = JS_NewObject(sctx);
+    if (JS_IsException(proto)) {
+        return NGX_ERROR;
+    }
+
+    JS_SetPropertyFunctionList(sctx, proto, ngx_js_author_proto_funcs,
+                               sizeof(ngx_js_author_proto_funcs)
+                               / sizeof(ngx_js_author_proto_funcs[0]));
+
+    JS_SetClassProto(sctx, ngx_js_author_class_id, proto);
+    return NGX_OK;
 }
 
 
@@ -3349,6 +4226,37 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         }
         if (s_free != NULL) {                /* s may be the static OOM text */
             JS_FreeCString(sctx, s_free);
+        }
+
+        /*
+         * A REFUSAL RAISED INSIDE THE FRAGMENT KEEPS ITS CODE.  The authoring
+         * tier raises coded refusals (E_AUTHOR_LIMIT, admission codes for a
+         * sub-fragment) from author.include() -- inside the compartment, on
+         * the parent's call -- and a parent that does not catch them hands
+         * them to the host as its own failure.  The code is the half a
+         * tenant's CI pins to (MANUAL §3.2), and it already survives in the
+         * message text (the bracketed suffix); this makes it survive as the
+         * property too.  Only a STRING `code` is copied, and only the string:
+         * no object crosses the boundary.
+         */
+        if (JS_IsObject(exc)) {
+            JSValue  cv = JS_GetPropertyStr(sctx, exc, "code");
+
+            if (JS_IsString(cv)) {
+                const char  *cs = JS_ToCString(sctx, cv);
+
+                if (cs != NULL) {
+                    JSValue  he = JS_GetException(hctx);
+
+                    if (JS_IsObject(he)) {
+                        JS_SetPropertyStr(hctx, he, "code",
+                                          JS_NewString(hctx, cs));
+                    }
+                    retv = JS_Throw(hctx, he);
+                    JS_FreeCString(sctx, cs);
+                }
+            }
+            JS_FreeValue(sctx, cv);
         }
         JS_FreeValue(sctx, exc);
 

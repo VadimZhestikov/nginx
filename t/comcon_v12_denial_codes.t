@@ -283,6 +283,7 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
 
         rec2.got = (got === undefined) ? null : got;
         rec2.ok = (got === r.code);
+        rec2.msg = msg.slice(0, 200);          /* diagnostic only, not asserted */
         /* the prose must survive too: the code is the contract, but an
            operator reading the error log gets the sentence. */
         rec2.prose = (msg.indexOf(r.msg) >= 0);

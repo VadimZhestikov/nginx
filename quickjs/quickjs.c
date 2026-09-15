@@ -10831,6 +10831,16 @@ void JS_SetUncatchableException(JSContext *ctx, BOOL flag)
     ctx->rt->current_exception_is_uncatchable = flag;
 }
 
+/* pilgrim: the flag, for compiled code.  JS_CallInternal's `exception:` path
+   skips every catch handler while it is set; a JIT-compiled function has its
+   own catch dispatch and needs the same question answered.  Before this
+   existed, a compiled `try { for(;;){} } catch(e){}` swallowed the interrupt
+   the deadline throws -- and ran on. */
+BOOL JS_IsUncatchableException(JSContext *ctx)
+{
+    return ctx->rt->current_exception_is_uncatchable;
+}
+
 void JS_SetOpaque(JSValue obj, void *opaque)
 {
    JSObject *p;

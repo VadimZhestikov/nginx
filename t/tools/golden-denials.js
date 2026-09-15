@@ -378,6 +378,30 @@ var REFUSALS = [
         via: 'stale',
         probe: null,          /* built by the test: include, free, then call */
         msg: 'stale epoch'
+    },
+    {
+        code: 'E_AUTHOR_LIMIT',
+        why: 'the authoring tier: a fragment holding an `author` capability '
+           + 'asked it for more than it carries -- a sub-fragment beyond its '
+           + 'subFragments budget, or one authored from inside a '
+           + 'sub-fragment. Raised INSIDE the parent fragment, at its own '
+           + 'author.include() call; a parent that does not catch it hands '
+           + 'it to the host as its failure, and the code survives that '
+           + 'boundary as `e.code` because the host copies a string code off '
+           + 'the compartment exception. The probe grants a budget of ONE and '
+           + 'spends it twice',
+        via: 'call',
+        /* the grant is `author` and the fragment takes no parameter: a grant
+           and the invocation argument sharing one name is the argument
+           shadowing the grant, which the first version of this probe did */
+        probe: "comcon.include("
+             + "'function(){ author.include(\"function(){ return 1; }\", "
+             + "{imports: []}); "
+             + "author.include(\"function(){ return 2; }\", {imports: []}); "
+             + "return 0; }', "
+             + "{imports: [], grants: {author: comcon.author({subFragments: 1})}})"
+             + "({})",
+        msg: 'sub-fragment budget'
     }
 ];
 

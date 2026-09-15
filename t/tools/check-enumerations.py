@@ -123,12 +123,18 @@ def check_p_symbols():
 # ---------------------------------------------------------------------------
 PORTALS = {
     # comcon / admission
-    ("ngx_js_module.c", "ngx_js_comcon_include_confined"):
-        "x4 (F15 phase 2, was x2): a confined fragment (wrapped in "
-        "NGX_JS_COMCON_WRAP_*) and the contract's admission TEST function, "
-        "each compiled with JS_EVAL_FLAG_COMPILE_ONLY then separately run "
-        "with JS_EvalFunction once js_comcon_is_single_toplevel_closure "
-        "passes -- one JS_Eval + one JS_EvalFunction per compiled unit",
+    # The authoring tier split comcon.include()'s two compiled units into
+    # two STAGES shared with author.include(), so the host entrance itself no
+    # longer compiles anything: one pipeline, two entrances, and every path
+    # from text to code is one of these two functions.
+    ("ngx_js_module.c", "ngx_js_comcon_compile_wrapper"):
+        "x2 (stage 1, reached from comcon.include() and author.include()): a "
+        "confined fragment wrapped in NGX_JS_COMCON_WRAP_*, compiled with "
+        "JS_EVAL_FLAG_COMPILE_ONLY then run with JS_EvalFunction once "
+        "js_comcon_is_single_toplevel_closure passes (F15 phase 2)",
+    ("ngx_js_module.c", "ngx_js_comcon_run_tests"):
+        "x2 (stage 3, both entrances): the contract's admission TEST "
+        "function, the same compile-then-check-then-run shape",
     ("ngx_js_module.c", "ngx_js_comcon_eval_dep"):
         "a pinned pure-library dependency, sha256-checked before it compiles",
     ("ngx_js_module.c", "ngx_js_comcon_compartment"):
