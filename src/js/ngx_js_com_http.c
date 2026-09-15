@@ -10733,8 +10733,10 @@ ngx_js_http_fn_add_hook(JSContext *ctx, JSValueConst this_val,
 }
 
 /*
- * Register the NginxServer and NginxLocation classes with this runtime.
- * Called by ngx_js_com_register_classes() from ngx_js_com.c.
+ * Register the NginxServer class and the per-module COM node classes with
+ * this runtime.  Called by ngx_js_com_register_classes() from ngx_js_com.c --
+ * for EVERY runtime it sets up, since v5.110; before that only the host called
+ * it, and a server wrapper minted inside the compartment had no finalizer.
  */
 ngx_int_t
 ngx_js_http_register_classes(JSRuntime *rt)

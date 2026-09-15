@@ -1191,6 +1191,47 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T4, T6, T9, T13
 - **V:** V13
 
+#### G7.17 — a worker frees the compartment it ran fragments in, and every class it can mint there finalizes
+- **CLAIM:** At worker exit the compartment — every held fragment, the frags pool, the context,
+  the runtime — is freed (`ngx_js_comcon_teardown`, one definition for the reload, master-exit
+  and worker-exit paths); every COM node class whose ID exists in the compartment runtime is
+  REGISTERED there, so a wrapper minted inside a fragment is freed with its finalizer; and the
+  S6 sanitizer corpus runs with leak detection ON, so either property failing is a `src/js`
+  finding in the standing gate.
+- **ARGUMENT:** F17, two parts, one instrument. (a) `ngx_js_exit_process` freed the tenant
+  runtime and the host runtime and never the compartment; every worker that had ever included
+  a fragment exited holding it. Freeing it where fragments actually RAN also makes
+  `JS_FreeRuntime`'s own assertion (the GC list must be empty) a leak check of every invocation
+  path — and it held, over 84 files: no wrapper, job, result or re-grant leaves a live reference.
+  (b) `ngx_js_com_register_classes()` allocated every COM class ID for the compartment and
+  `ngx_js_com_install_protos()` gave each a prototype, but `JS_NewClass()` for the node classes
+  (`NginxServer` and the per-module nodes, the upstream classes) happened only in the host's
+  `ngx_js_com_init()`. A class ID with a prototype and no definition still mints objects; they
+  are freed with NO finalizer. `listener.serverByName()` inside a fragment under audit mode
+  minted one per call — opaque and 4 KB dynamic-location pool leaked each time, unboundedly,
+  from a fragment (T11). The registration now happens in `ngx_js_com_register_classes()` for
+  every runtime it sets up. Both were invisible because the corpus ran `detect_leaks=0` — for a
+  real reason (one by-construction allocation, the SharedWorker manager thread's parked `pollfd`
+  array, made every report noise) that is now a one-line, one-reason suppression
+  (`t/tools/lsan.supp`) instead of a blind spot. The narrow leak stage (G7.10's era) stays for
+  the specific claim it makes.
+- **EV:** `t/run_sanitizers.sh` — the ASAN and UBSAN corpus runs (84 files) with
+  `detect_leaks=1`; a leak block with a `src/js` frame is a finding like any other. Both fixes
+  were each seen firing before they landed (the compartment's frags pool in every comcon file;
+  `ngx_js_wrap_server` under `comcon_v12_denial_codes.t`), and the corpus reports 0 blocks after
+  — with exactly one exception that carries no `src/js` frame (`comcon_include_teardown.t`'s
+  single-process exit allocations in nginx core, reported and not failed).
+- **EV:** `t/tools/lsan.supp` — the suppression, with its reason beside it.
+- **GAP:** The SharedWorker manager thread is not joined at exit; its 16 bytes are suppressed
+  by name rather than freed. The tenant runtime (A3) is torn down by its own path and was not
+  re-examined here. The negative controls are by hand (MANUAL rows in
+  `t/tools/verify-negative-controls.sh`): drop the worker-exit call or the registration, run the
+  sanitizer script, and the corpus reports the `src/js` frame.
+  **home:** finding F17 · `ngx_js_comcon_teardown` · the note at the end of
+  `ngx_js_com_register_classes`.
+- **THREAT:** T11, T13
+- **V:** V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1858,6 +1899,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F14** | Every confined invocation walked the WHOLE shared compartment heap (`JS_ComputeMemoryUsage`, twice per call) to read one counter — so one tenant's retained memory set every other tenant's per-request cost, persistently and beyond the execution deadline's reach | G7.10, G7.7 | **FOUND AND CLOSED 2026-09-14.** Measured before: a handler making one trivial confined invocation ran at **22.0% of stock** with an idle compartment and **0.2% (476 req/s)** while another fragment retained 200,000 objects. After: 68.0% and 66.6%. The same counter is now read in O(1) (`JS_GetMallocSize`). Found by reading the invoke path for a proposal, not by any test — nothing had measured invocation cost against heap size, and PERFORMANCE.md had no confined-invocation number at all |
 | **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered — AND a shared global binding was reassignable across fragments — AND a source could escape the wrapper it was compiled inside, defeating admission entirely | G6.19, G7.11, G7.12, G7.13 | **CLOSED 2026-09-14, ALL THREE PARTS.** Investigating the original finding turned up two defects worse than it, closed alongside it. **G7.11:** an ADMITTED fragment body (`imports:['Promise']`) could do `Promise = evil` and corrupt every co-resident fragment; an UN-ADMITTED fragment (`{}`) could do the same to any intrinsic with zero gating — fixed by freezing every binding on the compartment's globalThis once, at creation. **G7.12:** the wrapper is built by string concatenation, so a source could close it and run script-level code before admission ever ran, even under `imports: []` — fixed by compiling with `JS_EVAL_FLAG_COMPILE_ONLY` and checking the compiled unit's own bytecode is exactly "create one closure, return it" before ever running it. **G7.13, the originally-found defect:** the wrapper's body — where a looping `source` actually runs — had no deadline independent of a worker existing, so it (and a confined invocation, and an admission test that calls its fragment) hung indefinitely at CONFIG PHASE. Fixed by giving comcon_rt a deadline of its own (`jcf->comcon_deadline_ms`), pushed and restored around every place fragment-adjacent code runs on it, installed once at compartment creation rather than re-wired post-fork. **No authority leaked** through any of this — a grant read at top level is `undefined` (`cap.owner` refuses it; every grant is bound to the fragment's future handle and `cur_frag` is 0 there) — but that was `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. |
 | **F16** | A fragment lowered to native C (the compiled tier) could CATCH ITS OWN DEADLINE: the interrupt is thrown uncatchable, the interpreter's exception path honours the flag, and maxim's generated catch dispatch never asked — so a compiled `try { for(;;){} } catch(e){}` swallowed the interrupt and ran on, and the hostile form (`for(;;){ try{ for(;;){} } catch(e){} }`) would loop forever | G7.15 | **CLOSED 2026-09-15** (after the §15 signature — see §16). Found by the authoring tier's basic test, whose PARENT fragment caught its sub-fragment's abort on the JIT build only; probed directly (`t/comcon_jit_uncatchable.t`: "SURVIVED the interrupt" on objs_jit, stopped on objs). Fixed in the engine: `JS_IsUncatchableException()` (new public getter) and one guard in the generated catch dispatch, `JIT_CODEGEN_VERSION` 16→17. The S6 AOT arm (F5) never saw this because its runaway probe has no try/catch — the battery tests what a fragment can REACH, and this was what a fragment can REFUSE TO STOP DOING. |
+| **F17** | (a) A WORKER never freed the compartment at exit — `exit_process` tore down the tenant and host runtimes and not `comcon_rt`; (b) the COM node classes (`NginxServer`, the per-module nodes, the upstream classes) had IDs and prototypes in the compartment runtime but NO CLASS DEFINITION there, so a wrapper minted inside a fragment (`listener.serverByName()` under audit) was freed without its finalizer — opaque + 4 KB pool per call, unboundedly, from a fragment | G7.17 | **CLOSED 2026-09-15** (after the §15 signature — see §16). Found by running one new test under ASAN with leak detection ON, then the whole corpus: both were invisible to a corpus that ran `detect_leaks=0`. Fixed: one `ngx_js_comcon_teardown()` for all three exit paths; `ngx_js_http_register_classes` + `ngx_js_upstream_register_classes` moved into `ngx_js_com_register_classes` for every runtime. The corpus now runs leaks-on with a one-line suppression, and `JS_FreeRuntime`'s assertion at worker exit held over 84 files: the invocation paths leak no JS reference. |
 
 ---
 
@@ -2023,6 +2065,7 @@ signature is never quietly credited with work it did not see.
 | **F16 FOUND AND CLOSED — G7.15.** A fragment lowered to native C could catch its own deadline interrupt: the engine throws it uncatchable, the interpreter honours the flag, maxim's generated catch dispatch never asked. Found because the authoring tier's parent caught its sub-fragment's abort on the JIT build only; fixed in the engine (a public getter, one guard, codegen version 17) and pinned on both builds. | **Weakens what the signature attested about the compiled tier (F5, G7.5).** The S6 AOT arm was run and passed, honestly — but its runaway probe has no `try/catch`, so "the tiers agree probe by probe" was true of what the battery ASKED, and the battery did not ask whether a fragment can refuse to stop. Recorded here so the signature is not credited with a property it did not test. |
 | **THE AUTHORING TIER, PHASE 3 — RE-GRANTING (G7.16, v5.107).** A parent re-grants only its own wrappers, by COPY of the opaque with the owner changed and the mask/expiry moved downward; never by re-wrapping the handle, which would launder a fresh wrapper from a stale parent. Both arms agree with the host-side meet. | **Extends the No-Amplification claim (SEMANTICS §3) to a boundary the signature never saw**, by construction rather than by a check; the theorem's text still states one boundary, and its induction step is phase 4's. |
 | **THE AUTHORING TIER, PHASE 4 — THE CLOSE-OUT (v5.108).** SEMANTICS §3 carries the nested induction step and names F16's class under assumption (F); PERFORMANCE §2d measures the nested boundary (≈ 0.59 µs, less than the outer one); SPEC §8a, OPERATOR_API §8j, MANUAL §3.8, THREATS T13, SHOWCASE17 §8 and INCREMENT_MLIB §4 describe what shipped; `t/tools/verify-negative-controls.sh` gains one automated row (phase 3) and five MANUAL rows (phases 1–2, copy-vs-rewrap, the marshal, F16); the nested bounds and the parent-owned jobs are pinned. | **Nothing new is claimed; what was claimed is now stated where a reader looks for it, and its controls are named.** The tier remains a change after the signature (the two rows above); this row records that its documentation and controls are complete, not that it is attested. |
+| **F17 FOUND AND CLOSED — G7.17; THE SANITIZER CORPUS NOW DETECTS LEAKS (v5.110).** A worker never freed the compartment at exit, and the COM node classes had no definition in the compartment runtime, so a wrapper minted inside a fragment leaked its opaque and pool — unboundedly, under audit. Both invisible to a corpus that ran `detect_leaks=0`; both fixed; the corpus runs leaks-on with one named suppression. | **Strengthens the instrument the signature relied on.** §15 attested a corpus that could not see a leak. It now can, and the first thing it saw was two of ours. A signature over a weaker instrument is not wrong, but a reader relying on "ASAN+UBSAN clean" for leak-freedom should know that claim dates from here. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

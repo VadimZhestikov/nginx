@@ -635,6 +635,40 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.110 (in place — F17, found by turning leak detection on: a worker never freed the
+compartment, and the compartment's COM node classes had no finalizer — the sanitizer corpus
+now detects leaks):** step 2 of the remaining items was run once under ASAN with
+`detect_leaks=1` — the corpus runs `detect_leaks=0` — and reported 4 KB the sanitizer gate had
+never seen. Pulling that thread found two defects and a blind spot.
+
+(a) `ngx_js_exit_process` freed the tenant runtime and the host runtime and never the
+compartment: every worker that had ever included a fragment exited holding it. One
+`ngx_js_comcon_teardown()` now serves the three places a process lets go of its copy — reload,
+master exit, worker exit — where before there were two identical blocks and one missing. And
+freeing the compartment where fragments actually RAN makes `JS_FreeRuntime`'s own assertion a
+leak check of every invocation path: over 84 files it held. No wrapper, job, result, re-grant or
+sub-fragment leaves a live JS reference behind.
+
+(b) With the corpus leak-detecting, one file still reported: `comcon_v12_denial_codes.t`, whose
+audit-mode row calls `listener.serverByName()` inside a fragment. `ngx_js_com_register_classes()`
+allocated every COM class ID for the compartment runtime and `ngx_js_com_install_protos()` gave
+each a prototype, but `JS_NewClass()` for the node classes — `NginxServer`, the per-module nodes,
+the upstream classes — happened only in the host's `ngx_js_com_init()`. A class ID with a
+prototype and no definition still mints objects, and they are freed with NO FINALIZER: opaque
+and 4 KB dynamic-location pool leaked per call, unboundedly, from a fragment, in audit mode
+(T11). The registration now happens in `ngx_js_com_register_classes()` for every runtime it sets
+up; the host's separate call is gone.
+
+THE BLIND SPOT. The corpus ran leaks-off for a real reason: one by-construction allocation — the
+SharedWorker manager thread's per-iteration `pollfd` array, live because the thread is parked in
+`poll()` at exit — made every report noise, and G7.10's narrow leak stage was the only leak
+instrument. That reason is now a one-line suppression with its reason beside it
+(`t/tools/lsan.supp`), the corpus runs `detect_leaks=1`, and a leak block is classified like any
+other report: a `src/js` frame makes it ours. The narrow stage stays for the specific claim it
+makes. What the upgraded instrument reports today: zero `src/js` blocks over 84 files; one file's
+single-process exit allocations in nginx core, reported and not failed. ASSURANCE G7.17, F17's
+ledger row, §16.
+
 **v5.109 (in place — the remaining items, one at a time: the engine debt paid to the fork;
 the author capability's gates probed in both postures):** two of the open items the close-out
 listed, done.

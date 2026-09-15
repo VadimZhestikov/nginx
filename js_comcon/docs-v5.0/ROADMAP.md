@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.109 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.110 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,19 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **F17 FOUND AND CLOSED — THE SANITIZER CORPUS NOW DETECTS LEAKS (2026-09-15, v5.110).**
+>   Step 2 below, run once with `detect_leaks=1`, reported 4 KB the gate had never seen: a
+>   WORKER never freed the compartment at exit (`exit_process` tore down the tenant and host
+>   runtimes, not `comcon_rt`). Fixed with one `ngx_js_comcon_teardown()` for all three exit
+>   paths — and freeing it where fragments ran makes `JS_FreeRuntime`'s assertion a leak check
+>   of every invocation path, which held over 84 files. With the corpus then run leaks-on, one
+>   file still reported: the COM node classes (`NginxServer`, the per-module nodes, upstreams)
+>   had IDs and prototypes in the compartment runtime but NO class definition, so
+>   `listener.serverByName()` inside a fragment under audit minted wrappers freed without their
+>   finalizer — opaque + 4 KB pool per call, unboundedly (T11). Registration moved into
+>   `ngx_js_com_register_classes()` for every runtime. The corpus ran leaks-off because of one
+>   by-construction allocation (the SW manager thread's parked `pollfd`); that is now a one-line
+>   suppression (`t/tools/lsan.supp`) and the corpus runs `detect_leaks=1`. ASSURANCE G7.17.
 > - **THE REMAINING ITEMS, ONE AT A TIME (2026-09-15, v5.109): two done.** (1) The engine debt
 >   is paid: the four engine files are carried to the pilgrim-quickjs fork's `pilgrim` branch
 >   at byte parity under its own self-gate (local commit `8984e3f`; not pushed; `run-test262.c`

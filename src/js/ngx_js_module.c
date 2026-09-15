@@ -1146,6 +1146,49 @@ ngx_js_comcon_mem_pop(ngx_js_conf_t *jcf, size_t old)
 }
 
 
+/*
+ * Free the compartment: every held fragment, the frags array's own pool, the
+ * context, then the runtime.  ONE definition, called from the three places a
+ * process lets go of its copy -- a reload (init_conf), the master's exit, and
+ * a WORKER's exit.  The worker's was missing: exit_process freed the tenant
+ * runtime and the host runtime and never the compartment, so every worker that
+ * had ever included a fragment exited holding it.  Found with LeakSanitizer on
+ * (the sanitizer corpus runs detect_leaks=0; its leak stage covers two files)
+ * as 4 KB of frags pool -- but the pool is the smallest thing this frees.
+ *
+ * JS_FreeRuntime() asserts the runtime is empty, so freeing the compartment
+ * where fragments actually RAN makes a worker's exit a leak check of every
+ * invocation path: a wrapper, a job or a result left with a live reference
+ * would abort here, in the sanitizer gate, rather than nowhere.
+ */
+static void
+ngx_js_comcon_teardown(ngx_js_conf_t *jcf)
+{
+    if (jcf->comcon_ctx != NULL) {
+        if (jcf->comcon_frags != NULL) {
+            ngx_uint_t  fi;
+            JSValue    *fv = jcf->comcon_frags->elts;
+
+            for (fi = 0; fi < jcf->comcon_frags->nelts; fi++) {
+                JS_FreeValue(jcf->comcon_ctx, fv[fi]);
+            }
+            jcf->comcon_frags->nelts = 0;
+        }
+        if (jcf->comcon_frags_pool != NULL) {
+            ngx_destroy_pool(jcf->comcon_frags_pool);
+            jcf->comcon_frags_pool = NULL;
+            jcf->comcon_frags = NULL;
+        }
+        JS_FreeContext(jcf->comcon_ctx);
+        jcf->comcon_ctx = NULL;
+    }
+    if (jcf->comcon_rt != NULL) {
+        JS_FreeRuntime(jcf->comcon_rt);
+        jcf->comcon_rt = NULL;
+    }
+}
+
+
 static JSContext *
 ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
 {
@@ -5230,27 +5273,7 @@ failed_ctx:
     JS_FreeContext(jcf->ctx);
     jcf->ctx = NULL;
 
-    if (jcf->comcon_ctx != NULL) {   /* M-CFG: free frags, context, then its runtime */
-        if (jcf->comcon_frags != NULL) {
-            ngx_uint_t  fi;
-            JSValue    *fv = jcf->comcon_frags->elts;
-            for (fi = 0; fi < jcf->comcon_frags->nelts; fi++) {
-                JS_FreeValue(jcf->comcon_ctx, fv[fi]);
-            }
-            jcf->comcon_frags->nelts = 0;
-        }
-        if (jcf->comcon_frags_pool != NULL) {
-            ngx_destroy_pool(jcf->comcon_frags_pool);
-            jcf->comcon_frags_pool = NULL;
-            jcf->comcon_frags = NULL;
-        }
-        JS_FreeContext(jcf->comcon_ctx);
-        jcf->comcon_ctx = NULL;
-    }
-    if (jcf->comcon_rt != NULL) {
-        JS_FreeRuntime(jcf->comcon_rt);
-        jcf->comcon_rt = NULL;
-    }
+    ngx_js_comcon_teardown(jcf);
 
 failed_rt:
     js_std_free_handlers(jcf->rt);
@@ -6034,6 +6057,10 @@ ngx_js_exit_process(ngx_cycle_t *cycle)
      * free this process's copy. Independent of w — safe before the w check. */
     ngx_js_tenant_teardown(jcf);
 
+    /* M-CFG: and the compartment, likewise this process's copy -- the one
+       place fragments actually ran, so this is also where a leak would show */
+    ngx_js_comcon_teardown(jcf);
+
     w = jcf->worker;
     if (w == NULL) {
         return;
@@ -6393,27 +6420,7 @@ ngx_js_exit_master(ngx_cycle_t *cycle)
         jcf->ctx = NULL;
     }
 
-    if (jcf->comcon_ctx != NULL) {   /* M-CFG: free frags, context, then its runtime */
-        if (jcf->comcon_frags != NULL) {
-            ngx_uint_t  fi;
-            JSValue    *fv = jcf->comcon_frags->elts;
-            for (fi = 0; fi < jcf->comcon_frags->nelts; fi++) {
-                JS_FreeValue(jcf->comcon_ctx, fv[fi]);
-            }
-            jcf->comcon_frags->nelts = 0;
-        }
-        if (jcf->comcon_frags_pool != NULL) {
-            ngx_destroy_pool(jcf->comcon_frags_pool);
-            jcf->comcon_frags_pool = NULL;
-            jcf->comcon_frags = NULL;
-        }
-        JS_FreeContext(jcf->comcon_ctx);
-        jcf->comcon_ctx = NULL;
-    }
-    if (jcf->comcon_rt != NULL) {
-        JS_FreeRuntime(jcf->comcon_rt);
-        jcf->comcon_rt = NULL;
-    }
+    ngx_js_comcon_teardown(jcf);
 
     if (jcf->rt) {
         js_std_free_handlers(jcf->rt);

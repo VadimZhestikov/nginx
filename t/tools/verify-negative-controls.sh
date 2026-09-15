@@ -79,6 +79,8 @@ MANUAL=(
 "by-hand|t/comcon_author_regrant.t|copy-vs-rewrap: replace *child = *op in ngx_js_socket_narrow() with ngx_js_socket_wrap_bounded(op->handle, ...) and the /stale arm must fail (a re-grant from the stale parent comes out fresh)"
 "by-hand|t/comcon_author_basic.t|the nested JSON marshal: return the result value from ngx_js_author_invoke() without the stringify/parse and the returnsFn/toJSON/throws assertions must fail (an object crosses)"
 "by-hand|t/comcon_jit_uncatchable.t|F16 lives in quickjs/ (outside src/js): drop the JS_IsUncatchableException(ctx) guard from quickjs-jit.c's _ex: dispatch, rebuild the lib and objs_jit, and the test must report SURVIVED on objs_jit"
+"by-hand|t/run_sanitizers.sh|F17 (a): remove the ngx_js_comcon_teardown(jcf) call from ngx_js_exit_process, rebuild objs_asan, run the sanitizer script: every comcon file reports a src/js leak frame (ngx_js_comcon_publish)"
+"by-hand|t/run_sanitizers.sh|F17 (b): remove the ngx_js_http_register_classes/ngx_js_upstream_register_classes calls from ngx_js_com_register_classes (and restore them in ngx_js_com_init), rebuild objs_asan, run the script: comcon_v12_denial_codes.t reports ngx_js_wrap_server"
 "1618dce79|t/comcon_wrapper_breakout.t|the JS_EvalFunction()/JS_Call() lines it touched were rewritten by F15 phase 3's deadline push/pop (cabd6f4c2), landing the same session"
 )
 

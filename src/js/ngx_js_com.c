@@ -647,6 +647,26 @@ ngx_js_com_register_classes(JSRuntime *rt)
         return NGX_ERROR;
     }
 
+    /*
+     * THE COM NODE CLASSES TOO -- in EVERY runtime this function sets up, not
+     * only the host's.  They used to be registered by ngx_js_com_init() for
+     * the host runtime alone, so the confined compartment (which calls this
+     * function to "mirror" the host) had their class IDs and their prototypes
+     * (ngx_js_com_install_protos) but NO CLASS DEFINITION: an object of such a
+     * class can still be created there -- and was, by `listener.serverByName()`
+     * inside a fragment in audit mode -- and is then freed with no finalizer,
+     * leaking its opaque and its 4 KB dynamic-location pool on every call.
+     * A fragment could grow a worker without bound in audit mode.  Found by
+     * running the S6 corpus with leak detection ON (t/run_sanitizers.sh).
+     */
+    if (ngx_js_http_register_classes(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_js_upstream_register_classes(rt) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     return NGX_OK;
 }
 
@@ -6872,16 +6892,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 
     rt = JS_GetRuntime(ctx);
 
-    /* Register ALL classes before installing any prototypes */
+    /* Register ALL classes before installing any prototypes -- the COM node
+       classes included, which the compartment runtime needs as much as this
+       one does (see the note at the end of ngx_js_com_register_classes) */
     if (ngx_js_com_register_classes(rt) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    if (ngx_js_http_register_classes(rt) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    if (ngx_js_upstream_register_classes(rt) != NGX_OK) {
         return NGX_ERROR;
     }
 

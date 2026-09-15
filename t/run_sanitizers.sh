@@ -69,7 +69,14 @@ run_one() {  # name, builddir, envvar, prefix
     echo
     echo "=== $name over ${#FILES[@]} file(s) ==="
     rm -f "$pfx".*
-    out=$(env "$var=print_stacktrace=1:log_path=$pfx:halt_on_error=0:detect_leaks=0" \
+    # LEAKS ON (v5.110), with the one by-construction allocation named in
+    # t/tools/lsan.supp.  This used to be detect_leaks=0, and it cost two
+    # findings: the compartment was never freed at worker exit, and a COM node
+    # class minted inside the compartment had no finalizer there -- both
+    # invisible to a corpus that could not see leaks.  A leak block is classified
+    # like every other report: a src/js frame makes it ours.
+    out=$(env "$var=print_stacktrace=1:log_path=$pfx:halt_on_error=0:detect_leaks=1" \
+              LSAN_OPTIONS="suppressions=$PWD/t/tools/lsan.supp:print_suppressions=0" \
               TEST_NGINX_BINARY="$PWD/$dir/nginx" prove "${FILES[@]}" 2>&1)
     echo "$out" | grep -E "^(Files=|Result:)" | sed 's/^/  /'
 
@@ -122,12 +129,16 @@ run_one() {  # name, builddir, envvar, prefix
 }
 
 # ---------------------------------------------------------------------------
-# A LEAK STAGE, because the corpus runs above are detect_leaks=0.
+# A LEAK STAGE -- written when the corpus runs above were detect_leaks=0, and
+# kept now that they are not (v5.110), because it asserts something SPECIFIC
+# (a pool leaked from ngx_event_accept) that the general classification would
+# only report as "a src/js frame".
 #
-# They have to be: a full leak report on this tree is dominated by one-off
-# allocations that live for the process (the SharedWorker manager thread's 16
-# bytes, for one), so leaks-on over the whole corpus would be noise nobody reads.
-# But that left the tree with NO leak instrument at all, and it cost something:
+# The corpus ran leaks-off for a reason that is now a suppression instead: a
+# full leak report on this tree was dominated by one-off allocations that live
+# for the process (the SharedWorker manager thread's 16 bytes), so leaks-on was
+# noise nobody read.  Leaving it off left the tree with NO leak instrument at
+# all, and it cost something:
 # P17's `conn.reject()` closed a freshly accepted connection with
 # ngx_close_connection(), which does not destroy c->pool -- ngx_event_accept()
 # had just created it -- so every rejected connection leaked 512 bytes.  Found

@@ -1,0 +1,14 @@
+# LeakSanitizer suppressions for t/run_sanitizers.sh -- the S6 corpus runs
+# with leak detection ON since v5.110, and these are the allocations that are
+# live at process exit BY CONSTRUCTION, not leaks of any path:
+#
+#   ngx_js_sw_manager_thread   the SharedWorker manager thread's per-iteration
+#                              pollfd array (16 bytes); the thread is parked in
+#                              poll() when the worker exits and never returns to
+#                              free it.  Joining the thread at exit is its own
+#                              change; until then this one frame is named here.
+#
+# Everything else that LeakSanitizer reports counts.  A suppression is a claim
+# ("this is not a leak") and is reviewed like one: add a line here only with the
+# reason beside it, and never by function name alone.
+leak:ngx_js_sw_manager_thread
