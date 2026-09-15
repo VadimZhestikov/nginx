@@ -124,8 +124,11 @@ def check_p_symbols():
 PORTALS = {
     # comcon / admission
     ("ngx_js_module.c", "ngx_js_comcon_include_confined"):
-        "x2: a confined fragment (wrapped in NGX_JS_COMCON_WRAP_*) and the "
-        "contract's admission TEST function, compiled in the compartment",
+        "x4 (F15 phase 2, was x2): a confined fragment (wrapped in "
+        "NGX_JS_COMCON_WRAP_*) and the contract's admission TEST function, "
+        "each compiled with JS_EVAL_FLAG_COMPILE_ONLY then separately run "
+        "with JS_EvalFunction once js_comcon_is_single_toplevel_closure "
+        "passes -- one JS_Eval + one JS_EvalFunction per compiled unit",
     ("ngx_js_module.c", "ngx_js_comcon_eval_dep"):
         "a pinned pure-library dependency, sha256-checked before it compiles",
     ("ngx_js_module.c", "ngx_js_comcon_compartment"):

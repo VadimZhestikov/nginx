@@ -635,6 +635,58 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.103 (in place — F15, phase 2: a fragment's own text cannot escape the wrapper it is
+compiled inside):** phase 1 closed the corruption; this closes what let it bypass admission
+entirely.
+
+`comcon.include()` builds `(function(g0,...){"use strict";return(` + source + `)})` and
+compiles the whole buffer as one script. Admission only ever inspected the RESULT of that
+compile — the returned function — never the rest of the script that produced it. So a source
+whose own text closed the wrapper early (an unbalanced `)}` inside what looks like a string,
+comment or template literal) and supplied more script-level code afterward ran that code with
+NO ADMISSION GATE APPLIED AT ALL, no matter how strict the contract asked to be: MEASURED,
+`imports: []` — the strictest an operator can write — admitted a fragment whose escaped text
+read another fragment's declared free names and reassigned a shared intrinsic for every
+fragment, before phase 1's freeze existed to catch that. `{}` (no admission at all) fared no
+better, which was already the documented behaviour for that path.
+
+THE FIX COMPILES FIRST AND RUNS ONLY IF THE SHAPE IS RIGHT. `JS_EVAL_FLAG_COMPILE_ONLY`
+compiles without executing anything, so a breakout's injected code cannot run before — or
+instead of — being refused. A new engine helper,
+`js_comcon_is_single_toplevel_closure()`, then checks the compiled unit's OWN bytecode: the
+legitimate shape — one parenthesized function expression, nothing else at the script's top
+level — always compiles to exactly three opcodes (`fclosure8`; `set_loc0`; `return`: create
+the one closure, store it as the completion value, return it), verified against the
+compiler's ACTUAL output for every shape that matters (zero params, several params, a
+free-variable reference, an IIFE as the body) rather than assumed or re-derived with a second
+parser. Only if that check passes does `JS_EvalFunction()` actually run it, producing the
+identical result a non-breakout fragment always got.
+
+A FIRST VERSION OF THE CHECK WAS INCOMPLETE, AND THE GAP WAS FOUND BEFORE SHIPPING BY TESTING
+THE CLAIM RATHER THAN TRUSTING IT. Counting nested closures in the constant pool (must be
+exactly one) is sufficient for the FRAGMENT wrapper — it is itself function-shaped, so
+breaking out of it always consumes that closure and needs a replacement to keep the result
+callable. It is NOT sufficient for `contract.tests`, wrapped in bare parens with no function
+shape to consume: a comma expression can smuggle in a side effect —
+`(1), (globalThis.__x = 1), (function(fragment){ return true; })` — with only ONE function
+anywhere in it. Disabling the opcode check and keeping only the closure count reproduced
+exactly that one gap and nothing else, which is how the final check came to verify the root's
+own OPCODE SEQUENCE rather than stopping at a count that happened to work for the wrapper it
+was first tried against.
+
+The same protection is applied to `contract.tests` AS A REFUSAL, not a silent skip: that field
+already had one silent-skip path (a string that fails to compile at all), and turning a
+breakout into a second one would make a test that looks like it validates something quietly
+not run — worse than a loud refusal for a phase whose entire point is verifying behaviour.
+
+WHAT KEEPS WORKING, unaffected because it is entirely nested inside the one wrapper closure
+regardless of its own internal complexity: an IIFE as the fragment body, a called IIFE with no
+grants at all, many grant parameters, and a real `contract.tests` function.
+
+`t/comcon_wrapper_breakout.t` (13, two controls: the whole mechanism reverted, and the opcode
+check alone disabled) · ASSURANCE G7.12 (new leaf) · F15's ledger row now two parts of three
+closed · enumeration check [2]'s PORTALS row updated (x2 → x4 call sites in the one function).
+
 **v5.102 (in place — F15, phase 1: a fragment cannot reassign a shared global for every
 OTHER fragment):** measuring F15's original finding (an unmetered top-level eval) before fixing it
 turned up something worse.

@@ -919,6 +919,52 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T3, T4, T6, T9
 - **V:** V13, V4
 
+#### G7.12 — a fragment's own text cannot escape the wrapper it is compiled inside
+- **CLAIM:** `comcon.include()` builds `(function(g0,...){"use strict";return(` + source +
+  `)})` and compiles the whole buffer as one script. A `source` whose own text closes that
+  function expression early and supplies more script-level code afterward is refused before
+  any of that code runs, regardless of the contract — including `imports: []`, the strictest
+  an operator can write, and `{}`, which skips admission entirely. The same protection applies
+  to `contract.tests`, wrapped as a bare `(tests_source)`.
+- **ARGUMENT:** Admission only ever inspected the RESULT of compiling `source` (the returned
+  function), never the rest of the script that produced it — so a source that closed the
+  wrapper early and reopened it to keep the completion value callable ran its escaped text
+  with NO ADMISSION GATE EVER APPLIED, no matter how strict the contract asked to be.
+  Measured: `imports: []` admitted a fragment whose escaped text read another fragment's
+  declared free names and, before G7.11, reassigned a shared intrinsic for every fragment.
+  **The fix compiles first and runs only if the shape is right**, using
+  `JS_EVAL_FLAG_COMPILE_ONLY` (nothing executes yet, so a breakout's injected code cannot run
+  before — or instead of — being refused) then `js_comcon_is_single_toplevel_closure()`, an
+  engine helper verified against the compiler's OWN bytecode output rather than a second
+  parser: the legitimate shape's root unit is exactly three opcodes (`fclosure8`; `set_loc0`;
+  `return` — create the one closure, store it as the completion value, return it) and nothing
+  else, because grouping parentheses compile to nothing and a function's own parameter list
+  and body are entirely the CHILD closure's concern. Any breakout, with or without a second
+  closure, adds bytecode before that tail. **A first, narrower version checked only the
+  constant pool's closure count (must be exactly one)** — sufficient for the fragment
+  wrapper, since it is itself function-shaped and closing it early always consumes that
+  closure, forcing a second one to keep the result callable — but insufficient for `tests`'s
+  bare-paren wrapper, where a comma expression can smuggle in a side effect
+  (`(1), (globalThis.__x = 1), (function(fragment){ return true; })`) with no second closure
+  at all. Found and closed the same session, before shipping: disabling the opcode check and
+  keeping only the closure count reproduces exactly that one gap and nothing else.
+- **EV:** `t/comcon_wrapper_breakout.t` — 13 assertions, three breakout shapes (comma with a
+  replacement closure, comma with a bare side effect, a statement-level declaration) against
+  both wrapper sites, the original severity (a shadowed intrinsic) refused at the source
+  rather than merely caught afterward by G7.11's freeze, and the legitimate shapes an IIFE
+  fragment body and a real `contract.tests` still need to keep working. Two controls: the
+  whole mechanism reverted (5 of 13 fail — everything that depends on it, nothing else), and
+  the opcode check alone disabled, closure-count-only (exactly 1 of 13 fails — the `tests`
+  bare-side-effect case, and only that one).
+- **GAP:** This closes the ADMISSION-BYPASS severity of F15's third finding. What remains
+  named there and NOT touched here: the wrapper's own evaluation still runs with no deadline
+  or memory allowance of its own (phase 3), and at config phase with no interrupt handler
+  installed at all.
+  **home:** finding F15 (phase 2 of its fix) · `js_comcon_is_single_toplevel_closure` ·
+  `ngx_js_comcon_include_confined`.
+- **THREAT:** T3, T6, T9, T11
+- **V:** V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1573,7 +1619,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F13** | The REQUEST was outside the registry: `nginx.describe(req)` returned **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carried no declared type and no class. The read-only descriptor hardcoded `requestScoped: false` for every row, unfalsifiable only *because* there were no request rows to be wrong about. | G11.8, G3.7 | **CLOSED 2026-09-13.** All **54** rows classified — 28 getters, 25 methods, one settable (`statusCode`) — as TABLE rows, which are per-class and carry their own `RQS`, rather than through the bare-name read-only map. **Every type was read off its getter, and none was wrong on the first run** (`startTime` is a number not a Date; `location` is a live handle, not a path string). The pin at zero is now the real count, plus an assertion that every request row declares `requestScoped` — so a getter added without a table row is emitted by the discovery pass with `false` and fails the day it lands. Three controls |
 | **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
 | **F14** | Every confined invocation walked the WHOLE shared compartment heap (`JS_ComputeMemoryUsage`, twice per call) to read one counter — so one tenant's retained memory set every other tenant's per-request cost, persistently and beyond the execution deadline's reach | G7.10, G7.7 | **FOUND AND CLOSED 2026-09-14.** Measured before: a handler making one trivial confined invocation ran at **22.0% of stock** with an idle compartment and **0.2% (476 req/s)** while another fragment retained 200,000 objects. After: 68.0% and 66.6%. The same counter is now read in O(1) (`JS_GetMallocSize`). Found by reading the invoke path for a proposal, not by any test — nothing had measured invocation cost against heap size, and PERFORMANCE.md had no confined-invocation number at all |
-| **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered — AND a shared global binding was reassignable across fragments | G6.19, G7.11 | **RE-SCOPED 2026-09-14, part CLOSED.** Investigating this turned up a second, more serious defect than the one it was opened for: a normal ADMITTED fragment body (`imports:['Promise']`) could do `Promise = evil` and corrupt every co-resident fragment's view of it, and an UN-ADMITTED fragment (`{}`, no admission at all) could do the same to any intrinsic with zero gating. **CLOSED — see G7.11:** every binding on the compartment's globalThis is frozen once, at compartment creation. **STILL OPEN, as originally found:** `include()` compiles the source as `(function(grants){ return ( SRC ) })` and calls it with no `ngx_js_compartment_enter` and no per-invocation deadline or allowance; admission then inspects the RESULTING function, not the expression that produced it. Measured: an expression that loops **hung `nginx -t` until killed** (config phase, no worker, so no deadline exists), and at request time was stopped only by the host's 10 s request deadline. And a THIRD, related defect found alongside: the wrapper is built by string concatenation, so a source can close it and run script-level code before admission ever runs, even under `imports: []` — planting on an (now frozen, but still EXTENSIBLE) global or reading/writing another fragment's declared names. **No authority leaked** through any of these — a grant read at top level is `undefined` (`cap.owner` refuses it; every grant is bound to the fragment's future handle and `cur_frag` is 0 there) — but that is `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. The unmetered evaluation and the wrapper breakout are phases 2–3 of this fix, not done here |
+| **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered — AND a shared global binding was reassignable across fragments — AND a source could escape the wrapper it was compiled inside, defeating admission entirely | G6.19, G7.11, G7.12 | **RE-SCOPED 2026-09-14, TWO OF THREE PARTS CLOSED.** Investigating the original finding turned up two defects worse than it. **CLOSED — G7.11:** an ADMITTED fragment body (`imports:['Promise']`) could do `Promise = evil` and corrupt every co-resident fragment; an UN-ADMITTED fragment (`{}`) could do the same to any intrinsic with zero gating. Fixed by freezing every binding on the compartment's globalThis once, at creation. **CLOSED — G7.12:** the wrapper is built by string concatenation, so a source could close it and run script-level code before admission ever ran, even under `imports: []` — the escaped text was gated by NOTHING, regardless of contract strictness. Fixed by compiling with `JS_EVAL_FLAG_COMPILE_ONLY` and checking the compiled unit's own bytecode is exactly "create one closure, return it" before ever running it. **STILL OPEN, as originally found:** `include()` compiles the source as `(function(grants){ return ( SRC ) })` and calls it with no `ngx_js_compartment_enter` and no per-invocation deadline or allowance; admission then inspects the RESULTING function, not the expression that produced it. Measured: an expression that loops **hung `nginx -t` until killed** (config phase, no worker, so no deadline exists), and at request time was stopped only by the host's 10 s request deadline. **No authority leaked** through any of this — a grant read at top level is `undefined` (`cap.owner` refuses it; every grant is bound to the fragment's future handle and `cur_frag` is 0 there) — but that is `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. The unmetered evaluation is phase 3 of this fix, not done here |
 
 ---
 

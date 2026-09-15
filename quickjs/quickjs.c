@@ -6682,6 +6682,78 @@ uint32_t JS_GetOutOfMemoryCount(JSRuntime *rt)
     return rt->oom_count;
 }
 
+/*
+ * WHY THIS CATCHES EVERY WRAPPER BREAKOUT WITHOUT A SECOND PARSER.
+ *
+ * A host embedding a fragment's source builds "(function(g0,...){...})" (or,
+ * for a contract's `tests`, a bare "(SRC)") and compiles the WHOLE buffer as
+ * one script.  For that shape, and ONLY that shape, the top-level "global
+ * code" unit's OWN bytecode -- excluding whatever lives inside the one nested
+ * function it creates -- is EXACTLY three opcodes, verified empirically
+ * against this engine's own compiler output for every legitimate variant
+ * (zero params, several params, an IIFE as the body, a free-variable
+ * reference inside the body): create the one closure, store it as the
+ * script's completion value, return it.  Nothing else can appear, because
+ * grouping parentheses compile to nothing and a function's own parameter
+ * list and body are entirely the CHILD closure's concern, not the root's.
+ *
+ * A fragment whose text closes that function expression early (an unbalanced
+ * `)}` inside a string, comment or template literal) and supplies more
+ * script-level code afterward must still leave the script's completion value
+ * a callable, or the caller's own `JS_IsFunction()` check refuses it -- and
+ * ANY extra top-level operation, whether or not it creates a second closure,
+ * shows up as extra bytecode BEFORE this exact three-opcode tail.  Measured:
+ * a bare side effect with no second closure at all --
+ * `(1), (globalThis.__x = 1), (function(fragment){ return true; })` -- adds
+ * `get_var globalThis; push_1; put_field __x` ahead of the identical
+ * `fclosure8; set_loc0; return` tail.  So the count of nested closures in the
+ * constant pool is NOT sufficient by itself (this shape keeps it at one); the
+ * root's OWN opcode sequence is what has to be checked.
+ *
+ * `OP_fclosure8` (not the wider `OP_fclosure`) is required deliberately: the
+ * whole point of this check is that the constant pool holds EXACTLY the one
+ * function, so its index always fits in one byte -- seeing the wide form here
+ * is itself already a shape this wrapper never produces, and is refused
+ * rather than specially accommodated.
+ */
+int js_comcon_is_single_toplevel_closure(JSValueConst compiled)
+{
+    JSFunctionBytecode *b;
+    const uint8_t       *bc;
+    int                  i, nfunc, idx;
+
+    if (JS_VALUE_GET_TAG(compiled) != JS_TAG_FUNCTION_BYTECODE)
+        return 0;
+
+    b = JS_VALUE_GET_PTR(compiled);
+
+    nfunc = 0;
+    for (i = 0; i < b->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+            nfunc++;
+    }
+    if (nfunc != 1) {
+        return 0;
+    }
+
+    if (b->byte_code_len != 4) {
+        return 0;
+    }
+    bc = b->byte_code_buf;
+
+    if (bc[0] != OP_fclosure8) {
+        return 0;
+    }
+    idx = bc[1];
+    if (idx < 0 || idx >= b->cpool_count
+        || JS_VALUE_GET_TAG(b->cpool[idx]) != JS_TAG_FUNCTION_BYTECODE)
+    {
+        return 0;
+    }
+
+    return bc[2] == OP_set_loc0 && bc[3] == OP_return;
+}
+
 void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
 {
     struct list_head *el, *el1;

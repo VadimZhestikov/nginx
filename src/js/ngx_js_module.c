@@ -1404,8 +1404,33 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
 
     oom0 = JS_GetOutOfMemoryCount(JS_GetRuntime(sctx));
 
+    /*
+     * F15 PHASE 2: COMPILE FIRST, RUN ONLY IF THE SHAPE IS RIGHT.
+     *
+     * `buf` is source TEXT concatenated around the fragment: "(function(g0,
+     * ...){"use strict";return(" + source + ")})".  A fragment whose own text
+     * closes that function expression early -- an unbalanced `)}` sitting
+     * inside what looks like a string, comment or template literal -- and
+     * supplies more script-level code afterward used to have that code run
+     * with NO admission gate ever applied to it, REGARDLESS of how strict the
+     * contract asked to be: `imports: []` bought nothing, because admission
+     * only ever inspected the RESULT (`fn`), never the rest of the script that
+     * produced it.  Measured: `imports: []` admitted a fragment whose escaped
+     * text read another fragment's declared free names and (before F15 phase 1
+     * froze bindings) reassigned a shared intrinsic for every fragment, not
+     * just its own.
+     *
+     * COMPILE_ONLY compiles the whole buffer WITHOUT running any of it, so a
+     * syntax error is still caught here exactly as before, but nothing --
+     * including a breakout's injected code -- has executed yet.  The shape
+     * check runs on that unexecuted result; only if it passes does
+     * JS_EvalFunction() actually create the wrapper's closure and hand back
+     * `outer`, identical to what the single-step JS_Eval() used to return for
+     * a fragment that never attempted a breakout.
+     */
     outer = JS_Eval(sctx, (const char *) buf, p - buf,
-                    NGX_JS_COMCON_FRAGMENT_ORIGIN, JS_EVAL_TYPE_GLOBAL);
+                    NGX_JS_COMCON_FRAGMENT_ORIGIN,
+                    JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
     ngx_free(buf);
 
     if (JS_IsException(outer)) {
@@ -1415,6 +1440,37 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         etext = ngx_js_comcon_exc_text(sctx, exc, oom0,
                     "out of memory while compiling the fragment -- the "
                     "compartment's memory limit was reached", &estr);
+        thrown = JS_ThrowSyntaxError(hctx, "comcon.include: %s", etext);
+        if (estr != NULL) {
+            JS_FreeCString(sctx, estr);
+        }
+        JS_FreeValue(sctx, exc);
+        return thrown;
+    }
+
+    if (!js_comcon_is_single_toplevel_closure(outer)) {
+        /*
+         * Fail closed WITHOUT running it.  `outer` here is a raw compiled unit
+         * (JS_TAG_FUNCTION_BYTECODE), never turned into a callable, so freeing
+         * it discards the compiled form without ever creating -- let alone
+         * calling -- any closure the escaped text tried to produce.
+         */
+        JS_FreeValue(sctx, outer);
+        return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_ADMIT_SOURCE,
+                   "comcon.include: source must be a single function "
+                   "expression -- no statements or additional top-level code "
+                   "may accompany it");
+    }
+
+    outer = JS_EvalFunction(sctx, outer);
+
+    if (JS_IsException(outer)) {
+        const char  *etext;
+
+        exc = JS_GetException(sctx);
+        etext = ngx_js_comcon_exc_text(sctx, exc, oom0,
+                    "out of memory while creating the fragment's closure -- "
+                    "the compartment's memory limit was reached", &estr);
         thrown = JS_ThrowSyntaxError(hctx, "comcon.include: %s", etext);
         if (estr != NULL) {
             JS_FreeCString(sctx, estr);
@@ -2189,9 +2245,45 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                     ngx_memcpy(tbuf + 1, tsrc, tlen);
                     tbuf[tlen + 1] = ')';
                     tbuf[tlen + 2] = '\0';
+
+                    /*
+                     * F15 PHASE 2, same reasoning as the fragment wrapper
+                     * above: compile without running, so a `tests` source that
+                     * closes its own "(" early and supplies extra top-level
+                     * code cannot run that code before (or instead of) being
+                     * refused.  Unlike the fragment wrapper this is a HARD
+                     * REFUSAL rather than admission failing open: `tests`
+                     * already has one silent-skip path (a string that does not
+                     * compile to a function), and turning a breakout into a
+                     * SECOND silent skip would make a test that looks like it
+                     * validates something quietly not run at all -- worse than
+                     * refusing loudly, and the opposite of a zero-blast-radius
+                     * test phase.
+                     */
                     testfn = JS_Eval(sctx, (const char *) tbuf, tlen + 2,
-                                     "<comcon-tests>", JS_EVAL_TYPE_GLOBAL);
+                                     "<comcon-tests>",
+                                     JS_EVAL_TYPE_GLOBAL
+                                     | JS_EVAL_FLAG_COMPILE_ONLY);
                     ngx_free(tbuf);
+
+                    if (!JS_IsException(testfn)
+                        && !js_comcon_is_single_toplevel_closure(testfn))
+                    {
+                        JS_FreeValue(sctx, testfn);
+                        JS_FreeCString(hctx, tsrc);
+                        JS_FreeValue(hctx, tv);
+                        JS_FreeValue(sctx, fn);
+                        return ngx_js_comcon_refuse(hctx,
+                            NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                            "comcon.include: admission refused: contract "
+                            "`tests` must be a single function expression -- "
+                            "no statements or additional top-level code may "
+                            "accompany it");
+                    }
+
+                    if (!JS_IsException(testfn)) {
+                        testfn = JS_EvalFunction(sctx, testfn);
+                    }
 
                     if (JS_IsFunction(sctx, testfn)) {
                         tprev = ngx_js_compartment_enter(

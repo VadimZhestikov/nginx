@@ -453,6 +453,19 @@ size_t JS_GetMallocSize(JSRuntime *rt);
  * so "did this call run out of memory" is only answerable by comparing this
  * count before and after it. */
 uint32_t JS_GetOutOfMemoryCount(JSRuntime *rt);
+
+/* COMCON F15 phase 2: is this COMPILE-ONLY unit's top level EXACTLY "create
+ * one nested closure and return it" -- the shape "(function(...){...})" (or a
+ * bare "(SRC)") compiles to, and nothing else?  `compiled` must be the
+ * JS_TAG_FUNCTION_BYTECODE value JS_Eval(..., JS_EVAL_FLAG_COMPILE_ONLY)
+ * returns, NOT YET run via JS_EvalFunction() -- checking after running is
+ * checking after any breakout payload already executed.  Verified against
+ * the compiler's own bytecode, not a second parser: a constant-pool count of
+ * one nested function is necessary but not sufficient (a bare side effect
+ * needs no second closure), so the root's own opcode sequence is checked too.
+ * Returns 1 if the shape matches, 0 otherwise (including a wrong tag: fail
+ * closed). */
+int js_comcon_is_single_toplevel_closure(JSValueConst compiled);
 void JS_DumpMemoryUsage(FILE *fp, const JSMemoryUsage *s, JSRuntime *rt);
 
 /* atom support */
