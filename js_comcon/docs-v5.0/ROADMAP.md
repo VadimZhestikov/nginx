@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.112 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.113 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,14 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **M5 STEP 3 (2026-09-15, v5.113): M8's harness is SR-2's differential, now holding M5.0's
+>   two fragment classes** (byte-scan validation; a string-heavy token check) — both lower,
+>   both agree — **and a hole in it is closed**: the first version's cases failed identically
+>   on both tiers at include (newlines in a single-quoted literal) and 27/28 assertions passed,
+>   because equal is true of two identical failures; each case now asserts what a correct
+>   response looks like. Step 1's clean pack on `469fa5161`: ALL GATES PASS, transcript
+>   delivered. **Next: M5.0, the go/no-go benchmark** — the two classes interpreted vs
+>   untyped lowering vs the hand-written typed-shape arm (`t/tools/lowering-ceiling.t`).
 > - **M5 IS UNPARKED (2026-09-15, v5.112) — EVIDENCE FIRST.** The user unparked the compiler
 >   track. The order: (1) a second signer for SR-4 (the reviewer pack, run in full — green;
 >   one run spoiled by a file the authoring session wrote into `t/` mid-run, re-run clean for

@@ -227,6 +227,15 @@ The primary control, and the one everything else is defence in depth for.
 - **CLAIM:** The same fragment interpreted and AOT-compiled produces identical responses
   AND identical denials, gates included.
 - **EV:** `t/comcon_include_faithfulness.t` — the SR-2 gate for `include`, on both builds.
+  *v5.113 (M5 step 3):* this file is M8's harness — the typed cases arrive with M5.1 — and it
+  now holds M5.0's two candidate fragment classes (a byte-scan validation loop, a string-heavy
+  token check), both lowered, both agreeing. **A hole in the harness was found and closed on
+  the way:** the first version of those cases failed identically on both tiers at include
+  (newlines inside a single-quoted literal), and 27 of 28 assertions passed — "compiled
+  response == interpreted response" is true of two arms that fail the same way; only the
+  non-vacuity (NATIVE-line) gate noticed. Every case now asserts what a correct response looks
+  like (`expect_re`, or at least a non-empty body without the include error's signature).
+  Equal is not enough.
 - **THREAT:** T1, T7
 - **V:** V5a, V6
 

@@ -635,6 +635,29 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.113 (in place — M5 step 3: M8's harness is the SR-2 differential, and it gains M5.0's two
+fragment classes — and a hole):** "T2 refines T1" (SEMANTICS §3 (F), SPEC §8) already had its
+instrument: `t/comcon_include_faithfulness.t`, SR-2 for include — every representative fragment
+run on both binaries from one file, compiled response == interpreted, compiled denials ==
+interpreted, and the NATIVE line asserted so the compiled arm is really compiled. M8's harness is
+that file; the typed cases arrive with M5.1. What arrives now is M5.0's two candidate fragment
+classes — a byte-scan validation loop over the request (class A) and a string-heavy token check
+(class B) — so the fragments the go/no-go benchmark will measure are under the differential
+FIRST: whatever the compiler later does to them must keep producing the interpreter's bytes.
+Both lower today (`NATIVE (1 of 1)`), both agree.
+
+THE HOLE, found on the way. The first version of the two cases had newlines inside the fragment
+source, which the harness embeds in a single-quoted JS literal: a syntax error at include, on
+BOTH tiers, identically — and 27 of 28 assertions passed, because "compiled response ==
+interpreted response" is true of two arms that fail the same way. Only the non-vacuity gate
+(the NATIVE line) noticed. The harness now asserts, per case, what a correct response LOOKS LIKE
+(`expect_re`, or at least a non-empty body without the include error's signature): equal is not
+enough. Recorded as an instrument fix, because a differential that can pass on two identical
+failures is the dead-probe class this tree has been burned by before (V14/V9, the dead-probe
+sweep). ASSURANCE G4.1 addendum.
+
+Steps 1–3 of the M5 order are done; next is M5.0 — the benchmark that decides go/no-go.
+
 **v5.112 (in place — M5 unparked: the ground is prepared first — a second signer's pack, and
 the compiled tier's resource gates as a standing battery):** M5 (typed lowering to maxim C) is
 unparked on the user's decision, and its order is deliberately evidence-first: (1) a second

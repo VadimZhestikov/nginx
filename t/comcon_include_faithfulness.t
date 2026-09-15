@@ -63,9 +63,23 @@ my @cases = (
     grant => 1,
     frag => q{function(req){ try { sock.close(); return "closed\n"; } catch(e){ return "denied\n"; } }},
     paths => [qw(/t/m /t/m)], expect_denials => 1 },
+
+  # M5.0's two candidate fragment classes (M5 unparked, v5.112): the go/no-go
+  # benchmark measures these against the typed-shape arm, so they are under the
+  # differential FIRST -- whatever the compiler does to them later must keep
+  # producing the interpreter's bytes.  Both are deterministic in the request.
+  { name => 'byte-scan validation (M5.0 class A)',
+    frag => q{function(req){ var s = req.uri + "?" + req.args; var bad = 0; for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); if (c < 32 || c > 126) { bad++; } } var acc = 0; for (var k = 0; k < 20000; k++) { acc = ((acc * 31) + s.charCodeAt(k % s.length)) | 0; } return "bad=" + bad + " h=" + acc + "\n"; }},
+    paths => ['/t/scan?x=1&y=two', '/t/scan?z=3'], expect_denials => 0,
+    expect_re => qr/^bad=0 h=-?\d+$/m },
+
+  { name => 'token check, string-heavy (M5.0 class B)',
+    frag => q{function(req){ var tok = "eyJhbGciOiJIUzI1NiJ9." + (req.args || "") + ".sig"; var parts = tok.split("."); var h = 2166136261; for (var p = 0; p < parts.length; p++) { var part = parts[p]; for (var i = 0; i < part.length; i++) { h = ((h ^ part.charCodeAt(i)) * 16777619) >>> 0; } } var ok = parts.length === 3 && parts[0].length > 0 && (h % 7) < 7; return (ok ? "accept " : "reject ") + h.toString(16) + " " + parts[1].length + "\n"; }},
+    paths => ['/t/tok?sub=alice', '/t/tok?sub=bob&exp=1'], expect_denials => 0,
+    expect_re => qr/^accept [0-9a-f]+ \d+$/m },
 );
 
-plan tests => scalar(@cases) * 3 + 1;
+plan tests => scalar(@cases) * 4 + 1;
 
 sub run_case {
     my ($bin, $tag, $case, $port, $sockport) = @_;
@@ -150,12 +164,23 @@ for my $case (@cases) {
     my ($rj, $dj, $lj)   = run_case($jit,    "${tag}j", $case, $portbase + $i*2 + 1, $sockport);
 
     is($rj, $ri, "[$case->{name}] compiled response == interpreted");
+    # EQUAL IS NOT ENOUGH: two arms that fail the same way are equal too.  Each
+    # case says what a correct response looks like (an explicit expect_re, or
+    # at least a non-empty body without the include error's signature), so an
+    # include that refused on both tiers cannot pass as agreement.
+    if ($case->{expect_re}) {
+        like($ri, $case->{expect_re}, "[$case->{name}] the response is the fragment's own output");
+    } else {
+        ok(length($ri) > 0 && $ri !~ /comcon\.include|comcon: fragment/,
+           "[$case->{name}] the response is a fragment response, not an include error");
+    }
     is($dj, $di, "[$case->{name}] compiled denials == interpreted ($di)");
     if ($case->{expect_denials}) {
         cmp_ok($di, '>', 0, "[$case->{name}] A1 gate fired in both tiers");
     } else {
         is($di, 0, "[$case->{name}] no spurious denials");
     }
+    diag("[$case->{name}] compiled arm lowered=$lj") unless $lj;
     $all_compiled &&= $lj;
     $i++;
 }
