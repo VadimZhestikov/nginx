@@ -2788,9 +2788,9 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
  *                             timeoutMs?, memoryBytes?})  ->  callable
  *
  * The callable runs the SUB-fragment as a real fragment: its own handle in
- * jcf->comcon_frags, its own identity (handle + 1, so its wrappers -- none
- * yet; re-granting is the next phase -- would be its own and not its
- * parent's), its own deadline and allowance NESTED inside the parent's
+ * jcf->comcon_frags, its own identity (handle + 1, so the wrappers its
+ * parent re-grants to it -- see ngx_js_author_grants() -- are its own and
+ * not its parent's), its own deadline and allowance NESTED inside the parent's
  * (the push/pop pairs can only narrow what they find), and the parent's
  * posture, which it cannot change.  It is the same pipeline the host runs --
  * the four stages above -- reached from the other side of the membrane,
@@ -3132,6 +3132,366 @@ ngx_js_author_invoke(JSContext *ctx, JSValueConst this_val, int argc,
 
 
 /*
+ * RE-GRANTING: `grants: {name: cap}` + `attenuate: {name: {allow|redact,
+ * ttlSeconds}}` on a sub-fragment contract.  The parent hands over ITS OWN
+ * wrappers -- the objects it was granted -- and each becomes a sub-fragment
+ * wrapper by COPY-THEN-NARROW (ngx_js_socket_narrow & co.): the parent's
+ * opaque is duplicated, generation and all, the owner becomes the
+ * sub-fragment's, and only the mask (AND, subset asserted) and the expiry
+ * (min) can move, downward.  So A(sub) ⊆ A(parent) holds by construction,
+ * and a stale parent yields a stale child rather than a laundered fresh one
+ * -- which is why the handle is never re-wrapped.
+ *
+ * The attenuation words a fragment may write are DATA, not the host's
+ * comcon.* producers (a fragment has no `comcon`): `allow: [fields]`,
+ * `redact: [fields]`, `ttlSeconds: n`.  Anything else is refused as a flavor
+ * (E_CAP_FLAVOR), for the reason the host refuses an unknown word: an
+ * unrecognized attenuation once meant FULL authority.  A field mask on a
+ * non-socket, a ttl on a facet, a session-typed wrapper, a wrapper that is
+ * not the parent's own, an author capability -- each refused, none defaulted.
+ *
+ * Grant names become the sub-fragment wrapper's parameters (stage 1), so
+ * admission sees them as closure var-refs, exactly as it sees the host's.
+ */
+static ngx_int_t
+ngx_js_author_grants(JSContext *ctx, JSValueConst spec, uint32_t parent_owner,
+    uint32_t child_owner, const char **names, size_t *nlens, JSValue *av,
+    ngx_uint_t *n_out, ngx_js_comcon_fail_t *fail)
+{
+    JSValue          gv, attv, att, v, a, e;
+    JSPropertyEnum  *tab = NULL, *atab = NULL;
+    uint32_t         len = 0, alen = 0, i, k, cnt;
+    ngx_uint_t       n = 0, mask_word, allow_word, both;
+    const char      *name, *fname, *aname;
+    uint32_t         keep, ttl, bit;
+    int              code;
+    char             reason[256];
+    ngx_int_t        rc;
+
+    *n_out = 0;
+
+    gv = JS_GetPropertyStr(ctx, spec, "grants");
+    if (JS_IsUndefined(gv) || JS_IsNull(gv)) {
+        JS_FreeValue(ctx, gv);
+        return NGX_OK;
+    }
+
+    attv = JS_GetPropertyStr(ctx, spec, "attenuate");
+
+    if (!JS_IsObject(gv)
+        || (!JS_IsUndefined(attv) && !JS_IsNull(attv) && !JS_IsObject(attv)))
+    {
+        ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+            "`grants` must be {name: capability} and `attenuate` "
+            "{name: {allow|redact: [fields], ttlSeconds}}");
+        goto fail;
+    }
+
+    if (JS_GetOwnPropertyNames(ctx, &tab, &len, gv,
+                               JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) < 0)
+    {
+        ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                                  "`grants` could not be enumerated");
+        goto fail;
+    }
+
+    for (i = 0; i < len; i++) {
+        if (n >= 16) {
+            ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                                      "at most 16 grants");
+            goto fail;
+        }
+
+        name = JS_AtomToCString(ctx, tab[i].atom);
+        if (name == NULL) {
+            ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                                      "a grant name could not be read");
+            goto fail;
+        }
+
+        /* the name is spliced into the wrapper's parameter list: an
+           identifier and nothing else (the shape check would catch a breakout
+           anyway; this makes the refusal say what was wrong) */
+        for (k = 0; name[k] != '\0'; k++) {
+            u_char  c = (u_char) name[k];
+
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                  || c == '_' || c == '$' || (k > 0 && c >= '0' && c <= '9')))
+            {
+                break;
+            }
+        }
+        if (k == 0 || name[k] != '\0') {
+            ngx_snprintf((u_char *) reason, sizeof(reason),
+                         "grant name `%s` is not an identifier%Z", name);
+            JS_FreeCString(ctx, name);
+            ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                                      reason);
+            goto fail;
+        }
+
+        /* `name` is owned from here: it joins names[]/av[] only once its
+           wrapper exists (the bottom of the loop); until then a failure goes
+           through fail_name, which releases it and nothing else */
+
+        v = JS_GetProperty(ctx, gv, tab[i].atom);
+        att = JS_IsObject(attv) ? JS_GetPropertyStr(ctx, attv, name)
+                                : JS_UNDEFINED;
+
+        keep = NGX_JS_SOCKET_MASK_ALL;
+        ttl = 0;
+        mask_word = 0;
+        allow_word = 0;
+        both = 0;
+
+        if (JS_IsObject(att)) {
+            /* every word checked, none defaulted */
+            if (JS_GetOwnPropertyNames(ctx, &atab, &alen, att,
+                                       JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY)
+                == 0)
+            {
+                for (k = 0; k < alen; k++) {
+                    aname = JS_AtomToCString(ctx, atab[k].atom);
+                    if (aname == NULL
+                        || (ngx_strcmp(aname, "allow") != 0
+                            && ngx_strcmp(aname, "redact") != 0
+                            && ngx_strcmp(aname, "ttlSeconds") != 0))
+                    {
+                        ngx_snprintf((u_char *) reason, sizeof(reason),
+                                     "attenuate.%s: `%s` is not an attenuation "
+                                     "a sub-fragment may write (allow, redact, "
+                                     "ttlSeconds)%Z", name, aname ? aname : "?");
+                        if (aname != NULL) {
+                            JS_FreeCString(ctx, aname);
+                        }
+                        JS_FreePropertyEnum(ctx, atab, alen);
+                        atab = NULL;
+                        JS_FreeValue(ctx, v);
+                        JS_FreeValue(ctx, att);
+                        ngx_js_comcon_fail_refuse(fail,
+                                                  NGX_JS_REFUSAL_CAP_FLAVOR,
+                                                  reason);
+                        goto fail_name;
+                    }
+                    JS_FreeCString(ctx, aname);
+                }
+                JS_FreePropertyEnum(ctx, atab, alen);
+                atab = NULL;
+            }
+
+            a = JS_GetPropertyStr(ctx, att, "allow");
+            if (!JS_IsUndefined(a)) {
+                if (!JS_IsArray(ctx, a)) {
+                    JS_FreeValue(ctx, a);
+                    JS_FreeValue(ctx, v);
+                    JS_FreeValue(ctx, att);
+                    ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_CAP_FLAVOR,
+                        "attenuate: `allow` must be an array of field names");
+                    goto fail_name;
+                }
+                mask_word = 1;
+                allow_word = 1;
+                both++;
+                keep = 0;
+                e = JS_GetPropertyStr(ctx, a, "length");
+                JS_ToUint32(ctx, &cnt, e);
+                JS_FreeValue(ctx, e);
+                for (k = 0; k < cnt && k < 32; k++) {
+                    e = JS_GetPropertyUint32(ctx, a, k);
+                    fname = JS_ToCString(ctx, e);
+                    bit = fname ? ngx_js_socket_field_bit(fname) : 0;
+                    if (bit == 0) {
+                        ngx_snprintf((u_char *) reason, sizeof(reason),
+                                     "attenuate.%s.allow: `%s` is not a socket "
+                                     "field%Z", name, fname ? fname : "?");
+                        if (fname != NULL) {
+                            JS_FreeCString(ctx, fname);
+                        }
+                        JS_FreeValue(ctx, e);
+                        JS_FreeValue(ctx, a);
+                        JS_FreeValue(ctx, v);
+                        JS_FreeValue(ctx, att);
+                        ngx_js_comcon_fail_refuse(fail,
+                                                  NGX_JS_REFUSAL_CAP_FLAVOR,
+                                                  reason);
+                        goto fail_name;
+                    }
+                    keep |= bit;
+                    JS_FreeCString(ctx, fname);
+                    JS_FreeValue(ctx, e);
+                }
+            }
+            JS_FreeValue(ctx, a);
+
+            a = JS_GetPropertyStr(ctx, att, "redact");
+            if (!JS_IsUndefined(a)) {
+                if (!JS_IsArray(ctx, a)) {
+                    JS_FreeValue(ctx, a);
+                    JS_FreeValue(ctx, v);
+                    JS_FreeValue(ctx, att);
+                    ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_CAP_FLAVOR,
+                        "attenuate: `redact` must be an array of field names");
+                    goto fail_name;
+                }
+                mask_word = 1;
+                both++;
+                e = JS_GetPropertyStr(ctx, a, "length");
+                JS_ToUint32(ctx, &cnt, e);
+                JS_FreeValue(ctx, e);
+                for (k = 0; k < cnt && k < 32; k++) {
+                    e = JS_GetPropertyUint32(ctx, a, k);
+                    fname = JS_ToCString(ctx, e);
+                    bit = fname ? ngx_js_socket_field_bit(fname) : 0;
+                    if (bit == 0) {
+                        ngx_snprintf((u_char *) reason, sizeof(reason),
+                                     "attenuate.%s.redact: `%s` is not a socket "
+                                     "field%Z", name, fname ? fname : "?");
+                        if (fname != NULL) {
+                            JS_FreeCString(ctx, fname);
+                        }
+                        JS_FreeValue(ctx, e);
+                        JS_FreeValue(ctx, a);
+                        JS_FreeValue(ctx, v);
+                        JS_FreeValue(ctx, att);
+                        ngx_js_comcon_fail_refuse(fail,
+                                                  NGX_JS_REFUSAL_CAP_FLAVOR,
+                                                  reason);
+                        goto fail_name;
+                    }
+                    keep &= ~bit;
+                    JS_FreeCString(ctx, fname);
+                    JS_FreeValue(ctx, e);
+                }
+            }
+            JS_FreeValue(ctx, a);
+
+            if (both > 1) {
+                JS_FreeValue(ctx, v);
+                JS_FreeValue(ctx, att);
+                ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_CAP_FLAVOR,
+                    "attenuate: `allow` and `redact` together say two things; "
+                    "write one");
+                goto fail_name;
+            }
+
+            a = JS_GetPropertyStr(ctx, att, "ttlSeconds");
+            if (!JS_IsUndefined(a)) {
+                JS_ToUint32(ctx, &ttl, a);
+                if (ttl == 0) {
+                    JS_FreeValue(ctx, a);
+                    JS_FreeValue(ctx, v);
+                    JS_FreeValue(ctx, att);
+                    ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_CAP_FLAVOR,
+                        "attenuate: `ttlSeconds` must be a positive integer");
+                    goto fail_name;
+                }
+            }
+            JS_FreeValue(ctx, a);
+
+        } else if (!JS_IsUndefined(att) && !JS_IsNull(att)) {
+            JS_FreeValue(ctx, v);
+            JS_FreeValue(ctx, att);
+            ngx_snprintf((u_char *) reason, sizeof(reason),
+                         "attenuate.%s must be an object%Z", name);
+            ngx_js_comcon_fail_refuse(fail, NGX_JS_REFUSAL_ADMIT_CONTRACT,
+                                      reason);
+            goto fail_name;
+        }
+
+        /* the kinds, in turn; each declines what is not its own */
+        code = NGX_JS_REFUSAL_NONE;
+        reason[0] = '\0';
+
+        rc = ngx_js_socket_narrow(ctx, v, keep, allow_word, ttl, parent_owner,
+                                  child_owner, &av[n], &code, reason,
+                                  sizeof(reason));
+
+        if (rc == NGX_DECLINED) {
+            if (mask_word) {
+                ngx_snprintf((u_char *) reason, sizeof(reason),
+                             "attenuate.%s: allow/redact attenuate a socket, "
+                             "and this grant is not one%Z", name);
+                code = NGX_JS_REFUSAL_CAP_FLAVOR;
+                rc = NGX_ERROR;
+            } else {
+                rc = ngx_js_outbound_narrow(ctx, v, ttl, parent_owner,
+                                            child_owner, &av[n], &code,
+                                            reason, sizeof(reason));
+            }
+        }
+
+        if (rc == NGX_DECLINED) {
+            if (ttl != 0) {
+                ngx_snprintf((u_char *) reason, sizeof(reason),
+                             "attenuate.%s: ttlSeconds attenuates a socket or "
+                             "an outbound capability, and this grant is "
+                             "neither%Z", name);
+                code = NGX_JS_REFUSAL_CAP_FLAVOR;
+                rc = NGX_ERROR;
+            } else {
+                rc = ngx_js_com_facet_copy(ctx, v, parent_owner, child_owner,
+                                           &av[n], &code, reason,
+                                           sizeof(reason));
+            }
+        }
+
+        if (rc == NGX_DECLINED) {
+            code = NGX_JS_REFUSAL_CAP_GRANT;
+            if (JS_GetOpaque(v, ngx_js_author_class_id) != NULL) {
+                ngx_snprintf((u_char *) reason, sizeof(reason),
+                             "grant `%s`: an author capability is not "
+                             "re-grantable%Z", name);
+            } else {
+                ngx_snprintf((u_char *) reason, sizeof(reason),
+                             "grant `%s` is not a capability this fragment "
+                             "holds (a NginxSocket, NginxOutbound or "
+                             "NginxComFacet it was granted)%Z", name);
+            }
+            rc = NGX_ERROR;
+        }
+
+        JS_FreeValue(ctx, v);
+        JS_FreeValue(ctx, att);
+
+        if (rc != NGX_OK) {
+            ngx_js_comcon_fail_refuse(fail, (ngx_js_refusal_code_t) code,
+                                      reason);
+            fail->syntax = 0;
+            goto fail_name;
+        }
+
+        names[n] = name;
+        nlens[n] = ngx_strlen(name);
+        n++;
+    }
+
+    JS_FreePropertyEnum(ctx, tab, len);
+    JS_FreeValue(ctx, gv);
+    JS_FreeValue(ctx, attv);
+    *n_out = n;
+    return NGX_OK;
+
+fail_name:
+
+    JS_FreeCString(ctx, name);
+
+fail:
+
+    while (n > 0) {
+        n--;
+        JS_FreeCString(ctx, names[n]);
+        JS_FreeValue(ctx, av[n]);
+    }
+    if (tab != NULL) {
+        JS_FreePropertyEnum(ctx, tab, len);
+    }
+    JS_FreeValue(ctx, gv);
+    JS_FreeValue(ctx, attv);
+    return NGX_ERROR;
+}
+
+
+/*
  * author.include(source, spec) -> callable.  The fragment-side entrance to
  * the shared pipeline: decode the spec from COMPARTMENT values, then stages
  * 1-4 exactly as the host runs them.
@@ -3143,16 +3503,17 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
     ngx_js_conf_t           *jcf;
     ngx_js_author_opaque_t  *op;
     JSValue                  outer, fn, v, imp_s, intr_s, callable, data[4];
+    JSValue                  av[16];
     JSValueConst             spec;
-    const char              *source, *tsrc, *iname;
-    size_t                   slen, tlen;
+    const char              *source, *tsrc, *iname, *names[16];
+    size_t                   slen, tlen, nlens[16];
     uint32_t                 frag_pred, ilen = 0, nlen = 0, k;
     uint32_t                 timeout = 0, memory = 0;
     int                      check;
-    ngx_uint_t               handle;
+    ngx_uint_t               handle, nn = 0, ni;
     ngx_int_t                rc;
     ngx_js_comcon_fail_t     fail;
-    static const char       *forbidden[] = { "grants", "deps", "identity",
+    static const char       *forbidden[] = { "deps", "identity",
                                              "onViolation", "profile",
                                              "meter", NULL };
     ngx_uint_t               i;
@@ -3221,8 +3582,8 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
             return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_ADMIT_CONTRACT,
                        "author.include: `%s` is not a sub-fragment contract "
                        "word -- a sub-fragment declares imports, intrinsics, "
-                       "checkRequest, tests, timeoutMs and memoryBytes only",
-                       forbidden[i]);
+                       "checkRequest, tests, grants, attenuate, timeoutMs and "
+                       "memoryBytes only", forbidden[i]);
         }
         JS_FreeValue(ctx, v);
     }
@@ -3268,16 +3629,31 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
     frag_pred = (jcf->comcon_frags == NULL)
                 ? 0 : (uint32_t) jcf->comcon_frags->nelts;
 
-    /* stage 1 + 2: no parameters, no grant values -- a sub-fragment holds
-       nothing in this phase */
-    rc = ngx_js_comcon_compile_wrapper(jcf, ctx, source, slen, NULL, NULL, 0,
-                                       &outer, &fail);
-    JS_FreeCString(ctx, source);
-    if (rc != NGX_OK) {
+    /* the re-grants: the parent's OWN wrappers, copied and narrowed, bound to
+       the sub-fragment's predicted identity (asserted at publish) */
+    if (ngx_js_author_grants(ctx, spec, ngx_js_compartment_frag_get(),
+                             frag_pred + 1, names, nlens, av, &nn, &fail)
+        != NGX_OK)
+    {
+        JS_FreeCString(ctx, source);
         return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");
     }
 
-    if (ngx_js_comcon_call_wrapper(jcf, ctx, outer, NULL, 0, &fn, &fail)
+    /* stage 1 + 2 */
+    rc = ngx_js_comcon_compile_wrapper(jcf, ctx, source, slen, names, nlens,
+                                       nn, &outer, &fail);
+    JS_FreeCString(ctx, source);
+    for (ni = 0; ni < nn; ni++) {
+        JS_FreeCString(ctx, names[ni]);
+    }
+    if (rc != NGX_OK) {
+        for (ni = 0; ni < nn; ni++) {
+            JS_FreeValue(ctx, av[ni]);
+        }
+        return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");
+    }
+
+    if (ngx_js_comcon_call_wrapper(jcf, ctx, outer, av, nn, &fn, &fail)
         != NGX_OK)
     {
         return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");

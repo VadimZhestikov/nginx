@@ -129,6 +129,22 @@ JSValue    ngx_js_socket_wrap_budgeted(JSContext *ctx, uint32_t handle,
 JSValue    ngx_js_socket_wrap_masked(JSContext *ctx, uint32_t handle,
                uint32_t mask);
 
+/* The authoring tier: a field name -> its mask bit (0 = not a field), and
+ * COPY-THEN-NARROW of a parent fragment's own wrapper into a sub-fragment's.
+ * NGX_DECLINED when `parent` is not this kind of wrapper; NGX_ERROR with
+ * *code (a ngx_js_refusal_code_t) + reason on a refusal.  See the definition
+ * for why it is a copy and never a re-wrap of the handle. */
+uint32_t   ngx_js_socket_field_bit(const char *name);
+ngx_int_t  ngx_js_socket_narrow(JSContext *ctx, JSValueConst parent,
+               uint32_t keep_mask, ngx_uint_t assert_subset,
+               uint32_t ttl_seconds, uint32_t parent_owner,
+               uint32_t child_owner, JSValue *out, int *code, char *reason,
+               size_t rlen);
+ngx_int_t  ngx_js_outbound_narrow(JSContext *ctx, JSValueConst parent,
+               uint32_t ttl_seconds, uint32_t parent_owner,
+               uint32_t child_owner, JSValue *out, int *code, char *reason,
+               size_t rlen);
+
 
 /* ------------------------------------------------------------------------- *
  * COMCON M-LIB `allowHosts` — the OUTBOUND capability.

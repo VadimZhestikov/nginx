@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.106 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.107 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,19 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **THE AUTHORING TIER, PHASE 3 — RE-GRANTING, BY COPY (2026-09-15, v5.107).** A parent
+>   hands its OWN wrappers down (`grants: {name: cap}`) narrowed by data words
+>   (`attenuate: {name: {allow|redact, ttlSeconds}}`); each child is a COPY of the parent's
+>   opaque with the owner changed, and only the mask (AND, subset asserted for `allow`) and
+>   the expiry (min) move, downward. Never a re-wrap of the handle — phase 0 found that would
+>   mint a FRESH wrapper from a stale parent; measured instead: after the host closes the
+>   socket, the parent, its cached sub-fragment and a re-grant made from the stale parent
+>   all answer the same. Both arms agree with the host-side meet (with a control that
+>   differs); a session-typed wrapper is not re-grantable (its cursor is one conversation).
+>   Two of my readings were corrected by the evidence (`redact` only removes; no mask word
+>   means unchanged). `t/comcon_author_regrant.t` (34). ASSURANCE G7.16. **Phase 4 remains:
+>   SEMANTICS §3's induction step, PERFORMANCE's depth-2 row, negative-control rows,
+>   SHOWCASE17 §8, INCREMENT_MLIB §4.**
 > - **THE AUTHORING TIER, PHASE 2 — A FRAGMENT CAN AUTHOR FRAGMENTS (2026-09-15, v5.106) —
 >   AND F16, FOUND BY IT.** `comcon.author({subFragments: N})` is granted like any capability;
 >   `author.include(source, {imports, ...})` runs the SAME admission pipeline the host runs

@@ -115,8 +115,8 @@ var parent = comcon.include(
     "  attempt('freeName', function () {" +
     "    author.include('function(){ return nope; }', {imports: []}); return 'admitted'; });" +
     /* the contract words a sub-fragment may not use, refused rather than ignored */
-    "  attempt('grantsWord', function () {" +
-    "    author.include('function(){ return 1; }', {imports: [], grants: {}}); return 'admitted'; });" +
+    "  attempt('depsWord', function () {" +
+    "    author.include('function(){ return 1; }', {imports: [], deps: []}); return 'admitted'; });" +
     "  attempt('onViolationWord', function () {" +
     "    author.include('function(){ return 1; }', {imports: [], onViolation: 'audit'}); return 'admitted'; });" +
     "  attempt('noContract', function () {" +
@@ -269,8 +269,8 @@ is($o->{namesParent}{code}, 'E_ADMIT_FREENAME',
    'a sub-fragment cannot NAME its parent\'s grant: `author` is a free name to it');
 is($o->{freeName}{code}, 'E_ADMIT_FREENAME',
    'a free name in a sub-fragment is refused at admission, exactly as at the host');
-is($o->{grantsWord}{code}, 'E_ADMIT_CONTRACT',
-   '`grants` is refused in a sub-fragment contract (phase 3), not ignored');
+is($o->{depsWord}{code}, 'E_ADMIT_CONTRACT',
+   '`deps` is refused in a sub-fragment contract, not ignored (grants are t/comcon_author_regrant.t)');
 is($o->{onViolationWord}{code}, 'E_ADMIT_CONTRACT',
    '`onViolation` is refused: the posture is the parent\'s');
 is($o->{noContract}{code}, 'E_ADMIT_CONTRACT',

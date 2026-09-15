@@ -787,6 +787,123 @@ ngx_js_socket_wrap_masked(JSContext *ctx, uint32_t handle, uint32_t mask)
 
 
 /*
+ * A field NAME to its mask bit (bit index == getter magic), for a fragment
+ * writing an attenuation as data (`{allow: ['address']}`) where the host writes
+ * comcon.allow(['address']).  0 for a name that is not a field: the caller
+ * refuses it rather than defaulting -- an unknown word once meant FULL
+ * authority on the host side, and the lesson carries.
+ */
+uint32_t
+ngx_js_socket_field_bit(const char *name)
+{
+    if (ngx_strcmp(name, "address") == 0)  { return 1u << 0; }
+    if (ngx_strcmp(name, "port") == 0)     { return 1u << 1; }
+    if (ngx_strcmp(name, "fd") == 0)       { return 1u << 2; }
+    if (ngx_strcmp(name, "listener") == 0) { return 1u << 3; }
+    return 0;
+}
+
+
+/*
+ * THE AUTHORING TIER: derive a sub-fragment's wrapper from a PARENT's own
+ * wrapper -- COPY, THEN NARROW.
+ *
+ * Never re-wrap the handle.  ngx_js_socket_wrap_bounded() reads `gen` from the
+ * live registry, so a wrapper minted from a STALE parent -- its socket closed
+ * and the slot reissued -- would come out fresh and valid: a laundering path.
+ * A copy inherits the parent's gen, so a stale parent yields a stale child and
+ * the reach gate denies the child exactly as it denies the parent.
+ *
+ * Everything else is inherited verbatim -- the budget (the same fleet-wide
+ * counter, so nothing is spent twice), the window, the cosignature (the same
+ * principal, one vote) -- and only two things change, both downward: the mask
+ * (AND, with the request asserted to be a SUBSET of what the parent holds, as
+ * the host-side meet asserts) and the expiry (min).  A session-typed wrapper is
+ * refused: its cursor is one conversation, and a copy would be a second one at
+ * the same position -- a one-shot operation performed once per copy.
+ *
+ * `parent_owner` is the calling fragment: a wrapper that is not its own cannot
+ * be re-granted, whatever it holds.  Returns NGX_DECLINED when `parent` is not
+ * a socket wrapper at all (the caller tries the next kind), NGX_ERROR with
+ * `*code` (a ngx_js_refusal_code_t) and `reason` on a refusal.
+ */
+ngx_int_t
+ngx_js_socket_narrow(JSContext *ctx, JSValueConst parent, uint32_t keep_mask,
+    ngx_uint_t assert_subset, uint32_t ttl_seconds, uint32_t parent_owner,
+    uint32_t child_owner, JSValue *out, int *code, char *reason, size_t rlen)
+{
+    JSValue                  obj;
+    time_t                   exp;
+    ngx_js_socket_opaque_t  *op, *child;
+
+    op = JS_GetOpaque(parent, ngx_js_socket_class_id);
+    if (op == NULL) {
+        return NGX_DECLINED;
+    }
+
+    if (op->owner != parent_owner) {
+        *code = NGX_JS_REFUSAL_CAP_GRANT;
+        ngx_snprintf((u_char *) reason, rlen,
+                     "grant is not this fragment's own capability%Z");
+        return NGX_ERROR;
+    }
+
+    if (op->proto_n > 0) {
+        *code = NGX_JS_REFUSAL_CAP_ESCALATE;
+        ngx_snprintf((u_char *) reason, rlen,
+                     "a session-typed capability cannot be re-granted: its "
+                     "cursor is one conversation, and a copy would be a "
+                     "second%Z");
+        return NGX_ERROR;
+    }
+
+    /* `allow` NAMES the fields to keep, and they must be a SUBSET of what the
+       parent holds: asking for a field the parent lacks is an escalation, not
+       a no-op, exactly as the host-side meet treats it (assert_subset).
+       `redact` and "no word" only ever remove, and are ANDed without the
+       assertion -- redacting a field the parent never had is not asking for
+       anything. */
+    if (assert_subset && (keep_mask & ~op->mask)) {
+        *code = NGX_JS_REFUSAL_CAP_ESCALATE;
+        ngx_snprintf((u_char *) reason, rlen,
+                     "attenuation names a field the parent's capability does "
+                     "not have%Z");
+        return NGX_ERROR;
+    }
+
+    child = js_mallocz(ctx, sizeof(ngx_js_socket_opaque_t));
+    if (child == NULL) {
+        *code = NGX_JS_REFUSAL_NONE;
+        ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");
+        return NGX_ERROR;
+    }
+
+    *child = *op;                              /* gen, budget, window, cosign */
+    child->mask = op->mask & keep_mask;
+    child->owner = child_owner;
+
+    if (ttl_seconds > 0) {
+        exp = ngx_time() + (time_t) ttl_seconds;
+        if (child->expires == 0 || exp < child->expires) {
+            child->expires = exp;
+        }
+    }
+
+    obj = JS_NewObjectClass(ctx, ngx_js_socket_class_id);
+    if (JS_IsException(obj)) {
+        js_free(ctx, child);
+        *code = NGX_JS_REFUSAL_NONE;
+        ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");
+        return NGX_ERROR;
+    }
+
+    JS_SetOpaque(obj, child);
+    *out = obj;
+    return NGX_OK;
+}
+
+
+/*
  * COMCON M-LIB: the same wrapper, plus a `uses` budget. The budget travels on
  * the WRAPPER, not on the socket: two fragments granted the same socket under
  * different budgets get different wrappers, and neither can see or spend the
@@ -1937,6 +2054,72 @@ ngx_js_outbound_set_owner(JSValueConst obj, uint32_t frag)
     if (op != NULL) {
         op->owner = frag;
     }
+}
+
+
+/*
+ * The authoring tier's copy-then-narrow for an outbound wrapper -- see
+ * ngx_js_socket_narrow() for the argument.  The glob, budget, window and
+ * cosignature are inherited verbatim; only the expiry can change, downward.
+ */
+ngx_int_t
+ngx_js_outbound_narrow(JSContext *ctx, JSValueConst parent,
+    uint32_t ttl_seconds, uint32_t parent_owner, uint32_t child_owner,
+    JSValue *out, int *code, char *reason, size_t rlen)
+{
+    JSValue                    obj;
+    time_t                     exp;
+    ngx_js_outbound_opaque_t  *op, *child;
+
+    op = JS_GetOpaque(parent, ngx_js_outbound_class_id);
+    if (op == NULL) {
+        return NGX_DECLINED;
+    }
+
+    if (op->owner != parent_owner) {
+        *code = NGX_JS_REFUSAL_CAP_GRANT;
+        ngx_snprintf((u_char *) reason, rlen,
+                     "grant is not this fragment's own capability%Z");
+        return NGX_ERROR;
+    }
+
+    if (op->proto_n > 0) {
+        *code = NGX_JS_REFUSAL_CAP_ESCALATE;
+        ngx_snprintf((u_char *) reason, rlen,
+                     "a session-typed capability cannot be re-granted: its "
+                     "cursor is one conversation, and a copy would be a "
+                     "second%Z");
+        return NGX_ERROR;
+    }
+
+    child = js_mallocz(ctx, sizeof(ngx_js_outbound_opaque_t));
+    if (child == NULL) {
+        *code = NGX_JS_REFUSAL_NONE;
+        ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");
+        return NGX_ERROR;
+    }
+
+    *child = *op;
+    child->owner = child_owner;
+
+    if (ttl_seconds > 0) {
+        exp = ngx_time() + (time_t) ttl_seconds;
+        if (child->expires == 0 || exp < child->expires) {
+            child->expires = exp;
+        }
+    }
+
+    obj = JS_NewObjectClass(ctx, ngx_js_outbound_class_id);
+    if (JS_IsException(obj)) {
+        js_free(ctx, child);
+        *code = NGX_JS_REFUSAL_NONE;
+        ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");
+        return NGX_ERROR;
+    }
+
+    JS_SetOpaque(obj, child);
+    *out = obj;
+    return NGX_OK;
 }
 
 

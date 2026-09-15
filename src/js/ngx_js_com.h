@@ -36,6 +36,11 @@ extern JSClassID  ngx_js_com_facet_class_id;
 void      *ngx_js_server_srv_op(JSValueConst val);
 /* Bind a granted facet to the fragment it was granted to (0 = the host's own). */
 void       ngx_js_com_facet_set_owner(JSValueConst obj, uint32_t frag);
+/* the authoring tier: copy a parent's own facet for a sub-fragment (NGX_DECLINED
+ * when `parent` is not a facet; NGX_ERROR + *code/reason on a refusal) */
+ngx_int_t  ngx_js_com_facet_copy(JSContext *ctx, JSValueConst parent,
+               uint32_t parent_owner, uint32_t child_owner, JSValue *out,
+               int *code, char *reason, size_t rlen);
 JSValue    ngx_js_com_facet_wrap(JSContext *ctx, void *srv_op,
                const char *glob, size_t glob_len);
 ngx_int_t  ngx_js_com_facet_register_class(JSRuntime *rt);

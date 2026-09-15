@@ -635,6 +635,41 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.107 (in place — the authoring tier, phase 3: re-granting, by copy and never by
+re-wrapping):** a sub-fragment contract may now carry `grants: {name: cap}` and `attenuate:
+{name: {allow|redact: [fields], ttlSeconds}}`. The parent passes the wrapper objects IT was
+granted; each becomes the sub-fragment's by COPY-THEN-NARROW — the parent's opaque is
+duplicated, generation, budget, window, cosignature and glob included, the owner becomes the
+sub-fragment's, and only the mask (AND, `allow` asserted to be a subset of what the parent
+holds) and the expiry (min) can move, downward. A(sub) ⊆ A(parent) is therefore a property of
+the copy, not of a check.
+
+WHY A COPY. Phase 0 found that `ngx_js_socket_wrap_bounded()` reads `gen` from the live
+registry, so a child minted from the parent's HANDLE would be fresh and valid even when the
+parent's wrapper is stale — its socket closed and the slot reissued. That is a laundering path,
+and the copy closes it structurally: a stale parent yields a stale child, and a re-grant made
+FROM a stale parent is stale too (measured: after the host closes the socket, the parent, its
+cached sub-fragment and a fresh re-grant all answer the same way). Everything the copy inherits
+verbatim is inherited for a reason: the budget is the same fleet-wide counter, so nothing is
+spent twice; the cosignature is the same principal, so one wrapper is still one vote. A
+session-typed wrapper is refused outright — its cursor is one conversation, and a copy would
+be a second at the same position, a one-shot operation performed once per copy.
+
+THE WORDS ARE DATA. A fragment has no `comcon.*` producers, so it writes `allow`, `redact` and
+`ttlSeconds` as plain values; any other word is `E_CAP_FLAVOR`, for the reason the host refuses
+an unknown word — an unrecognized attenuation once meant FULL authority. A field mask on an
+outbound capability or a facet, a ttl on a facet, a plain object, an author capability, a
+wrapper that is not the parent's own: each refused, none defaulted. Two of my first readings
+were wrong and the evidence said so: `redact` is not `allow` (it only removes, so redacting a
+field the parent never had asks for nothing, and asserting the subset for it refused a
+legitimate narrowing), and "no mask word" means UNCHANGED, not ALL (asserting ALL ⊆ parent
+refused every re-grant that only set a ttl).
+
+BOTH ARMS AGREE: the host attenuating `allow(['address'])` and a parent re-granting
+`allow: ['address']` from address+port give the identical view; a control arm that keeps `port`
+differs from it in exactly that field. `t/comcon_author_regrant.t` (34). ASSURANCE G7.16. Phase
+4 (docs, SEMANTICS §3's induction step, PERFORMANCE, negative-control rows) is next.
+
 **v5.106 (in place — the authoring tier, phase 2: a fragment can author fragments — and F16,
 found by it: compiled code could catch its own deadline):** `comcon.author({subFragments: N,
 ttlSeconds?})` is a capability like any other that `include()` grants; inside the fragment it is

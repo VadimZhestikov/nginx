@@ -8306,6 +8306,59 @@ ngx_js_com_facet_set_owner(JSValueConst obj, uint32_t frag)
 }
 
 
+/*
+ * The authoring tier: a sub-fragment's facet is a COPY of its parent's own
+ * facet with the owner changed -- the same server, the same glob.  A facet has
+ * no word that narrows it from inside a fragment (a route glob has no
+ * computable meet, which is why the host refuses to re-mediate one too), so
+ * this is the whole of what a re-grant can do with it.  NGX_DECLINED when
+ * `parent` is not a facet; NGX_ERROR with *code (a ngx_js_refusal_code_t) and
+ * `reason` on a refusal.
+ */
+ngx_int_t
+ngx_js_com_facet_copy(JSContext *ctx, JSValueConst parent,
+    uint32_t parent_owner, uint32_t child_owner, JSValue *out, int *code,
+    char *reason, size_t rlen)
+{
+    JSValue                     obj;
+    ngx_js_com_facet_opaque_t  *fop, *child;
+
+    fop = JS_GetOpaque(parent, ngx_js_com_facet_class_id);
+    if (fop == NULL) {
+        return NGX_DECLINED;
+    }
+
+    if (fop->owner != parent_owner) {
+        *code = NGX_JS_REFUSAL_CAP_GRANT;
+        ngx_snprintf((u_char *) reason, rlen,
+                     "grant is not this fragment's own capability%Z");
+        return NGX_ERROR;
+    }
+
+    child = js_mallocz(ctx, sizeof(ngx_js_com_facet_opaque_t));
+    if (child == NULL) {
+        *code = NGX_JS_REFUSAL_NONE;
+        ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");
+        return NGX_ERROR;
+    }
+
+    *child = *fop;                     /* srv_op stays borrowed, as before */
+    child->owner = child_owner;
+
+    obj = JS_NewObjectClass(ctx, ngx_js_com_facet_class_id);
+    if (JS_IsException(obj)) {
+        js_free(ctx, child);
+        *code = NGX_JS_REFUSAL_NONE;
+        ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");
+        return NGX_ERROR;
+    }
+
+    JS_SetOpaque(obj, child);
+    *out = obj;
+    return NGX_OK;
+}
+
+
 JSValue
 ngx_js_com_facet_wrap(JSContext *ctx, void *srv_op, const char *glob,
     size_t glob_len)

@@ -1078,12 +1078,11 @@ The primary control, and the one everything else is defence in depth for.
   (with and without the one row an admitted fragment cannot carry), never copied.
 - **EV:** `t/tools/golden-denials.js` — the `E_AUTHOR_LIMIT` row; `t/comcon_v12_denial_codes.t`
   keeps the corpus complete against the enumerator.
-- **GAP:** Phase 2 grants a sub-fragment NOTHING: re-granting (copy-then-narrow of the parent's
-  own wrappers, `mask`/`ttl` only) is phase 3, so the No-Amplification argument at depth 2 is
-  today the trivial case A(sub) = ∅. A sub-fragment's queued jobs run in the parent's drain
-  under the parent's identity — stated, charged to the parent, but not yet pinned by a test.
-  The foreign-owner gates on the author capability and its callables are structural (nothing
-  can carry them to another fragment) and are not probed in audit mode.
+- **GAP:** A sub-fragment's queued jobs run in the parent's drain under the parent's identity —
+  stated, charged to the parent, but not yet pinned by a test. The foreign-owner gates on the
+  author capability and its callables are structural (nothing can carry them to another
+  fragment) and are not probed in audit mode. (Re-granting, which phase 2 left at the trivial
+  case A(sub) = ∅, is G7.16.)
   **home:** ROADMAP POSITION (the five-phase plan) · `ngx_js_author_include`,
   `ngx_js_author_invoke` · the four stage functions above `ngx_js_comcon_include_confined`.
 - **THREAT:** T4, T6, T9
@@ -1121,6 +1120,55 @@ The primary control, and the one everything else is defence in depth for.
   `t/tools/verify-negative-controls.sh`.
   **home:** finding F16 · `JS_IsUncatchableException` · quickjs-jit.c `_ex:` dispatch.
 - **THREAT:** T6, T9
+- **V:** V13
+
+#### G7.16 — a parent re-grants only what it holds, narrowed, by copy — never by re-wrapping
+- **CLAIM:** A sub-fragment contract's `grants: {name: cap}` accepts only the parent's OWN
+  wrappers (socket, outbound, facet) and produces, for each, a COPY of the parent's opaque with
+  the sub-fragment as owner; `attenuate: {name: {allow|redact: [fields], ttlSeconds}}` can move
+  only the mask (AND; `allow` asserted to be a subset of what the parent holds) and the expiry
+  (min), downward. Every other word is refused (`E_CAP_FLAVOR`), a field the parent lacks is
+  `E_CAP_ESCALATE`, a wrapper that is not the parent's own, a plain object or an author
+  capability is `E_CAP_GRANT`, and a session-typed wrapper is `E_CAP_ESCALATE`. So
+  A(sub) ⊆ A(parent) holds by construction, and a STALE parent yields a stale child.
+- **ARGUMENT:** COPY-THEN-NARROW, NEVER RE-WRAP, and the reason is a finding of phase 0:
+  `ngx_js_socket_wrap_bounded()` reads `gen` from the live registry, so a child minted from
+  the parent's HANDLE would come out fresh and valid even when the parent's wrapper is stale
+  (its socket closed, the slot reissued) — a laundering path. `ngx_js_socket_narrow()`,
+  `ngx_js_outbound_narrow()` and `ngx_js_com_facet_copy()` duplicate the parent's opaque
+  instead — generation, budget (the same fleet-wide counter, so nothing is spent twice),
+  window, cosignature (the same principal, one vote), glob — set the owner, and apply the
+  two downward moves. A session-typed wrapper is refused because its cursor is one
+  conversation and a copy would be a second at the same position: a one-shot operation
+  performed once per copy. The words a fragment may write are DATA (`allow`, `redact`,
+  `ttlSeconds` — a fragment has no `comcon.*` producers), and `redact` differs from `allow` in
+  exactly one way that matters: `allow` NAMES fields and must be a subset; `redact` only
+  removes, so redacting a field the parent never had is not asking for anything — the first
+  version asserted the subset for both and refused `redact: ['port']` from a parent holding
+  address+port, which the evidence caught. The no-mask default is "unchanged", not "all": the
+  first version asserted ALL ⊆ parent and refused every re-grant without a mask word, which
+  the evidence also caught. BOTH ARMS AGREE: the host attenuating `allow(['address'])` and a
+  parent re-granting `allow: ['address']` from address+port produce the identical view, and a
+  control arm re-granting `allow: ['address', 'port']` differs from it exactly in `port`.
+- **EV:** `t/comcon_author_regrant.t` — 34 assertions: the socket words and every refusal; the
+  sub-fragment sees its grant as a bound name and still cannot name its parent's author cap; a
+  wrapper the sub-fragment returns arrives as `{}`; both arms agree with a control that
+  differs; ttl meets by MIN across two requests (a 1-second re-grant expires while the parent's
+  3600 s and a 7200-second re-grant do not); the host closes the socket and the parent, its
+  cached sub-fragment and a re-grant made FROM the stale parent all read the same stale answer
+  (`threw`) — the laundering path closed; an outbound re-grant keeps its host glob and a facet
+  its route glob, the inapplicable words are refused, and a session-typed wrapper is not
+  re-grantable.
+- **GAP:** `uses` (a fragment-chosen fleet-wide budget key would be a cross-tenant channel),
+  `window`, `cosign` and `protocol` are inherited verbatim and cannot be written by a
+  sub-fragment contract; `routes` and `allowHosts` globs are inherited and have no meet, as on
+  the host. A sub-fragment cannot re-grant (it holds no author capability, and the kind is
+  not re-grantable), so depth 3 of the No-Amplification argument is vacuous rather than
+  proved. SEMANTICS §3 still states the theorem for one boundary; the induction step is
+  phase 4's.
+  **home:** `ngx_js_author_grants` · `ngx_js_socket_narrow` · `ngx_js_outbound_narrow` ·
+  `ngx_js_com_facet_copy`.
+- **THREAT:** T4, T6, T9
 - **V:** V13
 
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
@@ -1953,6 +2001,7 @@ signature is never quietly credited with work it did not see.
 | **F15 PHASE 1 CLOSED — G7.11, and a §15-SIGNED CLAIM WAS INCOMPLETE.** Investigating F15's original finding (an unmetered top-level eval) turned up a worse one: G7.6 — signed 2026-09-12, same date as §15 — probed eight shared surfaces for cross-fragment channels and found none, but every probe mutated a VALUE (`JSON.__chan = 'x'`); none tried REASSIGNING a binding (`JSON = evil`). That ninth operation was wide open: an admitted fragment declaring `imports: ['Promise']` for READ could overwrite `Promise` for every co-resident fragment, and an UN-ADMITTED fragment (`{}`, no admission at all) could do the same to any intrinsic. Closed by freezing every binding on the compartment's globalThis once, at creation, independent of admission. | **A claim §15 attested (G7.6's "separated by ... an admission gate") was TRUE of every operation its own battery tried and INCOMPLETE as a description of the boundary — not forged, not fabricated, but narrower than the prose read.** §15's invalidation list (end of that section) does not name this case; recorded here on the same model as F14's row, and G7.6 itself now carries the correction in place, parallel to the `Symbol.for` erratum it already carries. F15 stays open for its original finding plus a wrapper-breakout defect found alongside (phases 2–3). |
 | **THE AUTHORING TIER, PHASES 1–2 — G7.14, and G7.13's addendum (v5.105–v5.106).** A fragment can now author fragments: `comcon.author({subFragments: N})` grants a capability whose `include()` runs the SAME admission pipeline the host runs — `comcon.include()` split into four stages on compartment values, two entrances, no second copy — and returns a callable sub-fragment with its own identity, its deadline and allowance nested inside the parent's (phase 1 made both bounds a stack), the parent's posture, and nothing the parent did not hold. Text crosses the nested boundary, never objects; nested invocation is synchronous. The S6 battery answers at depth 2 exactly as at depth 1. | **A second tier the signature never saw.** Nothing it attested changes — the host boundary, admission, the gates — but a NEW boundary exists inside the compartment, and its evidence (G7.14) is dated after §15. A reader relying on the signature for "how many confinement boundaries exist" should read this row first. |
 | **F16 FOUND AND CLOSED — G7.15.** A fragment lowered to native C could catch its own deadline interrupt: the engine throws it uncatchable, the interpreter honours the flag, maxim's generated catch dispatch never asked. Found because the authoring tier's parent caught its sub-fragment's abort on the JIT build only; fixed in the engine (a public getter, one guard, codegen version 17) and pinned on both builds. | **Weakens what the signature attested about the compiled tier (F5, G7.5).** The S6 AOT arm was run and passed, honestly — but its runaway probe has no `try/catch`, so "the tiers agree probe by probe" was true of what the battery ASKED, and the battery did not ask whether a fragment can refuse to stop. Recorded here so the signature is not credited with a property it did not test. |
+| **THE AUTHORING TIER, PHASE 3 — RE-GRANTING (G7.16, v5.107).** A parent re-grants only its own wrappers, by COPY of the opaque with the owner changed and the mask/expiry moved downward; never by re-wrapping the handle, which would launder a fresh wrapper from a stale parent. Both arms agree with the host-side meet. | **Extends the No-Amplification claim (SEMANTICS §3) to a boundary the signature never saw**, by construction rather than by a check; the theorem's text still states one boundary, and its induction step is phase 4's. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with
