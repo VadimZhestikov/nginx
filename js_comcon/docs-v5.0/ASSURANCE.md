@@ -1237,6 +1237,43 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T11, T13
 - **V:** V13
 
+#### G7.18 — the resource gates hold on the compiled tier, and the gate for it stands
+- **CLAIM:** The deadline, the memory allowance and a `uses` budget bind a fragment lowered to
+  native C exactly as they bind the interpreter — through `try/catch`, `catch`-and-spin,
+  `finally`, a compiled generator, a compiled sub-fragment inside a compiled parent's
+  `try/catch` — and a standing two-arm battery asserts agreement, probe by probe, with the
+  compiled arm proven compiled.
+- **ARGUMENT:** F16 was a defect of a kind the S6 battery cannot see: it asks what a fragment
+  can REACH, and F16 was what a fragment can REFUSE TO STOP DOING. With M5 unparked
+  (2026-09-15), typed lowering will erase more of the interpreter's structure, so the question
+  needs a standing gate before the codegen changes. `t/comcon_compiled_resource_gates.t` runs
+  ten probes on both binaries from one file (the AOT gate's two-instance harness): seven
+  deadline probes that must run to a 200 ms meter and be stopped (`catch_spin`,
+  `catch_forever`, `finally_spin` — the gosub/ret path, not the catch path —
+  `generator_spin`, `async_spin`, `async_after`, `nested_spin` — a sub-fragment authored at
+  config phase, so lowered, inside a compiled parent that tries to catch), and three resource
+  probes (`uses_budget` spent by a compiled loop with `budget.uses` firing once,
+  `redacted_loop` firing nothing over 1000 reads, `memory_alloc` hitting the allowance).
+  Every probe's verdict AND its denial counters must equal the interpreter's; every deadline
+  probe must report ≥ 150 ms, so an unrelated immediate throw cannot pass as "stopped"; the
+  compiled arm must report native code from `aotStatus()` and the interpreted arm none. First
+  run: all agree, nothing found. **One fact surfaced and is recorded rather than hidden inside
+  a looser assertion:** async fragments report `compiled == 0` on the JIT arm — the codegen
+  handles async bodies (P12.3) but the include-time tree compile does not lower them, so an
+  async policy runs interpreted on the compiled tier. The battery asserts that as the expected
+  tier for its two async probes, and M5.0's benchmark has to know it.
+- **EV:** `t/comcon_compiled_resource_gates.t` — 36 assertions over two arms: 2 tier
+  preconditions (compiled ≥ 1 on every non-async probe on the JIT arm, 0 on the interpreter),
+  30 per-probe (named verdict, ran-to-deadline, agreement including counters), 4 named
+  counters and the no-alerts check across both arms' logs.
+- **GAP:** The battery covers the gates a fragment can hit from inside; it does not cover the
+  typed-slot write guards SPEC §8 names for the compiled tier, because no typed lowering ships
+  yet — that is the M8 differential harness (the next step). Async fragments are not on the
+  compiled tier at all, which is a limit of the tier, not of the battery.
+  **home:** the M5 unpark (ROADMAP POSITION) · `t/comcon_compiled_resource_gates.t`'s header.
+- **THREAT:** T6, T9, T11
+- **V:** V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -2072,6 +2109,7 @@ signature is never quietly credited with work it did not see.
 | **THE AUTHORING TIER, PHASE 4 — THE CLOSE-OUT (v5.108).** SEMANTICS §3 carries the nested induction step and names F16's class under assumption (F); PERFORMANCE §2d measures the nested boundary (≈ 0.59 µs, less than the outer one); SPEC §8a, OPERATOR_API §8j, MANUAL §3.8, THREATS T13, SHOWCASE17 §8 and INCREMENT_MLIB §4 describe what shipped; `t/tools/verify-negative-controls.sh` gains one automated row (phase 3) and five MANUAL rows (phases 1–2, copy-vs-rewrap, the marshal, F16); the nested bounds and the parent-owned jobs are pinned. | **Nothing new is claimed; what was claimed is now stated where a reader looks for it, and its controls are named.** The tier remains a change after the signature (the two rows above); this row records that its documentation and controls are complete, not that it is attested. |
 | **F17 FOUND AND CLOSED — G7.17; THE SANITIZER CORPUS NOW DETECTS LEAKS (v5.110).** A worker never freed the compartment at exit, and the COM node classes had no definition in the compartment runtime, so a wrapper minted inside a fragment leaked its opaque and pool — unboundedly, under audit. Both invisible to a corpus that ran `detect_leaks=0`; both fixed; the corpus runs leaks-on with one named suppression. | **Strengthens the instrument the signature relied on.** §15 attested a corpus that could not see a leak. It now can, and the first thing it saw was two of ours. A signature over a weaker instrument is not wrong, but a reader relying on "ASAN+UBSAN clean" for leak-freedom should know that claim dates from here. |
 | **`subFragments` BECOMES A LIVE COUNT (v5.111).** The sub-fragment callable is now an object with a finalizer; dropping it releases the slot and refunds the count. A semantic change to a word SPEC §8a stated ("for the life of the worker"), made on the user's decision; pinned by the basic test's hold/drop arm and re-worded across SPEC, OPERATOR_API, MANUAL, SHOWCASE17, THREATS. | **No effect on §15**: the tier post-dates it. Recorded because a documented word changed meaning. |
+| **M5 UNPARKED; STEPS 1–2 (v5.112).** Step 1: the reviewer pack was run in full on `151e348ef`+docs — every gate green (`verified 7 / failed 0 / skipped 2`, sanitizers 0 in `src/js`) EXCEPT two rows caused by a file the authoring session wrote into `t/` while the pack was running (a battery under construction; `check-assurance` saw it uncited, the JIT suite ran it unfinished). That run is therefore not a signer artifact; it is re-run on the committed tree and its transcript attached for the second signer. Step 2: the compiled-tier resource-gate battery (G7.18) stands, and found that async fragments are not lowered at include time. | **Prepares the ground the signature stands on before M5 changes it**: a second signer's reproduction (F11) is what M5's later evidence will be measured against, and the resource-gate battery is the instrument F16 showed was missing. Neither changes what §15 attested. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

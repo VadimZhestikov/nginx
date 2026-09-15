@@ -635,6 +635,34 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.112 (in place — M5 unparked: the ground is prepared first — a second signer's pack, and
+the compiled tier's resource gates as a standing battery):** M5 (typed lowering to maxim C) is
+unparked on the user's decision, and its order is deliberately evidence-first: (1) a second
+signer for SR-4, (2) a battery for what a fragment can REFUSE TO STOP DOING on native code —
+F16's class, which the S6 battery cannot see — (3) M8's "T2 refines T1" as a differential
+harness over typed fragments, (4) M5.0, a benchmark that decides go/no-go (the record says
+compiling a host-call-dominated policy buys ~1.0×; only a typed-shape arm reaches parity),
+(5) M5.1, the codegen, only if M5.0 says yes.
+
+STEP 1. `t/tools/reviewer-pack.sh` ran in full on the tree as of v5.111: every gate green
+(`t/` 353 files on `objs`, `t_stress`, three checkers, sanitizers 0 in `src/js`, negative
+controls `verified 7 / failed 0 / skipped 2`, 18 MANUAL rows printed) — except two rows the
+authoring session caused itself by writing an unfinished test into `t/` while the pack was
+running, after its dirty-tree check had passed: `check-assurance` saw the file uncited and
+the JIT suite ran it unfinished. That run is not a signer artifact. The pack is re-run on the
+committed tree, and its transcript is what a second signer attaches (REVIEW.md §4). Lesson,
+recorded: nothing is written into `src/js`, `quickjs`, `t` or `js_comcon` while the pack runs.
+
+STEP 2. `t/comcon_compiled_resource_gates.t` (36, two arms from one file): the deadline through
+`try/catch`, catch-and-spin, `finally`, a compiled generator, async before and after its first
+`await`, and a compiled sub-fragment inside a compiled parent's `try/catch`; a `uses` budget, a
+redacted field and the memory allowance in compiled loops. Every probe agrees with the
+interpreter, verdict and denial counters; every deadline probe runs to its 200 ms meter; the
+compiled arm is proven compiled. Nothing widened. One fact surfaced: **async fragments are not
+lowered at include time** — `compiled == 0` on the JIT arm although the codegen handles async
+bodies — so an async policy runs interpreted on the compiled tier. Recorded as the battery's
+expectation and as a thing M5.0's benchmark must know. ASSURANCE G7.18; §16.
+
 **v5.111 (in place — `subFragments` becomes a LIVE count: a dropped sub-fragment releases its
 slot):** the plan's D8 deferred sub-fragment slot release with `subFragments` as a lifetime
 count; the user chose the live count. The callable a sub-fragment is returned as is now an

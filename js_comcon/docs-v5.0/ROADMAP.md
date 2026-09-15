@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.111 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.112 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,18 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **M5 IS UNPARKED (2026-09-15, v5.112) — EVIDENCE FIRST.** The user unparked the compiler
+>   track. The order: (1) a second signer for SR-4 (the reviewer pack, run in full — green;
+>   one run spoiled by a file the authoring session wrote into `t/` mid-run, re-run clean for
+>   the signer); (2) **the compiled tier's resource gates as a standing battery**
+>   (`t/comcon_compiled_resource_gates.t`, 36, two arms from one file): deadline through
+>   catch, catch-and-spin, finally, a compiled generator, async, and a compiled sub-fragment
+>   inside a compiled parent's catch; budget, redaction and allowance in compiled loops —
+>   every probe agrees with the interpreter, nothing widened; **async fragments are not
+>   lowered at include time** (compiled == 0 on the JIT arm), which M5.0 must know; (3) M8's
+>   "T2 refines T1" as a differential harness over typed fragments; (4) M5.0, a go/no-go
+>   benchmark on two real fragment classes against the typed-shape arm; (5) M5.1, the codegen,
+>   only if M5.0 says yes. ASSURANCE G7.18.
 > - **`subFragments` IS A LIVE COUNT (2026-09-15, v5.111 — D8, decided by the user).** The
 >   sub-fragment callable is an object with a `call` handler and a finalizer: drop it and the
 >   slot is released, the count refunded, immediately. A parent authoring per request spends

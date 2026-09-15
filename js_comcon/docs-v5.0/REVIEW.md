@@ -85,11 +85,17 @@ those shapes and `verify-negative-controls.sh` exercises the fixes' tests agains
 reverted fixes, which is why both are in the pack. Neither proves an instrument
 measures what it claims; they rule out specific ways of measuring nothing.
 
-**Six negative-control rows cannot be checked automatically.** Their inverse
-patches no longer apply, because later commits rewrote the lines they target. The
-pack prints them; each names the reason. Checking one means reverting it by hand.
-That is maintenance debt the existing signature accepted, and it is still
-outstanding — labelled, not paid.
+**Eighteen negative-control rows cannot be checked automatically** (six when
+this was first written). Their inverse patches no longer apply, because later
+commits rewrote the lines they target — or the control was never a commit revert
+(a one-line change by hand, or a fix in `quickjs/`, outside what the script
+reverts). The pack prints them; each names the reason and the exact change to
+make. Checking one means reverting it by hand. That is maintenance debt the
+existing signature accepted, and it is still outstanding — labelled, not paid.
+
+**Do not write into `src/js`, `quickjs`, `t` or `js_comcon` while the pack runs.**
+Its dirty-tree check happens once, at the start; a file that appears afterwards
+is run and cited as if it were part of the tree. One run was spoiled that way.
 
 ---
 
