@@ -6940,8 +6940,20 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             _borrowed_depth = -1; /* consume borrow */
 
             /* P46: INT element hint — speculative extract for warm recompile.
-             * Only applies when index is already a native INT (_idx_typed). */
-            int _p46_use_int = (_idx_typed && vt_hints
+             * Only applies when index is already a native INT (_idx_typed).
+             *
+             * DISABLED (pilgrim, 2026-09-15): the speculation has no exit.  On
+             * a miss -- the element observed as INT during warm-up turns out
+             * to be anything else -- the path below substitutes 0 for the
+             * value (see the `(JS_FreeValue(ctx,_r),0LL)` arm) and carries on
+             * typed, which is a silent wrong result, not a slow one.  A hint
+             * is not a proof; without a deoptimisation to the boxed code there
+             * is no sound way to act on it.  The half-typed bit-op rule
+             * (M5.1a) keeps an int accumulator typed through `h ^ a[i]`
+             * WITHOUT assuming anything about the element, and the typed-array
+             * read is exact, so the win this bought is largely kept.  The code
+             * is left in place so the decision is visible next to it. */
+            int _p46_use_int = 0 && (_idx_typed && vt_hints
                                 && (n_gf + ae_idx) < (n_gf + n_ae)
                                 && vt_hints[n_gf + ae_idx] == 0);
 
