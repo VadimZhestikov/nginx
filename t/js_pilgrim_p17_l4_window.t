@@ -101,9 +101,10 @@ EOF
 $t->write_file('init.js', <<'JS');
 (function () {
     /* By INDEX, in config order: [0] plain :8080, [1] filtered :8081,
-     * [2] parked :8082.  Not by name — `server.serverName` and
-     * `server.serverNames` both read undefined at config phase, which is its own
-     * (unrelated) gap and not something this test should depend on. */
+     * [2] parked :8082.  (An earlier version of this comment called
+     * `server.serverNames` reading undefined "a gap": it is not -- the server's
+     * list is `server.names` (t/js_com_phase1.t), and `serverNames` is the
+     * LISTENER's property.  Indexing is kept because it is simpler here.) */
     var servers = nginx.http.servers;
 
     for (var i = 0; i < servers.length; i++) {
