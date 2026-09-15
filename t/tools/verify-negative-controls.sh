@@ -55,11 +55,6 @@ ROWS=(
 "a321849fa|t/js_com_lb_select.t|objs|balancer with no return pinned peer 0"
 "335dc0956|t/js_com_filter_nongenerator.t|objs|filter with no return dropped the response"
 "c5bf0ceac|t/js_pilgrim_p17_l4_window.t|objs|the L4 window armed no timer, so it was a wait state with no deadline"
-"d5c880cd4|t/comcon_leftover_accounting.t|objs|leftovers spent the next fragment's budget, and kept authority if their own fragment ran next"
-"ffd76ed84|t/comcon_invoke_heap_independence.t|objs|every invocation walked the shared heap, so a peer's memory set its cost"
-"ffd76ed84|t/comcon_fragment_error_report.t|objs|out of memory read as null, and include() errors arrived with no value"
-"0317e8b90|t/comcon_global_binding_freeze.t|objs|a fragment could reassign a shared global binding for every other fragment"
-"1618dce79|t/comcon_wrapper_breakout.t|objs|a fragment could escape its wrapper and defeat admission entirely, even under imports: []"
 "cabd6f4c2|t/comcon_deadline_without_worker.t|objs|comcon_rt had no interrupt handler at all before a worker existed, so config-phase evaluation could hang forever"
 )
 
@@ -70,6 +65,11 @@ MANUAL=(
 "0ebac7e47|t/js_com_ssl_range.t|same: its helper was collapsed by e246cc347"
 "21b42d7e5|t/js_com_grant_declare.t|the grant-wrapping path was rewritten by the uses/ttl budgets (2026-09-13); revert by hand against that"
 "67bc359e9|t/comcon_include_contract_fuzz.t|the include contract path was rewritten by the refusal codes and the fail-closed tests check (2026-09-12)"
+"d5c880cd4|t/comcon_leftover_accounting.t|the leftover-drain code it touched was rewritten by F14/F15's heap-walk and deadline changes (ffd76ed84, cabd6f4c2), landing the same session"
+"ffd76ed84|t/comcon_invoke_heap_independence.t|__invokeConfined's deadline arithmetic it touched was rewritten by F15 phase 3 (cabd6f4c2), landing the same session"
+"ffd76ed84|t/comcon_fragment_error_report.t|the include() exception-handling lines it touched were rewritten by F15 phase 2's compile-then-check restructuring (1618dce79), landing the same session"
+"0317e8b90|t/comcon_global_binding_freeze.t|the compartment-setup lines it touched (the interrupt-handler install site) were rewritten by F15 phase 3 (cabd6f4c2), landing the same session"
+"1618dce79|t/comcon_wrapper_breakout.t|the JS_EvalFunction()/JS_Call() lines it touched were rewritten by F15 phase 3's deadline push/pop (cabd6f4c2), landing the same session"
 )
 
 if ! git diff --quiet -- src/js || ! git diff --cached --quiet -- src/js; then
