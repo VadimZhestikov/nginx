@@ -269,6 +269,27 @@ typedef struct {
     ngx_js_sw_state_t   *sw_list;        /* linked list of SharedWorker states */
     JSValue              master_handlers; /* {event:[fn,...]} — nginx.on() registry */
     ngx_shm_zone_t      *shared_zone;    /* P11: nginx.shared memory zone    */
+
+    /*
+     * F15 PHASE 3: the compartment's OWN execution deadline, checked by
+     * ngx_js_comcon_interrupt_handler() on comcon_rt -- 0 means none armed.
+     *
+     * comcon_rt is a SEPARATE runtime from the host's, so it needs a deadline
+     * of its own rather than sharing w->request_deadline_ms the way tenant_rt
+     * does: a worker does not exist yet at CONFIG PHASE (js_source evaluation,
+     * including nginx -t), and a mechanism keyed on `w` cannot be armed before
+     * `w` exists.  This field lives on jcf, not on ngx_js_worker_t, precisely
+     * so it is reachable -- and settable -- with or without a worker.  Pushed
+     * and restored by ngx_js_comcon_deadline_push()/_pop() around every place
+     * that runs fragment-adjacent code: a wrapper's own top-level evaluation,
+     * a contract's admission tests, a confined invocation, and the leftover
+     * drain.  Measured before this existed: `comcon.include("(function(){
+     * for(;;){} })()", {imports:[]})` hung `nginx -t` until killed, and a
+     * separately-compiled fragment invoked at config phase (`f({})` called
+     * from the SAME js_source script) hung the same way -- neither had a
+     * worker, so neither had ANY interrupt handler installed at all.
+     */
+    uint64_t             comcon_deadline_ms;
 } ngx_js_conf_t;
 
 

@@ -995,25 +995,95 @@ ngx_js_comcon_rejection_tracker(JSContext *ctx, JSValueConst promise,
  * cross the boundary (runtime-agnostic), so no JSValue crosses realms/runtimes.
  */
 /*
- * Has this request's deadline already passed?  The authoritative test for "the
- * interrupt fired", used instead of matching the exception's message: the
- * message is prose and the deadline is a number, and one of those two is a
- * contract.
+ * Has the deadline already passed?  The authoritative test for "the interrupt
+ * fired", used instead of matching the exception's message: the message is
+ * prose and the deadline is a number, and one of those two is a contract.
+ *
+ * Against jcf->comcon_deadline_ms (F15 phase 3), not a worker's own field --
+ * see that field's comment in ngx_js.h for why comcon_rt needs a deadline
+ * independent of whether a worker exists.
  */
 static ngx_uint_t
-ngx_js_comcon_deadline_passed(ngx_js_worker_t *w)
+ngx_js_comcon_deadline_passed_jcf(ngx_js_conf_t *jcf)
 {
     struct timespec  ts;
     uint64_t         now_ms;
 
-    if (w->request_deadline_ms == 0) {
+    if (jcf->comcon_deadline_ms == 0) {
         return 0;
     }
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
     now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
 
-    return now_ms >= w->request_deadline_ms ? 1 : 0;
+    return now_ms >= jcf->comcon_deadline_ms ? 1 : 0;
+}
+
+
+/*
+ * F15 PHASE 3: comcon_rt's OWN interrupt handler, independent of whether a
+ * worker exists.  `opaque` is `jcf`, never `w` -- unlike ngx_js_interrupt_
+ * handler (installed on the HOST runtime and on tenant_rt), which is keyed
+ * on the worker because both of those only ever run once a worker exists.
+ * comcon_rt is reachable from CONFIG PHASE (a js_source script can call
+ * comcon.include() and even invoke the result immediately, while parsing
+ * nginx.conf, long before any worker is forked), so its handler cannot
+ * assume one.
+ */
+static int
+ngx_js_comcon_interrupt_handler(JSRuntime *rt, void *opaque)
+{
+    ngx_js_conf_t  *jcf = opaque;
+
+    return ngx_js_comcon_deadline_passed_jcf(jcf) ? 1 : 0;
+}
+
+
+/*
+ * Arm (tighten) the compartment's own deadline for the duration of one
+ * fragment-adjacent operation -- a wrapper's own top-level evaluation, a
+ * contract's admission tests, a confined invocation, the leftover drain.
+ * Returns the PREVIOUS jcf->comcon_deadline_ms, to be restored via
+ * ngx_js_comcon_deadline_pop() once that operation is over, on every exit
+ * path including an exception: a forgotten pop only matters if something
+ * else runs on comcon_rt before the next push, and every one of those entry
+ * points pushes its own fresh deadline before running anything, so a missed
+ * pop is inert rather than a leak of authority or a stuck clock.
+ *
+ * `timeout_ms` may only TIGHTEN an already-running request's own deadline,
+ * never extend it, matching the rule the invocation path already followed
+ * for w->request_deadline_ms -- the difference here is that there may be no
+ * `w` at all (config phase), in which case `timeout_ms` alone applies.
+ */
+static uint64_t
+ngx_js_comcon_deadline_push(ngx_js_conf_t *jcf, uint32_t timeout_ms)
+{
+    ngx_js_worker_t  *w = jcf->worker;
+    struct timespec   ts;
+    uint64_t          now_ms, newd, old;
+
+    old = jcf->comcon_deadline_ms;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
+    newd = now_ms + timeout_ms;
+
+    if (w != NULL && w->request_deadline_ms != 0
+        && w->request_deadline_ms < newd)
+    {
+        newd = w->request_deadline_ms;
+    }
+
+    jcf->comcon_deadline_ms = newd;
+
+    return old;
+}
+
+
+static void
+ngx_js_comcon_deadline_pop(ngx_js_conf_t *jcf, uint64_t old)
+{
+    jcf->comcon_deadline_ms = old;
 }
 
 
@@ -1021,7 +1091,6 @@ static JSContext *
 ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
 {
     JSContext        *sctx;
-    ngx_js_worker_t  *w;
 
     if (jcf->comcon_ctx != NULL) {
         return jcf->comcon_ctx;
@@ -1178,12 +1247,18 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
 
     jcf->comcon_ctx = sctx;
 
-    /* gas interrupt handler: wire now if the worker exists (post-fork include);
-       init-time includes are (re)wired in init_process alongside tenant_rt. */
-    w = jcf->worker;
-    if (w != NULL) {
-        JS_SetInterruptHandler(jcf->comcon_rt, ngx_js_interrupt_handler, w);
-    }
+    /*
+     * F15 PHASE 3: install comcon_rt's own interrupt handler UNCONDITIONALLY,
+     * here, at compartment creation -- not gated on a worker existing, and
+     * not re-wired post-fork (ngx_js_init_process used to do that for this
+     * runtime; it no longer needs to).  `jcf` is the opaque, and `jcf` is a
+     * stable pointer across fork() by the same COW argument that lets
+     * jcf->worker be set post-fork into a struct that already existed: each
+     * worker's copy-on-write page holds its OWN comcon_deadline_ms, and the
+     * handler installed here before fork keeps working correctly after it.
+     */
+    JS_SetInterruptHandler(jcf->comcon_rt, ngx_js_comcon_interrupt_handler,
+                           jcf);
 
     return sctx;
 }
@@ -1462,7 +1537,23 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                    "may accompany it");
     }
 
+    /*
+     * F15 PHASE 3: JS_EvalFunction() here only CREATES the wrapper's own
+     * closure (the root "eval" unit's whole job, per its 3-opcode shape, is
+     * "make one closure and return it") -- it does not call it, so no
+     * fragment-adjacent code runs yet.  A push here is defence in depth for
+     * closure allocation itself (the OOM path the exception check below
+     * already names), not the fix for a looping SOURCE -- that runs later,
+     * when the wrapper is actually CALLED.
+     */
+    {
+    uint64_t  saved_deadline = ngx_js_comcon_deadline_push(jcf,
+                                    NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS);
+
     outer = JS_EvalFunction(sctx, outer);
+
+    ngx_js_comcon_deadline_pop(jcf, saved_deadline);
+    }
 
     if (JS_IsException(outer)) {
         const char  *etext;
@@ -2008,8 +2099,26 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
 
     oom0 = JS_GetOutOfMemoryCount(JS_GetRuntime(sctx));
 
+    /*
+     * F15 PHASE 3: THIS is where the wrapper's body actually runs --
+     * `"use strict"; return( source )` -- and therefore where the original
+     * finding's IIFE (`"(function(){ for(;;){} })()"` as `source`) loops.
+     * Measured before this push existed: it hung config-phase evaluation
+     * (`nginx -t`) until killed, because no worker exists yet at that point
+     * and the compartment's interrupt handler used to require one; at
+     * request time it was bounded only by whichever ambient deadline
+     * happened to be running, not by a budget of its own.
+     */
+    {
+    uint64_t  call_deadline = ngx_js_comcon_deadline_push(jcf,
+                                   NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS);
+
     fn = JS_Call(sctx, outer, JS_UNDEFINED, (int) (gn + dn),
                  (JSValueConst *) av);
+
+    ngx_js_comcon_deadline_pop(jcf, call_deadline);
+    }
+
     for (gi = 0; gi < gn + dn; gi++) {
         JS_FreeValue(sctx, av[gi]);
     }
@@ -2236,6 +2345,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             size_t       tlen;
             u_char      *tbuf;
             JSValue      testfn, tret;
+            uint64_t     test_deadline;
 
             tsrc = JS_ToCStringLen(hctx, &tlen, tv);
             if (tsrc != NULL) {
@@ -2281,6 +2391,19 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                             "accompany it");
                     }
 
+                    /*
+                     * F15 PHASE 3: one push spans materializing the test
+                     * closure AND calling it -- the call is what runs
+                     * arbitrary contract-authored code against the fragment
+                     * (which itself runs, since `tests` exists precisely to
+                     * invoke `fn` and inspect what it does), so it needs the
+                     * same bound the wrapper's own evaluation just got, not
+                     * only the ambient request deadline that used to be the
+                     * sole protection here (and none at all at config phase).
+                     */
+                    test_deadline = ngx_js_comcon_deadline_push(
+                                    jcf, NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS);
+
                     if (!JS_IsException(testfn)) {
                         testfn = JS_EvalFunction(sctx, testfn);
                     }
@@ -2309,10 +2432,21 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
                             }
                             JS_FreeValue(sctx, exc2);
                             JS_FreeValue(sctx, fn);
+                            ngx_js_comcon_deadline_pop(jcf, test_deadline);
                             return thrown;
                         }
                         JS_FreeValue(sctx, tret);
                     }
+
+                    /*
+                     * F15 PHASE 3: one pop covers both remaining paths -- the
+                     * test ran and did not throw, or testfn was never a
+                     * function at all (the pre-existing silent-skip path for
+                     * a malformed contract.tests string) -- the early-return
+                     * exception path above pops for itself.
+                     */
+                    ngx_js_comcon_deadline_pop(jcf, test_deadline);
+
                     JS_FreeValue(sctx, testfn);
                 }
                 JS_FreeCString(hctx, tsrc);
@@ -2538,12 +2672,10 @@ ngx_js_comcon_aot_status(JSContext *hctx, JSValueConst this_val,
  * today; the guard costs a comparison and removes the need to remember that.
  */
 static void
-ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf, ngx_js_worker_t *w)
+ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf)
 {
-    struct timespec       ts;
-    uint64_t              saved_deadline = 0, now_ms, newd;
+    uint64_t              saved_deadline;
     ngx_uint_t            jobs = 0, failed = 0, rejections;
-    ngx_uint_t            deadline_pushed = 0;
     ngx_js_compartment_t  prev;
 
     if (!JS_IsJobPending(jcf->comcon_rt)) {
@@ -2564,18 +2696,12 @@ ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf, ngx_js_worker_t *w)
                       JS_GetMallocSize(jcf->comcon_rt)
                       + (size_t) NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES);
 
-    if (w != NULL) {
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
-        newd = now_ms + NGX_JS_COMCON_LEFTOVER_MS;
-        saved_deadline = w->request_deadline_ms;
-
-        /* only ever TIGHTEN: the request's own deadline stays the outer bound */
-        w->request_deadline_ms =
-            (saved_deadline != 0 && saved_deadline < newd) ? saved_deadline
-                                                           : newd;
-        deadline_pushed = 1;
-    }
+    /*
+     * F15 PHASE 3: pushed via jcf->comcon_deadline_ms now, not w->request_
+     * deadline_ms -- unconditionally, so a leftover drain reached at CONFIG
+     * PHASE (no worker yet) is bounded too, not just the request-time case.
+     */
+    saved_deadline = ngx_js_comcon_deadline_push(jcf, NGX_JS_COMCON_LEFTOVER_MS);
 
     /* Whatever this drain's jobs reject is reported as the LEFTOVERS' -- the
        invocation resets these again for its own drain. */
@@ -2607,9 +2733,7 @@ ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf, ngx_js_worker_t *w)
 
     ngx_js_compartment_leave(prev);
 
-    if (deadline_pushed) {
-        w->request_deadline_ms = saved_deadline;
-    }
+    ngx_js_comcon_deadline_pop(jcf, saved_deadline);
 
     JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
 
@@ -2642,7 +2766,6 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
 {
     ngx_js_conf_t    *jcf;
     JSContext        *sctx;
-    ngx_js_worker_t  *w = NULL;
     JSValueConst      fn;
     JSValue           arg, result, jstr, retv, exc, stack_v;
     const char       *s, *st, *where;
@@ -2665,9 +2788,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     const char       *s_free = NULL;
     ngx_js_tenant_mode_e  saved_mode = NGX_JS_TENANT_ENFORCE;
     ngx_uint_t        mode_pushed = 0;
-    uint64_t          old_deadline = 0, now_ms, newd;
-    ngx_uint_t        metered = 0;
-    struct timespec   ts;
+    uint64_t          old_deadline;
     ngx_js_compartment_t  prev;
 
     jcf = ngx_js_comcon_jcf;
@@ -2717,7 +2838,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
      * this fragment's job budget, deadline, allowance or rejection report.  See
      * ngx_js_comcon_drain_leftovers() for why they run as nobody.
      */
-    ngx_js_comcon_drain_leftovers(jcf, jcf->worker);
+    ngx_js_comcon_drain_leftovers(jcf);
 
     /*
      * A confined fragment ALWAYS runs under a deadline.
@@ -2740,16 +2861,15 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         timeout = NGX_JS_COMCON_FRAGMENT_TIMEOUT_MS;
     }
 
-    w = jcf->worker;
-    if (w != NULL) {
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
-        newd = now_ms + timeout;
-        old_deadline = w->request_deadline_ms;
-        w->request_deadline_ms =
-            (old_deadline != 0 && old_deadline < newd) ? old_deadline : newd;
-        metered = 1;
-    }
+    /*
+     * F15 PHASE 3: pushed via jcf->comcon_deadline_ms, unconditionally --
+     * comcon_rt's own interrupt handler reads that field regardless of
+     * whether a worker exists, so an invocation reached at CONFIG PHASE
+     * (a js_source script calling the fragment it just included) is bounded
+     * too, not only the request-time case ngx_js_comcon_deadline_push()
+     * already covered by consulting w->request_deadline_ms when w exists.
+     */
+    old_deadline = ngx_js_comcon_deadline_push(jcf, timeout);
 
     /*
      * F2: a per-INVOCATION memory allowance, enforced by narrowing the runtime
@@ -3050,8 +3170,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
                 ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
                               "js comcon: a fragment's queued job could not run "
                               "(%s): %s",
-                              (metered && w != NULL
-                               && ngx_js_comcon_deadline_passed(w))
+                              ngx_js_comcon_deadline_passed_jcf(jcf)
                               ? "its deadline had passed"
                               : "the fragment's allowance was exhausted",
                               jm ? jm : "error");
@@ -3267,9 +3386,8 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
 
     ngx_js_compartment_leave(prev);
 
-    if (metered) {
-        w->request_deadline_ms = old_deadline;
-    }
+    ngx_js_comcon_deadline_pop(jcf, old_deadline);
+
     JS_FreeValue(sctx, arg);
 
     return retv;
@@ -4499,9 +4617,12 @@ ngx_js_init_process(ngx_cycle_t *cycle)
         JS_SetInterruptHandler(jcf->tenant_rt, ngx_js_interrupt_handler, w);
     }
 
-    if (jcf->comcon_rt != NULL) {   /* M-CFG: gas for init-time include fragments */
-        JS_SetInterruptHandler(jcf->comcon_rt, ngx_js_interrupt_handler, w);
-    }
+    /*
+     * comcon_rt's OWN interrupt handler (F15 phase 3) is installed once, at
+     * compartment creation, keyed on `jcf` rather than `w` -- `jcf` is a
+     * stable pointer across fork(), so there is nothing to re-wire here now
+     * that a worker existing is no longer a precondition for arming it.
+     */
 
     /*
      * Overwrite the context opaque (set to cycle in ngx_js_com_init) with

@@ -965,6 +965,57 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T3, T6, T9, T11
 - **V:** V13
 
+#### G7.13 — the compartment meters itself, whether or not a worker exists
+- **CLAIM:** Every place fragment-adjacent code runs on comcon_rt — a wrapper's own top-level
+  evaluation, an admission test that invokes the fragment it tests, a confined invocation, and
+  the leftover drain — is bounded by a deadline of its own, reachable and enforced with or
+  without a worker.
+- **ARGUMENT:** comcon_rt's interrupt handler used to require a worker (`w != NULL`) before it
+  was installed at all, because it read `w->request_deadline_ms` — the same field the HOST
+  runtime's handler reads. A worker does not exist at CONFIG PHASE (`js_source` evaluation,
+  including `nginx -t`), so anything reaching comcon_rt there ran with NO interrupt handler
+  whatsoever. Measured, each hanging until killed: the wrapper's own body (`comcon.include(
+  "(function(){ for(;;){} })()", {imports:[]})` — the wrapper IS `"use strict";return(source)`,
+  so a looping source runs during `include()` itself, before the fragment is even admitted); a
+  confined invocation of an already-admitted fragment; and an admission test that calls the
+  fragment it is testing (`tests` exists precisely to invoke it). Request-time paths were not
+  unbounded — a worker's own ambient deadline (F6/F12) already covered them — but only loosely,
+  as a side effect of sharing that field rather than by a budget of their own.
+  **The fix gives comcon_rt a deadline that belongs to the COMPARTMENT, not the worker:** a new
+  field, `jcf->comcon_deadline_ms`, checked by a new interrupt handler keyed on `jcf` rather than
+  `w`. `jcf` is a stable pointer across `fork()` — the same property that already lets
+  `jcf->worker` be set post-fork into a struct that existed before it — so installing the
+  handler ONCE, at compartment creation, needs no post-fork re-wiring the way the old
+  worker-gated handler did. `ngx_js_comcon_deadline_push()`/`_pop()` tighten and restore it
+  around each risky call, min'd against the ambient `w->request_deadline_ms` when a worker
+  exists (so a fragment still cannot outlive its enclosing request), and defaulting to the
+  fragment's own timeout alone when it does not.
+  **A push around the wrong call was found and corrected during the same session, by testing
+  the claim rather than trusting it.** The first attempt wrapped `JS_EvalFunction()` on the
+  compiled wrapper — but that call only MATERIALIZES the wrapper's closure (its whole job, per
+  G7.12's three-opcode shape, is "make one closure and return it"); it does not CALL it, so no
+  fragment-adjacent code runs there at all. The wrapper's body — `"use strict";return(source)`,
+  where the looping IIFE actually loops — runs at the LATER `JS_Call(sctx, outer, ...)` that
+  invokes the materialized wrapper with its grant arguments. The first attempt's own debug
+  logging showed `JS_EvalFunction()` returning in milliseconds with no exception, which is what
+  said the push was on the wrong statement rather than merely too generous.
+- **EV:** `t/comcon_deadline_without_worker.t` — 9 assertions. The config-phase case is driven
+  by a DIRECT `nginx -t` subprocess, deliberately outside Test::Nginx's own `run()`: that harness
+  waits up to 5 seconds for nginx's pid file, written only after `js_source` finishes, so a
+  single 5-second config-phase timeout already sits at that budget's edge and stacking more than
+  one inside it would make the harness time out ambiguously instead of failing the test cleanly.
+  The three request-time cases run one per request for the same reason in the other direction
+  (Test::Nginx's `http()` carries its own 8-second alarm). A fourth case confirms the compartment
+  is not left wedged by any of the pushes that preceded it.
+- **GAP:** Only the four call sites this investigation reached (`include()`'s wrapper body and
+  admission test, `invoke_confined`, the leftover drain) push a deadline; a future comcon_rt
+  entry point that runs fragment-adjacent code must remember to push one too — there is no
+  structural guarantee every future caller will.
+  **home:** finding F15 (phase 3 of its fix, and the last of its three parts) ·
+  `ngx_js_comcon_deadline_push` · `ngx_js.h`'s `comcon_deadline_ms` field comment.
+- **THREAT:** T6, T9, T11
+- **V:** V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1619,7 +1670,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F13** | The REQUEST was outside the registry: `nginx.describe(req)` returned **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carried no declared type and no class. The read-only descriptor hardcoded `requestScoped: false` for every row, unfalsifiable only *because* there were no request rows to be wrong about. | G11.8, G3.7 | **CLOSED 2026-09-13.** All **54** rows classified — 28 getters, 25 methods, one settable (`statusCode`) — as TABLE rows, which are per-class and carry their own `RQS`, rather than through the bare-name read-only map. **Every type was read off its getter, and none was wrong on the first run** (`startTime` is a number not a Date; `location` is a live handle, not a path string). The pin at zero is now the real count, plus an assertion that every request row declares `requestScoped` — so a getter added without a table row is emitted by the discovery pass with `false` and fails the day it lands. Three controls |
 | **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
 | **F14** | Every confined invocation walked the WHOLE shared compartment heap (`JS_ComputeMemoryUsage`, twice per call) to read one counter — so one tenant's retained memory set every other tenant's per-request cost, persistently and beyond the execution deadline's reach | G7.10, G7.7 | **FOUND AND CLOSED 2026-09-14.** Measured before: a handler making one trivial confined invocation ran at **22.0% of stock** with an idle compartment and **0.2% (476 req/s)** while another fragment retained 200,000 objects. After: 68.0% and 66.6%. The same counter is now read in O(1) (`JS_GetMallocSize`). Found by reading the invoke path for a proposal, not by any test — nothing had measured invocation cost against heap size, and PERFORMANCE.md had no confined-invocation number at all |
-| **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered — AND a shared global binding was reassignable across fragments — AND a source could escape the wrapper it was compiled inside, defeating admission entirely | G6.19, G7.11, G7.12 | **RE-SCOPED 2026-09-14, TWO OF THREE PARTS CLOSED.** Investigating the original finding turned up two defects worse than it. **CLOSED — G7.11:** an ADMITTED fragment body (`imports:['Promise']`) could do `Promise = evil` and corrupt every co-resident fragment; an UN-ADMITTED fragment (`{}`) could do the same to any intrinsic with zero gating. Fixed by freezing every binding on the compartment's globalThis once, at creation. **CLOSED — G7.12:** the wrapper is built by string concatenation, so a source could close it and run script-level code before admission ever ran, even under `imports: []` — the escaped text was gated by NOTHING, regardless of contract strictness. Fixed by compiling with `JS_EVAL_FLAG_COMPILE_ONLY` and checking the compiled unit's own bytecode is exactly "create one closure, return it" before ever running it. **STILL OPEN, as originally found:** `include()` compiles the source as `(function(grants){ return ( SRC ) })` and calls it with no `ngx_js_compartment_enter` and no per-invocation deadline or allowance; admission then inspects the RESULTING function, not the expression that produced it. Measured: an expression that loops **hung `nginx -t` until killed** (config phase, no worker, so no deadline exists), and at request time was stopped only by the host's 10 s request deadline. **No authority leaked** through any of this — a grant read at top level is `undefined` (`cap.owner` refuses it; every grant is bound to the fragment's future handle and `cur_frag` is 0 there) — but that is `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. The unmetered evaluation is phase 3 of this fix, not done here |
+| **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered — AND a shared global binding was reassignable across fragments — AND a source could escape the wrapper it was compiled inside, defeating admission entirely | G6.19, G7.11, G7.12, G7.13 | **CLOSED 2026-09-14, ALL THREE PARTS.** Investigating the original finding turned up two defects worse than it, closed alongside it. **G7.11:** an ADMITTED fragment body (`imports:['Promise']`) could do `Promise = evil` and corrupt every co-resident fragment; an UN-ADMITTED fragment (`{}`) could do the same to any intrinsic with zero gating — fixed by freezing every binding on the compartment's globalThis once, at creation. **G7.12:** the wrapper is built by string concatenation, so a source could close it and run script-level code before admission ever ran, even under `imports: []` — fixed by compiling with `JS_EVAL_FLAG_COMPILE_ONLY` and checking the compiled unit's own bytecode is exactly "create one closure, return it" before ever running it. **G7.13, the originally-found defect:** the wrapper's body — where a looping `source` actually runs — had no deadline independent of a worker existing, so it (and a confined invocation, and an admission test that calls its fragment) hung indefinitely at CONFIG PHASE. Fixed by giving comcon_rt a deadline of its own (`jcf->comcon_deadline_ms`), pushed and restored around every place fragment-adjacent code runs on it, installed once at compartment creation rather than re-wired post-fork. **No authority leaked** through any of this — a grant read at top level is `undefined` (`cap.owner` refuses it; every grant is bound to the fragment's future handle and `cur_frag` is 0 there) — but that was `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. |
 
 ---
 

@@ -635,6 +635,49 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.104 (in place — F15, phase 3: the compartment meters itself, whether or not a worker
+exists — F15 CLOSED, all three parts):** phases 1 and 2 closed what the wrapper's shape allowed
+to bypass; this closes F15's ORIGINAL finding, the one that opened the investigation into the
+other two.
+
+comcon_rt's interrupt handler used to require a worker before it was installed at all, because
+it read `w->request_deadline_ms` — the same field the host runtime's handler reads. A worker
+does not exist at CONFIG PHASE (`js_source` evaluation, including `nginx -t`), so anything
+reaching comcon_rt there ran with NO interrupt handler whatsoever. MEASURED, each hanging until
+killed: the wrapper's own body (its whole job is `"use strict";return(source)`, so a looping
+source runs during `include()` itself, before the fragment is even admitted); a confined
+invocation of an already-admitted fragment; and an admission test that calls the fragment it is
+testing, since `tests` exists precisely to invoke it. Request-time paths were not unbounded — a
+worker's own ambient deadline already covered them — but only as a side effect of sharing that
+field, not by a budget of their own.
+
+THE FIX gives comcon_rt a deadline that belongs to the COMPARTMENT, not the worker: a new field,
+`jcf->comcon_deadline_ms`, checked by a new interrupt handler keyed on `jcf` rather than `w`.
+`jcf` is a stable pointer across `fork()` — the same property that already lets `jcf->worker` be
+set post-fork into a struct that existed before it — so the handler installs ONCE, at
+compartment creation, with no post-fork re-wiring needed (the old worker-gated handler needed
+exactly that, and the code for it is gone). A push/pop pair tightens and restores the deadline
+around each risky call, min'd against the ambient `w->request_deadline_ms` when a worker exists
+(so a fragment still cannot outlive its enclosing request) and defaulting to the fragment's own
+timeout alone when it does not.
+
+A PUSH AROUND THE WRONG CALL WAS FOUND AND CORRECTED THE SAME SESSION, BY TESTING THE CLAIM
+RATHER THAN TRUSTING IT. The first attempt wrapped `JS_EvalFunction()` on the compiled wrapper —
+but that call only MATERIALIZES the wrapper's closure (its whole job, per the three-opcode shape
+phase 2 verifies, is "make one closure and return it"); it does not CALL it, so no
+fragment-adjacent code runs there. The wrapper's body — where the looping IIFE that named this
+finding actually loops — runs at the LATER call that invokes the materialized wrapper with its
+grant arguments. Debug logging added to check the claim showed `JS_EvalFunction()` returning in
+milliseconds with no exception every time, which is what said the push was on the wrong
+statement rather than merely too generous.
+
+`t/comcon_deadline_without_worker.t` (9). The config-phase case is driven by a DIRECT `nginx -t`
+subprocess, deliberately outside Test::Nginx's own `run()`: that harness waits up to 5 seconds
+for nginx's pid file, written only after `js_source` finishes, so a single 5-second config-phase
+timeout already sits at that budget's edge. The three request-time cases run one per request for
+the same reason in the other direction (`http()` carries an 8-second alarm). ASSURANCE G7.13 ·
+F15's ledger row now closed, all three parts.
+
 **v5.103 (in place — F15, phase 2: a fragment's own text cannot escape the wrapper it is
 compiled inside):** phase 1 closed the corruption; this closes what let it bypass admission
 entirely.
