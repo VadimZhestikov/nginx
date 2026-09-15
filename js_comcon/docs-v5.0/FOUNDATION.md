@@ -635,6 +635,30 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.109 (in place — the remaining items, one at a time: the engine debt paid to the fork;
+the author capability's gates probed in both postures):** two of the open items the close-out
+listed, done.
+
+THE ENGINE DEBT. The four engine files the vendored `quickjs/` had accumulated since the last
+subtree pull — `JS_GetMallocSize`, `JS_GetOutOfMemoryCount`, `js_comcon_is_single_toplevel_
+closure`, `JS_IsUncatchableException`, V14's reproducible translation-unit name, F16's guard,
+`JIT_CODEGEN_VERSION` 17 — are carried to the pilgrim-quickjs fork's `pilgrim` branch, at byte
+parity, under its own self-gate (`make CONFIG_JIT=y test`). `run-test262.c` was NOT carried:
+the fork's copy is newer (its glibc backtrace fix) and flows the other way, on the next pull.
+The fork commit is local; nothing was pushed.
+
+THE GATES IN BOTH POSTURES. G7.14's gap said the author capability's foreign-owner gate was
+not probed under audit, because nothing can carry the capability to another fragment. It can
+be reached, through the one path that runs a fragment's code as someone else: a LEFTOVER,
+drained as nobody by the next invocation (G6.16). `t/comcon_author_audit.t` (15) arranges ten
+leftover `author.include()` calls and finds what v5.96 already decided for every wrapper:
+`cap.owner` is UNCONDITIONAL — fired in enforce and in audit alike, admitted in neither,
+`unconditional=1` on the record. The capability's other first question, `cap.expired`, is
+ordinary — a 1-second capability granted at request time (the clock starts when it crosses,
+which is why granting it at config phase measured nothing) denies after 2 s in enforce and is
+logged-and-allowed in audit, three times, once per gated operation. Two behaviours, each the
+one the other wrappers have.
+
 **v5.108 (in place — the authoring tier, phase 4: the close-out — the theorem's nested step,
 the nested cost, the words, the controls):** nothing new ships; what shipped in v5.105–v5.107
 is now stated where a reader looks for it, and every claim names its control.

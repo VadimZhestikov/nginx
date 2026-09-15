@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.108 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.109 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,17 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **THE REMAINING ITEMS, ONE AT A TIME (2026-09-15, v5.109): two done.** (1) The engine debt
+>   is paid: the four engine files are carried to the pilgrim-quickjs fork's `pilgrim` branch
+>   at byte parity under its own self-gate (local commit `8984e3f`; not pushed; `run-test262.c`
+>   flows the other way on the next pull). (2) The author capability's two gates are probed in
+>   both postures (`t/comcon_author_audit.t`, 15): `cap.owner` reached through a leftover
+>   drained as nobody, and UNCONDITIONAL — denied in audit too, as v5.96 decided for every
+>   wrapper; `cap.expired` ordinary — allowed in audit, logged once per gated operation.
+>   **Still open:** `uses`/`window`/`cosign`/`protocol` not writable by a sub-fragment;
+>   facets not narrowable from inside; depth two; sub-fragment slot release; and the older
+>   backlog (the broadcast-fuzz flake, the `serverName` config-phase gap, `std.postures.
+>   lockdown`, `opaque.*`, F2's leak half, F11's second signer, M5 parked).
 > - **THE AUTHORING TIER IS COMPLETE — PHASE 4, THE CLOSE-OUT (2026-09-15, v5.108).** Nothing
 >   new ships. SEMANTICS §3 carries the (AUTHOR) induction step and names F16's class under
 >   assumption (F) — the lowered C must simulate the RESOURCE gates too, which the S6 battery

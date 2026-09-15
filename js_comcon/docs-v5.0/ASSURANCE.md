@@ -1078,10 +1078,19 @@ The primary control, and the one everything else is defence in depth for.
   (with and without the one row an admitted fragment cannot carry), never copied.
 - **EV:** `t/tools/golden-denials.js` — the `E_AUTHOR_LIMIT` row; `t/comcon_v12_denial_codes.t`
   keeps the corpus complete against the enumerator.
-- **GAP:** The foreign-owner gates on the author capability and its callables are structural
-  (nothing can carry them to another fragment) and are not probed in audit mode.
-  (Re-granting, which phase 2 left at the trivial case A(sub) = ∅, is G7.16.) *Closed at
-  v5.108:* a sub-fragment's queued job is now pinned running in the host's trailing drain after
+- **EV:** `t/comcon_author_audit.t` — 15 assertions *(v5.109)*: the two gates every
+  `author.*` entry point asks first, in both postures. `cap.owner` is reached through the one
+  path that runs a fragment's code as someone else — a LEFTOVER, drained as nobody by the next
+  invocation (G6.16) — and is UNCONDITIONAL (v5.96): ten leftover `author.include()` calls fire
+  it in enforce and in audit alike, and none is admitted in either (`author.used` does not move;
+  the audit record carries `unconditional=1`). `cap.expired` is ordinary: a 1-second author
+  capability, granted at request time so its clock is the test's, denies the include after 2 s
+  in enforce and lets it through in audit — logged three times, once per gated operation (two
+  counter reads and the include).
+- **GAP:** The foreign-owner gate on a sub-fragment's CALLABLE (as opposed to the author
+  capability) is structural (nothing can carry a callable to another fragment) and is probed
+  only through the capability. (Re-granting, which phase 2 left at the trivial case
+  A(sub) = ∅, is G7.16.) *Closed at v5.108:* a sub-fragment's queued job is now pinned running in the host's trailing drain after
   the parent returns, reported as the fragment's unhandled rejection (`/jobs`); and the nested
   bounds — phase 1's `min()` — are pinned where nesting exists (`/nestdeadline`: a sub-fragment
   asking 3 s inside a 500 ms parent is aborted at 500 ms; `/nestmemory`: one asking 16 MB inside
