@@ -137,6 +137,16 @@ only mitigation for it currently in the tree**, and it bounds the per-event leak
 exactly the deadline — narrowing the channel, not closing it, which is what
 "accepted residual" has to mean here.
 
+**A SECOND MEDIUM, FOUND AND CLOSED 2026-09-14 (F14 — ASSURANCE G7.10).** The table above
+measures CPU a sender burns while the receiver waits, which the deadline caps. It could not
+see memory a sender merely HOLDS: every confined invocation walked the whole shared heap to
+read one counter, so a peer's retained objects set the receiver's cost — persistently, with
+the sender idle, and beyond any deadline, because the walk ran inside the receiver's own
+call. One worker, one trivial confined invocation per request: **22.0% of stock throughput
+idle, 0.2% (476 req/s) while a peer retained 200,000 objects**. After an O(1) fix: 68.0% and
+66.6%. The CPU medium is unchanged by that fix and re-measured on the same build: 0.3 →
+319.9 ms, ~3.1 bits/s, 50.0 ms under a 50 ms deadline.
+
 ### T10 — Request-level attacker (classic injection, from the network)
 *Blocked by:* grammar-valued interfaces (SQL scenario 3, header CRLF scenario 4,
 patterns w/o ReDoS); tenant cages bound the blast radius of any tenant-code bug the

@@ -1137,11 +1137,44 @@ ngx_js_comcon_eval_dep(JSContext *ctx, ngx_cycle_t *cycle, ngx_str_t *path,
 
 /* comcon.__includeConfined(source) -> handle: compile a fragment (function
  * expression) in the compartment; hold it C-side; return an integer handle. */
+/*
+ * Describe an exception pending on the COMPARTMENT context, for a message thrown
+ * on the HOST context.  Returns the text; `*to_free` is set when the text must be
+ * released with JS_FreeCString(sctx, ...).
+ *
+ * OUT OF MEMORY USED TO READ AS `null`.  At a hard limit the engine cannot
+ * allocate the InternalError it means to throw, so JS_ThrowError2() throws JS_NULL
+ * instead -- and the host reported `comcon: fragment: null`, exactly what a
+ * fragment doing `throw null` produces.  An operator could not tell "this tenant
+ * ran out of its allowance" from "this tenant threw null".  The engine now counts
+ * its out-of-memory throws; a non-object exception thrown while that count moved
+ * is the allocation failure, and it is named as one.  A real Error object is left
+ * alone, because then the engine did manage to say "out of memory" itself.
+ */
+static const char *
+ngx_js_comcon_exc_text(JSContext *sctx, JSValueConst exc, uint32_t oom_before,
+    const char *oom_text, const char **to_free)
+{
+    *to_free = NULL;
+
+    if (!JS_IsObject(exc)
+        && JS_GetOutOfMemoryCount(JS_GetRuntime(sctx)) != oom_before)
+    {
+        return oom_text;
+    }
+
+    *to_free = JS_ToCString(sctx, exc);
+
+    return (*to_free != NULL) ? *to_free : "error";
+}
+
+
 JSValue
 ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     int argc, JSValueConst *argv)
 {
     uint32_t  frag_pred;
+    uint32_t  oom0;
     ngx_js_conf_t  *jcf;
     JSContext      *sctx;
     JSValue         fn, outer, thrown, exc, name_v, av[16];
@@ -1274,15 +1307,20 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     *p = '\0';                    /* JS_Eval requires a NUL-terminated buffer */
     JS_FreeCString(hctx, source);
 
+    oom0 = JS_GetOutOfMemoryCount(JS_GetRuntime(sctx));
+
     outer = JS_Eval(sctx, (const char *) buf, p - buf,
                     NGX_JS_COMCON_FRAGMENT_ORIGIN, JS_EVAL_TYPE_GLOBAL);
     ngx_free(buf);
 
     if (JS_IsException(outer)) {
+        const char  *etext;
+
         exc = JS_GetException(sctx);
-        estr = JS_ToCString(sctx, exc);
-        thrown = JS_ThrowSyntaxError(hctx, "comcon.include: %s",
-                                     estr ? estr : "compile error");
+        etext = ngx_js_comcon_exc_text(sctx, exc, oom0,
+                    "out of memory while compiling the fragment -- the "
+                    "compartment's memory limit was reached", &estr);
+        thrown = JS_ThrowSyntaxError(hctx, "comcon.include: %s", etext);
         if (estr != NULL) {
             JS_FreeCString(sctx, estr);
         }
@@ -1817,6 +1855,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         }
     }
 
+    oom0 = JS_GetOutOfMemoryCount(JS_GetRuntime(sctx));
+
     fn = JS_Call(sctx, outer, JS_UNDEFINED, (int) (gn + dn),
                  (JSValueConst *) av);
     for (gi = 0; gi < gn + dn; gi++) {
@@ -1825,7 +1865,30 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     JS_FreeValue(sctx, outer);
 
     if (JS_IsException(fn)) {
-        return fn;
+        /*
+         * CARRY THE EXCEPTION ACROSS, do not return it.  This used to be
+         * `return fn`, and JS_EXCEPTION means "an exception is pending ON THIS
+         * CONTEXT" -- but the exception was pending on the COMPARTMENT context
+         * and this returns to the HOST.  So the host saw an exception with no
+         * value at all: `typeof e === "unknown"`, `String(e)` = "[unsupported
+         * type]", no message, no code.  Anything that throws while the fragment's
+         * expression is being evaluated took that path -- found through an
+         * include that ran out of memory, but a top-level `throw` did the same --
+         * and the real exception stayed pending in the compartment, holding its
+         * references until something else overwrote it.
+         */
+        const char  *etext;
+
+        exc = JS_GetException(sctx);
+        etext = ngx_js_comcon_exc_text(sctx, exc, oom0,
+                    "out of memory while evaluating the fragment -- the "
+                    "compartment's memory limit was reached", &estr);
+        thrown = JS_ThrowTypeError(hctx, "comcon.include: %s", etext);
+        if (estr != NULL) {
+            JS_FreeCString(sctx, estr);
+        }
+        JS_FreeValue(sctx, exc);
+        return thrown;
     }
     if (!JS_IsFunction(sctx, fn)) {
         JS_FreeValue(sctx, fn);
@@ -2290,7 +2353,6 @@ ngx_js_comcon_aot_status(JSContext *hctx, JSValueConst this_val,
 static void
 ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf, ngx_js_worker_t *w)
 {
-    JSMemoryUsage         mu;
     struct timespec       ts;
     uint64_t              saved_deadline = 0, now_ms, newd;
     ngx_uint_t            jobs = 0, failed = 0, rejections;
@@ -2311,9 +2373,8 @@ ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf, ngx_js_worker_t *w)
      * belong to nobody.  Restored to the compartment's own limit afterwards,
      * exactly as the invocation path restores it.
      */
-    JS_ComputeMemoryUsage(jcf->comcon_rt, &mu);
     JS_SetMemoryLimit(jcf->comcon_rt,
-                      (size_t) mu.malloc_size
+                      JS_GetMallocSize(jcf->comcon_rt)
                       + (size_t) NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES);
 
     if (w != NULL) {
@@ -2413,11 +2474,12 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     ngx_uint_t        job_failed = 0;
     JSValue           irq = JS_UNDEFINED;
     uint32_t          saved_frag = 0;
+    uint32_t          oom0 = 0;
+    const char       *s_free = NULL;
     ngx_js_tenant_mode_e  saved_mode = NGX_JS_TENANT_ENFORCE;
     ngx_uint_t        mode_pushed = 0;
     uint64_t          old_deadline = 0, now_ms, newd;
     ngx_uint_t        metered = 0;
-    JSMemoryUsage     mu;
     struct timespec   ts;
     ngx_js_compartment_t  prev;
 
@@ -2517,9 +2579,20 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         memory = NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES;
     }
 
-    JS_ComputeMemoryUsage(jcf->comcon_rt, &mu);
+    /*
+     * JS_GetMallocSize(), NOT JS_ComputeMemoryUsage().  They report the same
+     * number, but the second walks every live object in the compartment to get
+     * there -- and the compartment is SHARED, so that made every invocation
+     * O(everyone's heap).  Measured on the trivial `function(a){ return 1; }`:
+     * 13.5 us per call with an idle compartment, 205 us once another fragment
+     * retained 50,000 objects, 2,440 us at ~250,000 -- while the call itself
+     * costs 0.5 us.  So the walk was 96% of an invocation even when nothing was
+     * retained, and above that it was a CROSS-TENANT channel: one tenant's heap
+     * set every other tenant's latency, and a tenant could modulate it at will.
+     * Nothing measured invocation cost against heap size, so nothing saw it.
+     */
     JS_SetMemoryLimit(jcf->comcon_rt,
-                      (size_t) mu.malloc_size + (size_t) memory);
+                      JS_GetMallocSize(jcf->comcon_rt) + (size_t) memory);
 
     /* run the fragment as a confined compartment: the A1 reach gate denies the
        authority edges (e.g. a granted socket's .listener) even though the
@@ -2566,6 +2639,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     ngx_js_compartment_frag_set((uint32_t) handle + 1);
 
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
+    oom0 = JS_GetOutOfMemoryCount(jcf->comcon_rt);
     result = JS_Call(sctx, fn, JS_UNDEFINED, nargs, (JSValueConst *) &arg);
 
     /*
@@ -2855,7 +2929,9 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
 
     if (JS_IsException(result)) {
         exc = JS_GetException(sctx);
-        s = JS_ToCString(sctx, exc);
+        s = ngx_js_comcon_exc_text(sctx, exc, oom0,
+                "out of memory -- the fragment exhausted its memory allowance "
+                "for this call", &s_free);
 
         /*
          * D5b-4 (cross-file provenance): carry the fragment's OWN location out
@@ -2873,7 +2949,10 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
          * t/comcon_pom_origin.t.
          */
         wbuf[0] = '\0';
-        stack_v = JS_GetPropertyStr(sctx, exc, "stack");
+        /* only an object has a stack; reading one off `null` would throw a
+           second exception on the compartment while reporting the first */
+        stack_v = JS_IsObject(exc) ? JS_GetPropertyStr(sctx, exc, "stack")
+                                   : JS_UNDEFINED;
         if (JS_IsString(stack_v)) {
             st = JS_ToCString(sctx, stack_v);
             if (st != NULL) {
@@ -2903,8 +2982,8 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
             retv = JS_ThrowTypeError(hctx, "comcon: fragment: %s",
                                      s ? s : "error");
         }
-        if (s != NULL) {
-            JS_FreeCString(sctx, s);
+        if (s_free != NULL) {                /* s may be the static OOM text */
+            JS_FreeCString(sctx, s_free);
         }
         JS_FreeValue(sctx, exc);
 

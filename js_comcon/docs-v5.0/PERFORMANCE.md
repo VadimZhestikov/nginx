@@ -157,6 +157,36 @@ compiles its output at `-O2/-O3`, which would otherwise **flatter JS**.
    "compute-bearing code gets 13× from lowering". **The shape maxim wins biggest on is the
    shape gcc deletes.**
 
+## 2c. The confined invocation, measured *(v5.101)*
+
+Until v5.101 this document had **no number for the tier tenants actually run.** M1's
+"interpreted policy" is host JS, not a fragment invoked through `comcon`, so every
+per-request cost quoted for confinement was a model — which is how an O(heap) walk on every
+invocation stayed invisible (F14, ASSURANCE G7.10). Instrument: `t/tools/confined-invoke-cost.t`.
+
+One worker, loopback, WSL2, `wrk -t1 -c10 -d4s`, one run per arm — so read the ratios, not
+the absolutes. "Loaded" means a DIFFERENT fragment retains 200,000 objects in the shared
+compartment.
+
+| per request | before F14's fix | after |
+|---|--:|--:|
+| stock nginx (`return 200`) | 296,968 req/s — 100% | 298,931 req/s — 100% |
+| host JS handler | 263,781 — 88.8% | 260,516 — 87.1% |
+| host handler + one confined invocation | 65,198 — **22.0%** | 203,358 — **68.0%** |
+| ...same, loaded | **476 — 0.2%** | 199,113 — **66.6%** |
+
+| in-process, per call | before | after |
+|---|--:|--:|
+| host JS function call | 0.046 µs | 0.047 µs |
+| confined invocation, idle | 10.8 µs | **0.78 µs** |
+| confined invocation, loaded | 2,030 µs | **0.78 µs** |
+
+Two readings. **The walk was over 90% of an invocation even with nothing retained**, so
+every earlier impression of "confinement is expensive" was mostly this. And what remains —
+host handler 87% of stock, one confined call 68% — is the real cost of the boundary: the
+JSON round trip, the compartment enter/leave, the posture and identity bookkeeping, and the
+two drains. That is the number any future tier (including M5) now has to be measured against.
+
 ---
 
 ## 3. Cost model by enforcement moment

@@ -635,6 +635,44 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.101 (in place — a confined invocation no longer costs what the rest of the compartment holds):**
+step 1 of the proposal written after v5.100, and the first item in a while that was found by
+reading code for a plan rather than by a test.
+
+F14 — EVERY CONFINED INVOCATION WALKED THE WHOLE SHARED HEAP. It narrows the compartment's limit
+to "allocated now + this call's allowance", and learned "allocated now" from
+`JS_ComputeMemoryUsage()`: the right number, reached by walking every context, module and live GC
+object — twice per call, on a heap every fragment shares. Measured on one worker, a handler making
+one trivial confined invocation: **22.0% of stock throughput with nothing retained, and 0.2%
+(476 req/s) while a different fragment held 200,000 objects.** After reading the same counter in
+O(1) (`JS_GetMallocSize`, added to the vendored engine): 68.0% and 66.6%. In-process, 10.8 µs →
+0.78 µs idle and 2,030 µs → 0.78 µs loaded.
+
+WHY IT MATTERS MORE THAN ITS SIZE: IT WAS A CHANNEL. F8 was accepted on a measurement of CPU a
+sender burns while the receiver waits, which the execution deadline caps. This medium is memory a
+sender merely HOLDS — it persists across requests with the sender idle, and no deadline touches it,
+because the walk ran inside the receiver's own call. Nothing had measured invocation cost against
+heap size, and PERFORMANCE.md had no number for a confined invocation at all; §2c now has one, and
+it is the baseline every future tier must beat.
+
+TWO REPORTING DEFECTS, found chasing why a memory probe printed `undefined` (G6.19). At a hard limit
+the engine cannot allocate the InternalError it means to throw and throws `null` instead, so a
+fragment that exhausted its allowance reported `comcon: fragment: null` — identical to `throw null`.
+The engine now counts out-of-memory throws and the host names them. And `include()`'s failure path
+was `return fn`: `JS_EXCEPTION` from the COMPARTMENT context handed to the HOST, where nothing was
+pending, so any top-level throw arrived as `typeof "unknown"` with no message at all.
+
+F15 — FOUND, AND DELIBERATELY NOT FIXED IN PASSING. The fragment's top-level expression is evaluated
+before admission, outside the tenant compartment scope, and unmetered: a looping expression hung
+`nginx -t` until killed. No authority leaked — a grant read there is `undefined` — but because
+`cap.owner` happens to refuse it (the grant is bound to a handle that does not exist yet), not
+because the reach gate that should holds. Fixing it changes what a config-phase include may do,
+so it is recorded as OPEN for its own decision.
+
+`t/comcon_invoke_heap_independence.t` (3, gated as a ratio: 1.01×, control 173.57×) ·
+`t/comcon_fragment_error_report.t` (7, two controls) · `t/tools/confined-invoke-cost.t` ·
+ASSURANCE G7.10, G6.19, F14, F15 · PERFORMANCE §2c · THREATS T9.
+
 **v5.100 (in place — a fragment's leftovers are charged to nobody):** the last named residual of
 G6.16, and the smallest of the three items in the saved plan. It was also the one where the
 INSTRUMENT was written from a model instead of a measurement, twice.

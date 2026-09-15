@@ -442,6 +442,17 @@ typedef struct JSMemoryUsage {
 } JSMemoryUsage;
 
 void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s);
+/* PILGRIM: the runtime's current malloc'd byte count, in O(1).
+ * JS_ComputeMemoryUsage() reports the same number as `malloc_size`, but it gets
+ * there by walking every context, module and live GC object, so calling it to
+ * read that one field makes the caller O(heap).  A host that sizes a limit on
+ * every call must use this instead. */
+size_t JS_GetMallocSize(JSRuntime *rt);
+/* PILGRIM: a monotone count of out-of-memory throws in this runtime.  At a hard
+ * limit the engine throws JS_NULL instead of an InternalError it cannot allocate,
+ * so "did this call run out of memory" is only answerable by comparing this
+ * count before and after it. */
+uint32_t JS_GetOutOfMemoryCount(JSRuntime *rt);
 void JS_DumpMemoryUsage(FILE *fp, const JSMemoryUsage *s, JSRuntime *rt);
 
 /* atom support */

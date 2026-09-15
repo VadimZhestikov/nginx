@@ -786,6 +786,36 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T3, T6, T9
 - **V:** V4, V13
 
+#### G6.19 — a fragment's failure reaches the host as what it is
+- **CLAIM:** An exception raised while a fragment is compiled, evaluated or invoked reaches the host
+  as an Error carrying the fragment's own message; and a fragment that runs out of memory is
+  reported as out of memory, distinguishably from a fragment that throws `null`.
+- **ARGUMENT:** Two defects, found while working out why a memory probe printed `undefined`.
+  **Out of memory read as `null`:** at a hard limit the engine cannot allocate the InternalError it
+  means to throw, so `JS_ThrowError2()` throws `JS_NULL` — and the host reported
+  `comcon: fragment: null`, byte-for-byte what `throw null` produces. The per-invocation allowance
+  exists to stop a fragment, and the operator could not see that it had. The engine now COUNTS its
+  out-of-memory throws (`JS_GetOutOfMemoryCount`), and a non-object exception thrown while the count
+  moved is named as the allocation failure; a real Error is left alone, because then the engine did
+  say "out of memory" itself. **An exception during `include()` arrived with no value at all:** the
+  fragment's expression is evaluated by a call on the COMPARTMENT context, and the failure path was
+  `return fn` — `JS_EXCEPTION` means "pending on THIS context", returned to the HOST, where nothing
+  was pending. The host caught `typeof e === "unknown"` and `String(e)` = `[unsupported type]`, and the
+  real exception stayed pending in the compartment. Any top-level `throw` took that path; memory
+  exhaustion only happened to be how it was found.
+- **EV:** `t/comcon_fragment_error_report.t` — 7 assertions, with the control arm first: `throw null`
+  must STILL read `null`, or "out of memory" would just be what every null now says. Two controls:
+  the `return fn` restored (the include and top-level-throw assertions fail) and the out-of-memory
+  test disabled (the allowance and include assertions fail).
+- **GAP:** A fragment that CATCHES an out-of-memory and then throws `null` itself is reported as out
+  of memory — which is still true of the call, and cannot be told apart without an engine flag that
+  would have to be cleared by every catch. **And the investigation turned up F15, which this leaf
+  does not close:** the fragment's top-level expression is evaluated before admission, outside the
+  tenant compartment scope, and — at config phase — with no bound at all.
+  **home:** finding F15 · `ngx_js_comcon_include_confined` · `ngx_js_comcon_exc_text`.
+- **THREAT:** T6, T11
+- **V:** V13
+
 #### G7.9 — the kernel operators are not reachable from a fragment, so authoring does not nest
 - **CLAIM:** `comcon` and `nginx` are absent from a fragment's global; declaring either in
   `imports` does not produce them; granting `comcon` is refused with `E_CAP_GRANT`. Attenuation,
@@ -812,6 +842,39 @@ The primary control, and the one everything else is defence in depth for.
   **home:** SHOWCASE17.md §8 (corrected in place) · INCREMENT_MLIB.md §4.
 - **THREAT:** T4, T9
 - **V:** V4
+
+#### G7.10 — what one fragment retains does not set what another's invocation costs
+- **CLAIM:** The cost of a confined invocation is independent of how much memory OTHER fragments
+  hold in the shared compartment: the same trivial call with and without 200,000 objects retained
+  by a different fragment costs within 4×, and measures 1.01×.
+- **ARGUMENT:** Every invocation narrows the compartment limit to "allocated now + this call's
+  allowance", and learned "allocated now" from `JS_ComputeMemoryUsage()` — the right number, reached
+  by walking every context, module and live GC object. The compartment is SHARED, so each invocation
+  was O(everyone's heap). **It was a cross-tenant channel of a different kind from F8's**, and a
+  worse one: F8's medium is CPU a sender must burn WHILE the receiver waits, so the execution deadline
+  caps it; this medium is memory a sender merely HOLDS, so it persists across requests with the
+  sender idle, and no deadline touches it — the walk happened inside the receiver's own call.
+  Measured before the fix, one worker, a handler making one trivial confined invocation: **22.0% of
+  stock throughput with an idle compartment, and 0.2% (476 req/s) while another fragment retained
+  200,000 objects** — a 137× modulation any tenant could set. In-process, 10.8 µs per invocation
+  idle and 2,030 µs loaded, against 0.78 µs for the call itself: the walk was over 90% of an
+  invocation even with nothing retained. Nothing had ever measured invocation cost against heap
+  size; PERFORMANCE.md had no number for a confined invocation at all. The fix reads the same
+  counter in O(1) (`JS_GetMallocSize`, added to the vendored engine), so the allowance semantics are
+  unchanged byte for byte.
+- **EV:** `t/comcon_invoke_heap_independence.t` — the ratio, gated (a ratio, not a time, because the
+  suite runs on loaded machines). Its loops stop at 250 ms rather than at a count, so the control
+  build finishes. Control: the walk restored at the invocation site measures **173.57×**.
+- **EV:** `t/tools/confined-invoke-cost.t` — the absolute numbers, evidence not a gate: after the
+  fix 68.0% of stock idle and 66.6% loaded, 0.78 µs per invocation either way (PERFORMANCE.md §2c).
+- **GAP:** This closes the heap-size medium only. F8's CPU medium is unchanged and re-measured on the
+  same build (0.3 → 319.9 ms, ~3.1 bits/s, capped at 50.0 ms by a 50 ms deadline). And the same
+  class of defect can exist anywhere a per-call path consults a whole-runtime statistic; this leaf
+  found one by suspicion, not by a sweep. `nginx.jsMemUsage()` still walks, deliberately — it is an
+  explicit diagnostic that needs `objectCount`, and it is called by the host, not per invocation.
+  **home:** finding F14 · finding F8 · PERFORMANCE.md §2c.
+- **THREAT:** T4, T9, T6
+- **V:** V13
 
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
@@ -973,7 +1036,11 @@ The primary control, and the one everything else is defence in depth for.
   gap (T4) this is the explicitly deferred confidentiality axis of the design, accepted
   rather than closed — but **no longer unquantified**: measured at 0.3 ms → 347 ms on a
   peer's latency (1227× idle, ~2.9 bits/s), narrowed to 49.8 ms by a 50 ms execution
-  deadline. **home:** THREATS.md T9 · FOUNDATION §13.4 (post-M9 IFC track) · finding F8.
+  deadline. **Re-measured 2026-09-14 on the build that closed F14:** 0.3 → 319.9 ms (1105×,
+  ~3.1 bits/s), 50.0 ms under the 50 ms deadline — unchanged, as it should be. **And a second medium
+  existed that this measurement could not see (F14, closed — G7.10):** memory a peer merely HOLDS used
+  to set every invocation's cost, persistently and beyond the deadline's reach.
+  **home:** THREATS.md T9 · FOUNDATION §13.4 (post-M9 IFC track) · finding F8 · finding F14.
 - **EV:** `t/tools/ifc-timing-channel.t` — the measurement (evidence, not a gate).
 - **EV:** `t/comcon_include_deny.t` — what IS closed: no peer name resolves, no shared surface.
 - **THREAT:** T9, T4
@@ -1441,12 +1508,14 @@ assurance case whose findings section is empty has not been built honestly.
 | **F5** | AOT-compiled fragments not separately run against the escape battery | G7.5 | **CLOSED 2026-09-12** (after the §15 signature — see §16): the battery now runs against a fragment with 20 natively-lowered functions, the precondition is asserted, and the tiers agree probe by probe |
 | **F6** | Host JS (not fragments) is unbounded by default — a runaway `location.handler` hangs the worker | ASSUME A5, AUDIT §3 → G6.6 | **CLOSED 2026-09-13** (after the §15 signature — see §16): the deadline defaults ON at 10 s, `0` opts out, a malformed value reads as the default. Superseded in part by **F12** |
 | **F7** | **TM-2:** session identity → environment mapping was unspecified and unowned | THREATS.md → FOUNDATION §8b, G10.3 | **SPECIFIED + BUILT 2026-09-12** (v5.65): `std.sessions`, descriptors-not-envs, attenuation-only, deny-by-default, leases. **Residual:** authentication, the principal namespace and the login transport remain the host's, by design and by statement |
-| **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 → G7.7 | **ACCEPTED — and now QUANTIFIED (2026-09-13):** a co-resident tenant's CPU burn moves a peer's latency from **0.3 ms to 347 ms** (1227× idle, ~2.9 bits/s) because the worker is single-threaded. Under a 50 ms execution deadline the separation falls to 49.8 ms. The deadline is the only mitigation in the tree and it narrows, never closes |
+| **F8** | Information flow / timing channels between co-resident tenants | ASSUME A3, THREATS T4/T9 → G7.7 | **ACCEPTED — and now QUANTIFIED (2026-09-13):** a co-resident tenant's CPU burn moves a peer's latency from **0.3 ms to 347 ms** (1227× idle, ~2.9 bits/s) because the worker is single-threaded. Under a 50 ms execution deadline the separation falls to 49.8 ms. The deadline is the only mitigation in the tree and it narrows, never closes **See F14:** a second medium — memory a peer merely HOLDS — set every invocation's cost beyond the deadline's reach, and was closed 2026-09-14; this CPU medium re-measured unchanged on that build (0.3 → 319.9 ms). |
 | **F9** | V-track items with no machinery yet: **V5a, V5b, V6** (three — **V10 built 2026-09-13**, and it found a defect; was four — **V14 built 2026-09-13**, and it found its claim FALSE; was six — this row said five until 2026-09-13, omitting V5a, which §Placement has always listed as unbuilt; a ledger that undercounts its own backlog is the quiet kind of wrong) | VERIFICATION.md | **REDUCED TWICE 2026-09-13: V13 built** (G11.7) **and V8 built COMPLETE** — both halves: G11.8 (read-only schema conformance) and G11.10 (the propagation column, across real workers). **V14 built 2026-09-13** (G11.12 — and its claim was FALSE: the same fragment compiled to different bytes). **V9 built 2026-09-13** (G11.13 — seven undescribed ops found). **Four remain, and ALL FOUR (V5a, V5b, V6, V10) sit on the parked compiler/protocol track** — the reachable V-track backlog is empty |
 | **F10** | `E_CAP_FLAVOR` / `E_CAP_ESCALATE` (the JS capability layer's own refusals) have no codes | MANUAL §3.2 [TBD-2] | **CLOSED 2026-09-12** (after the §15 signature — see §16): both ship, thrown by one `capRefuse()` that mirrors the C helper's shape. **`E_BUDGET_*` stays empty by placement** (budget exhaustion is a DENIAL) and the deadline abort has no refusal of ours to label — [TBD-2] is fully resolved |
 | **F11** | The M-SES audit is one attestation with one signer; §4 not independently reproduced | ASSUME A2, G11.14 | **STILL OPEN, but no longer expensive (2026-09-13).** It needs a person, so it cannot be closed here — what has changed is the cost: `t/tools/reviewer-pack.sh` + `REVIEW.md` turn "read 1100 lines, extract the commands, know which builddirs are stale" into one command and a verdict table. **Reproduction is what a signature there buys; two attestations of the DESIGN would need a reviewer who disagrees and says where**, and the sign-off block says so rather than implying otherwise |
 | **F13** | The REQUEST was outside the registry: `nginx.describe(req)` returned **zero rows**, so `remoteAddr`, `uri`, `method`, `headers` and `body` — the tenant-facing surface — carried no declared type and no class. The read-only descriptor hardcoded `requestScoped: false` for every row, unfalsifiable only *because* there were no request rows to be wrong about. | G11.8, G3.7 | **CLOSED 2026-09-13.** All **54** rows classified — 28 getters, 25 methods, one settable (`statusCode`) — as TABLE rows, which are per-class and carry their own `RQS`, rather than through the bare-name read-only map. **Every type was read off its getter, and none was wrong on the first run** (`startTime` is a number not a Date; `location` is a live handle, not a path string). The pin at zero is now the real count, plus an assertion that every request row declares `requestScoped` — so a getter added without a table row is emitted by the discovery pass with `false` and fails the day it lands. Three controls |
 | **F12** | The host-JS deadline bounded one SYNCHRONOUS ENTRY — a runaway *after* an `await` was unbounded | G6.5 | **CLOSED 2026-09-13.** `w->current_request` is the chokepoint (8 entry sites, not the 19 `JS_Call`s first counted): one helper arms at each, nested entries INHERIT rather than extend, and the body-read completion — where post-`await` code actually runs — arms too. The time-gap heuristic stays rejected: under load the worker never idles |
+| **F14** | Every confined invocation walked the WHOLE shared compartment heap (`JS_ComputeMemoryUsage`, twice per call) to read one counter — so one tenant's retained memory set every other tenant's per-request cost, persistently and beyond the execution deadline's reach | G7.10, G7.7 | **FOUND AND CLOSED 2026-09-14.** Measured before: a handler making one trivial confined invocation ran at **22.0% of stock** with an idle compartment and **0.2% (476 req/s)** while another fragment retained 200,000 objects. After: 68.0% and 66.6%. The same counter is now read in O(1) (`JS_GetMallocSize`). Found by reading the invoke path for a proposal, not by any test — nothing had measured invocation cost against heap size, and PERFORMANCE.md had no confined-invocation number at all |
+| **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered | G6.19 | **OPEN (found 2026-09-14).** `include()` compiles the source as `(function(grants){ return ( SRC ) })` and calls it with no `ngx_js_compartment_enter` and no per-invocation deadline or allowance; admission then inspects the RESULTING function, not the expression that produced it. Measured: an expression that loops **hung `nginx -t` until killed** (config phase, no worker, so no deadline exists), and at request time was stopped only by the host's 10 s request deadline. **No authority leaked** — a grant read at top level is `undefined`, not the listener (`cap.owner` refuses it: every grant is bound to the fragment's future handle and `cur_frag` is 0 there), and the compartment's globals are locked down. But that is `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. Not fixed in the change that found it: running the evaluation under the tenant scope with a deadline changes what a config-phase include may do, and deserves its own decision and controls |
 
 ---
 
@@ -1604,6 +1673,8 @@ signature is never quietly credited with work it did not see.
 | **THE LOWERING CEILING IS MEASURED, and it reframes M5.** `t/tools/lowering-ceiling.t` + `nginx.bench`: untyped lowering is **8.3× off hand-written C on arithmetic and 17× on a byte scan**, and `--jit-dump-c` shows why — every operation boxes a `JSValue`, tag-checks both operands and writes a type-feedback byte, with the accumulator living in a `double`. A typed-SHAPE arm, gas check kept, is **at parity**. The zero-copy `ArrayBuffer` view over nginx memory **works and buys nothing** (the access path dominates; one 16 KB copy is 0.2 µs against 12.7 ns/byte to scan it). | **Turns the M5 commitment from a judgement into a measurement, and corrects two beliefs of our own** — that a host call per element is the thing to avoid (it costs about the same as a compiled typed-array read), and that `policy-compute-split.t`'s 13× control demonstrates lowering quality (it demonstrates loop elimination). Adds no assurance claim: this is decision evidence for a milestone, not a confinement property. |
 
 | **"CAGES NEST FOR FREE" MEASURED — G7.9 — and half of it is not built.** SHOWCASE17 §8's reseller scenario has ACME caging its own customers by calling the kernel operators; measured, `comcon` reads `undefined` in a fragment, declaring it changes nothing, and granting it is `E_CAP_GRANT`. **Attenuation nests without limit; authoring does not nest at all.** Also: enumeration **check [8]** now enforces that a NOT-BUILT list cannot name a word the code ships — the rot that let the ROADMAP's POSITION block call four shipped words unbuilt for three days. | **Adds one leaf and one checker, and corrects a scenario in place rather than leaving it to be discovered.** The security half was already asserted by the S6 gate (a fragment reaching `comcon` is an escape); what was missing was saying that this *also* means the reseller story is unbuilt. Nothing signed becomes untrue — the boundary moved in the docs, not in the code. |
+
+| **F14 FOUND AND CLOSED, F15 FOUND AND OPEN — G7.10, G6.19** — every confined invocation walked the whole shared heap to read one counter: measured 22.0% of stock throughput idle and **0.2%** while a peer retained 200,000 objects; now 68.0% / 66.6%, gated as a ratio (1.01×, control 173.57×). Out of memory now reads as out of memory rather than `null`, and an exception during `include()` reaches the host with its value instead of none. The investigation found F15 — the top-level expression is evaluated before admission, outside the compartment scope, unmetered at config phase — and records it rather than fixing it in passing. | **Closes a cross-tenant channel the signature did not know about, and opens a finding it did not know about.** Neither changes what was attested; both are recorded so the signature is not credited with either. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

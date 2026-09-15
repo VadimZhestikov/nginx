@@ -332,6 +332,15 @@ struct JSRuntime {
      * but js_jit_special_object(ARGUMENTS) reads this field for the correct .length. */
     int jit_actual_argc;
 #endif
+    /* PILGRIM: how many times JS_ThrowOutOfMemory() has been entered.  At a hard
+     * memory limit the engine cannot allocate the InternalError it means to
+     * throw, and JS_ThrowError2() falls back to throwing JS_NULL -- which a host
+     * cannot tell from a script doing `throw null`.  A counter the host reads
+     * before and after a call is the only reliable signal.  Appended at the END
+     * so no existing field moves (JIT-generated code reaches runtime state only
+     * through host functions, but a layout that does not change needs no
+     * argument). */
+    uint32_t oom_count;
 };
 
 struct JSClass {
@@ -6663,6 +6672,16 @@ static void compute_value_size(JSValueConst val, JSMemoryUsage_helper *hp)
     }
 }
 
+size_t JS_GetMallocSize(JSRuntime *rt)
+{
+    return rt->malloc_state.malloc_size;
+}
+
+uint32_t JS_GetOutOfMemoryCount(JSRuntime *rt)
+{
+    return rt->oom_count;
+}
+
 void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
 {
     struct list_head *el, *el1;
@@ -7516,6 +7535,7 @@ JSValue __attribute__((format(printf, 2, 3))) JS_ThrowInternalError(JSContext *c
 JSValue JS_ThrowOutOfMemory(JSContext *ctx)
 {
     JSRuntime *rt = ctx->rt;
+    rt->oom_count++;
     if (!rt->in_out_of_memory) {
         rt->in_out_of_memory = TRUE;
         JS_ThrowInternalError(ctx, "out of memory");
