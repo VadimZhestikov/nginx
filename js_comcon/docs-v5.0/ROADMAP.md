@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.115 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.116 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,12 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **A SECOND SIGNATURE (2026-09-15, v5.116).** The reviewer pack run in full on `4a86d2a62`
+>   (twice — run 1 tripped the broadcast-fuzz flake on one automated control, run 2 passed
+>   every gate; transcripts under `reviews/`); a second signer, Dick Hardman, accepted the
+>   evidence and the residuals (`REVIEW.md` §4, ASSURANCE §15, AUDIT_M-SES §5). The pack was
+>   executed by the authoring session, so F11's reproduction half stays open — the row's
+>   "I ran it myself" clause is struck, not softened.
 > - **F18 FOUND BY M5.0's GATE AND CLOSED (2026-09-15, v5.115).** An out-of-memory inside
 >   the engine's own backtrace annotation freed the pending exception under its own feet:
 >   `build_backtrace(ctx, rt->current_exception, …)` held no reference, so a fragment that

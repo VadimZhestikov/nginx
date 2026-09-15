@@ -635,6 +635,18 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.116 (in place — a second signature on `4a86d2a62`):** the reviewer pack run in full,
+twice, on the tree that carries M5.0 and F18. Run 1 failed one automated negative control
+(`d3a438051`, the broadcast misaligned header read) on the known broadcast-fuzz flake — the
+fleet's receive path was not reached, so the reverted read went unreported; the row re-run alone
+holds. Run 2 passed every gate: 355 files on both binaries, sanitizers 0 in `src/js`, negative
+controls 7 verified / 0 failed / 2 inconclusive. Both transcripts are committed under
+`reviews/`. A second signer, Dick Hardman, accepted the evidence and the residuals: `REVIEW.md`
+§4 (the row's "I ran it myself" clause struck, because the pack was executed by the authoring
+session at the signer's request), ASSURANCE §15's second table and F11's row, AUDIT_M-SES §5's
+third row, ASSURANCE §16. **F11's reproduction half stays open**; what closed is that two names
+now accept the same residuals on a transcript of the whole evidence.
+
 **v5.115 (in place — F18: an out-of-memory inside the engine's own backtrace annotation freed
 the pending exception; a fragment-reachable worker SIGSEGV at the allowance, closed in the
 engine):** found by the gate for M5.0's commit — `t/comcon_author_basic.t` `/nestmemory` killed

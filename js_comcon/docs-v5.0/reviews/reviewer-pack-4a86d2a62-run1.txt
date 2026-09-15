@@ -1,0 +1,103 @@
+REVIEWER PACK — 20260915T203615Z
+output dir: /home/vadim/reviewer-pack-4a86d2a62   (outside the repo, so this run cannot dirty the tree)
+
+── 0. Provenance (what you are about to attest to) ──
+  commit      : 4a86d2a62150fe940aba5b579c7758f6046307b5
+  branch      : js_comcon
+  gcc         : gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+  perl        : v5.34.0
+  host        : Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+  tree        : clean under src/js, quickjs, t, js_comcon
+
+── 1. Rebuild every builddir (§4: the committed binaries are STALE ARTIFACTS) ──
+  The objs*/ trees are tracked in git, so a fresh clone or a reset --hard
+  gives you a committed binary rather than one built from the source under
+  audit.  Assembling the audit, that produced a FAIL on objs_jit that the
+  real build passes.  Rebuilding is not optional.
+  built objs
+  built objs_jit
+  built objs_asan
+  built objs_ubsan
+  PASS  all builddirs rebuilt from the audited source
+  ....  builddirs rebuilt: 4
+  PASS  binaries are newer than the newest source file
+
+── 2. The suites (§4) ──
+  PASS  t/ on objs
+  ....  t/ on objs: Files=355, Tests=4789
+  PASS  t/ on objs_jit
+  ....  t/ on objs_jit: Files=355, Tests=4786
+  PASS  t_stress/ on objs
+
+── 3. The standing checkers (drift is a build failure here) ──
+  PASS  check-assurance.py
+  PASS  check-enumerations.py
+  PASS  check-dead-probes.py
+
+── 4. Memory safety (§4: builds its own guards in; refuses a vacuous run) ──
+  PASS  ASAN+UBSAN over the COMCON corpus, 0 findings in src/js
+          tests run          : 1179
+          findings in src/js : 0
+          findings elsewhere : 3  (upstream nginx; reported, not failed)
+          tests run          : 1179
+          findings in src/js : 0
+          findings elsewhere : 84  (upstream nginx; reported, not failed)
+        S6 sanitizer gate: PASS (no findings in src/js)
+
+── 5. Negative controls (do the fixes' tests actually fail without the fix?) ──
+  FAIL  every automated negative control holds   verified 6   failed 1   skipped 2
+  ....  negative controls: verified 6   failed 1   skipped 2
+  MANUAL rows (inverse patch no longer applies — revert by hand to check):
+  These are the ones a full reproduction still cannot check for you.
+          cd391a160  t/js_com_socket_fuzz.t       superseded by 07c7fd277, which rewrote the same lines
+          07c7fd277  t/js_com_socket_fuzz.t       builds on cd391a160; revert both together, newest first
+          5186565a1  t/js_com_peer_range.t        its helper was collapsed into ngx_js_com_num_range by e246cc347
+          0ebac7e47  t/js_com_ssl_range.t         same: its helper was collapsed by e246cc347
+          21b42d7e5  t/js_com_grant_declare.t     the grant-wrapping path was rewritten by the uses/ttl budgets (2026-09-13); revert by hand against that
+          67bc359e9  t/comcon_include_contract_fuzz.t the include contract path was rewritten by the refusal codes and the fail-closed tests check (2026-09-12)
+          d5c880cd4  t/comcon_leftover_accounting.t the leftover-drain code it touched was rewritten by F14/F15's heap-walk and deadline changes (ffd76ed84, cabd6f4c2), landing the same session
+          ffd76ed84  t/comcon_invoke_heap_independence.t __invokeConfined's deadline arithmetic it touched was rewritten by F15 phase 3 (cabd6f4c2), landing the same session
+          ffd76ed84  t/comcon_fragment_error_report.t the include() exception-handling lines it touched were rewritten by F15 phase 2's compile-then-check restructuring (1618dce79), landing the same session
+          0317e8b90  t/comcon_global_binding_freeze.t the compartment-setup lines it touched (the interrupt-handler install site) were rewritten by F15 phase 3 (cabd6f4c2), landing the same session
+          8c57ded4b  t/comcon_author_basic.t      the authoring tier, phase 2: its author.include() lines were rewritten by phase 3 (37b3c2057); revert both together, newest first
+          b75e7d9e5  t/comcon_author_basic.t      phase 1 (the bounds as a stack): its push/pop lines were rewritten by phase 2's stage split (8c57ded4b); by hand, drop the two min() lines in ngx_js_comcon_deadline_push()/mem_push() and /nestdeadline and /nestmemory must fail
+          by-hand    t/comcon_author_regrant.t    copy-vs-rewrap: replace *child = *op in ngx_js_socket_narrow() with ngx_js_socket_wrap_bounded(op->handle, ...) and the /stale arm must fail (a re-grant from the stale parent comes out fresh)
+          by-hand    t/comcon_author_basic.t      the nested JSON marshal: return the result value from ngx_js_author_invoke() without the stringify/parse and the returnsFn/toJSON/throws assertions must fail (an object crosses)
+          by-hand    t/comcon_jit_uncatchable.t   F16 lives in quickjs/ (outside src/js): drop the JS_IsUncatchableException(ctx) guard from quickjs-jit.c's _ex: dispatch, rebuild the lib and objs_jit, and the test must report SURVIVED on objs_jit
+          by-hand    t/run_sanitizers.sh          F17 (a): remove the ngx_js_comcon_teardown(jcf) call from ngx_js_exit_process, rebuild objs_asan, run the sanitizer script: every comcon file reports a src/js leak frame (ngx_js_comcon_publish)
+          by-hand    t/run_sanitizers.sh          F17 (b): remove the ngx_js_http_register_classes/ngx_js_upstream_register_classes calls from ngx_js_com_register_classes (and restore them in ngx_js_com_init), rebuild objs_asan, run the script: comcon_v12_denial_codes.t reports ngx_js_wrap_server
+          by-hand    t/comcon_oom_backtrace.t     F18 lives in quickjs/ (outside src/js): in quickjs.c replace the build_backtrace_pending(ctx, NULL, 0, 0, 0) call at JS_CallInternal's exception label with build_backtrace(ctx, rt->current_exception, NULL, 0, 0, 0), rebuild the lib and objs, and the sweep's first response is empty (the worker died on signal 11): three of five fail
+          1618dce79  t/comcon_wrapper_breakout.t  the JS_EvalFunction()/JS_Call() lines it touched were rewritten by F15 phase 3's deadline push/pop (cabd6f4c2), landing the same session
+
+── 6. Reported, not gated (look at these; this script does not judge them) ──
+  ....  assurance leaves: 91
+  ....  findings in ledger: 18
+  ....  t/ files: 355
+  ....  comcon_*.t files: 87
+  ....  delta-log version: **v5.115
+
+── VERDICT ──
+  PASS  all builddirs rebuilt from the audited source
+  PASS  binaries are newer than the newest source file
+  PASS  t/ on objs
+  PASS  t/ on objs_jit
+  PASS  t_stress/ on objs
+  PASS  check-assurance.py
+  PASS  check-enumerations.py
+  PASS  check-dead-probes.py
+  PASS  ASAN+UBSAN over the COMCON corpus, 0 findings in src/js
+  FAIL  every automated negative control holds
+
+  builddirs rebuilt            4
+  t/ on objs                   Files=355, Tests=4789
+  t/ on objs_jit               Files=355, Tests=4786
+  negative controls            verified 6   failed 1   skipped 2
+  assurance leaves             91
+  findings in ledger           18
+  t/ files                     355
+  comcon_*.t files             87
+  delta-log version            **v5.115
+
+ONE OR MORE GATES FAILED — do not sign.  See the FAIL rows above and the
+logs in /home/vadim/reviewer-pack-4a86d2a62/.  A gate failure is either a real regression or a stale
+builddir; §4 explains why the second is the likelier of the two.

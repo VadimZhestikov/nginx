@@ -107,11 +107,14 @@ below is entirely in its being narrow and true.
 
 | role | signer | date | commit | run | attests |
 |---|---|---|---|---|---|
-| Independent reproduction (F11) | *(name)* | *(date)* | *(git rev-parse HEAD)* | full / --quick | I ran `reviewer-pack.sh` myself on the commit named, all gates passed, and I have read §2's documents including the findings ledger. I accept the residuals named there. This is an independent reproduction of the evidence, not a review of the design. |
+| Independent reproduction (F11) | **Dick Hardman** | 2026-09-15 | `4a86d2a62` | full, twice | ~~I ran `reviewer-pack.sh` myself on the commit named~~ — struck: the pack was executed by the authoring session on the commit named, at the signer's request. Run 1 (`reviews/reviewer-pack-4a86d2a62-run1.txt`) failed one automated negative control, `d3a438051`, on the known broadcast-fuzz flake — the three-worker fleet's receive path was not reached, so the reverted misaligned read went unreported by UBSAN; the row re-run alone holds. Run 2 (`reviews/reviewer-pack-4a86d2a62.txt`) passed every gate: 355 files on both binaries, sanitizers 0 in `src/js`, negative controls 7 verified / 0 failed / 2 inconclusive. I have read §2's documents including the findings ledger. I accept the residuals named there. This is a second acceptance of the evidence, not an independent reproduction and not a review of the design. |
 
-**What signing this does and does not do.** It closes the *reproduction* half of
-F11: the evidence has now been run by someone other than the authoring session.
-It does **not** make the assurance case two attestations of the *design* — that
-would need a reviewer who disagrees with the argument and says where, which is a
-different and larger exercise. Recording the narrower claim honestly is worth
-more than implying the broader one.
+**What signing this does and does not do.** With the first clause intact it closes
+the *reproduction* half of F11: the evidence has then been run by someone other
+than the authoring session. **The row above does not do that** — its first clause
+is struck because the commands were run by the authoring session — so it records
+a second acceptance and leaves the reproduction half open; restoring the clause
+means the signer running the pack. It does **not** make the assurance case two
+attestations of the *design* — that would need a reviewer who disagrees with the
+argument and says where, which is a different and larger exercise. Recording the
+narrower claim honestly is worth more than implying the broader one.
