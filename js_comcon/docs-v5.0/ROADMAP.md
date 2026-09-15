@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.98 — 2026-09-14).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.104 — 2026-09-14).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -38,6 +38,82 @@
 > **THE CONFINEMENT TRACK IS CLOSED. THE LIBRARY IS STARTED AND ITS REMAINDER IS BLOCKED.
 > THE COMPILER TRACK IS PARKED, AND NOW HAS THE EVIDENCE TO STAY THAT WAY.**
 >
+> **"CLOSED" SURVIVED THREE REAL ESCAPES FOUND AFTER IT WAS SAID (F15, 2026-09-14),
+> BECAUSE EACH WAS FOUND AND FIXED BEFORE ANYTHING SHIPPED ON IT.** Investigating one
+> named, minor residual (an unmetered top-level eval) turned up two defects that were
+> WORSE than what was named: a fragment could reassign a shared global for every OTHER
+> fragment, and a fragment's own source text could escape the wrapper it is compiled
+> inside, defeating admission ENTIRELY — even under `imports: []`, the strictest
+> contract an operator can write. All three are closed (v5.102–v5.104, below); the
+> track's claim stands, but "closed" describes today's tree, not a proof that no
+> fourth defect is waiting the same way: all three were found by INVESTIGATING, not
+> by a scheduled review, and the pattern across this session is that composing
+> shipped features finds what auditing them in isolation did not.
+>
+> - **F15 CLOSED, ALL THREE PARTS (2026-09-14, v5.104).** The last part, and the ORIGINAL
+>   finding: comcon_rt's interrupt handler required a worker before it was installed at
+>   all, so a fragment's own top-level evaluation, a confined invocation, and an
+>   admission test that calls its fragment were ALL genuinely unbounded at CONFIG PHASE
+>   (`js_source`, including `nginx -t`) — measured, each **hanging until killed**. Fixed
+>   by giving comcon_rt a deadline of its own (`jcf->comcon_deadline_ms`), independent of
+>   whether a worker exists, installed once at compartment creation with no post-fork
+>   re-wiring needed. **A push around the wrong call was found and corrected the same
+>   session, by testing the claim rather than trusting it**: the first attempt bounded
+>   the call that only MATERIALIZES the wrapper's closure, not the later one that
+>   actually RUNS its body — where the looping source that named this finding loops.
+>   `t/comcon_deadline_without_worker.t` (9). ASSURANCE G7.13.
+> - **F15 PHASE 2 (2026-09-14, v5.103): a fragment's own text cannot escape the wrapper
+>   it is compiled inside.** `comcon.include()` compiles a fragment by concatenating it
+>   into `(function(g0,...){"use strict";return(SRC)})` and compiling the WHOLE buffer;
+>   admission only ever inspected the RESULT, never the rest of the script. A source that
+>   closed the wrapper early ran its escaped text with **no admission gate at all**, even
+>   under `imports: []`. Fixed: compile with `JS_EVAL_FLAG_COMPILE_ONLY`, then verify the
+>   compiled unit's bytecode is exactly "create one closure, return it" — checked against
+>   the compiler's own opcode output, not a second parser — before ever running it. **A
+>   first version of the check (count nested closures) was found incomplete before
+>   shipping**: sufficient for the fragment wrapper, not for `contract.tests`'s bare-paren
+>   wrapper, where a side effect needs no second closure at all.
+>   `t/comcon_wrapper_breakout.t` (13, two controls). ASSURANCE G7.12.
+> - **F15 PHASE 1 (2026-09-14, v5.102): a fragment cannot reassign a shared global for
+>   every other fragment.** An ADMITTED fragment body (`imports: ['Promise']`) could do
+>   `Promise = evil` and corrupt every co-resident fragment's view of it; an UN-ADMITTED
+>   fragment (`{}`, no admission at all) could do the same to any intrinsic with zero
+>   gating. **A claim signed 2026-09-12 (G7.6) was found INCOMPLETE, not false**: its
+>   eight-surface cross-identity battery tested only VALUE mutation, never BINDING
+>   reassignment — the ninth operation, and the one that was open. Fixed by freezing
+>   every binding on the compartment's globalThis once, at creation, independent of
+>   admission. `t/comcon_global_binding_freeze.t` (8). ASSURANCE G7.11, G7.6 corrected in
+>   place.
+> - **F14 CLOSED (2026-09-14, v5.101): a confined invocation no longer costs what the
+>   rest of the compartment holds.** Every invocation walked the WHOLE shared compartment
+>   heap (`JS_ComputeMemoryUsage`, twice per call) to read one counter — measured, one
+>   worker, one trivial confined call: **22.0% of stock throughput idle, 0.2% (476 req/s)
+>   while another fragment held 200,000 objects**, a cross-tenant channel F8's own
+>   measurement could not see (memory a peer merely HOLDS, beyond the execution
+>   deadline's reach). Fixed via an O(1) engine counter (`JS_GetMallocSize`): now 68.0% /
+>   66.6%. Also fixed in the same investigation: out-of-memory reported as `null`
+>   (identical to a fragment doing `throw null`), and `include()` errors that reached the
+>   host with no value at all. `t/comcon_invoke_heap_independence.t` (ratio-gated:
+>   1.01×, control 173.57×) · `t/comcon_fragment_error_report.t`. ASSURANCE G7.10, G6.19.
+> - **G6.16's ACCOUNTING HALF CLOSED (2026-09-14, v5.100): a fragment's leftovers are
+>   charged to nobody.** The job queue is FIFO, so a fragment's leftover continuations
+>   ran FIRST inside the next invocation — measured, 12,000 leftovers queued ahead of it
+>   consumed a fragment's ENTIRE 10,000-job budget, so its own continuations never ran at
+>   all. And a leftover's AUTHORITY depended on who arrived next (`cap.owner` compares
+>   against the fragment now running) — allowed when its own fragment happened to be
+>   invoked again, denied otherwise. Fixed: leftovers drain at the START of an
+>   invocation, as nobody, under a budget and deadline of their own.
+>   `t/comcon_leftover_accounting.t` (9). ASSURANCE G6.18.
+> - **THE L4 FILTER WINDOW WAS NOT A WAIT STATE (2026-09-14, v5.99) — the ~2.8% p17
+>   flake, closed, and two worse defects found alongside it.** Between accept and
+>   `ngx_http_init_connection()` a connection with an L4 filter armed had **no deadline
+>   of any kind**: a client sending zero bytes held a connection slot and its pool until
+>   reload, and the worker aborted at graceful shutdown over a connection stock nginx
+>   would have held with a non-cancelable timer. Fixed by arming the same timer nginx's
+>   own wait state arms. Found alongside it: **13 sites** closing a pre-http connection
+>   with `ngx_close_connection()` instead of `ngx_http_close_connection()`, leaking the
+>   connection pool — measured, 199 rejects leaked 101,888 bytes.
+>   `t/js_pilgrim_p17_l4_window.t` (8) · `t/js_pilgrim_p17_reject_leak.t` (7).
 > - **M-LIB IS NEARLY COMPLETE.** Steps 1–2 shipped 2026-09-12 (`comcon.std.profiles`,
 >   `std.ops`); **the mediation vocabulary is ten of ten** and the posture fields are read
 >   (v5.67 → v5.91). *(This bullet said the opposite for three days — that the posture

@@ -1114,6 +1114,17 @@ The primary control, and the one everything else is defence in depth for.
   DIFFER).
 - **EV:** `t/comcon_mses_gate.t` — 12 probes over conditions (a)–(e) plus the resource guard.
 - **EV:** `t/run_sanitizers.sh` — the corpus under ASAN + UBSAN.
+- **GAP:** A sixth condition, (f) — a fragment's SOURCE escaping the wrapper `comcon.include()`
+  concatenates around it, defeating admission before it ever runs (F15, closed by G7.12) — is
+  deliberately NOT folded into this file's battery. Every probe here assumes a well-formed
+  fragment is already running; a wrapper-breakout source never becomes one, so the
+  confined-vs-unconfined comparison this gate is built around does not apply to it, and forcing
+  one would have meant a second escape battery living beside this one — the exact drift
+  `t/tools/mses-probes.js`'s own header warns against. (f) is verified on its own terms, with its
+  own two controls, in `t/comcon_wrapper_breakout.t`; recorded here so a reader of "the standing
+  escape gate" knows a sixth condition exists and where it lives, rather than concluding the gate
+  is now stale for not naming it.
+  **home:** finding F15 · G7.12 · `t/comcon_wrapper_breakout.t`.
 - **THREAT:** T8, T1
 - **V:** V5b
 

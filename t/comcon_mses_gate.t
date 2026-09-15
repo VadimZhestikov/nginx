@@ -13,6 +13,22 @@
 # months from now. Confinement is the claim COMCON rests on, so it needs a gate
 # that runs every time, not a document saying it was checked once.
 #
+# A SIXTH CONDITION, (f), IS NOT IN THIS FILE'S BATTERY AND IS DELIBERATELY NOT
+# FOLDED IN.  F15 found that a fragment's SOURCE could escape the wrapper
+# comcon.include() concatenates around it (an unbalanced ")}" inside what looks
+# like a string, comment or template literal) and run script-level code with
+# NO ADMISSION GATE EVER APPLIED, defeating even `imports: []`.  That is a
+# COMPILE-TIME shape defect, not something an already-admitted fragment BODY
+# can attempt from the inside -- PROBES here all assume a well-formed fragment
+# is already running, which a breakout source never becomes.  The
+# confined-vs-unconfined comparison this file is built around therefore does
+# not apply to it in any honest way, and forcing a fit would have meant a
+# SECOND, differently-shaped escape battery living beside this one -- exactly
+# the drift `t/tools/mses-probes.js`'s own header warns against.  Condition (f)
+# is verified on its own terms, with its own two controls, in
+# t/comcon_wrapper_breakout.t (ASSURANCE G7.12); read that file, not a probe
+# added here, for the wrapper-breakout story.
+#
 # SELF-VALIDATING BY CONSTRUCTION: every probe runs TWICE -- once inside a
 # confined comcon.include fragment, once in unconfined host JS -- and the suite
 # asserts they DIFFER in the expected direction. A probe that reports "closed"

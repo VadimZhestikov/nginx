@@ -588,12 +588,24 @@ Coverage of the five M-SES conditions:
 | (c) code from strings | 4 probes | 4 probes, in the gate |
 | (d) COM facet beyond reach | route-glob + `comcon_include_grant.t` | unchanged (already covered) |
 | (e) escape resource guards | **not probed** | probed — **and the probe found a real hole** |
+| (f) escape the wrapper before admission runs | **not probed** | **NOT in this battery, by design — see below** |
 
 **What (e) found.** The deadline was opt-in: `__invokeConfined` armed it only when
 `contract.meter[...].timeoutMs > 0`, so a fragment with no meter ran **unbounded**
 (measured 4474 ms to completion). An accidental infinite loop hung the worker with
 no escape involved. Fixed — fragments are now always bounded; see
 `OPERATOR_API.md` §3.
+
+**Why (f) is not folded into this battery.** F15 (2026-09-14) found that a fragment's SOURCE
+could close the wrapper `comcon.include()` concatenates around it — an unbalanced `)}` inside
+what looks like a string, comment or template literal — and run script-level code with NO
+ADMISSION GATE EVER APPLIED, defeating even `imports: []`. That is a COMPILE-TIME shape defect:
+every probe (a)–(e) assumes a well-formed, already-admitted fragment is running, and a
+wrapper-breakout source never becomes one, so the confined-vs-unconfined comparison this gate is
+built around does not apply to it. Forcing a fit would have meant a second, differently-shaped
+escape battery living beside this one — the drift `t/tools/mses-probes.js`'s own header warns
+against. (f) is verified on its own terms, with its own two controls, in
+`t/comcon_wrapper_breakout.t` (ASSURANCE G7.1's GAP, G7.12).
 
 **Memory safety (`bash t/run_sanitizers.sh`).** 313 tests over the 34-file COMCON
 corpus under each sanitizer: **ASAN 0 findings; UBSAN 0 findings in `src/js`**, 34
