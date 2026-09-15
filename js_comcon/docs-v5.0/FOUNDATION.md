@@ -635,6 +635,51 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.100 (in place — a fragment's leftovers are charged to nobody):** the last named residual of
+G6.16, and the smallest of the three items in the saved plan. It was also the one where the
+INSTRUMENT was written from a model instead of a measurement, twice.
+
+WHAT WAS OWED. Every invocation drains the compartment to quiescence before returning, so a
+fragment's continuations are charged to the fragment that created them. That drain is best-effort: a
+fragment which outruns the 10,000-job budget leaves work queued, and nothing can un-queue ordinary
+JS. G6.17 closed the AUTHORITY half — `cap.owner` means a leftover runs and obtains nothing. The
+ACCOUNTING half was still open: a stranger paid.
+
+AND THE QUEUE ORDER IS WHAT MAKES IT A CHANNEL RATHER THAN AN ANNOYANCE. Jobs are FIFO
+(`list_add_tail` to enqueue, `job_list.next` to dequeue), so leftovers run FIRST. Measured: with
+12,000 jobs queued ahead of it, a fragment's ENTIRE 10,000-job allowance goes on a stranger's work
+and its own continuations never run at all. That is the original escape's shape with the arrow
+reversed — instead of one fragment reaching into the next invocation, one fragment SPENDS the next
+invocation. They also ran on that fragment's deadline, and because the unhandled-rejection counter is
+reset per invocation, a leftover that rejected was logged as *"this fragment's queued jobs"* against
+a fragment that had never seen it.
+
+MEASURING IT FOUND SOMETHING THE BACKLOG HAD NOT NAMED. `cap.owner` compares the capability's owner
+against the fragment NOW RUNNING, so the same leftover was DENIED when a different fragment was
+drained into and ALLOWED when its own fragment happened to be invoked again — with `ttl` and `window`
+then evaluated at that later moment, under that invocation's posture. **Whether unfinished work kept
+its authority was decided by traffic order**, which is worse than either answer held consistently.
+
+THE FIX: drain leftovers at the START of an invocation, before it arms its deadline, narrows its
+allowance, pushes its posture or claims its identity — under a job budget and a 50 ms deadline OF
+THEIR OWN, the fleet posture, and nobody's identity. So an invocation's work belongs to that
+invocation, and the authority answer stops depending on who is running. It runs INSIDE the
+compartment, which is not optional: these jobs are fragment code, and running them between
+compartment scopes would run them as HOST_ROOT with the A1 reach gate off — an accounting fix
+becoming the escape it is tidying up after. And it runs as nobody BY CONSTRUCTION rather than by
+assignment: `cur_frag` is zero outside any invocation and the nested-invoke guard is what establishes
+that, so there is no `frag_set()` to get wrong.
+
+THE INSTRUMENT WAS WRITTEN FROM A MODEL TWICE, AND THE MODEL WAS WRONG BOTH TIMES. The first probe
+used one invocation queueing 20,100 jobs and asserted 10,100 would be left behind; its control did
+not fire, because the fragment's own 16 MB allowance caps it at ~19,400 queued, so only 9,416 were
+left — under the next fragment's 10,000 budget, which is exactly the condition needed. The second
+used three invocations and left 9,000: still under. It takes FOUR, and that is now written into the
+test as the reason it is the only place the defect is reachable. *A number asserted from an argument
+is a number nobody measured* — and both times the control failing to fire is what said so.
+
+`t/comcon_leftover_accounting.t` (9) · ASSURANCE G6.18 · G6.16's GAP closed.
+
 **v5.99 (in place — the L4 filter window was not a wait state, and that was two defects):**
 a flake hunt that found the flake, and found something worse on the way to it.
 

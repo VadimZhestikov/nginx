@@ -606,9 +606,13 @@ The primary control, and the one everything else is defence in depth for.
   inside a later invocation, on its deadline and under its posture. The drain reports it loudly and
   cannot remove it. **The structural half was owed here and is now PAID — see G6.17:** every granted
   wrapper is bound to its fragment and the gates refuse it to anyone else, so a leftover job runs
-  and gets nothing. What remains of this gap is the accounting, not the authority: leftover work is
-  still *charged* to a stranger's deadline and budget, and still runs at a stranger's wall-clock
-  time.
+  and gets nothing. **The accounting half is now PAID TOO — see G6.18:** leftovers are drained at
+  the START of the next invocation under bounds of their own and nobody's identity, so they cannot be
+  charged to a stranger's budget, deadline or rejection report. Measuring that found one thing this
+  gap had not named: a leftover's AUTHORITY depended on who arrived next, because `cap.owner`
+  compares against the fragment now running — allowed when its own fragment was invoked again, denied
+  when anyone else was. What remains is that quiescence is still best-effort: a fragment leaving more
+  than 10,000 behind pushes the remainder into the next invocation's trailing drain.
   **A bound nobody measured is a bound nobody knows the order of.** G6.15's commit claimed the
   deadline was the real bound and the job cap the belt; measurement says a `.then` chain exhausts the
   **memory allowance** after 354,885 promises, while an `await` chain reaches the **request**
@@ -726,6 +730,60 @@ The primary control, and the one everything else is defence in depth for.
   argued: a second such code should force a list rather than another `if`.
   **home:** G6.16's GAP (which named this fix) · `ngx_js_cap_foreign`.
 - **THREAT:** T3, T4, T6, T9
+- **V:** V4, V13
+
+#### G6.18 — a fragment's leftovers are charged to NOBODY
+- **CLAIM:** Pending jobs left by an earlier invocation are drained at the START of the next one,
+  before it arms its deadline, narrows its allowance, pushes its posture or claims its identity —
+  under a job budget and a 50 ms deadline of their own, the FLEET posture, and nobody's identity. So
+  a fragment's continuations cannot be paid for out of another fragment's job budget, deadline,
+  memory allowance or rejection report, and they obtain nothing from ANY invocation including its own
+  author's next one.
+- **ARGUMENT:** G6.17 closed the AUTHORITY half of what the best-effort drain left behind. The
+  ACCOUNTING half is a channel in the other direction, and the queue order is what makes it one:
+  jobs are FIFO (`list_add_tail` to enqueue, `job_list.next` to dequeue), so leftovers run FIRST.
+  **Measured: with 12,000 jobs queued ahead of it, a fragment's entire 10,000-job allowance goes on
+  a stranger's work and its own continuations never run at all** — the original escape's shape with
+  the arrow reversed: instead of one fragment reaching into the next invocation, one fragment SPENDS
+  the next invocation. They also ran on that fragment's deadline, and the unhandled-rejection counter
+  is reset per invocation, so a leftover that rejected was logged as *"this fragment's queued jobs"*
+  against a fragment that had never seen it — a line naming the wrong author sends an operator to the
+  wrong place.
+  **AND MEASURING IT FOUND SOMETHING THE BACKLOG HAD NOT NAMED: a leftover's AUTHORITY depended on
+  who arrived next.** `cap.owner` compares the capability's owner against the fragment NOW RUNNING,
+  so the same leftover was DENIED when a different fragment was drained into and ALLOWED when its own
+  fragment happened to be invoked again — with `ttl` and `window` then evaluated at that later
+  moment, under that invocation's posture, on its clock. Whether unfinished work kept its authority
+  was decided by traffic order, which is worse than either answer consistently. Draining as nobody
+  makes it deterministic: **an invocation's work belongs to that invocation.** The cost falls only on
+  a fragment that outran a 10,000-job budget, whose continuations were best-effort already.
+  It runs INSIDE the compartment, which is not optional: these jobs are fragment code, and running
+  them between compartment scopes would run them as HOST_ROOT with the A1 reach gate off — turning an
+  accounting fix into the escape it is tidying up after. It runs AS NOBODY by construction rather
+  than by assignment: `cur_frag` is zero outside any invocation and the nested-invoke guard is what
+  establishes that, so there is no `frag_set()` to get wrong. And a leftover that CANNOT RUN does not
+  fail the invocation, unlike the trailing drain's: there it means the fragment being invoked did not
+  finish, here it means a previous one did not, which the current caller is not answerable for.
+- **EV:** `t/comcon_leftover_accounting.t` — 9 assertions. The two that carry the weight are the ones
+  that changed: **B's own 100 continuations all run** (32 recorded + 68 dropped, where the control
+  measures `{queued:0, dropped:0}`), and **A's own 3,000 leftovers are denied on A's own next
+  invocation** (3,000 `cap.owner`, where the control measures 0 — they were allowed because A was
+  next). Plus: B is not STOPPED, which is the control on the restore — forget it and every invocation
+  after a leftover drain dies on a deadline that had already passed; `cap.owner` still the only code
+  firing, so the authority answer is unchanged; and the log line naming them as leftovers. **Reaching
+  the condition takes FOUR invocations**, because one cannot leave more behind than the next
+  fragment's budget: its own 16 MB allowance caps how many jobs it can queue and its own drain burns
+  10,000 of them. The first version of this test used one invocation of 20,100 and its control did
+  not fire — the numbers were asserted from a model instead of measured, and the model was wrong
+  about both the memory ceiling and how much was left behind.
+- **GAP:** The leading drain has a budget too, so a fragment that leaves more than 10,000 behind
+  still pushes the remainder into the next invocation's trailing drain — bounded and reported, not
+  zero. Quiescence remains BEST-EFFORT; what is now exact is who pays for the part that runs. And
+  the 50 ms leftover deadline is a constant nobody can configure, deliberately (it bounds work that
+  belongs to no binding, so no contract may set it) — which also means an operator with a
+  pathological tenant cannot trade latency for faster cleanup.
+  **home:** G6.16's GAP (which named this fix) · `ngx_js_comcon_drain_leftovers`.
+- **THREAT:** T3, T6, T9
 - **V:** V4, V13
 
 #### G7.9 — the kernel operators are not reachable from a fragment, so authoring does not nest

@@ -2225,6 +2225,165 @@ ngx_js_comcon_aot_status(JSContext *hctx, JSValueConst this_val,
 }
 
 
+/*
+ * G6.16, THE ACCOUNTING HALF: A FRAGMENT'S LEFTOVERS ARE DRAINED FIRST, AND
+ * CHARGED TO NOBODY.
+ *
+ * Every invocation drains the compartment to quiescence before it returns, so a
+ * fragment's continuations are charged to, and gated at, the fragment that
+ * created them.  That drain is BEST-EFFORT: a fragment which outruns the job
+ * budget leaves work queued, and nothing can un-queue ordinary JS.
+ *
+ * The AUTHORITY half of what remained is closed -- `cap.owner` refuses a
+ * capability to anyone but the fragment it was granted to, so a leftover job
+ * runs and obtains nothing.  THE ACCOUNTING HALF WAS NOT, and it is a channel in
+ * both directions:
+ *
+ *   - THE BUDGET.  Leftovers were drained by the next invocation's trailing
+ *     loop, out of the next fragment's job budget.  Measured: A leaves 10,100
+ *     jobs behind, B then queues 100 of its own, and B's continuations DO NOT RUN
+ *     AT ALL -- B's whole 10,000-job allowance goes on a stranger's work, and B's
+ *     capability records nothing.  A fragment could therefore silence the next
+ *     fragment's continuations, which is the original escape's shape (one
+ *     fragment reaching into another's invocation) with the arrow reversed.
+ *   - THE CLOCK.  They ran on the next fragment's deadline, so an innocent
+ *     request paid for them in latency and could be stopped by its own meter
+ *     over work it did not queue.
+ *   - THE REPORT.  The unhandled-rejection counter is reset per invocation, so a
+ *     leftover that rejected was logged as "this fragment's queued jobs" against
+ *     a fragment that had never seen it.  A log line that names the wrong
+ *     fragment is worse than no line: it sends an operator to the wrong author.
+ *
+ * So the leftovers are drained HERE, before the invocation arms its deadline,
+ * narrows its allowance, pushes its posture or claims its identity -- under a
+ * separate job budget, a separate short deadline, the FLEET posture rather than
+ * any binding's, and `cur_frag = 0`, which is nobody.
+ *
+ * IT RUNS AS NOBODY, AND BY CONSTRUCTION RATHER THAN BY ASSIGNMENT.  `cur_frag`
+ * is zero outside any invocation, and the nested-invoke guard below is what
+ * establishes that it is zero here -- so there is no frag_set() in this function,
+ * because there is nothing to set.  (A line that assigns the value a guard has
+ * just proved is code no control can break, which this tree deletes.)  That
+ * identity is what makes this the same answer as before rather than a new hole:
+ * `ngx_js_cap_foreign()` is `owner != 0 && owner != cur_frag`, so every
+ * fragment-granted capability is foreign to nobody and `cap.owner` denies it --
+ * exactly as it did when the leftovers ran inside a stranger.  The authority
+ * outcome is unchanged; only the bill moves.
+ *
+ * IT RUNS INSIDE THE COMPARTMENT, and that is not optional.  These jobs are
+ * fragment code; running them between compartment scopes would run them as
+ * HOST_ROOT with the A1 reach gate switched off, which would convert an
+ * accounting fix into the escape it is supposed to be tidying up after.
+ *
+ * A LEFTOVER THAT COULD NOT RUN DOES NOT FAIL THIS INVOCATION.  The trailing
+ * drain re-raises such a job, because there it means the fragment being invoked
+ * did not finish.  Here it means a PREVIOUS fragment did not finish, which the
+ * current one is not answerable for: it is logged as a leftover and the
+ * invocation proceeds.  Failing the innocent caller would be the accounting
+ * defect again, dressed as strictness.
+ *
+ * Nested invokes are skipped (`cur_frag != 0`): inside a fragment the pending
+ * jobs may be that fragment's own, and running them as nobody would deny
+ * capabilities that are legitimately theirs.  Nothing reaches a nested invoke
+ * today; the guard costs a comparison and removes the need to remember that.
+ */
+static void
+ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf, ngx_js_worker_t *w)
+{
+    JSMemoryUsage         mu;
+    struct timespec       ts;
+    uint64_t              saved_deadline = 0, now_ms, newd;
+    ngx_uint_t            jobs = 0, failed = 0, rejections;
+    ngx_uint_t            deadline_pushed = 0;
+    ngx_js_compartment_t  prev;
+
+    if (!JS_IsJobPending(jcf->comcon_rt)) {
+        return;
+    }
+
+    if (ngx_js_compartment_frag_get() != 0) {
+        return;                          /* nested: not ours to reassign */
+    }
+
+    /*
+     * The same per-invocation allowance a fragment gets, so a leftover chain
+     * that keeps allocating cannot eat the shared runtime while pretending to
+     * belong to nobody.  Restored to the compartment's own limit afterwards,
+     * exactly as the invocation path restores it.
+     */
+    JS_ComputeMemoryUsage(jcf->comcon_rt, &mu);
+    JS_SetMemoryLimit(jcf->comcon_rt,
+                      (size_t) mu.malloc_size
+                      + (size_t) NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES);
+
+    if (w != NULL) {
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        now_ms = (uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000;
+        newd = now_ms + NGX_JS_COMCON_LEFTOVER_MS;
+        saved_deadline = w->request_deadline_ms;
+
+        /* only ever TIGHTEN: the request's own deadline stays the outer bound */
+        w->request_deadline_ms =
+            (saved_deadline != 0 && saved_deadline < newd) ? saved_deadline
+                                                           : newd;
+        deadline_pushed = 1;
+    }
+
+    /* Whatever this drain's jobs reject is reported as the LEFTOVERS' -- the
+       invocation resets these again for its own drain. */
+    rejections = ngx_js_comcon_rejections;
+    ngx_js_comcon_rejections = 0;
+    ngx_js_comcon_rejections_logged = 0;
+
+    prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
+
+    while (JS_IsJobPending(jcf->comcon_rt)
+           && jobs < NGX_JS_COMCON_MAX_LEFTOVER_JOBS)
+    {
+        JSContext  *jctx = NULL;
+        int         jrc;
+
+        jrc = JS_ExecutePendingJob(jcf->comcon_rt, &jctx);
+
+        if (jrc == 0) {
+            break;
+        }
+
+        jobs++;
+
+        if (jrc < 0 && jctx != NULL) {
+            JS_FreeValue(jctx, JS_GetException(jctx));
+            failed++;
+        }
+    }
+
+    ngx_js_compartment_leave(prev);
+
+    if (deadline_pushed) {
+        w->request_deadline_ms = saved_deadline;
+    }
+
+    JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
+
+    /*
+     * REPORTED AS LEFTOVERS, which is the whole point of draining them here.
+     * One line, naming what they are, so an operator reading it is not sent to
+     * the author of the fragment that merely arrived next.
+     */
+    ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                  "js comcon: drained %ui leftover job(s) from an earlier "
+                  "fragment before this invocation (%ui could not run, %ui "
+                  "rejected unhandled, %s)",
+                  jobs, failed, ngx_js_comcon_rejections,
+                  JS_IsJobPending(jcf->comcon_rt)
+                      ? "more remain for the next invocation"
+                      : "the compartment is now quiescent");
+
+    ngx_js_comcon_rejections = rejections;
+    ngx_js_comcon_rejections_logged = 0;
+}
+
+
 /* comcon.__invokeConfined(handle, arg, timeoutMs) -> result: invoke the held
  * fragment in the compartment; `arg`/result marshaled by JSON round-trip in C
  * (only strings cross). Metered via the worker deadline (compartment runtime
@@ -2302,6 +2461,14 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         }
         JS_FreeValue(hctx, jstr);
     }
+
+    /*
+     * G6.16 accounting: finish an EARLIER fragment's leftovers before this
+     * invocation arms anything of its own, so they cannot be paid for out of
+     * this fragment's job budget, deadline, allowance or rejection report.  See
+     * ngx_js_comcon_drain_leftovers() for why they run as nobody.
+     */
+    ngx_js_comcon_drain_leftovers(jcf, jcf->worker);
 
     /*
      * A confined fragment ALWAYS runs under a deadline.
@@ -2518,11 +2685,13 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
      * deliberately pathological; one that exceeds it is REPORTED, loudly, and its
      * leftover jobs can still run inside a later invocation.
      *
-     * THE STRUCTURAL FIX IS OWED AND NAMED: bind each granted capability wrapper
-     * to the fragment it was granted to, and have the gates refuse when the
-     * fragment being invoked is not that one.  Then a leftover job cannot use
-     * authority no matter when it runs, and this loop is about ATTRIBUTION only
-     * -- which is all a best-effort loop can honestly promise.
+     * BOTH HALVES OF WHAT THIS LOOP LEAVES BEHIND ARE NOW PAID.  The AUTHORITY
+     * half is `cap.owner`: every granted wrapper is bound to its fragment and the
+     * gates refuse it to anyone else, so a leftover job runs and obtains nothing.
+     * The ACCOUNTING half is ngx_js_comcon_drain_leftovers(), which finishes them
+     * at the START of the next invocation under bounds of their own -- so this
+     * loop is about ATTRIBUTION only, which is all a best-effort loop can
+     * honestly promise.
      *
      * A job that THROWS does not fail the invocation: the fragment's value was
      * already computed and returned legitimately.  It is logged -- once, with a
@@ -2645,15 +2814,18 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
 
     /*
      * The loud half of "best effort".  A fragment that outran the job budget
-     * leaves work behind, and that work will run inside a later invocation --
-     * under its posture, on its deadline, at its wall-clock time.  Silence here
-     * would be the original defect with extra steps.
+     * leaves work behind; silence here would be the original defect with extra
+     * steps.  What happens to that work is no longer "it runs inside a later
+     * invocation, on its deadline and under its posture" -- the next invocation
+     * finishes it FIRST, as nobody, under a budget and a deadline of its own
+     * (ngx_js_comcon_drain_leftovers) -- and the message says so, because an
+     * operator reading it needs to know who will be billed.
      */
     if (JS_IsJobPending(jcf->comcon_rt)) {
         ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
                       "js comcon: a fragment outran the %ui-job budget and left "
-                      "queued jobs behind; they will run inside a later "
-                      "invocation, on its deadline and under its posture",
+                      "queued jobs behind; the next invocation will finish them "
+                      "first, as nobody, under bounds of their own",
                       (ngx_uint_t) NGX_JS_COMCON_MAX_JOBS);
     }
 

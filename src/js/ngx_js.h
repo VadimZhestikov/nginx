@@ -48,6 +48,31 @@ typedef struct ngx_js_sw_state_s ngx_js_sw_state_t;
 #define NGX_JS_COMCON_MAX_JOBS             10000
 
 /*
+ * G6.16, THE ACCOUNTING HALF: the LEFTOVER drain's own bounds.
+ *
+ * The drain above is best-effort, so a deliberately pathological fragment leaves
+ * jobs queued.  Those jobs used to run inside the NEXT invocation's drain, and
+ * the authority half of that is closed -- `cap.owner` refuses a capability to
+ * anyone but the fragment it was granted to -- but the ACCOUNTING was not: a
+ * stranger's leftovers spent the next fragment's job budget, ran on its
+ * deadline, and its unhandled rejections were reported as that fragment's.
+ *
+ * So leftovers are drained FIRST, before the invocation arms anything, under
+ * bounds OF THEIR OWN.  Two numbers rather than one because they answer
+ * different questions: the job cap is how much leftover work one invocation is
+ * willing to finish, and the millisecond cap is how much of an innocent
+ * request's time it is willing to spend doing it.  Without the second, the
+ * leading drain would simply move the theft from the fragment's budget to the
+ * request's clock.
+ *
+ * 50 ms: enough to finish thousands of microtasks, short enough that a request
+ * which pays it is not visibly slower.  A fragment cannot choose either number
+ * -- they bound work that belongs to nobody, so nobody's contract sets them.
+ */
+#define NGX_JS_COMCON_MAX_LEFTOVER_JOBS    10000
+#define NGX_JS_COMCON_LEFTOVER_MS          50
+
+/*
  * The SYNTHETIC FILE ORIGIN of every confined fragment (POM.md §6 Q3): the name
  * include()'s eval is given, and therefore the name that appears in a fragment's
  * own stack frames.  One constant, because the eval site and the error-location
