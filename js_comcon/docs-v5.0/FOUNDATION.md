@@ -635,6 +635,17 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.118 (in place — M5.1b PARKED with its numbers; the M5 track closes at M5.1a):** user
+decision 2026-09-15 on the analysis in PERFORMANCE §2f.1. (B) declared parameter shapes at the
+boundary: class A's remaining gap is 2.1×, below the rule's 3×, and the word would add a second
+source of truth for a value's type (an entry guard, a refusal, the closed-set machinery).
+(A) a host typed view of request bytes: the request crosses as JSON, so it needs a new channel
+and an opt-in word; its gain is 12.5 ns/byte over a `charCodeAt` scan — 2.5 µs for a uri,
+noise against the 1.1 µs request boundary, 200 µs for a 16 KB body — and no measured policy
+scans bodies in JS (E0: the real ones are header/uri/shared bound, 0.92–1.36×). A product
+question; the shape is fixed in §2f.1 should it appear (one capability word, copy-backed,
+never a zero-copy view). ROADMAP POSITION, ASSURANCE §16.
+
 **v5.117 (in place — M5.1a, the narrow compiler's first cut: class A's lowered scan 11.72 →
 1.26 ns/byte, nothing assumed):** two codegen changes in the engine, `JIT_CODEGEN_VERSION` 18.
 (1) A bit op (`& | ^ << >>`) with ONE provably-numeric operand yields a typed int32 — by the

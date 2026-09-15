@@ -319,6 +319,42 @@ Three readings, the third a correction to the record:
 The gas check is untouched: `t/comcon_compiled_resource_gates.t`'s ten probes agree as
 before, and `t/comcon_jit_uncatchable.t` still stops both forms on native code.
 
+### 2f.1 M5.1b — PARKED with its numbers (2026-09-15, v5.118)
+
+M5.1b had two halves: **(A)** a host typed view of request bytes — the only way a real policy
+receives a `Uint8Array`, since the host passes the request to a fragment as JSON text and a
+typed array cannot ride that channel — and **(B)** declared parameter shapes in the contract,
+so the compiler knows a value's type at the boundary. Both parked, on these numbers:
+
+| what decides it | number | source |
+|---|--:|---|
+| class A's remaining gap after M5.1a, lowered / typed | 2.1× | §2f — below the rule's 3× |
+| gain of a byte view over a `charCodeAt` scan | 12.5 ns/byte | 13.75 − 1.26, §2f |
+| …for a 200-byte uri and args | 2.5 µs | against a 1.1 µs request boundary |
+| …for a 16 KB body | 200 µs | |
+| …for a 1 MB body | 12.5 ms | |
+| a copy of 16 KB into the compartment | 0.2 µs | E2, §2b — a view buys nothing |
+| what a typed stub ABI uniquely removes per host call | 0.035 µs | `host-call-cost.t`, §2b |
+| measured real policies, compiled vs interpreted | 0.92–1.36× | E0 — header/uri/shared bound |
+
+- **(B) is not worth its risk by the rule stated before the numbers** (`lowered / typed ≥ 3`):
+  what it would remove is one class-id check and a box and unbox per element, and it would
+  add a second source of truth for a value's type — an entry guard, a new refusal, a
+  vocabulary word with the closed-set machinery behind it. Everything the language fixes the
+  type of, M5.1a already types.
+- **(A) pays only for a policy that scans request BODIES in JS**, and the record holds no such
+  policy: for uri-sized inputs the gain is noise against the request boundary. It is a
+  product question, not an engineering one. **If that use case appears**, the shape is fixed
+  here so it is not re-derived: one capability word granted at include time (so it enters the
+  owner, denial and audit machinery), backed by a COPY counted against the allowance, never a
+  zero-copy view (a retained view would alias freed pool memory unless detached at return,
+  bodies are not contiguous, and E2 measured no gain), with the body read by the host before
+  the synchronous invocation.
+
+**The M5 track therefore closes at M5.1a**, complete as measured: a fragment that builds its
+own typed array runs its byte scan at 1.26 ns/byte on the compiled tier, and nothing in the
+data plane is waiting on a compiler change.
+
 ---
 
 ## 3. Cost model by enforcement moment

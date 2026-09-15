@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.117 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.118 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -60,9 +60,15 @@
 >   written out, validated by breaking both paths; G7.18's ten probes unchanged. Class B
 >   unmoved (its loop is a call and a `>>>`), and its "typed bound" was lowered JS — corrected
 >   in PERFORMANCE §2f. By the M5.0 rule the remaining 2.1× (boxing and checks) is NOT worth a
->   further cut: **M5.1 is complete as measured; M5.1b (declared shapes at the boundary + a
->   host typed view of request bytes) is the next decision, not the next step.** ASSURANCE
->   G7.20.
+>   further cut: **M5.1 is complete as measured.** ASSURANCE G7.20.
+> - **M5.1b PARKED WITH ITS NUMBERS (2026-09-15, v5.118) — THE M5 TRACK CLOSES AT M5.1a.**
+>   (B) declared shapes at the boundary: the remaining gap is 2.1×, below the 3× rule, and it
+>   would add a second source of truth for a value's type. (A) a host typed view of request
+>   bytes: the host passes the request as JSON, so it needs a new crossing and an opt-in word;
+>   it pays 12.5 ns/byte over a `charCodeAt` scan — 2.5 µs for a uri, noise against the 1.1 µs
+>   boundary; 200 µs for a 16 KB body — and the record holds no policy that scans bodies in JS.
+>   A product question. If it appears: one capability word, copy-backed, never a zero-copy
+>   view (E2 measured no gain; a retained view would alias freed memory). PERFORMANCE §2f.1.
 > - **A SECOND SIGNATURE (2026-09-15, v5.116).** The reviewer pack run in full on `4a86d2a62`
 >   (twice — run 1 tripped the broadcast-fuzz flake on one automated control, run 2 passed
 >   every gate; transcripts under `reviews/`); a second signer, Dick Hardman, accepted the
