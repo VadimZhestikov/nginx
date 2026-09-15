@@ -1054,6 +1054,13 @@ ngx_js_comcon_interrupt_handler(JSRuntime *rt, void *opaque)
  * never extend it, matching the rule the invocation path already followed
  * for w->request_deadline_ms -- the difference here is that there may be no
  * `w` at all (config phase), in which case `timeout_ms` alone applies.
+ *
+ * The same rule against the deadline ALREADY IN FORCE on the compartment: a
+ * push made while another push is live (a nested confined invocation) can
+ * only tighten what it found, never extend it.  Until nesting existed the
+ * previous value was always 0 here, so this min() was never asked; it is what
+ * makes "a sub-fragment runs inside its parent's remaining time" a property of
+ * the push rather than a promise every caller has to keep.
  */
 static uint64_t
 ngx_js_comcon_deadline_push(ngx_js_conf_t *jcf, uint32_t timeout_ms)
@@ -1074,6 +1081,10 @@ ngx_js_comcon_deadline_push(ngx_js_conf_t *jcf, uint32_t timeout_ms)
         newd = w->request_deadline_ms;
     }
 
+    if (old != 0 && old < newd) {
+        newd = old;
+    }
+
     jcf->comcon_deadline_ms = newd;
 
     return old;
@@ -1084,6 +1095,45 @@ static void
 ngx_js_comcon_deadline_pop(ngx_js_conf_t *jcf, uint64_t old)
 {
     jcf->comcon_deadline_ms = old;
+}
+
+
+/*
+ * Narrow the compartment runtime's memory limit to "what is in use now plus
+ * `allowance`" for the duration of one operation, and return the limit that
+ * was in force so ngx_js_comcon_mem_pop() can put it back.
+ *
+ * The limit in force is read from jcf->comcon_mem_limit, not from the engine
+ * (which has no getter), and the push can only NARROW it: a nested push asks
+ * for min(the limit it found, now + allowance).  Restoring the value found,
+ * rather than the runtime's constant, is the whole reason this is a pair --
+ * with a constant, the first nested pop would have handed the ENCLOSING call
+ * the entire runtime back for the rest of its own run.
+ */
+static size_t
+ngx_js_comcon_mem_push(ngx_js_conf_t *jcf, size_t allowance)
+{
+    size_t  old, newl;
+
+    old = jcf->comcon_mem_limit;
+    newl = JS_GetMallocSize(jcf->comcon_rt) + allowance;
+
+    if (old != 0 && old < newl) {
+        newl = old;
+    }
+
+    jcf->comcon_mem_limit = newl;
+    JS_SetMemoryLimit(jcf->comcon_rt, newl);
+
+    return old;
+}
+
+
+static void
+ngx_js_comcon_mem_pop(ngx_js_conf_t *jcf, size_t old)
+{
+    jcf->comcon_mem_limit = old;
+    JS_SetMemoryLimit(jcf->comcon_rt, old);
 }
 
 
@@ -1100,7 +1150,9 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
     if (jcf->comcon_rt == NULL) {
         return NULL;
     }
-    JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
+    jcf->comcon_mem_limit = NGX_JS_COMCON_RUNTIME_MEMORY_BYTES;
+    jcf->comcon_depth = 0;
+    JS_SetMemoryLimit(jcf->comcon_rt, jcf->comcon_mem_limit);
     JS_SetHostPromiseRejectionTracker(jcf->comcon_rt,
                                       ngx_js_comcon_rejection_tracker, NULL);
     (void) ngx_js_com_register_classes(jcf->comcon_rt);  /* mirror tenant_rt setup */
@@ -2675,6 +2727,7 @@ static void
 ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf)
 {
     uint64_t              saved_deadline;
+    size_t                saved_mem;
     ngx_uint_t            jobs = 0, failed = 0, rejections;
     ngx_js_compartment_t  prev;
 
@@ -2682,19 +2735,17 @@ ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf)
         return;
     }
 
-    if (ngx_js_compartment_frag_get() != 0) {
+    if (ngx_js_compartment_frag_get() != 0 || jcf->comcon_depth != 0) {
         return;                          /* nested: not ours to reassign */
     }
 
     /*
      * The same per-invocation allowance a fragment gets, so a leftover chain
      * that keeps allocating cannot eat the shared runtime while pretending to
-     * belong to nobody.  Restored to the compartment's own limit afterwards,
-     * exactly as the invocation path restores it.
+     * belong to nobody.  Restored to the limit found afterwards, exactly as
+     * the invocation path restores it.
      */
-    JS_SetMemoryLimit(jcf->comcon_rt,
-                      JS_GetMallocSize(jcf->comcon_rt)
-                      + (size_t) NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES);
+    saved_mem = ngx_js_comcon_mem_push(jcf, NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES);
 
     /*
      * F15 PHASE 3: pushed via jcf->comcon_deadline_ms now, not w->request_
@@ -2735,7 +2786,7 @@ ngx_js_comcon_drain_leftovers(ngx_js_conf_t *jcf)
 
     ngx_js_comcon_deadline_pop(jcf, saved_deadline);
 
-    JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
+    ngx_js_comcon_mem_pop(jcf, saved_mem);
 
     /*
      * REPORTED AS LEFTOVERS, which is the whole point of draining them here.
@@ -2789,6 +2840,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     ngx_js_tenant_mode_e  saved_mode = NGX_JS_TENANT_ENFORCE;
     ngx_uint_t        mode_pushed = 0;
     uint64_t          old_deadline;
+    size_t            old_mem;
     ngx_js_compartment_t  prev;
 
     jcf = ngx_js_comcon_jcf;
@@ -2898,8 +2950,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
      * set every other tenant's latency, and a tenant could modulate it at will.
      * Nothing measured invocation cost against heap size, so nothing saw it.
      */
-    JS_SetMemoryLimit(jcf->comcon_rt,
-                      JS_GetMallocSize(jcf->comcon_rt) + (size_t) memory);
+    old_mem = ngx_js_comcon_mem_push(jcf, (size_t) memory);
 
     /* run the fragment as a confined compartment: the A1 reach gate denies the
        authority edges (e.g. a granted socket's .listener) even though the
@@ -2941,9 +2992,15 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
      *
      * Saved and restored rather than assigned, so a nested invoke would inherit
      * correctly; nothing reaches one today, and this costs one word either way.
+     *
+     * The depth goes up with it.  The settle loop and the trailing drain below
+     * consult it: they run at depth 1 only, because the job queue is one FIFO
+     * for every fragment and a nested frame that drained it would run the
+     * enclosing fragment's jobs under the inner one's identity.
      */
     saved_frag = ngx_js_compartment_frag_get();
     ngx_js_compartment_frag_set((uint32_t) handle + 1);
+    jcf->comcon_depth++;
 
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
     oom0 = JS_GetOutOfMemoryCount(jcf->comcon_rt);
@@ -2980,7 +3037,8 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
 
         while (JS_PromiseState(sctx, result) == JS_PROMISE_PENDING
                && JS_IsJobPending(jcf->comcon_rt)
-               && jobs < NGX_JS_COMCON_MAX_JOBS)
+               && jobs < NGX_JS_COMCON_MAX_JOBS
+               && jcf->comcon_depth == 1)
         {
             JSContext  *jctx = NULL;
 
@@ -3098,7 +3156,8 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     ngx_js_comcon_rejections_logged = 0;
 
     while (JS_IsJobPending(jcf->comcon_rt)
-           && jobs < NGX_JS_COMCON_MAX_JOBS)
+           && jobs < NGX_JS_COMCON_MAX_JOBS
+           && jcf->comcon_depth == 1)
     {
         JSContext  *jctx = NULL;
         int         jrc;
@@ -3380,9 +3439,10 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     }
 
     ngx_js_compartment_frag_set(saved_frag);
+    jcf->comcon_depth--;
 
     /* the allowance was for THAT call only */
-    JS_SetMemoryLimit(jcf->comcon_rt, 64 * 1024 * 1024);
+    ngx_js_comcon_mem_pop(jcf, old_mem);
 
     ngx_js_compartment_leave(prev);
 

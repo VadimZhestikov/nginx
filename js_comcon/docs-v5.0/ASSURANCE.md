@@ -1011,6 +1011,13 @@ The primary control, and the one everything else is defence in depth for.
   admission test, `invoke_confined`, the leftover drain) push a deadline; a future comcon_rt
   entry point that runs fragment-adjacent code must remember to push one too — there is no
   structural guarantee every future caller will.
+  **v5.105 (nesting readiness):** the push now also mins against the deadline ALREADY in
+  force on the compartment, and the memory allowance follows the same discipline
+  (`ngx_js_comcon_mem_push()`/`_pop()` over a mirrored `jcf->comcon_mem_limit`, restoring the
+  value found rather than a literal 64 MB); a depth counter (`jcf->comcon_depth`) keeps the
+  settle loop and both drains at depth 1. Nothing in this tree nests, so the existing EV is
+  unchanged; the tests that pin the stacked behaviour arrive with the nesting that exercises
+  them (the authoring tier, phase 2).
   **home:** finding F15 (phase 3 of its fix, and the last of its three parts) ·
   `ngx_js_comcon_deadline_push` · `ngx_js.h`'s `comcon_deadline_ms` field comment.
 - **THREAT:** T6, T9, T11

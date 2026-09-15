@@ -216,6 +216,25 @@ typedef struct {
  */
 #define NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES  (16 * 1024 * 1024)
 
+/*
+ * The compartment runtime's own limit -- the backstop above, and what every
+ * per-call allowance is restored to once the call is over.  Kept in
+ * jcf->comcon_mem_limit as well as in the runtime, because the engine has a
+ * setter and no getter: a push that wants to NARROW the limit in force has to
+ * be able to read it, and a nested push that restored a constant instead of
+ * the value it found would hand the enclosing call the whole runtime back.
+ */
+#define NGX_JS_COMCON_RUNTIME_MEMORY_BYTES   (64 * 1024 * 1024)
+
+/*
+ * How deep confined invocations may nest.  1 is a fragment invoked by the
+ * host; 2 is a fragment invoked by another fragment (the authoring tier).
+ * The settle loop and the leftover drain run at depth 1 only: the job queue
+ * is one FIFO shared by every fragment, and a nested frame that drained it
+ * would run the enclosing fragment's jobs under the inner one's identity.
+ */
+#define NGX_JS_COMCON_MAX_DEPTH              2
+
 
 /*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).
@@ -290,6 +309,15 @@ typedef struct {
      * worker, so neither had ANY interrupt handler installed at all.
      */
     uint64_t             comcon_deadline_ms;
+
+    /*
+     * The compartment runtime's memory limit IN FORCE, mirrored from the last
+     * JS_SetMemoryLimit() on comcon_rt (see NGX_JS_COMCON_RUNTIME_MEMORY_BYTES
+     * for why the mirror exists), and how many confined invocations are
+     * currently on the stack (see NGX_JS_COMCON_MAX_DEPTH).
+     */
+    size_t               comcon_mem_limit;
+    ngx_uint_t           comcon_depth;
 } ngx_js_conf_t;
 
 

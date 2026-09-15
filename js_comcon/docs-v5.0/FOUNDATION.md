@@ -635,6 +635,39 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.105 (in place — nesting readiness: a confined invocation's bounds are a STACK, not a
+constant — phase 1 of the authoring tier):** the second compartment tier (a fragment that
+includes and invokes SUB-fragments through a granted `author` capability; the five-phase plan
+is in ROADMAP.md's POSITION block) needs one thing the invocation path did not have: a nested
+invocation must run inside its parent's bounds and give them BACK afterwards. This delta makes
+the bounds behave as a stack before any nesting exists, so the property is the push's rather
+than a promise every future caller has to keep.
+
+THREE THINGS WERE CONSTANTS THAT HAD TO BECOME VALUES. (1) The memory allowance was restored to
+a literal `64 * 1024 * 1024` at three sites (compartment creation, the leftover drain, the
+invocation exit) — correct while nothing nested, wrong the moment something did: the first
+nested pop would hand the ENCLOSING call the whole runtime back for the rest of its own run.
+The engine has a setter and no getter, so the limit in force is now mirrored in
+`jcf->comcon_mem_limit` and moved by a `ngx_js_comcon_mem_push()`/`_pop()` pair that restores
+what it FOUND, and can only narrow it: a push asks for min(the limit in force, in-use-now +
+allowance). (2) `ngx_js_comcon_deadline_push()` min'd a fresh deadline against the worker's
+request deadline (G7.13) but not against the deadline ALREADY in force on the compartment —
+never asked while the previous value was always 0, and the rule "a sub-fragment runs inside its
+parent's remaining time" the moment it is not. It now mins against both. (3) A depth counter,
+`jcf->comcon_depth` (`NGX_JS_COMCON_MAX_DEPTH`, 2), goes up with the fragment identity and
+down with it; the settle loop and the trailing drain run at depth 1 ONLY, and the leftover
+drain refuses to run at any depth, because the job queue is one FIFO for every fragment and a
+nested frame that drained it would run the ENCLOSING fragment's jobs under the inner one's
+identity — the deferred-job escape (G6.16) with the roles reversed.
+
+NOTHING REACHES A NESTED INVOCATION IN THIS TREE, so nothing observable changes: every push
+still finds 0 / the runtime limit, every pop still restores them, and the existing suite is the
+evidence (the drain runs BEFORE the invocation's own push, so no site was nested even by
+accident — checked before touching it). The tests that pin the stacked behaviour arrive with the
+nesting that exercises them (phase 2). What this delta pins is the SHAPE: the only literal
+runtime limit left in `ngx_js_module.c` is the host runtime's (`jcf->rt`), and the two
+compartment bounds share one discipline — push what you found, restore what you found.
+
 **v5.104 (in place — F15, phase 3: the compartment meters itself, whether or not a worker
 exists — F15 CLOSED, all three parts):** phases 1 and 2 closed what the wrapper's shape allowed
 to bypass; this closes F15's ORIGINAL finding, the one that opened the investigation into the

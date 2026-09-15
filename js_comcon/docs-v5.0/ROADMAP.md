@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.104 — 2026-09-14).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.105 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,22 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **THE AUTHORING TIER IS STARTED — PHASE 1, NESTING READINESS (2026-09-15, v5.105).**
+>   The v5.98 bullet below measured that "authoring does not nest at all"; the decision taken
+>   is to BUILD it — a granted `author` capability whose one operation is `include(src,
+>   spec)`, returning a callable sub-fragment that is a real fragment (own handle, own
+>   owner, own deadline) and can hold only what its parent holds, narrowed. Five phases:
+>   0 (verifications — done; two rules in the plan turned out unnecessary, one got more
+>   precise), 1 (this delta: the invocation's memory allowance and deadline behave as a
+>   STACK — push what you found, restore what you found — and a depth counter keeps the
+>   settle loop and both drains at depth 1, because the job FIFO is shared), 2 (the
+>   capability, nested include and a sync-only nested invoke, no re-grants; the depth-2
+>   escape battery over `t/tools/mses-probes.js` is the stop condition), 3 (re-granting by
+>   COPY-THEN-NARROW of the parent's wrapper, `mask`/`ttl` only in v1 — never by re-wrapping
+>   the handle, which reads `gen` from the global table and would launder a stale parent),
+>   4 (docs, assurance, enumerations, negative controls). Nothing nests in this tree yet;
+>   v5.105 changes nothing observable and pins the shape. FOUNDATION v5.105 · ASSURANCE
+>   G7.13 (addendum).
 > - **F15 CLOSED, ALL THREE PARTS (2026-09-14, v5.104).** The last part, and the ORIGINAL
 >   finding: comcon_rt's interrupt handler required a worker before it was installed at
 >   all, so a fragment's own top-level evaluation, a confined invocation, and an
