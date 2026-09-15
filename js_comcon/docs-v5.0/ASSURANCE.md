@@ -1283,6 +1283,49 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T6, T9, T11
 - **V:** V13
 
+#### G7.19 — an out-of-memory inside the engine's own error annotation keeps the error alive
+- **CLAIM:** When the memory allowance is hit while the engine is annotating the pending
+  exception with its backtrace, whoever catches it — the fragment's `catch`, the parent, the
+  host — receives the ORIGINAL error, with its uncatchable flag as thrown, minus its `stack`;
+  the worker does not die.
+- **ARGUMENT:** The engine defers an error's backtrace when the throw happens in bytecode
+  (`JS_ThrowError`: no `stack` yet) and adds it at the interpreter's exception label, by
+  calling `build_backtrace(ctx, rt->current_exception, …)` — by value, holding no reference.
+  `build_backtrace` allocates: the frame strings, the `stack` string, the property slot. At
+  the allowance any of those fails and throws out-of-memory, and `JS_Throw` FREES the pending
+  exception — the very error object being annotated, whose only reference it was. The
+  annotation then defines `stack` on a freed object: `find_own_property` on a NULL shape,
+  SIGSEGV. Reachable from a fragment: exhaust the allowance so that the OOM `InternalError`
+  itself is still buildable (a couple of hundred bytes) but its backtrace is not. Found by
+  the M5.0 commit's gate: `t/comcon_author_basic.t` `/nestmemory` killed the worker 3/3 on
+  this layout — and never under ASAN or valgrind, because a sanitizer moves where the
+  allowance bites; the class is one the sanitizer corpus cannot be relied on to find. **The
+  same path carried a second defect:** a deadline abort is thrown uncatchable and annotated
+  at the same label, and the inner `JS_Throw` resets the flag — so at the allowance an abort
+  would have become catchable (and crashed anyway). Fixed in the engine
+  (`build_backtrace_pending`): hold a reference across the annotation; if the attempt threw,
+  put the original error AND its flag back, minus `stack`; and `build_backtrace` no longer
+  stores an exception-tagged value as `stack`. The parser's two annotation sites (a
+  `SyntaxError`, a regexp compile error, either at the allowance) go through the same helper.
+- **EV:** `t/comcon_oom_backtrace.t` — 5 assertions. Where the allowance bites is a matter
+  of residue, so the probe SWEEPS it: the fragment fills memory in exact 1 KB strings and the
+  allowance steps by 32 bytes across one such string, walking the failing allocation through
+  every alignment; the worker answers, all 32 alignments run, the fragment's catch received
+  the out-of-memory ERROR in ≥ 1 of them (28 of 32 on both builds), a second sweep runs, and
+  nothing else came back but the error, a null (when even the error could not be built) or
+  the host's ordinary out-of-memory failure. **Validated against the unfixed engine:** the
+  sweep's first response is empty — the worker died — and three of the five fail. Also
+  `t/comcon_author_basic.t` `/nestmemory`, the case that found it.
+- **GAP:** The flag restore has no dedicated test — it needs the deadline to fire exactly
+  when the annotation's allocation fails, a window of a few hundred bytes coincident with a
+  timer — and rests on inspection of one branch. The negative control is a MANUAL row in
+  `t/tools/verify-negative-controls.sh` (the fix lives in `quickjs/`, outside what the script
+  reverts). The same patch is carried to the engine fork (`pilgrim-quickjs`); until it is
+  pushed, the fork is behind pilgrim by this fix.
+  **home:** finding F18 · `build_backtrace_pending` · `t/comcon_oom_backtrace.t`'s header.
+- **THREAT:** T1, T11, T13
+- **V:** V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1951,6 +1994,7 @@ assurance case whose findings section is empty has not been built honestly.
 | **F15** | A fragment's TOP-LEVEL expression is evaluated before admission, outside the tenant compartment scope, and unmetered — AND a shared global binding was reassignable across fragments — AND a source could escape the wrapper it was compiled inside, defeating admission entirely | G6.19, G7.11, G7.12, G7.13 | **CLOSED 2026-09-14, ALL THREE PARTS.** Investigating the original finding turned up two defects worse than it, closed alongside it. **G7.11:** an ADMITTED fragment body (`imports:['Promise']`) could do `Promise = evil` and corrupt every co-resident fragment; an UN-ADMITTED fragment (`{}`) could do the same to any intrinsic with zero gating — fixed by freezing every binding on the compartment's globalThis once, at creation. **G7.12:** the wrapper is built by string concatenation, so a source could close it and run script-level code before admission ever ran, even under `imports: []` — fixed by compiling with `JS_EVAL_FLAG_COMPILE_ONLY` and checking the compiled unit's own bytecode is exactly "create one closure, return it" before ever running it. **G7.13, the originally-found defect:** the wrapper's body — where a looping `source` actually runs — had no deadline independent of a worker existing, so it (and a confined invocation, and an admission test that calls its fragment) hung indefinitely at CONFIG PHASE. Fixed by giving comcon_rt a deadline of its own (`jcf->comcon_deadline_ms`), pushed and restored around every place fragment-adjacent code runs on it, installed once at compartment creation rather than re-wired post-fork. **No authority leaked** through any of this — a grant read at top level is `undefined` (`cap.owner` refuses it; every grant is bound to the fragment's future handle and `cur_frag` is 0 there) — but that was `cap.owner` holding for a reason it was not built for, not the reach gate that is supposed to. |
 | **F16** | A fragment lowered to native C (the compiled tier) could CATCH ITS OWN DEADLINE: the interrupt is thrown uncatchable, the interpreter's exception path honours the flag, and maxim's generated catch dispatch never asked — so a compiled `try { for(;;){} } catch(e){}` swallowed the interrupt and ran on, and the hostile form (`for(;;){ try{ for(;;){} } catch(e){} }`) would loop forever | G7.15 | **CLOSED 2026-09-15** (after the §15 signature — see §16). Found by the authoring tier's basic test, whose PARENT fragment caught its sub-fragment's abort on the JIT build only; probed directly (`t/comcon_jit_uncatchable.t`: "SURVIVED the interrupt" on objs_jit, stopped on objs). Fixed in the engine: `JS_IsUncatchableException()` (new public getter) and one guard in the generated catch dispatch, `JIT_CODEGEN_VERSION` 16→17. The S6 AOT arm (F5) never saw this because its runaway probe has no try/catch — the battery tests what a fragment can REACH, and this was what a fragment can REFUSE TO STOP DOING. |
 | **F17** | (a) A WORKER never freed the compartment at exit — `exit_process` tore down the tenant and host runtimes and not `comcon_rt`; (b) the COM node classes (`NginxServer`, the per-module nodes, the upstream classes) had IDs and prototypes in the compartment runtime but NO CLASS DEFINITION there, so a wrapper minted inside a fragment (`listener.serverByName()` under audit) was freed without its finalizer — opaque + 4 KB pool per call, unboundedly, from a fragment | G7.17 | **CLOSED 2026-09-15** (after the §15 signature — see §16). Found by running one new test under ASAN with leak detection ON, then the whole corpus: both were invisible to a corpus that ran `detect_leaks=0`. Fixed: one `ngx_js_comcon_teardown()` for all three exit paths; `ngx_js_http_register_classes` + `ngx_js_upstream_register_classes` moved into `ngx_js_com_register_classes` for every runtime. The corpus now runs leaks-on with a one-line suppression, and `JS_FreeRuntime`'s assertion at worker exit held over 84 files: the invocation paths leak no JS reference. |
+| **F18** | An out-of-memory INSIDE the engine's backtrace annotation freed the pending exception under its own feet: `build_backtrace(ctx, rt->current_exception, …)` held no reference, a failed allocation in it threw, `JS_Throw` released the error being annotated, and the annotation went on to define `stack` on a freed object — a fragment-reachable worker SIGSEGV at the memory allowance; on the same path an uncatchable deadline abort would have lost its flag | G7.19 | **FOUND AND CLOSED 2026-09-15 (v5.115).** Found by the M5.0 commit's gate: `t/comcon_author_basic.t` `/nestmemory` killed the worker 3/3 on this layout and never under ASAN or valgrind, because a sanitizer moves where the allowance bites. Fixed in the engine (`build_backtrace_pending`: hold a reference; if the attempt threw, put the original error and its flag back, minus `stack`), the parser's two sites included. `t/comcon_oom_backtrace.t` sweeps the allowance across 32 alignments of a 1 KB fill so the window is hit whatever the layout; validated against the unfixed engine (the worker dies, three of five fail). The same patch is carried to the engine fork. |
 
 ---
 
@@ -2119,6 +2163,8 @@ signature is never quietly credited with work it did not see.
 | **F17 FOUND AND CLOSED — G7.17; THE SANITIZER CORPUS NOW DETECTS LEAKS (v5.110).** A worker never freed the compartment at exit, and the COM node classes had no definition in the compartment runtime, so a wrapper minted inside a fragment leaked its opaque and pool — unboundedly, under audit. Both invisible to a corpus that ran `detect_leaks=0`; both fixed; the corpus runs leaks-on with one named suppression. | **Strengthens the instrument the signature relied on.** §15 attested a corpus that could not see a leak. It now can, and the first thing it saw was two of ours. A signature over a weaker instrument is not wrong, but a reader relying on "ASAN+UBSAN clean" for leak-freedom should know that claim dates from here. |
 | **`subFragments` BECOMES A LIVE COUNT (v5.111).** The sub-fragment callable is now an object with a finalizer; dropping it releases the slot and refunds the count. A semantic change to a word SPEC §8a stated ("for the life of the worker"), made on the user's decision; pinned by the basic test's hold/drop arm and re-worded across SPEC, OPERATOR_API, MANUAL, SHOWCASE17, THREATS. | **No effect on §15**: the tier post-dates it. Recorded because a documented word changed meaning. |
 | **M5 UNPARKED; STEPS 1–2 (v5.112).** Step 1: the reviewer pack was run in full on `151e348ef`+docs — every gate green (`verified 7 / failed 0 / skipped 2`, sanitizers 0 in `src/js`) EXCEPT two rows caused by a file the authoring session wrote into `t/` while the pack was running (a battery under construction; `check-assurance` saw it uncited, the JIT suite ran it unfinished). That run is therefore not a signer artifact; it is re-run on the committed tree and its transcript attached for the second signer. Step 2: the compiled-tier resource-gate battery (G7.18) stands, and found that async fragments are not lowered at include time. | **Prepares the ground the signature stands on before M5 changes it**: a second signer's reproduction (F11) is what M5's later evidence will be measured against, and the resource-gate battery is the instrument F16 showed was missing. Neither changes what §15 attested. |
+| **M5.0 DECIDED (v5.114).** Class A (byte-scan validation) GO at 19.2×, class B (the token check) NO-GO at 2.5×, rule stated before the numbers (`t/tools/m5-go-nogo.t`); the gas check costs nothing, untyped lowering buys 1.4×; M5.1 is a narrow typed-array/int32 compiler under SR-2 and G7.18. | **No bearing on the signature.** A measurement, not a mechanism; what it narrows is the scope of the codegen G7.18 and the M8 harness were built to gate before it changes anything. |
+| **F18 FOUND AND CLOSED — G7.19 (v5.115).** The gate for M5.0's commit killed a worker: an out-of-memory inside the engine's own backtrace annotation freed the pending exception under its own feet, so a fragment that exhausts its allowance at the right residue crashed the worker — and, on the same path, an uncatchable deadline abort would have lost its flag. Fixed in the engine with a reference held across the annotation and the original error (flag included) restored if the attempt threw; a sweep test hits the window on any layout; validated against the unfixed engine. | **Narrows a claim the signature relied on.** G6.6 (F2: the allowance is a contained refusal) and F16's guarantee (an abort is uncatchable on every tier) both held only when the allowance did not bite inside the annotation itself. The sanitizer corpus could not have found this — a sanitizer moves the point where the limit bites — so the §15 attestation over that corpus never covered this class; the sweep in `t/comcon_oom_backtrace.t` is the instrument that does not depend on layout. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

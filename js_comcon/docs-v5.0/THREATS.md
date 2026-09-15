@@ -195,7 +195,9 @@ generation included — and move only mask AND and expiry min; `allow` asserted 
 `E_CAP_ESCALATE`; the handle is never re-wrapped, G7.16); text-only crossing (JSON both
 ways, exceptions as message + string code, G7.14); nested bounds as a stack (`min()` against
 the deadline and allowance in force, G7.13's addendum; a sub past its deadline aborts the
-whole invocation, uncatchable — on the compiled tier too since F16); nested invocation
+whole invocation, uncatchable — on the compiled tier too since F16, and through an allowance
+hit inside the engine's own error annotation since F18, which also stopped that hit from
+killing the worker); nested invocation
 synchronous and draining nothing (a promise is `E_INVOKE_PENDING`; a sub-fragment's jobs
 are the parent's, run in the host's drain under the parent's identity); mandatory admission
 (`imports` required, `onViolation`/`profile`/`deps`/`identity`/`meter` refused,

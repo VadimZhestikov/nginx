@@ -7441,8 +7441,39 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_obj,
     else
         str = JS_NewString(ctx, (char *)dbuf.buf);
     dbuf_free(&dbuf);
+    if (JS_IsException(str))
+        return; /* out of memory: no 'stack', not an exception-tagged one */
     JS_DefinePropertyValue(ctx, error_obj, JS_ATOM_stack, str,
                            JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+}
+
+/* Add the backtrace to the PENDING exception.  build_backtrace() allocates
+   (the frame strings, the 'stack' string, the property slot); at the memory
+   limit any of those throws, and JS_Throw() releases the pending exception
+   -- the very error object being annotated, whose only reference it may be.
+   Hold a reference across the call; if the annotation attempt threw, the
+   original error (and its uncatchable flag) is put back, minus its 'stack'. */
+static void build_backtrace_pending(JSContext *ctx, const char *filename,
+                                    int line_num, int col_num,
+                                    int backtrace_flags)
+{
+    JSRuntime *rt = ctx->rt;
+    JSValue exc;
+    BOOL uncatchable;
+
+    if (JS_VALUE_GET_TAG(rt->current_exception) != JS_TAG_OBJECT)
+        return;
+    exc = JS_DupValue(ctx, rt->current_exception);
+    uncatchable = rt->current_exception_is_uncatchable;
+    build_backtrace(ctx, exc, filename, line_num, col_num, backtrace_flags);
+    if (JS_VALUE_GET_TAG(rt->current_exception) != JS_TAG_OBJECT ||
+        JS_VALUE_GET_OBJ(rt->current_exception) != JS_VALUE_GET_OBJ(exc)) {
+        JS_FreeValue(ctx, rt->current_exception);
+        rt->current_exception = exc; /* the reference held above */
+        rt->current_exception_is_uncatchable = uncatchable;
+    } else {
+        JS_FreeValue(ctx, exc);
+    }
 }
 
 /* Note: it is important that no exception is returned by this function */
@@ -23022,7 +23053,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
            before if the exception happens in a bytecode
            operation */
         sf->cur_pc = pc;
-        build_backtrace(ctx, rt->current_exception, NULL, 0, 0, 0);
+        build_backtrace_pending(ctx, NULL, 0, 0, 0);
     }
     if (!rt->current_exception_is_uncatchable) {
         while (sp > stack_buf) {
@@ -25449,8 +25480,7 @@ static int js_parse_error_v(JSParseState *s, const uint8_t *ptr, const char *fmt
     int line_num, col_num;
     line_num = get_line_col(&col_num, s->buf_start, ptr - s->buf_start);
     JS_ThrowError2(ctx, JS_SYNTAX_ERROR, fmt, ap, FALSE);
-    build_backtrace(ctx, ctx->rt->current_exception, s->filename,
-                    line_num + 1, col_num + 1, 0);
+    build_backtrace_pending(ctx, s->filename, line_num + 1, col_num + 1, 0);
     return -1;
 }
 
@@ -30004,8 +30034,8 @@ static __exception int js_parse_postfix_expr(JSParseState *s, int parse_flags)
                 /* add the line number info */
                 int line_num, col_num;
                 line_num = get_line_col(&col_num, s->buf_start, s->token.ptr - s->buf_start);
-                build_backtrace(s->ctx, s->ctx->rt->current_exception,
-                                s->filename, line_num + 1, col_num + 1, 0);
+                build_backtrace_pending(s->ctx, s->filename,
+                                        line_num + 1, col_num + 1, 0);
                 return -1;
             }
             ret = emit_push_const(s, str, 0);

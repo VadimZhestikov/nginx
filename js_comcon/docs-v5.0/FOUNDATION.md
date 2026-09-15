@@ -635,6 +635,23 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.115 (in place — F18: an out-of-memory inside the engine's own backtrace annotation freed
+the pending exception; a fragment-reachable worker SIGSEGV at the allowance, closed in the
+engine):** found by the gate for M5.0's commit — `t/comcon_author_basic.t` `/nestmemory` killed
+the worker 3/3 on this layout, never under ASAN or valgrind (a sanitizer moves where the
+allowance bites). The engine defers an error's backtrace when the throw happens in bytecode and
+adds it at the interpreter's exception label by `build_backtrace(ctx, rt->current_exception, …)`,
+holding no reference; the annotation allocates, at the allowance an allocation throws
+out-of-memory, `JS_Throw` releases the error being annotated, and the annotation defines `stack`
+on a freed object. On the same path an uncatchable deadline abort would have lost its flag.
+Fixed with `build_backtrace_pending`: a reference held across the annotation and, if the attempt
+threw, the original error and its flag put back minus `stack`; the parser's two sites use it
+too; `build_backtrace` stores no exception-tagged `stack`. `t/comcon_oom_backtrace.t` sweeps the
+allowance across 32 alignments of a 1 KB fill so the window is hit on any layout (28 of 32 hand
+the catch the error), and was validated against the unfixed engine. ASSURANCE G7.19, F18's
+ledger row, §16; AUDIT_M-SES §2b; THREATS T13's line; a MANUAL negative-control row. The same
+patch is carried to the engine fork.
+
 **v5.114 (in place — M5.0, the go/no-go benchmark: class A GO at 19×, class B NO-GO at 2.5× —
 M5.1's target is the byte-scan shape, not policies):** the measurement the M5 order was built
 to reach. `t/tools/m5-go-nogo.t` (against `objs_jit`, in-process, §2b's controls) measures the

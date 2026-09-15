@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.114 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.115 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,16 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **F18 FOUND BY M5.0's GATE AND CLOSED (2026-09-15, v5.115).** An out-of-memory inside
+>   the engine's own backtrace annotation freed the pending exception under its own feet:
+>   `build_backtrace(ctx, rt->current_exception, …)` held no reference, so a fragment that
+>   exhausts its allowance at the right residue killed the worker (`/nestmemory`, 3/3 on this
+>   layout, never under a sanitizer — a sanitizer moves where the allowance bites); on the
+>   same path an uncatchable abort would have lost its flag. Closed in the engine
+>   (`build_backtrace_pending`: hold a reference; restore the error and its flag if the
+>   attempt threw), with a sweep that hits the window on any layout
+>   (`t/comcon_oom_backtrace.t`), validated against the unfixed engine. ASSURANCE G7.19.
+>   The patch is carried to the engine fork.
 > - **M5.0 DECIDED (2026-09-15, v5.114): class A GO at 19.2×, class B NO-GO at 2.5×.**
 >   `t/tools/m5-go-nogo.t`, rule stated first (`lowered / typed ≥ 3`), `typed` = the
 >   achievable typed-shape bound (gas-checked C walk for bytes; per-char engine access for
