@@ -56,6 +56,8 @@ ROWS=(
 "335dc0956|t/js_com_filter_nongenerator.t|objs|filter with no return dropped the response"
 "c5bf0ceac|t/js_pilgrim_p17_l4_window.t|objs|the L4 window armed no timer, so it was a wait state with no deadline"
 "d5c880cd4|t/comcon_leftover_accounting.t|objs|leftovers spent the next fragment's budget, and kept authority if their own fragment ran next"
+"ffd76ed84|t/comcon_invoke_heap_independence.t|objs|every invocation walked the shared heap, so a peer's memory set its cost"
+"ffd76ed84|t/comcon_fragment_error_report.t|objs|out of memory read as null, and include() errors arrived with no value"
 )
 
 MANUAL=(
