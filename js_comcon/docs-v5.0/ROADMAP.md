@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.107 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.108 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,20 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **THE AUTHORING TIER IS COMPLETE — PHASE 4, THE CLOSE-OUT (2026-09-15, v5.108).** Nothing
+>   new ships. SEMANTICS §3 carries the (AUTHOR) induction step and names F16's class under
+>   assumption (F) — the lowered C must simulate the RESOURCE gates too, which the S6 battery
+>   (what a fragment can reach) cannot see. PERFORMANCE §2d: one nested invocation ≈ 0.59 µs on
+>   top of the outer 0.72 µs — less, as its shape predicts (no enter/leave, posture, settle or
+>   drain). SPEC §8a is normative (eight contract words, three attenuation words, the refusals);
+>   OPERATOR_API §8j, MANUAL §3.8, THREATS T13, SHOWCASE17 §8 (rewritten around what was built,
+>   with its two honest limits), INCREMENT_MLIB §4. Phase 1's `min()` is finally pinned where
+>   nesting exists (a sub asking 3 s inside a 500 ms parent dies at 500 ms; one asking 16 MB
+>   inside 2 MB runs out at ~109 × 16 KB), and a sub-fragment's job is pinned running in the
+>   parent's drain. `verify-negative-controls.sh`: one automated row (phase 3, verified) and
+>   five MANUAL rows with instructions. **Open, listed:** `uses`/`window`/`cosign`/`protocol`
+>   not writable by a sub-fragment; facets not narrowable from inside; depth two; the author
+>   gate under audit mode; sub-fragment slot release.
 > - **THE AUTHORING TIER, PHASE 3 — RE-GRANTING, BY COPY (2026-09-15, v5.107).** A parent
 >   hands its OWN wrappers down (`grants: {name: cap}`) narrowed by data words
 >   (`attenuate: {name: {allow|redact, ttlSeconds}}`); each child is a COPY of the parent's

@@ -458,6 +458,54 @@ across a whole environment rather than one capability. Assembling it here would 
 
 ---
 
+## 8j. `author({subFragments, ttlSeconds?})` — a fragment that authors fragments *(v5.106–v5.107)*
+
+```js
+// the host: a reseller may author up to 8 sub-fragments, for the life of the worker
+var acme = comcon.include(src, {
+    imports: [],
+    grants: { sock:   comcon.mediate(sock, comcon.allow(['address', 'port'])),
+              author: comcon.author({ subFragments: 8 }) } });
+
+// inside the fragment: the same pipeline, from the other side of the membrane
+var sub = author.include('function(req){ return { where: s.address }; }', {
+    imports:   [],                                // mandatory: a sub-fragment is always admitted
+    grants:    { s: sock },                       // the reseller's OWN wrapper, copied
+    attenuate: { s: { redact: ['port'], ttlSeconds: 600 } },   // narrowed: mask AND, expiry min
+    tests:     function (f) { if (typeof f({}).where !== 'string') throw new Error('no address'); },
+    timeoutMs: 200, memoryBytes: 1048576 });     // min() against what is in force
+var r = sub({ id: 41 });                          // JSON in, JSON out; sync; text-only exceptions
+```
+
+**It is not a mediation word and it wraps no host object.** `author()` is a descriptor that
+`include()` grants; the far side is a `NginxComconAuthor` whose whole authority is "run the
+admission pipeline `subFragments` times, as the fragment I was granted to". It is not
+mediatable (a `mediate()`d author descriptor is refused as a grant) and not re-grantable.
+
+**The contract is the host contract's subset that a less-trusted author may write:** `imports`
+(required), `intrinsics`, `checkRequest`, `tests`, `grants`, `attenuate`, `timeoutMs`,
+`memoryBytes`. `deps`, `identity`, `onViolation`, `profile` and `meter` are refused
+(`E_ADMIT_CONTRACT`) — the posture is the parent's, and the bounds are plain numbers here.
+
+**`grants` and `attenuate` — copy, then narrow.** A grant must be a wrapper the parent itself
+holds; the child is a copy of it with the owner changed, and `attenuate` can move exactly two
+things downward: the field mask (`allow: [...]` — a subset of the parent's, else
+`E_CAP_ESCALATE` — or `redact: [...]`) and the expiry (`ttlSeconds`, min). Everything else
+(budget, window, cosignature, glob) is inherited verbatim; any other word is `E_CAP_FLAVOR`; a
+session-typed wrapper is not re-grantable (`E_CAP_ESCALATE`). A stale parent yields a stale
+child — the handle is never re-wrapped, because that would mint a fresh one.
+
+**What crosses is text.** The argument and result are JSON; an exception reaches the parent as
+a new error carrying message and string `code`. A nested call is synchronous (a promise is
+`E_INVOKE_PENDING`) and drains nothing: a sub-fragment's queued jobs are the parent's. A
+sub-fragment past its deadline aborts the whole invocation; past its allowance it throws an
+ordinary exception, as the host boundary does. `subFragments` is spent by admissions only;
+exhaustion is `E_AUTHOR_LIMIT`, and so is nesting deeper than two.
+
+**Reading it back:** `author.subFragments`, `author.used`; `nginx.describeType('NginxComconAuthor')`.
+
+---
+
 ## 8h. `protocol(step…)` — enforced operation order *(v5.90)*
 
 ```js

@@ -181,6 +181,31 @@ administrative-only; schema-hash + content pins close both drift channels (V2, C
 *Residual:* key compromise = its mediations' bounds (rotate = revoke + re-sign; rides
 the same cascade machinery).
 
+### T13 — Reseller amplification (a fragment that authors fragments) *(v5.106–v5.107)*
+*Capabilities:* holds a `comcon.author` capability; writes sub-fragment sources and contracts;
+chooses what to re-grant and how to attenuate; controls what crosses the nested boundary.
+*Attacks:* (i) mint a wrapper wider than its own (re-grant with a field it lacks, or launder a
+stale wrapper into a fresh one); (ii) pass an object across the nested boundary (a closure
+returned or thrown to the parent runs under the parent's identity); (iii) run a
+sub-fragment past the parent's own bounds, or drain the shared job FIFO under the wrong
+identity; (iv) author without admission, or set a posture the host did not choose; (v) spend
+the budget on refusals, or nest without limit.
+*Blocked by:* copy-then-narrow (`ngx_js_socket_narrow` & co. duplicate the parent's opaque —
+generation included — and move only mask AND and expiry min; `allow` asserted as a subset,
+`E_CAP_ESCALATE`; the handle is never re-wrapped, G7.16); text-only crossing (JSON both
+ways, exceptions as message + string code, G7.14); nested bounds as a stack (`min()` against
+the deadline and allowance in force, G7.13's addendum; a sub past its deadline aborts the
+whole invocation, uncatchable — on the compiled tier too since F16); nested invocation
+synchronous and draining nothing (a promise is `E_INVOKE_PENDING`; a sub-fragment's jobs
+are the parent's, run in the host's drain under the parent's identity); mandatory admission
+(`imports` required, `onViolation`/`profile`/`deps`/`identity`/`meter` refused,
+`E_ADMIT_CONTRACT`); `subFragments` spent by admissions only, `E_AUTHOR_LIMIT`; depth capped
+at two and the author kind not re-grantable.
+*Residual:* a sub-fragment's queued jobs run in the parent's trailing drain — bounded by the
+parent's budget and identity, so a reseller pays for its sub-tenant's leftovers; the
+`uses`, `window`, `cosign` and `protocol` words cannot be written by a sub-fragment contract
+(inherited verbatim or refused), which is a limit, not a hole.
+
 ## The two new findings
 
 **TM-1 — Denial-log flooding.** A tenant that *intentionally* triggers millions of

@@ -187,6 +187,28 @@ host handler 87% of stock, one confined call 68% — is the real cost of the bou
 JSON round trip, the compartment enter/leave, the posture and identity bookkeeping, and the
 two drains. That is the number any future tier (including M5) now has to be measured against.
 
+## 2d. The nested invocation, measured *(v5.108)*
+
+The authoring tier (v5.106) adds a second boundary INSIDE the compartment: a parent fragment
+invoking a sub-fragment it authored. Same instrument (`t/tools/confined-invoke-cost.t`, the
+in-process half), one worker, idle compartment; the parent is cached across calls so only the
+invocation is timed.
+
+| in-process, per call | µs |
+|---|--:|
+| host JS function call | 0.046 |
+| confined invocation (host → fragment) | 0.717 |
+| a parent that returns without invoking anything | 0.699 |
+| the same parent invoking one sub-fragment | 1.285 |
+| **⇒ one nested invocation, on top of the outer one** | **≈ 0.59** |
+
+The nested boundary costs LESS than the host boundary, which is what its shape predicts: it
+has the JSON round trip and the identity/deadline/allowance push and pop, and none of the
+rest — no compartment enter/leave, no posture push, no settle loop, no drain (it drains
+nothing by design; a sub-fragment's jobs are the parent's). Two of them in a request cost
+about one host boundary. The per-request half is unchanged by this tier (a request that does
+not author anything pays nothing), so it is not re-measured here.
+
 ---
 
 ## 3. Cost model by enforcement moment

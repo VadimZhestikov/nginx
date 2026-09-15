@@ -5,30 +5,24 @@
 
 ---
 
-## 8. Resellers: your tenant becomes a host — cages nest for free
+## 8. Resellers: your tenant becomes a host — cages nest, and now authoring does too
 
-> **MEASURED 2026-09-14 (v5.98): the first half of that heading is true, the second
-> half is not built — and the code sample below is the half that is not.**
-> `t/comcon_nesting.t` pins the boundary:
+> **MEASURED 2026-09-14 (v5.98), then BUILT 2026-09-15 (v5.106–v5.107).** The first
+> measurement said the heading was half true: ATTENUATION nested without limit (a host
+> could chain `allow(port,address)` → `allow(port)` → `uses()` three levels deep), but
+> AUTHORING did not nest at all — `comcon` read `undefined` inside a fragment, and the
+> S6 gate asserted that as CLOSED, by design. The code sample this section used to show
+> was the half that did not exist.
 >
-> - **ATTENUATION nests, without limit.** A host can build a chain of cages as deep as it
->   likes — `allow(port,address)` → `allow(port)` → `uses()` — each level only narrowing
->   (V4's meet), and hand the innermost to a fragment. Measured three levels deep.
-> - **AUTHORING does not nest at all.** `comcon` and `nginx` both read `undefined` inside a
->   fragment — a real read of the compartment global, not an admission refusal. Declaring
->   `comcon` in `imports` does not conjure it (`imports` whitelists free NAMES, not
->   capabilities), and granting it is refused with **`E_CAP_GRANT`**: what may cross into a
->   compartment is exactly what the host can WRAP, and the kernel operator table is not a
->   C-backed capability.
->
-> So ACME cannot run the code below. Worse for the scenario as written: a fragment reaching
-> `comcon` is something **`t/comcon_mses_gate.t` asserts is CLOSED** — it is an escape, by
-> design. Nesting authoring is therefore not a configuration choice anyone has today; it
-> needs the operators deliberately re-exposed to a confined fragment through a mechanism
-> that does not exist, which is what INCREMENT_MLIB.md §4 calls **"raw operators withheld"**.
->
-> What the platform *can* do today is write the reseller's policy on their behalf — the
-> cages are real and nest properly; only the authorship is centralised.
+> It exists now, and not the way the sample wrote it. The kernel operators are still
+> withheld from a fragment (INCREMENT_MLIB §4's "raw operators withheld" stands); what a
+> fragment can hold is ONE mediated capability, `comcon.author({subFragments: N})`, with
+> ONE operation, `author.include(source, contract)`. The contract carries `imports`
+> (mandatory: admission is not optional for a sub-tenant), `grants` — the reseller's OWN
+> wrappers, copied — and `attenuate` — plain data words (`allow`, `redact`,
+> `ttlSeconds`), because a fragment has no `comcon.*` producers. Pinned by
+> `t/comcon_author_basic.t`, `t/comcon_author_regrant.t` and the depth-2 battery
+> `t/comcon_author_depth2_gate.t` (every S6 probe answers at depth 2 as at depth 1).
 
 **Problem:** ACME (your tenant) resells to *its own* customers. ACME wants to cage
 them; you don't want to know or care.
@@ -36,19 +30,36 @@ them; you don't want to know or care.
 **Today:** either you manage everyone's isolation, or nobody does.
 
 **With COMCON** — a tenant is code; a host is code; they are the same kind of code.
-ACME simply does to its customers what you did to ACME:
+The platform grants ACME an author capability once; from then on ACME does to its
+customers what you did to ACME:
 
 ```js
-// inside ACME's own main.js — no involvement from the platform team:
-const bobs = env();
-grant(bobs, "http", mediate(acmeHttp, routes("/acme/bobs/*")));   // a slice of ACME's own slice
-include("./customers/bobs-flowers.js", acme_policies.customer(bobs));
+// the platform, once: ACME may author up to 50 sub-tenants for the life of the worker
+var acme = comcon.include(acmeSource, {
+    imports: [],
+    grants: { http:   comcon.mediate(srv, comcon.routes('/acme/*')),
+              sock:   comcon.mediate(sock, comcon.allow(['address', 'port'])),
+              author: comcon.author({ subFragments: 50 }) } });
+
+// inside ACME's own fragment — no involvement from the platform team:
+var bobs = author.include(bobsSource, {
+    imports: [],
+    grants:   { http: http, sock: sock },            // ACME's own slice, copied
+    attenuate: { sock: { redact: ['port'], ttlSeconds: 3600 } } });   // and narrowed
 ```
 
-The laws of physics hold automatically — and in v3 they are literally a theorem
-(No-Amplification, `SEMANTICS.md` §3): everything ACME grants its customer was
-evaluated from ACME's own environment, so a sub-tenant can never be more powerful than
-its reseller. Nobody has to review for that; it is not checkable behavior, it is
+Two honest limits of the built thing. A route facet has no meet on the host either, so
+`http` reaches Bob's Flowers as ACME holds it (`/acme/*`), not as `/acme/bobs/*` — the
+narrowing ACME can express is the socket's fields and the lifetime. And a sub-tenant of
+Bob's is not a thing: the depth is capped at two, and an author capability is not itself
+re-grantable.
+
+The laws of physics hold automatically — and they are literally a theorem
+(No-Amplification, `SEMANTICS.md` §3, now with the nested step written down): everything
+ACME grants its customer is a COPY of something ACME held, narrowed — never a fresh
+wrapper minted from a handle, so a sub-tenant of a reseller whose socket was closed
+holds a stale copy, not a laundered live one. A sub-tenant can never be more powerful
+than its reseller. Nobody has to review for that; it is not checkable behavior, it is
 *unexpressible* behavior.
 
 **The point:** multi-level tenancy is not a feature we built — it falls out of the

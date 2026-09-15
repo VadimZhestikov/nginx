@@ -305,6 +305,26 @@ $ comconctl request acme 'grants.http.post: "/acme/api/*"' --reason "checkout v2
 Widening is never self-service (the one law). The host reviews a descriptor diff;
 approval lands as a new epoch of your binding; your generated docs update themselves.
 
+### 3.8 Caging your own customers *(v5.106)*
+
+If the host granted you an `author` capability, you can do to your customers what the host
+did to you — narrower, never wider:
+
+```js
+var bob = author.include(bobSource, {
+    imports: [],                                    // required: your customers are admitted too
+    grants: { sock: sock },                         // only wrappers YOU hold
+    attenuate: { sock: { redact: ['port'], ttlSeconds: 3600 } } });
+var answer = bob({ order: 12 });                     // JSON in, JSON out, synchronous
+```
+
+What you cannot do, and the code you will see: hand over something you do not hold
+(`E_CAP_GRANT`), keep a field the host redacted from you (`E_CAP_ESCALATE`), write an
+attenuation word other than `allow`/`redact`/`ttlSeconds` (`E_CAP_FLAVOR`), skip admission or
+set a posture (`E_ADMIT_CONTRACT`), author more than your `subFragments` (`E_AUTHOR_LIMIT`).
+A customer's `try/catch` cannot save your invocation from its deadline: a sub-fragment that
+outruns it takes you with it, by design. Read `author.used` to see what you have spent.
+
 ---
 
 ## 4. The Policy author's handbook

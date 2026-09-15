@@ -116,15 +116,18 @@ that says "SHIPPED at v5.91" is a record of a prediction that came true, not a c
 - **`std.ops`** (the comconctl verbs as library programs over ops-resource caps,
   FOUNDATION §8a) — not started; the natural step 2, and it needs the ops-resource caps
   first.
-- **"raw operators withheld"** — the governance half. **MEASURED at v5.98** (`t/comcon_nesting.t`):
-  it is not merely unbuilt, it is currently *unreachable by configuration*. `comcon` reads
-  `undefined` inside a fragment, declaring it in `imports` does not conjure it, and granting it is
-  refused with `E_CAP_GRANT` because the operator table is not a C-backed capability. A fragment
-  reaching `comcon` is also something the S6 escape gate asserts is CLOSED. So this needs a new
-  mechanism — a second compartment tier holding `comcon.std.*` without the raw kernel operators —
-  and SHOWCASE17 §8's reseller scenario is the thing waiting on it. Today `comcon.*` is HOST_ROOT-only, so
-  a library user *is* the operator; withholding requires a second compartment for library
-  consumers, which is its own increment.
+- **"raw operators withheld"** — the governance half. **MEASURED at v5.98** (`t/comcon_nesting.t`)
+  and **the second tier BUILT at v5.106–v5.107**, differently from what this entry predicted. The
+  measurement: `comcon` reads `undefined` inside a fragment, declaring it in `imports` does not
+  conjure it, granting it is refused with `E_CAP_GRANT`, and the S6 gate asserts a fragment
+  reaching `comcon` is CLOSED. The build: not `comcon.std.*` re-exposed, but ONE C-backed
+  capability, `comcon.author({subFragments})`, with ONE mediated operation, `author.include()`,
+  reached through the same four-stage admission pipeline the host uses. The raw operators
+  (`env`, `grant`, `mediate`, `bind`, `admit`, `include`) remain withheld — a fragment still
+  cannot name them — so this line stays on the NOT-BUILT list as written: what shipped is the
+  mediated authoring the entry said would need "a second compartment tier", and SHOWCASE17 §8's
+  reseller scenario now runs on it. `std.ops` over ops-resource caps inside a fragment is still
+  not this.
 - **Interceptor certification criteria** — ROADMAP calls interceptors TCB-adjacent because
   they close over capabilities. **In this implementation they do not:** the four flavors are
   inert descriptors interpreted in C, never functions. The criteria become necessary if a

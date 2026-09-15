@@ -635,6 +635,46 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.108 (in place — the authoring tier, phase 4: the close-out — the theorem's nested step,
+the nested cost, the words, the controls):** nothing new ships; what shipped in v5.105–v5.107
+is now stated where a reader looks for it, and every claim names its control.
+
+THE THEOREM. SEMANTICS §3's proof sketch gains the (AUTHOR) case: `ρ_sub` is the parent's
+environment restricted to its grants and narrowed per name by copy-then-narrow, so (MEDIATE)
+per name, (ADMIT) and (EXEC) bound a sub-fragment by `A*(ρ_parent)`; values cross as text, so
+the runtime-passing clause of (EXEC) is vacuous by construction. Assumption (F) — compiler
+faithfulness — now names F16's class: the lowered C must simulate the RESOURCE gates (the
+interrupt, the allowance) as well as the authority gates, and the S6 battery, which asks what
+a fragment can reach, cannot see a failure of the first kind.
+
+THE COST. PERFORMANCE §2d: one nested invocation is ≈ 0.59 µs on top of the outer boundary's
+0.72 µs (`t/tools/confined-invoke-cost.t`, extended) — less than the host boundary, as its
+shape predicts: JSON and the push/pop, no compartment enter/leave, no posture, no settle loop,
+no drain.
+
+THE WORDS. SPEC §8a is the normative statement (the closed set of eight sub-fragment contract
+words, the three attenuation words, the refusals); OPERATOR_API §8j and MANUAL §3.8 are the
+host's and the reseller's views; THREATS T13 is the adversary who holds an author capability;
+SHOWCASE17 §8's reseller scenario is rewritten around what was actually built (with its two
+honest limits: a facet's route glob has no meet, and depth is two); INCREMENT_MLIB §4's "raw
+operators withheld" records that the second tier arrived, and not as `comcon.std.*`.
+
+THE CONTROLS. Phase 1's `min()` on the deadline and the allowance is pinned where nesting
+exists (`t/comcon_author_basic.t` `/nestdeadline`, `/nestmemory`: a sub-fragment asking for
+3 s inside a 500 ms parent is aborted at 500 ms; one asking for 16 MB inside 2 MB runs out at
+~109 × 16 KB); a sub-fragment's queued job is pinned running in the host's drain after the
+parent returns (`/jobs`). `t/tools/verify-negative-controls.sh` gains one automated row —
+`37b3c2057`, phase 3: revert its `src/js` half and `t/comcon_author_regrant.t` fails, verified
+— and five MANUAL rows with exact instructions: phases 1 and 2 (later phases rewrote their
+lines), copy-vs-rewrap, the nested marshal, and F16 (in `quickjs/`, outside what the script
+reverts). AUDIT_M-SES §2b carries F16 and the tier's controls. ASSURANCE G7.14–G7.16's gaps are
+updated, and §16 has the row.
+
+The five-phase plan is complete. What remains open is listed, not implied: `uses`, `window`,
+`cosign`, `protocol` cannot be written by a sub-fragment contract; a facet cannot be
+narrowed from inside; depth is two; the audit-mode probing of the author's foreign-owner
+gate; releasing a sub-fragment's slot.
+
 **v5.107 (in place — the authoring tier, phase 3: re-granting, by copy and never by
 re-wrapping):** a sub-fragment contract may now carry `grants: {name: cap}` and `attenuate:
 {name: {allow|redact: [fields], ttlSeconds}}`. The parent passes the wrapper objects IT was

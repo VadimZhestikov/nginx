@@ -33,11 +33,15 @@
 # outside src/js, and it restores the tree on any exit including Ctrl-C.  If it
 # ever leaves the tree modified, `git checkout -- src/js` is the whole recovery.
 #
-# FOUR ROWS NEED A MANUAL CHECK.  Later commits rewrote the same lines -- the two
-# socket fixes supersede each other, and the numeric sweep collapsed the peer and
-# SSL helpers onto one shared check -- so their inverse patch does not apply to
-# today's tree.  The script names them and says what to do instead; it does not
-# skip them silently.
+# SOME ROWS NEED A MANUAL CHECK (the MANUAL list below).  Later commits rewrote
+# the same lines -- the two socket fixes supersede each other, the numeric sweep
+# collapsed the peer and SSL helpers onto one shared check, the F15 phases and
+# the authoring tier's phases each rewrote the previous one's lines -- so their
+# inverse patch does not apply to today's tree; and a few controls are not a
+# commit revert at all (a one-line change by hand, or a fix in quickjs/, which
+# this script does not touch).  The script names each and says what to do
+# instead; it does not skip them silently.  NO BACKTICKS IN A ROW STRING: the
+# rows are double-quoted, and a backtick there is a command substitution.
 
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
@@ -55,6 +59,7 @@ ROWS=(
 "a321849fa|t/js_com_lb_select.t|objs|balancer with no return pinned peer 0"
 "335dc0956|t/js_com_filter_nongenerator.t|objs|filter with no return dropped the response"
 "c5bf0ceac|t/js_pilgrim_p17_l4_window.t|objs|the L4 window armed no timer, so it was a wait state with no deadline"
+"37b3c2057|t/comcon_author_regrant.t|objs|the authoring tier, phase 3: re-granting by copy-then-narrow (without it a sub-fragment contract's grants are refused, and nothing narrows)"
 "cabd6f4c2|t/comcon_deadline_without_worker.t|objs|comcon_rt had no interrupt handler at all before a worker existed, so config-phase evaluation could hang forever"
 )
 
@@ -69,6 +74,11 @@ MANUAL=(
 "ffd76ed84|t/comcon_invoke_heap_independence.t|__invokeConfined's deadline arithmetic it touched was rewritten by F15 phase 3 (cabd6f4c2), landing the same session"
 "ffd76ed84|t/comcon_fragment_error_report.t|the include() exception-handling lines it touched were rewritten by F15 phase 2's compile-then-check restructuring (1618dce79), landing the same session"
 "0317e8b90|t/comcon_global_binding_freeze.t|the compartment-setup lines it touched (the interrupt-handler install site) were rewritten by F15 phase 3 (cabd6f4c2), landing the same session"
+"8c57ded4b|t/comcon_author_basic.t|the authoring tier, phase 2: its author.include() lines were rewritten by phase 3 (37b3c2057); revert both together, newest first"
+"b75e7d9e5|t/comcon_author_basic.t|phase 1 (the bounds as a stack): its push/pop lines were rewritten by phase 2's stage split (8c57ded4b); by hand, drop the two min() lines in ngx_js_comcon_deadline_push()/mem_push() and /nestdeadline and /nestmemory must fail"
+"by-hand|t/comcon_author_regrant.t|copy-vs-rewrap: replace *child = *op in ngx_js_socket_narrow() with ngx_js_socket_wrap_bounded(op->handle, ...) and the /stale arm must fail (a re-grant from the stale parent comes out fresh)"
+"by-hand|t/comcon_author_basic.t|the nested JSON marshal: return the result value from ngx_js_author_invoke() without the stringify/parse and the returnsFn/toJSON/throws assertions must fail (an object crosses)"
+"by-hand|t/comcon_jit_uncatchable.t|F16 lives in quickjs/ (outside src/js): drop the JS_IsUncatchableException(ctx) guard from quickjs-jit.c's _ex: dispatch, rebuild the lib and objs_jit, and the test must report SURVIVED on objs_jit"
 "1618dce79|t/comcon_wrapper_breakout.t|the JS_EvalFunction()/JS_Call() lines it touched were rewritten by F15 phase 3's deadline push/pop (cabd6f4c2), landing the same session"
 )
 

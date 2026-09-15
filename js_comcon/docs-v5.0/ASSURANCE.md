@@ -1078,14 +1078,18 @@ The primary control, and the one everything else is defence in depth for.
   (with and without the one row an admitted fragment cannot carry), never copied.
 - **EV:** `t/tools/golden-denials.js` — the `E_AUTHOR_LIMIT` row; `t/comcon_v12_denial_codes.t`
   keeps the corpus complete against the enumerator.
-- **GAP:** A sub-fragment's queued jobs run in the parent's drain under the parent's identity —
-  stated, charged to the parent, but not yet pinned by a test. The foreign-owner gates on the
-  author capability and its callables are structural (nothing can carry them to another
-  fragment) and are not probed in audit mode. (Re-granting, which phase 2 left at the trivial
-  case A(sub) = ∅, is G7.16.)
+- **GAP:** The foreign-owner gates on the author capability and its callables are structural
+  (nothing can carry them to another fragment) and are not probed in audit mode.
+  (Re-granting, which phase 2 left at the trivial case A(sub) = ∅, is G7.16.) *Closed at
+  v5.108:* a sub-fragment's queued job is now pinned running in the host's trailing drain after
+  the parent returns, reported as the fragment's unhandled rejection (`/jobs`); and the nested
+  bounds — phase 1's `min()` — are pinned where nesting exists (`/nestdeadline`: a sub-fragment
+  asking 3 s inside a 500 ms parent is aborted at 500 ms; `/nestmemory`: one asking 16 MB inside
+  a 2 MB parent runs out at ~109 × 16 KB). The nested cost is measured (PERFORMANCE §2d:
+  ≈ 0.59 µs on top of the outer boundary's 0.72 µs).
   **home:** ROADMAP POSITION (the five-phase plan) · `ngx_js_author_include`,
   `ngx_js_author_invoke` · the four stage functions above `ngx_js_comcon_include_confined`.
-- **THREAT:** T4, T6, T9
+- **THREAT:** T4, T6, T9, T13
 - **V:** V13
 
 #### G7.15 — compiled code cannot catch what the interpreter cannot catch
@@ -1115,9 +1119,12 @@ The primary control, and the one everything else is defence in depth for.
 - **EV:** `t/comcon_author_basic.t` — the parent-catches-sub-abort case that found it, now
   passing on both builds.
 - **GAP:** The fix is tested through the two forms above and the authoring case; the generated
-  dispatch has no other consumer of the flag. A negative control (revert the guard, watch the
-  hostile form hang) was run by hand while writing the test and is not yet a row in
-  `t/tools/verify-negative-controls.sh`.
+  dispatch has no other consumer of the flag. The negative control (drop the guard, rebuild the
+  lib and objs_jit, the test reports SURVIVED) was run by hand while writing the test; it is a
+  MANUAL row in `t/tools/verify-negative-controls.sh` because the fix lives in `quickjs/`,
+  outside what the script reverts, and an AUDIT_M-SES §2b row. SEMANTICS §3's assumption (F)
+  now names this class: the refinement obligation covers the resource gates, not only the
+  authority gates.
   **home:** finding F16 · `JS_IsUncatchableException` · quickjs-jit.c `_ex:` dispatch.
 - **THREAT:** T6, T9
 - **V:** V13
@@ -1164,11 +1171,15 @@ The primary control, and the one everything else is defence in depth for.
   sub-fragment contract; `routes` and `allowHosts` globs are inherited and have no meet, as on
   the host. A sub-fragment cannot re-grant (it holds no author capability, and the kind is
   not re-grantable), so depth 3 of the No-Amplification argument is vacuous rather than
-  proved. SEMANTICS §3 still states the theorem for one boundary; the induction step is
-  phase 4's.
+  proved. *v5.108:* SEMANTICS §3 now carries the (AUTHOR) case of the induction — `ρ_sub` is
+  the parent's environment restricted to the grants and narrowed per name, so (MEDIATE) per
+  name + (ADMIT) + (EXEC) bound the sub-fragment by `A*(ρ_parent)`; the automated negative
+  control `37b3c2057` (revert phase 3's `src/js` half, `t/comcon_author_regrant.t` fails) is a
+  row in `t/tools/verify-negative-controls.sh`, and the copy-vs-rewrap control is a MANUAL row
+  there (re-wrap the handle in `ngx_js_socket_narrow()`, the `/stale` arm fails).
   **home:** `ngx_js_author_grants` · `ngx_js_socket_narrow` · `ngx_js_outbound_narrow` ·
   `ngx_js_com_facet_copy`.
-- **THREAT:** T4, T6, T9
+- **THREAT:** T4, T6, T9, T13
 - **V:** V13
 
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
@@ -2002,6 +2013,7 @@ signature is never quietly credited with work it did not see.
 | **THE AUTHORING TIER, PHASES 1–2 — G7.14, and G7.13's addendum (v5.105–v5.106).** A fragment can now author fragments: `comcon.author({subFragments: N})` grants a capability whose `include()` runs the SAME admission pipeline the host runs — `comcon.include()` split into four stages on compartment values, two entrances, no second copy — and returns a callable sub-fragment with its own identity, its deadline and allowance nested inside the parent's (phase 1 made both bounds a stack), the parent's posture, and nothing the parent did not hold. Text crosses the nested boundary, never objects; nested invocation is synchronous. The S6 battery answers at depth 2 exactly as at depth 1. | **A second tier the signature never saw.** Nothing it attested changes — the host boundary, admission, the gates — but a NEW boundary exists inside the compartment, and its evidence (G7.14) is dated after §15. A reader relying on the signature for "how many confinement boundaries exist" should read this row first. |
 | **F16 FOUND AND CLOSED — G7.15.** A fragment lowered to native C could catch its own deadline interrupt: the engine throws it uncatchable, the interpreter honours the flag, maxim's generated catch dispatch never asked. Found because the authoring tier's parent caught its sub-fragment's abort on the JIT build only; fixed in the engine (a public getter, one guard, codegen version 17) and pinned on both builds. | **Weakens what the signature attested about the compiled tier (F5, G7.5).** The S6 AOT arm was run and passed, honestly — but its runaway probe has no `try/catch`, so "the tiers agree probe by probe" was true of what the battery ASKED, and the battery did not ask whether a fragment can refuse to stop. Recorded here so the signature is not credited with a property it did not test. |
 | **THE AUTHORING TIER, PHASE 3 — RE-GRANTING (G7.16, v5.107).** A parent re-grants only its own wrappers, by COPY of the opaque with the owner changed and the mask/expiry moved downward; never by re-wrapping the handle, which would launder a fresh wrapper from a stale parent. Both arms agree with the host-side meet. | **Extends the No-Amplification claim (SEMANTICS §3) to a boundary the signature never saw**, by construction rather than by a check; the theorem's text still states one boundary, and its induction step is phase 4's. |
+| **THE AUTHORING TIER, PHASE 4 — THE CLOSE-OUT (v5.108).** SEMANTICS §3 carries the nested induction step and names F16's class under assumption (F); PERFORMANCE §2d measures the nested boundary (≈ 0.59 µs, less than the outer one); SPEC §8a, OPERATOR_API §8j, MANUAL §3.8, THREATS T13, SHOWCASE17 §8 and INCREMENT_MLIB §4 describe what shipped; `t/tools/verify-negative-controls.sh` gains one automated row (phase 3) and five MANUAL rows (phases 1–2, copy-vs-rewrap, the marshal, F16); the nested bounds and the parent-owned jobs are pinned. | **Nothing new is claimed; what was claimed is now stated where a reader looks for it, and its controls are named.** The tier remains a change after the signature (the two rows above); this row records that its documentation and controls are complete, not that it is attested. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

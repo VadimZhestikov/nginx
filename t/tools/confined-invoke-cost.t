@@ -75,6 +75,17 @@ locs.forEach(function (l) { by[l.path] = l; });
 var F = comcon.include("function(a){ return 1; }", { imports: [] });
 var ballast = null;
 
+/* the authoring tier (v5.106): a parent that only returns, and a parent that
+   authors ONE sub-fragment (once, cached) and invokes it per call -- the
+   difference is what a nested invocation costs on top of the outer one */
+var P0 = comcon.include("function(a){ return 1; }",
+                        { imports: [], grants: { author: comcon.author({ subFragments: 1 }) } });
+var P1 = comcon.include(
+    "(function(){ var sub = null; return function(a){" +
+    "  if (!sub) { sub = author.include('function(a){ return 1; }', { imports: [] }); }" +
+    "  return sub({}); }; })()",
+    { imports: [], grants: { author: comcon.author({ subFragments: 1 }) } });
+
 function usPerCall(fn) {
     var t0 = Date.now(), n = 0, dt;
     do {
@@ -94,6 +105,8 @@ by['/micro'].handler = function (r) {
     var o = {
         hostCall: usPerCall(function () { plain({}); }),
         confined: usPerCall(function () { F({}); }),
+        parentOnly: usPerCall(function () { P0({}); }),
+        nested: usPerCall(function () { P1({}); }),
         loaded: ballast !== null
     };
     r.respond(200, {}, JSON.stringify(o));
@@ -126,6 +139,9 @@ my $have_wrk = system('which wrk >/dev/null 2>&1') == 0;
 my $idle = decode_json(body('/micro'));
 diag(sprintf('in-process, idle compartment:   host JS call %.3f us   confined invoke %.3f us',
              $idle->{hostCall}, $idle->{confined}));
+diag(sprintf('in-process, nested (v5.106):    parent alone %.3f us   parent+sub-fragment %.3f us'
+             . '   => one nested invocation ~%.3f us',
+             $idle->{parentOnly}, $idle->{nested}, $idle->{nested} - $idle->{parentOnly}));
 
 my %rps;
 if ($have_wrk) {

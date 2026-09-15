@@ -55,6 +55,9 @@ http {
         location /spin { }
         location /oom { }
         location /uncaught { }
+        location /nestdeadline { }
+        location /nestmemory { }
+        location /jobs { }
         location /late { }
         location /host { }
     }
@@ -191,6 +194,43 @@ var eater = comcon.include(
     "}",
     {imports: ['String'], grants: {author: comcon.author({subFragments: 2})}});
 
+/* THE BOUNDS NEST (phase 1's promise, pinned here where nesting exists).  The
+   parent's own meter is 500 ms and 2 MB; the sub-fragments ask for MORE (3 s,
+   16 MB) and get min(): the spinner is aborted at the parent's deadline, and
+   the allocator runs out at the parent's allowance.  Without the min() in
+   ngx_js_comcon_deadline_push()/mem_push() the sub would get what it asked. */
+var nestDeadline = comcon.include(
+    "function(req){" +
+    "  var spin = author.include('function(){ for (;;) {} }', {imports: [], timeoutMs: 3000});" +
+    "  try { spin(); return { status: 200, body: 'returned' }; }" +
+    "  catch (e) { return { status: 200, body: 'PARENT CAUGHT ' + String(e.message || e) }; }" +
+    "}",
+    {imports: ['String'], grants: {author: comcon.author({subFragments: 1})},
+     meter: comcon.meter({timeoutMs: 500})});
+
+var nestMemory = comcon.include(
+    "function(req){" +
+    "  var eat = author.include(" +
+    "    'function(){ var a = []; try { for (var i = 0; i < 1500; i++) { a.push(new Array(1024).fill(0)); } return \"allocated \" + a.length; } catch (e) { return \"oom at \" + a.length; } }'," +
+    "    {imports: ['Array'], memoryBytes: 16777216});" +
+    "  return { status: 200, body: eat() };" +
+    "}",
+    {imports: [], grants: {author: comcon.author({subFragments: 1})},
+     meter: comcon.meter({memoryBytes: 2097152})});
+
+/* A SUB-FRAGMENT'S QUEUED JOB IS THE PARENT'S JOB.  The sub-fragment queues a
+   microtask that throws and returns synchronously; nothing runs it inside the
+   nested frame (which drains nothing), so the host's trailing drain runs it
+   after the PARENT returns, under the parent's identity, and reports it the
+   way it reports any fragment's unhandled rejection. */
+var jobber = comcon.include(
+    "function(req){" +
+    "  var q = author.include('function(){ Promise.resolve().then(function(){ throw new Error(\"subjob-marker\"); }); return 7; }'," +
+    "                         {imports: ['Promise', 'Error']});" +
+    "  return { status: 200, body: 'parent returned ' + q() };" +
+    "}",
+    {imports: [], grants: {author: comcon.author({subFragments: 1})}});
+
 /* a refusal the parent does not catch reaches the host with its code intact */
 var careless = comcon.include(
     "function(req){" +
@@ -203,7 +243,8 @@ var careless = comcon.include(
 for (var i = 0; i < locs.length; i++) {
     (function (path) {
         var run = { '/basic': parent, '/spin': spinner, '/oom': eater,
-                    '/uncaught': careless }[path];
+                    '/uncaught': careless, '/nestdeadline': nestDeadline,
+                    '/nestmemory': nestMemory, '/jobs': jobber }[path];
         if (run) {
             locs[i].handler = function (req) {
                 var t0 = Date.now();
@@ -246,7 +287,7 @@ for (var i = 0; i < locs.length; i++) {
 }
 JS
 
-$t->try_run('no js module')->plan(43);
+$t->try_run('no js module')->plan(49);
 
 sub body { my ($raw) = @_; $raw =~ s/^.*?\r\n\r\n//s; return $raw; }
 sub js   { my ($raw) = @_; my $o; eval { $o = decode_json(body($raw)); 1 }
@@ -330,6 +371,30 @@ like($unc, qr/^HOST CAUGHT \d+ms code=E_AUTHOR_LIMIT /,
    'a refusal the parent does not catch reaches the host with e.code intact');
 like($unc, qr/sub-fragment budget \(subFragments: 1\) is spent \[E_AUTHOR_LIMIT\]/,
    '... and with its message and bracketed code, so an error log carries it');
+
+###############################################################################
+# the bounds nest (phase 1), pinned where nesting exists
+
+my $nd = body(http_get('/nestdeadline'));
+diag("nestdeadline: $nd");
+like($nd, qr/^HOST CAUGHT (\d+)ms/, 'a sub-fragment asking for 3 s inside a 500 ms parent is aborted');
+if ($nd =~ /^HOST CAUGHT (\d+)ms/) {
+    cmp_ok($1, '<', 1500, "... at the PARENT's deadline (${1}ms), not the sub-fragment's request");
+} else { fail('no timing'); }
+
+my $nm = body(http_get('/nestmemory'));
+diag("nestmemory: $nm");
+like($nm, qr/^oom at \d+$/, 'a sub-fragment asking for 16 MB inside a 2 MB parent runs out at the parent\'s allowance');
+if ($nm =~ /^oom at (\d+)$/) {
+    cmp_ok($1, '<', 400, '... before it could allocate what 16 MB would have allowed (16 KB per array; 2 MB is ~128)');
+} else { fail('no count'); }
+
+my $jb = body(http_get('/jobs'));
+diag("jobs: $jb");
+is($jb, 'parent returned 7', 'a sub-fragment that queues a job and returns synchronously returns');
+my $log = $t->read_file('error.log');
+like($log, qr/a fragment's queued job threw after the fragment returned \(unhandled rejection\): Error: subjob-marker/,
+     '... and its job ran in the host\'s trailing drain after the PARENT returned, reported as the fragment\'s');
 
 my $late = js(http_get('/late'));
 diag("late: " . encode_json($late));

@@ -193,6 +193,22 @@ quotation's free-name manifest** (least-authority realization, §4.4) — then E
 - *(EXEC):* a bound fragment's steps are evaluations under `ρ = B(n)` ⟹ IH bounds it by
   `A*(B(n))`; values passed in at runtime were held by their passers (IH on the caller)
   ⟹ globally, authority flows only along held references. ∎ (sketch)
+- *(AUTHOR) — the nested boundary (v5.106–v5.107), the induction step made concrete.* A
+  fragment holding an `author` capability evaluates `author.include(src, {grants: G,
+  attenuate: A})` and obtains a callable `sub`. The environment the sub-fragment is
+  admitted under is `ρ_sub = { name ↦ narrow(ρ_parent(name), A(name)) : name ∈ G }` — every
+  value in it is a COPY of a value the parent held (never a fresh mint from a handle, so a
+  stale value copies stale), narrowed by the only two moves permitted (`allow`/`redact` on
+  the field mask, AND with the subset asserted; `ttlSeconds` on the expiry, min). Therefore
+  `A*(ρ_sub) ⊆ A*(ρ_parent)` by (MEDIATE) applied per name; admission is (ADMIT), mandatory;
+  and an invocation of `sub` is (EXEC) under `ρ_sub`, so IH bounds it by `A*(ρ_sub)`. Values
+  crossing in and out are TEXT (JSON), so no capability is passed at runtime in either
+  direction — the "values passed in at runtime were held by their passers" clause of (EXEC) is
+  vacuous here by construction rather than by trust — and an exception crosses as message
+  and code only. Clause (c) holds because the sub-fragment inherits the parent's posture and
+  cannot set one, and holds no bind-capable handle. The depth is capped and an `author`
+  capability is not itself re-grantable, so the induction has exactly one nested step today;
+  nothing in the argument depends on that cap.
 
 **Corollaries — the worked examples of §4 are instances:** closure mode is clause (a)
 applied twice along T ≤ P ≤ B ≤ A; quotation mode is `A(q) = ∅` plus realize-under-ρ_R
@@ -208,7 +224,14 @@ applied twice along T ≤ P ≤ B ≤ A; quotation mode is `A(q) = ∅` plus rea
 - **(F) Compiler faithfulness** — the theorem is proved for the interpreted (stage-0)
   semantics. Compile-through preserves it **iff** maxim's lowering is a refinement of
   the mediated semantics along the provenance links: *the lowered C must simulate every
-  MEDIATE/NAME gate it erased.* That is the M8 gate, stated precisely.
+  MEDIATE/NAME gate it erased.* That is the M8 gate, stated precisely. **F16 (v5.106) is a
+  measured instance of (F) failing on a gate that is not a MEDIATE/NAME gate at all:** the
+  deadline's interrupt is thrown uncatchable, the interpreter's exception path honours the
+  flag, and maxim's generated catch dispatch did not — so a compiled fragment could catch
+  its own deadline and run on. The refinement obligation therefore covers the RESOURCE
+  gates (the interrupt, the allowance) as well as the authority gates; the S6 battery asks
+  what a fragment can reach, not what it can refuse to stop doing, and only a probe of the
+  second kind found this.
 
 **Slogan (Principle 8):** soundness is stage-independent; staging is purely a
 performance property. Moving a check earlier never changes what is allowed — only what

@@ -272,6 +272,48 @@ wasm2c-emitted**), and write guards where a lower tier stores into a declared-ty
 shared slot (the type boundary — `Number.isSafeInteger` for `int` slots). Low
 single-digit %; M7 measures.
 
+### 8a. The authoring tier: a fragment that authors fragments *(v5.106–v5.107)*
+
+A second confinement boundary INSIDE the compartment. `comcon.author({subFragments: N,
+ttlSeconds?})` is a host-side descriptor that `include()` grants like any capability
+(descriptor kind 4; nothing crosses — the compartment side is built from two numbers).
+Inside the fragment it is a `NginxComconAuthor` with one operation:
+
+```
+author.include(source, {imports, intrinsics?, checkRequest?, tests?,
+                        grants?, attenuate?, timeoutMs?, memoryBytes?})  →  callable
+```
+
+**Normative:**
+
+- The sub-fragment is admitted by the SAME pipeline as a host fragment (the four stages of
+  `comcon.include`, reached from a second entrance) and is always admitted: `imports` is
+  mandatory. The closed set of sub-fragment contract words is exactly the eight above; every
+  other host contract word (`deps`, `identity`, `onViolation`, `profile`, `meter`) is refused,
+  `E_ADMIT_CONTRACT`.
+- `grants` accepts only the parent's OWN wrappers (`NginxSocket`, `NginxOutbound`,
+  `NginxComFacet`). Each child is a COPY of the parent's opaque with the owner changed;
+  `attenuate` may write exactly three data words — `allow: [fields]`, `redact: [fields]`,
+  `ttlSeconds: n` — and may move only the field mask (AND; `allow` must be a subset of what the
+  parent holds, else `E_CAP_ESCALATE`) and the expiry (min). Any other word, an inapplicable one
+  (a mask on a non-socket, a ttl on a facet), or an unknown field is `E_CAP_FLAVOR`; a plain
+  object, an author capability, or a wrapper that is not the parent's own is `E_CAP_GRANT`; a
+  session-typed wrapper is `E_CAP_ESCALATE`. The handle is never re-wrapped: a stale parent
+  yields a stale child.
+- What crosses the nested boundary is TEXT: the argument in and the result out are
+  JSON-marshalled; an exception arrives as a fresh error with its message and string `code`.
+- A nested invocation is synchronous and drains nothing; a promise result is
+  `E_INVOKE_PENDING`. Its deadline and allowance are `min()` of what the sub-fragment asks and
+  what is in force. A sub-fragment past its deadline aborts the whole invocation
+  (uncatchable); past its allowance it raises an ordinary exception, as at the host boundary.
+  The posture is the parent's. A sub-fragment's queued jobs are the parent's.
+- `subFragments` is spent by admissions only, for the life of the worker; exhaustion, and a
+  sub-fragment authoring sub-fragments (depth is capped at two; the author kind is not
+  re-grantable), is `E_AUTHOR_LIMIT`.
+- The S6 escape battery answers at depth 2 exactly as at depth 1 (`t/comcon_author_depth2_gate.t`
+  is the standing gate; `globalThis` is a denied name, so the admissible composition of the
+  battery runs at both depths and the full battery is shown refused identically).
+
 ---
 
 ## 9. WASM: the border crossing, never the interior
