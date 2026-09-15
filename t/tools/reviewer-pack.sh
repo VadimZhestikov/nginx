@@ -182,7 +182,10 @@ else
         | sed 's/^/        /' | tee -a "$LOG"
 
     head2 "5. Negative controls (do the fixes' tests actually fail without the fix?)"
-    bash t/tools/verify-negative-controls.sh >"$OUT/controls.log" 2>&1
+    # a row that does not hold keeps its prove -v output and the test's own
+    # directory under the pack's output, so a flake leaves evidence, not a verdict
+    VNC_EVIDENCE="$OUT/controls-evidence" \
+        bash t/tools/verify-negative-controls.sh >"$OUT/controls.log" 2>&1
     rc=$?
     gate "every automated negative control holds" "$rc" \
          "$(grep -E '^verified [0-9]+' "$OUT/controls.log" | tail -1)"

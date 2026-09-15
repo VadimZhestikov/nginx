@@ -1041,6 +1041,28 @@ int  js_jit_get_threshold(void);
  *         11=get_var_ref_check TDZ fix: emits UNINITIALIZED check (generated C changes).
  *         12=P51: OP_add warm vt_hints + speculative INT add (array layout change).
  *         13=P52: put/set_var_ref* old-value INT hint: skip JS_VALUE_HAS_REF_COUNT. */
+/*
+ * Warm-recompile VALUE SPECULATION (pilgrim, 2026-09-15): OFF.
+ *
+ * The warm recompile (P45b and after) re-emits a function with the value tags
+ * the cold run observed, and acts on them without an exit.  Read site by
+ * site, a miss -- the value is not what was observed -- is handled like this:
+ *   P45b get_field    IC hit: JS_VALUE_GET_INT with no tag check (a garbage
+ *                     int); IC miss: 0 substituted for the value
+ *   P46  get_array_el 0 substituted for the value
+ *   P49  get_var_ref  JS_VALUE_GET_INT of the cell with no tag check
+ *   P51  add          JS_VALUE_GET_INT of both operands with no tag check
+ *   P52  put_var_ref  the old value is not freed (a leak when it was an object)
+ *   P48  put_field    sound: the write value's type comes from the codegen's
+ *   P50  put_array_el own stack types, the hint only skips a box
+ * A hint is not a proof, and without a deoptimisation to the boxed code there
+ * is no sound way to act on one.  With this 0 the codegen is handed no hints
+ * (every site takes its observed/boxed path, which is exact) and no warm
+ * recompile job is queued.  The half-typed bit-op rule (M5.1a) keeps an int
+ * accumulator typed without any of this.  Set to 1 only with a deopt in place.
+ */
+#define JIT_WARM_VALUE_SPECULATION 0
+
 #define JIT_CODEGEN_VERSION 18u  /* M5.1a: int32 results for half-typed bit ops; integer typed-array element reads (was 17: catch dispatch honours the uncatchable flag) */
 void js_jit_set_max_bc_len(int n);
 int  js_jit_get_max_bc_len(void);

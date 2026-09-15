@@ -635,6 +635,24 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.121 (in place — evidence from a failed control; warm speculation off; the sweep
+widened):** three items of the same plan. (1) `verify-negative-controls.sh` keeps every run's
+`prove -v` output, and the test's own directory when a row fails to hold or cannot run, under
+`$VNC_EVIDENCE` (the pack sets it inside its output); a row that holds cleans up. The broadcast
+fuzz asserts that at least one worker RECEIVED a broadcast — the flake that spoiled two
+signable pack runs (the UBSAN misaligned-read control "not holding" because no worker received
+anything) is now a failing assertion carrying the per-worker counts. (2) Every warm-recompile
+value speculation in the vendored engine is off behind `JIT_WARM_VALUE_SPECULATION 0`, after
+reading each site: P45b `get_field` and P46 `get_array_el` substitute 0 on a miss (P45b's IC
+hit reads with no tag check), P49 `get_var_ref` and P51 `add` read a value with no tag check,
+P52 `put_var_ref` skips freeing the old value; P48 and P50 are sound (the codegen's own stack
+types). The codegen is handed no hints and no warm job is queued. Unreachable here twice over;
+carried to the fork. (3) `t/comcon_oom_sweep.t` has eleven shapes: F18's at a 16-byte step
+over 64 alignments, include inside a parent that filled its allowance (mostly `null` — the
+error itself unbuildable), an admission `tests` that fills memory (refused, coded), a rejected
+promise's reaction filling memory in the settle loop (the fragment's `queued` returns); 80
+assertions, both tiers, no worker died. Not swept: the stream surface. ASSURANCE G7.21, §16.
+
 **v5.120 (in place — the negative-control debt paid; every row automated):** twenty rows both
 signatures accepted as manual — inverse patches that no longer applied because later commits
 rewrote the lines, controls that were never a commit revert, and fixes in `quickjs/` outside
@@ -649,7 +667,7 @@ commit rows, rebuilds the engine for a `quickjs/` patch, runs a leak row under `
 looking for the named frame, treats a skipped test as INCONCLUSIVE, and fails the run when a
 patch no longer applies — so the debt cannot accumulate silently again. F19's row is a commit
 revert over both binaries. The reviewer pack prints INCONCLUSIVE rows instead of a MANUAL list.
-**29 rows, 29 verified** on the first full run (three re-crafted on the way: a patch that
+**30 rows, 30 verified** on the first full run (three re-crafted on the way: a patch that
 commented a call out and hit `-Werror=unused-function`; F18's, which needs BOTH halves of the
 fix absent — the `stack` guard alone keeps the freed object untouched; and copy-vs-rewrap,
 whose by-hand row COULD NOT FAIL: the `/stale` arm never reused the closed socket's slot, so a

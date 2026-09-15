@@ -251,7 +251,7 @@ for (var li = 0; li < locs.length; li++) {
 }
 JS
 
-$t->try_run('no js module')->plan(16);
+$t->try_run('no js module')->plan(17);
 
 sub jget {
     my ($path) = @_;
@@ -360,6 +360,18 @@ my @resolved = grep { $check{$_}{resolves} } keys %check;
 
 diag "  worker $_ received " . ($check{$_}{received} // '?') . " broadcast socket(s)"
     for sort keys %check;
+# THE RECEIVE PATH MUST HAVE RUN.  Twice a reviewer-pack run reported the
+# UBSAN misaligned-header control for this file as "does not hold": the
+# reverted read went unreported because no worker RECEIVED anything in that
+# run, and this file said nothing about it -- the counts above were printed
+# and thrown away.  So it is asserted: a run in which the fleet delivered no
+# broadcast is a failed run, with the per-worker counts in the diag above.
+my $received = 0;
+$received += ($check{$_}{received} || 0) for keys %check;
+cmp_ok($received, '>', 0,
+       'the receive path was reached: at least one worker received a broadcast socket')
+    or diag 'no worker received anything: every receive-path assertion here, and the '
+          . 'misaligned-read negative control on this file, is vacuous in this run';
 diag sprintf("stale handles parked on %d worker(s), checked on %d, resolving after broadcast: %d",
              scalar @ready, scalar keys %check, scalar @resolved);
 diag "  worker $_ stale handle now reads: $check{$_}{addr}"

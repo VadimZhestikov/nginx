@@ -2467,6 +2467,10 @@ void js_jit_schedule_warm_recompile(JSContext *ctx, JSFunctionBytecode *b)
 {
     js_jit_fb_set_warm_done(b); /* prevent re-entry */
 
+    /* JIT_WARM_VALUE_SPECULATION 0: a warm recompile would emit the cold
+     * code again (the codegen is handed no hints), so do not queue one. */
+    if (!JIT_WARM_VALUE_SPECULATION) return;
+
     uint64_t bc_hash = js_jit_fb_get_bc_hash(b);
     if (!bc_hash) return;
 
@@ -9594,7 +9598,10 @@ static int js_jit_gen_c(JSFunctionBytecode *b, JSJITCodeBuf *cb,
     if (n_pv > 0 && n_pv <= 0xFFFF)
         js_jit_fb_set_n_pv(b, (uint16_t)n_pv); /* P52 */
     /* P45b: read val_tag hints set by js_jit_schedule_warm_recompile(). */
-    const uint8_t *vt_hints = js_jit_fb_get_vt_hints(b);
+    /* JIT_WARM_VALUE_SPECULATION 0: hand the codegen no hints -- every site
+     * takes its observed/boxed path, which is exact (see quickjs-jit.h). */
+    const uint8_t *vt_hints = JIT_WARM_VALUE_SPECULATION
+                              ? js_jit_fb_get_vt_hints(b) : NULL;
 
     gen_preamble(cb, bc_hash, var_count, arg_count, stack_size,
                  closure_var_count, cpool_count, fname_out, fname_sz,

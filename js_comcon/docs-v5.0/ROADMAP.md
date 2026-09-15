@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.120 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.121 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -61,6 +61,18 @@
 >   unmoved (its loop is a call and a `>>>`), and its "typed bound" was lowered JS — corrected
 >   in PERFORMANCE §2f. By the M5.0 rule the remaining 2.1× (boxing and checks) is NOT worth a
 >   further cut: **M5.1 is complete as measured.** ASSURANCE G7.20.
+> - **EVIDENCE FROM A FAILED CONTROL; WARM SPECULATION OFF; THE SWEEP WIDENED (2026-09-15,
+>   v5.121).** The controls script keeps `prove -v` output and the test's directory when a row
+>   fails to hold, and the broadcast fuzz asserts a worker received a broadcast, so the flake
+>   that spoiled two pack runs is a failing assertion with per-worker counts. Every warm
+>   value speculation in the engine is off behind `JIT_WARM_VALUE_SPECULATION 0` — read site
+>   by site, three read with no tag check on a miss, one substituted 0, one leaked; the two
+>   write sites were sound; unreachable here, carried to the fork. The residue sweep has
+>   eleven shapes (F18's at a 16-byte step, include inside a full parent, an admission
+>   `tests` that fills memory, a rejected promise's reaction), 80 assertions, no worker died;
+>   the stream surface stays unswept. F2's leak half has a DESIGN awaiting a decision
+>   (per-fragment retained accounting, amortized GC correction, a `retainedBytes` word and an
+>   `E_MEM_RETAINED` refusal) — a mechanism and a vocabulary word, so not built unasked.
 > - **THE NEGATIVE-CONTROL DEBT PAID (2026-09-15, v5.120).** Twenty rows both signatures had
 >   accepted as manual are maintained reverse patches under `t/tools/controls/` — each the
 >   smallest change that brings its defect back — verified by the same script as the commit

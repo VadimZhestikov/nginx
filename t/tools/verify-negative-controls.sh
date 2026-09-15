@@ -128,41 +128,67 @@ rebuild() {
     return 0
 }
 
-# run $1=test $2=builddir $3=expect ; echo PASS, FAIL or SKIP
+# EVIDENCE.  A control that does not hold, or cannot run, used to leave nothing
+# behind but a verdict: the broadcast-fuzz flake spoiled two signable pack runs
+# that way, with its receive counts printed by the test and thrown away here.
+# Every run's `prove -v` output now lands in $EVID/<row>-<phase>.log, and the
+# test's own directory (TEST_NGINX_LEAVE) is kept there when the row FAILS to
+# hold or is INCONCLUSIVE; a row that holds cleans its evidence up.
+EVID=${VNC_EVIDENCE:-/tmp/vnc-evidence}
+mkdir -p "$EVID"
+
+# run $1=test $2=builddir $3=expect $4=evidence-tag ; echo PASS, FAIL or SKIP
 run_test() {
-    local t="$1" d="$2" expect="${3:-fail}" out first
+    local t="$1" d="$2" expect="${3:-fail}" tag="${4:-run}" out first started
     first=${d%%+*}
+    started=$(date +%s)
+    export TEST_NGINX_LEAVE=1
+    local log="$EVID/$tag.log" verdict
     case "$expect" in
     leak:*)
         # the defect is a LEAK: a report naming the symbol must appear
         rm -f /tmp/vnc-asan.*
         LSAN_OPTIONS="suppressions=$PWD/t/tools/lsan.supp" \
         ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/vnc-asan" \
-            TEST_NGINX_BINARY="$PWD/$first/nginx" prove "$t" >/dev/null 2>&1
+            TEST_NGINX_BINARY="$PWD/$first/nginx" prove -v "$t" >"$log" 2>&1
+        cat /tmp/vnc-asan.* >>"$log" 2>/dev/null
         if cat /tmp/vnc-asan.* 2>/dev/null | grep -q "${expect#leak:}"; then
-            echo FAIL       # the named leak is present == the defect is present
+            verdict=FAIL    # the named leak is present == the defect is present
         else
-            echo PASS
+            verdict=PASS
         fi
-        return
+        ;;
+    *)
+        if [ "$first" = objs_ubsan ]; then
+            # this row's control is a SANITIZER finding, not a failing assertion
+            rm -f /tmp/vnc-ubsan.*
+            UBSAN_OPTIONS="log_path=/tmp/vnc-ubsan:halt_on_error=0" \
+                TEST_NGINX_BINARY="$PWD/$first/nginx" prove -v "$t" >"$log" 2>&1
+            cat /tmp/vnc-ubsan.* >>"$log" 2>/dev/null
+            if cat /tmp/vnc-ubsan.* 2>/dev/null | grep -q "src/js"; then
+                verdict=FAIL   # a finding in src/js == the defect is present
+            else
+                verdict=PASS
+            fi
+        else
+            TEST_NGINX_BINARY="$PWD/$first/nginx" prove -v "$t" >"$log" 2>&1
+            if grep -qi "skipped:" "$log"; then verdict=SKIP
+            elif grep -q "^Result: PASS" "$log"; then verdict=PASS
+            else verdict=FAIL; fi
+        fi
         ;;
     esac
-    if [ "$first" = objs_ubsan ]; then
-        # this row's control is a SANITIZER finding, not a failing assertion
-        rm -f /tmp/vnc-ubsan.*
-        UBSAN_OPTIONS="log_path=/tmp/vnc-ubsan:halt_on_error=0" \
-            TEST_NGINX_BINARY="$PWD/$first/nginx" prove "$t" >/dev/null 2>&1
-        if cat /tmp/vnc-ubsan.* 2>/dev/null | grep -q "src/js"; then
-            echo FAIL          # a finding in src/js == the defect is present
-        else
-            echo PASS
-        fi
-        return
-    fi
-    out=$(TEST_NGINX_BINARY="$PWD/$first/nginx" prove "$t" 2>&1)
-    if echo "$out" | grep -qi "skipped:"; then echo SKIP; return; fi
-    if echo "$out" | grep -q "^Result: PASS"; then echo PASS; else echo FAIL; fi
+    # the test's own directory (kept by TEST_NGINX_LEAVE), moved next to the log
+    local dir
+    for dir in $(find /tmp -maxdepth 1 -name 'nginx-test-*' -newermt "@$started" 2>/dev/null); do
+        mv "$dir" "$EVID/$tag.$(basename "$dir")" 2>/dev/null
+    done
+    echo "$verdict"
 }
+
+# a row that holds needs no evidence kept; one that does not keeps all of it
+evidence_drop() { rm -rf "$EVID/$1"-*; }
+evidence_note() { echo "    evidence: $EVID/$1-*"; }
 
 pass=0; fail=0; skipped=0
 
@@ -181,11 +207,14 @@ check_row() {
         fi
     done
 
+    evidence_drop "$id"
+
     # 1. with the fix: the test must pass, or nothing below means anything
     rebuild "$dir" 0 || { echo "    INCONCLUSIVE: rebuild failed (see /tmp/vnc-build.log)"; fail=$((fail + 1)); return; }
-    got=$(run_test "$test" "$dir" "$expect")
+    got=$(run_test "$test" "$dir" "$expect" "$id-with")
     if [ "$got" != PASS ]; then
         echo "    INCONCLUSIVE: the test does not pass WITH the fix in place ($got)."
+        evidence_note "$id"
         fail=$((fail + 1)); return
     fi
     echo "    with the fix    : PASS"
@@ -196,19 +225,22 @@ check_row() {
         restore; fail=$((fail + 1)); return
     fi
     rebuild "$dir" "$engine" || { echo "    INCONCLUSIVE: rebuild without the fix failed"; restore; rebuild "$dir" "$engine"; fail=$((fail + 1)); return; }
-    got=$(run_test "$test" "$dir" "$expect")
+    got=$(run_test "$test" "$dir" "$expect" "$id-without")
     restore
     rebuild "$dir" "$engine"
 
     if [ "$got" = FAIL ]; then
         echo "    without the fix : FAIL   <- the control holds"
+        evidence_drop "$id"
         pass=$((pass + 1))
     elif [ "$got" = SKIP ]; then
         echo "    INCONCLUSIVE: the test skipped itself without the fix"
+        evidence_note "$id"
         fail=$((fail + 1))
     else
         echo "    without the fix : PASS   <- THE CONTROL DOES NOT HOLD."
         echo "    The row claims this test catches the defect.  It does not."
+        evidence_note "$id"
         fail=$((fail + 1))
     fi
 }

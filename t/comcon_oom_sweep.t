@@ -58,8 +58,10 @@ my $jit    = "$root/objs_jit/nginx";
 plan(skip_all => "no interpreter build objs/nginx") unless -x $interp;
 plan(skip_all => "no JIT build objs_jit/nginx")     unless -x $jit;
 
-my @SHAPES = qw(catch finally generator async nested marshal catch_alloc);
-my %CAUGHT_EXPECTED = map { $_ => 1 } qw(catch finally generator async nested);
+my @SHAPES = qw(catch finally generator async nested marshal catch_alloc
+                catch_fine nested_include admit_tests reject_job);
+my %CAUGHT_EXPECTED = map { $_ => 1 } qw(catch finally generator async nested catch_fine);
+my %ALIGNMENTS = (catch_fine => 64);   # 16-byte step; every other shape 32 x 32 bytes
 
 # per arm: 3 per shape (answers, allowed, tier) + 1 per shape with a catch;
 # then the two logs
@@ -119,6 +121,36 @@ S.marshal = function (mem) { return comcon.include(
     "  return { n: a.length, a: a }; }",
     { imports: [], meter: comcon.meter({ memoryBytes: mem }) }); };
 
+/* F18's own shape again at a FINER step: 64 alignments 16 bytes apart, so a
+   window narrower than the 32-byte step above is not stepped over */
+S.catch_fine = S.catch;
+
+/* the allowance biting INSIDE include: the parent fills memory, then authors
+   a sub-fragment -- compile and admission run under the parent's allowance */
+S.nested_include = function (mem) { return comcon.include(
+    "function(req){ var a = [];" +
+    "  try { for (;;) { a.push('x'.repeat(1024)); } } catch (e) {}" +
+    "  try { var s = author.include('function(){ return 1; }', {imports: []}); return 'included ' + s(); }" +
+    "  catch (e2) { return e2 === null ? 'null' : 'caught ' + ('' + e2.message); } }",
+    { imports: [], grants: { author: comcon.author({ subFragments: 1 }) },
+      meter: comcon.meter({ memoryBytes: mem }) }); };
+
+/* the allowance biting inside an admission TEST: the sub-fragment's contract
+   carries a tests function that fills memory; it runs at include time */
+S.admit_tests = function (mem) { return comcon.include(
+    "function(req){" +
+    "  try { var s = author.include('function(){ return 2; }', {imports: [], tests: 'function(f){ var a = []; for (;;) { a.push(\"x\".repeat(1024)); } }'}); return 'included ' + s(); }" +
+    "  catch (e) { return e === null ? 'null' : 'caught ' + ('' + e.message); } }",
+    { imports: [], grants: { author: comcon.author({ subFragments: 1 }) },
+      meter: comcon.meter({ memoryBytes: mem }) }); };
+
+/* the allowance biting inside a REJECTED promise's reaction: the job runs in
+   the host's settle loop, after the fragment returned, and throws out of it */
+S.reject_job = function (mem) { return comcon.include(
+    "function(req){ Promise.reject(new Error('r')).catch(function(){ var a = [];" +
+    "  for (;;) { a.push('x'.repeat(1024)); } }); return 'queued'; }",
+    { imports: ['Promise', 'Error'], meter: comcon.meter({ memoryBytes: mem }) }); };
+
 S.catch_alloc = function (mem) { return comcon.include(
     "function(req){ var a = [];" +
     "  try { for (;;) { a.push('x'.repeat(1024)); } }" +
@@ -129,18 +161,23 @@ S.catch_alloc = function (mem) { return comcon.include(
    config-phase include is lowered (the compile thread does not exist in a
    worker); a fragment authored at request time would silently run interpreted
    on the compiled arm and the tier assertion would say so */
-var FRAGS = {}, name, k;
+var FRAGS = {}, name, k, n, step;
 for (name in S) {
     FRAGS[name] = [];
-    for (k = 0; k < 32; k++) { FRAGS[name].push(S[name](1048576 + k * 32)); }
+    n = (name === 'catch_fine') ? 64 : 32;
+    step = (name === 'catch_fine') ? 16 : 32;
+    for (k = 0; k < n; k++) { FRAGS[name].push(S[name](1048576 + k * step)); }
 }
 
 function classify(r) {
     if (r === 'null' || r === 'sub null') { return 'nul'; }
     if (/^null fin=1$/.test(r)) { return 'nul'; }
     if (/^caught out of memory( fin=1)?$/.test(r)) { return 'caught'; }
+    if (/^caught author\.include: .*out of memory$/.test(r)) { return 'caught'; }   /* the include stage's own OOM */
     if (/^sub caught out of memory$/.test(r)) { return 'caught'; }
     if (/^parent caught .*out of memory/.test(r)) { return 'parentcaught'; }
+    if (/^caught .*\[E_[A-Z_]+\]/.test(r)) { return 'refused'; }   /* include refused, coded */
+    if (/^(queued|included [0-9]+)$/.test(r)) { return 'ret'; }
     return null;
 }
 
@@ -150,9 +187,9 @@ for (var i = 0; i < locs.length; i++) {
     locs[i].handler = function (req) {
         var name = String(req.args || '').replace(/^name=/, '');
         var o = { shape: name, attempts: 0, caught: 0, nul: 0, hostfail: 0,
-                  parentcaught: 0, ret: 0, other: [], compiled: 0, n: [] };
+                  parentcaught: 0, refused: 0, ret: 0, other: [], compiled: 0, n: [] };
         var f = null, k, r, c, st;
-        for (k = 0; k < 32; k++) {
+        for (k = 0; k < FRAGS[name].length; k++) {
             f = FRAGS[name][k];
             st = comcon.aotStatus(name === 'nested' ? NESTED : f);
             if (st && st.compiled) { o.compiled += st.compiled; }
@@ -210,7 +247,7 @@ sub run_arm {
     for my $s (@SHAPES) {
         my $body = `curl -s -m 60 '127.0.0.1:$port/probe?name=$s'`;
         my %o = (body => $body);
-        for my $k (qw(attempts caught nul hostfail parentcaught ret)) {
+        for my $k (qw(attempts caught nul hostfail parentcaught refused ret)) {
             ($o{$k}) = $body =~ /"$k":(\d+)/;
             $o{$k} //= -1;
         }
@@ -242,20 +279,25 @@ my %ALLOWED = (
     nested      => [qw(caught nul parentcaught hostfail)],
     marshal     => [qw(hostfail ret)],
     catch_alloc => [qw(hostfail ret)],
+    catch_fine      => [qw(caught nul hostfail)],
+    nested_include  => [qw(caught refused ret nul hostfail)],
+    admit_tests     => [qw(caught refused ret nul hostfail)],
+    reject_job      => [qw(ret hostfail)],
 );
 
 for my $arm ([interp => $I], [jit => $J]) {
     my ($tag, $R) = @$arm;
     for my $s (@SHAPES) {
         my $o = $R->{$s};
-        diag(sprintf("%-6s %-12s attempts=%d caught=%d null=%d hostfail=%d parentcaught=%d ret=%d compiled=%d other=[%s]%s",
-                     $tag, $s, @$o{qw(attempts caught nul hostfail parentcaught ret compiled)}, $o->{other},
+        diag(sprintf("%-6s %-14s attempts=%d caught=%d null=%d hostfail=%d parentcaught=%d refused=%d ret=%d compiled=%d other=[%s]%s",
+                     $tag, $s, @$o{qw(attempts caught nul hostfail parentcaught refused ret compiled)}, $o->{other},
                      ($o->{n} // '') ne '' ? " n=[$o->{n}]" : ''));
 
-        is($o->{attempts}, 32, "[$tag/$s] the worker answered all 32 alignments");
+        my $want = $ALIGNMENTS{$s} // 32;
+        is($o->{attempts}, $want, "[$tag/$s] the worker answered all $want alignments");
 
         my %allowed = map { $_ => 1 } @{ $ALLOWED{$s} };
-        my @bad = grep { $o->{$_} > 0 && !$allowed{$_} } qw(caught nul hostfail parentcaught ret);
+        my @bad = grep { $o->{$_} > 0 && !$allowed{$_} } qw(caught nul hostfail parentcaught refused ret);
         push @bad, "other=[$o->{other}]" if $o->{other} ne '';
         is(join(',', @bad), '', "[$tag/$s] every outcome is one the shape allows");
 
