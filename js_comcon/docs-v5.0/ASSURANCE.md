@@ -1329,6 +1329,45 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T1, T11, T13
 - **V:** V13
 
+#### G7.20 — the narrow compiler's first cut changes no value: half-typed bit ops and integer typed-array reads
+- **CLAIM:** On the compiled tier, a bit op (`& | ^ << >>`) whose one operand is provably a
+  Number produces exactly the interpreter's int32, and an integer typed-array element read
+  produces exactly the interpreter's value — for every operand kind (`undefined`, `NaN`, `-0`,
+  `null`, numeric and non-numeric strings, a hex string, booleans, arrays, an object with
+  `valueOf`, `2^32+5`, a fraction), for every integer element type including clamped, for
+  `Uint32` and float arrays (runtime path), out of bounds, negative and fractional indices,
+  and the BigInt case that throws on both tiers with the same name and message — and the
+  resource gates hold unchanged.
+- **ARGUMENT:** M5.1a (v5.117) is two codegen changes that ASSUME NOTHING about an untyped
+  operand. (1) The result type of a bit op with one provably-numeric operand is int32 by the
+  spec: ToInt32 applies to both sides, the only non-int32 outcome needs both operands to be
+  BigInt, and Number-with-BigInt throws; the generated code takes the inline path only when
+  both operands are int-tagged at run time and otherwise calls the same runtime the boxed
+  path called, then unboxes its int32. (2) An in-bounds element of an integer typed array is
+  read in place; the bounds check is against the count the engine keeps current (0 once
+  detached), so every other case is the runtime path as before. Two designs were REJECTED for
+  soundness, not cost: loop versioning needs a deoptimisation for an out-of-bounds read
+  (`undefined` is not an int32), and feedback-driven speculation — maxim's warm element hint —
+  substitutes 0 on a miss, which a confined tier cannot have; it is unused at include time.
+  Found on the way: the M5.0 benchmark's class B "typed bound" was itself lowered JS and moved
+  with this change (PERFORMANCE §2f records the correction).
+- **EV:** `t/comcon_include_faithfulness.t` — four new SR-2 cases (16 assertions; 53 in the
+  file): mixed-operand bit ops over 13 operand kinds × 5 operators with the spec's 65 values
+  written out; the BigInt throw; nine typed-array kinds with the spec's values, out of bounds,
+  negative and fractional indices; the class A shape on a `Uint8Array` with the interpreter as
+  oracle. **Validated by breaking both paths** (`^` emitted as `|`; Int8 read as Uint8): 2 of
+  53 failed, restored: pass. `t/comcon_compiled_resource_gates.t` (36, unchanged) and
+  `t/comcon_jit_uncatchable.t` on the new codegen. `t/tools/m5-go-nogo.t`: class A lowered
+  11.72 → 1.26 ns/byte.
+- **GAP:** `>>>`, `~` and `Math.imul` results stay untyped (uint32 and a call); typed-array
+  WRITES, `.length` on a typed array, and `Uint32`/float element reads take the runtime. The
+  remaining 2.1× on class A is boxing and checks, accepted under the M5.0 rule, not scheduled.
+  The negative control is a MANUAL row in `t/tools/verify-negative-controls.sh` (the change
+  lives in `quickjs/`). The same patch is carried to the engine fork.
+  **home:** M5.1a (ROADMAP POSITION) · PERFORMANCE §2f · `JIT_CODEGEN_VERSION` 18.
+- **THREAT:** T6, T9, T11
+- **V:** V13
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -2193,6 +2232,7 @@ signature is never quietly credited with work it did not see.
 | **M5.0 DECIDED (v5.114).** Class A (byte-scan validation) GO at 19.2×, class B (the token check) NO-GO at 2.5×, rule stated before the numbers (`t/tools/m5-go-nogo.t`); the gas check costs nothing, untyped lowering buys 1.4×; M5.1 is a narrow typed-array/int32 compiler under SR-2 and G7.18. | **No bearing on the signature.** A measurement, not a mechanism; what it narrows is the scope of the codegen G7.18 and the M8 harness were built to gate before it changes anything. |
 | **F18 FOUND AND CLOSED — G7.19 (v5.115).** The gate for M5.0's commit killed a worker: an out-of-memory inside the engine's own backtrace annotation freed the pending exception under its own feet, so a fragment that exhausts its allowance at the right residue crashed the worker — and, on the same path, an uncatchable deadline abort would have lost its flag. Fixed in the engine with a reference held across the annotation and the original error (flag included) restored if the attempt threw; a sweep test hits the window on any layout; validated against the unfixed engine. | **Narrows a claim the signature relied on.** G6.6 (F2: the allowance is a contained refusal) and F16's guarantee (an abort is uncatchable on every tier) both held only when the allowance did not bite inside the annotation itself. The sanitizer corpus could not have found this — a sanitizer moves the point where the limit bites — so the §15 attestation over that corpus never covered this class; the sweep in `t/comcon_oom_backtrace.t` is the instrument that does not depend on layout. |
 | **A SECOND SIGNATURE (v5.116).** The reviewer pack run in full, twice, on `4a86d2a62`; run 1 tripped the broadcast-fuzz flake on one automated control, run 2 passed every gate; both transcripts committed under `reviews/`; a second signer, Dick Hardman, accepted the evidence and the residuals (§15's second table, `REVIEW.md` §4). | **Adds a second acceptance to §15; does not reproduce it.** The pack was executed by the authoring session, so F11's reproduction half is still open and the sign-off row says so in a struck clause. The first signature is unchanged; what a reader gains is a second name on the same residuals and a transcript of the whole evidence on a tree that includes everything in this section through v5.115. |
+| **M5.1a — THE NARROW COMPILER'S FIRST CUT (v5.117).** Two codegen changes in the engine (`JIT_CODEGEN_VERSION` 18): a bit op with one provably-numeric operand yields a typed int32, and an in-bounds element of an integer typed array is read in place. Class A's lowered scan 11.72 → 1.26 ns/byte, within 2.1× of the typed bound; class B unmoved. Four SR-2 cases with the spec's values written out, validated by breaking both paths; the resource gates and the uncatchable-abort probe unchanged. G7.20. | **Touches the compiled tier the signature attests through G7.5/G7.18 and (F).** Every value the compiled tier can now produce differently is enumerated and pinned to the interpreter and to the spec; nothing is speculated. The codegen version bump retires every cached artifact, so no signed-era `.so` runs under the new rules. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

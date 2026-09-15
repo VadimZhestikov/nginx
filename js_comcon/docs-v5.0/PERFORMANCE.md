@@ -258,6 +258,69 @@ not author anything pays nothing), so it is not re-measured here.
 
 ---
 
+## 2f. M5.1a — the narrow compiler's first cut, measured *(v5.117)*
+
+What shipped, in the engine (`JIT_CODEGEN_VERSION` 18), and why it assumes nothing:
+
+1. **A bit op with ONE provably-numeric operand yields a typed int32.** `& | ^ << >>` apply
+   ToInt32 to both sides; the only non-int32 outcome (BigInt with BigInt) needs BOTH operands
+   to be BigInt, and a Number mixed with a BigInt throws — an exception, not a value. So when
+   one side is a typed int or double, the result is int32 whatever the other side is, and an
+   int accumulator no longer degrades to a boxed double at `h ^ u8[i]`. The generated code
+   takes the inline path when both operands are int-tagged at run time and otherwise calls the
+   SAME runtime the boxed path called — same conversions, same exceptions — and unboxes its
+   int32. Before, one untyped operand made the whole op untyped, and every op after it.
+2. **An in-bounds element of an integer typed array is read in place.** Uint8, Uint8Clamped,
+   Int8, Int16, Uint16 and Int32 arrays share the fast array's layout (element pointer, count);
+   the bounds check is against the count the engine keeps current — 0 once the buffer is
+   detached, tracking a resizable buffer — so out of bounds, detached, a negative or fractional
+   index, and every other class take the runtime path exactly as before.
+
+Not done, and why: **loop versioning** (a typed copy of the loop chosen at entry) needs a
+deoptimisation for the element read that goes out of bounds — `undefined` is not an int32 —
+and **feedback-driven speculation** (maxim's warm-recompile element hint) substitutes 0 on a
+miss, which is unsound for a confined tier and unused at include time anyway. Neither is
+needed for the shape M5.0 measured.
+
+Same instrument (`t/tools/m5-go-nogo.t`, `objs_jit`, three runs, best of three per arm):
+
+| class A, byte scan (ns/byte) | v5.114 | **v5.117** |
+|---|--:|--:|
+| floor (C, nothing kept) | 0.57 | 0.61 |
+| typed (gas-checked C walk) | 0.61 | 0.61 |
+| **lowered** | 11.72 | **1.26** |
+| interpreted | 16.48 | 15.5 |
+| lowered / typed | 19.2 | **2.1** |
+
+| class B, token check (ns/char) | v5.114 | **v5.117** |
+|---|--:|--:|
+| floor (C FNV) | 0.47 | 0.47 |
+| "typed" (K: lowered JS, one host read per char) | 20.16 | 13.75 |
+| lowered | 50.00 | 50.0 |
+| interpreted | 53.13 | 54 |
+| lowered / typed | 2.5 | 3.6 |
+
+Three readings, the third a correction to the record:
+
+- **Class A: 9.3× of the 19× is realised**, and by the rule stated before the numbers
+  (`lowered / typed ≥ 3 → GO`) the remaining 2.1× is NOT worth a further typed cut. What is
+  left is one box and unbox per element, the class-id and bounds checks, and the stack
+  bookkeeping around the op — not typed work. Accepted, not scheduled.
+- **Class B did not move** (50.0), as predicted: its loop is `Math.imul(h ^ c, p) >>> 0` —
+  `imul` is a call and `>>> 0` is uint32 (NUMBER), so the accumulator stays boxed — and the
+  split, the `toString(16)` and the allocations around the loop are engine work no lowering
+  removes.
+- **Class B's "typed bound" was not a bound.** The K arm is lowered JS (`h ^ byteAt(i)`), so
+  this change moved it, from 20.16 to 13.75, and the class B ratio rose to 3.6 with the
+  numerator unchanged. §2e's 2.5× NO-GO stands on the evidence that matters — the fragment's
+  own number did not move — and the rule's ratio is recorded here as sensitive to how its
+  denominator is built. A future re-measurement should use a C per-char kernel for that arm.
+
+The gas check is untouched: `t/comcon_compiled_resource_gates.t`'s ten probes agree as
+before, and `t/comcon_jit_uncatchable.t` still stops both forms on native code.
+
+---
+
 ## 3. Cost model by enforcement moment
 
 ### 3.1 Compile / admission time (reload-time, not request-time)

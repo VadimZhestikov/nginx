@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.116 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.117 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -50,6 +50,19 @@
 > by a scheduled review, and the pattern across this session is that composing
 > shipped features finds what auditing them in isolation did not.
 >
+> - **M5.1a SHIPPED (2026-09-15, v5.117): class A's lowered scan 11.72 → 1.26 ns/byte, within
+>   2.1× of the typed bound, nothing assumed.** Two codegen changes (`JIT_CODEGEN_VERSION`
+>   18): a bit op with one provably-numeric operand yields a typed int32 — the spec gives the
+>   accumulator its type, so no loop versioning and no declared shapes were needed — and an
+>   in-bounds integer typed-array element is read in place, bounds-checked against the count
+>   the engine keeps current. Rejected as unsound: versioning (out of bounds is `undefined`)
+>   and feedback speculation (a miss substitutes 0). Four SR-2 cases with the spec's values
+>   written out, validated by breaking both paths; G7.18's ten probes unchanged. Class B
+>   unmoved (its loop is a call and a `>>>`), and its "typed bound" was lowered JS — corrected
+>   in PERFORMANCE §2f. By the M5.0 rule the remaining 2.1× (boxing and checks) is NOT worth a
+>   further cut: **M5.1 is complete as measured; M5.1b (declared shapes at the boundary + a
+>   host typed view of request bytes) is the next decision, not the next step.** ASSURANCE
+>   G7.20.
 > - **A SECOND SIGNATURE (2026-09-15, v5.116).** The reviewer pack run in full on `4a86d2a62`
 >   (twice — run 1 tripped the broadcast-fuzz flake on one automated control, run 2 passed
 >   every gate; transcripts under `reviews/`); a second signer, Dick Hardman, accepted the

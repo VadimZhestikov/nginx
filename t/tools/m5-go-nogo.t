@@ -40,6 +40,15 @@
 # compresses every ratio toward 1.0).  Decision evidence, not a gate: it lives
 # in t/tools/ and is re-run when the question comes up.
 #
+# AFTER M5.1a (v5.117) the same rule reads the REMAINING gap: class A's lowered
+# arm went 11.72 -> 1.26 ns/byte and its ratio 19.2 -> 2.1, so a further typed
+# cut is NOT worth it by the rule.  And a correction the re-run forced: class
+# B's "typed" arm (K) is lowered JS -- `h ^ byteAt(i)` -- so M5.1a moved it
+# too (20.16 -> 13.75) while the class B fragment itself did not (50.0); the
+# class B ratio is therefore sensitive to how its denominator is built, and
+# PERFORMANCE §2f says so.  A future re-measurement should give class B a C
+# per-char kernel for that arm, as class A has.
+#
 #     TEST_NGINX_BINARY=$(pwd)/objs_jit/nginx prove -v t/tools/m5-go-nogo.t
 
 use warnings;

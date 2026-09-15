@@ -618,6 +618,20 @@ typedef struct {
 #define JIT_ARR_COUNT_OFF    64   /* JSObject.u.array.count (int) */
 
 /*
+ * M5.1a: the integer typed arrays share u.array with JS_CLASS_ARRAY --
+ * u.array.u.ptr sits at JIT_ARR_VALUES_OFF and u.array.count is the element
+ * count (0 once the buffer is detached, kept current for a resizable one), so
+ * the same bounds check serves.  The class ids are contiguous, UINT8C first.
+ * Verified by _Static_assert in quickjs.c.
+ */
+#define JIT_CLASS_UINT8C_ARRAY 21
+#define JIT_CLASS_INT8_ARRAY   22
+#define JIT_CLASS_UINT8_ARRAY  23
+#define JIT_CLASS_INT16_ARRAY  24
+#define JIT_CLASS_UINT16_ARRAY 25
+#define JIT_CLASS_INT32_ARRAY  26
+
+/*
  * P11.3: JSObject layout constants for call IC.
  *   JS_CLASS_BYTECODE_FUNCTION        = 13       (enum value for JS bytecode functions)
  *   JSObject.u.func.function_bytecode = byte 48  (JSFunctionBytecode*)
@@ -1027,7 +1041,7 @@ int  js_jit_get_threshold(void);
  *         11=get_var_ref_check TDZ fix: emits UNINITIALIZED check (generated C changes).
  *         12=P51: OP_add warm vt_hints + speculative INT add (array layout change).
  *         13=P52: put/set_var_ref* old-value INT hint: skip JS_VALUE_HAS_REF_COUNT. */
-#define JIT_CODEGEN_VERSION 17u  /* catch dispatch honours the uncatchable flag (was 16: 7th arg, the per-bytecode atom table) */
+#define JIT_CODEGEN_VERSION 18u  /* M5.1a: int32 results for half-typed bit ops; integer typed-array element reads (was 17: catch dispatch honours the uncatchable flag) */
 void js_jit_set_max_bc_len(int n);
 int  js_jit_get_max_bc_len(void);
 

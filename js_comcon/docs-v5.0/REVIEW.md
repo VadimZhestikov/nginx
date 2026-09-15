@@ -85,7 +85,7 @@ those shapes and `verify-negative-controls.sh` exercises the fixes' tests agains
 reverted fixes, which is why both are in the pack. Neither proves an instrument
 measures what it claims; they rule out specific ways of measuring nothing.
 
-**Nineteen negative-control rows cannot be checked automatically** (six when
+**Twenty negative-control rows cannot be checked automatically** (six when
 this was first written). Their inverse patches no longer apply, because later
 commits rewrote the lines they target — or the control was never a commit revert
 (a one-line change by hand, or a fix in `quickjs/`, outside what the script

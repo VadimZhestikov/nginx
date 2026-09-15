@@ -1051,7 +1051,15 @@ static uint8_t *jit_infer_types(const uint8_t *bc, int bc_len,
             case OP_and: case OP_or:  case OP_xor:
             case OP_shl: case OP_sar: {
                 uint8_t _b = _TI_POP(), _a = _TI_POP();
-                _TI_PUSH((_a == JIT_T_INT && _b == JIT_T_INT) ? JIT_T_INT : JIT_T_NUMBER);
+                /* M5.1a: with ONE operand provably a Number the result is
+                 * provably int32 -- ToInt32 applies to both sides, and the only
+                 * non-int32 outcome (BigInt op BigInt) needs both to be BigInt;
+                 * a Number mixed with a BigInt throws, which is an exception,
+                 * not a value.  So an INT accumulator stays INT through
+                 * `h ^ u8[i]` even though the element read is untyped. */
+                _TI_PUSH(((_a == JIT_T_INT || _a == JIT_T_NUMBER) ||
+                          (_b == JIT_T_INT || _b == JIT_T_NUMBER))
+                         ? JIT_T_INT : JIT_T_NUMBER);
                 break;
             }
             case OP_shr: _TI_DROPN(2); _TI_PUSH(JIT_T_NUMBER); break;
@@ -3114,6 +3122,17 @@ static void gen_preamble(JSJITCodeBuf *cb, uint64_t bc_hash,
         "#define _FREE(v) JS_FreeValue(ctx,(v))\n"
         "#define _CHK(v)  do{if(JS_VALUE_GET_TAG(v)==JS_TAG_EXCEPTION)"
                           "goto _ex;}while(0)\n"
+        /* M5.1a: an in-bounds element of an INTEGER typed array is an int32 --
+         * read in place, no runtime call.  The bounds check against
+         * u.array.count is the detach check too (count is 0 once detached and
+         * tracks a resizable buffer's length).  Out of bounds, or any other
+         * class, takes the runtime path exactly as before. */
+        "#define _TA_INT_CLASS(c) ((c)>=JIT_CLASS_UINT8C_ARRAY&&(c)<=JIT_CLASS_INT32_ARRAY)\n"
+        "#define _TA_INT_LOAD(c,p,i) ((c)==JIT_CLASS_INT8_ARRAY?(int32_t)((int8_t*)(p))[i]"
+        ":(c)==JIT_CLASS_INT16_ARRAY?(int32_t)((int16_t*)(p))[i]"
+        ":(c)==JIT_CLASS_UINT16_ARRAY?(int32_t)((uint16_t*)(p))[i]"
+        ":(c)==JIT_CLASS_INT32_ARRAY?((int32_t*)(p))[i]"
+        ":(int32_t)((uint8_t*)(p))[i])\n"
         /* Fast bool extraction: avoids external JS_ToBool call for the common
          * case where the top-of-stack is already JS_TAG_BOOL (result of lt/gt/eq).
          * For other tags JS_ToBool handles the general case.            */
@@ -5519,6 +5538,24 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
         "      _sp=%d; }\n", \
         d-1, d-2, d-2, op_str, d-2, rt_name, d-2, d-1)
 
+/* M5.1a: HALF-TYPED bit op -- at least one operand is provably a Number (INT
+ * or NUMBER in gen_st) and they are not both INT.  The result is then provably
+ * int32 (see jit_infer_types), so it goes to _ti{d-2}, and the accumulator it
+ * feeds stays typed.  Fast path when both are INT-tagged at run time (the
+ * common case: an int accumulator against an element read that produced an
+ * int); otherwise the SAME runtime the boxed path calls -- the same
+ * conversions, the same exceptions (a BigInt operand throws there) -- and its
+ * int32 result is unboxed.  Nothing is assumed about the untyped operand. */
+#define _GS_ISNUM(t) ((t) == JIT_T_INT || (t) == JIT_T_NUMBER)
+#define GEN_BITOP_HALF_INT(fast_expr, rt_name) \
+    jit_buf_printf(cb, \
+        "    { JSValue _b=_tsv%d,_a=_tsv%d; int32_t _ri;\n" \
+        "      if(JS_VALUE_GET_TAG(_a)==JS_TAG_INT&&JS_VALUE_GET_TAG(_b)==JS_TAG_INT){\n" \
+        "        int32_t _ia=JS_VALUE_GET_INT(_a),_ib=JS_VALUE_GET_INT(_b); _ri=(" fast_expr "); }\n" \
+        "      else { _sp=%d; JSValue _r=_RT->%s(ctx,_a,_b); _CHK(_r); _ri=JS_VALUE_GET_INT(_r); }\n" \
+        "      _ti%d=(int64_t)_ri; _sp=%d; }\n", \
+        d-1, d-2, d-2, rt_name, d-2, d-1)
+
         /* Shift operators must mask the shift count to & 31, matching the
          * JavaScript spec (ToInt32 semantics) and avoiding C UB for shifts
          * by >= 32 (e.g. 1 << 32 must equal 1, not 0). */
@@ -5529,6 +5566,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 jit_buf_printf(cb,
                     "    _ti%d=(int64_t)(int32_t)((uint32_t)_ti%d<<(_ti%d&31)); _sp=%d;\n",
                     d-2, d-2, d-1, d-1);
+            } else if (_GS_ISNUM(_t2) || _GS_ISNUM(_t1)) {
+                _P94_ENSURE(d-2); _P94_ENSURE(d-1);
+                GEN_BITOP_HALF_INT("(int32_t)((uint32_t)_ia<<(_ib&31))", "shl");
             } else {
                 _P94_ENSURE(d-2); _P94_ENSURE(d-1);
                 jit_buf_printf(cb,
@@ -5548,6 +5588,9 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 jit_buf_printf(cb,
                     "    _ti%d=(int64_t)(int32_t)(_ti%d>>(_ti%d&31)); _sp=%d;\n",
                     d-2, d-2, d-1, d-1);
+            } else if (_GS_ISNUM(_t2) || _GS_ISNUM(_t1)) {
+                _P94_ENSURE(d-2); _P94_ENSURE(d-1);
+                GEN_BITOP_HALF_INT("_ia>>(_ib&31)", "sar");
             } else {
                 _P94_ENSURE(d-2); _P94_ENSURE(d-1);
                 jit_buf_printf(cb,
@@ -5566,6 +5609,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 jit_buf_printf(cb,
                     "    _ti%d=(int64_t)(int32_t)(_ti%d&_ti%d); _sp=%d;\n",
                     d-2, d-2, d-1, d-1);
+            } else if (_GS_ISNUM(_t2) || _GS_ISNUM(_t1)) {
+                _P94_ENSURE(d-2); _P94_ENSURE(d-1); GEN_BITOP_HALF_INT("_ia&_ib", "band");
             } else { _P94_ENSURE(d-2); _P94_ENSURE(d-1); GEN_BITOP_INT("&",  "band"); }
             break;
         }
@@ -5575,6 +5620,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 jit_buf_printf(cb,
                     "    _ti%d=(int64_t)(int32_t)(_ti%d|_ti%d); _sp=%d;\n",
                     d-2, d-2, d-1, d-1);
+            } else if (_GS_ISNUM(_t2) || _GS_ISNUM(_t1)) {
+                _P94_ENSURE(d-2); _P94_ENSURE(d-1); GEN_BITOP_HALF_INT("_ia|_ib", "bor");
             } else { _P94_ENSURE(d-2); _P94_ENSURE(d-1); GEN_BITOP_INT("|",  "bor"); }
             break;
         }
@@ -5584,6 +5631,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 jit_buf_printf(cb,
                     "    _ti%d=(int64_t)(int32_t)(_ti%d^_ti%d); _sp=%d;\n",
                     d-2, d-2, d-1, d-1);
+            } else if (_GS_ISNUM(_t2) || _GS_ISNUM(_t1)) {
+                _P94_ENSURE(d-2); _P94_ENSURE(d-1); GEN_BITOP_HALF_INT("_ia^_ib", "bxor");
             } else { _P94_ENSURE(d-2); _P94_ENSURE(d-1); GEN_BITOP_INT("^",  "bxor"); }
             break;
         }
@@ -6942,11 +6991,16 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         "      if(js_likely(JS_VALUE_GET_TAG(_o)==JS_TAG_OBJECT)){\n"
                         "        char *_op=(char*)JS_VALUE_GET_PTR(_o);\n"
                         "        uint32_t _ai=(uint32_t)_ti%d;\n"
-                        "        if(js_likely(*(uint16_t*)(_op+JIT_OBJ_CLASSID_OFF)==JIT_CLASS_ARRAY\n"
+                        "        uint16_t _cls=*(uint16_t*)(_op+JIT_OBJ_CLASSID_OFF);\n"
+                        "        if(js_likely(_cls==JIT_CLASS_ARRAY\n"
                         "                   &&_ai<(uint32_t)*(int*)(_op+JIT_ARR_COUNT_OFF))){\n"
                         "          _r=(*(JSValue**)(_op+JIT_ARR_VALUES_OFF))[_ai];\n"
                         "          __jit_vt_%016llx[%d]=(uint8_t)JS_VALUE_GET_TAG(_r);\n"
                         "          JS_DupValue(ctx,_r);\n"
+                        "          %s _sp=%d; _tsv%d=_r; _sp=%d; goto _aok%d;}\n"
+                        "        if(_TA_INT_CLASS(_cls)&&_ai<(uint32_t)*(int*)(_op+JIT_ARR_COUNT_OFF)){\n"
+                        "          _r=JS_NewInt32(ctx,_TA_INT_LOAD(_cls,*(char**)(_op+JIT_ARR_VALUES_OFF),_ai));\n"
+                        "          __jit_vt_%016llx[%d]=(uint8_t)JS_VALUE_GET_TAG(_r);\n"
                         "          %s _sp=%d; _tsv%d=_r; _sp=%d; goto _aok%d;}}\n"
                         "      { int64_t _iv%d=_ti%d;\n"
                         "        JSValue _idx=((int64_t)(int32_t)_iv%d==_iv%d)\n"
@@ -6960,6 +7014,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         d-1,                                    /* _ai=(uint32_t)_ti{d-1} */
                         (unsigned long long)bc_hash, n_gf + ae_idx,  /* vt update fast */
                         _o_free, d-2, d-2, d-1, pc,            /* fast: free,sp,tsv,sp,goto */
+                        (unsigned long long)bc_hash, n_gf + ae_idx,  /* vt update typed-array */
+                        _o_free, d-2, d-2, d-1, pc,            /* typed-array: free,sp,tsv,sp,goto */
                         pc, d-1, pc, pc, pc, pc,                /* slow: box _ti{d-1} → _idx */
                         (unsigned long long)bc_hash, n_gf + ae_idx,  /* vt update slow */
                         _o_free, d-2, d-2, d-1, pc);            /* slow: free,sp,chk,tsv,sp,label */
@@ -6975,11 +7031,17 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                                        "&&JS_VALUE_GET_TAG(_idx)==JS_TAG_INT)){\n"
                         "        char *_op=(char*)JS_VALUE_GET_PTR(_o);\n"
                         "        uint32_t _ai=(uint32_t)JS_VALUE_GET_INT(_idx);\n"
-                        "        if(js_likely(*(uint16_t*)(_op+JIT_OBJ_CLASSID_OFF)==JIT_CLASS_ARRAY\n"
+                        "        uint16_t _cls=*(uint16_t*)(_op+JIT_OBJ_CLASSID_OFF);\n"
+                        "        if(js_likely(_cls==JIT_CLASS_ARRAY\n"
                         "                   &&_ai<(uint32_t)*(int*)(_op+JIT_ARR_COUNT_OFF))){\n"
                         "          _r=(*(JSValue**)(_op+JIT_ARR_VALUES_OFF))[_ai];\n"
                         "          __jit_vt_%016llx[%d]=(uint8_t)JS_VALUE_GET_TAG(_r);\n"
                         "          JS_DupValue(ctx,_r);\n"
+                        "          _FREE(_idx); _sp=%d; _tsv%d=_r; _sp=%d;\n"  /* no _FREE(_o) */
+                        "          goto _aok%d;}\n"
+                        "        if(_TA_INT_CLASS(_cls)&&_ai<(uint32_t)*(int*)(_op+JIT_ARR_COUNT_OFF)){\n"
+                        "          _r=JS_NewInt32(ctx,_TA_INT_LOAD(_cls,*(char**)(_op+JIT_ARR_VALUES_OFF),_ai));\n"
+                        "          __jit_vt_%016llx[%d]=(uint8_t)JS_VALUE_GET_TAG(_r);\n"
                         "          _FREE(_idx); _sp=%d; _tsv%d=_r; _sp=%d;\n"  /* no _FREE(_o) */
                         "          goto _aok%d;}}\n"
                         "      _r=_RT->get_array_el(ctx,_o,_idx);\n"
@@ -6989,6 +7051,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         d-1, d-2,
                         (unsigned long long)bc_hash, n_gf + ae_idx,  /* vt update fast */
                         d-2, d-2, d-1, pc,  /* fast path: _sp, _tsv, _sp, goto */
+                        (unsigned long long)bc_hash, n_gf + ae_idx,  /* vt update typed-array */
+                        d-2, d-2, d-1, pc,  /* typed-array path: _sp, _tsv, _sp, goto */
                         (unsigned long long)bc_hash, n_gf + ae_idx,  /* vt update slow */
                         d-2, d-2, d-1, pc); /* slow path: _sp, _tsv, _sp, label */
                 } else {
@@ -6999,11 +7063,17 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                                        "&&JS_VALUE_GET_TAG(_idx)==JS_TAG_INT)){\n"
                         "        char *_op=(char*)JS_VALUE_GET_PTR(_o);\n"
                         "        uint32_t _ai=(uint32_t)JS_VALUE_GET_INT(_idx);\n"
-                        "        if(js_likely(*(uint16_t*)(_op+JIT_OBJ_CLASSID_OFF)==JIT_CLASS_ARRAY\n"
+                        "        uint16_t _cls=*(uint16_t*)(_op+JIT_OBJ_CLASSID_OFF);\n"
+                        "        if(js_likely(_cls==JIT_CLASS_ARRAY\n"
                         "                   &&_ai<(uint32_t)*(int*)(_op+JIT_ARR_COUNT_OFF))){\n"
                         "          _r=(*(JSValue**)(_op+JIT_ARR_VALUES_OFF))[_ai];\n"
                         "          __jit_vt_%016llx[%d]=(uint8_t)JS_VALUE_GET_TAG(_r);\n"
                         "          JS_DupValue(ctx,_r);\n"
+                        "          _FREE(_o);_FREE(_idx); _sp=%d; _tsv%d=_r; _sp=%d;\n"
+                        "          goto _aok%d;}\n"
+                        "        if(_TA_INT_CLASS(_cls)&&_ai<(uint32_t)*(int*)(_op+JIT_ARR_COUNT_OFF)){\n"
+                        "          _r=JS_NewInt32(ctx,_TA_INT_LOAD(_cls,*(char**)(_op+JIT_ARR_VALUES_OFF),_ai));\n"
+                        "          __jit_vt_%016llx[%d]=(uint8_t)JS_VALUE_GET_TAG(_r);\n"
                         "          _FREE(_o);_FREE(_idx); _sp=%d; _tsv%d=_r; _sp=%d;\n"
                         "          goto _aok%d;}}\n"
                         "      _r=_RT->get_array_el(ctx,_o,_idx);\n"
@@ -7013,6 +7083,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                         d-1, d-2,
                         (unsigned long long)bc_hash, n_gf + ae_idx,  /* vt update fast */
                         d-2, d-2, d-1, pc,  /* fast path: _sp, _tsv, _sp, goto label */
+                        (unsigned long long)bc_hash, n_gf + ae_idx,  /* vt update typed-array */
+                        d-2, d-2, d-1, pc,  /* typed-array path: _sp, _tsv, _sp, goto label */
                         (unsigned long long)bc_hash, n_gf + ae_idx,  /* vt update slow */
                         d-2, d-2, d-1, pc); /* slow path: _sp, _tsv, _sp, label */
                 }
@@ -8893,7 +8965,10 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
             case OP_shl: case OP_sar: {
                 uint8_t _t2=_GS_TOP2(), _t1=_GS_TOP();
                 _gs_drop=2;
-                _gs_push=(_t2==JIT_T_INT&&_t1==JIT_T_INT)?JIT_T_INT:JIT_T_JSVAL;
+                /* M5.1a: one provably numeric operand -> int32 result in _ti
+                 * (the main switch emits the half-typed path for that case). */
+                _gs_push=((_t2==JIT_T_INT||_t2==JIT_T_NUMBER)||
+                          (_t1==JIT_T_INT||_t1==JIT_T_NUMBER))?JIT_T_INT:JIT_T_JSVAL;
                 break;
             }
             case OP_shr: _gs_drop=2; _gs_push=JIT_T_JSVAL; break;

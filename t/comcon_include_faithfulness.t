@@ -77,6 +77,43 @@ my @cases = (
     frag => q{function(req){ var tok = "eyJhbGciOiJIUzI1NiJ9." + (req.args || "") + ".sig"; var parts = tok.split("."); var h = 2166136261; for (var p = 0; p < parts.length; p++) { var part = parts[p]; for (var i = 0; i < part.length; i++) { h = Math.imul(h ^ part.charCodeAt(i), 16777619) >>> 0; } } var ok = parts.length === 3 && parts[0].length > 0 && (h % 7) < 7; return (ok ? "accept " : "reject ") + h.toString(16) + " " + parts[1].length + "\n"; }},
     paths => ['/t/tok?sub=alice', '/t/tok?sub=bob&exp=1'], expect_denials => 0,
     expect_re => qr/^accept [0-9a-f]+ \d+$/m },
+
+  # M5.1a (v5.117): two codegen changes, each pinned by the value the
+  # interpreter produces AND by the value the spec says, written out.
+  #
+  # (1) A bit op with ONE provably-numeric operand now yields a typed int32,
+  #     so an int accumulator survives `h ^ arr[i]`.  The untyped operand goes
+  #     through ToInt32 exactly as before -- undefined/NaN/-0/null/""/"abc" are
+  #     0, "3" and [5] are 3 and 5, 1.9 is 1, 2^32+5 is 5, "0x10" is 16, true
+  #     is 1, valueOf is called -- so every row below is a spec value.
+  { name => 'half-typed bit ops, mixed operands (M5.1a)',
+    frag => q{function(req){ var xs = [undefined, "3", 1.9, 4294967301, -0, NaN, {valueOf:function(){return 3;}}, "0x10", null, true, [], [5], "abc"]; var o = []; var i, h; for (i = 0; i < xs.length; i++) { h = 5; h = (h ^ xs[i]) | 0; o.push(h); } for (i = 0; i < xs.length; i++) { h = 5; h = h | xs[i]; o.push(h); } for (i = 0; i < xs.length; i++) { h = 5; h = h & xs[i]; o.push(h); } for (i = 0; i < xs.length; i++) { h = 1; h = h << xs[i]; o.push(h); } for (i = 0; i < xs.length; i++) { h = -8; h = h >> xs[i]; o.push(h); } return o.join(",") + "\n"; }},
+    paths => [qw(/t/bits /t/bits)], expect_denials => 0,
+    expect_re => qr/^5,6,4,0,5,5,6,21,5,4,5,0,5,5,7,5,5,5,5,7,21,5,5,5,5,5,0,1,1,5,0,0,1,0,0,1,0,5,0,1,8,2,32,1,1,8,65536,1,2,1,32,1,-8,-1,-4,-1,-8,-8,-1,-1,-8,-4,-8,-1,-8$/m },
+
+  #     ...and the one non-int32 outcome, a BigInt, is an exception on both
+  #     tiers with the same name and message (the runtime path is shared).
+  { name => 'half-typed bit op against a BigInt throws (M5.1a)',
+    frag => q{function(req){ var xs = [3n]; var h = 5; try { h = (h ^ xs[0]) | 0; return "nothrow " + h + "\n"; } catch (e) { return e.name + ": " + e.message + "\n"; } }},
+    paths => [qw(/t/big /t/big)], expect_denials => 0,
+    expect_re => qr/^TypeError: /m },
+
+  # (2) An in-bounds element of an INTEGER typed array is read in place as an
+  #     int32; every other read -- float arrays, out of bounds, a negative or
+  #     fractional index -- takes the runtime path.  Values per the spec: the
+  #     clamped array clamps, Uint32 4294967295 is -1 after ToInt32, 1e10 is
+  #     1410065408, NaN is 0, out of bounds is undefined and so 0.
+  { name => 'integer typed-array element reads (M5.1a)',
+    frag => q{function(req){ var i8 = new Int8Array([-1, 127, -128]); var u8 = new Uint8Array([0, 255, 7]); var u8c = new Uint8ClampedArray([300, -5]); var i16 = new Int16Array([-2, 32767]); var u16 = new Uint16Array([65535, 1]); var i32 = new Int32Array([-2147483648, 2147483647]); var u32 = new Uint32Array([4294967295, 7]); var f32 = new Float32Array([1.5, -2.5]); var f64 = new Float64Array([1e10, NaN]); var o = []; var k; for (k = 0; k < 3; k++) { o.push(0 ^ i8[k]); } for (k = 0; k < 3; k++) { o.push(0 | u8[k]); } for (k = 0; k < 2; k++) { o.push(0 ^ u8c[k]); } for (k = 0; k < 2; k++) { o.push(0 | i16[k]); } for (k = 0; k < 2; k++) { o.push(0 ^ u16[k]); } for (k = 0; k < 2; k++) { o.push(0 | i32[k]); } for (k = 0; k < 2; k++) { o.push(0 ^ u32[k]); } for (k = 0; k < 2; k++) { o.push(0 | f32[k]); } for (k = 0; k < 2; k++) { o.push(0 ^ f64[k]); } for (k = 3; k < 5; k++) { o.push(7 ^ i8[k]); } o.push(7 ^ i8[-1]); o.push(7 | u8[2.5]); o.push(typeof u8[5]); return o.join(",") + "\n"; }},
+    paths => [qw(/t/ta /t/ta)], expect_denials => 0,
+    expect_re => qr/^-1,127,-128,0,255,7,255,0,-2,32767,65535,1,-2147483648,2147483647,-1,7,1,-2,1410065408,0,7,7,7,7,undefined$/m },
+
+  # The class A shape itself, on a Uint8Array with an int accumulator: the
+  # interpreter is the oracle for the hash, the regex proves it ran.
+  { name => 'Uint8Array byte scan, int accumulator (M5.1a, class A shape)',
+    frag => q{function(req){ var u8 = new Uint8Array(1024); var i, r; for (i = 0; i < 1024; i++) { u8[i] = (i * 7 + 3) & 255; } var n = u8.length; var h = 0x811c9dc5 | 0; for (r = 0; r < 200; r++) { for (i = 0; i < n; i++) { h = (h ^ u8[i]) | 0; h = (h + (h << 5)) | 0; } } return "h=" + (h >>> 0) + "\n"; }},
+    paths => [qw(/t/u8 /t/u8)], expect_denials => 0,
+    expect_re => qr/^h=\d+$/m },
 );
 
 plan tests => scalar(@cases) * 4 + 1;

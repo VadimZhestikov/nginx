@@ -272,6 +272,14 @@ wasm2c-emitted**), and write guards where a lower tier stores into a declared-ty
 shared slot (the type boundary — `Number.isSafeInteger` for `int` slots). Low
 single-digit %; M7 measures.
 
+**What T2 lowers with a type today (M5.1a, v5.117), and the rule it must keep:** a lowering
+may give a value a static type only where the language already fixes that type for every
+operand — a bit op with one provably-numeric operand is int32 by ToInt32 (the only other
+outcome needs two BigInts; a Number with a BigInt throws), and an in-bounds element of an
+integer typed array is its int32 — never by speculation, never by a hint that substitutes a
+value on a miss. Every such lowering ships with an SR-2 row that writes the spec's values
+out (ASSURANCE G7.20), and a codegen version bump retires every cached artifact.
+
 ### 8a. The authoring tier: a fragment that authors fragments *(v5.106–v5.107)*
 
 A second confinement boundary INSIDE the compartment. `comcon.author({subFragments: N,

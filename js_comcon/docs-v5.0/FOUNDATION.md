@@ -635,6 +635,25 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.117 (in place — M5.1a, the narrow compiler's first cut: class A's lowered scan 11.72 →
+1.26 ns/byte, nothing assumed):** two codegen changes in the engine, `JIT_CODEGEN_VERSION` 18.
+(1) A bit op (`& | ^ << >>`) with ONE provably-numeric operand yields a typed int32 — by the
+spec, not by speculation: ToInt32 applies to both sides, the only non-int32 result needs both
+operands to be BigInt, and Number-with-BigInt throws; the inline path runs only when both are
+int-tagged at run time, otherwise the same runtime as the boxed path is called and its int32
+unboxed. An int accumulator therefore survives `h ^ u8[i]`, which is where the whole 19× was
+lost. (2) An in-bounds element of an integer typed array is read in place, bounds-checked
+against the count the engine keeps current (0 when detached). Rejected: loop versioning (an
+out-of-bounds read is `undefined`, needing a deoptimisation) and feedback speculation (maxim's
+warm hint substitutes 0 on a miss). Recommended first as versioning; the closer look found the
+spec already gives the accumulator its type. Four SR-2 cases with the spec's values written out
+(65 mixed-operand results, nine typed-array kinds, the BigInt throw, the class A shape), the
+run validated by breaking both paths (2 of 53 fail). G7.18's ten probes and F16's probe
+unchanged. **A correction to §2e's record:** the class B "typed bound" was lowered JS and moved
+with this change (20.16 → 13.75); the fragment's own number did not (50.0), so class B stays
+re-parked. ASSURANCE G7.20, §16; PERFORMANCE §2f; SPEC §8; a MANUAL negative-control row. The
+patch is carried to the engine fork.
+
 **v5.116 (in place — a second signature on `4a86d2a62`):** the reviewer pack run in full,
 twice, on the tree that carries M5.0 and F18. Run 1 failed one automated negative control
 (`d3a438051`, the broadcast misaligned header read) on the known broadcast-fuzz flake — the

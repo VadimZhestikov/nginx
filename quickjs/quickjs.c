@@ -17688,6 +17688,18 @@ _Static_assert(offsetof(JSObject, u.array.count)      == JIT_ARR_COUNT_OFF,
 _Static_assert(offsetof(JSObject, u.array.u.values)   == JIT_ARR_VALUES_OFF,
                "JIT_ARR_VALUES_OFF mismatch");
 
+/* M5.1a: the integer typed arrays read through the same layout -- the element
+ * pointer shares the values slot and count is the element count. */
+_Static_assert(offsetof(JSObject, u.array.u.ptr)      == JIT_ARR_VALUES_OFF,
+               "JIT_ARR_VALUES_OFF (typed array ptr) mismatch");
+_Static_assert((int)JS_CLASS_UINT8C_ARRAY == JIT_CLASS_UINT8C_ARRAY &&
+               (int)JS_CLASS_INT8_ARRAY   == JIT_CLASS_INT8_ARRAY   &&
+               (int)JS_CLASS_UINT8_ARRAY  == JIT_CLASS_UINT8_ARRAY  &&
+               (int)JS_CLASS_INT16_ARRAY  == JIT_CLASS_INT16_ARRAY  &&
+               (int)JS_CLASS_UINT16_ARRAY == JIT_CLASS_UINT16_ARRAY &&
+               (int)JS_CLASS_INT32_ARRAY  == JIT_CLASS_INT32_ARRAY,
+               "JIT_CLASS_*_ARRAY mismatch");
+
 /* P40: Verify JSVarRef.pvalue offset used by the direct byte-offset access
  * in the generated JIT C code (JIT_VARREF_PVALUE_OFF). */
 _Static_assert(offsetof(JSVarRef, pvalue) == JIT_VARREF_PVALUE_OFF,

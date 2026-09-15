@@ -82,6 +82,7 @@ MANUAL=(
 "by-hand|t/run_sanitizers.sh|F17 (a): remove the ngx_js_comcon_teardown(jcf) call from ngx_js_exit_process, rebuild objs_asan, run the sanitizer script: every comcon file reports a src/js leak frame (ngx_js_comcon_publish)"
 "by-hand|t/run_sanitizers.sh|F17 (b): remove the ngx_js_http_register_classes/ngx_js_upstream_register_classes calls from ngx_js_com_register_classes (and restore them in ngx_js_com_init), rebuild objs_asan, run the script: comcon_v12_denial_codes.t reports ngx_js_wrap_server"
 "by-hand|t/comcon_oom_backtrace.t|F18 lives in quickjs/ (outside src/js): in quickjs.c replace the build_backtrace_pending(ctx, NULL, 0, 0, 0) call at JS_CallInternal's exception label with build_backtrace(ctx, rt->current_exception, NULL, 0, 0, 0), rebuild the lib and objs, and the sweep's first response is empty (the worker died on signal 11): three of five fail"
+"by-hand|t/comcon_include_faithfulness.t|M5.1a lives in quickjs/ (outside src/js): in quickjs-jit.c change the xor half-typed emission GEN_BITOP_HALF_INT(\"_ia^_ib\", \"bxor\") to \"_ia|_ib\" and make _TA_INT_LOAD read INT8 as uint8_t, rebuild the lib and objs_jit: the mixed-operands and typed-array cases fail (2 of 53), the rest pass"
 "1618dce79|t/comcon_wrapper_breakout.t|the JS_EvalFunction()/JS_Call() lines it touched were rewritten by F15 phase 3's deadline push/pop (cabd6f4c2), landing the same session"
 )
 
