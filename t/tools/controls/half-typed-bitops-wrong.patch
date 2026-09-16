@@ -1,17 +1,17 @@
 diff --git a/quickjs/quickjs-jit.c b/quickjs/quickjs-jit.c
-index c34ffe21a..65fee059c 100644
+index b0f26895b..9be6b21a7 100644
 --- a/quickjs/quickjs-jit.c
 +++ b/quickjs/quickjs-jit.c
-@@ -3128,7 +3128,7 @@ static void gen_preamble(JSJITCodeBuf *cb, uint64_t bc_hash,
-          * tracks a resizable buffer's length).  Out of bounds, or any other
-          * class, takes the runtime path exactly as before. */
+@@ -3186,7 +3186,7 @@ static void gen_preamble(JSJITCodeBuf *cb, uint64_t bc_hash,
+         "#define _TOI32V(v) (JS_VALUE_GET_TAG(v)==JS_TAG_INT?JS_VALUE_GET_INT(v):_TOI32D(JS_VALUE_GET_FLOAT64(v)))\n"
+         "#define _ISNUMV(v) (JS_VALUE_GET_TAG(v)==JS_TAG_INT||JS_VALUE_GET_TAG(v)==JS_TAG_FLOAT64)\n"
          "#define _TA_INT_CLASS(c) ((c)>=JIT_CLASS_UINT8C_ARRAY&&(c)<=JIT_CLASS_INT32_ARRAY)\n"
 -        "#define _TA_INT_LOAD(c,p,i) ((c)==JIT_CLASS_INT8_ARRAY?(int32_t)((int8_t*)(p))[i]"
 +        "#define _TA_INT_LOAD(c,p,i) ((c)==JIT_CLASS_INT8_ARRAY?(int32_t)((uint8_t*)(p))[i]"
          ":(c)==JIT_CLASS_INT16_ARRAY?(int32_t)((int16_t*)(p))[i]"
          ":(c)==JIT_CLASS_UINT16_ARRAY?(int32_t)((uint16_t*)(p))[i]"
          ":(c)==JIT_CLASS_INT32_ARRAY?((int32_t*)(p))[i]"
-@@ -5632,7 +5632,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
+@@ -5706,7 +5706,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                      "    _ti%d=(int64_t)(int32_t)(_ti%d^_ti%d); _sp=%d;\n",
                      d-2, d-2, d-1, d-1);
              } else if (_GS_ISNUM(_t2) || _GS_ISNUM(_t1)) {

@@ -667,7 +667,9 @@ case for, so `~x` on a double, a boolean, a string or `null` called `abort()`: a
 holding `~1.5` took the worker down. Fixed by taking the interpreter's own path. After the
 fixes: 30 seeds, 1,800 functions, zero divergences; the engine's own test files under
 `--jit-compile-all` fail exactly where the committed engine failed (pre-existing, recorded).
-The fuzz is a gate stage (`gate.sh` 2b) and a pack check. (4) The broadcast-fuzz flake hunt:
+The fuzz is a gate stage (`gate.sh` 2b) and a pack check. The pack on `c8e4e6d04` had one row
+INCONCLUSIVE — M5.1a's control patch, whose lines M5.1c moved; re-based and verified, 34 rows.
+(4) The broadcast-fuzz flake hunt:
 three full runs of the compiled-tier corpus, no recurrence; the instrumented harness stays
 armed. ASSURANCE G7.23, F20, F21, §16; SPEC §8 (what T2 lowers with a type); THREATS T11.
 
