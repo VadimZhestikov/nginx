@@ -1,0 +1,15 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+index 2c2133d60..4045b8495 100644
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -1206,8 +1206,8 @@ ngx_js_comcon_retained_over(ngx_js_conf_t *jcf, uint32_t handle, size_t cap)
+ {
+     ngx_js_comcon_frag_stats_t  *st = ngx_js_comcon_stats(jcf, handle);
+ 
+-    if (st == NULL || cap == 0 || st->retained <= (int64_t) cap) {
+-        return 0;
++    if (1 || st == NULL || cap == 0 || st->retained <= (int64_t) cap) {
++        return 0;   /* the control: the cap is never checked */
+     }
+ 
+     st->refused++;

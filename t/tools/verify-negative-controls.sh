@@ -101,6 +101,7 @@ PATCHES=(
 "F17b|com-classes-unregistered.patch|t/comcon_v12_denial_codes.t|objs_asan|leak:ngx_js_wrap_server|COM node classes finalizer-less in the compartment"
 "F18|backtrace-frees-the-error.patch|t/comcon_oom_backtrace.t|objs|fail|an out-of-memory inside the backtrace annotation freed the error"
 "M5.1a|half-typed-bitops-wrong.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|M5.1a: xor emitted as or, Int8 read as Uint8"
+"F2-leak|retained-cap-unchecked.patch|t/comcon_retained_memory.t|objs|fail|F2's leak half: the retained cap is never checked, so a fragment over it keeps running"
 )
 
 if ! git diff --quiet -- src/js quickjs || ! git diff --cached --quiet -- src/js quickjs; then
