@@ -173,7 +173,9 @@ run_test() {
             fi
         else
             TEST_NGINX_BINARY="$PWD/$first/nginx" prove -v "$t" >"$log" 2>&1
-            if grep -qi "skipped:" "$log"; then verdict=SKIP
+            # prove's own skip line, not a test's prose: an assertion whose
+            # text said "not silently skipped:" read as a SKIP once
+            if grep -qE '^t/[^ ]+ \.+ skipped:' "$log"; then verdict=SKIP
             elif grep -q "^Result: PASS" "$log"; then verdict=PASS
             else verdict=FAIL; fi
         fi

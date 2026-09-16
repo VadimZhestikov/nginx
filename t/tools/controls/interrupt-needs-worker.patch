@@ -1,8 +1,8 @@
 diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
-index 2cc885eb8..659291073 100644
+index 2c2133d60..236461557 100644
 --- a/src/js/ngx_js_module.c
 +++ b/src/js/ngx_js_module.c
-@@ -1368,8 +1368,10 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
+@@ -1543,8 +1543,10 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
       * worker's copy-on-write page holds its OWN comcon_deadline_ms, and the
       * handler installed here before fork keeps working correctly after it.
       */
@@ -11,5 +11,5 @@ index 2cc885eb8..659291073 100644
                             jcf);
 +    }
  
-     return sctx;
- }
+     /* F2's leak half: what the compartment weighs before any fragment exists
+        is the baseline every fragment's retained count is measured above */

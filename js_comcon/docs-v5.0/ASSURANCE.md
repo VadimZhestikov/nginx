@@ -1397,9 +1397,13 @@ The primary control, and the one everything else is defence in depth for.
   footprints differ, so the same alignment lands elsewhere. **First run found F19:** the
   `catch_alloc` shape returned a failure labelled `error` on 3 of 64 alignments — the host's
   ToString of the error had itself run out of memory.
-- **EV:** `t/comcon_oom_sweep.t` — 80 assertions (v5.121; 54 at v5.119): two arms × (eleven
-  shapes × answered every alignment / every outcome allowed / tier precondition, plus the
-  window reached for the six shapes with a catch) and no alert or signal in either log. The
+- **EV:** `t/comcon_oom_sweep.t` — 86 assertions (v5.123; 80 at v5.121, 54 at v5.119): two
+  arms × (twelve shapes × answered every alignment / every outcome allowed / tier
+  precondition, plus the window reached for the six shapes with a catch) and no alert or
+  signal in either log. The shape added at v5.123, `stream`: the same uncaught out-of-memory
+  as `catch_alloc`, received by a STREAM server's handler, one alignment per TCP connection
+  (32 connections, the tallies read over http) — the host's stream-side failure path, the
+  session finalized every time, 32 host failures per arm, compiled on the compiled arm. The
   four shapes added at v5.121: F18's own shape again at a 16-byte step over 64 alignments;
   include INSIDE a parent that has filled its allowance (compile and admission under the
   allowance — the include mostly throws `null`, the error itself unbuildable, or the stage's
@@ -1410,8 +1414,8 @@ The primary control, and the one everything else is defence in depth for.
   a shape has two functions), the async shape 0 (G7.18). A run: the catch shape's error
   caught in 21–27 of 32 alignments per arm, 45–49 of 64 at the fine step.
 - **GAP:** The fine step covers F18's shape only; the others step 32 bytes over a 1 KB fill.
-  Not swept: the stream surface, and `checkRequest` at admission (it reads request fields,
-  allocating little). The negative control for the battery's crash claim is F18's maintained
+  Not swept: `checkRequest` at admission (it reads request fields, allocating little). The
+  stream surface is swept since v5.123. The negative control for the battery's crash claim is F18's maintained
   patch; F19's is a commit-revert row (`60e6d5585`), run over both binaries.
   **home:** `t/comcon_oom_sweep.t`'s header · finding F19 · `ngx_js_comcon_exc_text`.
 - **THREAT:** T1, T11, T13
@@ -1451,9 +1455,21 @@ The primary control, and the one everything else is defence in depth for.
   `memStatus` of a plain function is a `TypeError`. The V12 golden corpus carries the code
   (`t/comcon_v12_denial_codes.t`, `refusalComplete`). `t/comcon_invoke_heap_independence.t`
   unchanged.
-- **GAP:** The backstop's proportional scaling can UNDER-count a real leaker whose sibling
-  makes many small cycles (both counts are scaled by the same factor); it never over-counts,
-  and the runtime cap remains the backstop for what it cannot attribute. A call that pays the
+- **EV:** `t/comcon_retained_backstop.t` — the named limit below, measured and bounded: a
+  leaker beside a small cycle-maker keeps at least half of its exact count (measured: all
+  of it), and the cycle-maker carries none of its cycles.
+- **GAP:** The backstop's proportional scaling can in principle UNDER-count a real leaker
+  whose sibling makes many small cycles (both counts are scaled by the same factor); it
+  never over-counts, and the runtime cap remains the backstop for what it cannot attribute.
+  **Measured (v5.123, `t/comcon_retained_backstop.t`):** a leaker holding 3 MB beside a
+  sibling making ~45 KB of cycles per call — below the per-call collection threshold, so the
+  backstop is the only correction — keeps **100% of its exact count** after 250 of the
+  sibling's calls and again after 200 interleaved calls (three of the sibling's, then one of
+  its own, so collections land inside its calls too); the sibling reads 0. The engine's own
+  cycle collector runs before the backstop does at these sizes and credits the collected
+  cycles to the call it runs in, and in three provoked configurations that was never the
+  leaker's. The test asserts the leaker keeps at least half, as the regression bound; the
+  correction was left as it is, because the measurement gave nothing to tighten. A call that pays the
   per-call collection is charged slightly less than it kept when other fragments had cycles
   outstanding. The counts are per worker. The negative control is a maintained patch
   (`t/tools/controls/retained-cap-unchecked.patch`).
@@ -2336,6 +2352,7 @@ signature is never quietly credited with work it did not see.
 | **THE NEGATIVE-CONTROL DEBT PAID (v5.120): 30 rows, 30 verified.** Twenty rows both signatures accepted as manual — inverse patches that no longer applied, controls that were never a commit, fixes in `quickjs/` — are maintained reverse patches under `t/tools/controls/`, each the smallest change that brings its defect back, verified by the same script as the commit rows (an engine patch rebuilds the library; a leak row runs under `objs_asan` and looks for the named frame; a skipped test is INCONCLUSIVE, never a pass). A patch that stops applying fails the run and is re-based on purpose. **Making the rows mechanical found two things the by-hand descriptions had not:** the copy-vs-rewrap control (G7.16) could not fail — the `/stale` arm closed the socket but never reused its slot, so a re-wrap and a copy both pointed at an empty slot; the test now hands the slot to a new socket, and a re-wrap reads the stranger; and F18's crash (G7.19) needs BOTH halves of the fix absent — the `stack` guard alone keeps the freed object from being touched — so its patch removes both. Also: maxim's warm element hint, which substituted 0 on a type miss, is off (unreachable here; hygiene). | **Strengthens what the reviewer pack attests.** §15's second signature accepted nineteen rows it could not check; the pack now checks every row, and the number a reader sees is the whole set. One of those rows turned out to be a probe that could not fail — the class `check-dead-probes.py` exists for — and is now live. Nothing the case claims changes; what changes is that "verified N" covers every control there is. |
 | **EVIDENCE FROM A FAILED CONTROL; WARM SPECULATION OFF; THE SWEEP WIDENED (v5.121).** (1) The controls script keeps every run's `prove -v` output and the test's own directory under the pack's output when a row fails to hold or cannot run, and the broadcast fuzz asserts that at least one worker RECEIVED a broadcast — the flake that spoiled two signable runs is now a failing assertion with per-worker counts, not a silent non-holding control. (2) Every warm-recompile value speculation in the engine is off behind one switch: read site by site, three sites extracted a value with no tag check on a miss, one substituted 0, one skipped freeing the old value; the two write sites were sound. Unreachable here (no compile thread in a worker; fragments compile at include time). (3) The residue sweep has eleven shapes: F18's at a 16-byte step, include inside a full parent, an admission `tests` that fills memory, a rejected promise's reaction; 80 assertions, no worker died. | **Strengthens G7.21 and the pack's evidence; no bearing on a claim.** The unreachable engine paths were a landmine for host JS ever running compiled, not a hole in the confined tier; the sweep's new shapes found nothing, which is what a widened instrument is supposed to be able to say. |
 | **F2's LEAK HALF CLOSED — G7.22 (v5.122).** What a fragment RETAINS across calls is attributed to it (the compartment's malloc delta around each invocation, exact for what refcounting frees, corrected for cycles by a per-call collection when a call leaves 64 KB or more behind and a 4 MB backstop), capped by a new meter word `retainedBytes` (8 MB default, narrowing only), and refused past the cap with a new refusal code `E_MEM_RETAINED` until the epoch is replaced; a sub-fragment charges its own slot under the cap in force; `comcon.memStatus(f)` reads the count. 19 assertions on both binaries, the golden corpus carries the code, the invocation cost is unchanged. | **Closes a gap both signatures accepted as residual risk** (AUDIT_M-SES §3's first row, G6.6's GAP, F2). A new mechanism, a new vocabulary word and a new closed-set member, so it is exactly what §15 says would need looking at: the enumeration checks and the golden corpus were extended with it and pass; G7.22's GAP names what the accounting cannot attribute, and the runtime cap remains the backstop for that. |
+| **THE GATE IN THE TREE; THE BACKSTOP MEASURED; THE STREAM SURFACE SWEPT; ARTIFACTS UNTRACKED (v5.123).** `t/tools/gate.sh` is what "gate green" means, one command with the exit code as verdict, and `--configure` builds the four builddirs from the recipe the record used; `objs_jit/` is no longer tracked (212 objects and a binary a clone was handed instead of building). G7.22's named limit measured: the leaker keeps 100% of its exact count beside a small cycle-maker in three provoked configurations (`t/comcon_retained_backstop.t`), so the correction stays as it is. The residue sweep has twelve shapes: the stream server's handler receiving an uncaught out-of-memory, one alignment per connection, finalized every time. And the pack on `3d0e11d0e` did what v5.120 promised: three rows INCONCLUSIVE — two patches whose lines F2 moved (re-based) and one false SKIP (an assertion's prose said "skipped:", and the detector now reads only prove's own skip line); the kept evidence is what said which. The warm-speculation finding could not be filed upstream: the maxim repository has issues disabled; the text is delivered. | **Strengthens what every "gate green" claim since v5.105 rests on**, by making it reproducible; nothing the case attests changes. G7.22's GAP shrinks from a hazard to a measurement. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

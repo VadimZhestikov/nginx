@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.122 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.123 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -61,6 +61,15 @@
 >   unmoved (its loop is a call and a `>>>`), and its "typed bound" was lowered JS — corrected
 >   in PERFORMANCE §2f. By the M5.0 rule the remaining 2.1× (boxing and checks) is NOT worth a
 >   further cut: **M5.1 is complete as measured.** ASSURANCE G7.20.
+> - **THE GATE IN THE TREE; G7.22 MEASURED; THE STREAM SURFACE SWEPT; ARTIFACTS UNTRACKED
+>   (2026-09-15, v5.123).** `t/tools/gate.sh` is what "gate green" means, with `--configure`
+>   for the four builddirs; `objs_jit/` is no longer tracked. G7.22's named under-count
+>   measured at 100% kept in three provoked configurations (`t/comcon_retained_backstop.t`),
+>   the correction unchanged. The residue sweep's twelfth shape: a stream server's handler
+>   receiving an uncaught out-of-memory, one alignment per connection. The pack's
+>   INCONCLUSIVE rows did their job: two patches re-based after F2 moved their lines, one
+>   false SKIP (an assertion's prose) fixed. The warm-speculation finding could not be filed
+>   upstream — issues are disabled on the maxim repository — and its text is with the author.
 > - **F2's LEAK HALF CLOSED (2026-09-15, v5.122).** What a fragment RETAINS across calls is
 >   charged to it — the compartment's malloc delta around each invocation, exact for what
 >   refcounting frees, corrected for cycles by a per-call collection when a call leaves

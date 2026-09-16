@@ -27,6 +27,10 @@
 #   marshal      the throw inside the HOST's JSON stringify of the result,
 #                under the allowance, after the fragment returned
 #   catch_alloc  the throw inside the catch handler's own allocation
+#   stream       the throw inside a fragment invoked from a STREAM server's
+#                handler, one alignment per TCP connection: the host's
+#                stream-side failure path, not the http one, and the session
+#                must still be finalized
 #
 # WHAT IS ASSERTED, per shape and tier: the worker answers all 32 alignments;
 # every outcome is one the shape allows -- the fragment's catch got the error,
@@ -59,9 +63,10 @@ plan(skip_all => "no interpreter build objs/nginx") unless -x $interp;
 plan(skip_all => "no JIT build objs_jit/nginx")     unless -x $jit;
 
 my @SHAPES = qw(catch finally generator async nested marshal catch_alloc
-                catch_fine nested_include admit_tests reject_job);
+                catch_fine nested_include admit_tests reject_job stream);
 my %CAUGHT_EXPECTED = map { $_ => 1 } qw(catch finally generator async nested catch_fine);
 my %ALIGNMENTS = (catch_fine => 64);   # 16-byte step; every other shape 32 x 32 bytes
+my %STREAM_PORT = (interp => 8959, jit => 8960);
 
 # per arm: 3 per shape (answers, allowed, tier) + 1 per shape with a catch;
 # then the two logs
@@ -151,6 +156,14 @@ S.reject_job = function (mem) { return comcon.include(
     "  for (;;) { a.push('x'.repeat(1024)); } }); return 'queued'; }",
     { imports: ['Promise', 'Error'], meter: comcon.meter({ memoryBytes: mem }) }); };
 
+/* the STREAM surface: the same uncaught out-of-memory as catch_alloc, but the
+   host that receives it is a stream server's handler, once per connection */
+S.stream = function (mem) { return comcon.include(
+    "function(req){ var a = [];" +
+    "  try { for (;;) { a.push('x'.repeat(1024)); } }" +
+    "  catch (e) { return 'y'.repeat(65536) + (e === null ? 'null' : e.message); } }",
+    { imports: [], meter: comcon.meter({ memoryBytes: mem }) }); };
+
 S.catch_alloc = function (mem) { return comcon.include(
     "function(req){ var a = [];" +
     "  try { for (;;) { a.push('x'.repeat(1024)); } }" +
@@ -181,6 +194,27 @@ function classify(r) {
     return null;
 }
 
+/* the stream server (created at init, no stream{} block): every connection
+   runs ONE alignment of the stream shape and finalizes; the tallies are read
+   over http at /probe?name=stream */
+var STREAM = { attempts: 0, hostfail: 0, ret: 0, other: [], k: 0 };
+nginx.createStream();
+var ssrv = nginx.stream.addServer();
+ssrv.handler = function (session) {
+    var f = FRAGS.stream[STREAM.k % FRAGS.stream.length], r;
+    STREAM.k++;
+    STREAM.attempts++;
+    try {
+        r = f({});
+        if (typeof r === 'string' && /^y+/.test(r)) { STREAM.ret++; } else { STREAM.other.push(String(r).slice(0, 60)); }
+    } catch (e) {
+        if (/out of memory/.test(String(e && e.message))) { STREAM.hostfail++; }
+        else { STREAM.other.push('THREW ' + String(e && e.message).slice(0, 60)); }
+    }
+    session.finalize(200);
+};
+nginx.stream.attach(nginx.createSocket('127.0.0.1:%%STREAMPORT%%')).addServer(ssrv);
+
 var locs = nginx.http.servers[0].locations;
 for (var i = 0; i < locs.length; i++) {
     if (locs[i].path !== "/probe") { continue; }
@@ -189,6 +223,18 @@ for (var i = 0; i < locs.length; i++) {
         var o = { shape: name, attempts: 0, caught: 0, nul: 0, hostfail: 0,
                   parentcaught: 0, refused: 0, ret: 0, other: [], compiled: 0, n: [] };
         var f = null, k, r, c, st;
+        if (name === 'stream') {
+            /* the alignments ran on the stream side, one per connection */
+            o.attempts = STREAM.attempts; o.hostfail = STREAM.hostfail; o.ret = STREAM.ret;
+            o.other = STREAM.other;
+            for (k = 0; k < FRAGS.stream.length; k++) {
+                st = comcon.aotStatus(FRAGS.stream[k]);
+                if (st && st.compiled) { o.compiled += st.compiled; }
+            }
+            o.aot = { compiled: o.compiled };
+            req.respond(200, {'content-type':'application/json'}, JSON.stringify(o));
+            return;
+        }
         for (k = 0; k < FRAGS[name].length; k++) {
             f = FRAGS[name][k];
             st = comcon.aotStatus(name === 'nested' ? NESTED : f);
@@ -214,8 +260,9 @@ JS
 sub run_arm {
     my ($bin, $tag, $port) = @_;
 
+    (my $js = $root_js) =~ s/%%STREAMPORT%%/$STREAM_PORT{$tag}/g;
     open my $r, '>', "$dir/$tag.root.js" or die $!;
-    print $r $root_js;
+    print $r $js;
     close $r;
 
     open my $c, '>', "$dir/$tag.conf" or die $!;
@@ -241,6 +288,13 @@ sub run_arm {
     for (1 .. 2400) {
         last if IO::Socket::INET->new(PeerAddr => "127.0.0.1:$port", Timeout => 1);
         select undef, undef, undef, 0.05;
+    }
+
+    # the stream shape: 32 connections, one alignment each, before its probe
+    for (1 .. 32) {
+        my $c = IO::Socket::INET->new(PeerAddr => "127.0.0.1:$STREAM_PORT{$tag}", Proto => 'tcp', Timeout => 8);
+        next unless $c;
+        my $buf = ''; $c->read($buf, 16); close $c;
     }
 
     my %res;
@@ -283,6 +337,7 @@ my %ALLOWED = (
     nested_include  => [qw(caught refused ret nul hostfail)],
     admit_tests     => [qw(caught refused ret nul hostfail)],
     reject_job      => [qw(ret hostfail)],
+    stream          => [qw(ret hostfail)],
 );
 
 for my $arm ([interp => $I], [jit => $J]) {

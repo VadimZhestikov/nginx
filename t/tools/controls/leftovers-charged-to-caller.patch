@@ -1,8 +1,8 @@
 diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
-index 2cc885eb8..c2073abf6 100644
+index 2c2133d60..e1616b380 100644
 --- a/src/js/ngx_js_module.c
 +++ b/src/js/ngx_js_module.c
-@@ -4300,7 +4300,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
+@@ -4549,7 +4549,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
       * this fragment's job budget, deadline, allowance or rejection report.  See
       * ngx_js_comcon_drain_leftovers() for why they run as nobody.
       */
@@ -10,4 +10,4 @@ index 2cc885eb8..c2073abf6 100644
 +    if (0) { ngx_js_comcon_drain_leftovers(jcf); }   /* the control: leftovers stay for the caller */
  
      /*
-      * A confined fragment ALWAYS runs under a deadline.
+      * F2's LEAK HALF: the cap on what this fragment may hold ACROSS calls,

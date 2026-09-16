@@ -18,21 +18,34 @@ That work is now done once, here.
 ## 1. Run the evidence
 
 ```bash
-bash t/tools/reviewer-pack.sh            # everything, about 40 minutes
+bash t/tools/gate.sh --configure         # once per clone: the four builddirs
+bash t/tools/reviewer-pack.sh            # everything, about 90 minutes
 bash t/tools/reviewer-pack.sh --quick    # suites + checkers only, about 8
 ```
+
+**"Gate green" in a commit message means `bash t/tools/gate.sh`** (since v5.123):
+the sanitizer builddirs rebuilt first, then the whole `t/` on the interpreter build,
+the confinement corpus on the compiled build, the stress suites, and ASAN + UBSAN with
+leak detection on, about 15–20 minutes, exit code as verdict. Until v5.123 that script
+lived in a session's temp directory and the claim was the author's word; now a reader
+runs exactly what the message says. The pack is its superset: it adds the three
+document checkers and every negative control. The build directories are artifacts, not
+tracked (`objs_jit/` was, through v5.122, which handed a clone a committed binary
+instead of one built from the audited source — the trap §1's rebuild rule exists for);
+`gate.sh --configure` produces all four from the recipe the record used.
 
 It refuses rather than proceeding if the tree has uncommitted changes under
 `src/js`, `quickjs`, `t` or `js_comcon`: **a signature has to name a commit, and
 evidence gathered from a modified tree names nothing.** It writes its transcript
 outside the repository, so running it cannot dirty the tree it just checked.
 
-It rebuilds every build directory first, and that is not a courtesy. The `objs*/`
-trees are **tracked in git**, so a fresh clone or a `git reset --hard` hands you a
-*committed* binary rather than one built from the source you are auditing.
-Assembling the audit, exactly that produced a FAIL on `objs_jit` that the real
-build passes — and the reverse case is worse, because it would have been a pass
-nobody measured. The pack also checks that each binary is newer than the newest
+It rebuilds every build directory first, and that is not a courtesy. Through
+v5.122 the `objs_jit/` tree was **tracked in git**, so a fresh clone or a
+`git reset --hard` handed you a *committed* binary rather than one built from the
+source you are auditing. Assembling the audit, exactly that produced a FAIL on
+`objs_jit` that the real build passes — and the reverse case is worse, because it
+would have been a pass nobody measured. The artifacts are no longer tracked, the
+rebuild stays, and the pack also checks that each binary is newer than the newest
 source file, which is the mechanical form of the same warning.
 
 **Two classes of result, and the separation is the point.**

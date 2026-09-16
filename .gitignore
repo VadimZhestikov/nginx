@@ -5,3 +5,11 @@
 
 # nginx runtime logs (log dirs are kept in git via .keep / .gitkeep)
 *.log
+
+# Private patent invention-disclosure drafts — never commit (company-internal)
+patents/
+objs_asan/
+
+# build directories are artifacts: configure them with t/tools/gate.sh --configure
+objs_jit/
+objs_ubsan/

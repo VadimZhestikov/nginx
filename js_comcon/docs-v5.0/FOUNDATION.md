@@ -635,6 +635,28 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.123 (in place — the gate in the tree; G7.22's limit measured; the stream surface swept;
+build artifacts untracked):** five items of one plan. (1) `t/tools/gate.sh` is what "gate
+green" in a commit message means — the sanitizer builddirs rebuilt first, `t/` on the
+interpreter build, the confinement corpus on the compiled build, the stress suites, ASAN and
+UBSAN with leaks on, exit code as verdict — and `--configure` produces the four builddirs from
+the recipe the record used; until now the script lived in a session's temp directory, so the
+claim was the author's word (REVIEW.md §1). (2) G7.22's named under-count, measured
+(`t/comcon_retained_backstop.t`): a 3 MB leaker beside a sibling making ~45 KB of cycles per
+call keeps 100% of its exact count after 250 of the sibling's calls and after 200 interleaved
+ones — the engine's own collector gets there first and credits the call it runs in, never the
+leaker's in three provoked configurations; a ≥ 50% bound stands as the regression guard and the
+correction is unchanged, because the measurement gave nothing to tighten. (3) The residue sweep
+has twelve shapes: a stream server's handler receiving an uncaught out-of-memory, one alignment
+per TCP connection, the session finalized every time, 32 host failures per arm, compiled on the
+compiled arm (86 assertions). (4) `objs_jit/` — 212 objects, a binary and the configure outputs
+— is no longer tracked; `.gitignore` covers every builddir. (5) The warm-speculation finding
+could not be filed upstream: the maxim repository has issues disabled; the text is delivered
+to the author. **And the mechanism of v5.120 did what it promised on the pack for `3d0e11d0e`:**
+three rows INCONCLUSIVE — two patches whose lines F2 moved (re-based, both hold) and one false
+SKIP, an assertion whose prose said "not silently skipped:" matching a detector that now reads
+only prove's own skip line — with the kept evidence saying which. ASSURANCE G7.21, G7.22, §16.
+
 **v5.122 (in place — F2's leak half CLOSED: what a fragment retains across calls is its own,
 capped, refused past the cap):** user decision 2026-09-15 on the design of the same day, with
 its four recommendations taken (refusal not denial; 8 MB default; a sub-fragment charges its
