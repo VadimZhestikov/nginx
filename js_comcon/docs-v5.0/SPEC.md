@@ -272,13 +272,18 @@ wasm2c-emitted**), and write guards where a lower tier stores into a declared-ty
 shared slot (the type boundary — `Number.isSafeInteger` for `int` slots). Low
 single-digit %; M7 measures.
 
-**What T2 lowers with a type today (M5.1a, v5.117), and the rule it must keep:** a lowering
-may give a value a static type only where the language already fixes that type for every
-operand — a bit op with one provably-numeric operand is int32 by ToInt32 (the only other
-outcome needs two BigInts; a Number with a BigInt throws), and an in-bounds element of an
-integer typed array is its int32 — never by speculation, never by a hint that substitutes a
+**What T2 lowers with a type today (M5.1a v5.117, M5.1c v5.125), and the rule it must keep:**
+a lowering may give a value a static type only where the language already fixes that type
+for every operand — a bit op with one provably-numeric operand is int32 by ToInt32 (the only
+other outcome needs two BigInts; a Number with a BigInt throws), an in-bounds element of an
+integer typed array is its int32, `charCodeAt` on a string receiver is a code unit or `NaN`
+and `Math.imul` is int32 **when the callee is the engine's own function, checked by identity
+at run time and never by name** — never by speculation, never by a hint that substitutes a
 value on a miss. Every such lowering ships with an SR-2 row that writes the spec's values
-out (ASSURANCE G7.20), and a codegen version bump retires every cached artifact.
+out (ASSURANCE G7.20, G7.23), and a codegen version bump retires every cached artifact. The
+compiled tier is also fuzzed against the interpreter (`t/tools/jit-diff-fuzz.py`, a gate
+stage) because the rows a lowering ships with hold its own shapes, and F20/F21 were found on
+shapes no row held.
 
 ### 8a. The authoring tier: a fragment that authors fragments *(v5.106–v5.107)*
 

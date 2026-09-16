@@ -108,6 +108,67 @@ my @cases = (
     paths => [qw(/t/ta /t/ta)], expect_denials => 0,
     expect_re => qr/^-1,127,-128,0,255,7,255,0,-2,32767,65535,1,-2147483648,2147483647,-1,7,1,-2,1410065408,0,7,7,7,7,undefined$/m },
 
+  # M5.1c (v5.125): two builtins inlined by IDENTITY, and doubles in half-typed
+  # bit ops.  Every value below is the spec's, written out.
+  #
+  # (1) String.prototype.charCodeAt on a string receiver with an int index is
+  #     that code unit, or NaN out of range -- and ONLY that shape: a String
+  #     object, a fractional index, an object with its own charCodeAt, and a
+  #     replaced builtin all take the ordinary call (the inlining checks the C
+  #     function's identity, not the name).
+  { name => 'charCodeAt inlined by identity (M5.1c)',
+    frag => q{function(req){ var s = "A\u00e9\ud83d\ude00z", o = [], i; for (i = 0; i < 6; i++) { o.push(s.charCodeAt(i)); } o.push(s.charCodeAt(-1)); o.push(s.charCodeAt(1.5)); o.push(s.charCodeAt(99)); var so = new String("xy"); o.push(so.charCodeAt(1)); var fake = { charCodeAt: function (k) { return "fake" + k; } }; o.push(fake.charCodeAt(0)); var t = "hello"; var h = 0; for (i = 0; i < t.length; i++) { h = (h * 31 + t.charCodeAt(i)) | 0; } o.push(h); return o.join(",") + "\n"; }},
+    paths => [qw(/t/cca /t/cca)], expect_denials => 0,
+    expect_re => qr/^65,233,55357,56832,122,NaN,NaN,233,NaN,121,fake0,99162322$/m },
+
+  # (2) Math.imul on two ints is the int32 product; anything else is the call:
+  #     doubles (ToInt32 first, by the builtin), strings, huge values, NaN, and
+  #     a shadowing `Math` whose imul is the fragment's own function.
+  { name => 'Math.imul inlined by identity (M5.1c)',
+    frag => q{function(req){ var o = []; o.push(Math.imul(3, 4)); o.push(Math.imul(-5, 12)); o.push(Math.imul(0xffffffff, 5)); o.push(Math.imul(65536, 65536)); o.push(Math.imul(2147483647, 2)); o.push(Math.imul(1.9, 3.9)); o.push(Math.imul("7", "6")); o.push(Math.imul(4294967301, 3)); o.push(Math.imul(NaN, 9)); o.push(Math.imul(1e10, 1)); var Math2 = { imul: function (a, b) { return "mine" + (a + b); } }; o.push(Math2.imul(2, 3)); var h = 2166136261; var t = "abc"; for (var i = 0; i < t.length; i++) { h = Math.imul(h ^ t.charCodeAt(i), 16777619) >>> 0; } o.push(h); return o.join(",") + "\n"; }},
+    paths => [qw(/t/imul /t/imul)], expect_denials => 0,
+    expect_re => qr/^12,-60,-5,0,-2,3,42,15,0,1410065408,mine5,440920331$/m },
+
+  # (3) a half-typed bit op whose untyped operand is a DOUBLE -- a uint32 from
+  #     `>>> 0`, a fraction, 2^31, 2^32+5, 1e10, negatives, NaN, the infinities,
+  #     2^63 and -2^70 -- is ToInt32'd inline, exactly (fmod, not a cast):
+  #     ToInt32(-1.5) is -1, ToInt32(-4294967301) is -5, 1 << 1e10 shifts by
+  #     1410065408 & 31 = 0.
+  { name => 'half-typed bit ops with double operands (M5.1c)',
+    frag => q{function(req){ var xs = [4294967295, 2147483648, 4294967301, 1e10, -1.5, -4294967301, NaN, Infinity, -Infinity, 9223372036854775808, -1180591620717411303424, 0.5, -0.5]; var o = [], i, h; for (i = 0; i < xs.length; i++) { h = 5; h = (h ^ xs[i]) | 0; o.push(h); } for (i = 0; i < xs.length; i++) { h = 1; h = h << xs[i]; o.push(h); } var u = 0; for (i = 0; i < 40; i++) { u = ((u * 3 + i) >>> 0); u = (u ^ 0x5bd1e995) | 0; } o.push(u); return o.join(",") + "\n"; }},
+    paths => [qw(/t/dbl /t/dbl)], expect_denials => 0,
+    expect_re => qr/^-6,-2147483643,0,1410065413,-6,-2,5,5,5,5,5,5,5,-2147483648,1,32,1,-2147483648,134217728,1,1,1,1,1,1,1,790674668$/m },
+
+  # F20 (v5.125), found by the double-operand row above and then by the
+  # differential fuzz (t/tools/jit-diff-fuzz.py): the typed lowering read a
+  # value from the wrong slot at five kinds of codegen site and typed one local
+  # wrongly.  (a) a NUMBER local stored from an INT slot, a NUMBER local
+  # `+=` an INT, and a branch on an INT condition read _tsd where the value
+  # was in _ti; (b) a branch on an untyped condition, and a fused
+  # compare-and-branch on untyped operands, left the typed slots below the
+  # condition unboxed, so the join label read a stale value; (c) the type
+  # inference walked the bytecode linearly, so a value arriving at a join
+  # over a jump edge (`b = c ? 1.5 : 0`) never reached the store's type and
+  # the local stayed INT: the compiled tier stored 1.  Every value below is
+  # the spec's, and every shape here was reachable before M5.1a.
+  { name => 'typed local stores, branches and joins from int slots (F20)',
+    frag => q{function(req){ var o = []; var u = 1.5; u = 3; o.push(u); var v = 0.5; v += 2; o.push(v); var w = 2.5; for (var i = 0; i < 3; i++) { w = (i & 1) ? 7 : w + 1; } o.push(w); var x = 6, y = 0; if (x & 1) { y = 1; } else { y = 2; } o.push(y); if (x & 2) { y = 3; } o.push(y); var z = 0.25, k; for (k = 0; k < 4; k++) { z = (k * 2) | 0; } o.push(z); var j = 0; j = (x & 2) ? 1.5 : 0; o.push(j); var j2 = 1; j2 = (j2 ? -0.5 : j2); o.push(j2); var p = 7, pb = -0.5; p <<= (((0.25 !== pb) < pb) ? pb : (+ p)); o.push(p); var q2 = 0, qa = 0, qc = 1e10; qc = (qa >>> 0); q2 |= (1 !== (qc ? 0 : qa)); o.push(q2); var q = 0; for (k = 0; k < 40; k++) { q = ((q * 3 + k) >>> 0); q = (q ^ 0x5bd1e995) | 0; } o.push(q); return o.join(",") + "\n"; }},
+    paths => [qw(/t/f20 /t/f20)], expect_denials => 0,
+    expect_re => qr/^3,2.5,8,2,3,6,1.5,-0.5,896,1,790674668$/m },
+
+  # F21 (v5.125), found by the same fuzz: the compiled tier's helper for
+  # bitwise NOT called the unary-ARITHMETIC slow path with OP_not, whose
+  # switch has no such case and calls abort().  Reached by `~x` on any
+  # operand the type stack does not prove INT: a double, a boolean, a
+  # string, null -- so a fragment holding `~1.5` took the worker process
+  # down.  The helper now takes the interpreter's own not-slow path
+  # (ToNumeric, then ~ToInt32).  Values are ToInt32's: ~1.5 is -2, ~"3" is
+  # -4, ~1e10 is -1410065409, ~2147483648 is 2147483647.
+  { name => 'bitwise not on untyped operands does not abort the worker (F21)',
+    frag => q{function(req){ var o = []; var d = 1.5; o.push(~d); var b = true; o.push(~b); var s = "3"; o.push(~s); o.push(~null, ~undefined, ~{}, ~[], ~"", ~NaN, ~-0.5, ~4294967296.5, ~1e10); var big = 2147483648; o.push(~big); var arr = [2.5, false, "7", 1]; var acc = 0; for (var i = 0; i < arr.length; i++) { acc += ~arr[i]; } o.push(acc); return o.join(",") + "\n"; }},
+    paths => [qw(/t/f21 /t/f21)], expect_denials => 0,
+    expect_re => qr/^-2,-2,-4,-1,-1,-1,-1,-1,-1,-1,-1,-1410065409,2147483647,-14$/m },
+
   # The class A shape itself, on a Uint8Array with an int accumulator: the
   # interpreter is the oracle for the hash, the regex proves it ran.
   { name => 'Uint8Array byte scan, int accumulator (M5.1a, class A shape)',

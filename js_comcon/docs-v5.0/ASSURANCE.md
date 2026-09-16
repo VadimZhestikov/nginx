@@ -1366,7 +1366,8 @@ The primary control, and the one everything else is defence in depth for.
   53 failed, restored: pass. `t/comcon_compiled_resource_gates.t` (36, unchanged) and
   `t/comcon_jit_uncatchable.t` on the new codegen. `t/tools/m5-go-nogo.t`: class A lowered
   11.72 → 1.26 ns/byte.
-- **GAP:** `>>>`, `~` and `Math.imul` results stay untyped (uint32 and a call); typed-array
+- **GAP:** `>>>`, `~` and `Math.imul` results stay untyped (uint32 and a call) — `Math.imul` and
+  `charCodeAt` typed by identity since M5.1c, G7.23; typed-array
   WRITES, `.length` on a typed array, and `Uint32`/float element reads take the runtime. The
   remaining 2.1× on class A is boxing and checks, accepted under the M5.0 rule, not scheduled.
   The negative control is a maintained reverse patch
@@ -1477,6 +1478,72 @@ The primary control, and the one everything else is defence in depth for.
   **home:** finding F2 · `ngx_js_comcon_retained_charge` · `NGX_JS_COMCON_FRAGMENT_RETAINED_BYTES`.
 - **THREAT:** T4, T11
 - **V:** V6
+
+#### G7.23 — M5.1c changes no value: two intrinsics inlined by identity, doubles through ToInt32; and what building it found (F20, F21)
+- **CLAIM:** On the compiled tier, `s.charCodeAt(i)` for a string `s` and an int `i` produces
+  exactly the interpreter's code unit or `NaN` (out of bounds, negative index, either half of
+  a surrogate pair); `Math.imul(a, b)` for ints produces exactly the interpreter's int32
+  (overflow wraps); a receiver whose `charCodeAt` is not the engine's own — a tenant object, a
+  subclass, a replaced prototype method — is CALLED, never inlined; a half-typed bit op with a
+  double operand produces the spec's ToInt32 for every edge (`2^32+5`, `-1.5`, `1e10`, `NaN`,
+  `±Infinity`, `2^63`, `-2^70`, `±0.5`); and — F20, F21 — every typed-slot shape the fuzz found
+  produces the interpreter's value, and `~x` on an untyped operand does not abort.
+- **ARGUMENT:** M5.1c (v5.125) assumes nothing about a name. The inline path is taken only
+  when the callee value IS the engine's C function for `String.prototype.charCodeAt` or
+  `Math.imul` — identity by function pointer, checked at run time on every call — AND the
+  receiver and arguments carry the tags the spec's fast case needs; every other case is the
+  same inline-cache call the boxed path made. The helper reads the string's code unit through
+  the engine (it is the interpreter's own read, not a re-implementation), returning −1 out of
+  bounds, which the generated code maps to `NaN`. The ToInt32 for doubles is written once in
+  the generated preamble (truncate, mod 2³², wrap to int32) and is the spec's algorithm, not
+  a cast. **F20 and F21 are what the SR-2 rows for M5.1c found on their first run, on shapes
+  M5.1c did not touch:** (F20) five kinds of site in maxim's typed lowering where a value was read
+  from the wrong slot, and an inference that typed a local wrongly — a NUMBER local stored from, or `+=`'d with, an
+  INT slot read the double register; a branch on an INT condition read the double register, in
+  the 32-bit and the 8-bit branch forms; a branch on an untyped condition and a fused
+  compare-and-branch on untyped operands left the typed slots below the condition unboxed, so
+  the join label read a stale value; and the inference pre-pass walked the bytecode linearly,
+  so a value reaching a join over a jump edge never reached the store's type and `var b = 0; b
+  = c ? 1.5 : 0` typed `b` INT — the compiled tier stored 1. The pre-pass now carries the
+  least-specific type arriving at each jump target and merges it at the label; the branch sites
+  box what survives below the condition; the store sites read the slot the value is in. (F21)
+  the compiled tier's helper for `~` called the unary-ARITHMETIC slow path with an opcode it
+  has no case for, and that path's `default:` is `abort()`: a fragment holding `~1.5`, `~true`,
+  `~"3"` or `~null` took the worker process down. The helper now takes the interpreter's own
+  path (ToNumeric, then `~ToInt32`, or BigInt not). **The instrument** is
+  `t/tools/jit-diff-fuzz.py`: random small functions over int and double locals with
+  branches, loops, compound assignments and the operators the lowering types; each program run
+  interpreted and with every function compiled, the interpreter as oracle; a divergence is
+  delta-reduced to a minimal function automatically (the four reductions that named F20's
+  join class were one or two statements each). It is a gate stage and a pack check, and a
+  seed that does not print one line per function is DEAD, which fails the run.
+- **EV:** `t/comcon_include_faithfulness.t` — five new SR-2 cases (20 assertions; 77 in the
+  file): `charCodeAt` inlined by identity (12 values incl. the surrogate halves, OOB, `NaN`, a
+  fake receiver returning its own value); `Math.imul` inlined by identity (12 values incl. the
+  wrap and a shadowed `imul`); half-typed bit ops with 13 double operands × 2 operators with
+  the spec's 26 values; F20's row (11 values over the six shapes); F21's row (14 values of `~`
+  over doubles, booleans, strings, `null`, `undefined`, an object, an array, `NaN`, the
+  int32 edges). **Validated by breaking both intrinsics** (verified at the JIT shell with every
+  function compiled: both inline paths emitted once for the token loop). `t/tools/jit-diff-fuzz.py
+  run --seeds 1-30`: 1,800 functions, compiled == interpreted (before the fixes: 7 of the first
+  12 seeds diverged and one aborted). `t/comcon_compiled_resource_gates.t` (36) and
+  `t/comcon_jit_uncatchable.t` on the new codegen. `t/tools/m5-go-nogo.t`: class B 52.5 → 34.38
+  ns/char, ratio 2.3, NO-GO. The engine's own five test files under `--jit-compile-all` fail
+  at exactly the assertions the committed engine failed at (pre-existing; checked against a
+  clean worktree of the parent commit).
+- **GAP:** The fuzz population is numeric: three locals, no strings, objects or calls; string and
+  object shapes are the nginx differential's. The engine's own `--jit-compile-all` failures
+  (`test_language`, `test_loop`, `test_bigint`, `test_builtin`) are maxim's and pre-date this
+  work; they are recorded, not fixed, and none is reachable by a fragment through a shape the
+  differential holds. The negative controls are maintained reverse patches
+  (`t/tools/controls/intrinsics-wrong.patch`: the OOB code unit read as 0 and `imul` emitted
+  as a plain product; `t/tools/controls/f20-branch-reads-double.patch`: the 8-bit branch on an
+  INT condition reading the double register again; `t/tools/controls/f21-bnot-aborts.patch`:
+  the helper back on the arithmetic path, the worker dies), each verified by the script. The
+  same engine patch is carried to the fork.
+  **home:** M5.1c (ROADMAP POSITION) · PERFORMANCE §2f.3 · findings F20, F21 · `JIT_CODEGEN_VERSION` 19.
+- **THREAT:** T6, T9, T11
+- **V:** V13
 
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
@@ -2152,6 +2219,8 @@ assurance case whose findings section is empty has not been built honestly.
 | **F17** | (a) A WORKER never freed the compartment at exit — `exit_process` tore down the tenant and host runtimes and not `comcon_rt`; (b) the COM node classes (`NginxServer`, the per-module nodes, the upstream classes) had IDs and prototypes in the compartment runtime but NO CLASS DEFINITION there, so a wrapper minted inside a fragment (`listener.serverByName()` under audit) was freed without its finalizer — opaque + 4 KB pool per call, unboundedly, from a fragment | G7.17 | **CLOSED 2026-09-15** (after the §15 signature — see §16). Found by running one new test under ASAN with leak detection ON, then the whole corpus: both were invisible to a corpus that ran `detect_leaks=0`. Fixed: one `ngx_js_comcon_teardown()` for all three exit paths; `ngx_js_http_register_classes` + `ngx_js_upstream_register_classes` moved into `ngx_js_com_register_classes` for every runtime. The corpus now runs leaks-on with a one-line suppression, and `JS_FreeRuntime`'s assertion at worker exit held over 84 files: the invocation paths leak no JS reference. |
 | **F18** | An out-of-memory INSIDE the engine's backtrace annotation freed the pending exception under its own feet: `build_backtrace(ctx, rt->current_exception, …)` held no reference, a failed allocation in it threw, `JS_Throw` released the error being annotated, and the annotation went on to define `stack` on a freed object — a fragment-reachable worker SIGSEGV at the memory allowance; on the same path an uncatchable deadline abort would have lost its flag | G7.19 | **FOUND AND CLOSED 2026-09-15 (v5.115).** Found by the M5.0 commit's gate: `t/comcon_author_basic.t` `/nestmemory` killed the worker 3/3 on this layout and never under ASAN or valgrind, because a sanitizer moves where the allowance bites. Fixed in the engine (`build_backtrace_pending`: hold a reference; if the attempt threw, put the original error and its flag back, minus `stack`), the parser's two sites included. `t/comcon_oom_backtrace.t` sweeps the allowance across 32 alignments of a 1 KB fill so the window is hit whatever the layout; validated against the unfixed engine (the worker dies, three of five fail). The same patch is carried to the engine fork. |
 | **F19** | Reporting a fragment's failure, the host called ToString on the error under the fragment's allowance; when that itself ran out of memory it reported `error` for an out-of-memory it could have named, and left ToString's own exception pending on the compartment, alive until the next throw replaced it | G7.21 | **FOUND AND CLOSED 2026-09-15 (v5.119)** by the residue-sweep battery's `catch_alloc` shape on its first run (3 of 64 alignments across the arms). Fixed in `ngx_js_comcon_exc_text`: the pending exception is taken off, and a moved out-of-memory counter names the cause. Not a crash and not an escape; a label a tenant could not act on, and a stale object on the compartment. |
+| **F20** | Maxim's typed lowering read a value from the wrong slot at five kinds of codegen site (fourteen sites) and typed one local wrongly: a NUMBER local stored from (or `+=`'d with) an INT stack slot read the double register; a branch on an INT condition read the double register (32-bit and 8-bit forms); a branch on an untyped condition, and a fused compare-and-branch on untyped operands, left the typed slots below the condition unboxed for the join label to read stale; and the inference pre-pass walked the bytecode linearly, so a value reaching a join over a jump edge never reached the store's type (`var b = 0; b = c ? 1.5 : 0` typed `b` INT and the compiled tier stored 1) — wrong values, no escape, reachable by any fragment with `var` locals holding a double and an int in turn | G7.23 | **FOUND AND CLOSED 2026-09-16 (v5.125).** Found by M5.1c's SR-2 rows on their first run (the double-operand row failed on a store M5.1c did not touch), then the rest of the class by `t/tools/jit-diff-fuzz.py` (7 of the first 12 seeds diverged; each reduced to one or two statements). Fixed in the engine: the pre-pass merges jump-edge state at labels; the branch sites box what survives; the stores read the slot the value is in. 30 seeds, 1,800 functions clean after; the F20 row in the differential pins 11 values; the fuzz is a gate stage. Carried to the fork. |
+| **F21** | The compiled tier's helper for bitwise NOT called the unary-ARITHMETIC slow path with `OP_not`, an opcode that path has no case for, and its `default:` is `abort()`: `~x` on any operand the type stack did not prove INT — a double, a boolean, a string, `null` — killed the worker process; a fragment holding `~1.5` was a worker crash on the compiled tier | G7.23 | **FOUND AND CLOSED 2026-09-16 (v5.125)** by the fuzz's first run (every seed aborted before printing). Fixed in the engine: the helper takes the interpreter's own not-slow path (ToNumeric, then `~ToInt32`, or BigInt not). The F21 row in the differential holds 14 values over every operand kind; the negative control (`t/tools/controls/f21-bnot-aborts.patch`) brings the abort back and the row fails with the worker dead. Not an escape; an availability defect a tenant could trigger at will. Carried to the fork. |
 
 ---
 
@@ -2355,6 +2424,7 @@ signature is never quietly credited with work it did not see.
 | **F2's LEAK HALF CLOSED — G7.22 (v5.122).** What a fragment RETAINS across calls is attributed to it (the compartment's malloc delta around each invocation, exact for what refcounting frees, corrected for cycles by a per-call collection when a call leaves 64 KB or more behind and a 4 MB backstop), capped by a new meter word `retainedBytes` (8 MB default, narrowing only), and refused past the cap with a new refusal code `E_MEM_RETAINED` until the epoch is replaced; a sub-fragment charges its own slot under the cap in force; `comcon.memStatus(f)` reads the count. 19 assertions on both binaries, the golden corpus carries the code, the invocation cost is unchanged. | **Closes a gap both signatures accepted as residual risk** (AUDIT_M-SES §3's first row, G6.6's GAP, F2). A new mechanism, a new vocabulary word and a new closed-set member, so it is exactly what §15 says would need looking at: the enumeration checks and the golden corpus were extended with it and pass; G7.22's GAP names what the accounting cannot attribute, and the runtime cap remains the backstop for that. |
 | **THE GATE IN THE TREE; THE BACKSTOP MEASURED; THE STREAM SURFACE SWEPT; ARTIFACTS UNTRACKED (v5.123).** `t/tools/gate.sh` is what "gate green" means, one command with the exit code as verdict, and `--configure` builds the four builddirs from the recipe the record used; `objs_jit/` is no longer tracked (212 objects and a binary a clone was handed instead of building). G7.22's named limit measured: the leaker keeps 100% of its exact count beside a small cycle-maker in three provoked configurations (`t/comcon_retained_backstop.t`), so the correction stays as it is. The residue sweep has twelve shapes: the stream server's handler receiving an uncaught out-of-memory, one alignment per connection, finalized every time. And the pack on `3d0e11d0e` did what v5.120 promised: three rows INCONCLUSIVE — two patches whose lines F2 moved (re-based) and one false SKIP (an assertion's prose said "skipped:", and the detector now reads only prove's own skip line); the kept evidence is what said which. The warm-speculation finding could not be filed upstream: the maxim repository has issues disabled; the text is delivered. | **Strengthens what every "gate green" claim since v5.105 rests on**, by making it reproducible; nothing the case attests changes. G7.22's GAP shrinks from a hazard to a measurement. |
 | **THE RECORD MADE READABLE; CLASS B RE-MEASURED AGAINST A C BOUND (v5.124).** README's 80-line history (one line of 83 KB) is gone — every entry was already FOUNDATION's delta log — and a five-line state stands in its place; ROADMAP's POSITION opens with where the work is, in five lines, above its log. The benchmark's class B typed arm is a C kernel reading every character through the engine, which no codegen change can move: on it class B reads **3.5× — GO by the M5.0 rule**, where the v5.114 NO-GO stood on a denominator that was not a bound (PERFORMANCE §2f.2). The sweep covers `checkRequest` at admission. And the broadcast flake's first face finally carried text — `kill(worker, 9) failed (No such process)`: the master in its TERMINATE escalation at shutdown, under the pack only, never standalone (three runs, QUIT only) — so the harness now prints the error log's last 40 lines on any "no alerts" failure, which is what would have said who sent TERM. | **No bearing on a claim.** A measurement corrected (and its decision flipped, on the record's own rule), an instrument sharpened, and two documents made readable. The M5.1c the corrected number points at is a decision, recorded with the number. |
+| **M5.1c BUILT AND MEASURED — NO-GO AT 2.3×, THE M5 TRACK CLOSES; F20 AND F21 FOUND BY A DIFFERENTIAL FUZZ AND CLOSED (v5.125).** `charCodeAt` on a string with an int index and `Math.imul` on ints are inlined when the callee is the engine's own C function (identity by pointer, never by name); a half-typed bit op takes a double operand through ToInt32 in place. `JIT_CODEGEN_VERSION` 19. Class B 52.5 → 34.38 ns/char against the C bound 15.00: 2.3×, NO-GO by the rule; class A 2.2×. The SR-2 rows for it failed first on shapes it did not touch: F20 (five kinds of typed-lowering site reading the wrong slot, and a linear inference that missed a value arriving over a jump) and F21 (a compiled `~` on an untyped operand calling `abort()` — a fragment's `~1.5` killed the worker). Both fixed in the engine; `t/tools/jit-diff-fuzz.py` (interpreter as oracle, automatic reduction) found F20's rest and is a gate stage: 30 seeds, 1,800 functions clean. The flake hunt: three full runs, no recurrence. | **Touches the compiled tier the signature attests through G7.5/G7.18 and (F), and narrows one claim it relied on.** F21 was a worker crash reachable by any fragment on the compiled tier — an availability defect under T11, not an escape — and F20 was wrong values on the tier SR-2 attests equal to the interpreter, on shapes the differential did not hold until now. Neither was found by the sanitizer corpus (a miscompile is not a memory error) nor by the differential's shapes (string- and object-heavy); the instrument that finds this class is now standing evidence. Every value the compiled tier can now produce differently is enumerated and pinned; the codegen version bump retires every cached artifact. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

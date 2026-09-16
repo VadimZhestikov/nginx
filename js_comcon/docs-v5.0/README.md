@@ -2,11 +2,12 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.124**, 2026-09-16.)
+> (current: **v5.125**, 2026-09-16.)
 >
 > **Where the work stands.** Every roadmap increment is done (A–E, live ops, the config
 > instance), the confinement track is closed and the assurance case carries two signatures
-> (ASSURANCE §15), the compiler track is closed at M5.1a with M5.1b parked on its numbers, and
+> (ASSURANCE §15), the compiler track is closed at M5.1c (M5.1a and M5.1c shipped, M5.1b parked, the rule
+> saying NO-GO at 2.3× on the last class), and
 > the mediation vocabulary is complete with `opaque.*` and the postures not built by decision.
 > What is still open is named, not implied: F11's reproduction half (a signer running the pack
 > themselves), the broadcast-fuzz flake (instrumented, its alert text now captured, awaiting a

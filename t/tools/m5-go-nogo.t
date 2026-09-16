@@ -57,6 +57,14 @@
 # PERFORMANCE §2f.2 as a decision with its number, not a scheduled step.  The
 # K arm stays in the file for continuity of the earlier numbers.
 #
+# SINCE v5.125 M5.1c IS BUILT (charCodeAt and Math.imul inlined when the
+# callee is the engine's own function -- identity, not name; doubles through
+# ToInt32 in place) and the same rule reads the remaining gap: class B
+# lowered 52.5 -> 34.38 ns/char against the C bound 15.00, ratio 2.3 --
+# NO-GO.  What is left is the engine's per-character read and the boxing
+# around the loop, which no lowering of this kind removes.  THE M5 TRACK
+# CLOSES AT M5.1c (PERFORMANCE §2f.3).  Class A reads 2.2 (1.34 vs 0.61).
+#
 #     TEST_NGINX_BINARY=$(pwd)/objs_jit/nginx prove -v t/tools/m5-go-nogo.t
 
 use warnings;

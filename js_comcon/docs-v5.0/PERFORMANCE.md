@@ -382,6 +382,49 @@ same kind of cut as M5.1a (no speculation, the type comes from the spec), not M5
 shapes; the split and `toString(16)` around the loop stay engine work. It is a decision, not a
 scheduled step, recorded here with its number so it is decided on evidence.
 
+### 2f.3 M5.1c built and measured — and the rule now says NO-GO: the M5 track closes here *(v5.125)*
+
+§2f.2 pointed at a cut of M5.1a's kind and left it as a decision with its number. It was
+built: on the compiled tier a `charCodeAt` call on a string receiver with an int index, and a
+`Math.imul` call on two ints, are emitted inline **when the callee is the engine's own C
+function** — identity by function pointer at run time, never by the property name, so a
+tenant's `charCodeAt` (the differential's `fake` receiver) is still a call — and a half-typed
+bit op with a double operand takes ToInt32 in place. Same instrument, same box, the same C
+bound as v5.124:
+
+| class B, token check (ns/char) | v5.124 | **v5.125 (M5.1c)** |
+|---|--:|--:|
+| floor (C FNV) | 0.47 | 0.31 |
+| typed bound (C, engine read per char) | 15.16 | 15.00 |
+| lowered | 52.5 | **34.38** |
+| lowered / typed | 3.5 | **2.3** |
+
+| class A, byte scan (ns/byte) | v5.117 | v5.125 |
+|---|--:|--:|
+| typed bound | 0.61 | 0.61 |
+| lowered | 1.26 | 1.34 |
+| lowered / typed | 2.1 | 2.2 |
+
+**By the rule stated before the numbers (`lowered / typed ≥ 3 → GO`), class B is NO-GO at
+2.3× after M5.1c, and class A is unchanged at 2.2×.** M5.1c collected the part of the class B
+prize that the language fixes the type of — the two calls per character; what remains between
+34 and 15 is the engine's per-character string read, the boxing of the accumulator across the
+loop, and the `split`/`toString(16)` around it, none of which a lowering of M5.1a's kind (no
+speculation, the type from the spec) can remove. A lowering that could would be M5.1b's
+declared shapes or a speculating tier — both decided against on their numbers. **The M5 track
+therefore closes at M5.1c**, complete as measured: 11.72 → 1.34 ns/byte on the byte-scan
+class and 52.5 → 34.38 ns/char on the token class, every value the compiled tier can produce
+differently enumerated and pinned to the interpreter and the spec (ASSURANCE G7.23).
+
+What the build cost, which the record should carry: the three SR-2 rows written for M5.1c
+failed on their first run on shapes M5.1c did not touch, and pulling that thread found F20
+(five kinds of typed-lowering site reading the wrong slot, and an inference typing a local wrongly) and F21 (a
+compiled `~` on an untyped operand aborting the worker), both pre-existing in maxim's lowering
+and reachable by a fragment before this work. The instrument that found them,
+`t/tools/jit-diff-fuzz.py`, is now a gate stage. **A codegen change is measured in ns/char
+and paid for in findings;** this one paid more than it bought, and that is the better reason
+the track closes.
+
 ---
 
 ## 3. Cost model by enforcement moment

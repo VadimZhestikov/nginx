@@ -1,18 +1,26 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **WHERE WE ARE (v5.124 — 2026-09-16), in five lines.** Every increment is done and every
+> **WHERE WE ARE (v5.125 — 2026-09-16), in five lines.** Every increment is done and every
 > track is closed: confinement (two signatures on the assurance case, ASSURANCE §15), the
-> compiler (M5.1a shipped, M5.1b parked on its numbers), the library (the vocabulary complete;
-> `opaque.*` and the postures not built by decision), live ops and the config instance. The
-> gate is `t/tools/gate.sh`; every negative control is automated; the OOM sweep stands on both
-> tiers; F2's leak half is closed with its limit measured. **Open, by name:** F11's
-> reproduction half (a signer running the pack); the broadcast-fuzz flake (instrumented, its
-> alert text captured, awaiting a recurrence with the log tail); and five decisions — the
-> warm-speculation finding to post upstream, the sub-fragment narrowing words, `opaque.*` and
-> the postures, M5.1b, and **M5.1c**: on a C bound the benchmark's class B reads 3.5×, GO by
-> the M5.0 rule, pointing at a cut of M5.1a's kind (`charCodeAt` and `Math.imul` typed by the
-> spec; PERFORMANCE §2f.2). The rest of this block is the log, newest first, each entry also
-> a FOUNDATION delta.
+> compiler (M5.1a and M5.1c shipped, M5.1b parked; the rule says NO-GO at 2.3× on the last
+> class, PERFORMANCE §2f.3), the library (the vocabulary complete; `opaque.*` and the postures
+> not built by decision), live ops and the config instance. The gate is `t/tools/gate.sh`,
+> with a differential fuzz of the compiled tier as a stage; every negative control is
+> automated; the OOM sweep stands on both tiers; F2's leak half is closed with its limit
+> measured. **Open, by name:** F11's reproduction half (a signer running the pack); the
+> broadcast-fuzz flake (instrumented, three clean hunts, awaiting a recurrence with the log
+> tail); the engine's own `--jit-compile-all` test failures (maxim's, pre-existing, recorded in
+> G7.23); and four decisions — the warm-speculation finding to post upstream, the sub-fragment
+> narrowing words, `opaque.*` and the postures, M5.1b. The rest of this block is the log,
+> newest first, each entry also a FOUNDATION delta.
+>
+> - **M5.1c BUILT AND MEASURED; THE M5 TRACK CLOSES; F20 AND F21 CLOSED (2026-09-16, v5.125).**
+>   `charCodeAt` and `Math.imul` inlined by identity of the callee, doubles through ToInt32 in
+>   place: class B 52.5 → 34.38 ns/char on the C bound 15.00, 2.3×, NO-GO by the rule. Building
+>   it found F20 (five kinds of typed-lowering site reading the wrong slot, one linear inference
+>   missing a value over a jump) and F21 (a compiled `~1.5` aborting the worker), both maxim's, both
+>   fixed; `t/tools/jit-diff-fuzz.py` found F20's rest and is a gate stage (1,800 functions
+>   clean). Flake hunt: three runs, no recurrence.
 >
 > - **THE RECORD MADE READABLE; CLASS B RE-MEASURED (2026-09-16, v5.124).** README's 83 KB
 >   history line is a five-line state; ROADMAP opens with where we are. Class B's typed arm is

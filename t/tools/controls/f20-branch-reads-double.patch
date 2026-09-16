@@ -1,0 +1,13 @@
+diff --git a/quickjs/quickjs-jit.c b/quickjs/quickjs-jit.c
+index b0f26895b..23bc05a3d 100644
+--- a/quickjs/quickjs-jit.c
++++ b/quickjs/quickjs-jit.c
+@@ -6675,7 +6675,7 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
+                 /* F20: an INT condition lives in _ti, not _tsd (0 is falsy) */
+                 { int _bx; for (_bx=0; _bx < d-1 && _bx < gen_sp-1; _bx++) _P94_ENSURE(_bx); }
+                 jit_buf_printf(cb,
+-                    "    { _sp=%d; if(_ti%d==0) goto _L%d; }\n",
++                    "    { _sp=%d; if(_tsd%d==0.0) goto _L%d; }\n",
+                     d-1, d-1, tgt);
+             } else if (gen_sp > 0 && gen_st[gen_sp-1] == JIT_T_NUMBER) {
+                 /* P9.4: typed fast path — box surviving slots below condition */

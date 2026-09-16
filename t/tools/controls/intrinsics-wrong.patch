@@ -1,0 +1,28 @@
+diff --git a/quickjs/quickjs.c b/quickjs/quickjs.c
+index d46a79237..dad582d2c 100644
+--- a/quickjs/quickjs.c
++++ b/quickjs/quickjs.c
+@@ -16201,7 +16201,7 @@ int64_t js_jit_char_code_at(JSValueConst str, int64_t idx)
+         return -1;
+     p = JS_VALUE_GET_STRING(str);
+     if (idx < 0 || idx >= (int64_t) p->len)
+-        return -1;
++        return 0;
+     return string_get(p, (int) idx);
+ }
+ 
+diff --git a/quickjs/quickjs-jit.c b/quickjs/quickjs-jit.c
+index b0f26895b..1fa9177c8 100644
+--- a/quickjs/quickjs-jit.c
++++ b/quickjs/quickjs-jit.c
+@@ -7651,8 +7651,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
+                     snprintf(_intr_pro, sizeof(_intr_pro),
+                         "      if(js_jit_intrinsic_is(_f,%d)&&JS_VALUE_GET_TAG(_ca%d[0])==JS_TAG_INT"
+                         "&&JS_VALUE_GET_TAG(_ca%d[1])==JS_TAG_INT){\n"
+-                        "        _r=JS_NewInt32(ctx,(int32_t)((uint32_t)JS_VALUE_GET_INT(_ca%d[0])"
+-                        "*(uint32_t)JS_VALUE_GET_INT(_ca%d[1])));\n"
++                        "        _r=JS_NewFloat64(ctx,(double)JS_VALUE_GET_INT(_ca%d[0])"
++                        "*(double)JS_VALUE_GET_INT(_ca%d[1]));\n"
+                         "      } else\n",
+                         JS_JIT_INTR_IMUL, pc, pc, pc, pc);
+                 }

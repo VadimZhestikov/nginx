@@ -1063,7 +1063,14 @@ int  js_jit_get_threshold(void);
  */
 #define JIT_WARM_VALUE_SPECULATION 0
 
-#define JIT_CODEGEN_VERSION 18u  /* M5.1a: int32 results for half-typed bit ops; integer typed-array element reads (was 17: catch dispatch honours the uncatchable flag) */
+/* M5.1c: builtins the generated code may inline after an exact identity check
+ * (js_jit_intrinsic_is); js_jit_char_code_at reads a string's code unit. */
+#define JS_JIT_INTR_CHARCODEAT 0
+#define JS_JIT_INTR_IMUL       1
+int     js_jit_intrinsic_is(JSValueConst f, int which);
+int64_t js_jit_char_code_at(JSValueConst str, int64_t idx);
+
+#define JIT_CODEGEN_VERSION 19u  /* M5.1c: charCodeAt and Math.imul inlined by identity; doubles in half-typed bit ops (was 18: M5.1a) */
 void js_jit_set_max_bc_len(int n);
 int  js_jit_get_max_bc_len(void);
 

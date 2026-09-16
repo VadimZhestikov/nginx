@@ -635,6 +635,42 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.125 (in place — M5.1c built and measured: class B's method calls typed by identity, and
+the rule now says NO-GO at 2.3×, so the compiler track closes at M5.1c; F20 and F21 found by
+a differential fuzz and closed; the flake hunt clean):** (1) M5.1c, the cut §2f.2 pointed at,
+of M5.1a's kind: `charCodeAt` on a string receiver with an int index, and `Math.imul` on two
+ints, are emitted inline when the callee IS the engine's own C function — identity by
+function pointer at run time, never by name, so a tenant's `charCodeAt` is still a call —
+and the half-typed bit ops take a double operand through ToInt32 in place instead of the
+runtime. `JIT_CODEGEN_VERSION` 19; three SR-2 rows with the spec's values written out
+(surrogate halves, out of bounds, `NaN`, a fake receiver, int32 overflow of `imul`, the ToInt32
+edge doubles). **Measured:** class B lowered 52.5 → 34.38 ns/char against the C bound 15.00,
+**2.3×, NO-GO by the rule stated before the numbers**; class A unchanged at 2.2×. M5.1c
+collected the part of the class B prize that the spec fixes the type of; what remains is the
+engine's per-character read and boxing, which no lowering of this kind can remove. **The M5
+track closes at M5.1c** (PERFORMANCE §2f.3). (2) The three SR-2 rows failed on their first
+run for a reason that was not M5.1c: **F20**, five kinds of place where the typed lowering read a
+value from the wrong slot, and an inference that typed a local wrongly — a NUMBER local stored from an int slot
+read the double register; a branch on an int condition read the double register (the 32-bit
+and 8-bit branch forms alike); a branch on an untyped condition, and a fused compare-and-branch
+on untyped operands, left the typed slots below the condition unboxed for the join label to
+read stale; and the type inference walked the bytecode linearly, so a value arriving at a
+join over a jump edge (`b = c ? 1.5 : 0`) never reached the store's type and the local stayed
+INT (the compiled tier stored 1). Every shape was reachable before M5.1a with `var` locals
+holding a double and an int in turn. (3) To find the rest of F20's class the tree now has a
+**differential fuzz with a delta reducer**, `t/tools/jit-diff-fuzz.py`: random small
+functions over int and double locals, run interpreted and with every function compiled,
+the interpreter as oracle; a divergence is reduced to a minimal function automatically. Its
+first twelve seeds diverged on seven; the first run also aborted — **F21:** the compiled
+tier's helper for bitwise NOT called the unary-arithmetic slow path with an opcode it has no
+case for, so `~x` on a double, a boolean, a string or `null` called `abort()`: a fragment
+holding `~1.5` took the worker down. Fixed by taking the interpreter's own path. After the
+fixes: 30 seeds, 1,800 functions, zero divergences; the engine's own test files under
+`--jit-compile-all` fail exactly where the committed engine failed (pre-existing, recorded).
+The fuzz is a gate stage (`gate.sh` 2b) and a pack check. (4) The broadcast-fuzz flake hunt:
+three full runs of the compiled-tier corpus, no recurrence; the instrumented harness stays
+armed. ASSURANCE G7.23, F20, F21, §16; SPEC §8 (what T2 lowers with a type); THREATS T11.
+
 **v5.124 (in place — the record made readable; class B re-measured against a C bound, and the
 rule now says GO; the last sweep gap closed; the flake's text captured):** (1) README's
 80-line history — one line of it 83 KB, every entry already in this delta log — is replaced by

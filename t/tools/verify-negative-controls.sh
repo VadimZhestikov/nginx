@@ -102,6 +102,9 @@ PATCHES=(
 "F18|backtrace-frees-the-error.patch|t/comcon_oom_backtrace.t|objs|fail|an out-of-memory inside the backtrace annotation freed the error"
 "M5.1a|half-typed-bitops-wrong.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|M5.1a: xor emitted as or, Int8 read as Uint8"
 "F2-leak|retained-cap-unchecked.patch|t/comcon_retained_memory.t|objs|fail|F2's leak half: the retained cap is never checked, so a fragment over it keeps running"
+"M5.1c|intrinsics-wrong.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|M5.1c: charCodeAt out of bounds read as 0 instead of NaN, Math.imul emitted as a double product"
+"F20|f20-branch-reads-double.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|F20: the 8-bit branch on an INT condition reads the double register again"
+"F21|f21-bnot-aborts.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|F21: the compiled bitwise-not helper back on the arithmetic slow path -- a fragment's ~1.5 kills the worker"
 )
 
 if ! git diff --quiet -- src/js quickjs || ! git diff --cached --quiet -- src/js quickjs; then

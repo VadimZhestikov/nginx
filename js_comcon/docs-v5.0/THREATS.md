@@ -175,6 +175,12 @@ only) the fragment is refused (`E_MEM_RETAINED`) until its epoch is replaced; a
 sub-fragment charges its own slot under the cap in force. Corrected for cycles at O(1)
 per call (a call that leaves 64 KB or more behind pays a collection; a 4 MB backstop).
 ASSURANCE G7.22, `t/comcon_retained_memory.t`.
+*Found and closed (v5.125):* **F21 — a fragment's `~1.5` killed the worker on the compiled
+tier.** The compiled helper for bitwise NOT went down the unary-arithmetic slow path, whose
+`default:` is `abort()`, for any operand the type stack did not prove INT. An availability
+defect a tenant could trigger at will, not an escape; found by the differential fuzz's first
+run, fixed in the engine, pinned by an SR-2 row over every operand kind, its negative control
+brings the abort back (ASSURANCE G7.23, F21).
 *Residual:* **TM-1 found here** (denial-log flooding, below); what the retained accounting
 cannot attribute (G7.22's GAP: a leaker beside a sibling that makes many small cycles is
 under-counted at the backstop) falls to the runtime cap.

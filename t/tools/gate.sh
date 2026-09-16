@@ -15,6 +15,10 @@
 #      from before the change -- the rule is written in the sanitizer script)
 #   1. t/ on objs             the whole functional suite, interpreter build
 #   2. t/comcon_*.t on objs_jit   the confinement corpus, compiled tier
+#   2b. t/tools/jit-diff-fuzz.py  the compiled tier fuzzed against the interpreter
+#      (quickjs/qjs, every function compiled; twelve seeds; the instrument
+#      that found F20 and F21, which no sanitizer and no shape the corpus
+#      held could see)
 #   3. t_stress/ on objs      the leak and reload stress suites
 #   4. t/run_sanitizers.sh    ASAN + UBSAN over the corpus, leaks ON
 #
@@ -86,7 +90,7 @@ stage() {  # name, logfile, command...
     echo "=== $name ==="
     "$@" >"$OUT/$log" 2>&1
     local rc=$?
-    grep -E "^Files=|^Result|Failed test|^S6 sanitizer gate|findings in src/js" "$OUT/$log" | head -12
+    grep -E "^Files=|^Result|Failed test|^S6 sanitizer gate|findings in src/js|^jit-diff-fuzz:|^seed [0-9]+: [0-9]+ diverging|^DEAD" "$OUT/$log" | head -12
     if [ $rc -eq 0 ]; then verdict+=("PASS  $name"); else verdict+=("FAIL  $name  (see $OUT/$log)"); fail=1; fi
 }
 
@@ -98,9 +102,12 @@ done
 for d in objs objs_jit; do
     make -f "$d/Makefile" build -j"$(nproc)" >"$OUT/build-$d.log" 2>&1 || { echo "FAIL  rebuild $d"; exit 1; }
 done
+# the JIT shell for stage 2b (same archive, same flags; a no-op when current)
+make -C quickjs CONFIG_JIT=y qjs >"$OUT/build-qjs.log" 2>&1 || { echo "FAIL  rebuild quickjs/qjs"; exit 1; }
 
 stage "1. t/ on objs"               t-objs.log     env TEST_NGINX_BINARY="$PWD/objs/nginx"     prove t/
 stage "2. t/comcon_*.t on objs_jit" t-jit.log      env TEST_NGINX_BINARY="$PWD/objs_jit/nginx" prove t/comcon_*.t
+stage "2b. jit-diff-fuzz (12 seeds)" jit-fuzz.log   env JIT_FUZZ_TMP="$OUT/jit-fuzz" python3 t/tools/jit-diff-fuzz.py run --seeds 1-12 --n 60
 stage "3. t_stress/ on objs"        t-stress.log   env TEST_NGINX_BINARY="$PWD/objs/nginx"     prove t_stress/
 stage "4. sanitizers (leaks on)"    sanitizers.log bash t/run_sanitizers.sh
 

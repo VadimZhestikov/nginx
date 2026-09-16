@@ -159,6 +159,11 @@ for c in check-assurance.py check-enumerations.py check-dead-probes.py; do
     python3 "t/tools/$c" >"$OUT/$c.log" 2>&1
     gate "$c" $? "$(tail -1 "$OUT/$c.log")"
 done
+# The compiled tier against the interpreter (G7.23): random numeric functions,
+# every one compiled, the interpreter as oracle.  Needs the JIT shell.
+make -C quickjs CONFIG_JIT=y qjs >"$OUT/build-qjs.log" 2>&1
+JIT_FUZZ_TMP="$OUT/jit-fuzz" python3 t/tools/jit-diff-fuzz.py run --seeds 1-12 --n 60 >"$OUT/jit-diff-fuzz.log" 2>&1
+gate "jit-diff-fuzz.py, 12 seeds x 60 functions, compiled == interpreted" $? "$(tail -1 "$OUT/jit-diff-fuzz.log")"
 
 # ───────────────────────────────────────────────────────── the slow half ─
 if [ "$QUICK" = 1 ]; then

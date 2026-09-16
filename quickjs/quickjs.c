@@ -16161,6 +16161,50 @@ int js_comcon_aot_compile(JSContext *ctx, JSValueConst func)
     return 0;
 }
 
+/* M5.1c (pilgrim): the two builtins the generated code may inline, checked by
+ * IDENTITY -- the object must be a C function whose C pointer is the builtin's
+ * -- so a program that replaced String.prototype.charCodeAt or Math.imul, or
+ * that shadows `Math` with its own object, takes the ordinary call.  No cache:
+ * a per-site cached pointer would be an ABA hazard across contexts, and the
+ * check is a tag, a class and a pointer compare. */
+static JSValue js_string_charCodeAt(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv);
+static JSValue js_math_imul(JSContext *ctx, JSValueConst this_val,
+                            int argc, JSValueConst *argv);
+
+int js_jit_intrinsic_is(JSValueConst f, int which)
+{
+    JSObject *p;
+
+    if (JS_VALUE_GET_TAG(f) != JS_TAG_OBJECT)
+        return 0;
+    p = JS_VALUE_GET_OBJ(f);
+    if (p->class_id != JS_CLASS_C_FUNCTION)
+        return 0;
+    switch (which) {
+    case JS_JIT_INTR_CHARCODEAT:
+        return p->u.cfunc.c_function.generic == js_string_charCodeAt;
+    case JS_JIT_INTR_IMUL:
+        return p->u.cfunc.c_function.generic == js_math_imul;
+    }
+    return 0;
+}
+
+/* the code unit at idx of a string value, or -1 when idx is out of range:
+ * exactly what String.prototype.charCodeAt returns (NaN for the -1 case),
+ * for a string receiver and an integer index -- the only shape inlined */
+int64_t js_jit_char_code_at(JSValueConst str, int64_t idx)
+{
+    JSString *p;
+
+    if (JS_VALUE_GET_TAG(str) != JS_TAG_STRING)
+        return -1;
+    p = JS_VALUE_GET_STRING(str);
+    if (idx < 0 || idx >= (int64_t) p->len)
+        return -1;
+    return string_get(p, (int) idx);
+}
+
 /* P10.3: guard check + cpool/var_refs extraction for generated direct calls.
  * Returns 1 if func is the expected JIT function and fills *cpool_out and *var_refs_out. */
 int js_jit_check_and_extract(JSValue func, JSJITFunc expected,
@@ -16996,8 +17040,20 @@ JSValue js_jit_op_##name(JSContext *ctx, JSValue a)                      \
 }
 DEF_JIT_UNARY(neg,  OP_neg)
 DEF_JIT_UNARY(plus, OP_plus)
-DEF_JIT_UNARY(bnot, OP_not)
 #undef DEF_JIT_UNARY
+
+/* F20: bitwise NOT is not a unary-arith op -- js_unary_arith_slow(OP_not)
+ * hits its `default: abort()` on any non-BigInt input.  The interpreter's
+ * OP_not uses js_not_slow (ToNumeric, then ~ToInt32 or BigInt not); so
+ * does the compiled tier now.  Reached by `~x` on any operand the
+ * gen-time type stack does not prove INT (a double, a bool, a string). */
+JSValue js_jit_op_bnot(JSContext *ctx, JSValue a)
+{
+    JSValue sp[1] = { a };
+    if (js_not_slow(ctx, &sp[1]) < 0)
+        return JS_EXCEPTION;
+    return sp[0];
+}
 
 /* Comparisons: relational (lt, lte, gt, gte) */
 #define DEF_JIT_RELATIONAL(name, op)                                     \
