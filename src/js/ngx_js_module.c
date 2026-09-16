@@ -1138,6 +1138,181 @@ ngx_js_comcon_mem_push(ngx_js_conf_t *jcf, size_t allowance)
 }
 
 
+/*
+ * F2's LEAK HALF: what a fragment RETAINS across calls (see ngx_js.h at
+ * NGX_JS_COMCON_FRAGMENT_RETAINED_BYTES for the design and its limits).
+ *
+ * The stats array is parallel to comcon_frags -- same index, same pool -- and
+ * a slot is zeroed wherever the fragment slot is freed, so a replaced epoch
+ * starts from nothing, as its memory did.
+ */
+static ngx_int_t
+ngx_js_comcon_stats_push(ngx_js_conf_t *jcf)
+{
+    ngx_js_comcon_frag_stats_t  *st;
+
+    if (jcf->comcon_frag_stats == NULL) {
+        jcf->comcon_frag_stats = ngx_array_create(jcf->comcon_frags_pool, 8,
+                                     sizeof(ngx_js_comcon_frag_stats_t));
+        if (jcf->comcon_frag_stats == NULL) {
+            return NGX_ERROR;
+        }
+    }
+
+    /* keep the two arrays the same length whatever pushed before */
+    while (jcf->comcon_frag_stats->nelts < jcf->comcon_frags->nelts) {
+        st = ngx_array_push(jcf->comcon_frag_stats);
+        if (st == NULL) {
+            return NGX_ERROR;
+        }
+        ngx_memzero(st, sizeof(ngx_js_comcon_frag_stats_t));
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_js_comcon_frag_stats_t *
+ngx_js_comcon_stats(ngx_js_conf_t *jcf, uint32_t handle)
+{
+    if (jcf->comcon_frag_stats == NULL
+        || handle >= jcf->comcon_frag_stats->nelts)
+    {
+        return NULL;
+    }
+
+    return &((ngx_js_comcon_frag_stats_t *) jcf->comcon_frag_stats->elts)[handle];
+}
+
+
+static void
+ngx_js_comcon_stats_reset(ngx_js_conf_t *jcf, uint32_t handle)
+{
+    ngx_js_comcon_frag_stats_t  *st = ngx_js_comcon_stats(jcf, handle);
+
+    if (st != NULL) {
+        ngx_memzero(st, sizeof(ngx_js_comcon_frag_stats_t));
+    }
+}
+
+
+/*
+ * Is the fragment over its cap?  Decided BEFORE the invocation starts, so a
+ * fragment over the line is not run: a refusal, not a denial.  Logged once
+ * per crossing, counted every time.
+ */
+static ngx_uint_t
+ngx_js_comcon_retained_over(ngx_js_conf_t *jcf, uint32_t handle, size_t cap)
+{
+    ngx_js_comcon_frag_stats_t  *st = ngx_js_comcon_stats(jcf, handle);
+
+    if (st == NULL || cap == 0 || st->retained <= (int64_t) cap) {
+        return 0;
+    }
+
+    st->refused++;
+
+    if (!st->reported) {
+        st->reported = 1;
+        ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                      "js comcon: fragment %uD holds %L bytes across its calls, "
+                      "over its retainedBytes %uz -- refused until its epoch is "
+                      "replaced or its contract raises the cap",
+                      handle, st->retained, cap);
+    }
+
+    return 1;
+}
+
+
+/*
+ * Charge what the call left behind.
+ *
+ * The delta is exact for what refcounting can see; cycles it cannot are
+ * corrected in two places, both at the OUTERMOST invocation only:
+ *
+ *   1. A call that grew the runtime by NGX_JS_COMCON_GC_CALL_DELTA or more
+ *      pays a collection BEFORE its delta is taken, so what it made and did
+ *      not keep -- cycles included -- is gone from its own count.  Only such
+ *      calls pay; a call that leaves little behind never runs the collector,
+ *      which is what keeps this O(1) for ordinary work (F14).  The collection
+ *      also frees cycles OTHER fragments left, which lowers this call's delta
+ *      below its true retention: an under-count, the safe direction, and
+ *      only for the call that paid.
+ *   2. Once usage has grown NGX_JS_COMCON_GC_STEP since the last mark, a
+ *      collection establishes the ground truth -- usage above the baseline is
+ *      everything every fragment really holds -- and if the counts add up to
+ *      more than that, the excess is taken from every positive count in
+ *      proportion.  This can under-count a real leaker whose sibling makes
+ *      many small cycles; it never over-counts.  The runtime cap remains the
+ *      backstop for what this cannot attribute.
+ */
+static void
+ngx_js_comcon_retained_charge(ngx_js_conf_t *jcf, uint32_t handle,
+    size_t before, ngx_uint_t correct)
+{
+    size_t                       after, usage, actual;
+    int64_t                      sum, delta;
+    ngx_uint_t                   i;
+    ngx_js_comcon_frag_stats_t  *st, *all;
+
+    after = JS_GetMallocSize(jcf->comcon_rt);
+
+    if (correct && after >= before + NGX_JS_COMCON_GC_CALL_DELTA) {
+        JS_RunGC(jcf->comcon_rt);
+        after = JS_GetMallocSize(jcf->comcon_rt);
+        jcf->comcon_gc_mark = after;
+    }
+
+    delta = (int64_t) after - (int64_t) before;
+
+    if (correct) {
+        /* the parent's window contains its sub-fragments' charges: theirs,
+           on their own slots, not the parent's twice */
+        delta -= jcf->comcon_nested_delta;
+        jcf->comcon_nested_delta = 0;
+    } else {
+        jcf->comcon_nested_delta += delta;
+    }
+
+    st = ngx_js_comcon_stats(jcf, handle);
+    if (st != NULL) {
+        st->retained += delta;
+        st->invocations++;
+    }
+
+    if (!correct || jcf->comcon_frag_stats == NULL
+        || after < jcf->comcon_gc_mark + NGX_JS_COMCON_GC_STEP)
+    {
+        return;
+    }
+
+    JS_RunGC(jcf->comcon_rt);
+    usage = JS_GetMallocSize(jcf->comcon_rt);
+    jcf->comcon_gc_mark = usage;
+
+    actual = (usage > jcf->comcon_mem_baseline)
+             ? usage - jcf->comcon_mem_baseline : 0;
+
+    all = jcf->comcon_frag_stats->elts;
+    sum = 0;
+    for (i = 0; i < jcf->comcon_frag_stats->nelts; i++) {
+        if (all[i].retained > 0) {
+            sum += all[i].retained;
+        }
+    }
+
+    if (sum > (int64_t) actual && sum > 0) {
+        for (i = 0; i < jcf->comcon_frag_stats->nelts; i++) {
+            if (all[i].retained > 0) {
+                all[i].retained = (int64_t)
+                    ((double) all[i].retained * (double) actual / (double) sum);
+            }
+        }
+    }
+}
+
+
 static void
 ngx_js_comcon_mem_pop(ngx_js_conf_t *jcf, size_t old)
 {
@@ -1370,6 +1545,12 @@ ngx_js_comcon_compartment(ngx_js_conf_t *jcf)
      */
     JS_SetInterruptHandler(jcf->comcon_rt, ngx_js_comcon_interrupt_handler,
                            jcf);
+
+    /* F2's leak half: what the compartment weighs before any fragment exists
+       is the baseline every fragment's retained count is measured above */
+    jcf->comcon_mem_baseline = JS_GetMallocSize(jcf->comcon_rt);
+    jcf->comcon_gc_mark = jcf->comcon_mem_baseline;
+    jcf->comcon_retained_cap = 0;
 
     return sctx;
 }
@@ -1906,6 +2087,10 @@ ngx_js_comcon_publish(ngx_js_conf_t *jcf, JSContext *sctx, JSValue fn,
     }
     *(JSValue *) slot = fn;                          /* the array owns fn */
     handle = jcf->comcon_frags->nelts - 1;
+
+    if (ngx_js_comcon_stats_push(jcf) != NGX_OK) {   /* F2's leak half */
+        goto oom;
+    }
 
     /*
      * The prediction, checked.  Nothing between the grant loop and here
@@ -3030,6 +3215,7 @@ ngx_js_sub_finalizer(JSRuntime *rt, JSValue val)
         if (!JS_IsUndefined(fv[sop->handle])) {
             JS_FreeValueRT(rt, fv[sop->handle]);
             fv[sop->handle] = JS_UNDEFINED;
+            ngx_js_comcon_stats_reset(jcf, sop->handle);
         }
     }
 
@@ -3059,6 +3245,7 @@ ngx_js_sub_call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_val,
     uint32_t        saved_frag;
     uint64_t        old_deadline;
     size_t          old_mem;
+    size_t          before_bytes;
     ngx_uint_t      failed = 0, pending = 0, fatal = 0;
     char            tbuf[512], codebuf[64];
 
@@ -3141,6 +3328,16 @@ ngx_js_sub_call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_val,
         memory = NGX_JS_COMCON_FRAGMENT_MEMORY_BYTES;
     }
 
+    /* F2's leak half: the sub-fragment charges its OWN slot, under the cap
+       in force for the parent's invocation; over it, it is not run */
+    if (ngx_js_comcon_retained_over(jcf, handle, jcf->comcon_retained_cap)) {
+        JS_FreeValue(ctx, arg);
+        return ngx_js_comcon_refuse(ctx, NGX_JS_REFUSAL_MEM_RETAINED,
+                   "sub-fragment %uD holds more across its calls than the "
+                   "retainedBytes in force allows", handle);
+    }
+    before_bytes = JS_GetMallocSize(jcf->comcon_rt);
+
     old_deadline = ngx_js_comcon_deadline_push(jcf, timeout);
     old_mem = ngx_js_comcon_mem_push(jcf, (size_t) memory);
 
@@ -3208,6 +3405,7 @@ ngx_js_sub_call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_val,
     }
 
     /* restore, in the reverse order of the push */
+    ngx_js_comcon_retained_charge(jcf, handle, before_bytes, 0);
     jcf->comcon_depth--;
     ngx_js_compartment_frag_set(saved_frag);
     ngx_js_comcon_mem_pop(jcf, old_mem);
@@ -4072,6 +4270,52 @@ ngx_js_comcon_aot_status(JSContext *hctx, JSValueConst this_val,
 
 
 /*
+ * comcon.__memStatus(handle) -> {retained, invocations, refused}: what a
+ * fragment holds across its calls (F2's leak half), as the accounting sees it
+ * -- the signed sum of its per-call deltas, corrected at the last GC step.
+ */
+JSValue
+ngx_js_comcon_mem_status(JSContext *hctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_conf_t               *jcf;
+    JSValue                      r;
+    int64_t                      handle = 0;
+    ngx_js_comcon_frag_stats_t  *st;
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx == NULL || jcf->comcon_frags == NULL) {
+        return JS_ThrowInternalError(hctx, "comcon: no compartment");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(hctx, "comcon.__memStatus: handle required");
+    }
+    JS_ToInt64(hctx, &handle, argv[0]);
+
+    if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
+        return JS_ThrowTypeError(hctx, "comcon: bad fragment handle");
+    }
+
+    st = ngx_js_comcon_stats(jcf, (uint32_t) handle);
+
+    r = JS_NewObject(hctx);
+    if (JS_IsException(r)) {
+        return r;
+    }
+
+    JS_SetPropertyStr(hctx, r, "retained",
+                      JS_NewInt64(hctx, st ? st->retained : 0));
+    JS_SetPropertyStr(hctx, r, "invocations",
+                      JS_NewInt64(hctx, st ? st->invocations : 0));
+    JS_SetPropertyStr(hctx, r, "refused",
+                      JS_NewInt64(hctx, st ? st->refused : 0));
+
+    return r;
+}
+
+
+/*
  * G6.16, THE ACCOUNTING HALF: A FRAGMENT'S LEFTOVERS ARE DRAINED FIRST, AND
  * CHARGED TO NOBODY.
  *
@@ -4251,6 +4495,8 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     ngx_uint_t        mode_pushed = 0;
     uint64_t          old_deadline;
     size_t            old_mem;
+    uint32_t          retained_cap = 0;
+    size_t            saved_retained_cap, before_bytes;
     ngx_js_compartment_t  prev;
 
     jcf = ngx_js_comcon_jcf;
@@ -4268,6 +4514,9 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     }
     if (argc > 4) {
         JS_ToUint32(hctx, &onviol, argv[4]);
+    }
+    if (argc > 5 && !JS_IsUndefined(argv[5])) {
+        JS_ToUint32(hctx, &retained_cap, argv[5]);       /* F2's leak half */
     }
 
     if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
@@ -4301,6 +4550,31 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
      * ngx_js_comcon_drain_leftovers() for why they run as nobody.
      */
     ngx_js_comcon_drain_leftovers(jcf);
+
+    /*
+     * F2's LEAK HALF: the cap on what this fragment may hold ACROSS calls,
+     * narrowing only like the two bounds above, and checked before anything
+     * is pushed -- a fragment over it is not run.  The cap is left in force
+     * for the invocation so a sub-fragment inherits it.
+     */
+    if (retained_cap == 0
+        || retained_cap > NGX_JS_COMCON_FRAGMENT_RETAINED_BYTES)
+    {
+        retained_cap = NGX_JS_COMCON_FRAGMENT_RETAINED_BYTES;
+    }
+
+    if (ngx_js_comcon_retained_over(jcf, (uint32_t) handle, retained_cap)) {
+        JS_FreeValue(sctx, arg);
+        return ngx_js_comcon_refuse(hctx, NGX_JS_REFUSAL_MEM_RETAINED,
+                   "comcon: fragment %uD holds more across its calls than its "
+                   "retainedBytes allows -- replace its epoch or raise the cap",
+                   (uint32_t) handle);
+    }
+
+    saved_retained_cap = jcf->comcon_retained_cap;
+    jcf->comcon_retained_cap = retained_cap;
+    jcf->comcon_nested_delta = 0;
+    before_bytes = JS_GetMallocSize(jcf->comcon_rt);
 
     /*
      * A confined fragment ALWAYS runs under a deadline.
@@ -4882,6 +5156,10 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     ngx_js_compartment_frag_set(saved_frag);
     jcf->comcon_depth--;
 
+    /* what the call left behind is the fragment's, and stays counted */
+    ngx_js_comcon_retained_charge(jcf, (uint32_t) handle, before_bytes, 1);
+    jcf->comcon_retained_cap = saved_retained_cap;
+
     /* the allowance was for THAT call only */
     ngx_js_comcon_mem_pop(jcf, old_mem);
 
@@ -4930,6 +5208,7 @@ ngx_js_comcon_free_confined(JSContext *hctx, JSValueConst this_val, int argc,
     if (!JS_IsUndefined(frags[handle])) {
         JS_FreeValue(sctx, frags[handle]);
         frags[handle] = JS_UNDEFINED;
+        ngx_js_comcon_stats_reset(jcf, (uint32_t) handle);
     }
 
     return JS_UNDEFINED;

@@ -148,8 +148,18 @@ include("tenants/acme/main.js", std.profiles.tenant(acme),
 > `nginx.workerRequestTimeout`, so any test that sets that property already has
 > a deadline in force and cannot observe the fragment's own default.
 >
-> `meter`'s `gas` unit remains forward-declared; only `timeoutMs` maps to a
-> shipped mechanism.
+> `meter` maps three words to shipped mechanisms, each narrowing only against what
+> is in force: `timeoutMs` (the deadline above), `memoryBytes` (the per-INVOCATION
+> allowance, 16 MB default — a burst), and, since v5.122, `retainedBytes` (what the
+> fragment may hold ACROSS calls, 8 MB default). Every invocation charges its fragment
+> with what it left behind — the compartment's malloc delta around the call, corrected
+> for cycles at O(1) per call — and a fragment past its cap is REFUSED at its next
+> invocation with `E_MEM_RETAINED`, not run, until its epoch is replaced (the slot is
+> freed, the memory returns) or its contract raises the cap; a sub-fragment held across a
+> parent's calls charges its own slot under the parent's cap and is refused inside the
+> parent. `comcon.memStatus(fragment)` → `{retained, invocations, refused, cap}` reads the
+> count on the host (`t/comcon_retained_memory.t`, ASSURANCE G7.22). `meter`'s `gas` unit
+> remains forward-declared.
 The returned fragment handle carries **attenuated** operators, so the fragment can `include(...)`
 its **own** sub-fragments under its **own** policy — and by No-Amplification an inner policy can
 only **narrow** what its includer granted. `js_source → root → fragment → sub-fragment → …`, one

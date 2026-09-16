@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **POSITION (v5.121 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
+> **POSITION (v5.122 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator
 > surface (`comcon.{env,grant,mediate,bind,admit,include,mode}`) shipped and the
@@ -61,6 +61,18 @@
 >   unmoved (its loop is a call and a `>>>`), and its "typed bound" was lowered JS — corrected
 >   in PERFORMANCE §2f. By the M5.0 rule the remaining 2.1× (boxing and checks) is NOT worth a
 >   further cut: **M5.1 is complete as measured.** ASSURANCE G7.20.
+> - **F2's LEAK HALF CLOSED (2026-09-15, v5.122).** What a fragment RETAINS across calls is
+>   charged to it — the compartment's malloc delta around each invocation, exact for what
+>   refcounting frees, corrected for cycles by a per-call collection when a call leaves
+>   64 KB or more behind and a 4 MB backstop, O(1) for ordinary work (the heap-independence
+>   instrument reads 0.98×) — capped by `meter({retainedBytes})` (8 MB default, narrowing
+>   only) and REFUSED past the cap with `E_MEM_RETAINED`, not run, until the epoch is
+>   replaced; a sub-fragment charges its own slot under the cap in force and is refused
+>   inside its parent; `comcon.memStatus(f)` reads the count. The user's four decisions:
+>   refusal not denial; 8 MB; own slot; a host reader. 19 assertions on both binaries, the
+>   golden corpus carries the code. What the accounting cannot attribute is named in
+>   ASSURANCE G7.22 (a leaker beside a sibling making many small cycles is under-counted at
+>   the backstop) and falls to the runtime cap. AUDIT_M-SES §3's first residual is closed.
 > - **EVIDENCE FROM A FAILED CONTROL; WARM SPECULATION OFF; THE SWEEP WIDENED (2026-09-15,
 >   v5.121).** The controls script keeps `prove -v` output and the test's directory when a row
 >   fails to hold, and the broadcast fuzz asserts a worker received a broadcast, so the flake

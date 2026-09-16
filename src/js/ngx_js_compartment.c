@@ -404,6 +404,7 @@ static const char  *ngx_js_refusal_codes[NGX_JS_REFUSAL_LAST] = {
     "E_EPOCH_STALE",
     "E_INVOKE_PENDING",
     "E_AUTHOR_LIMIT",
+    "E_MEM_RETAINED",
 };
 
 

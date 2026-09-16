@@ -235,6 +235,41 @@ typedef struct {
  */
 #define NGX_JS_COMCON_MAX_DEPTH              2
 
+/*
+ * F2's leak half (v5.122): what a fragment RETAINS across calls.
+ *
+ * The per-invocation allowance above bounds a burst.  A fragment that keeps a
+ * little of every call -- an array it appends to, a cache -- walks the shared
+ * runtime cap upward until every sibling fails, and nothing attributed that
+ * memory to it.  Now every invocation adds its signed delta (usage after the
+ * call and its settle and marshal, minus usage before) to its fragment's
+ * `retained`; refcounting frees most garbage at once, so the delta is what
+ * the call left behind plus cycles not yet collected.  Cycles are corrected
+ * twice over: a call that grew the runtime by NGX_JS_COMCON_GC_CALL_DELTA or
+ * more pays a collection BEFORE its delta is taken (so only a call that
+ * leaves a lot behind ever runs the collector -- F14 closed a per-call heap
+ * walk, and ordinary work stays O(1)); and once usage has grown
+ * NGX_JS_COMCON_GC_STEP since the last mark, a collection establishes the
+ * ground truth and any excess in the counts is scaled out in proportion.
+ * See ngx_js_comcon_retained_charge() for what each can get wrong.
+ *
+ * A fragment whose `retained` exceeds its cap (`meter({retainedBytes})`,
+ * default below, narrowing only; a sub-fragment inherits the cap in force)
+ * is REFUSED at its next invocation with E_MEM_RETAINED -- not run, which is
+ * a refusal, not a denial -- until its epoch is replaced (the slot is freed,
+ * the memory returns) or its contract raises the cap.
+ */
+#define NGX_JS_COMCON_FRAGMENT_RETAINED_BYTES (8 * 1024 * 1024)
+#define NGX_JS_COMCON_GC_STEP                 (4 * 1024 * 1024)
+#define NGX_JS_COMCON_GC_CALL_DELTA           (64 * 1024)
+
+typedef struct {
+    int64_t              retained;      /* bytes left behind across calls */
+    uint32_t             invocations;
+    uint32_t             refused;       /* invocations refused at the cap */
+    unsigned             reported:1;    /* the crossing was logged once */
+} ngx_js_comcon_frag_stats_t;
+
 
 /*
  * Per-cycle configuration owned by ngx_js_module (NGX_CORE_MODULE).
@@ -318,6 +353,24 @@ typedef struct {
      */
     size_t               comcon_mem_limit;
     ngx_uint_t           comcon_depth;
+
+    /*
+     * F2's leak half: per-fragment retained accounting (see the constants
+     * NGX_JS_COMCON_FRAGMENT_RETAINED_BYTES / NGX_JS_COMCON_GC_STEP).
+     * comcon_frag_stats is parallel to comcon_frags (same index, same pool);
+     * comcon_mem_baseline is usage right after the compartment was built;
+     * comcon_gc_mark is usage at the last correction; comcon_retained_cap is
+     * the cap in force for the invocation on the stack, which a sub-fragment
+     * inherits.
+     */
+    ngx_array_t         *comcon_frag_stats;
+    size_t               comcon_mem_baseline;
+    size_t               comcon_gc_mark;
+    size_t               comcon_retained_cap;
+    int64_t              comcon_nested_delta;  /* what sub-fragments were charged
+                                                 during the invocation on the
+                                                 stack: the parent's delta
+                                                 contains it, so it is taken out */
 } ngx_js_conf_t;
 
 
@@ -648,6 +701,8 @@ JSValue ngx_js_comcon_pom_node_at(JSContext *ctx, JSValueConst this_val,
 JSValue ngx_js_comcon_parse(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_aot_status(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
+JSValue ngx_js_comcon_mem_status(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_pom_callsites(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);

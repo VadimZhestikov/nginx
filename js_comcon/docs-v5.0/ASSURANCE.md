@@ -1417,6 +1417,50 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T1, T11, T13
 - **V:** V13
 
+#### G7.22 — what a fragment retains across calls is its own, capped, and refused past the cap
+- **CLAIM:** Every invocation charges its fragment with what it left behind (usage after the
+  call, its settle and its marshal, minus usage before); a fragment that keeps nothing is
+  charged nothing; one that makes only cycles is charged and then corrected; a fragment past
+  its `retainedBytes` cap (8 MB by default, `meter({retainedBytes})` narrows only) is REFUSED
+  at its next invocation with `E_MEM_RETAINED` — not run — until its epoch is replaced or its
+  contract raises the cap; a replaced epoch starts from nothing; a sub-fragment held across
+  its parent's calls is charged on its own slot under the cap in force and refused inside the
+  parent; siblings are untouched; and the invocation cost is unchanged.
+- **ARGUMENT:** F2's residual was that the per-invocation allowance bounds a BURST and nothing
+  attributed RETENTION. The delta of the compartment's malloc size around one invocation is
+  exact for what refcounting frees at once, which is nearly everything a call makes and does
+  not keep; what it cannot see is cycles. Two corrections, both at the outermost invocation
+  only, keep the accounting O(1) for ordinary work (F14 closed a per-call heap walk and this
+  does not reopen it — `t/comcon_invoke_heap_independence.t` reads 0.98× with 200,000 objects
+  retained elsewhere): a call that grew the runtime by 64 KB or more pays a collection
+  BEFORE its delta is taken, so only a call that leaves a lot behind ever runs the collector,
+  and its cycles are gone from its own count; and once usage has grown 4 MB since the last
+  mark a collection establishes the ground truth — usage above the compartment's baseline is
+  everything every fragment really holds — and any excess in the counts is scaled out in
+  proportion. A parent's window contains its sub-fragments' charges, so those are taken out of
+  the parent's delta (found by the nested row: the first version charged the parent twice).
+  The refusal is decided before anything is pushed, so a fragment over the line does not run;
+  it is a refusal, not a denial, because the invocation never started. The cap narrows only,
+  like the deadline and the allowance, so `__invokeConfined` cannot widen it.
+- **EV:** `t/comcon_retained_memory.t` — 19 assertions, both binaries: A keeps 64 KB per call
+  and is charged 640 KB after ten (measured 655 KB); B allocates the same and keeps none,
+  charged 0; C makes 30 calls of cycles, charged 0 after the per-call collection; A is
+  refused past 1 MB with the code on the error and in the message, and B still runs; A's
+  replaced epoch runs from zero; a 1 GB cap is the 8 MB default (refused after 128 calls); a
+  sub-fragment held by its parent is refused inside the parent with the parent charged 2 KB;
+  `memStatus` of a plain function is a `TypeError`. The V12 golden corpus carries the code
+  (`t/comcon_v12_denial_codes.t`, `refusalComplete`). `t/comcon_invoke_heap_independence.t`
+  unchanged.
+- **GAP:** The backstop's proportional scaling can UNDER-count a real leaker whose sibling
+  makes many small cycles (both counts are scaled by the same factor); it never over-counts,
+  and the runtime cap remains the backstop for what it cannot attribute. A call that pays the
+  per-call collection is charged slightly less than it kept when other fragments had cycles
+  outstanding. The counts are per worker. The negative control is a maintained patch
+  (`t/tools/controls/retained-cap-unchecked.patch`).
+  **home:** finding F2 · `ngx_js_comcon_retained_charge` · `NGX_JS_COMCON_FRAGMENT_RETAINED_BYTES`.
+- **THREAT:** T4, T11
+- **V:** V6
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -1498,9 +1542,13 @@ The primary control, and the one everything else is defence in depth for.
   single-threaded, so growth in that window is attributable to that fragment, which is as
   much attribution as one shared runtime can honestly give.
 - **EV:** `t/comcon_fragment_memory.t` — over-allowance is refused with `InternalError: out of memory`, the compartment survives it, a contract narrows but cannot widen, and the bound resets per call.
-- **GAP:** It bounds a **burst, not a leak**: a fragment retaining memory across calls still
-  walks the shared 64 MB runtime cap upward, and nothing attributes that to a fragment.
-  **home:** HARDENING.md S5 · finding F2.
+- **GAP (closed 2026-09-15, v5.122):** It bounded a **burst, not a leak**: a fragment
+  retaining memory across calls walked the shared 64 MB runtime cap upward, and nothing
+  attributed that to a fragment. G7.22 now does: every invocation charges its fragment with
+  what it left behind, a fragment past its `retainedBytes` cap is refused, and the runtime
+  cap is the backstop only for what that accounting cannot attribute (its named limits are
+  in G7.22's GAP).
+  **home:** HARDENING.md S5 · finding F2 · G7.22.
 - **EV:** `t/js_worker_memory_limit.t` — the runtime-level mechanism, on the host runtime.
 - **THREAT:** T11, T4
 - **V:** V6
@@ -2069,7 +2117,7 @@ assurance case whose findings section is empty has not been built honestly.
 | # | Finding | Where | Status |
 |---|---|---|---|
 | **F1** | **20 of 83 evidence citations in the doc set pointed at files that do not exist** — pre-CONVERGENCE names, deleted in P6a/P6b. A reviewer following THREATS T11 to `t/comcon_gas.t` found nothing. | this document, §12 | **FIXED + now checked** (`check-assurance.py`) |
-| **F2** | No per-fragment memory attribution; nothing asserts a fragment hitting the 64 MB runtime cap | G6.6 | **PARTLY CLOSED 2026-09-13:** a per-INVOCATION allowance (16 MB default; `contract.meter.memoryBytes` may only narrow) enforced by narrowing the runtime limit for one call. **It bounds a BURST, not a leak** — a fragment retaining a little per call still walks the shared cap up, and that residue is the part of F2 still OPEN |
+| **F2** | No per-fragment memory attribution; nothing asserts a fragment hitting the 64 MB runtime cap | G6.6, G7.22 | **CLOSED 2026-09-15 (v5.122) — the leak half by G7.22:** every invocation charges its fragment with what it left behind, a fragment past `retainedBytes` is refused (`E_MEM_RETAINED`) until its epoch is replaced, corrected for cycles at O(1) per call; G7.22's GAP names what the accounting cannot attribute. Before that, **PARTLY CLOSED 2026-09-13:** a per-INVOCATION allowance (16 MB default; `contract.meter.memoryBytes` may only narrow) enforced by narrowing the runtime limit for one call. **It bounds a BURST, not a leak** — a fragment retaining a little per call still walks the shared cap up, and that residue is the part of F2 still OPEN |
 | **F3** | Cross-compartment identity not probed | G7.6 | **PROBED 2026-09-12; CLOSED 2026-09-13** — no channel found on seven shared surfaces, and removing the freeze opens them, so the mechanism is identified rather than assumed. **The `Symbol.for` residual is WITHDRAWN: it was an artefact of a probe that compared a value with itself.** Rewritten to attempt the real exploit — a shared registry gives the same KEY, and a key is no channel without a STORE, which the freeze denies. Both a live unconfined control and a freeze-disabled control back that |
 | **F4** | `guarded` / `irreversible` COM members are excluded from the setter fuzz | AUDIT_M-SES.md §3 → G7.8 | **CLOSED 2026-09-13:** each guarded member is now fuzzed in **its own nginx instance**, which is what the shared-state objection actually required. `irreversible` remains untested because the live walk reaches **none** — the class exists in the registry but no member on those paths carries it |
 | **F5** | AOT-compiled fragments not separately run against the escape battery | G7.5 | **CLOSED 2026-09-12** (after the §15 signature — see §16): the battery now runs against a fragment with 20 natively-lowered functions, the precondition is asserted, and the tiers agree probe by probe |
@@ -2287,6 +2335,7 @@ signature is never quietly credited with work it did not see.
 | **THE RESIDUE SWEEP AS A BATTERY; F19 FOUND AND CLOSED (v5.119).** Seven places the allowance can bite, 32 alignments each, both tiers (`t/comcon_oom_sweep.t`, 54 assertions): no worker died anywhere, and the compiled arm ran lowered where it can. First run found F19: the host's ToString of a fragment's error ran out of memory itself, reported `error` and left its exception pending on the compartment; fixed in one function. | **Adds an instrument the signature could not have had.** ASAN and UBSAN move the point where the allowance bites, so no sanitizer corpus covers this class; the sweep is now standing evidence on both tiers. F19 narrows nothing the case attests — a label and a stale object, no escape — but it is the second defect this instrument found in two files, which is the point of having it. |
 | **THE NEGATIVE-CONTROL DEBT PAID (v5.120): 30 rows, 30 verified.** Twenty rows both signatures accepted as manual — inverse patches that no longer applied, controls that were never a commit, fixes in `quickjs/` — are maintained reverse patches under `t/tools/controls/`, each the smallest change that brings its defect back, verified by the same script as the commit rows (an engine patch rebuilds the library; a leak row runs under `objs_asan` and looks for the named frame; a skipped test is INCONCLUSIVE, never a pass). A patch that stops applying fails the run and is re-based on purpose. **Making the rows mechanical found two things the by-hand descriptions had not:** the copy-vs-rewrap control (G7.16) could not fail — the `/stale` arm closed the socket but never reused its slot, so a re-wrap and a copy both pointed at an empty slot; the test now hands the slot to a new socket, and a re-wrap reads the stranger; and F18's crash (G7.19) needs BOTH halves of the fix absent — the `stack` guard alone keeps the freed object from being touched — so its patch removes both. Also: maxim's warm element hint, which substituted 0 on a type miss, is off (unreachable here; hygiene). | **Strengthens what the reviewer pack attests.** §15's second signature accepted nineteen rows it could not check; the pack now checks every row, and the number a reader sees is the whole set. One of those rows turned out to be a probe that could not fail — the class `check-dead-probes.py` exists for — and is now live. Nothing the case claims changes; what changes is that "verified N" covers every control there is. |
 | **EVIDENCE FROM A FAILED CONTROL; WARM SPECULATION OFF; THE SWEEP WIDENED (v5.121).** (1) The controls script keeps every run's `prove -v` output and the test's own directory under the pack's output when a row fails to hold or cannot run, and the broadcast fuzz asserts that at least one worker RECEIVED a broadcast — the flake that spoiled two signable runs is now a failing assertion with per-worker counts, not a silent non-holding control. (2) Every warm-recompile value speculation in the engine is off behind one switch: read site by site, three sites extracted a value with no tag check on a miss, one substituted 0, one skipped freeing the old value; the two write sites were sound. Unreachable here (no compile thread in a worker; fragments compile at include time). (3) The residue sweep has eleven shapes: F18's at a 16-byte step, include inside a full parent, an admission `tests` that fills memory, a rejected promise's reaction; 80 assertions, no worker died. | **Strengthens G7.21 and the pack's evidence; no bearing on a claim.** The unreachable engine paths were a landmine for host JS ever running compiled, not a hole in the confined tier; the sweep's new shapes found nothing, which is what a widened instrument is supposed to be able to say. |
+| **F2's LEAK HALF CLOSED — G7.22 (v5.122).** What a fragment RETAINS across calls is attributed to it (the compartment's malloc delta around each invocation, exact for what refcounting frees, corrected for cycles by a per-call collection when a call leaves 64 KB or more behind and a 4 MB backstop), capped by a new meter word `retainedBytes` (8 MB default, narrowing only), and refused past the cap with a new refusal code `E_MEM_RETAINED` until the epoch is replaced; a sub-fragment charges its own slot under the cap in force; `comcon.memStatus(f)` reads the count. 19 assertions on both binaries, the golden corpus carries the code, the invocation cost is unchanged. | **Closes a gap both signatures accepted as residual risk** (AUDIT_M-SES §3's first row, G6.6's GAP, F2). A new mechanism, a new vocabulary word and a new closed-set member, so it is exactly what §15 says would need looking at: the enumeration checks and the golden corpus were extended with it and pass; G7.22's GAP names what the accounting cannot attribute, and the runtime cap remains the backstop for that. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

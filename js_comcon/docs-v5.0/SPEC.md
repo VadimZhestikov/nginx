@@ -391,6 +391,15 @@ counted in `nginx.tenantDenials().byOp` and, in audit mode, **logged and allowed
 `comcon.refusalCodes()`; `E_CAP_PRINCIPAL` is the third of the capability layer's own, and
 is deliberately not folded into the other two — a `cosign` that names no acting principal
 spelled the flavour correctly and composed nothing, it is simply incoherent policy).
+Three refusal codes are raised at INVOCATION rather than admission, because what must change
+is still the fragment or its contract and not a gate's verdict on a request: `E_EPOCH_STALE`
+(the handle's epoch was freed), `E_INVOKE_PENDING` (an await nothing in reach can settle) and,
+since v5.122, `E_MEM_RETAINED` — the fragment holds more across its calls than its
+`meter({retainedBytes})` allows (8 MB by default, narrowing only; a sub-fragment inherits the
+cap in force and charges its own slot) and is not run again until its epoch is replaced or its
+contract raises the cap. What a fragment RETAINS is charged per invocation as the
+compartment's malloc delta around the call, corrected for cycles; `comcon.memStatus(f)` reads
+it (ASSURANCE G7.22).
 `cap.cosign` is the one denial in the set that is a **waiting state rather than a verdict**,
 and the one **with a side effect**: the denied attempt records the caller's consent, so the
 same call by a second principal executes it. `cap.protocol` is the one whose gate **separates

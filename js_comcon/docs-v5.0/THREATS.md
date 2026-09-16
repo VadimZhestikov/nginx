@@ -169,8 +169,15 @@ host-imposed default when a contract carries no meter). Memory
 is separately bounded (JS_SetMemoryLimit 64MB). *Still deferred (S5):* the fuller metered
 budget model (per-op/per-fragment metering, fine-grained memory attribution) and a
 configurable js_tenant_timeout directive.
-*Residual:* **TM-1 found here** (denial-log flooding, below); coarse per-runtime
-memory attribution (S5's honest deferral) until the substrate decision.
+*Implemented (v5.122):* **per-fragment RETAINED memory.** Every invocation charges its
+fragment with what it left behind; past `meter({retainedBytes})` (8 MB default, narrowing
+only) the fragment is refused (`E_MEM_RETAINED`) until its epoch is replaced; a
+sub-fragment charges its own slot under the cap in force. Corrected for cycles at O(1)
+per call (a call that leaves 64 KB or more behind pays a collection; a 4 MB backstop).
+ASSURANCE G7.22, `t/comcon_retained_memory.t`.
+*Residual:* **TM-1 found here** (denial-log flooding, below); what the retained accounting
+cannot attribute (G7.22's GAP: a leaker beside a sibling that makes many small cycles is
+under-counted at the backstop) falls to the runtime cap.
 
 ### T12 — Attacker of the authority system itself (A5/A6)
 *Blocked by:* ops-resources are first-class caps (third enumeration — no backdoor,

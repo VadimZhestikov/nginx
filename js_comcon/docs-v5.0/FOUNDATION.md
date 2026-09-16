@@ -635,6 +635,26 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.122 (in place — F2's leak half CLOSED: what a fragment retains across calls is its own,
+capped, refused past the cap):** user decision 2026-09-15 on the design of the same day, with
+its four recommendations taken (refusal not denial; 8 MB default; a sub-fragment charges its
+own slot under the parent's cap; a host reader). Every invocation charges its fragment with the
+compartment's malloc delta around the call — exact for what refcounting frees at once, which is
+nearly everything a call makes and does not keep. Cycles are corrected twice over, both at the
+outermost invocation only so ordinary work stays O(1) (F14 is not reopened; the
+heap-independence instrument reads 0.98×): a call that grew the runtime by 64 KB or more pays
+a collection BEFORE its delta is taken, and once usage has grown 4 MB since the last mark a
+collection establishes the ground truth and scales any excess out of the counts in
+proportion. A parent's window contains its sub-fragments' charges, so they are taken out of
+the parent's delta — the first version charged the parent twice, and the nested test row said
+so. New: `meter({retainedBytes})` (narrowing only), refusal `E_MEM_RETAINED` (decided before
+anything is pushed: the fragment does not run), `comcon.memStatus(f)`. `t/comcon_retained_memory.t`
+(19, both binaries), the V12 golden corpus row, the enumeration checks. **What it cannot
+attribute is named, not hidden:** at the backstop a real leaker beside a sibling that makes
+many small cycles is under-counted (never over-counted), and the runtime cap stays the
+backstop for that. ASSURANCE G7.22, G6.6's GAP closed, F2's row, §16; AUDIT_M-SES §3's first
+row closed; THREATS T11; SPEC; OPERATOR_API.
+
 **v5.121 (in place — evidence from a failed control; warm speculation off; the sweep
 widened):** three items of the same plan. (1) `verify-negative-controls.sh` keeps every run's
 `prove -v` output, and the test's own directory when a row fails to hold or cannot run, under

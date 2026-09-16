@@ -403,6 +403,25 @@ var REFUSALS = [
              + "{imports: [], grants: {author: comcon.author({subFragments: 1})}})"
              + "({})",
         msg: 'sub-fragment budget'
+    },
+    {
+        code: 'E_MEM_RETAINED',
+        why: "F2's leak half: the fragment holds more ACROSS its calls than "
+           + 'its retainedBytes cap allows (meter({retainedBytes}), 8 MB by '
+           + 'default, narrowing only). Every invocation charges its fragment '
+           + 'with what it left behind; past the cap the fragment is not run '
+           + "again -- a refusal at the host's call (or inside the parent, for "
+           + 'a sub-fragment) -- until its epoch is replaced or its contract '
+           + 'raises the cap. The probe caps a fragment at 64 KB, has it keep '
+           + '64 KB per call, and calls it until the second or third call is '
+           + 'refused',
+        via: 'call',
+        probe: "(function(){ var f = comcon.include("
+             + "'(function(){ var keep = []; return function(){ "
+             + "keep.push(\"x\".repeat(65536)); return keep.length; }; })()', "
+             + "{imports: [], meter: comcon.meter({retainedBytes: 65536})}); "
+             + "f({}); f({}); return f({}); })()",
+        msg: 'retainedBytes'
     }
 ];
 

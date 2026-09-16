@@ -237,6 +237,14 @@ typedef enum {
      * parent's contract or its code, not a gate's verdict on a request.
      */
     NGX_JS_REFUSAL_AUTHOR_LIMIT,       /* author cap: sub-fragment budget or depth */
+    /*
+     * F2's leak half: the fragment has RETAINED more across its calls than
+     * its `retainedBytes` cap, and is not run again until its epoch is
+     * replaced or its contract raises the cap.  A REFUSAL -- the invocation
+     * never started -- raised at the host's call, or inside the parent for a
+     * sub-fragment.
+     */
+    NGX_JS_REFUSAL_MEM_RETAINED,       /* retained across calls, over retainedBytes */
     NGX_JS_REFUSAL_LAST
 } ngx_js_refusal_code_t;
 

@@ -5205,6 +5205,10 @@ static const char  ngx_js_comcon_bootstrap[] =
        in C, so calling __invokeConfined directly cannot widen it). */
     "    var mem=(contract.meter&&contract.meter[METER]"
     "             &&contract.meter[METER].memoryBytes)|0;"
+    /* F2's leak half: the cap on what the fragment may RETAIN across calls,
+       narrowing only, enforced in C like the two above. */
+    "    var ret=(contract.meter&&contract.meter[METER]"
+    "             &&contract.meter[METER].retainedBytes)|0;"
     /* M-LIB `onViolation` + `profile`: the two contract fields MANUAL has always
        written and nothing read.  They are read now.
 
@@ -5242,9 +5246,10 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        capRefuse('E_ADMIT_CONTRACT','include: unknown profile '+pf+"
     "          '; the profiles are restrictive and declarative');}"
     "    var bound=function(arg){modeReconcile();"
-    "      return C.__invokeConfined(h,arg,ms,mem,ov);};"
+    "      return C.__invokeConfined(h,arg,ms,mem,ov,ret);};"
     "    bound.confined=true;bound.handle=h;bound.meterMs=ms;"
-    "    bound.meterMemoryBytes=mem;bound.onViolation=ov;"
+    "    bound.meterMemoryBytes=mem;bound.meterRetainedBytes=ret;"
+    "    bound.onViolation=ov;"
     "    bound.profile=(contract.profile===undefined)?'restrictive':"
     "                  String(contract.profile);return bound;};"
     /* pom(fragment): the reflective Program Object Model surface (increment D1).
@@ -5629,6 +5634,13 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      throw new TypeError('aotStatus: arg0 must be a confined fragment "
                  "(the value comcon.include returned)');"
     "    return C.__aotStatus(frag.handle);};"
+    /* memStatus(fragment) -- F2's leak half: what a fragment holds across its
+       calls, and the cap its contract set (0 = the default applies). */
+    "  C.memStatus=function(frag){"
+    "    if(!frag||frag.confined!==true||typeof frag.handle!=='number')"
+    "      throw new TypeError('memStatus: arg0 must be a confined fragment');"
+    "    var s=C.__memStatus(frag.handle);"
+    "    s.cap=frag.meterRetainedBytes||0;return s;};"
     /* ================= M-LIB: the standard policy library =================
        ROADMAP M-LIB: "the user-facing surface is not the kernel but the
        combinators."  Everything above is the kernel: 20 operators, correct and
@@ -7349,6 +7361,10 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__aotStatus",
                           JS_NewCFunction(ctx, ngx_js_comcon_aot_status,
                                           "__aotStatus", 1));
+        /* F2's leak half: what a fragment retains across its calls. */
+        JS_SetPropertyStr(ctx, comcon_obj, "__memStatus",
+                          JS_NewCFunction(ctx, ngx_js_comcon_mem_status,
+                                          "__memStatus", 1));
         /* [TBD-2]: the closed refusal-code set, generated from the C table —
            what a tenant's deny-suite may be refused with. */
         JS_SetPropertyStr(ctx, comcon_obj, "refusalCodes",
