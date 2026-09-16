@@ -1,0 +1,4 @@
+# runtime artefacts of the demos (each test.sh starts nginx -p . in its directory)
+**/logs/
+**/*_temp/
+**/run.log
