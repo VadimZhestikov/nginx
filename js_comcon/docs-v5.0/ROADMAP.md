@@ -1,5 +1,27 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
+> **WHERE WE ARE (v5.124 — 2026-09-16), in five lines.** Every increment is done and every
+> track is closed: confinement (two signatures on the assurance case, ASSURANCE §15), the
+> compiler (M5.1a shipped, M5.1b parked on its numbers), the library (the vocabulary complete;
+> `opaque.*` and the postures not built by decision), live ops and the config instance. The
+> gate is `t/tools/gate.sh`; every negative control is automated; the OOM sweep stands on both
+> tiers; F2's leak half is closed with its limit measured. **Open, by name:** F11's
+> reproduction half (a signer running the pack); the broadcast-fuzz flake (instrumented, its
+> alert text captured, awaiting a recurrence with the log tail); and five decisions — the
+> warm-speculation finding to post upstream, the sub-fragment narrowing words, `opaque.*` and
+> the postures, M5.1b, and **M5.1c**: on a C bound the benchmark's class B reads 3.5×, GO by
+> the M5.0 rule, pointing at a cut of M5.1a's kind (`charCodeAt` and `Math.imul` typed by the
+> spec; PERFORMANCE §2f.2). The rest of this block is the log, newest first, each entry also
+> a FOUNDATION delta.
+>
+> - **THE RECORD MADE READABLE; CLASS B RE-MEASURED (2026-09-16, v5.124).** README's 83 KB
+>   history line is a five-line state; ROADMAP opens with where we are. Class B's typed arm is
+>   a C engine-read kernel: 15.16 vs 52.5 ns/char, 3.5× — GO by the rule, where v5.114's NO-GO
+>   stood on a lowered-JS denominator. The sweep covers `checkRequest`. The broadcast flake's
+>   first face carried text (`kill(worker, 9) failed`: the master's TERMINATE escalation at
+>   shutdown, under the pack only); the harness now prints the log tail on a "no alerts"
+>   failure.
+>
 > **POSITION (v5.123 — 2026-09-15).** Increments **A / B / C are done** (COMCON-lite
 > core; typed admission front-end; compiled tier C5–C7 with the SR-2 faithfulness gate passed).
 > Increment **E (M-CFG / config instance)** is **substantially built**: the kernel-operator

@@ -355,6 +355,33 @@ so the compiler knows a value's type at the boundary. Both parked, on these numb
 own typed array runs its byte scan at 1.26 ns/byte on the compiled tier, and nothing in the
 data plane is waiting on a compiler change.
 
+### 2f.2 Class B re-measured against a C bound — and the rule now says GO *(v5.124)*
+
+§2f's third reading said the class B "typed" arm was lowered JS and asked for a C per-char
+kernel. It has one now: `nginx.bench.fnvEngine(reps)`, the same FNV over the same token with
+every character read THROUGH THE ENGINE (a property read on the JS string, then its code) —
+where a typed lowering of string code lands, since types cannot remove the engine's per-char
+access. Same instrument, same box:
+
+| class B, token check (ns/char) | v5.114 | v5.117 | **v5.124** |
+|---|--:|--:|--:|
+| floor (C FNV) | 0.47 | 0.47 | 0.47 |
+| typed bound | 20.16 *(lowered JS)* | 13.75 *(lowered JS)* | **15.16** *(C, engine read per char)* |
+| lowered | 50.00 | 50.0 | 52.5 |
+| lowered / typed | 2.5 | 3.6 | **3.5** |
+
+**By the rule stated before the numbers (`lowered / typed ≥ 3 → GO`), class B is GO at 3.5×
+on a bound that a codegen change can no longer move.** The v5.114 NO-GO stood on a
+denominator that was not a bound; the honest one says a typed lowering of class B's loop
+would have room to buy 3.5× over what maxim does today. Where the 52.5 goes is now visible in
+the same way M5.1a's was: the loop is `Math.imul(h ^ part.charCodeAt(i), p) >>> 0` — a
+method call through the inline cache for `charCodeAt`, a call for `Math.imul`, and a boxed
+`>>>` — and both calls have results the language fixes the type of: `charCodeAt` on a string
+receiver is a code unit or `NaN`, `Math.imul` is int32. **That is the shape of an M5.1c**, the
+same kind of cut as M5.1a (no speculation, the type comes from the spec), not M5.1b's declared
+shapes; the split and `toString(16)` around the loop stay engine work. It is a decision, not a
+scheduled step, recorded here with its number so it is decided on evidence.
+
 ---
 
 ## 3. Cost model by enforcement moment

@@ -79,7 +79,13 @@ sub DESTROY {
 				&& ! grep { $_ !~ $re } @alerts;
 		}
 
-		Test::More::is(join("\n", @alerts), '', 'no alerts');
+		# pilgrim: an alert's text alone did not say what the master saw
+		# (a kill(pid, 9) ESRCH at shutdown left "who sent TERM?" open);
+		# the log's last lines carry the signals and the exits
+		my @log = split /\n/, $self->read_file('error.log');
+		my $tail = join "\n", @log[($#log >= 39 ? $#log - 39 : 0) .. $#log];
+		Test::More::is(join("\n", @alerts), '', 'no alerts')
+			or Test::More::diag("error.log tail:\n$tail");
 	}
 
 	if (Test::More->builder->expected_tests) {

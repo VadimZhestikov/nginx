@@ -635,6 +635,25 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.124 (in place — the record made readable; class B re-measured against a C bound, and the
+rule now says GO; the last sweep gap closed; the flake's text captured):** (1) README's
+80-line history — one line of it 83 KB, every entry already in this delta log — is replaced by
+a five-line state, and ROADMAP's POSITION opens with where the work is, in five lines, above
+its log. (2) The benchmark's class B "typed" arm is a C kernel, `nginx.bench.fnvEngine`: the
+same FNV with every character read through the engine, which no codegen change can move. On it
+class B measures typed 15.16 ns/char against lowered 52.5 — **3.5×, GO by the rule stated
+before the numbers**, where the v5.114 NO-GO stood on a lowered-JS denominator that was not a
+bound. Where the 52.5 goes is visible: a `charCodeAt` method call and a `Math.imul` call per
+character, both with results the language fixes the type of — the shape of an M5.1c of
+M5.1a's kind (no speculation), recorded as a decision with its number (PERFORMANCE §2f.2).
+(3) The residue sweep's include-inside-a-full-parent shape names `checkRequest`, so the
+admission request-field check runs under the allowance too; every named place is swept.
+(4) The broadcast-fuzz flake's first face carried text at last, in the pack on `de081c548`:
+`kill(worker, 9) failed (No such process)` — the master in its TERMINATE escalation at
+shutdown, which means a terminate-class signal reached it; standalone, three kept logs show
+QUIT only. Who sent it is not known; `t/lib/Test/Nginx.pm` now prints the error log's last 40
+lines on any "no alerts" failure, which is what would have said. ASSURANCE G7.21, §16.
+
 **v5.123 (in place — the gate in the tree; G7.22's limit measured; the stream surface swept;
 build artifacts untracked):** five items of one plan. (1) `t/tools/gate.sh` is what "gate
 green" in a commit message means — the sanitizer builddirs rebuilt first, `t/` on the

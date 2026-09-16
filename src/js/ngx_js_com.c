@@ -6997,6 +6997,51 @@ ngx_js_bench_token_get(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 
+/* nginx.bench.fnvEngine(reps) -- the class B TYPED bound as a C kernel: the
+ * same FNV over the same token, but every character read THROUGH THE ENGINE
+ * (a property read on the JS string, then its code), which is where a typed
+ * lowering of string code lands: types cannot remove the engine's per-char
+ * access.  Until v5.124 this arm was lowered JS, so a codegen change moved the
+ * bound it was supposed to be (PERFORMANCE 2f). */
+static JSValue
+ngx_js_bench_fnv_engine(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    uint32_t     reps = 0, r, i, n, h = 2166136261u;
+    JSValue      str, ch;
+    const char  *cs;
+
+    if (argc > 0) {
+        JS_ToUint32(ctx, &reps, argv[0]);
+    }
+
+    str = JS_NewString(ctx, ngx_js_bench_token);
+    if (JS_IsException(str)) {
+        return str;
+    }
+    n = (uint32_t) (sizeof(ngx_js_bench_token) - 1);
+
+    for (r = 0; r < reps; r++) {
+        h = 2166136261u;
+        for (i = 0; i < n; i++) {
+            ch = JS_GetPropertyUint32(ctx, str, i);
+            cs = JS_ToCString(ctx, ch);
+            if (cs != NULL) {
+                if (cs[0] != '.') {
+                    h = (h ^ (uint8_t) cs[0]) * 16777619u;
+                }
+                JS_FreeCString(ctx, cs);
+            }
+            JS_FreeValue(ctx, ch);
+        }
+    }
+
+    JS_FreeValue(ctx, str);
+
+    return JS_NewUint32(ctx, h);
+}
+
+
 ngx_int_t
 ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
 {
@@ -7072,6 +7117,8 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
             JS_NewCFunction(ctx, ngx_js_bench_scan_typed, "scanTyped", 1));
         JS_SetPropertyStr(ctx, bench, "fnv",
             JS_NewCFunction(ctx, ngx_js_bench_fnv, "fnv", 1));
+        JS_SetPropertyStr(ctx, bench, "fnvEngine",
+            JS_NewCFunction(ctx, ngx_js_bench_fnv_engine, "fnvEngine", 1));
         JS_SetPropertyStr(ctx, bench, "token",
             JS_NewCFunction(ctx, ngx_js_bench_token_get, "token", 0));
 

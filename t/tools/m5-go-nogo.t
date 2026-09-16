@@ -20,10 +20,12 @@
 #   lowered   the JS, lowered by maxim today (untyped)
 #   typed     the ACHIEVABLE typed-shape bound -- for A, a C pointer walk with
 #             the gas check kept (nginx.bench.scanTyped, the stand-in
-#             ngx_js_bench_typed is for arithmetic); for B, the per-char
-#             engine-access arm (one host call per char, lowered), because
-#             string code that is typed still reads its characters through the
-#             engine -- that is where a typed lowering of class B would land
+#             ngx_js_bench_typed is for arithmetic); for B, a C kernel that
+#             reads every character THROUGH THE ENGINE (nginx.bench.fnvEngine,
+#             since v5.124; before that a lowered-JS arm that a codegen change
+#             moved), because string code that is typed still reads its
+#             characters through the engine -- that is where a typed lowering
+#             of class B would land
 #   floor     C with nothing kept (nginx.bench.scan / nginx.bench.fnv): what no
 #             lowering can beat; reported for scale, never the decision
 #
@@ -43,11 +45,17 @@
 # AFTER M5.1a (v5.117) the same rule reads the REMAINING gap: class A's lowered
 # arm went 11.72 -> 1.26 ns/byte and its ratio 19.2 -> 2.1, so a further typed
 # cut is NOT worth it by the rule.  And a correction the re-run forced: class
-# B's "typed" arm (K) is lowered JS -- `h ^ byteAt(i)` -- so M5.1a moved it
-# too (20.16 -> 13.75) while the class B fragment itself did not (50.0); the
-# class B ratio is therefore sensitive to how its denominator is built, and
-# PERFORMANCE §2f says so.  A future re-measurement should give class B a C
-# per-char kernel for that arm, as class A has.
+# B's "typed" arm was lowered JS (K, `h ^ byteAt(i)`), so M5.1a moved it too
+# (20.16 -> 13.75) while the class B fragment itself did not (50.0).
+#
+# SINCE v5.124 class B's typed arm is a C kernel (nginx.bench.fnvEngine): one
+# engine read per character, which no codegen change can move.  On it the
+# class B ratio is 3.5 (typed 15.16, lowered 52.5) -- GO by the rule, where
+# the v5.114 NO-GO stood on a denominator that was not a bound.  The shape of
+# the cut it points at is M5.1a's kind (charCodeAt on a string is a code unit
+# or NaN, Math.imul is int32 -- the language fixes both types), recorded in
+# PERFORMANCE §2f.2 as a decision with its number, not a scheduled step.  The
+# K arm stays in the file for continuity of the earlier numbers.
 #
 #     TEST_NGINX_BINARY=$(pwd)/objs_jit/nginx prove -v t/tools/m5-go-nogo.t
 
@@ -189,14 +197,14 @@ if (l.path === '/b') {
         var o = { cls: 'B', tokenLen: TOKEN.length, report: REPORT };
         try {
             o.tier = { i: nginx.jitStatus(T.i), c: nginx.jitStatus(T.c), k: nginx.jitStatus(K.c) };
-            o.hash = { floor: nginx.bench.fnv(1), lowered: T.c(TOKEN, 1), interp: T.i(TOKEN, 1) };
+            o.hash = { floor: nginx.bench.fnv(1), typed: nginx.bench.fnvEngine(1), lowered: T.c(TOKEN, 1), interp: T.i(TOKEN, 1) };
             /* the typed bound reads the same number of characters, through the engine */
             var chars = TOKEN.length - 2;              /* two '.' separators skipped */
             var R = 200000, RI = 40000, RK = 200000;
             function perChar(ms, reps) { return Math.round(ms * 1e6 / (reps * chars) * 100) / 100; }
             o.ns = {
                 floor:   perChar(best(function (r) { nginx.bench.fnv(r); }, R, 3), R),
-                typed:   perChar(best(function (r) { K.c(chars, r); }, RK, 3), RK),
+                typed:   perChar(best(function (r) { nginx.bench.fnvEngine(r); }, RK, 3), RK),
                 lowered: perChar(best(function (r) { T.c(TOKEN, r); }, R, 3), R),
                 interp:  perChar(best(function (r) { T.i(TOKEN, r); }, RI, 3), RI)
             };

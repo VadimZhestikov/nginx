@@ -131,11 +131,12 @@ S.marshal = function (mem) { return comcon.include(
 S.catch_fine = S.catch;
 
 /* the allowance biting INSIDE include: the parent fills memory, then authors
-   a sub-fragment -- compile and admission run under the parent's allowance */
+   a sub-fragment -- compile and admission, the request-field check included
+   (checkRequest), run under the parent's allowance */
 S.nested_include = function (mem) { return comcon.include(
     "function(req){ var a = [];" +
     "  try { for (;;) { a.push('x'.repeat(1024)); } } catch (e) {}" +
-    "  try { var s = author.include('function(){ return 1; }', {imports: []}); return 'included ' + s(); }" +
+    "  try { var s = author.include('function(){ return 1; }', {imports: [], checkRequest: true}); return 'included ' + s(); }" +
     "  catch (e2) { return e2 === null ? 'null' : 'caught ' + ('' + e2.message); } }",
     { imports: [], grants: { author: comcon.author({ subFragments: 1 }) },
       meter: comcon.meter({ memoryBytes: mem }) }); };
