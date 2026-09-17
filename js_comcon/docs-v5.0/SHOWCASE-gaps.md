@@ -84,6 +84,59 @@ Written down so the checklist reads in both directions:
 | G-05 (diff + would-deny) | v5.127 | `comcon.std.policy.diff`, `comcon.denials`, `ops.wouldDeny` (`t/comcon_std_policy_diff.t`, `t/comcon_would_deny.t`, demo O3) |
 | G-16 (docs) | v5.127 | `comcon.std.docs`, `ops.docs` (`t/comcon_std_docs.t`, demo A3) |
 
+## The plan for what is left (2026-09-16, after v5.127)
+
+Twenty-three gaps remain. Grouped by what closing each needs, cheapest evidence first.
+
+**Wave 1 — library only, no C change, an afternoon each.**
+- G-05, the allow-suite generator: record `(input, output)` pairs from a binding in audit or
+  learn posture into a `tests` quotation, so a candidate policy is admitted against what the
+  current one actually answered (`ops.wouldDeny` + `contract.tests`).
+- G-16, the rest: the `signing` ops resource (a host-held HMAC key descriptor; one C helper
+  for HMAC-SHA256, since host JS has no crypto) and a maker chain `{who, when, hash}` appended
+  at `register`/`rebind`; then `trustReport` carries provenance.
+- G-26, the shell: `comconctl` as a script over a host-defined admin location written with
+  `std.ops` — no directive, no new mechanism.
+- G-12, the trust ladder: `probation`/`standard`/`trusted` profiles over shipped words, and a
+  widening gate — `rebind` needs an explicit `{admin: true}`, recorded in `bindings()`.
+- G-19, the builder profile: include the generator itself with `intrinsics` narrowed (no
+  `Date`, no `Math.random`), which the allowance already supports.
+
+**Wave 2 — one C mechanism each, with a maintained control patch.**
+- G-01, live revocation: a generation number on the wrapper record checked at the gate;
+  `comcon.revoke(cap)` bumps it; a reseller's copies carry the parent's generation, so the
+  cascade is free. The socket-handle generation trick, applied to grants — the CVE-day story.
+- G-14, `protocol` on the server facet and the author capability (operations already named).
+- G-18, an append-only log capability kind: one operation, `append`, mediable by every word.
+- G-07, a CPU-time meter: `getrusage` delta around the invoke, charged like retained bytes.
+- G-21, master-side compilation of a live epoch — the design below.
+
+**Wave 3 — a written design first.** G-20 (bind by query, grantable program handles), G-25
+(`includeAt`/`expose`), G-23 (`nginx.conf`-syntax proposals), G-17 (an API version word),
+G-06 (partner edges), G-24 (the typed front-end), G-04 (the REL console), G-09 (signed
+manifests, after Wave 1's signing).
+
+**By decision, not scheduled:** G-03, G-10, G-11, G-15, G-22, G-08, G-02.
+
+**Recommended order:** G-01, then G-05, then G-21.
+
+### G-21: why a live epoch is not compiled in the master today, and how it could be
+
+Not "cannot" — not built. What exists: a live replace writes `{epoch, source}` to
+`nginx.shared` and every worker reconciles on its next request in its own compartment; the
+compiled tier's `.so` cache is keyed by the bytecode hash with atomic rename, and a worker
+that finds a cached artifact loads it; the master has the gcc thread and the cache directory.
+Workers have neither and keep it that way (privilege, N compiles, a tenant's `replace()`
+turning into a compile storm). What is missing: (1) a compile request from worker to master
+(hash and epoch, on a socketpair or a shared queue), served by the helper thread the master
+already runs; (2) the master compiles in the background exactly as at config time and writes
+the `.so` under the hash; (3) workers keep serving the interpreted epoch and pick the artifact
+up on reconcile — the same lazy pull, no broadcast; (4) two bounds: one compile in flight per
+binding with a queue cap, and care with the master's signal handling (the shutdown hang
+recorded at v5.127 is a master-side timing defect). The artifact must match the bytecode
+exactly (the atom fixup table and the hash enforce it), and the master compiles but never
+executes tenant code, as at config time. Two to three days with SR-2 rows and a control.
+
 ## Demos that came out of this pass
 
 Four scenarios had shipped code and no demo, and each addresses an audience the first
