@@ -655,7 +655,17 @@ holds, with the live epoch. (5) `std.describe()` told the truth again: its `abse
 named six shipped mediation words and `std.ops` as missing; it now lists the canonical NOT
 BUILT set and `onViolation`/`profile` are in `enforced`. Four tests (48 assertions), three
 demos (`O_Operators/O3`, `A_Auditors/A2`, `A_Auditors/A3`), OPERATOR_API §8k, ASSURANCE
-G7.24, `t/comcon_std_lib.t` made robust to port remapping. Gate green.
+G7.24, `t/comcon_std_lib.t` made robust to port remapping. Gate green. (6) **The
+broadcast-fuzz flake showed its third face, with the instrument's tail this time**, in the
+pack on `686253e1b`, in `t/js_com_proxy_cache.t` — a file with no SharedWorker and no
+fragment: QUIT at 20:43:33, the worker, cache manager and cache loader all exited with code
+0 within the same second and the master logged each SIGCHLD, then nothing for 93 s until the
+harness sent TERM, after which the master ran its TERM→KILL escalation against the cache
+manager it had already reaped (`kill(151110, 9) failed`). So the master stayed in its loop
+believing a child was live after reaping every child. The master's one helper thread blocks
+SIGCHLD (checked: `SigBlk` in `/proc/<pid>/task/*/status`), so a stolen signal is not the
+mechanism; 80 start/QUIT cycles of the same fixture under CPU load did not reproduce it. Open,
+with a better signature: a reaped child still counted live in the master's table.
 
 **v5.126 (in place — the showcases annotated with real code; the gaps collected; four demos
 for two new audiences):** (1) Every one of the 53 scenario headings in `SHOWCASE*.md` now

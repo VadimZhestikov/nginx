@@ -8,8 +8,9 @@
 > with a differential fuzz of the compiled tier as a stage; every negative control is
 > automated; the OOM sweep stands on both tiers; F2's leak half is closed with its limit
 > measured. **Open, by name:** F11's reproduction half (a signer running the pack); the
-> broadcast-fuzz flake (instrumented, three clean hunts, awaiting a recurrence with the log
-> tail); the engine's own `--jit-compile-all` test failures (maxim's, pre-existing, recorded in
+> broadcast-fuzz flake (its third face captured with the log tail in the v5.127 pack: every
+> child reaped, the master idle 93 s, then a KILL aimed at a child it had reaped — see the
+> FOUNDATION v5.127 delta); the engine's own `--jit-compile-all` test failures (maxim's, pre-existing, recorded in
 > G7.23); and four decisions — the warm-speculation finding to post upstream, the sub-fragment
 > narrowing words, `opaque.*` and the postures, M5.1b. The rest of this block is the log,
 > newest first, each entry also a FOUNDATION delta.
