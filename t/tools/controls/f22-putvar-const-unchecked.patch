@@ -1,0 +1,19 @@
+diff --git a/quickjs/quickjs-jit.c b/quickjs/quickjs-jit.c
+--- a/quickjs/quickjs-jit.c
++++ b/quickjs/quickjs-jit.c
+@@ -5173,12 +5173,10 @@
+                  * path is the interpreter's whole branch. */
+                 jit_buf_printf(cb,
+                     "    { JSValue _v=_tsv%d; _sp=%d;\n"
+-                    "      if(js_unlikely(JS_VALUE_GET_TAG(*_vrp%d)==JS_TAG_UNINITIALIZED"
+-                    "||_RT->var_ref_is_const(var_refs[%d]))){\n"
+-                    "        if(_RT->put_var_checked(ctx,var_refs[%d],%uu,%d,%d,_v)<0) goto _ex;\n"
++                    "      if(js_unlikely(JS_VALUE_GET_TAG(*_vrp%d)==JS_TAG_UNINITIALIZED)){\n"
++                    "        if(_RT->put_var_slow(ctx,%uu,%d,%d,_v)<0) goto _ex;\n"
+                     "      } else { _FREE(*_vrp%d); *_vrp%d=_v; } }\n",
+-                    d-1, d-1, idx, idx, idx, (unsigned)cv_atom, cv_is_lex, is_init,
+-                    idx, idx);
++                    d-1, d-1, idx, (unsigned)cv_atom, cv_is_lex, is_init, idx, idx);
+             }
+             break;
+         }

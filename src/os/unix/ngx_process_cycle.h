@@ -22,6 +22,7 @@
 #define NGX_CMD_JS_WORKER_MSG  7   /* worker → master: JS payload follows */
 #define NGX_CMD_JS_USE_PLUGIN  8   /* worker → master: broadcast plugin load */
 #define NGX_CMD_JS_LOAD_PLUGIN 9   /* master → worker: load plugin           */
+#define NGX_CMD_JS_COMCON_AOT  10  /* worker → master: compile this fragment  */
 
 
 #define NGX_PROCESS_SINGLE     0

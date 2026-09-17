@@ -48,6 +48,7 @@
 #include "dtoa.h"
 #ifdef CONFIG_JIT
 #include "quickjs-jit.h"
+#include <unistd.h>            /* COMCON G-21: unlink/rename of the index */
 #endif
 
 #define OPTIMIZE         1
@@ -16168,6 +16169,165 @@ int js_comcon_aot_compile(JSContext *ctx, JSValueConst func)
     return 0;
 }
 
+/*
+ * COMCON G-21 (pilgrim v5.131): a live epoch compiled in the MASTER's helper,
+ * adopted by the worker.
+ *
+ * js_comcon_aot_child(): in the helper.  Compiles the wrapper text COMPILE-
+ * ONLY -- nothing runs, not the IIFE a source may be, not a statement --
+ * enqueues every function under the wrapper, drains the gcc thread the
+ * helper starts for itself, and writes `idx_path` atomically: one line per
+ * function that has an artifact on disk, "<srckey> <bc_hash>".
+ *
+ * js_comcon_aot_pull(): in the worker.  Reads the index, walks the live
+ * fragment's tree, and installs by explicit hash every function whose source
+ * key the index names.  Returns the number installed, -1 without an index.
+ */
+static void js_comcon_aot_index_walk(FILE *f, JSFunctionBytecode *root, int *n)
+{
+    JSFunctionBytecode *stack[256];
+    int sp = 0, i;
+
+    stack[sp++] = root;
+    while (sp > 0) {
+        JSFunctionBytecode *b = stack[--sp];
+        uint64_t h = js_jit_fb_cache_hash(b);
+        if (js_jit_cached_exists(h)) {
+            fprintf(f, "%016llx %016llx\n",
+                    (unsigned long long) js_jit_fb_srckey(b),
+                    (unsigned long long) h);
+            (*n)++;
+        }
+        for (i = 0; i < b->cpool_count && sp < 256; i++) {
+            if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+                stack[sp++] = JS_VALUE_GET_PTR(b->cpool[i]);
+        }
+    }
+}
+
+int js_comcon_aot_child(JSContext *ctx, const char *text, size_t len,
+                        const char *origin, const char *idx_path)
+{
+    JSValue             o;
+    JSFunctionBytecode *root, *wrap = NULL;
+    FILE               *f;
+    char                tmp[640];
+    int                 i, n = 0;
+
+    js_jit_init();
+
+    o = JS_Eval(ctx, text, len, origin,
+                JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(o)) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return -1;
+    }
+    if (JS_VALUE_GET_TAG(o) != JS_TAG_FUNCTION_BYTECODE) {
+        JS_FreeValue(ctx, o);
+        return -1;
+    }
+    root = JS_VALUE_GET_PTR(o);
+
+    /* the script's one nested function is the wrapper; the fragment's own
+       functions are the wrapper's children (a plain function expression is
+       one child; an IIFE source is a child whose child is the fragment) */
+    for (i = 0; i < root->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(root->cpool[i]) == JS_TAG_FUNCTION_BYTECODE) {
+            wrap = JS_VALUE_GET_PTR(root->cpool[i]);
+            break;
+        }
+    }
+    if (!wrap) {
+        JS_FreeValue(ctx, o);
+        return -1;
+    }
+
+    for (i = 0; i < wrap->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(wrap->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+            js_jit_compile_all(ctx, JS_VALUE_GET_PTR(wrap->cpool[i]));
+    }
+    js_jit_drain();
+
+    snprintf(tmp, sizeof(tmp), "%s.tmp", idx_path);
+    f = fopen(tmp, "w");
+    if (!f) {
+        JS_FreeValue(ctx, o);
+        return -1;
+    }
+    for (i = 0; i < wrap->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(wrap->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+            js_comcon_aot_index_walk(f, JS_VALUE_GET_PTR(wrap->cpool[i]), &n);
+    }
+    fclose(f);
+    if (rename(tmp, idx_path) != 0) {
+        unlink(tmp);
+        n = -1;
+    }
+    JS_FreeValue(ctx, o);
+    return n;
+}
+
+int js_comcon_aot_pull(JSContext *ctx, JSValueConst func, const char *idx_path,
+                       int *n_funcs, int *n_matched)
+{
+    enum { MAXROWS = 1024 };
+    uint64_t            keys[MAXROWS], hashes[MAXROWS];
+    unsigned long long  k, h;
+    int                 rows = 0, installed = 0, walked = 0, matched = 0, i, sp = 0;
+    FILE               *f;
+    JSFunctionBytecode *stack[256], *root;
+
+    root = js_jit_get_callee_fb(func);
+    if (!root)
+        return -1;
+    f = fopen(idx_path, "r");
+    if (!f)
+        return -1;
+    while (rows < MAXROWS && fscanf(f, "%llx %llx", &k, &h) == 2) {
+        keys[rows] = (uint64_t) k;
+        hashes[rows] = (uint64_t) h;
+        rows++;
+    }
+    fclose(f);
+
+    stack[sp++] = root;
+    while (sp > 0) {
+        JSFunctionBytecode *b = stack[--sp];
+        uint64_t sk;
+
+        walked++;
+        if (js_jit_fb_get_func(b) == NULL) {
+            sk = js_jit_fb_srckey(b);
+            for (i = 0; i < rows; i++) {
+                if (keys[i] == sk) {
+                    matched++;
+                    installed += js_jit_install_from_cache(ctx, b, hashes[i]);
+                    break;
+                }
+            }
+        }
+        for (i = 0; i < b->cpool_count && sp < 256; i++) {
+            if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+                stack[sp++] = JS_VALUE_GET_PTR(b->cpool[i]);
+        }
+    }
+    if (n_funcs)
+        *n_funcs = walked;
+    if (n_matched)
+        *n_matched = matched;
+    return installed;
+}
+
+uint64_t js_comcon_aot_text_key(const char *text, size_t len)
+{
+    return js_jit_text_key(text, len);
+}
+
+const char *js_comcon_aot_cache_dir(void)
+{
+    return js_jit_cache_dir();
+}
+
 /* M5.1c (pilgrim): the two builtins the generated code may inline, checked by
  * IDENTITY -- the object must be a C function whose C pointer is the builtin's
  * -- so a program that replaced String.prototype.charCodeAt or Math.imul, or
@@ -16263,6 +16423,58 @@ JSValue js_jit_op_get_var_slow(JSContext *ctx, JSAtom atom, int is_lexical)
                                          ctx->global_obj, TRUE);
     return val;
 }
+/*
+ * F22 (pilgrim v5.131): the compiled store to a global must ask what the
+ * interpreter asks.  OP_put_var's interpreter case takes its slow path when
+ * the cell is uninitialised OR the reference is CONST -- and a global
+ * object property that is not writable is exactly a const reference
+ * (var_ref->is_const = !(flags & JS_PROP_WRITABLE) at creation), which is
+ * how the compartment's global-binding freeze (F15 phase 1) is represented.
+ * The generated code used to test only the first and write the cell
+ * directly otherwise, so compiled fragment code could reassign a frozen
+ * intrinsic that interpreted code was refused.  Two runtime entries: the
+ * const bit, read at the store, and the interpreter's whole branch.
+ */
+int js_jit_op_var_ref_is_const(JSVarRef *vr)
+{
+    return vr->is_const;
+}
+
+int js_jit_op_put_var_checked(JSContext *ctx, JSVarRef *vr, JSAtom atom,
+                              int is_lexical, int is_put_init, JSValue val)
+{
+    int ret;
+
+    if (JS_IsUninitialized(*vr->pvalue) || vr->is_const) {
+        if (is_lexical) {
+            if (is_put_init)
+                goto ok;
+            JS_FreeValue(ctx, val);
+            if (JS_IsUninitialized(*vr->pvalue))
+                JS_ThrowReferenceErrorUninitialized(ctx, atom);
+            else
+                JS_ThrowTypeErrorReadOnly(ctx, JS_PROP_THROW, atom);
+            return -1;
+        }
+        ret = JS_HasProperty(ctx, ctx->global_obj, atom);
+        if (ret < 0) {
+            JS_FreeValue(ctx, val);
+            return -1;
+        }
+        if (ret == 0 && is_strict_mode(ctx)) {
+            JS_FreeValue(ctx, val);
+            JS_ThrowReferenceErrorNotDefined(ctx, atom);
+            return -1;
+        }
+        ret = JS_SetPropertyInternal(ctx, ctx->global_obj, atom, val,
+                                     ctx->global_obj, JS_PROP_THROW_STRICT);
+        return (ret < 0) ? -1 : 0;
+    }
+ok:
+    set_value(ctx, vr->pvalue, val);
+    return 0;
+}
+
 /* Slow path for OP_put_var / OP_put_var_init when *var_ref->pvalue is
  * JS_UNINITIALIZED.  Mirrors the interpreter's OP_put_var branch exactly:
  *   is_lexical && !is_put_init → TDZ / const throw

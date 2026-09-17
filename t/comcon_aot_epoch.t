@@ -11,16 +11,20 @@
 #
 # comcon.aotStatus(fragment) now answers it, and the answer is architectural: a
 # live rewrite's new epoch is built in a WORKER, post-fork, where THERE IS NO GCC
-# THREAD (it does not survive fork()).  So the bytecode fallback is what runs,
-# and re-AOT of a live epoch is not something this architecture can do in a
-# worker at all.  This test pins that, in both directions:
+# THREAD (it does not survive fork()).  So the bytecode fallback is what runs AT
+# THE INSTANT THE EPOCH IS ADMITTED.  Since v5.131 (G-21) the worker asks the
+# master, whose helper compiles the text and whose index the worker adopts on a
+# later invocation -- t/comcon_aot_master.t pins that path; this file pins the
+# instant, in both directions:
 #
 #   * the SAFETY property, which is the one that matters: a rewrite of a fragment
 #     that WAS compiled natively takes effect -- the new epoch's behaviour is
 #     served, never the old native code.  A stale .so still answering requests
 #     after a rewrite would be the worst failure this class has.
-#   * the HONESTY property: aotStatus reports compiled:0 for that epoch instead
-#     of implying a re-AOT, and the log line says BYTECODE, not NATIVE.
+#   * the HONESTY property: aotStatus reports compiled:0 for that epoch at
+#     admission instead of implying a re-AOT (and, on the compiled build, that
+#     the master has been asked: pending), and the include's log line says
+#     BYTECODE, not NATIVE.
 #
 # Runs on both builds and says which it measured: on a build without CONFIG_JIT
 # there is no tier to report, and the test asserts that answer rather than
@@ -145,6 +149,13 @@ ctl.handler = function (req) {
 };
 JS
 
+# a private artifact cache: a previous run's master-compiled index would make
+# the rewritten epoch native at once (G-21, "compiled before it was asked"),
+# and this file pins the instant of admission
+my $cache = $t->testdir() . '/jitcache';
+mkdir $cache;
+$ENV{QJS_JIT_CACHE} = $cache;
+
 $t->try_run('no js module')->plan(13);
 
 ###############################################################################
@@ -155,8 +166,8 @@ my $jit = ($s0 =~ /"atLoad":\{"jit":true/) ? 1 : 0;
 diag($jit ? "compiled tier PRESENT (CONFIG_JIT build)"
           : "no compiled tier in this build (interpreter)");
 
-like($s0, qr/"atLoad":\{"jit":(true|false),"functions":\d+,"compiled":\d+\}/,
-     'aotStatus reports {jit, functions, compiled}');
+like($s0, qr/"atLoad":\{"jit":(true|false),"functions":\d+,"compiled":\d+[,}]/,
+     'aotStatus reports {jit, functions, compiled, ...}');
 
 # --- the safety property -------------------------------------------------
 like(http_get('/m'), qr/x-epoch: 0.*EPOCH-ONE:/s, 'epoch 0 serves V1');
@@ -174,9 +185,11 @@ like(http_get('/m'), qr/x-epoch: 0.*EPOCH-ONE:/s,
      '...serving V1 again, so the retained epoch is intact');
 
 # --- the honesty property ------------------------------------------------
-like($rep, qr/"after":\{"jit":(true|false),"functions":\d+,"compiled":0\}/,
-     'a live-rewritten epoch reports compiled:0 -- the BYTECODE FALLBACK is '
-     . 'what runs, because a worker has no gcc thread after fork()');
+like($rep, $jit ? qr/"after":\{"jit":true,"functions":\d+,"compiled":0,"pending":true,/
+                : qr/"after":\{"jit":false,"functions":\d+,"compiled":0[,}]/,
+     'a live-rewritten epoch reports compiled:0 at admission -- the BYTECODE '
+     . 'FALLBACK runs first, because a worker has no gcc thread after fork(); '
+     . 'on the compiled build the master has been asked (pending)');
 
 my $hf = http_get('/ctl?op=hostFn');
 # Two honest shapes, keyed on the flag: with a compiled tier it walks the tree
@@ -201,7 +214,7 @@ if ($jit) {
     # If this fails with 0 native, check that gcc is installed and on PATH --
     # a box with no compiler legitimately reports 0, and then this file is
     # measuring an interpreter and should be read as such.
-    ($s0 =~ /"atLoad":\{"jit":true,"functions":\d+,"compiled":(\d+)\}/);
+    ($s0 =~ /"atLoad":\{"jit":true,"functions":\d+,"compiled":(\d+)[,}]/);
     cmp_ok($1, '>', 0,
        "the LOAD-time include really was lowered ($1 functions native) -- "
        . 'needs gcc on PATH; 0 here means no compiler, not a broken tier');

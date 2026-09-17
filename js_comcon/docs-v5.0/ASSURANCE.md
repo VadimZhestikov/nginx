@@ -1545,6 +1545,53 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T6, T9, T11
 - **V:** V13
 
+#### G7.27 — a live epoch becomes native by the master without a reload, with the interpreter's answers; the master runs no tenant code
+- **CLAIM:** A fragment admitted at request time on the compiled build reports
+  `pending: true, compiled: 0` at once and, within seconds, `compiled == functions,
+  via: 'master'` on every worker — for a raw include, for every epoch of a `bindShared`
+  binding and again after a `replace()` — answering exactly what it answered interpreted; a
+  wrapper the channel cannot carry is refused at once (`unavailable`), never left pending;
+  the master spawns one helper per text and the helper writes the index only after every
+  function has an artifact; a worker never starts a compile thread.
+- **ARGUMENT:** The worker sends the very text it compiled, and the helper compiles it
+  COMPILE-ONLY: `JS_EVAL_FLAG_COMPILE_ONLY` yields bytecode without executing the script,
+  so an IIFE source or injected top-level code cannot run in the master's lineage — the same
+  flag F15 relies on at the host entrance. Identity across processes is by source key
+  (text plus shape), never by the atom-bearing bytecode hash, and installation is by
+  explicit hash under the cache-hit path's own checks (version symbol, no direct calls,
+  atoms rebound), so a stale, foreign or process-bound artifact is refused rather than run;
+  portable codegen is folded into the hash so it cannot alias an in-process artifact.
+  Workers forbid the compile thread at process init (a runtime created after the fork used
+  to start one), so a request never blocks on gcc and no worker writes to the cache. The
+  helper is detached: nginx does not count it as live at shutdown and does not signal it.
+  Faithfulness of the native tier is SR-2's standing claim; this test re-asserts it on the
+  live path with the two tiers' answers compared.
+- **EV:** `t/comcon_aot_master.t` (17, compiled tier): both workers include at request
+  time, start pending and interpreted with three functions; both become native by the
+  master within 30 s with the interpreter's answer; the master's helper line and the index
+  line in the log; a shared binding native on both workers at epoch 0 and again at epoch 1
+  after a live replace, answering differently as its text does; a 70 KB wrapper refused at
+  once with the reason logged. Skipped on the interpreter build.
+- **EV:** `t/tools/controls/aot-master-inert.patch` — the master ignores the request:
+  nothing becomes native (the "within 30 s" and every assertion after it fail). Verified by
+  the script on `objs_jit`.
+- **EV:** `t/tools/gate.sh` stage 2c and the pack's warm pass — `t/comcon_*.t` on `objs_jit`
+  with the first pass's artifact cache, so every request-time fragment the suite admits runs
+  native inside the request that admits it; the pass that found F22, F23 and F24.
+- **EV:** `t/comcon_include_faithfulness.t`, row `assigning a frozen global binding throws on
+  both tiers (F22)`, and `t/tools/controls/f22-putvar-const-unchecked.patch` (the compiled
+  store without the const check: the row's native tier answers `assigned`). Verified by the
+  script on both binaries.
+- **GAP:** F23: a failure raised from native code carries no line (the origin test says
+  which tier it measured). One helper at a time; a burst of distinct texts is served in the
+  order workers re-ask, not queued in the master. The cache directory is process-wide state on disk
+  (`QJS_JIT_CACHE`, else `~/.cache/qjs-jit`); its artifacts are trusted after the version and
+  shape checks, not signed. Sub-fragments (the author tier) are not compiled this way. A
+  reload still recompiles config-time includes in the master as before.
+  **home:** SHOWCASE-gaps G-09 (signed manifests, for the cache) · OPERATOR_API §8n.
+- **THREAT:** T5, T6, T9
+- **V:** V13
+
 #### G7.26 — a candidate is admitted against what the current binding actually answered; coverage names what the recording never reached
 - **CLAIM:** After `h.guard()` on a recorded binding, a `replace()`/`rebind` whose text
   answers any recorded stable input differently is refused at admission with
@@ -2357,6 +2404,8 @@ assurance case whose findings section is empty has not been built honestly.
 | **F18** | An out-of-memory INSIDE the engine's backtrace annotation freed the pending exception under its own feet: `build_backtrace(ctx, rt->current_exception, …)` held no reference, a failed allocation in it threw, `JS_Throw` released the error being annotated, and the annotation went on to define `stack` on a freed object — a fragment-reachable worker SIGSEGV at the memory allowance; on the same path an uncatchable deadline abort would have lost its flag | G7.19 | **FOUND AND CLOSED 2026-09-15 (v5.115).** Found by the M5.0 commit's gate: `t/comcon_author_basic.t` `/nestmemory` killed the worker 3/3 on this layout and never under ASAN or valgrind, because a sanitizer moves where the allowance bites. Fixed in the engine (`build_backtrace_pending`: hold a reference; if the attempt threw, put the original error and its flag back, minus `stack`), the parser's two sites included. `t/comcon_oom_backtrace.t` sweeps the allowance across 32 alignments of a 1 KB fill so the window is hit whatever the layout; validated against the unfixed engine (the worker dies, three of five fail). The same patch is carried to the engine fork. |
 | **F19** | Reporting a fragment's failure, the host called ToString on the error under the fragment's allowance; when that itself ran out of memory it reported `error` for an out-of-memory it could have named, and left ToString's own exception pending on the compartment, alive until the next throw replaced it | G7.21 | **FOUND AND CLOSED 2026-09-15 (v5.119)** by the residue-sweep battery's `catch_alloc` shape on its first run (3 of 64 alignments across the arms). Fixed in `ngx_js_comcon_exc_text`: the pending exception is taken off, and a moved out-of-memory counter names the cause. Not a crash and not an escape; a label a tenant could not act on, and a stale object on the compartment. |
 | **F20** | Maxim's typed lowering read a value from the wrong slot at five kinds of codegen site (fourteen sites) and typed one local wrongly: a NUMBER local stored from (or `+=`'d with) an INT stack slot read the double register; a branch on an INT condition read the double register (32-bit and 8-bit forms); a branch on an untyped condition, and a fused compare-and-branch on untyped operands, left the typed slots below the condition unboxed for the join label to read stale; and the inference pre-pass walked the bytecode linearly, so a value reaching a join over a jump edge never reached the store's type (`var b = 0; b = c ? 1.5 : 0` typed `b` INT and the compiled tier stored 1) — wrong values, no escape, reachable by any fragment with `var` locals holding a double and an int in turn | G7.23 | **FOUND AND CLOSED 2026-09-16 (v5.125).** Found by M5.1c's SR-2 rows on their first run (the double-operand row failed on a store M5.1c did not touch), then the rest of the class by `t/tools/jit-diff-fuzz.py` (7 of the first 12 seeds diverged; each reduced to one or two statements). Fixed in the engine: the pre-pass merges jump-edge state at labels; the branch sites box what survives; the stores read the slot the value is in. 30 seeds, 1,800 functions clean after; the F20 row in the differential pins 11 values; the fuzz is a gate stage. Carried to the fork. |
+| **F22** | The compiled tier's store to a global variable tested only for an uninitialised cell and otherwise wrote the variable cell directly; the interpreter also takes its slow path when the reference is CONST, which is how a non-writable global property — the compartment's frozen binding, F15 phase 1 — is represented. Compiled fragment code could reassign an intrinsic (`Promise = …`) for every co-resident fragment where interpreted code was refused with `TypeError` | G7.27 | **FOUND AND CLOSED 2026-09-17 (v5.131)** by the first warm-cache pass G-21 made possible (the suite's request-time fragments had never run native). Fixed in the engine: the generated store reads the const bit at the store and takes the interpreter's whole branch; codegen version 20, so no artifact with the bypass is loaded. SR-2 row `assigning a frozen global binding throws on both tiers`; control `f22-putvar-const-unchecked.patch` (the row fails on `objs_jit`). Carried to the fork. |
+| **F23** | Compiled code keeps no program counter, so a failure raised from the native tier carries no source line: `comcon: fragment: TypeError: cannot read property 'k' of null` with no `at <comcon-fragment>:4` — the origin the include hop promises (D5b-4) is absent on the native tier | G7.27 | **OPEN 2026-09-17 (v5.131), a diagnostics gap, not an authority one.** Found by the same warm pass. `t/comcon_pom_origin.t` now asserts the message on the native tier and the message with the line on the bytecode tier, and says which it measured. The fix is per-operation `cur_pc` maintenance in codegen (one store per throwing site, with the frame and the bytecode base fetched once in the prologue) — the compiler track. |
 | **F21** | The compiled tier's helper for bitwise NOT called the unary-ARITHMETIC slow path with `OP_not`, an opcode that path has no case for, and its `default:` is `abort()`: `~x` on any operand the type stack did not prove INT — a double, a boolean, a string, `null` — killed the worker process; a fragment holding `~1.5` was a worker crash on the compiled tier | G7.23 | **FOUND AND CLOSED 2026-09-16 (v5.125)** by the fuzz's first run (every seed aborted before printing). Fixed in the engine: the helper takes the interpreter's own not-slow path (ToNumeric, then `~ToInt32`, or BigInt not). The F21 row in the differential holds 14 values over every operand kind; the negative control (`t/tools/controls/f21-bnot-aborts.patch`) brings the abort back and the row fails with the worker dead. Not an escape; an availability defect a tenant could trigger at will. Carried to the fork. |
 
 ---
@@ -2567,6 +2616,8 @@ signature is never quietly credited with work it did not see.
 | **LIVE REVOCATION — G7.25 (v5.129).** `comcon.withdraw(f, name?)`: a grant the host already made is switched off while the fragment runs, and the switch follows every copy a re-grant made of it (one refcounted grant record per wrapper, a copy's record under its parent's, the gate walking the chain after `cap.owner`). `cap.revoked` joins `cap.owner` as an unconditional code, frozen in the golden corpus with a `revokeBefore` row. A binding's revocation sticks across `replace()` and `rollback()`; `bindShared` fans it out on the shared record; `ops.withdraw` is class X with a naming confirmation; the manual marks the grant REVOKED. Control `revoke-not-checked.patch`. | **Adds evidence; narrows nothing the signature attests.** The gate order the case attests through G6.17 (`cap.owner` first, then the mask and the words) gains one question after the first, at the same six sites, answered from a record the wrapper already owned by reference — no new table the gates could disagree with. The unconditional rule gains a second member at its one site. The library verbs confer no authority: `withdraw` only ever narrows (to zero), and nothing un-withdraws. |
 
 | **THE ALLOW-SUITE — G7.26 (v5.130).** `comcon.std.suite`: a fragment's traffic recorded as (input, output) cases in the include result's own callable; the stable cases emitted as a contract `tests` quotation; `guard` pinning it to a binding so a rebind that answers differently is refused at admission; `check` for a host-side rehearsal; `coverage` from a per-function entry counter the engine keeps in every build, with the native tier's caveat stated. `bindShared.replace` realizes before publishing. Control `suite-guard-inert.patch`. | **Adds evidence; narrows nothing the signature attests.** The suite runs through the test phase the case already attests (G3), as one more contract `tests` value; the recorder adds a property test to the callable and no authority; the counter is one increment at the call entry and one reader beside the POM walk, neither reachable from a fragment. The shared-replace ordering is a hardening of a pre-existing hazard (a refused candidate published to every worker), found by the suite's own test. |
+
+| **A LIVE EPOCH COMPILED IN THE MASTER — G7.27 (v5.131).** A worker sends the wrapper text it was admitted from; the master spawns one detached helper that compiles it compile-only, drains its own gcc thread, writes an index (source key → artifact hash) and exits; the worker adopts the artifacts by explicit hash under the cache-hit path's checks, at most once a second, on every worker. Portable codegen (no symbol-named direct calls) folded into the hash. Workers forbid the compile thread at process init — they used to start one for a runtime created after the fork, compiling synchronously and poisoning the cache under the master's environment. Control `aot-master-inert.patch`. | **Adds evidence; narrows nothing the signature attests.** The master's lineage still executes no tenant code (compile-only, the flag F15 already leans on); the artifact a worker runs passes the same checks a cache hit passes plus the version and direct-call refusals; the new channel command carries text the worker already held and the master already trusted to compile at config time. The worker-side change removes a compile path, it does not add one. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

@@ -228,6 +228,8 @@ const JSJITRuntime js_jit_rt = {
     .set_prop         = jit_rt_set_prop,
     .get_var_slow     = js_jit_op_get_var_slow,
     .put_var_slow     = js_jit_op_put_var_slow,
+    .var_ref_is_const = js_jit_op_var_ref_is_const,       /* F22 */
+    .put_var_checked  = js_jit_op_put_var_checked,
     .get_array_el     = jit_rt_get_array_el,
     .set_array_el     = jit_rt_set_array_el,
     /* property deletion — P16 */
@@ -1516,6 +1518,8 @@ static uint64_t jit_hash_bytecode(const uint8_t *bc, int bc_len)
  *
  * This replaces jit_hash_bytecode() at all callsites that have a live
  * JSFunctionBytecode* (i.e. everywhere except the P10.3 callee-hash path). */
+static int jit_portable;              /* COMCON G-21, defined with js_jit_set_portable */
+
 static uint64_t jit_hash_function(JSFunctionBytecode *b)
 {
     int bc_len;
@@ -1586,6 +1590,12 @@ static uint64_t jit_hash_function(JSFunctionBytecode *b)
     const char *src = js_jit_fb_get_source(b, &src_len);
     if (src && src_len > 0)
         h = jit_fnv1a_64(src, (size_t)src_len, h);
+    /* COMCON G-21: portable codegen is a different artifact for the same
+       function; keep the two apart in the cache and in symbol names */
+    if (jit_portable) {
+        static const char tag[] = "portable";
+        h = jit_fnv1a_64(tag, sizeof(tag) - 1, h);
+    }
     return h;
 }
 
@@ -1599,6 +1609,10 @@ int  js_jit_get_aot_mode(void)       { return jit_aot_mode_active; }
 static void jit_cache_init(void)
 {
     const char *env = getenv("QJS_JIT_CACHE");
+    /* once per process image: a forked child re-running this under a
+       different environment must not repoint the directory the parent's
+       artifacts and index live in (COMCON G-21) */
+    if (jit_cache_enabled) return;
     if (env && *env) {
         snprintf(jit_cache_dir, sizeof(jit_cache_dir), "%s", env);
     } else {
@@ -1672,6 +1686,65 @@ static void jit_cache_put(const char *src_path, uint64_t hash)
     close(dst_fd);
     if (!ok || n < 0) { unlink(tmp_path); return; }
     rename(tmp_path, dst_path); /* atomic on same filesystem */
+}
+
+/* =======================================================================
+ * COMCON G-21 (pilgrim v5.131) — artifacts across PROCESSES.
+ *
+ * A worker cannot compile (the gcc thread does not survive fork()), so the
+ * master's short-lived helper compiles a fragment's wrapper text and the
+ * worker adopts the artifacts.  The two processes never share a bytecode
+ * hash: atom operands make jit_hash_function() per-runtime.  So the helper
+ * writes an INDEX beside the cache -- one line per function, its SOURCE KEY
+ * (the function's own text plus its shape, identical wherever the same text
+ * is compiled) and the artifact hash the helper's runtime produced -- and the
+ * worker installs by explicit hash, with every check the cache-hit path makes
+ * (version symbol, no direct calls, the atom table rebound to ITS runtime).
+ * ======================================================================= */
+
+const char *js_jit_cache_dir(void)
+{
+    return jit_cache_enabled ? jit_cache_dir : NULL;
+}
+
+uint64_t js_jit_text_key(const char *text, size_t len)
+{
+    uint64_t h = UINT64_C(0xcbf29ce484222325);
+    uint32_t v = JIT_CODEGEN_VERSION;
+    h = jit_fnv1a_64(text, len, h);
+    h = jit_fnv1a_64(jit_build_stamp, sizeof(jit_build_stamp) - 1, h);
+    h = jit_fnv1a_64(&v, sizeof(v), h);
+    return h;
+}
+
+uint64_t js_jit_fb_srckey(JSFunctionBytecode *b)
+{
+    int         slen = 0, bc_len = 0;
+    const char *src = js_jit_fb_get_source(b, &slen);
+    uint64_t    h = UINT64_C(0xcbf29ce484222325);
+    uint32_t    meta[3];
+
+    js_jit_fb_get_bytecode(b, &bc_len);
+    meta[0] = (uint32_t) bc_len;
+    meta[1] = (uint32_t) js_jit_fb_get_closure_var_count(b);
+    meta[2] = (uint32_t) js_jit_fb_is_strict(b);
+    if (src && slen > 0)
+        h = jit_fnv1a_64(src, (size_t) slen, h);
+    h = jit_fnv1a_64(meta, sizeof(meta), h);
+    return h;
+}
+
+uint64_t js_jit_fb_cache_hash(JSFunctionBytecode *b)
+{
+    return jit_hash_function(b);
+}
+
+int js_jit_cached_exists(uint64_t hash)
+{
+    char *p = jit_cache_get(hash);
+    if (!p) return 0;
+    free(p);
+    return 1;
 }
 
 /* Copy src_path to <cache_dir>/<hash>.c — C source companion for the .so.
@@ -2578,6 +2651,31 @@ static void jit_atfork_child(void)
     jit_worker.started = 0;
 }
 
+/* COMCON G-21: a host may FORBID the compile thread in a process -- an nginx
+ * worker never compiles (it would block a request on gcc, N workers would
+ * compile the same text N times, and the master's minimal environment has no
+ * PATH for gcc anyway): a runtime created there after fork() must not start
+ * one just because JS_NewRuntime() ran.  The cache directory is still
+ * initialised, so the process can adopt artifacts made elsewhere. */
+static int jit_forbidden;
+
+void js_jit_forbid(int forbid)
+{
+    jit_forbidden = forbid;
+}
+
+/* COMCON G-21: PORTABLE codegen -- artifacts meant for another process.  A
+ * P10.3 direct call names its callee by __jit_f_<hash> symbol, valid only in
+ * the process that generated it; portable code takes the inline-cache path
+ * instead, whose callee is resolved at run time in whatever process loads
+ * it, and is not marked as a direct call.  The mode is folded into the
+ * cache hash, so a portable artifact and an in-process one for the same
+ * function never share a cache entry. */
+void js_jit_set_portable(int on)
+{
+    jit_portable = on;
+}
+
 void js_jit_init(void)
 {
     static int atfork_registered = 0;
@@ -2591,6 +2689,8 @@ void js_jit_init(void)
         return;
     }
     jit_cache_init();
+    if (jit_forbidden)
+        return;
     pthread_mutex_init(&jit_worker.lock, NULL);
     pthread_cond_init(&jit_worker.cond, NULL);
     pthread_cond_init(&jit_worker.idle_cond, NULL);
@@ -2765,6 +2865,55 @@ char *js_jit_gen_c_str(JSContext *ctx, JSFunctionBytecode *b,
     cb.buf = NULL; /* prevent jit_buf_free from freeing it */
     jit_buf_free(&cb);
     return src;
+}
+
+/* COMCON G-21: install the cached artifact `bc_hash` into `b`, which was
+ * compiled from the same source text in ANOTHER process.  No worker thread is
+ * needed and none may exist (a forked worker).  The checks are the cache-hit
+ * path's: eligibility, the codegen version symbol, no direct calls, and the
+ * atom table rebound to this runtime.  1 = installed, 0 = not. */
+int js_jit_install_from_cache(JSContext *ctx, JSFunctionBytecode *b,
+                              uint64_t bc_hash)
+{
+    char           fname[64], cv_sym[64], *cache_path;
+    void          *handle;
+    JSJITFunc      f;
+    const uint32_t *cv;
+    JSJITScanResult sr;
+
+    if (js_jit_fb_get_func(b) != NULL)
+        return 0;
+    if (js_jit_scan(b, &sr) != 0) {
+        scan_result_free(&sr);
+        return 0;
+    }
+    scan_result_free(&sr);
+
+    cache_path = jit_cache_get(bc_hash);
+    if (!cache_path)
+        return 0;
+    handle = dlopen(cache_path, RTLD_NOW | RTLD_GLOBAL);
+    free(cache_path);
+    if (!handle)
+        return 0;
+
+    snprintf(fname, sizeof(fname), "__jit_f_%016llx", (unsigned long long) bc_hash);
+    snprintf(cv_sym, sizeof(cv_sym), "__jit_cv_%016llx", (unsigned long long) bc_hash);
+    f  = (JSJITFunc)(uintptr_t) dlsym(handle, fname);
+    cv = (const uint32_t *)(uintptr_t) dlsym(handle, cv_sym);
+    if (!f || !cv || *cv != JIT_CODEGEN_VERSION
+        || jit_so_has_direct_calls(handle, bc_hash)
+        || jit_bind_atoms(JS_GetRuntime(ctx), b, handle, bc_hash) < 0)
+    {
+        dlclose(handle);
+        return 0;
+    }
+    js_jit_fb_set_bc_hash(b, bc_hash);
+    js_jit_fb_set_p103_safe(b, 1);
+    js_jit_fb_set_func(b, f, handle, 2);
+    jit_registry_add((uintptr_t) f, bc_hash,
+                     js_jit_fb_get_func_name(JS_GetRuntime(ctx), b));
+    return 1;
 }
 
 void js_jit_queue_gcc(JSContext *ctx, JSFunctionBytecode *b, JSVarRef **var_refs)
@@ -5017,12 +5166,19 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                     "    { _FREE(*_vrp%d); *_vrp%d=_tsv%d; _sp=%d; }\n",
                     idx, idx, d-1, d-1);
             } else {
+                /* F22: the interpreter's condition is "uninitialised OR
+                 * const"; a frozen global binding is a const reference.
+                 * The const bit is read at the store (a property can be made
+                 * non-writable after the reference exists), and the slow
+                 * path is the interpreter's whole branch. */
                 jit_buf_printf(cb,
                     "    { JSValue _v=_tsv%d; _sp=%d;\n"
-                    "      if(js_unlikely(JS_VALUE_GET_TAG(*_vrp%d)==JS_TAG_UNINITIALIZED)){\n"
-                    "        if(_RT->put_var_slow(ctx,%uu,%d,%d,_v)<0) goto _ex;\n"
+                    "      if(js_unlikely(JS_VALUE_GET_TAG(*_vrp%d)==JS_TAG_UNINITIALIZED"
+                    "||_RT->var_ref_is_const(var_refs[%d]))){\n"
+                    "        if(_RT->put_var_checked(ctx,var_refs[%d],%uu,%d,%d,_v)<0) goto _ex;\n"
                     "      } else { _FREE(*_vrp%d); *_vrp%d=_v; } }\n",
-                    d-1, d-1, idx, (unsigned)cv_atom, cv_is_lex, is_init, idx, idx);
+                    d-1, d-1, idx, idx, idx, (unsigned)cv_atom, cv_is_lex, is_init,
+                    idx, idx);
             }
             break;
         }
@@ -7424,7 +7580,8 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                 int func_slot = gen_sp - 1 - nargs;
                 int is_self = (func_slot >= 0 && gen_st[func_slot] == JIT_T_SELF_FUNC);
                 /* P10.3: guarded direct call to known JIT callee */
-                int is_jit  = (func_slot >= 0 && gen_st[func_slot] == JIT_T_JIT_FUNC && gen_hsh);
+                int is_jit  = (func_slot >= 0 && gen_st[func_slot] == JIT_T_JIT_FUNC && gen_hsh
+                               && !jit_portable);   /* COMCON G-21 */
                 uint64_t jit_callee_hash = is_jit ? gen_hsh[func_slot] : 0;
                 int fslot = d - nargs - 1; /* absolute slot index of func */
                 /* P9.4: box any typed arg slots before building the args array */
@@ -7514,7 +7671,10 @@ static int gen_body(JSJITCodeBuf *cb, const uint8_t *bc, int bc_len,
                             "extern int js_jit_check_and_extract"
                             "(JSValue,JSJITFunc,JSValue**,JSVarRef***,JSAtom**);\n");
                         p103_cae_declared = 1;
-                        cb->has_direct_call = 1;
+                        /* the IC resolves its callee where it runs; only a
+                           symbol-named call ties the code to a process */
+                        if (!jit_portable)
+                            cb->has_direct_call = 1;
                     }
                     jit_buf_str(cb,
                         "extern JSValue js_jit_ic_direct_call"

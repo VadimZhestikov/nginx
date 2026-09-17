@@ -635,6 +635,66 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.131 (in place — G-21 closed: a live epoch compiled in the master and adopted by every
+worker, without a reload):** (1) The protocol: a worker's request-time include keeps the wrapper
+text it was admitted from and sends it to the master (`NGX_CMD_JS_COMCON_AOT`, one message of
+at most 64 KB); the master spawns ONE detached helper — a fork of itself with the compartment
+and the cache directory — and does nothing else (no thread, no blocking, its signal loop
+untouched); the helper compiles the text compile-only (nothing runs, not an IIFE source, not a
+statement), enqueues every function under the wrapper on a gcc thread it starts for itself,
+drains it, writes an index atomically and exits; on every invocation, at most once a second,
+the worker looks for the index and installs the artifacts it names, re-asking after five
+seconds up to six times, then `unavailable`. `aotStatus()` gains `pending`, `via`
+(`config`/`master`/null), `tries`, `unavailable`. (2) Identity across processes is by SOURCE KEY
+(the function's own text plus its shape), never by the atom-bearing bytecode hash the cache is
+keyed by; the index maps source key to artifact hash and the worker installs by explicit hash
+under the cache-hit path's own checks (version symbol, no process-bound direct calls, the atom
+table rebound to its runtime). (3) Portable codegen: the helper emits no symbol-named direct
+JIT-to-JIT calls (the inline-cache call, resolved where it runs, is taken instead), the mode is
+folded into the hash, and an artifact so compiled carries no direct-call marker — the first
+cut was refused two of every three functions by exactly that marker. (4) **Found by the first
+test, pre-existing:** a worker that created its runtime after the fork — the compartment at a
+first request-time include, a SharedWorker's runtime — started a gcc thread of its own through
+the engine's runtime init: it compiled synchronously inside a request, N times across N
+workers, and under the master's minimal environment (no PATH) every job failed and wrote a skip
+marker that the helper then honoured. Workers now forbid the thread at process init
+(`js_jit_forbid`); the helper allows it for itself and sets a PATH when the environment has
+none; it also resets `SIGCHLD` so nginx's handler cannot reap the gcc children the compile
+thread waits for. "The JIT is inert in workers" is now enforced, where it had been assumed.
+(5) The helper is detached: nginx does not count it as live at shutdown and does not signal
+it. (6) The demo harness passed its `NGINX` variable into nginx's environment, where nginx
+reads a variable of that name as its inherited listening sockets, refuses to daemonize and
+blocks the shell; `demo_start` now unsets it for the process it starts, so the README's
+`NGINX=/path bash test.sh` form works as written. (7) `t/comcon_aot_epoch.t`, which pinned
+"a live epoch stays interpreted", now pins the instant of admission (`compiled: 0, pending:
+true`) under a private artifact cache — on a warm cache the master's index answers before the
+epoch is asked for, which is the feature, and which its old shape read as a failure. (8) **What
+the warm cache found.** The second gate run, with the previous run's index answering at
+include time, ran every request-time fragment of the suite NATIVE inside the request that
+admitted it — a pass the suite had never had, since request-time fragments were interpreted
+for good. Three files failed. **F22, found and fixed:** the compiled tier's store to a global
+tested only for an uninitialised cell and otherwise wrote the variable cell directly; the
+interpreter also takes its slow path when the reference is CONST, which is how a non-writable
+global property — the compartment's frozen binding (F15 phase 1) — is represented. Compiled
+fragment code could reassign `Promise` for every co-resident fragment where interpreted code
+was refused. Fixed in the engine: the generated store reads the const bit at the store and
+takes the interpreter's whole branch (two runtime entries, appended to the vtable; codegen
+version 20 so no artifact with the bypass is ever loaded); an SR-2 row pins both tiers, with
+a control. **F23, open:** compiled code keeps no program counter, so a failure raised from
+the native tier carries no line — `t/comcon_pom_origin.t` now says which tier answered
+rather than pin a line the tier cannot give; the fix is per-operation `cur_pc` maintenance in
+codegen, on the compiler track. **F24, an instrument:** the mutants corpus's spin probe (`t += i` over 4e7
+iterations) finished inside the 100 ms meter on the native tier, so `meter=off` changed
+nothing and survived — and no count mends an integer loop, which gcc folds or runs eighteen
+times faster than the interpreter; the probe now reads a property per iteration, which goes
+through the runtime on both tiers (measured within a factor of two), and 5e7 of them outlast
+the meter on both. (9) So the warm pass is a stage of the gate (2c) and of the
+pack, and every run has its own artifact cache (`QJS_JIT_CACHE`) — the accident is now the
+instrument. Engine debt to the fork.
+`t/comcon_aot_master.t` (17, compiled tier), control
+`aot-master-inert.patch`, OPERATOR_API §8n, ASSURANCE G7.27, demo `L_Live_Ops/L4`. Gate green
+on both binaries.
+
 **v5.130 (in place — G-05 closed: the allow-suite, a cage derived from observed behaviour and a
 candidate admitted against it):** (1) `comcon.std.suite`: `record(f, {max})` keeps every call's
 (input, output) as the JSON text the boundary marshals, in the include result's own callable

@@ -62,6 +62,10 @@
 
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
+# G-21 (v5.131): a control's test must not be answered by another run's
+# master-compiled index; this run's own artifact cache, unless the caller
+# (the pack) already chose one
+export QJS_JIT_CACHE="${QJS_JIT_CACHE:-$(mktemp -d /tmp/jitcache-controls.XXXXXX)}"
 
 ONLY=${1:-}
 
@@ -111,6 +115,8 @@ PATCHES=(
 "08934b766|library-programs-absent.patch|t/comcon_std_policy_diff.t|objs|fail|G-05: std.policy.diff absent, and include results no longer carry their contract"
 "08934b766|library-programs-absent.patch|t/comcon_std_docs.t|objs|fail|G-16: std.docs absent, ops.docs absent"
 "G-05b|suite-guard-inert.patch|t/comcon_std_suite.t|objs|fail|G-05: guard() reports success and pins nothing -- a rebind that answers differently is admitted"
+"G-21|aot-master-inert.patch|t/comcon_aot_master.t|objs_jit|fail|G-21: the master ignores the compile request -- no live epoch ever becomes native"
+"F22|f22-putvar-const-unchecked.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|F22: the compiled store to a global never asks whether the reference is const -- a frozen intrinsic is reassigned by native code"
 )
 
 if ! git diff --quiet -- src/js quickjs || ! git diff --cached --quiet -- src/js quickjs; then

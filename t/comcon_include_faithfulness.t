@@ -93,6 +93,16 @@ my @cases = (
 
   #     ...and the one non-int32 outcome, a BigInt, is an exception on both
   #     tiers with the same name and message (the runtime path is shared).
+  #     F22 (v5.131): a frozen global binding is read-only on BOTH tiers.  The
+  #     compiled store wrote the variable cell directly whenever it was
+  #     initialised, never asking whether the reference was CONST -- which is
+  #     how the compartment's global freeze (F15 phase 1) is represented -- so
+  #     compiled fragment code could reassign an intrinsic the interpreter
+  #     refused.  Found by the warm-cache pass G-21 made possible.
+  { name => 'assigning a frozen global binding throws on both tiers (F22)',
+    frag => q{function(req){ try { Promise = function(){ return 1; }; return "assigned\n"; } catch (e) { return e.name + ": " + e.message + "\n"; } }},
+    paths => [qw(/t/frz /t/frz)], expect_denials => 0,
+    expect_re => qr/^TypeError: /m },
   { name => 'half-typed bit op against a BigInt throws (M5.1a)',
     frag => q{function(req){ var xs = [3n]; var h = 5; try { h = (h ^ xs[0]) | 0; return "nothrow " + h + "\n"; } catch (e) { return e.name + ": " + e.message + "\n"; } }},
     paths => [qw(/t/big /t/big)], expect_denials => 0,

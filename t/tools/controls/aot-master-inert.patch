@@ -1,0 +1,11 @@
+diff --git a/src/js/ngx_js_module.c b/src/js/ngx_js_module.c
+--- a/src/js/ngx_js_module.c
++++ b/src/js/ngx_js_module.c
+@@ -5103,6 +5103,7 @@
+     char               idx[640];
+ 
+     key = js_comcon_aot_text_key((const char *) text, len);
++    if (1) return;                     /* CONTROL: the master never answers */
+ 
+     if (ngx_js_comcon_aot_idx_path(key, idx, sizeof(idx)) != NGX_OK) {
+         ngx_log_error(NGX_LOG_WARN, cycle->log, 0,

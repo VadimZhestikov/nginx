@@ -37,7 +37,10 @@ demo_start() {
     if [ ! -x "$NGINX" ]; then
         echo "no nginx binary at $NGINX (build objs/ first, or set NGINX=...)"; exit 2
     fi
-    if ! "$NGINX" -p . -c nginx.conf; then
+    # `env -u NGINX`: nginx reads a variable of that name as its inherited
+    # listening sockets (binary upgrade), refuses to daemonize and blocks
+    # this shell -- so the harness's own variable must not reach it.
+    if ! env -u NGINX "$NGINX" -p . -c nginx.conf; then
         echo "nginx failed to start; logs/error.log:"; sed 's/^/    /' logs/error.log; exit 2
     fi
     sleep 0.6

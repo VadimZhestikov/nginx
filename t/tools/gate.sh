@@ -94,6 +94,13 @@ stage() {  # name, logfile, command...
     if [ $rc -eq 0 ]; then verdict+=("PASS  $name"); else verdict+=("FAIL  $name  (see $OUT/$log)"); fail=1; fi
 }
 
+# G-21 (v5.131): the artifact cache is THIS run's.  The master's helper writes
+# an index per live epoch; a previous run's index would answer at include time
+# and turn stage 2 into a warm pass by accident (which is how F22 was found,
+# and why the warm pass is now a stage of its own, 2c).
+export QJS_JIT_CACHE="$OUT/jitcache"
+mkdir -p "$QJS_JIT_CACHE"
+
 echo "=== 0. rebuild the sanitizer builddirs ==="
 for d in objs_asan objs_ubsan; do
     rm -f "$d/nginx"
@@ -107,6 +114,13 @@ make -C quickjs CONFIG_JIT=y qjs >"$OUT/build-qjs.log" 2>&1 || { echo "FAIL  reb
 
 stage "1. t/ on objs"               t-objs.log     env TEST_NGINX_BINARY="$PWD/objs/nginx"     prove t/
 stage "2. t/comcon_*.t on objs_jit" t-jit.log      env TEST_NGINX_BINARY="$PWD/objs_jit/nginx" prove t/comcon_*.t
+# G-21 (v5.131): the second pass is the WARM one.  Pass 2 asked the master to
+# compile every request-time fragment; the index it left answers at include
+# time now, so every fragment the suite admits at request time runs NATIVE
+# inside the request that admits it.  This is the pass that found F22 (a
+# frozen global reassigned by compiled code): the compiled tier's confinement
+# was only ever exercised by config-time fragments before it.
+stage "2c. t/comcon_*.t on objs_jit, warm artifact cache" t-jit-warm.log env TEST_NGINX_BINARY="$PWD/objs_jit/nginx" prove t/comcon_*.t
 stage "2b. jit-diff-fuzz (12 seeds)" jit-fuzz.log   env JIT_FUZZ_TMP="$OUT/jit-fuzz" python3 t/tools/jit-diff-fuzz.py run --seeds 1-12 --n 60
 stage "3. t_stress/ on objs"        t-stress.log   env TEST_NGINX_BINARY="$PWD/objs/nginx"     prove t_stress/
 stage "4. sanitizers (leaks on)"    sanitizers.log bash t/run_sanitizers.sh

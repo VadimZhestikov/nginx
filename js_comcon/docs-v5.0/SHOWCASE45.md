@@ -160,10 +160,16 @@ a clean, loud admission failure.
 > h.replace(comcon.quote(fixed));      // from ANY worker; all four switch on their next request
 > h.rollback();
 > ```
-> The difference: a new epoch built in a worker runs on the bytecode tier and stays there —
-> there is no compiler thread after `fork()` — and `comcon.aotStatus(f)` reports it rather
-> than claiming native (gap G-21). Tests: `t/comcon_pom_fanout.t`, `t/comcon_aot_epoch.t`,
-> `t/comcon_pom_mutate.t`. Demos: `js_comcon_demos/L_Live_Ops/L1`, `L2`.
+> **The difference is gone since v5.131 (G-21 closed):** a new epoch built in a worker starts
+> on the bytecode tier and, within seconds, runs native by the master — the worker sends the
+> text it was admitted from, the master's detached helper compiles it compile-only and writes
+> an index, every worker adopts the artifacts on its next request:
+> ```js
+> comcon.aotStatus(callable)   // {compiled: 0, pending: true, via: null} … then {compiled: 3, via: 'master'}
+> ```
+> No reload, the same answer on both tiers, and `unavailable` when it cannot happen (a text
+> the channel cannot carry). Tests: `t/comcon_pom_fanout.t`, `t/comcon_aot_epoch.t`,
+> `t/comcon_aot_master.t`. Demos: `js_comcon_demos/L_Live_Ops/L1`, `L2`, `L4`.
 
 **Problem:** a pricing bug in the busiest tenant's hottest function — the one that was
 AOT-compiled to native code. Fixing it "requires a reload" (say the old rules), and

@@ -917,6 +917,20 @@ int js_comcon_aot_compile(JSContext *ctx, JSValueConst func);
  * observable rather than assumed. */
 int js_comcon_aot_status(JSContext *ctx, JSValueConst func, int *n_funcs);
 
+/* COMCON G-21 (CONFIG_JIT only): a live epoch compiled in the master's helper
+ * and adopted by the worker.  See quickjs.c at js_comcon_aot_child(). */
+int js_comcon_aot_child(JSContext *ctx, const char *text, size_t len,
+                        const char *origin, const char *idx_path);
+int js_comcon_aot_pull(JSContext *ctx, JSValueConst func, const char *idx_path,
+                       int *n_funcs, int *n_matched);
+uint64_t    js_comcon_aot_text_key(const char *text, size_t len);
+const char *js_comcon_aot_cache_dir(void);
+/* forbid (1) or allow (0) the compile thread in THIS process: nginx workers
+ * forbid it at process init; the master's helper allows it for itself */
+void        js_jit_forbid(int forbid);
+/* portable codegen for artifacts another process will load (the helper) */
+void        js_jit_set_portable(int on);
+
 /* AOT-A: budgeted load-time compilation of a function AND its nested functions.
  *
  * What js_comcon_aot_compile() cannot tell you is whether anything was actually

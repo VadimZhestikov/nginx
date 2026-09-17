@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **WHERE WE ARE (v5.130 — 2026-09-17), in five lines.** Every increment is done and every
+> **WHERE WE ARE (v5.131 — 2026-09-17), in five lines.** Every increment is done and every
 > track is closed: confinement (two signatures on the assurance case, ASSURANCE §15), the
 > compiler (M5.1a and M5.1c shipped, M5.1b parked; the rule says NO-GO at 2.3× on the last
 > class, PERFORMANCE §2f.3), the library (the vocabulary complete; `opaque.*` and the postures
@@ -15,6 +15,17 @@
 > narrowing words, `opaque.*` and the postures, M5.1b. The rest of this block is the log,
 > newest first, each entry also a FOUNDATION delta.
 >
+> - **G-21 CLOSED — A LIVE EPOCH COMPILED IN THE MASTER, NATIVE ON EVERY WORKER WITHOUT A
+>   RELOAD (2026-09-17, v5.131).** The worker sends its wrapper text; the master spawns one
+>   detached helper that compiles it compile-only, writes an index (source key → artifact
+>   hash) and exits; every worker adopts the artifacts on its next request under the
+>   cache-hit path's checks. Portable codegen for artifacts that cross processes. Found and
+>   fixed on the way: a worker that made its runtime after the fork started its own gcc
+>   thread (synchronous, N-fold, and failing under the master's environment) — workers now
+>   forbid it. One test (compiled tier), one control, one demo (L4). **The warm pass this made
+>   possible found F22** — compiled code could reassign a frozen global (fixed in the engine,
+>   SR-2 row, control), F23 (no source line from native code; open, compiler track) and F24
+>   (a probe too fast for the native tier; strengthened). The warm pass is gate stage 2c.
 > - **G-05 CLOSED — THE ALLOW-SUITE: A CANDIDATE ADMITTED AGAINST WHAT THE BINDING ANSWERED
 >   (2026-09-17, v5.130).** `comcon.std.suite` records a binding's (input, output) cases in
 >   the include result's own callable, emits them as a contract `tests` quotation, `guard`

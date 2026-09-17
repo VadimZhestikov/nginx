@@ -1195,10 +1195,21 @@ ngx_js_comcon_stats_reset(ngx_js_conf_t *jcf, uint32_t handle)
         for (i = 0; i < st->ngrants && i < NGX_JS_COMCON_GRANTS_MAX; i++) {
             ngx_js_grant_release(st->grants[i]);     /* G-01: the table's */
         }
+        if (st->aot_text != NULL) {
+            ngx_free(st->aot_text);                  /* G-21 */
+        }
         ngx_memzero(st, sizeof(ngx_js_comcon_frag_stats_t));
     }
 }
 
+
+#ifdef CONFIG_JIT
+/* G-21: defined with the master helper below */
+static void  ngx_js_comcon_aot_request(ngx_js_conf_t *jcf, uint32_t handle,
+    u_char **text, size_t len);
+static void  ngx_js_comcon_aot_tick(ngx_js_conf_t *jcf, uint32_t handle,
+    JSValueConst fn, ngx_js_comcon_frag_stats_t *st);
+#endif
 
 /* G-01: defined with the author tier below, used by both entrances */
 static ngx_js_grant_t  *ngx_js_cap_grant_of(JSValueConst v);
@@ -1759,7 +1770,8 @@ ngx_js_comcon_fail_throw(JSContext *ctx, ngx_js_comcon_fail_t *fail,
 static ngx_int_t
 ngx_js_comcon_compile_wrapper(ngx_js_conf_t *jcf, JSContext *sctx,
     const char *source, size_t slen, const char **names, const size_t *nlens,
-    ngx_uint_t nn, JSValue *outer, ngx_js_comcon_fail_t *fail)
+    ngx_uint_t nn, JSValue *outer, ngx_js_comcon_fail_t *fail,
+    u_char **text_out, size_t *tlen_out)
 {
     u_char      *buf, *p;
     size_t       total;
@@ -1829,7 +1841,15 @@ ngx_js_comcon_compile_wrapper(ngx_js_conf_t *jcf, JSContext *sctx,
     o = JS_Eval(sctx, (const char *) buf, p - buf,
                 NGX_JS_COMCON_FRAGMENT_ORIGIN,
                 JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
-    ngx_free(buf);
+
+    /* G-21: the caller may keep the text -- a worker sends it to the master
+       to be compiled there, exactly as compiled here */
+    if (text_out != NULL) {
+        *text_out = buf;
+        *tlen_out = (size_t) (p - buf);
+    } else {
+        ngx_free(buf);
+    }
 
     if (JS_IsException(o)) {
         ngx_js_comcon_fail_engine(sctx, fail, oom0,
@@ -2144,7 +2164,7 @@ oom:
 static JSValue
 ngx_js_comcon_include_inner(JSContext *hctx, JSValueConst this_val,
     int argc, JSValueConst *argv, ngx_js_grant_t **gnodes,
-    char gnames[][NGX_JS_COMCON_GRANT_NAME_MAX])
+    char gnames[][NGX_JS_COMCON_GRANT_NAME_MAX], u_char **wtext, size_t *wlen)
 {
     uint32_t  frag_pred;
     ngx_js_conf_t  *jcf;
@@ -2232,7 +2252,7 @@ ngx_js_comcon_include_inner(JSContext *hctx, JSValueConst this_val,
     }
 
     rc = ngx_js_comcon_compile_wrapper(jcf, sctx, source, slen, names, nlens,
-                                       nn, &outer, &fail);
+                                       nn, &outer, &fail, wtext, wlen);
 
     for (ni = 0; ni < nn; ni++) {
         JS_FreeCString(hctx, names[ni]);
@@ -3048,6 +3068,12 @@ ngx_js_comcon_include_inner(JSContext *hctx, JSValueConst this_val,
        references the grant loop took move into it */
     ngx_js_comcon_grants_record(jcf, (uint32_t) handle, gn, gnames, gnodes);
 
+#ifdef CONFIG_JIT
+    /* G-21: in a worker nothing was lowered (no compiler here); ask the
+       master, keeping the text the request needs.  Ownership moves. */
+    ngx_js_comcon_aot_request(jcf, (uint32_t) handle, wtext, *wlen);
+#endif
+
     return JS_NewInt64(hctx, (int64_t) handle);
 }
 
@@ -3065,14 +3091,19 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
     ngx_js_grant_t  *gnodes[NGX_JS_COMCON_GRANTS_MAX];             /* G-01 */
     char             gnames[NGX_JS_COMCON_GRANTS_MAX]
                            [NGX_JS_COMCON_GRANT_NAME_MAX];
+    u_char          *wtext = NULL;                                 /* G-21 */
+    size_t           wlen = 0;
 
     ngx_memzero(gnodes, sizeof(gnodes));
     ngx_memzero(gnames, sizeof(gnames));
 
     r = ngx_js_comcon_include_inner(hctx, this_val, argc, argv, gnodes,
-                                    gnames);
+                                    gnames, &wtext, &wlen);
 
     ngx_js_comcon_grants_drop(gnodes);
+    if (wtext != NULL) {
+        ngx_free(wtext);           /* refused before publish, or not asked */
+    }
     return r;
 }
 
@@ -4057,7 +4088,7 @@ ngx_js_author_include_inner(JSContext *ctx, JSValueConst this_val, int argc,
 
     /* stage 1 + 2 */
     rc = ngx_js_comcon_compile_wrapper(jcf, ctx, source, slen, names, nlens,
-                                       nn, &outer, &fail);
+                                       nn, &outer, &fail, NULL, NULL);
     JS_FreeCString(ctx, source);
     for (ni = 0; ni < nn; ni++) {
         JS_FreeCString(ctx, names[ni]);
@@ -4497,6 +4528,21 @@ ngx_js_comcon_aot_status(JSContext *hctx, JSValueConst this_val,
     JS_SetPropertyStr(hctx, r, "jit", JS_TRUE);
     JS_SetPropertyStr(hctx, r, "functions", JS_NewInt32(hctx, n));
     JS_SetPropertyStr(hctx, r, "compiled", JS_NewInt32(hctx, c < 0 ? 0 : c));
+    {
+        /* G-21: where the native code came from, and whether more is coming */
+        ngx_js_comcon_frag_stats_t  *st = ngx_js_comcon_stats(jcf,
+                                                              (uint32_t) handle);
+        unsigned  state = st ? st->aot_state : 0;
+
+        JS_SetPropertyStr(hctx, r, "pending", JS_NewBool(hctx, state == 1));
+        JS_SetPropertyStr(hctx, r, "unavailable",
+                          JS_NewBool(hctx, state == 3));
+        JS_SetPropertyStr(hctx, r, "tries",
+                          JS_NewInt32(hctx, st ? (int32_t) st->aot_tries : 0));
+        JS_SetPropertyStr(hctx, r, "via",
+                          state == 2 ? JS_NewString(hctx, "master")
+                          : (c > 0 ? JS_NewString(hctx, "config") : JS_NULL));
+    }
 #else
     JS_SetPropertyStr(hctx, r, "jit", JS_FALSE);
     JS_SetPropertyStr(hctx, r, "functions", JS_NewInt32(hctx, 0));
@@ -4765,6 +4811,351 @@ ngx_js_comcon_call_counts(JSContext *hctx, JSValueConst this_val, int argc,
 
     return hr;
 }
+
+
+#ifdef CONFIG_JIT
+
+/*
+ * ======================================================================
+ * G-21 (v5.131): A LIVE EPOCH COMPILED IN THE MASTER, ADOPTED BY THE WORKER
+ * ======================================================================
+ *
+ * A worker cannot compile: the gcc thread is a pthread and does not survive
+ * fork().  It used to leave a request-time epoch interpreted for good.  Now:
+ *
+ *   worker   include at request time -> nothing lowered -> keep the wrapper
+ *            text, send it to the master (NGX_CMD_JS_COMCON_AOT, at most
+ *            NGX_JS_MSG_MAX bytes), state 1.  On every invocation, at most
+ *            once a second, look for <cache>/<key>.idx; when it appears,
+ *            install the artifacts it names by explicit hash (the atom table
+ *            rebound to this runtime), state 2.  Unanswered for 5 s: ask
+ *            again, up to six times, then state 3 -- the epoch stays
+ *            interpreted and says so.
+ *   master   on the message: if the index exists already, nothing (the
+ *            worker will find it); if a helper is running, nothing (the
+ *            worker asks again); else spawn ONE detached helper with the
+ *            text.  The master itself compiles nothing, blocks on nothing,
+ *            and gains no thread: its signal loop is untouched.
+ *   helper   a fork of the master, so it has the compartment and the cache
+ *            directory: it compiles the text COMPILE-ONLY (nothing runs),
+ *            starts the gcc thread for itself, drains it, writes the index
+ *            atomically and exits.  Detached, so it neither delays a
+ *            shutdown nor is signalled by one.
+ *
+ * The master never executes tenant code: JS_EVAL_FLAG_COMPILE_ONLY compiles
+ * the whole wrapper -- an IIFE source included -- without running any of it.
+ * A worker never runs an artifact whose codegen version, direct-call shape
+ * or atom table it cannot verify (js_jit_install_from_cache).
+ */
+
+typedef struct {
+    size_t     len;
+    uint64_t   key;
+    u_char     text[1];
+} ngx_js_aot_req_t;
+
+static ngx_pid_t  ngx_js_aot_child_pid = NGX_INVALID_PID;
+static ngx_int_t  ngx_js_aot_child_slot = -1;
+
+#define NGX_JS_AOT_RETRY_SECS   5
+#define NGX_JS_AOT_MAX_TRIES    6
+
+
+static ngx_int_t
+ngx_js_comcon_aot_idx_path(uint64_t key, char *buf, size_t n)
+{
+    const char  *dir = js_comcon_aot_cache_dir();
+
+    if (dir == NULL) {
+        return NGX_ERROR;
+    }
+    snprintf(buf, n, "%s/%016llx.idx", dir, (unsigned long long) key);
+    return NGX_OK;
+}
+
+
+static ngx_uint_t
+ngx_js_comcon_aot_try_pull(ngx_js_conf_t *jcf, uint32_t handle,
+    JSValueConst fn, ngx_js_comcon_frag_stats_t *st)
+{
+    char  idx[640];
+    int   n, nf = 0, nm = 0;
+
+    if (ngx_js_comcon_aot_idx_path(st->aot_key, idx, sizeof(idx)) != NGX_OK) {
+        return 0;
+    }
+
+    n = js_comcon_aot_pull(jcf->comcon_ctx, fn, idx, &nf, &nm);
+    if (n <= 0) {
+        if (nm > 0) {
+            ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                          "js comcon: fragment %uD: the master's index names "
+                          "%d of %d functions but none installed",
+                          handle, nm, nf);
+        }
+        return 0;
+    }
+
+    st->aot_state = 2;
+    if (st->aot_text != NULL) {
+        ngx_free(st->aot_text);
+        st->aot_text = NULL;
+    }
+    if (st->aot_tries == 0) {
+        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                      "js comcon: fragment %uD NATIVE (master AOT: %d of %d "
+                      "functions, %d named by the index, key %016xL, "
+                      "compiled before it was asked)",
+                      handle, n, nf, nm, st->aot_key);
+    } else {
+        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                      "js comcon: fragment %uD NATIVE (master AOT: %d of %d "
+                      "functions, %d named by the index, key %016xL, after "
+                      "%uD request%s)",
+                      handle, n, nf, nm, st->aot_key, st->aot_tries,
+                      st->aot_tries == 1 ? "" : "s");
+    }
+    return 1;
+}
+
+
+static void
+ngx_js_comcon_aot_send(ngx_js_comcon_frag_stats_t *st, uint32_t handle)
+{
+    if (ngx_js_channel_send(ngx_channel, NGX_CMD_JS_COMCON_AOT,
+                            (ngx_uint_t) ngx_process_slot, st->aot_text,
+                            st->aot_len, ngx_cycle->log)
+        != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "js comcon: fragment %uD: compile request to the "
+                      "master could not be sent", handle);
+    }
+    st->aot_state = 1;
+    st->aot_since = ngx_time();
+    st->aot_last = ngx_time();
+    st->aot_tries++;
+
+    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                  "js comcon: fragment %uD: compile requested from the master "
+                  "(key %016xL, %uz bytes, request %uD)",
+                  handle, st->aot_key, st->aot_len, st->aot_tries);
+}
+
+
+static void
+ngx_js_comcon_aot_request(ngx_js_conf_t *jcf, uint32_t handle,
+    u_char **text, size_t len)
+{
+    JSValueConst                 fn;
+    ngx_js_comcon_frag_stats_t  *st;
+    int                          n = 0;
+
+    if (*text == NULL) {
+        return;
+    }
+
+    st = ngx_js_comcon_stats(jcf, handle);
+    if (st == NULL || ngx_process != NGX_PROCESS_WORKER
+        || jcf->comcon_frags == NULL || handle >= jcf->comcon_frags->nelts)
+    {
+        return;                      /* the outer frees the text */
+    }
+    fn = ((JSValue *) jcf->comcon_frags->elts)[handle];
+
+    if (js_comcon_aot_status(jcf->comcon_ctx, fn, &n) > 0) {
+        return;                      /* lowered here after all */
+    }
+
+    if (len > NGX_JS_MSG_MAX || js_comcon_aot_cache_dir() == NULL) {
+        st->aot_state = 3;
+        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                      "js comcon: fragment %uD stays BYTECODE: %s",
+                      handle, len > NGX_JS_MSG_MAX
+                              ? "the wrapper text exceeds the channel's "
+                                "message size" : "no artifact cache directory");
+        return;
+    }
+
+    st->aot_text = *text;
+    st->aot_len = len;
+    st->aot_key = js_comcon_aot_text_key((const char *) *text, len);
+    *text = NULL;
+
+    /* another worker, or an earlier life, may have had it compiled already */
+    if (ngx_js_comcon_aot_try_pull(jcf, handle, fn, st)) {
+        return;
+    }
+
+    ngx_js_comcon_aot_send(st, handle);
+}
+
+
+static void
+ngx_js_comcon_aot_tick(ngx_js_conf_t *jcf, uint32_t handle, JSValueConst fn,
+    ngx_js_comcon_frag_stats_t *st)
+{
+    time_t  now = ngx_time();
+
+    if (now <= st->aot_last) {
+        return;
+    }
+    st->aot_last = now;
+
+    if (ngx_js_comcon_aot_try_pull(jcf, handle, fn, st)) {
+        return;
+    }
+
+    if (now - st->aot_since < NGX_JS_AOT_RETRY_SECS) {
+        return;
+    }
+
+    if (st->aot_tries >= NGX_JS_AOT_MAX_TRIES) {
+        st->aot_state = 3;
+        if (st->aot_text != NULL) {
+            ngx_free(st->aot_text);
+            st->aot_text = NULL;
+        }
+        ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                      "js comcon: fragment %uD stays BYTECODE: the master "
+                      "did not compile it after %uD requests (key %016xL)",
+                      handle, st->aot_tries, st->aot_key);
+        return;
+    }
+
+    ngx_js_comcon_aot_send(st, handle);
+}
+
+
+/* the helper: a fork of the master that compiles and exits */
+static void
+ngx_js_comcon_aot_child_cycle(ngx_cycle_t *cycle, void *data)
+{
+    ngx_js_aot_req_t  *req = data;
+    ngx_js_conf_t     *jcf;
+    JSContext         *sctx;
+    sigset_t           set;
+    char               idx[640];
+    int                n;
+
+    ngx_process = NGX_PROCESS_HELPER;
+    ngx_setproctitle("js aot compiler");
+
+    /* the master's loop keeps every signal blocked; a helper that cannot be
+       terminated is not one anybody wants */
+    sigemptyset(&set);
+    sigprocmask(SIG_SETMASK, &set, NULL);
+
+    /* nginx's SIGCHLD handler would reap the gcc children the compile
+       thread waits for; the helper has no children of its own to manage */
+    signal(SIGCHLD, SIG_DFL);
+
+    ngx_close_listening_sockets(cycle);
+
+    js_jit_forbid(0);                /* this process compiles; workers do not */
+    js_jit_set_portable(1);          /* for another process to load */
+
+    /* the master runs under the minimal environment nginx builds for itself
+       (TZ and the `env` directive's names): gcc cannot find cc1 or ld
+       without a PATH.  A conservative one, unless the operator kept theirs
+       with `env PATH;` -- nginx's own directive, nothing new. */
+    if (getenv("PATH") == NULL) {
+        setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:"
+                       "/sbin:/bin", 0);
+    }
+
+    jcf = ngx_js_comcon_jcf;
+    sctx = (jcf != NULL) ? ngx_js_comcon_compartment(jcf) : NULL;
+
+    if (sctx == NULL
+        || ngx_js_comcon_aot_idx_path(req->key, idx, sizeof(idx)) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "js comcon: master aot: no compartment or no cache "
+                      "directory; key %016xL not compiled", req->key);
+        _exit(1);
+    }
+
+    n = js_comcon_aot_child(sctx, (const char *) req->text, req->len,
+                            NGX_JS_COMCON_FRAGMENT_ORIGIN, idx);
+    if (n < 0) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "js comcon: master aot: key %016xL did not compile "
+                      "(%uz bytes)", req->key, req->len);
+        _exit(1);
+    }
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "js comcon: master aot: %d function%s compiled for key "
+                  "%016xL (%uz bytes), index written",
+                  n, n == 1 ? "" : "s", req->key, req->len);
+    _exit(0);
+}
+
+
+/* the master: on a worker's request, one helper at a time */
+static void
+ngx_js_comcon_aot_master(ngx_cycle_t *cycle, u_char *text, size_t len)
+{
+    ngx_js_aot_req_t  *req;
+    ngx_pid_t          pid;
+    uint64_t           key;
+    char               idx[640];
+
+    key = js_comcon_aot_text_key((const char *) text, len);
+
+    if (ngx_js_comcon_aot_idx_path(key, idx, sizeof(idx)) != NGX_OK) {
+        ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                      "js comcon: master aot: no artifact cache directory; "
+                      "key %016xL not compiled", key);
+        return;
+    }
+
+    if (access(idx, R_OK) == 0) {
+        return;                      /* done before; the worker will find it */
+    }
+
+    if (ngx_js_aot_child_pid != NGX_INVALID_PID
+        && ngx_js_aot_child_slot >= 0
+        && ngx_js_aot_child_slot < ngx_last_process
+        && ngx_processes[ngx_js_aot_child_slot].pid == ngx_js_aot_child_pid
+        && !ngx_processes[ngx_js_aot_child_slot].exited)
+    {
+        ngx_log_debug1(NGX_LOG_DEBUG_CORE, cycle->log, 0,
+                       "js comcon: master aot: helper busy; key %016xL "
+                       "deferred to the worker's next request", key);
+        return;
+    }
+
+    req = ngx_alloc(offsetof(ngx_js_aot_req_t, text) + len + 1, cycle->log);
+    if (req == NULL) {
+        return;
+    }
+    req->len = len;
+    req->key = key;
+    ngx_memcpy(req->text, text, len);
+    req->text[len] = '\0';
+
+    pid = ngx_spawn_process(cycle, ngx_js_comcon_aot_child_cycle, req,
+                            "js aot compiler", NGX_PROCESS_DETACHED);
+
+    if (pid != NGX_INVALID_PID) {
+        ngx_js_aot_child_pid = pid;
+        ngx_js_aot_child_slot = ngx_process_slot;
+        ngx_processes[ngx_process_slot].data = NULL;   /* the child has its copy */
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "js comcon: master aot: helper %P spawned for key "
+                      "%016xL (%uz bytes)", pid, key, len);
+    } else {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "js comcon: master aot: could not spawn the helper "
+                      "for key %016xL", key);
+    }
+
+    ngx_free(req);
+}
+
+#endif /* CONFIG_JIT */
 
 
 /* comcon.__grantStatus(handle) -> {name: {revoked, delegated}} */
@@ -5190,6 +5581,15 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     dstats = ngx_js_comcon_stats(jcf, (uint32_t) handle);
     saved_dc = ngx_js_compartment_frag_denials_set(dstats ? dstats->denials
                                                           : NULL);
+
+#ifdef CONFIG_JIT
+    /* G-21: a fragment waiting on the master looks for its artifacts here,
+       at most once a second -- before the call, so this call may already run
+       native */
+    if (dstats != NULL && dstats->aot_state == 1) {
+        ngx_js_comcon_aot_tick(jcf, (uint32_t) handle, fn, dstats);
+    }
+#endif
 
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
     oom0 = JS_GetOutOfMemoryCount(jcf->comcon_rt);
@@ -6741,7 +7141,8 @@ ngx_js_handle_master_channel_msgs(ngx_cycle_t *cycle)
         }
 
         if (ch.command != NGX_CMD_JS_WORKER_MSG
-            && ch.command != NGX_CMD_JS_USE_PLUGIN)
+            && ch.command != NGX_CMD_JS_USE_PLUGIN
+            && ch.command != NGX_CMD_JS_COMCON_AOT)
         {
             /* Not a JS message — log and skip (shouldn't happen) */
             ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
@@ -6826,6 +7227,14 @@ ngx_js_handle_master_channel_msgs(ngx_cycle_t *cycle)
             continue;
         }
 
+#ifdef CONFIG_JIT
+        /* G-21: a worker asks for a live epoch to be compiled */
+        if (ch.command == NGX_CMD_JS_COMCON_AOT) {
+            ngx_js_comcon_aot_master(cycle, buf, (size_t) total);
+            continue;
+        }
+#endif
+
         /* Dispatch to nginx.on('workerMessage', fn(slot, data)) */
         slot_val = JS_NewInt32(jcf->ctx, (int32_t) i);
         ngx_js_dispatch_msg(jcf->ctx, jcf->rt, jcf, "workerMessage",
@@ -6855,6 +7264,19 @@ ngx_js_init_process(ngx_cycle_t *cycle)
 {
     ngx_js_conf_t    *jcf;
     ngx_js_worker_t  *w;
+
+#ifdef CONFIG_JIT
+    /*
+     * G-21: a worker never compiles.  The thread the master started did not
+     * survive the fork, but a runtime created HERE -- the compartment made at
+     * the first request-time include, a SharedWorker's -- would start one:
+     * a request then blocked on gcc, N workers compiled the same text N
+     * times, and under the master's minimal environment (no PATH) every job
+     * failed and wrote a skip marker the master's helper would honour.  The
+     * helper is the one process that compiles a live epoch.
+     */
+    js_jit_forbid(1);
+#endif
 
     jcf = (ngx_js_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_js_module);
 

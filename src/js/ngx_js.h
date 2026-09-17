@@ -291,6 +291,22 @@ typedef struct {
     ngx_js_grant_t      *grants[NGX_JS_COMCON_GRANTS_MAX];
     char                 grant_names[NGX_JS_COMCON_GRANTS_MAX]
                                     [NGX_JS_COMCON_GRANT_NAME_MAX];
+    /*
+     * G-21 (v5.131): a live epoch's compilation, asked of the master.  A
+     * worker cannot compile; it keeps the wrapper text it was admitted from,
+     * asks the master once, and on each invocation (at most once a second)
+     * looks for the index the master's helper writes, adopting the artifacts
+     * when it appears.  States: 0 nothing asked (compiled at config load, or
+     * not a worker), 1 requested, 2 native by the master, 3 unavailable
+     * (too large, no cache, or the master never answered).
+     */
+    u_char              *aot_text;
+    size_t               aot_len;
+    uint64_t             aot_key;
+    time_t               aot_since;      /* the last request's time */
+    time_t               aot_last;       /* the last look at the index */
+    uint32_t             aot_tries;
+    unsigned             aot_state:2;
 } ngx_js_comcon_frag_stats_t;
 
 

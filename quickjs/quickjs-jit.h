@@ -281,6 +281,13 @@ typedef struct JSJITRuntime {
     JSValue (*with_make_ref)(JSContext *, JSAtom atom);
     /* with_get_ref found path: get property for method call ref. obj borrowed. */
     JSValue (*with_get_ref)(JSContext *, JSValue obj, JSAtom atom);
+    /* F22 (pilgrim v5.131): a global store asks the interpreter's question --
+     * is the reference const (a non-writable global property, e.g. a frozen
+     * binding)? -- and takes the interpreter's whole branch when it is.
+     * Appended, so artifacts built against the shorter table stay valid. */
+    int     (*var_ref_is_const)(JSVarRef *vr);
+    int     (*put_var_checked)(JSContext *, JSVarRef *vr, JSAtom atom,
+                               int is_lexical, int is_put_init, JSValue val);
 } JSJITRuntime;
 
 /*
@@ -853,6 +860,8 @@ JSValue js_jit_op_mod(JSContext *, JSValue, JSValue);
 JSValue js_jit_op_pow(JSContext *, JSValue, JSValue);
 JSValue js_jit_op_get_var_slow(JSContext *, JSAtom atom, int is_lexical);
 int     js_jit_op_put_var_slow(JSContext *, JSAtom atom, int is_lexical, int is_put_init, JSValue val);
+int     js_jit_op_var_ref_is_const(JSVarRef *vr);
+int     js_jit_op_put_var_checked(JSContext *, JSVarRef *vr, JSAtom atom, int is_lexical, int is_put_init, JSValue val);
 int     js_jit_op_delete_global_var(JSContext *, JSAtom atom);
 JSValue js_jit_op_apply(JSContext *, JSValue func, JSValue this_val, JSValue args_array, int magic);
 JSValue js_jit_op_apply_eval(JSContext *, JSValue func, JSValue args_array, int scope_idx);
@@ -979,6 +988,17 @@ void js_jit_free_bytecode(JSFunctionBytecode *b);
  */
 void js_jit_compile_all(JSContext *ctx, JSFunctionBytecode *b);
 
+/* COMCON G-21: artifacts across processes (see quickjs-jit.c). */
+void        js_jit_forbid(int forbid);
+void        js_jit_set_portable(int on);
+const char *js_jit_cache_dir(void);
+uint64_t    js_jit_text_key(const char *text, size_t len);
+uint64_t    js_jit_fb_srckey(JSFunctionBytecode *b);
+uint64_t    js_jit_fb_cache_hash(JSFunctionBytecode *b);
+int         js_jit_cached_exists(uint64_t hash);
+int         js_jit_install_from_cache(JSContext *ctx, JSFunctionBytecode *b,
+                                      uint64_t bc_hash);
+
 /*
  * js_jit_drain() — block until all enqueued GCC jobs have completed.
  * Called in --jit-aot mode to ensure all functions are compiled before
@@ -1070,7 +1090,7 @@ int  js_jit_get_threshold(void);
 int     js_jit_intrinsic_is(JSValueConst f, int which);
 int64_t js_jit_char_code_at(JSValueConst str, int64_t idx);
 
-#define JIT_CODEGEN_VERSION 19u  /* M5.1c: charCodeAt and Math.imul inlined by identity; doubles in half-typed bit ops (was 18: M5.1a) */
+#define JIT_CODEGEN_VERSION 20u  /* F22: a global store honours a const reference (frozen binding); was 19: M5.1c */
 void js_jit_set_max_bc_len(int n);
 int  js_jit_get_max_bc_len(void);
 

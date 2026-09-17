@@ -115,8 +115,18 @@ var PROBES = [
     { name: 'undecl',  src: "function(req){ return { v: typeof nope }; }" },
     { name: 'evalref', src: "function(req){ var q = eval; return { v: 1 }; }" },
     { name: 'reqfield',src: "function(req){ return { v: typeof req.bogusField }; }" },
-    { name: 'spin',    src: "function(req){ var t = 0, i;"
-                          + " for (i = 0; i < 40000000; i++) { t += i; }"
+    /* F24 (v5.131): the old probe, `t += i` over 4e7, finished inside the
+       100 ms meter on the native tier, so `meter=off` changed nothing and
+       SURVIVED.  No iteration count mends an integer loop: gcc folds `t += i`
+       into a closed form, and a data-dependent one runs eighteen times faster
+       native than interpreted (measured: 30M steps, 32 ms vs 574 ms), so a
+       count that outlasts the meter native takes the interpreter tens of
+       seconds with the meter off.  A property read per iteration goes through
+       the runtime on both tiers and keeps them within a factor of two
+       (measured: 180 ms vs 296 ms at 30M); 5e7 of them is ~0.3 s native, ~0.5 s
+       interpreted -- the meter cuts both, and without it both finish. */
+    { name: 'spin',    src: "function(req){ var o = { x: 3 }, t = 1, i;"
+                          + " for (i = 0; i < 50000000; i++) { t = (t + o.x * i) | 0; }"
                           + " return { v: 'ran' }; }" }
 ];
 
@@ -141,11 +151,15 @@ l.handler = function (req) {
     var ms = mutants(BASE), killed = [], survived = [], equivSurvived = [],
         equivKilled = [];
 
+    var equivDiff = {};
     for (i = 0; i < ms.length; i++) {
         var got = runSuite(ms[i].policy);
         var differs = (got.join('|') !== baseline.join('|'));
         if (ms[i].equivalent) {
             (differs ? equivKilled : equivSurvived).push(ms[i].label);
+            /* say WHAT differed: an equivalent mutant killed is a finding, and
+               a finding without its outcome is a guess */
+            if (differs) { equivDiff[ms[i].label] = got.filter(function (g, k) { return g !== baseline[k]; }); }
         } else if (differs) {
             killed.push(ms[i].label);
         } else {
@@ -157,6 +171,7 @@ l.handler = function (req) {
     o.killed = killed;
     o.survived = survived;
     o.equivSurvived = equivSurvived;
+    o.equivDiff = equivDiff;
     o.equivKilled = equivKilled;
 
     req.respond(200, {'content-type':'application/json'}, JSON.stringify(o));

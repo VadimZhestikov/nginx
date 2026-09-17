@@ -53,7 +53,7 @@ substrate decision (`opaque.*`/COW: 7, 16, 19, 32), two are one design increment
 | **G-18** | 35 | an append-only `log` facet (append, never read/truncate) | denial log written by the host side only; masks on socket/server caps | a log capability kind | design | M-LIB facets |
 | **G-19** | 36 | a stage-0 builder profile that denies clock/RNG/I/O | the tenant's config proposals (declarative, typed, all-or-nothing); anchors; host `root.js` is trusted JS | determinism caps on the host's own stage-0 program | decision | — |
 | **G-20** | 38, 42 | `bind(env, pom.query(...))` across modules; a fragment holding a scoped `pom` handle | queries, call sites, anchors, `harden` + epochs on the host; only socket/server caps cross into a compartment | binding a policy to a query result; program handles as grantable capabilities | design | increment D follow-on |
-| **G-21** | 41 | re-AOT of a rewritten function while serving | the new epoch runs on the bytecode tier and `aotStatus` says so; no compiler thread survives `fork()` | native re-lowering of a live epoch in a worker | **honest limit** (`t/comcon_aot_epoch.t`) | — |
+| **G-21** | 41 | re-AOT of a rewritten function while serving | **CLOSED v5.131:** a request-time epoch sends its wrapper text to the master, one detached helper compiles it compile-only and writes an index, every worker adopts the artifacts on its next request (`via: 'master'`); the interpreted epoch serves meanwhile; `unavailable` when it cannot happen. Demo `L_Live_Ops/L4`. | — (one helper at a time; sub-fragments not compiled this way) | C mechanism | — |
 | **G-22** | 43 | a static mediation lowered to one `strncmp` | every gate holds on the compiled tier (SR-2, the fuzz, the resource gates); typed lowering measured (§2f) | membrane partial evaluation | design (M5 scope note); the compiler track is closed at M5.1c | M5–M7 |
 | **G-23** | 46 | proposals in `nginx.conf` syntax | proposals as config-shaped JS sentences over a typed subtree | an `nginx.conf` grammar front-end for proposals | design | M-CFG follow-on |
 | **G-24** | 48, 49 | type annotations, an admission type report, `E_TYPE_MISMATCH`, a HYBRID/`any` gradient | maxim's inference and the language's own types; `aotStatus` per fragment | the M3 typed profile front-end | design | M3/M4 typed IR (not started) |
@@ -85,6 +85,7 @@ Written down so the checklist reads in both directions:
 | G-16 (docs) | v5.127 | `comcon.std.docs`, `ops.docs` (`t/comcon_std_docs.t`, demo A3) |
 | G-01 | v5.129 | `comcon.withdraw` / `comcon.withdrawn`, `h.withdraw`, `ops.withdraw` / `ops.withdrawn`, the `cap.revoked` code (`t/comcon_revoke.t`, the V12 row, control `revoke-not-checked.patch`, demo S5) |
 | G-05 (allow-suite) | v5.130 | `comcon.std.suite` record/cases/tests/check/coverage, `h.guard`, `ops.record/suite/coverage/guard` (`t/comcon_std_suite.t`, control `suite-guard-inert.patch`, demo O4) |
+| G-21 | v5.131 | a live epoch compiled by the master's helper and adopted by every worker; `aotStatus().via/pending/unavailable` (`t/comcon_aot_master.t`, control `aot-master-inert.patch`, demo L4) |
 
 ## The plan for what is left (2026-09-16, after v5.127)
 
@@ -113,7 +114,9 @@ Twenty-three gaps remain. Grouped by what closing each needs, cheapest evidence 
 - G-14, `protocol` on the server facet and the author capability (operations already named).
 - G-18, an append-only log capability kind: one operation, `append`, mediable by every word.
 - G-07, a CPU-time meter: `getrusage` delta around the invoke, charged like retained bytes.
-- G-21, master-side compilation of a live epoch — the design below.
+- ~~G-21, master-side compilation of a live epoch~~ — **DONE v5.131**, as the design below
+  says, with two corrections found building it (workers forbid the compile thread; portable
+  codegen for artifacts that cross processes). OPERATOR_API §8n, ASSURANCE G7.27.
 
 **Wave 3 — a written design first.** G-20 (bind by query, grantable program handles), G-25
 (`includeAt`/`expose`), G-23 (`nginx.conf`-syntax proposals), G-17 (an API version word),
@@ -122,9 +125,9 @@ manifests, after Wave 1's signing).
 
 **By decision, not scheduled:** G-03, G-10, G-11, G-15, G-22, G-08, G-02.
 
-**Recommended order:** ~~G-01~~ (done v5.129), ~~G-05~~ (done v5.130), then G-21.
+**Recommended order:** ~~G-01~~ (done v5.129), ~~G-05~~ (done v5.130), ~~G-21~~ (done v5.131). Wave 1's remaining library gaps (G-16 signing, G-26, G-12, G-19) are next by cost.
 
-### G-21: why a live epoch is not compiled in the master today, and how it could be
+### G-21: why a live epoch was not compiled in the master, and how it is now (built v5.131 as written below)
 
 Not "cannot" — not built. What exists: a live replace writes `{epoch, source}` to
 `nginx.shared` and every worker reconciles on its next request in its own compartment; the

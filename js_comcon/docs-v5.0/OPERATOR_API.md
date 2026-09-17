@@ -527,6 +527,62 @@ G-16; one small mechanism under the second.
 
 ---
 
+## 8n. A live epoch compiled in the master — the tier follows the text, without a reload *(v5.131)*
+
+```js
+var h = comcon.bindShared('score', comcon.quote(V1), { imports: [] }, onReq);
+h.replace(comcon.quote(V2));         // admitted at request time, on every worker: interpreted at first
+comcon.aotStatus(callable)            // {jit, functions, compiled, pending: true, via: null, tries: 1, unavailable: false}
+…  a second or two later, on any worker …
+comcon.aotStatus(callable)            // {compiled: 3, functions: 3, pending: false, via: 'master'}
+```
+
+Closes `SHOWCASE-gaps.md` G-21 (scenario 41). Nothing new to configure: the operator's
+verbs are the ones live ops already had; the tier now follows.
+
+- **Why it needed the master.** The compiled tier's gcc thread is a pthread, and a pthread
+  does not survive `fork()`; so a request-time include — every `bindShared` epoch, every
+  `bindAt.replace()` — stayed interpreted, and `aotStatus()` said so. Workers must not compile
+  anyway: a request would block on gcc, N workers would compile the same text N times, and
+  the master's minimal environment has no PATH for gcc.
+- **The protocol, in one paragraph.** The worker keeps the wrapper text it was admitted from
+  and sends it to the master over the channel it already has (`NGX_CMD_JS_COMCON_AOT`, at
+  most one message of 64 KB). The master spawns **one detached helper** — a fork of itself
+  that has the compartment and the cache directory — and otherwise does nothing: no thread,
+  no blocking, its signal loop untouched. The helper compiles the text **compile-only**
+  (nothing runs there, not the IIFE a source may be, not a statement), enqueues every
+  function under the wrapper on the gcc thread it starts for itself, drains it, writes an
+  **index** beside the cache atomically, and exits. On every invocation, at most once a
+  second, the worker looks for the index and installs the artifacts it names; unanswered
+  for five seconds it asks again, up to six times, then the epoch stays interpreted and
+  `aotStatus()` says `unavailable`. The interpreted epoch serves meanwhile.
+- **Why an index.** The two processes never share a bytecode hash: atom operands are
+  per-runtime, and the cache is keyed by them. The index maps each function's **source key**
+  (its own text and shape, identical wherever that text is compiled) to the artifact hash the
+  helper produced; the worker installs by explicit hash, with every check the cache-hit path
+  makes — the codegen version symbol, no process-bound direct calls, the atom table rebound
+  to its own runtime.
+- **Portable codegen.** The helper compiles in a mode that emits no symbol-named direct
+  JIT-to-JIT calls (the inline-cache call, resolved where the code runs, is taken instead),
+  and that mode is folded into the hash, so a portable artifact and an in-process one never
+  share a cache entry.
+- **Two things found on the way, fixed.** A worker that created its runtime *after* the fork
+  (the compartment at its first request-time include, a SharedWorker's runtime) used to start
+  a gcc thread of its own: it compiled synchronously inside a request, N times across
+  workers, and under the master's environment every job failed and wrote a skip marker that
+  poisoned the cache. Workers now forbid the thread at process init (`js_jit_forbid`); the
+  helper is the one process that compiles a live epoch. And the helper resets `SIGCHLD` to
+  its default, so nginx's handler cannot reap the gcc children the compile thread waits for.
+- **Bounds.** One helper at a time (a busy master defers to the worker's next request);
+  one message size; one index read per second per pending fragment; six requests. The
+  master never executes tenant code; a worker never runs an artifact it cannot verify.
+
+Negative control: `t/tools/controls/aot-master-inert.patch` (the master ignores the
+request; nothing is ever native by the master). `t/comcon_aot_master.t` (17, compiled tier;
+skipped on the interpreter build), demo `L_Live_Ops/L4`.
+
+---
+
 ## 8m. `comcon.std.suite` — the allow-suite: a cage derived from observed behaviour, and a candidate admitted against it *(v5.130)*
 
 ```js

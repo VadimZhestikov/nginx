@@ -55,6 +55,9 @@ TS=$(date -u +%Y%m%dT%H%M%SZ)
 OUT="${REVIEWER_PACK_OUT:-${TMPDIR:-/tmp}/reviewer-pack-$TS}"
 mkdir -p "$OUT" || exit 2
 LOG="$OUT/transcript.txt"
+# G-21 (v5.131): this run's own artifact cache (see t/tools/gate.sh)
+export QJS_JIT_CACHE="$OUT/jitcache"
+mkdir -p "$QJS_JIT_CACHE"
 
 gate_fail=0
 declare -a GATE_ROWS
@@ -149,6 +152,17 @@ for d in objs objs_jit; do
     report "t/ on $d" "${n:-no summary line}"
     [ "$rc" = 0 ] || grep -E "^t/\S+ +\(Wstat|Failed tests?:" "$OUT/prove_$d.log" | head -6 | sed 's/^/        /' | tee -a "$LOG"
 done
+# G-21 (v5.131): the WARM pass -- every request-time fragment admitted native
+# (the index the first objs_jit pass left answers at include time); the pass
+# that found F22.  See t/tools/gate.sh stage 2c.
+if [ -x objs_jit/nginx ]; then
+    TEST_NGINX_BINARY="$PWD/objs_jit/nginx" prove t/comcon_*.t >"$OUT/prove_objs_jit_warm.log" 2>&1
+    rc=$?
+    n=$(grep -oE 'Files=[0-9]+, Tests=[0-9]+' "$OUT/prove_objs_jit_warm.log" | head -1)
+    gate "t/comcon_*.t on objs_jit, warm artifact cache" "$rc" "$n"
+    report "t/comcon_*.t on objs_jit (warm)" "${n:-no summary line}"
+    [ "$rc" = 0 ] || grep -E "^t/\S+ +\(Wstat|Failed tests?:" "$OUT/prove_objs_jit_warm.log" | head -6 | sed 's/^/        /' | tee -a "$LOG"
+fi
 TEST_NGINX_BINARY="$PWD/objs/nginx" prove t_stress/ >"$OUT/prove_stress.log" 2>&1
 rc=$?
 gate "t_stress/ on objs" "$rc" "$(grep -oE 'Files=[0-9]+, Tests=[0-9]+' "$OUT/prove_stress.log" | head -1)"
