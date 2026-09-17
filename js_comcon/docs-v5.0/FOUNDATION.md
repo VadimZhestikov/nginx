@@ -658,9 +658,12 @@ count and length on the record; and a shared `replace()` published the record BE
 the candidate — a refused one would have broken every worker's next reconcile — it now
 realizes first, as `bindAt` always did. (5) A thrown answer is recorded as `threw` without its
 text: an exception's message crosses the boundary prefixed, and a case must compare the same
-on both sides. `t/comcon_std_suite.t` (27), control `suite-guard-inert.patch`, OPERATOR_API
-§8m, ASSURANCE G7.26, demo `O_Operators/O4`; `std.ops` now twenty-four verbs. Gate green on
-both binaries.
+on both sides. (6) The pack on the first commit reported the three `library-programs-absent`
+rows INCONCLUSIVE again — this change rewrote both lines that patch anchors on (the include
+callable, the freeze of `std`) — so it is regenerated on this tree, as the script's rule
+requires. `t/comcon_std_suite.t` (27), control `suite-guard-inert.patch`, OPERATOR_API §8m,
+ASSURANCE G7.26, demo `O_Operators/O4`; `std.ops` now twenty-four verbs. Gate green on both
+binaries.
 
 **v5.129 (in place — G-01 closed: a grant can be withdrawn while the fragment runs, and the
 withdrawal follows every delegation):** (1) `comcon.withdraw(f, name?)` and

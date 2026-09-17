@@ -1,7 +1,7 @@
 diff --git a/src/js/ngx_js_com.c b/src/js/ngx_js_com.c
 --- a/src/js/ngx_js_com.c
 +++ b/src/js/ngx_js_com.c
-@@ -5311,7 +5311,7 @@
+@@ -5327,7 +5327,7 @@
      "    bound.onViolation=ov;"
      "    bound.profile=(contract.profile===undefined)?'restrictive':"
      "                  String(contract.profile);"
@@ -10,7 +10,7 @@ diff --git a/src/js/ngx_js_com.c b/src/js/ngx_js_com.c
      /* pom(fragment): the reflective Program Object Model surface (increment D1).
         A lazy NodeView tree over a compiled fragment (module/function granularity
         — the bytecode tree; POM.md). Reads ALWAYS return quotations: text()/
-@@ -5988,9 +5988,6 @@
+@@ -6012,9 +6012,6 @@
         holds.  Both are text over the binding store, no new authority. */
      "    verb('diff','bindings',function(name,candidate){"
      "      return STD.policy.diff(need(name).h.contract,candidate);});"
@@ -20,10 +20,10 @@ diff --git a/src/js/ngx_js_com.c b/src/js/ngx_js_com.c
      "    var sess={},withheld=[],avail=[];"
      "    for(var i=0;i<V.length;i++){"
      "      if(have[V[i].needs]){sess[V[i].name]=V[i].fn;avail.push(V[i].name);}"
-@@ -6602,6 +6599,7 @@
-     "    L.push('- identity: '+(m.identity?'pinned ('+m.identity+')':'not pinned'));"
-     "    for(i=0;i<m.deps.length;i++)L.push('- dependency `'+m.deps[i].name+'` pinned ('+m.deps[i].sha256+')');"
-     "    return L.join('\\n')+'\\n';};"
+@@ -6695,6 +6692,7 @@
+     "        percent:fns.length?Math.round(100*called/fns.length):0,uncalled:uncalled},"
+     "      gates:gates,recorded:rr.recorded,distinct:rr.order.length,"
+     "      tier:native?'native':'bytecode',exact:!native};};"
 +    "  delete STD.evaluate;delete STD.policy.diff;delete STD.docs;"
      "  C.std=Object.freeze(STD);"
      "  Object.freeze(STD.profiles);"
