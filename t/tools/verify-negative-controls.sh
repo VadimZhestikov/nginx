@@ -75,6 +75,9 @@ ROWS=(
 "335dc0956|t/js_com_filter_nongenerator.t|objs|filter with no return dropped the response"
 "c5bf0ceac|t/js_pilgrim_p17_l4_window.t|objs|the L4 window armed no timer, so it was a wait state with no deadline"
 "60e6d5585|t/comcon_oom_sweep.t|objs+objs_jit|F19: the host's ToString of a fragment's error ran out of memory itself, reported as error with its exception left pending"
+"08934b766|t/comcon_std_evaluate.t|objs|G-13: std.evaluate absent -- the whole-appetite read, the trailing-text refusal and the classification are all gone with the library"
+"08934b766|t/comcon_std_policy_diff.t|objs|G-05: std.policy.diff absent, and include results no longer carry their contract"
+"08934b766|t/comcon_std_docs.t|objs|G-16: std.docs absent, ops.docs absent"
 )
 
 # id | patch (under t/tools/controls/) | test | build (objs, objs_jit, objs_asan, objs_ubsan, or objs+objs_jit for a two-binary test) | expect (fail, leak:<symbol>) | label
