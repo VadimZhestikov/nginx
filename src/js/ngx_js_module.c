@@ -6331,18 +6331,39 @@ ngx_js_handle_master_channel_msgs(ngx_cycle_t *cycle)
             continue;
         }
 
-        /* Read payload — use blocking recv since we're in sigsuspend loop */
-        total = 0;
-        while (total < payload_len) {
-            n = recv(fd, buf + total, (size_t) (payload_len - total), 0);
-            if (n > 0) {
-                total += (ngx_int_t) n;
-                continue;
-            }
-            if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-                ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
-                              "js: master channel: recv() failed, slot %i", i);
-                break;
+        /*
+         * Read the payload.  The channel fds are O_NONBLOCK (ngx_spawn_process
+         * sets both ends), so the "blocking" recv this used to rely on never
+         * blocked: on EAGAIN the loop spun, with every signal blocked (the
+         * master cycle's sigprocmask), until the bytes arrived.  A worker sends
+         * header and payload in one sendmsg(), so a header without its payload
+         * is a torn or foreign message, not a slow one: give it a bounded
+         * number of short waits and then drop it with a log line, rather than
+         * pin the master in a loop it cannot be signalled out of.
+         */
+        {
+            ngx_uint_t  spins = 0;
+
+            total = 0;
+            while (total < payload_len) {
+                n = recv(fd, buf + total, (size_t) (payload_len - total), 0);
+                if (n > 0) {
+                    total += (ngx_int_t) n;
+                    continue;
+                }
+                if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
+                    ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+                                  "js: master channel: recv() failed, slot %i", i);
+                    break;
+                }
+                if (++spins > 200) {           /* ~200 ms, then give up */
+                    ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                                  "js: master channel: payload incomplete after "
+                                  "%i of %i bytes from slot %i, dropped",
+                                  total, payload_len, i);
+                    break;
+                }
+                ngx_msleep(1);
             }
         }
 

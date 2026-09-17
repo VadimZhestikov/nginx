@@ -9,6 +9,9 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 #include <ngx_channel.h>
+#if (NGX_LINUX)
+#include <sys/syscall.h>
+#endif
 
 
 typedef struct {
@@ -22,6 +25,16 @@ typedef struct {
 
 static void ngx_execute_proc(ngx_cycle_t *cycle, void *data);
 static void ngx_signal_handler(int signo, siginfo_t *siginfo, void *ucontext);
+
+static ngx_inline long
+ngx_thread_tid_sigsafe(void)
+{
+#if (NGX_LINUX)
+    return (long) syscall(SYS_gettid);
+#else
+    return (long) ngx_getpid();
+#endif
+}
 static void ngx_process_get_status(void);
 static void ngx_unlock_mutexes(ngx_pid_t pid);
 
@@ -442,14 +455,23 @@ ngx_signal_handler(int signo, siginfo_t *siginfo, void *ucontext)
     }
 
     if (siginfo && siginfo->si_pid) {
+        /*
+         * pilgrim: "tid=" is the thread the handler ran on.  The master
+         * carries helper threads (js SharedWorker manager, the JIT compiler),
+         * and a handler that runs on one of them sets its flag without waking
+         * the main thread's sigsuspend.  The v5.127 shutdown-hang record needed
+         * exactly this fact and did not have it.
+         */
         ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
-                      "signal %d (%s) received from %P%s",
-                      signo, sig->signame, siginfo->si_pid, action);
+                      "signal %d (%s) received from %P%s tid=%d",
+                      signo, sig->signame, siginfo->si_pid, action,
+                      (int) ngx_thread_tid_sigsafe());
 
     } else {
         ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
-                      "signal %d (%s) received%s",
-                      signo, sig->signame, action);
+                      "signal %d (%s) received%s tid=%d",
+                      signo, sig->signame, action,
+                      (int) ngx_thread_tid_sigsafe());
     }
 
     if (ignore) {

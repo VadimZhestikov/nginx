@@ -232,6 +232,39 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             if (delay == 0) {
                 delay = 50;
                 ngx_js_emit("terminate", -1, -1, 0);
+
+                /*
+                 * pilgrim: a TERM that arrives while a QUIT is already in
+                 * progress means someone (the test harness, an operator)
+                 * gave up waiting for this master to exit.  Say why it was
+                 * still here: every slot it counts, with the flags
+                 * ngx_reap_children() reads.  One line, at alert level, so
+                 * the 40-line tail a "no alerts" failure prints carries it.
+                 */
+                if (ngx_quit) {
+                    ngx_int_t  k;
+                    u_char     tbuf[512], *tp = tbuf,
+                              *tend = tbuf + sizeof(tbuf) - 1;
+
+                    for (k = 0; k < ngx_last_process && tp < tend; k++) {
+                        if (ngx_processes[k].pid == -1) {
+                            continue;
+                        }
+                        tp = ngx_slprintf(tp, tend, " [%i %P %s e=%d x=%d d=%d r=%d j=%d]",
+                                          k, ngx_processes[k].pid,
+                                          ngx_processes[k].name,
+                                          ngx_processes[k].exiting,
+                                          ngx_processes[k].exited,
+                                          ngx_processes[k].detached,
+                                          ngx_processes[k].respawn,
+                                          ngx_processes[k].just_spawn);
+                    }
+                    *tp = '\0';
+
+                    ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                                  "terminate after quit with live=%ui reap=%d:%s",
+                                  live, (int) ngx_reap, tbuf);
+                }
             }
 
             if (sigio) {

@@ -635,6 +635,30 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.128 (in place — the shutdown flake instrumented so its next appearance explains itself;
+one latent master spin removed):** (1) Three reads of the master's shutdown path, each a
+mechanism the third face (v5.127 item 6) could have been, each ruled out on the code: a
+stolen `SIGCHLD` (the SharedWorker manager thread blocks every signal with `sigfillset`
+before it is created; `/proc/<pid>/task/*/status` agrees); the master channel reader
+blocking the loop (`js_com_proxy_cache.t` sends no master message, and the header read is
+`MSG_DONTWAIT`); a blocking `exit` hook (the hook's line is logged last, after the three
+reaps). 80 start/QUIT cycles of the same fixture under CPU load: 0 hangs. The signature the
+log tail gave — every child reaped, the master idle, then `kill(reaped, 9) failed` — says the
+master's process table still held a slot it counted live. (2) So the table is now printed at
+the moment that matters: when a `TERM` arrives while a `QUIT` is in progress (only a harness
+or an operator who gave up waiting sends that), the master logs one alert line,
+`terminate after quit with live=N reap=R: [slot pid name e= x= d= r= j=]…` — every slot with
+the five flags `ngx_reap_children()` reads. It sits inside the 40-line tail the "no alerts"
+failure prints, so the fourth face, if it comes, arrives with its own explanation. (3) Every
+"signal N (SIGx) received" line now carries `tid=`, the kernel thread id of the handler, so a
+signal delivered to a helper thread would be visible as such. (4) One latent defect found by
+the reading and fixed: the master channel payload loop assumed a blocking socket (`recv()`
+"blocks since we are in the sigsuspend loop"), but the channel fds are `O_NONBLOCK`, so on a
+torn message it spun on `EAGAIN` with every signal masked — a loop the master could not be
+signalled out of. It now waits at most ~200 ms in 1 ms steps, then drops the message with a
+log line naming the slot and the byte count. No test observes the change (no test tears a
+message); the gate is green on both binaries. The flake stays open, with a better instrument.
+
 **v5.127 (in place — three library-kind gaps closed: the whole appetite in one read, the
 policy diff and the would-deny list, the manual as a query):** (1) `comcon.std.evaluate(fn |
 source, {declares})` — G-13 — every free name from the admission collector, classified, with

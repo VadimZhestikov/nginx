@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **WHERE WE ARE (v5.127 — 2026-09-16), in five lines.** Every increment is done and every
+> **WHERE WE ARE (v5.128 — 2026-09-16), in five lines.** Every increment is done and every
 > track is closed: confinement (two signatures on the assurance case, ASSURANCE §15), the
 > compiler (M5.1a and M5.1c shipped, M5.1b parked; the rule says NO-GO at 2.3× on the last
 > class, PERFORMANCE §2f.3), the library (the vocabulary complete; `opaque.*` and the postures
@@ -9,12 +9,18 @@
 > automated; the OOM sweep stands on both tiers; F2's leak half is closed with its limit
 > measured. **Open, by name:** F11's reproduction half (a signer running the pack); the
 > broadcast-fuzz flake (its third face captured with the log tail in the v5.127 pack: every
-> child reaped, the master idle 93 s, then a KILL aimed at a child it had reaped — see the
-> FOUNDATION v5.127 delta); the engine's own `--jit-compile-all` test failures (maxim's, pre-existing, recorded in
+> child reaped, the master idle 93 s, then a KILL aimed at a child it had reaped; since v5.128
+> the master prints its process table on that event — FOUNDATION v5.127/v5.128 deltas); the engine's own `--jit-compile-all` test failures (maxim's, pre-existing, recorded in
 > G7.23); and four decisions — the warm-speculation finding to post upstream, the sub-fragment
 > narrowing words, `opaque.*` and the postures, M5.1b. The rest of this block is the log,
 > newest first, each entry also a FOUNDATION delta.
 >
+> - **THE SHUTDOWN FLAKE INSTRUMENTED; A LATENT MASTER SPIN REMOVED (2026-09-16, v5.128).**
+>   Three candidate mechanisms for the third face read and ruled out (a stolen `SIGCHLD`, a
+>   blocking channel read, a blocking exit hook); 80 cycles under load, no reproduction. The
+>   master now prints its whole process table, with the reap flags, on the one event that
+>   marks a hang (a `TERM` during a `QUIT`), and every signal line names its thread. The
+>   channel payload loop no longer spins with signals masked on a torn message. Open.
 > - **THREE LIBRARY-KIND GAPS CLOSED (2026-09-16, v5.127).** `std.evaluate` (the whole appetite
 >   in one static read, G-13), `std.policy.diff` + `comcon.denials`/`ops.wouldDeny` (the
 >   policy diff with an auto-safe verdict, and the gates attributed to the binding they fired
