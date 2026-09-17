@@ -1,0 +1,90 @@
+REVIEWER PACK — 20260917T051139Z
+output dir: /home/vadim/.claude/jobs/05e7ab1e/tmp/reviewer-pack-d9bc1f743   (outside the repo, so this run cannot dirty the tree)
+
+── 0. Provenance (what you are about to attest to) ──
+  commit      : d9bc1f7439d67b1a4665858bfb06cae62097f36a
+  branch      : js_comcon
+  gcc         : gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+  perl        : v5.34.0
+  host        : Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+  tree        : clean under src/js, quickjs, t, js_comcon
+
+── 1. Rebuild every builddir (§4: the committed binaries are STALE ARTIFACTS) ──
+  The objs*/ trees are tracked in git, so a fresh clone or a reset --hard
+  gives you a committed binary rather than one built from the source under
+  audit.  Assembling the audit, that produced a FAIL on objs_jit that the
+  real build passes.  Rebuilding is not optional.
+  built objs
+  built objs_jit
+  built objs_asan
+  built objs_ubsan
+  PASS  all builddirs rebuilt from the audited source
+  ....  builddirs rebuilt: 4
+  PASS  binaries are newer than the newest source file
+
+── 2. The suites (§4) ──
+  PASS  t/ on objs
+  ....  t/ on objs: Files=362, Tests=4995
+  PASS  t/ on objs_jit
+  ....  t/ on objs_jit: Files=362, Tests=4956
+  PASS  t_stress/ on objs
+
+── 3. The standing checkers (drift is a build failure here) ──
+  PASS  check-assurance.py
+  PASS  check-enumerations.py
+  PASS  check-dead-probes.py
+  PASS  jit-diff-fuzz.py, 12 seeds x 60 functions, compiled == interpreted
+
+── 4. Memory safety (§4: builds its own guards in; refuses a vacuous run) ──
+  PASS  ASAN+UBSAN over the COMCON corpus, 0 findings in src/js
+          tests run          : 1262
+          findings in src/js : 0
+          findings elsewhere : 3  (upstream nginx; reported, not failed)
+          tests run          : 1262
+          findings in src/js : 0
+          findings elsewhere : 90  (upstream nginx; reported, not failed)
+        S6 sanitizer gate: PASS (no findings in src/js)
+
+── 5. Negative controls (do the fixes' tests actually fail without the fix?) ──
+  PASS  every automated negative control holds
+  ....  negative controls: verified 38   failed 0   skipped 0
+
+── 6. Reported, not gated (look at these; this script does not judge them) ──
+  ....  assurance leaves: 96
+  ....  findings in ledger: 21
+  ....  t/ files: 362
+  ....  comcon_*.t files: 94
+  ....  delta-log version: **v5.128
+
+── VERDICT ──
+  PASS  all builddirs rebuilt from the audited source
+  PASS  binaries are newer than the newest source file
+  PASS  t/ on objs
+  PASS  t/ on objs_jit
+  PASS  t_stress/ on objs
+  PASS  check-assurance.py
+  PASS  check-enumerations.py
+  PASS  check-dead-probes.py
+  PASS  jit-diff-fuzz.py, 12 seeds x 60 functions, compiled == interpreted
+  PASS  ASAN+UBSAN over the COMCON corpus, 0 findings in src/js
+  PASS  every automated negative control holds
+
+  builddirs rebuilt            4
+  t/ on objs                   Files=362, Tests=4995
+  t/ on objs_jit               Files=362, Tests=4956
+  negative controls            verified 38   failed 0   skipped 0
+  assurance leaves             96
+  findings in ledger           21
+  t/ files                     362
+  comcon_*.t files             94
+  delta-log version            **v5.128
+
+ALL GATES PASS on d9bc1f743.
+
+That is the EVIDENCE half and it is the smaller half.  Before signing,
+read js_comcon/docs-v5.0/REVIEW.md -- signing attests acceptance of the
+residuals named in ASSURANCE.md §15/§16 and AUDIT_M-SES.md §3, and a
+signature applied without reading those converts "we know these holes
+exist" into "someone looked and found nothing".
+
+Transcript to attach: /home/vadim/.claude/jobs/05e7ab1e/tmp/reviewer-pack-d9bc1f743/transcript.txt
