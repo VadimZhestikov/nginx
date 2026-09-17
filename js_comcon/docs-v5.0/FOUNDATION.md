@@ -663,7 +663,11 @@ the pointer dangled at publish (heap-use-after-free in `ngx_js_grant_ref`, a wor
 "corrupted double-linked list" on the compiled tier). Both entrances now take a reference of
 their own per record, publish *transfers* it into the table, and one outer function per
 entrance releases what was not transferred — dozens of refusal paths, none of which has to
-know. Clean under ASAN with leak detection on. `t/comcon_revoke.t` (31), the V12 row, control
+know. Clean under ASAN with leak detection on. (8) The pack on the first cut reported the three
+`08934b766` commit-revert rows INCONCLUSIVE — this change rewrote lines that commit touched —
+so they are re-based as one maintained patch, `t/tools/controls/library-programs-absent.patch`
+(the three library programs and the include result's contract removed; 12, 13 and 11
+assertions fail), as the script's own rule requires. `t/comcon_revoke.t` (31), the V12 row, control
 `revoke-not-checked.patch` (16 assertions fail with the walk blinded; the read-back ones
 pass), OPERATOR_API §8l, ASSURANCE G7.25, demo `S_Security_Teams/S5`; `std.ops` now twenty
 verbs. Gate green on both binaries.

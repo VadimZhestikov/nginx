@@ -1,0 +1,30 @@
+diff --git a/src/js/ngx_js_com.c b/src/js/ngx_js_com.c
+--- a/src/js/ngx_js_com.c
++++ b/src/js/ngx_js_com.c
+@@ -5311,7 +5311,7 @@
+     "    bound.onViolation=ov;"
+     "    bound.profile=(contract.profile===undefined)?'restrictive':"
+     "                  String(contract.profile);"
+-    "    bound.contract=contractView(contract);return bound;};"
++    "    return bound;};"
+     /* pom(fragment): the reflective Program Object Model surface (increment D1).
+        A lazy NodeView tree over a compiled fragment (module/function granularity
+        — the bytecode tree; POM.md). Reads ALWAYS return quotations: text()/
+@@ -5988,9 +5988,6 @@
+        holds.  Both are text over the binding store, no new authority. */
+     "    verb('diff','bindings',function(name,candidate){"
+     "      return STD.policy.diff(need(name).h.contract,candidate);});"
+-    "    verb('docs','bindings',function(name){var b=need(name);"
+-    "      return STD.docs.render(name,b.h,{epoch:b.h.epoch(),"
+-    "        tombstoned:b.h.tombstoned(),revoked:b.h.withdrawn()});});"
+     "    var sess={},withheld=[],avail=[];"
+     "    for(var i=0;i<V.length;i++){"
+     "      if(have[V[i].needs]){sess[V[i].name]=V[i].fn;avail.push(V[i].name);}"
+@@ -6602,6 +6599,7 @@
+     "    L.push('- identity: '+(m.identity?'pinned ('+m.identity+')':'not pinned'));"
+     "    for(i=0;i<m.deps.length;i++)L.push('- dependency `'+m.deps[i].name+'` pinned ('+m.deps[i].sha256+')');"
+     "    return L.join('\\n')+'\\n';};"
++    "  delete STD.evaluate;delete STD.policy.diff;delete STD.docs;"
+     "  C.std=Object.freeze(STD);"
+     "  Object.freeze(STD.profiles);"
+     "  C.pom=function(rootFn){"
