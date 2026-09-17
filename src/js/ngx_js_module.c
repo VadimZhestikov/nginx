@@ -4702,6 +4702,71 @@ ngx_js_comcon_revoke(JSContext *hctx, JSValueConst this_val, int argc,
 }
 
 
+/*
+ * G-05 (v5.130): comcon.__callCounts(handle) -> [{name, line0, calls, ...}]
+ * -- the fragment's per-function entry counts, for the allow-suite's
+ * coverage (a delta across the recording window, taken by the JS layer).
+ */
+JSValue
+ngx_js_comcon_call_counts(JSContext *hctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_conf_t  *jcf;
+    JSValueConst    fn;
+    JSValue         r, hr;
+    int64_t         handle = 0;
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx == NULL || jcf->comcon_frags == NULL) {
+        return JS_ThrowInternalError(hctx, "comcon: no compartment");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(hctx, "comcon.__callCounts: handle required");
+    }
+    JS_ToInt64(hctx, &handle, argv[0]);
+
+    if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
+        return JS_ThrowTypeError(hctx, "comcon: bad fragment handle");
+    }
+    fn = ((JSValue *) jcf->comcon_frags->elts)[handle];   /* borrowed */
+
+    if (JS_IsUndefined(fn)) {
+        return JS_ThrowTypeError(hctx,
+                                 "comcon: fragment was freed (stale epoch)");
+    }
+
+    /* built in the compartment's context, carried to the host as JSON text:
+       the rows are plain data, and nothing of the compartment may cross as
+       an object */
+    r = js_comcon_call_counts(jcf->comcon_ctx, fn);
+    if (JS_IsUndefined(r)) {
+        return JS_NewArray(hctx);
+    }
+
+    {
+        JSValue      js = JS_JSONStringify(jcf->comcon_ctx, r, JS_UNDEFINED,
+                                           JS_UNDEFINED);
+        const char  *txt;
+        size_t       len;
+
+        JS_FreeValue(jcf->comcon_ctx, r);
+        if (JS_IsException(js)) {
+            JS_FreeValue(jcf->comcon_ctx, JS_GetException(jcf->comcon_ctx));
+            return JS_NewArray(hctx);
+        }
+        txt = JS_ToCStringLen(jcf->comcon_ctx, &len, js);
+        hr = txt ? JS_ParseJSON(hctx, txt, len, "<callCounts>") : JS_NewArray(hctx);
+        if (txt) {
+            JS_FreeCString(jcf->comcon_ctx, txt);
+        }
+        JS_FreeValue(jcf->comcon_ctx, js);
+    }
+
+    return hr;
+}
+
+
 /* comcon.__grantStatus(handle) -> {name: {revoked, delegated}} */
 JSValue
 ngx_js_comcon_grant_status(JSContext *hctx, JSValueConst this_val, int argc,

@@ -1,6 +1,6 @@
 # js_comcon_demos — COMCON, shown to the people who need it
 
-Twenty self-contained, runnable demos of **COMCON**, the capability-secure
+Twenty-one self-contained, runnable demos of **COMCON**, the capability-secure
 confinement layer that lets nginx run code it does not trust. Each demo has its
 own `nginx.conf`, `host.js` (the operator's program), usually a tenant file,
 a `test.sh` that starts nginx, asserts and stops, and a `README.md` that says
@@ -34,7 +34,7 @@ for t in $(find . -name test.sh | sort); do echo "=== $t ==="; bash "$t" || brea
 
 The binary is `objs/nginx` at the repo root (`auto/configure --add-module=src/js …`;
 `t/tools/gate.sh --configure` builds it and the compiled `objs_jit`). Override
-with `NGINX=/path/to/nginx`. Ports are 8200–8219 for the servers and 8250–8269
+with `NGINX=/path/to/nginx`. Ports are 8200–8220 for the servers and 8250–8269
 for the socket capabilities the demos mint; nothing else in the tree uses them.
 
 ## The audiences, and what each needs to see
@@ -43,7 +43,7 @@ for the socket capabilities the demos mint; nothing else in the tree uses them.
 |---|---|---|---|
 | **P** | Platform / SaaS teams | *Can I run a customer's code in my nginx without it becoming my problem?* | P1–P4 |
 | **S** | Security / compliance teams | *What exactly can it do, who can make it do it, how do I read back what it tried, and can I take it back on CVE day?* | S1–S5 |
-| **O** | Operators / SREs | *How do I let tenants change config, and what do I look at when I am paged?* | O1–O3 |
+| **O** | Operators / SREs | *How do I let tenants change config, what do I look at when I am paged, and how do I know next week's version answers what this one does?* | O1–O4 |
 | **D** | Developers / architects | *What will refuse my fragment, and what changes when it is compiled?* | D1–D2 |
 | **L** | Live operations / release engineering | *Can I fix the hottest function at noon, on every worker, and undo it, without a reload?* | L1–L3 |
 | **A** | Auditors / procurement | *Who can touch what, where is that library used, and can you stop this call, in a way I can re-run?* | A1–A3 |
@@ -72,13 +72,14 @@ scenarios that had shipped code, no demo, and an audience the first twelve did n
 | [S4 Sessions: principal to environment](S_Security_Teams/S4_Sessions_principal_to_environment/) | 8207 | `ci@acme` holds the socket, `dev@acme` does not, `greedy@acme` is refused, revoke is a row removal |
 | [S5 CVE day: withdraw a grant](S_Security_Teams/S5_CVE_day_withdraw_a_grant/) | 8219 | `ops.withdraw('acme','out',{confirm})` live: the tenant's call and the library's delegated copy both answer `cap.revoked`; audit does not lift it; a replace and a rollback keep it; offboarding is the same verb with no name |
 
-### O — Operators (ports 8208–8209, 8216)
+### O — Operators (ports 8208–8209, 8216, 8220)
 
 | Demo | Port | What you see |
 |---|---|---|
 | [O1 Config proposal: review / apply / rollback](O_Operators/O1_Config_proposal_review_apply_rollback/) | 8208 | A tenant's inert proposal typechecked, diffed, applied with confirmation, rolled back by hash; an ill-typed one leaves nothing behind |
 | [O2 Denials dashboard](O_Operators/O2_Denials_dashboard/) | 8209 | The two closed sets of codes, the counters, and `comcon.mode()` turning a denial into a logged allow |
 | [O3 Rehearse before perform](O_Operators/O3_Rehearse_before_perform/) | 8216 | `policy.diff` predicts (narrowing, auto-safe / widening), the candidate shadowed beside the live binding on real traffic, its own would-deny rows, then the flip |
+| [O4 Onboard by evidence](O_Operators/O4_Onboard_by_evidence/) | 8220 | `ops.record` turns traffic into cases, `coverage` names the functions never entered, a drifted rewrite fails the host rehearsal and is refused at admission after `guard`; the faithful rewrite goes live |
 
 ### D — Developers (ports 8210–8211)
 

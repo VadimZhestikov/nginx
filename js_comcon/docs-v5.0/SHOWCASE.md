@@ -237,8 +237,16 @@ well-formed values." Injection needs a hole; the hole is no longer part of the l
 > `js_com_demos/COMCON_onboard/onboard.js` turns the harvest into a paste-ready grant stub.
 > Tests: `t/comcon_include_learn.t`, `t/comcon_posture.t`, `t/comcon_std_ops.t`. Demo:
 > `js_comcon_demos/P_Platform_Teams/P2`. **v5.127:** the per-binding would-deny report is
-> `ops.wouldDeny(f)` (demo `O_Operators/O3`); still not built: allow-suite generation and
-> coverage (gap G-05).
+> `ops.wouldDeny(f)` (demo `O_Operators/O3`). **v5.130 (G-05 closed):** the allow-suite and
+> its coverage, in a different spelling:
+> ```js
+> ops.record("acme");                 // …traffic…
+> ops.suite("acme")                   // {recorded: 1214, distinct: 388, cases: [...], unstable: [...]}
+> ops.coverage("acme")                // {functions: {total: 11, called: 10, percent: 91, uncalled: [{name: "onError", line: 40}]}, ...}
+> ops.guard("acme");                  // the next rebind must answer every recorded case the same
+> ```
+> Coverage is by function entered, not code path; the compiled tier says `exact: false`.
+> `t/comcon_std_suite.t`, demo `O_Operators/O4`. The `comconctl` spelling stays G-26.
 
 **Problem:** a years-old analytics script must move under policy. Nobody knows what it
 actually touches.

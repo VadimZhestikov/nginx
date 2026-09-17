@@ -635,6 +635,33 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.130 (in place — G-05 closed: the allow-suite, a cage derived from observed behaviour and a
+candidate admitted against it):** (1) `comcon.std.suite`: `record(f, {max})` keeps every call's
+(input, output) as the JSON text the boundary marshals, in the include result's own callable
+(one property test per call when off); `cases(f)` reads the stable cases apart from the
+unstable ones (an input answered two ways pins nothing) and counts what a full recorder
+dropped; `tests(cases)` emits a contract `tests` quotation — one function expression that
+replays every case inside the compartment and throws on the first divergence, naming it;
+`check(candidate, cases)` is the same replay on the host; `coverage(f)` is which of the
+fragment's functions the window entered, which never were (by name and line), and which gates
+fired. (2) `h.record/suite/coverage/guard` on `bindAt` and `bindShared`, `ops.record/suite/
+coverage/guard` over a name: `guard` pins the suite into the binding's own contract copy, so a
+rebind that answers a recorded case differently is refused with `E_ADMIT_TEST` and the epoch
+does not move; the policy diff reads a removed pin as widening. (3) One mechanism under
+coverage: `comcon_call_count`, a per-function entry counter the engine keeps in every build
+(one increment at the interpreter's call entry), read by `js_comcon_call_counts()` through the
+POM's own bytecode walk; on the compiled tier a lowered function's direct calls bypass that
+entry, so the report carries `tier` and `exact: false` rather than a number it cannot defend.
+Engine debt to the fork. (4) Two things the suite's own test found: a shared value is at most
+511 bytes, so `bindShared.guard` carries the suite in fixed chunks under sibling keys with the
+count and length on the record; and a shared `replace()` published the record BEFORE realizing
+the candidate — a refused one would have broken every worker's next reconcile — it now
+realizes first, as `bindAt` always did. (5) A thrown answer is recorded as `threw` without its
+text: an exception's message crosses the boundary prefixed, and a case must compare the same
+on both sides. `t/comcon_std_suite.t` (27), control `suite-guard-inert.patch`, OPERATOR_API
+§8m, ASSURANCE G7.26, demo `O_Operators/O4`; `std.ops` now twenty-four verbs. Gate green on
+both binaries.
+
 **v5.129 (in place — G-01 closed: a grant can be withdrawn while the fragment runs, and the
 withdrawal follows every delegation):** (1) `comcon.withdraw(f, name?)` and
 `comcon.withdrawn(f)`; `h.withdraw`/`h.withdrawn` on `bindAt` and `bindShared` handles;

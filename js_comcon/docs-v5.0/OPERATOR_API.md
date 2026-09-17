@@ -527,6 +527,60 @@ G-16; one small mechanism under the second.
 
 ---
 
+## 8m. `comcon.std.suite` — the allow-suite: a cage derived from observed behaviour, and a candidate admitted against it *(v5.130)*
+
+```js
+var S = comcon.std.suite;
+S.record(f, { max: 1000 });      // from now on f keeps (input, output) as the JSON the boundary carries
+…                                // traffic
+S.cases(f)                       // {recorded, distinct, dropped, max, cases: [{input, output, n}], unstable: [{input, outputs, n}]}
+S.tests(f)                       // a contract `tests` quotation: one function expression replaying every case
+S.check(candidate, S.cases(f))   // the same replay on the host: {total, passed, failed: [{i, input, expected, got}], ok}
+S.coverage(f)                    // {functions: {total, called, percent, uncalled: [{name, line, calls}]}, gates, tier, exact}
+
+h.record(); h.suite(); h.coverage(); h.guard()      // bindAt / bindShared: guard pins the suite into the contract
+ops.record('acme'); ops.suite('acme'); ops.coverage('acme'); ops.guard('acme')
+ops.rebind('acme', candidate)    // refused with E_ADMIT_TEST if it answers a recorded case differently
+```
+
+Closes the last half of `SHOWCASE-gaps.md` G-05 (scenario 5: "allow-suite generated: 1,214
+recorded cases; coverage 91%"). Library programs over shipped operators, with one small
+mechanism under `coverage`.
+
+- **A case is one distinct input and the answer it got.** The recorder sits in the include
+  result's own callable and keeps the JSON text the boundary marshals anyway, so recording
+  costs one property test per call when off. An input answered two ways is **unstable**,
+  kept apart with both answers and never pinned; past `max` distinct inputs the recorder
+  counts what it dropped rather than grow. A thrown answer is recorded as `threw` without
+  its text, because an exception's message crosses the boundary prefixed and a case must
+  compare the same on both sides.
+- **`tests` is the suite as a contract field.** The quotation is a single function
+  expression — what the admission test phase accepts — that parses each input, calls the
+  candidate inside the compartment, and throws on the first divergence naming the case, its
+  input, the expected and the actual answer. Nothing else runs; the host is unreachable
+  there as in every test phase. `check` is the same replay on the host for a rehearsal.
+- **`guard` pins it to a binding.** `bindAt.guard(tests?)` (default: the recorded suite) sets
+  `tests` on the binding's own copy of the contract, so every later `replace()` is admitted
+  against it; the policy diff reads a removed pin as a widening. `bindShared.guard` carries
+  the suite on the shared record — in fixed chunks under sibling keys, since a shared value
+  is at most 511 bytes — and every worker admits its next epoch under it. A shared
+  `replace()` now realizes the candidate **before** publishing it (the rule bindAt already
+  followed), so a refused candidate never reaches the record where every worker's next
+  reconcile would trip over it.
+- **Coverage is function-level and says what it can stand behind.** The engine counts
+  entries per function in every build (`comcon_call_count`, one increment at the
+  interpreter's call entry); `coverage` reports the delta over the recording window: the
+  functions entered, the ones never entered by name and line, the percentage, and the gates
+  that fired. On the compiled tier a lowered function's direct calls into other lowered
+  functions bypass that entry, so the report carries `tier` and `exact: false` rather than a
+  number it cannot defend. Per worker, like every counter here.
+
+Negative control: `t/tools/controls/suite-guard-inert.patch` (guard reports success and pins
+nothing; the divergent rebinds are admitted). `t/comcon_std_suite.t` (27), demo
+`O_Operators/O4`.
+
+---
+
 ## 8l. `comcon.withdraw(f, name?)` — live revocation of a grant, cascading over delegations *(v5.129)*
 
 ```js

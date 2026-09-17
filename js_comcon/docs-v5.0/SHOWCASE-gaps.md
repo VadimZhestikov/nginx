@@ -37,7 +37,7 @@ substrate decision (`opaque.*`/COW: 7, 16, 19, 32), two are one design increment
 | **G-02** | 3, 4, 11 | grammar-valued interfaces: a parameterized-only `db` facet, `header_value` grammars, `pattern{}` instead of regex, "one parser, N policies" | stone splices (data can never become code), `reviewDeclarative` as one sound rejecter, CRLF dropped at the header boundary | facets whose *language* is a policy; a pattern language; a `db` capability kind | design | M2.5–M4 (+M-LIB facets) |
 | **G-03** | 7, 16, 19, 32, (18 overlay) | `opaque.str` values with named sinks; COW views and overlays; a shadow world | field-level `redact`/`allow` on socket and server capabilities; sessions never carry caps | the opaque/COW engine substrate | substrate, **unscheduled by decision** (ROADMAP §5 lesson 6; canonical NOT BUILT list) | none |
 | **G-04** | 6, 13, 23 | a REL/forensics console attached to a worker; an AI session with redacted handles and opaque traffic | per-worker data through host handlers (`tenantDenials`, `tenantLearning`, `memStatus`, `aotStatus`, `trustReport`); NodeView reads are quotations, `binding` redacted | an attach/REPL surface; a forensics profile; body redaction on program handles | library (REPL exists on the js_com side; a COMCON-shaped session does not) | tooling verbs |
-| **G-05** | 5, 6, 14 | allow-suite generation with coverage; a policy diff that reports "narrowing, auto-safe"; a would-deny event list | **CLOSED v5.127 for the diff and the would-deny list:** `comcon.std.policy.diff` (verdict narrowing / widening / unchanged / incomparable, auto-safe flag, every change with its direction, over the kernel's own grant translation) and `comcon.denials(f)` / `ops.wouldDeny(f)` (the gates attributed to the binding they fired in, read against its posture). Demo `O_Operators/O3`. | still open: a recorded-cases generator with coverage | library | M2.5 denial/explain schema |
+| **G-05** | 5, 6, 14 | allow-suite generation with coverage; a policy diff that reports "narrowing, auto-safe"; a would-deny event list | **CLOSED v5.127** for the diff and the would-deny list (`comcon.std.policy.diff`, `comcon.denials(f)` / `ops.wouldDeny(f)`, demo O3); **CLOSED v5.130** for the allow-suite: `comcon.std.suite` records a binding's (input, output) cases, emits them as a contract `tests` quotation, `guard` pins it so a rebind that answers differently is refused (`E_ADMIT_TEST`), `check` rehearses on the host, `coverage` names the functions never entered (function-level, from an engine entry counter; the native tier says `exact: false`). Demo `O_Operators/O4`. | — (function-level coverage, not code paths; answers, not effects) | library + one counter | — |
 | **G-06** | 9 | `expose`/`accept` communication edges, both signatures required | host-brokered exchange (JSON between two fragments of one host); reseller copies narrowed | fragment-to-fragment edges as capabilities | design | mixed (ROADMAP §5) |
 | **G-07** | 10, 33 | `cpu: "5ms/request"`, `compile: "50ms"`, budgets as billing counters | `timeoutMs` (wall clock), `memoryBytes` (burst), `retainedBytes` (leak), `memStatus` counts | a CPU-time unit, a `gas` instruction count (forward-declared), compile budgets, invoice-grade counters | design | S5-b (`meter({gas})`) |
 | **G-08** | 15, 50 | Tcl iRules and WASM modules as fragments | JavaScript only | multi-language includes; the `wasm` facet and wasm2c lane | design | M9 / stage 2; M-LIB v5.2 (wasm) |
@@ -84,15 +84,17 @@ Written down so the checklist reads in both directions:
 | G-05 (diff + would-deny) | v5.127 | `comcon.std.policy.diff`, `comcon.denials`, `ops.wouldDeny` (`t/comcon_std_policy_diff.t`, `t/comcon_would_deny.t`, demo O3) |
 | G-16 (docs) | v5.127 | `comcon.std.docs`, `ops.docs` (`t/comcon_std_docs.t`, demo A3) |
 | G-01 | v5.129 | `comcon.withdraw` / `comcon.withdrawn`, `h.withdraw`, `ops.withdraw` / `ops.withdrawn`, the `cap.revoked` code (`t/comcon_revoke.t`, the V12 row, control `revoke-not-checked.patch`, demo S5) |
+| G-05 (allow-suite) | v5.130 | `comcon.std.suite` record/cases/tests/check/coverage, `h.guard`, `ops.record/suite/coverage/guard` (`t/comcon_std_suite.t`, control `suite-guard-inert.patch`, demo O4) |
 
 ## The plan for what is left (2026-09-16, after v5.127)
 
 Twenty-three gaps remain. Grouped by what closing each needs, cheapest evidence first.
 
 **Wave 1 — library only, no C change, an afternoon each.**
-- G-05, the allow-suite generator: record `(input, output)` pairs from a binding in audit or
-  learn posture into a `tests` quotation, so a candidate policy is admitted against what the
-  current one actually answered (`ops.wouldDeny` + `contract.tests`).
+- ~~G-05, the allow-suite generator~~ — **DONE v5.130** as `comcon.std.suite`: the pairs are
+  recorded in the include result's own callable, emitted as a `tests` quotation, pinned by
+  `guard`; coverage at function level from an engine entry counter. OPERATOR_API §8m,
+  ASSURANCE G7.26.
 - G-16, the rest: the `signing` ops resource (a host-held HMAC key descriptor; one C helper
   for HMAC-SHA256, since host JS has no crypto) and a maker chain `{who, when, hash}` appended
   at `register`/`rebind`; then `trustReport` carries provenance.
@@ -120,7 +122,7 @@ manifests, after Wave 1's signing).
 
 **By decision, not scheduled:** G-03, G-10, G-11, G-15, G-22, G-08, G-02.
 
-**Recommended order:** ~~G-01~~ (done v5.129), then G-05, then G-21.
+**Recommended order:** ~~G-01~~ (done v5.129), ~~G-05~~ (done v5.130), then G-21.
 
 ### G-21: why a live epoch is not compiled in the master today, and how it could be
 

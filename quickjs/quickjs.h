@@ -885,6 +885,11 @@ int js_comcon_check_request_fields(JSContext *ctx, JSValueConst func,
  * JS_UNDEFINED if func is not a bytecode fragment. */
 JSValue js_comcon_pom_inspect(JSContext *ctx, JSValueConst func);
 
+/* COMCON G-05: per-function entry counts of a fragment, flat, pre-order:
+ * [{kind,name,line0,line1,...,calls}].  JS_UNDEFINED if not a bytecode
+ * fragment. */
+JSValue js_comcon_call_counts(JSContext *ctx, JSValueConst func);
+
 /* COMCON increment D1: the single node at `path` (indices among FUNCTION_BYTECODE
  * cpool children) under root fragment `func` — scalar fields + the node's own
  * `source` slice. Backs the lazy NodeView; GC-safe (holds no pointers). Returns

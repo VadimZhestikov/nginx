@@ -727,6 +727,8 @@ JSValue ngx_js_comcon_aot_status(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_mem_status(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
+JSValue ngx_js_comcon_call_counts(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_revoke(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_grant_status(JSContext *ctx, JSValueConst this_val,

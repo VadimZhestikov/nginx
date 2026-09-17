@@ -110,6 +110,7 @@ PATCHES=(
 "08934b766|library-programs-absent.patch|t/comcon_std_evaluate.t|objs|fail|G-13: std.evaluate absent -- the whole-appetite read, the trailing-text refusal and the classification are all gone with the library"
 "08934b766|library-programs-absent.patch|t/comcon_std_policy_diff.t|objs|fail|G-05: std.policy.diff absent, and include results no longer carry their contract"
 "08934b766|library-programs-absent.patch|t/comcon_std_docs.t|objs|fail|G-16: std.docs absent, ops.docs absent"
+"G-05b|suite-guard-inert.patch|t/comcon_std_suite.t|objs|fail|G-05: guard() reports success and pins nothing -- a rebind that answers differently is admitted"
 )
 
 if ! git diff --quiet -- src/js quickjs || ! git diff --cached --quiet -- src/js quickjs; then

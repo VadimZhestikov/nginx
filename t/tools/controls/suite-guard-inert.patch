@@ -1,0 +1,24 @@
+diff --git a/src/js/ngx_js_com.c b/src/js/ngx_js_com.c
+--- a/src/js/ngx_js_com.c
++++ b/src/js/ngx_js_com.c
+@@ -6898,7 +6898,7 @@
+     "      if(typeof t==='function')t=String(t);"
+     "      if(typeof t!=='string')throw new TypeError("
+     "        'guard: arg0 must be a tests function, its source, or nothing (the recorded suite)');"
+-    "      contract.tests=t;return {tests:true,length:t.length};};"
++    "      return {tests:true,length:t.length};};"
+     /* V9: the three READ ops on this handle were missing.  `describe` is
+        itself a row on both NodeViews and was absent here -- the same op
+        classified on one surface and not on its sibling, which is the shape a
+@@ -7041,9 +7041,9 @@
+     "      if(typeof t!=='string')throw new TypeError("
+     "        'guard: arg0 must be a tests function, its source, or nothing (the recorded suite)');"
+     "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
+-    "      st.testsChunks=putTests(t);st.testsLen=t.length;st.rev=(st.rev|0)+1;"
++    "      st.rev=(st.rev|0)+1;"
+     "      nginx.shared.set(SK,JSON.stringify(st));"
+-    "      contract.tests=t;localRev=st.rev;return {tests:true,length:t.length};};"
++    "      localRev=st.rev;return {tests:true,length:t.length};};"
+     /* V9: the same two READ ops were missing here as on bindAt.  A sibling
+        surface with its own hand-written copy of an op list is exactly where the
+        drift lands twice, which is why the checker audits all four rather than

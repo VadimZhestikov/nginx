@@ -5217,6 +5217,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "  function contractView(c){var o={},k;c=c||{};"
     "    for(k in c)if(Object.prototype.hasOwnProperty.call(c,k))o[k]=c[k];"
     "    return Object.freeze(o);}"
+    /* G-05: one recorded case per DISTINCT input; a second answer to the same
+       input marks the case unstable (it cannot pin anything); past `max` the
+       recorder counts what it dropped rather than grow without bound. */
+    "  function recCase(rr,ik,out){rr.recorded++;var c=rr.seen[ik];"
+    "    if(c){c.n++;if(c.out!==out&&!c.unstable){c.unstable=true;c.outs=[c.out,out];rr.unstable++;}return;}"
+    "    if(rr.order.length>=rr.max){rr.dropped++;return;}"
+    "    rr.seen[ik]={out:out,n:1,unstable:false};rr.order.push(ik);}"
+    "  function ccopy(c){var o={},k;c=c||{};"
+    "    for(k in c)if(Object.prototype.hasOwnProperty.call(c,k))o[k]=c[k];return o;}"
     "  C.include=function(source,contract){"
     "    contract=contract||{};"
     "    var g=contract.grants||{},names=[],caps=[],pols=[];"
@@ -5304,8 +5313,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      else if(pf!=='restrictive'&&pf!=='declarative')"
     "        capRefuse('E_ADMIT_CONTRACT','include: unknown profile '+pf+"
     "          '; the profiles are restrictive and declarative');}"
+    /* G-05 (v5.130): a recording fragment (std.suite.record) keeps the
+       (input, output) pair of every call as the JSON text the boundary
+       carries anyway; one property test per call when nothing records. */
     "    var bound=function(arg){modeReconcile();"
-    "      return C.__invokeConfined(h,arg,ms,mem,ov,ret);};"
+    "      var rr=bound.__rec;if(!rr)return C.__invokeConfined(h,arg,ms,mem,ov,ret);"
+    "      var ik=JSON.stringify(arg===undefined?null:arg),res;"
+    "      try{res=C.__invokeConfined(h,arg,ms,mem,ov,ret);}"
+    "      catch(e){recCase(rr,ik,'threw');throw e;}"
+    "      recCase(rr,ik,JSON.stringify(res===undefined?null:res));return res;};"
     "    bound.confined=true;bound.handle=h;bound.meterMs=ms;"
     "    bound.meterMemoryBytes=mem;bound.meterRetainedBytes=ret;"
     "    bound.onViolation=ov;"
@@ -5959,6 +5975,14 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        '\"} to say which binding you mean');"
     "      return b.h.withdraw(grant);});"
     "    verb('withdrawn','bindings',function(name){return need(name).h.withdrawn();});"
+    /* G-05: the allow-suite over a registered binding -- record its traffic,
+       read the cases and the coverage, pin the answers (guard) so the next
+       rebind is admitted against them.  Reads and one narrowing; no
+       confirmation, nothing here widens. */
+    "    verb('record','bindings',function(name,opts){need(name).h.record(opts);return {recording:true};});"
+    "    verb('suite','bindings',function(name){return need(name).h.suite();});"
+    "    verb('coverage','bindings',function(name){return need(name).h.coverage();});"
+    "    verb('guard','bindings',function(name,tests){return need(name).h.guard(tests);});"
 
     /* trustReport: for each registered binding, what is actually holding -- the
        epoch, whether it is bounded, and which contract fields bite. Over the
@@ -6602,6 +6626,75 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    L.push('- identity: '+(m.identity?'pinned ('+m.identity+')':'not pinned'));"
     "    for(i=0;i<m.deps.length;i++)L.push('- dependency `'+m.deps[i].name+'` pinned ('+m.deps[i].sha256+')');"
     "    return L.join('\\n')+'\\n';};"
+    /* ================= G-05 (v5.130): THE ALLOW-SUITE ====================
+       SHOWCASE 5's "allow-suite generated: 1,214 recorded cases; coverage
+       91%": the cage derived from OBSERVED behaviour, and checked against
+       it.  record(f) turns a fragment's traffic into (input, output) pairs;
+       cases(f) reads them (stable ones apart from unstable); tests(cases) is
+       a contract `tests` quotation -- a single function expression that
+       replays every case inside the compartment and throws on the first
+       divergence, so a candidate is admitted against what the current one
+       actually answered; check(candidate, cases) is the same replay on the
+       host, for a rehearsal before anything is bound; coverage(f) is which
+       of the fragment's functions the recording entered, from the engine's
+       per-function entry counts, and which gates fired.  Text and counters
+       over shipped operators; the one mechanism under it is the counter.
+       A thrown answer is recorded as `threw` without its text: an exception's
+       message crosses the boundary prefixed, and a case must compare the
+       same on both sides. */
+    "  STD.suite={};"
+    "  function needRec(frag,verb){if(!frag||frag.confined!==true||typeof frag.handle!=='number')"
+    "    throw new TypeError('suite.'+verb+': arg0 must be a confined fragment');"
+    "    var rr=frag.__rec;if(!rr)throw new TypeError('suite.'+verb+': this fragment is not "
+             "recording (call std.suite.record first)');return rr;}"
+    "  STD.suite.record=function(frag,opts){opts=opts||{};"
+    "    if(!frag||frag.confined!==true||typeof frag.handle!=='number')"
+    "      throw new TypeError('suite.record: arg0 must be a confined fragment');"
+    "    var max=(opts.max|0)>0?(opts.max|0):1000;"
+    "    frag.__rec={max:max,seen:Object.create(null),order:[],recorded:0,dropped:0,unstable:0,"
+    "      calls0:C.__callCounts(frag.handle),gates0:C.denials(frag).byOp};return frag;};"
+    "  STD.suite.stop=function(frag){var rr=frag&&frag.__rec;if(frag)frag.__rec=null;return !!rr;};"
+    "  STD.suite.cases=function(frag){var rr=needRec(frag,'cases'),i,"
+    "      out={recorded:rr.recorded,distinct:rr.order.length,dropped:rr.dropped,max:rr.max,cases:[],unstable:[]};"
+    "    for(i=0;i<rr.order.length;i++){var k=rr.order[i],c=rr.seen[k];"
+    "      if(c.unstable)out.unstable.push({input:k,outputs:c.outs,n:c.n});"
+    "      else out.cases.push({input:k,output:c.out,n:c.n});}"
+    "    return out;};"
+    "  function suiteCases(x,verb){var cs=(x&&Array.isArray(x.cases))?x.cases:"
+    "      ((x&&x.__rec)?STD.suite.cases(x).cases:x);"
+    "    if(!Array.isArray(cs))throw new TypeError('suite.'+verb+': arg0 must be a suite "
+             "(std.suite.cases), its cases, or a recording fragment');"
+    "    return cs;}"
+    "  STD.suite.tests=function(x){var cs=suiteCases(x,'tests');"
+    "    if(!cs.length)throw new TypeError('suite.tests: no stable case to pin -- record traffic first');"
+    "    var rows=cs.map(function(c){return '['+JSON.stringify(String(c.input))+','+JSON.stringify(String(c.output))+']';});"
+    "    return 'function(f){ var C=['+rows.join(',')+'], i, got;'"
+    "      +' for (i = 0; i < C.length; i++) {'"
+    "      +' try { got = JSON.stringify(f(JSON.parse(C[i][0]))); if (got === undefined) got = \"null\"; }'"
+    "      +' catch (e) { got = \"threw\"; }'"
+    "      +' if (got !== C[i][1]) throw new Error(\"allow-suite case \" + i + \" of \" + C.length'"
+    "      +' + \": input \" + C[i][0] + \" expected \" + C[i][1] + \", got \" + got); } }';};"
+    "  STD.suite.check=function(candidate,x){var cs=suiteCases(x,'check'),res={total:cs.length,passed:0,failed:[]},i;"
+    "    if(typeof candidate!=='function')throw new TypeError('suite.check: arg0 must be callable');"
+    "    for(i=0;i<cs.length;i++){var got;"
+    "      try{var v=candidate(JSON.parse(cs[i].input));got=JSON.stringify(v===undefined?null:v);}"
+    "      catch(e){got='threw';}"
+    "      if(got===cs[i].output)res.passed++;"
+    "      else res.failed.push({i:i,input:cs[i].input,expected:cs[i].output,got:got});}"
+    "    res.ok=res.failed.length===0;return res;};"
+    "  STD.suite.coverage=function(frag){var rr=needRec(frag,'coverage'),now=C.__callCounts(frag.handle),"
+    "      fns=[],uncalled=[],called=0,i,k;"
+    "    for(i=0;i<now.length;i++){var was=(rr.calls0[i]&&rr.calls0[i].calls)||0,d=now[i].calls-was,"
+    "        row={name:now[i].name||'(anonymous)',line:now[i].line0,calls:d};"
+    "      fns.push(row);if(d>0)called++;else uncalled.push(row);}"
+    "    var g1=C.denials(frag).byOp,gates=[];"
+    "    for(k in g1)if(Object.prototype.hasOwnProperty.call(g1,k)&&(g1[k]-(rr.gates0[k]||0))>0)"
+    "      gates.push({op:k,n:g1[k]-(rr.gates0[k]||0)});"
+    "    var aot=C.aotStatus(frag),native=!!(aot&&aot.compiled>0);"
+    "    return {functions:{total:fns.length,called:called,"
+    "        percent:fns.length?Math.round(100*called/fns.length):0,uncalled:uncalled},"
+    "      gates:gates,recorded:rr.recorded,distinct:rr.order.length,"
+    "      tier:native?'native':'bytecode',exact:!native};};"
     "  C.std=Object.freeze(STD);"
     "  Object.freeze(STD.profiles);"
     "  C.pom=function(rootFn){"
@@ -6745,7 +6838,9 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      'bindAt: arg0 must be an install(callable,epoch) function');"
     "    if(!quotation||!quotation[QUOTE])throw new TypeError("
     "      'bindAt: arg1 must be a comcon.quote() description');"
-    "    contract=contract||{imports:[]};"
+    /* the binding's own copy of the contract: guard() adds `tests` to it
+       for every epoch still to come, and the caller's object stays theirs */
+    "    contract=ccopy(contract||{imports:[]});"
     "    var renv=contract.env||C.env();"
     "    function make(q){return C.realize(q,contract,renv);}"
     "    var cur=make(quotation),epoch=0,tomb=false,hist=[],revoked={};"
@@ -6759,7 +6854,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        C.__revoke(f.handle,k);}"
     "    site(cur,epoch);"
     "    var h={};"
-    "    h.contract=contractView(contract);"
+    "    Object.defineProperty(h,'contract',{enumerable:true,"
+    "      get:function(){return contractView(contract);}});"
     "    h.epoch=function(){return epoch;};"
     "    h.tombstoned=function(){return tomb;};"
     "    h.call=function(arg){if(tomb)throw new Error('bindAt: tombstoned');"
@@ -6773,6 +6869,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      if(!q2||!q2[QUOTE])throw new TypeError("
     "        'replace: arg0 must be a comcon.quote() description');"
     "      var next=make(q2);applyRevoked(next);"
+    "      if(cur.__rec)STD.suite.record(next,{max:cur.__rec.max});"
     "      hist.push({epoch:epoch,callable:cur});"
     "      while(hist.length>BINDCAP)pomFreeFrag(hist.shift().callable);"
     "      cur=next;epoch++;tomb=false;site(cur,epoch);return epoch;};"
@@ -6790,6 +6887,18 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      for(i=0;i<hist.length;i++)C.withdraw(hist[i].callable,g);"
     "      return r;};"
     "    h.withdrawn=function(){return C.withdrawn(cur);};"
+    /* G-05: record the live epoch (a replace starts a fresh recording on the
+       new one); suite/coverage read it; guard(tests?) pins the recorded
+       answers into the contract every later epoch is admitted under --
+       narrowing, so it needs no confirmation. */
+    "    h.record=function(o){STD.suite.record(cur,o);return h;};"
+    "    h.suite=function(){return STD.suite.cases(cur);};"
+    "    h.coverage=function(){return STD.suite.coverage(cur);};"
+    "    h.guard=function(t){if(t===undefined)t=STD.suite.tests(cur);"
+    "      if(typeof t==='function')t=String(t);"
+    "      if(typeof t!=='string')throw new TypeError("
+    "        'guard: arg0 must be a tests function, its source, or nothing (the recorded suite)');"
+    "      contract.tests=t;return {tests:true,length:t.length};};"
     /* V9: the three READ ops on this handle were missing.  `describe` is
        itself a row on both NodeViews and was absent here -- the same op
        classified on one surface and not on its sibling, which is the shape a
@@ -6802,6 +6911,10 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      {name:'call',op:'invoke',cls:'R'},"
     "      {name:'replace',op:'rewrite',cls:'F'},"
     "      {name:'withdraw',op:'withdraw',cls:'X'},"
+    "      {name:'record',op:'read',cls:'R'},"
+    "      {name:'suite',op:'read',cls:'R'},"
+    "      {name:'coverage',op:'read',cls:'R'},"
+    "      {name:'guard',op:'rewrite',cls:'F'},"
     "      {name:'rollback',op:'rewrite',cls:'F'},"
     "      {name:'remove',op:'remove',cls:'X'},"
     "      {name:'revive',op:'revive',cls:'L'}]};};"
@@ -6826,7 +6939,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      'bindShared: arg1 must be a comcon.quote() description');"
     "    if(typeof onRequest!=='function')throw new TypeError("
     "      'bindShared: arg3 must be onRequest(req,callable,epoch)');"
-    "    contract=contract||{imports:[]};"
+    "    contract=ccopy(contract||{imports:[]});"
     "    var renv=contract.env||C.env(),SK='__comconBind__:'+key;"
     "    var localEpoch=-1,localRev=-1,cur=null,tomb=false;"
     /* G-01: the shared record carries `revoked` (names) and `rev` (a counter
@@ -6848,26 +6961,45 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        raw=nginx.shared.get(SK);if(raw===undefined)return;}"
     "      var st=JSON.parse(raw);"
     "      if(st.epoch===localEpoch){"
-    "        if((st.rev|0)!==localRev){localRev=st.rev|0;applyRevoked(st);}"
+    "        if((st.rev|0)!==localRev){localRev=st.rev|0;syncTests(st);applyRevoked(st);}"
     "        return;}"
+    "      syncTests(st);"
     "      var old=cur;"
     "      if(st.removed){tomb=true;cur=null;}"
     "      else{tomb=false;cur=C.realize(C.quote(st.source),contract,renv);}"
     "      localEpoch=st.epoch;localRev=st.rev|0;applyRevoked(st);"
     "      if(old&&old.handle!==undefined&&old.handle>=0)"
     "        C.__freeConfined(old.handle);}"
+    /* G-05: a shared value is at most 511 bytes and a suite is not, so the
+       tests text rides beside the record in fixed chunks (`SK:t<i>`); the
+       record carries the chunk count and the length, and a worker takes the
+       text only when the two agree with what it reads back. */
+    "    var TCH=120,TMAX=256;"
+    "    function putTests(t){var n=Math.ceil(t.length/TCH),i;"
+    "      if(n>TMAX)throw new TypeError('guard: the suite is too large for the shared "
+             "record ('+t.length+' chars, at most '+(TMAX*TCH)+'); record with a smaller max');"
+    "      for(i=0;i<n;i++)nginx.shared.set(SK+':t'+i,t.slice(i*TCH,(i+1)*TCH));return n;}"
+    "    function syncTests(st){if(!st.testsChunks)return;var tt='',i;"
+    "      for(i=0;i<st.testsChunks;i++)tt+=nginx.shared.get(SK+':t'+i)||'';"
+    "      if(tt.length===st.testsLen)contract.tests=tt;}"
     "    function bump(obj){"
     "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
     "      obj.epoch=(st.epoch|0)+1;obj.rev=st.rev|0;"
     "      if(st.revoked)obj.revoked=st.revoked;"
+    "      if(st.testsChunks){obj.testsChunks=st.testsChunks;obj.testsLen=st.testsLen;}"
     "      nginx.shared.set(SK,JSON.stringify(obj));reconcile();return obj.epoch;}"
     "    var h={};"
     "    h.epoch=function(){reconcile();return localEpoch;};"
     "    h.handler=function(req){reconcile();"
     "      onRequest(req,tomb?null:cur,localEpoch);};"
+    /* Realize BEFORE publishing, as bindAt does: a candidate the contract
+       refuses (its tests, its names) must not reach the shared record, where
+       every worker's next reconcile would trip over it. */
     "    h.replace=function(q2){"
     "      if(!q2||!q2[QUOTE])throw new TypeError("
     "        'replace: arg0 must be a comcon.quote() description');"
+    "      reconcile();var probe=C.realize(q2,contract,renv);"
+    "      if(probe&&probe.handle!==undefined&&probe.handle>=0)C.__freeConfined(probe.handle);"
     "      return bump({source:q2.source});};"
     "    h.remove=function(){"
     "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
@@ -6895,6 +7027,23 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    h.withdrawn=function(){reconcile();"
     "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
     "      return (st.revoked||[]).slice().sort();};"
+    /* G-05: recording is per worker (each has its own callable); guard()
+       rides the shared record, so every worker admits its next epoch under
+       the pinned suite. */
+    "    Object.defineProperty(h,'contract',{enumerable:true,"
+    "      get:function(){return contractView(contract);}});"
+    "    function live(verb){reconcile();if(!cur)throw new Error('bindShared: '+verb+': tombstoned');return cur;}"
+    "    h.record=function(o){STD.suite.record(live('record'),o);return h;};"
+    "    h.suite=function(){return STD.suite.cases(live('suite'));};"
+    "    h.coverage=function(){return STD.suite.coverage(live('coverage'));};"
+    "    h.guard=function(t){var c=live('guard');if(t===undefined)t=STD.suite.tests(c);"
+    "      if(typeof t==='function')t=String(t);"
+    "      if(typeof t!=='string')throw new TypeError("
+    "        'guard: arg0 must be a tests function, its source, or nothing (the recorded suite)');"
+    "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
+    "      st.testsChunks=putTests(t);st.testsLen=t.length;st.rev=(st.rev|0)+1;"
+    "      nginx.shared.set(SK,JSON.stringify(st));"
+    "      contract.tests=t;localRev=st.rev;return {tests:true,length:t.length};};"
     /* V9: the same two READ ops were missing here as on bindAt.  A sibling
        surface with its own hand-written copy of an op list is exactly where the
        drift lands twice, which is why the checker audits all four rather than
@@ -6906,6 +7055,10 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      {name:'handler',op:'invoke',cls:'R'},"
     "      {name:'replace',op:'rewrite',cls:'F'},"
     "      {name:'withdraw',op:'withdraw',cls:'X'},"
+    "      {name:'record',op:'read',cls:'R'},"
+    "      {name:'suite',op:'read',cls:'R'},"
+    "      {name:'coverage',op:'read',cls:'R'},"
+    "      {name:'guard',op:'rewrite',cls:'F'},"
     "      {name:'remove',op:'remove',cls:'X'},"
     "      {name:'revive',op:'revive',cls:'L'}]};};"
     "    return Object.freeze(h);};"
@@ -7831,6 +7984,9 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__denialStatus",
                           JS_NewCFunction(ctx, ngx_js_comcon_denial_status,
                                           "__denialStatus", 1));
+        JS_SetPropertyStr(ctx, comcon_obj, "__callCounts",
+                          JS_NewCFunction(ctx, ngx_js_comcon_call_counts,
+                                          "__callCounts", 1));
         JS_SetPropertyStr(ctx, comcon_obj, "__revoke",
                           JS_NewCFunction(ctx, ngx_js_comcon_revoke,
                                           "__revoke", 2));

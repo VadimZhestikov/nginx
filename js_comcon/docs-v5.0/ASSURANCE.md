@@ -1545,6 +1545,48 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T6, T9, T11
 - **V:** V13
 
+#### G7.26 — a candidate is admitted against what the current binding actually answered; coverage names what the recording never reached
+- **CLAIM:** After `h.guard()` on a recorded binding, a `replace()`/`rebind` whose text
+  answers any recorded stable input differently is refused at admission with
+  `E_ADMIT_TEST` naming the case, and the epoch does not move; one that answers every case
+  the same is admitted; the same holds through the shared record for `bindShared`, on
+  every worker; an input answered two ways is never pinned; the recorder keeps at most
+  `max` distinct inputs and counts the rest; `coverage` reports exactly the fragment's
+  functions entered during the window on the bytecode tier and says `exact: false` on the
+  native tier.
+- **ARGUMENT:** The recorder is the include result's own callable, so it sees exactly the
+  argument and result the boundary marshals, as text — no second serialization to disagree
+  with the first. The suite is emitted as the one shape the test phase accepts (a single
+  function expression) and runs where every test phase runs, inside the compartment with
+  the host unreachable; a divergence is a throw, and a throw at stage 3 is a refusal before
+  publish, so nothing is installed (`t/comcon_admit_tests.t` already pins that stage).
+  `guard` writes the binding's own contract copy, which `make()` reads on every realize;
+  `bindShared.replace` realizes before it publishes, so a refused candidate cannot reach the
+  record. The coverage counter is one field, incremented at the interpreter's single call
+  entry in every build and read through the same bytecode walk the POM uses, so a function
+  the POM lists is a function the counter covers; the native-tier caveat is stated because
+  it is true, not hidden because it is inconvenient.
+- **EV:** `t/comcon_std_suite.t` (27): four calls / three distinct inputs with counts and a
+  throw as `threw`; an unstable input kept apart; `tests()` a single function expression;
+  the faithful candidate passes the rehearsal and is admitted, the divergent one is named
+  case by case and refused with the case in the message; coverage 2 of 3 with `spare`
+  uncalled on the bytecode tier and `exact: false` on the native tier; `max` respected;
+  not-recording and empty-suite errors; through `ops.record/suite/coverage/guard` a
+  divergent rebind refused at epoch 0 and a faithful one admitted at epoch 1; the diff
+  reads the pin's removal as widening; the handle describes the four ops; the same through
+  `bindShared` with the chunked record.
+- **EV:** `t/tools/controls/suite-guard-inert.patch` — guard reports success and pins
+  nothing: the two divergent rebinds are admitted (the assertions that expect
+  `E_ADMIT_TEST` fail), everything else still passes. Verified by the script.
+- **GAP:** Function granularity, not code paths: an untaken branch inside an entered
+  function is not reported. The native tier's counts are not trusted (`exact: false`), not
+  corrected. A suite pins answers, not effects: a candidate that answers the same and
+  reaches for a different capability is caught by the gates, not by the suite. Recording
+  is per worker; a shared binding's suite is the recording worker's.
+  **home:** SHOWCASE-gaps G-24 (the typed front-end, for path coverage) · OPERATOR_API §8m.
+- **THREAT:** T2, T6
+- **V:** V13
+
 #### G7.25 — a grant can be withdrawn while the fragment runs, and the withdrawal follows every delegation; no posture lifts it
 - **CLAIM:** After `comcon.withdraw(f, name)` every use of that grant by `f` is denied as
   `cap.revoked` — from the next read, in every posture (audit and learn included), for the
@@ -2523,6 +2565,8 @@ signature is never quietly credited with work it did not see.
 | **THREE LIBRARY-KIND GAPS CLOSED — G7.24 (v5.127).** `std.evaluate` (a module's whole appetite in one static read: every free name from the admission collector, classified, with call sites and lines; a source accepted only as one function expression, nothing run), `std.policy.diff` (narrowing / widening / unchanged / incomparable with every change named, over the grant translation `include()` itself uses), `comcon.denials` / `ops.wouldDeny` (the gates attributed to the binding they fired in — the one new mechanism, a pointer the invoke sets and the compartment's single counting site honours, with a maintained control), `std.docs` / `ops.docs` (the manual as a projection of the contract a binding carries). `std.describe()`'s `absent` list, which had named six shipped words and `std.ops` as missing, corrected. | **Adds evidence; narrows nothing the signature attests.** The mechanism touches the denial path the case attests through G6 (the counters are exact and every gate is counted) by adding a second, per-fragment increment at the same site — the fleet counter is unchanged and its tests still pass; the control shows the new rows go to zero without it. The three library programs confer no authority: they read the descriptors the kernel enforces, which is what lets a report be trusted as a projection rather than a second table. A stale honesty surface (`std.describe().absent`) was found and corrected on the way, the drift check [8] guards one surface over. |
 
 | **LIVE REVOCATION — G7.25 (v5.129).** `comcon.withdraw(f, name?)`: a grant the host already made is switched off while the fragment runs, and the switch follows every copy a re-grant made of it (one refcounted grant record per wrapper, a copy's record under its parent's, the gate walking the chain after `cap.owner`). `cap.revoked` joins `cap.owner` as an unconditional code, frozen in the golden corpus with a `revokeBefore` row. A binding's revocation sticks across `replace()` and `rollback()`; `bindShared` fans it out on the shared record; `ops.withdraw` is class X with a naming confirmation; the manual marks the grant REVOKED. Control `revoke-not-checked.patch`. | **Adds evidence; narrows nothing the signature attests.** The gate order the case attests through G6.17 (`cap.owner` first, then the mask and the words) gains one question after the first, at the same six sites, answered from a record the wrapper already owned by reference — no new table the gates could disagree with. The unconditional rule gains a second member at its one site. The library verbs confer no authority: `withdraw` only ever narrows (to zero), and nothing un-withdraws. |
+
+| **THE ALLOW-SUITE — G7.26 (v5.130).** `comcon.std.suite`: a fragment's traffic recorded as (input, output) cases in the include result's own callable; the stable cases emitted as a contract `tests` quotation; `guard` pinning it to a binding so a rebind that answers differently is refused at admission; `check` for a host-side rehearsal; `coverage` from a per-function entry counter the engine keeps in every build, with the native tier's caveat stated. `bindShared.replace` realizes before publishing. Control `suite-guard-inert.patch`. | **Adds evidence; narrows nothing the signature attests.** The suite runs through the test phase the case already attests (G3), as one more contract `tests` value; the recorder adds a property test to the callable and no authority; the counter is one increment at the call entry and one reader beside the POM walk, neither reachable from a fragment. The shared-replace ordering is a hardening of a pre-existing hazard (a refused candidate published to every worker), found by the suite's own test. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

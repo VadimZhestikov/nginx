@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **WHERE WE ARE (v5.129 — 2026-09-17), in five lines.** Every increment is done and every
+> **WHERE WE ARE (v5.130 — 2026-09-17), in five lines.** Every increment is done and every
 > track is closed: confinement (two signatures on the assurance case, ASSURANCE §15), the
 > compiler (M5.1a and M5.1c shipped, M5.1b parked; the rule says NO-GO at 2.3× on the last
 > class, PERFORMANCE §2f.3), the library (the vocabulary complete; `opaque.*` and the postures
@@ -15,6 +15,14 @@
 > narrowing words, `opaque.*` and the postures, M5.1b. The rest of this block is the log,
 > newest first, each entry also a FOUNDATION delta.
 >
+> - **G-05 CLOSED — THE ALLOW-SUITE: A CANDIDATE ADMITTED AGAINST WHAT THE BINDING ANSWERED
+>   (2026-09-17, v5.130).** `comcon.std.suite` records a binding's (input, output) cases in
+>   the include result's own callable, emits them as a contract `tests` quotation, `guard`
+>   pins it so a divergent rebind is refused (`E_ADMIT_TEST`), `check` rehearses on the host,
+>   `coverage` names the functions never entered from a per-function entry counter the engine
+>   now keeps in every build (the native tier says `exact: false`). Found on the way: the
+>   shared record's 511-byte value cap (the suite rides in chunks) and a shared replace that
+>   published before realizing (it realizes first now). One test, one control, one demo (O4).
 > - **G-01 CLOSED — A GRANT WITHDRAWN WHILE THE FRAGMENT RUNS, FOLLOWING EVERY DELEGATION
 >   (2026-09-17, v5.129).** `comcon.withdraw(f, name?)`, `h.withdraw`, `ops.withdraw` with a
 >   naming confirmation: one refcounted grant record per wrapper, a copy's under its parent's,

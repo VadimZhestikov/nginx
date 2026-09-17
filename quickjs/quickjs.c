@@ -740,6 +740,13 @@ typedef struct JSFunctionBytecode {
     uint8_t          *jit_vt_hints;   /* val_tag hints array (malloc'd) or NULL */
     void             *jit_warm_handle; /* warm-recompile .so handle (kept loaded) */
 #endif
+    /* COMCON G-05: how many times this function was entered, in EVERY build
+     * (the JIT's jit_call_count above stops at the compile threshold and is
+     * CONFIG_JIT only).  Read by js_comcon_call_counts() for the allow-suite's
+     * function coverage.  AFTER the JIT block on purpose: generated code reads
+     * jit_func/jit_bc_hash by raw byte offset, and this must not shift them;
+     * before `debug` so the !has_debug allocation still covers it. */
+    uint32_t          comcon_call_count;
     struct {
         /* debug info, move to separate structure to save memory? */
         JSAtom filename;
@@ -20407,6 +20414,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
     arg_buf = argv;
     sf->arg_count = argc;
     sf->cur_func = (JSValue)func_obj;
+    b->comcon_call_count++;            /* COMCON G-05: function coverage */
     var_refs = p->u.func.var_refs;
 
     local_buf = alloca(alloca_size);
@@ -25194,6 +25202,52 @@ JSValue js_comcon_pom_inspect(JSContext *ctx, JSValueConst func)
         return JS_UNDEFINED;
 
     return comcon_pom_node(ctx, p->u.func.function_bytecode, 1);
+}
+
+/* COMCON G-05 (v5.130): the per-function entry counts of a fragment, flat and
+ * in pre-order (the root first, then nested functions as the POM walks them),
+ * each row the POM's scalar fields plus `calls`.  The allow-suite's coverage
+ * is the delta of these across a recording window.  Counted at the
+ * interpreter's entry, so on the compiled tier a lowered function's direct
+ * calls into other lowered functions are not seen -- the JS layer says so
+ * (`exact`) rather than report a number it cannot stand behind. */
+static void comcon_calls_walk(JSContext *ctx, JSValue arr, uint32_t *n,
+                              JSFunctionBytecode *b, int is_module)
+{
+    JSValue node;
+    int     i;
+
+    node = JS_NewObject(ctx);
+    if (JS_IsException(node))
+        return;
+    comcon_pom_fill(ctx, node, b, is_module);
+    JS_SetPropertyStr(ctx, node, "calls",
+                      JS_NewInt64(ctx, (int64_t) b->comcon_call_count));
+    JS_SetPropertyUint32(ctx, arr, (*n)++, node);
+
+    for (i = 0; i < b->cpool_count; i++) {
+        if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE)
+            comcon_calls_walk(ctx, arr, n, JS_VALUE_GET_PTR(b->cpool[i]), 0);
+    }
+}
+
+JSValue js_comcon_call_counts(JSContext *ctx, JSValueConst func)
+{
+    JSObject *p;
+    JSValue   arr;
+    uint32_t  n = 0;
+
+    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
+        return JS_UNDEFINED;
+    p = JS_VALUE_GET_OBJ(func);
+    if (!js_class_has_bytecode(p->class_id))
+        return JS_UNDEFINED;
+
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr))
+        return arr;
+    comcon_calls_walk(ctx, arr, &n, p->u.func.function_bytecode, 1);
+    return arr;
 }
 
 /* D1 (lazy NodeView backing): reflect the SINGLE node at `path` (indices among

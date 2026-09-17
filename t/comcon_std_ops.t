@@ -234,8 +234,8 @@ like($inv, qr/"bare":\["describe"\]/,
      . '"no backdoor" property, visible by Object.keys');
 like($inv, qr/"modeOnly":\["describe","enforce","learnMode","shadow"\]/,
      'one resource yields exactly the verbs that decompose over it');
-like($inv, qr/"verbs":\["bindings","denials","describe","diff","docs","enforce","learn","learnMode","rebind","register","remove","revive","rewrite","rollback","shadow","snapshot","trustReport","withdraw","withdrawn","wouldDeny"\]/,
-     'a fully-provisioned session exposes all twenty shipped verbs');
+like($inv, qr/"verbs":\["bindings","coverage","denials","describe","diff","docs","enforce","guard","learn","learnMode","rebind","record","register","remove","revive","rewrite","rollback","shadow","snapshot","suite","trustReport","withdraw","withdrawn","wouldDeny"\]/,
+     'a fully-provisioned session exposes all twenty-four shipped verbs');
 
 # --- the third closed enumeration ---------------------------------------
 like($inv, qr/"resourceCount":9/,
@@ -250,7 +250,7 @@ like($inv, qr/"noHost":\["provenance","signing"\]/,
      'the two with NO host spelling are marked host:null, so the gap is '
      . 'checkable instead of invisible');
 like($inv, qr/"heldNone":true/, 'a bare session holds none of them');
-like($inv, qr/"withheldCount":1[0-9]/,
+like($inv, qr/"withheldCount":23/,
      'verbs it cannot perform are reported as withheld, with what they need');
 like($inv, qr/"absent":\["revoke","cosign \/ office-hours","propose"\]/,
      'and the comconctl verbs that cannot be built yet are named with reasons');
