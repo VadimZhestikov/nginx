@@ -5,10 +5,27 @@
 > control flow (an inner loop), not merely wired as a location handler. Design:
 > `OPERATOR_API.md` (`include = parse ∘ admit ∘ bind`, staging §6), `FOUNDATION.md` §2a/§4,
 > the shell fundament (nginx.conf gains only `js_source`).
+> **Since v5.126 every scenario opens with a `REAL CODE` block:** what the shipped tree does today for that scenario, the tests that pin it, and the gap id (`SHOWCASE-gaps.md`) where the sample and the tree differ. The samples below it are the original hypothetical syntax, kept as written.
 
 ---
 
 ## 51. A 3rd-party fragment in the middle of an inner loop
+
+> **REAL CODE (v5.125): SHIPPED** (the callable form). Admit once at config load, call per
+> item, each call metered and scope-isolated:
+> ```js
+> var normalize = comcon.include(normalizeSource, {
+>     imports: [], grants: { lookup: comcon.mediate(srv, comcon.routes("/norm/*")) },
+>     identity: pin, meter: comcon.meter({ timeoutMs: 2 }), onViolation: "audit" });
+> loc.handler = function (req) {
+>     var items = JSON.parse(req.body || "[]"), out = [];
+>     for (var i = 0; i < items.length; i++) {
+>         "use comcon: normalize-site";                 // inert; queryable by anchors('normalize-site')
+>         out.push(normalize(items[i]));                // sees `lookup` and its argument, nothing else
+>     }
+>     req.respond(200, { "content-type": "application/json" }, JSON.stringify(out)); };
+> ```
+> Tests: `t/comcon_include.t` (scope isolation, the meter), `t/comcon_pom_anchors.t`.
 
 **Problem:** the host program processes a batch and wants a **3rd-party fragment to run on each
 item, inside its own inner loop** — under a policy the host defines, without letting the
@@ -79,6 +96,15 @@ nginx.http.servers[0].locations["/batch"].handler = function (req) {
 
 ## 51b. The same in a *stage-0* loop (compile-time config-gen)
 
+> **REAL CODE (v5.125): SHIPPED.** A stage-0 loop that includes N fragments is ordinary host
+> JS at config load:
+> ```js
+> routes.forEach(function (r) {
+>     var frag = comcon.include(r.source, { imports: [], grants: envFor(r), identity: r.pin,
+>                                            meter: comcon.meter({ timeoutMs: r.budget }) });
+>     locs.find(function (l) { return l.path === r.path; }).handler = function (req) { … frag(…) … }; });
+> ```
+
 If the loop is in the **root program itself** — generating N confined fragments at config load,
 one per route — the same `admit` runs inside a stage-0 loop:
 
@@ -98,6 +124,12 @@ scope — and the untouched operator `nginx.conf` gained only `js_source`.
 ---
 
 ## 51c. Textual (hygienic-macro) inclusion — the fragment *is* the loop body
+
+> **REAL CODE (v5.125): NOT BUILT** (gap G-25: `includeAt` with `expose: {in, out}` was folded
+> into increment D and waits on structured POM splices; OPERATOR_API §3a). The text-level
+> operation that exists is `comcon.harden(cst, query, wrapper)`, which rewrites matched
+> sites of a *quotation* and installs the result as an epoch — a hygienic rewrite the host
+> reviews, not a splice into the host's own loop body.
 
 51 called a policy-bound function. But the fragment's **text** can instead be **spliced
 directly into the loop body** at an anchor — a *textual include*. The host source carries only

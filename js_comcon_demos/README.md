@@ -1,6 +1,6 @@
 # js_comcon_demos — COMCON, shown to the people who need it
 
-Twelve self-contained, runnable demos of **COMCON**, the capability-secure
+Sixteen self-contained, runnable demos of **COMCON**, the capability-secure
 confinement layer that lets nginx run code it does not trust. Each demo has its
 own `nginx.conf`, `host.js` (the operator's program), usually a tenant file,
 a `test.sh` that starts nginx, asserts and stops, and a `README.md` that says
@@ -34,7 +34,7 @@ for t in $(find . -name test.sh | sort); do echo "=== $t ==="; bash "$t" || brea
 
 The binary is `objs/nginx` at the repo root (`auto/configure --add-module=src/js …`;
 `t/tools/gate.sh --configure` builds it and the compiled `objs_jit`). Override
-with `NGINX=/path/to/nginx`. Ports are 8200–8211 for the servers and 8250–8259
+with `NGINX=/path/to/nginx`. Ports are 8200–8215 for the servers and 8250–8265
 for the socket capabilities the demos mint; nothing else in the tree uses them.
 
 ## The audiences, and what each needs to see
@@ -45,6 +45,11 @@ for the socket capabilities the demos mint; nothing else in the tree uses them.
 | **S** | Security / compliance teams | *What exactly can it do, who can make it do it, and how do I read back what it tried?* | S1–S4 |
 | **O** | Operators / SREs | *How do I let tenants change config, and what do I look at when I am paged?* | O1–O2 |
 | **D** | Developers / architects | *What will refuse my fragment, and what changes when it is compiled?* | D1–D2 |
+| **L** | Live operations / release engineering | *Can I fix the hottest function at noon, on every worker, and undo it, without a reload?* | L1–L3 |
+| **A** | Auditors / procurement | *Who can touch what, where is that library used, and can you stop this call, in a way I can re-run?* | A1 |
+
+The L and A groups came out of the SHOWCASE pass (`../js_comcon/docs-v5.0/SHOWCASE-gaps.md`):
+scenarios that had shipped code, no demo, and an audience the first twelve did not address.
 
 ## Demo index
 
@@ -80,6 +85,20 @@ for the socket capabilities the demos mint; nothing else in the tree uses them.
 | [D1 Admission as CI](D_Developers/D1_Admission_as_CI/) | 8210 | `admit()` verdicts with stable codes, nothing run; the test phase inside the sandbox; request fields as a contract |
 | [D2 Compiled tier, same answers](D_Developers/D2_Compiled_tier_same_answers/) | 8211 | The same fragment on `objs` and `objs_jit`: identical answers, the deadline fires on both |
 
+### L — Live operations (ports 8212–8214)
+
+| Demo | Port | What you see |
+|---|---|---|
+| [L1 Patch at noon: epochs and rollback](L_Live_Ops/L1_Patch_at_noon_epochs_and_rollback/) | 8212 | A live binding replaced as epoch 1, rolled back to 0, tombstoned (410), revived; 300 replacements leave the heap flat; the tier reported, never assumed |
+| [L2 Fleet fan-out, four workers](L_Live_Ops/L2_Fleet_fanout_four_workers/) | 8213 | One replace on one worker; 24 of 24 requests on every worker serve the new epoch, none torn |
+| [L3 Pinned by hash](L_Live_Ops/L3_Pinned_by_hash/) | 8214 | The fragment pin and the dependency SHA-256 computed with `perl`/`sha256sum` from the reviewed bytes; one moved byte is refused at admission |
+
+### A — Auditors (port 8215)
+
+| Demo | Port | What you see |
+|---|---|---|
+| [A1 The audit is a query](A_Auditors/A1_The_audit_is_a_query/) | 8215 | `trustReport()` over the session's own resources (a bare session has only `describe()`); "where is `fetch` used" from bytecode with lines; a locally-bound call rewritten by a reviewable transformation, installed as an epoch, rolled back |
+
 ## Five for a talk
 
 1. **P3** — a runaway loop, a burst, a leak: three refusals, one healthy neighbour, no dead worker.
@@ -87,6 +106,7 @@ for the socket capabilities the demos mint; nothing else in the tree uses them.
 3. **S1** — one probe, six membranes: the whole vocabulary on one screen.
 4. **O1** — a tenant proposes config; `apply` without `confirm` refuses; the ill-typed proposal leaves nothing.
 5. **D2** — two binaries, one answer.
+6. **L2** — one replace, four workers, none torn (a sixth, for a room of operators).
 
 ## Reading further
 

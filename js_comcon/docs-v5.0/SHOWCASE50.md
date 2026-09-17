@@ -4,10 +4,15 @@
 > provenance ruling: **substrate follows provenance, not language** — foreign-born code
 > enters as WASM through the `wasm` facet; our-born JS never leaves the T1/T2 path.
 > Design: `ROADMAP.md` §M-LIB (v5.2), memory branch §17. Syntax hypothetical.
+> **Since v5.126 every scenario opens with a `REAL CODE` block:** what the shipped tree does today for that scenario, the tests that pin it, and the gap id (`SHOWCASE-gaps.md`) where the sample and the tree differ. The samples below it are the original hypothetical syntax, kept as written.
 
 ---
 
 ## 50. The border crossing: a Rust module moves in
+
+> **REAL CODE (v5.125): NOT BUILT** (gap G-08: the `wasm` facet and the wasm2c lane are v5.2
+> design; the vendored engine has no WASM runtime). The admission shape it would reuse is the
+> shipped one: `comcon.include(src, { imports, grants, meter, identity })`.
 
 **Problem:** a fraud-detection partner ships their scoring model as a compiled WASM
 module, built from Rust. You want it *in the request path* — you will never see the

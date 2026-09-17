@@ -635,6 +635,23 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.126 (in place — the showcases annotated with real code; the gaps collected; four demos
+for two new audiences):** (1) Every one of the 53 scenario headings in `SHOWCASE*.md` now
+opens with a `REAL CODE (v5.125)` block: what the shipped tree does for that scenario, in its
+real spelling, the tests that pin it, and a gap id where the sample and the tree differ. The
+samples stay as written (illustrative, hypothetical). (2) `SHOWCASE-gaps.md` is the register:
+a scorecard (17 scenarios run as written, 4 in a different spelling, 16 in part, 16 not
+built) and 26 gaps, each classified — decision, substrate, library, design, honest limit —
+with the earliest home ROADMAP §5 names. Four of the sixteen not-built scenarios are one
+substrate decision (`opaque.*`/COW), two are one design increment (multi-language), one is a
+posture nobody has decided; three gaps are honest limits the samples contradict (no re-AOT of
+a live epoch in a worker; a deadline abort is uncatchable by the fragment; learn mode installs
+at the first include). (3) Four scenarios had shipped code, no demo, and an audience the first
+twelve demos did not address: `js_comcon_demos/L_Live_Ops/` (L1 epochs and rollback, L2
+fleet fan-out on four workers, L3 pinned by hash with the pins computed outside the tree) and
+`js_comcon_demos/A_Auditors/` (A1 the trust report, the call-site query, the reviewable
+rewrite). Sixteen demos, 168 checks, all green.
+
 **v5.125 (in place — M5.1c built and measured: class B's method calls typed by identity, and
 the rule now says NO-GO at 2.3×, so the compiler track closes at M5.1c; F20 and F21 found by
 a differential fuzz and closed; the flake hunt clean):** (1) M5.1c, the cut §2f.2 pointed at,

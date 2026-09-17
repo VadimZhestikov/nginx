@@ -2,10 +2,16 @@
 
 > **Status: illustrative, not normative.** Continuation of `SHOWCASE.md` (1–7). All
 > syntax is **hypothetical**; the design lives in `FOUNDATION.md` / `SEMANTICS.md`.
+> **Since v5.126 every scenario opens with a `REAL CODE` block:** what the shipped tree does today for that scenario, the tests that pin it, and the gap id (`SHOWCASE-gaps.md`) where the sample and the tree differ. The samples below it are the original hypothetical syntax, kept as written.
 
 ---
 
 ## 8. Resellers: your tenant becomes a host — cages nest, and now authoring does too
+
+> **REAL CODE (v5.125): SHIPPED** — the banner below records the measurement and the build.
+> Runnable: `js_comcon_demos/P_Platform_Teams/P4_Reseller_authors_subfragments` (a reseller
+> admits two sub-fragments, narrows a copied socket wrapper, is refused on widening and on
+> the third slot).
 
 > **MEASURED 2026-09-14 (v5.98), then BUILT 2026-09-15 (v5.106–v5.107).** The first
 > measurement said the heading was half true: ATTENUATION nested without limit (a host
@@ -70,6 +76,18 @@ day ACME wants to *propose* more than it holds, see scenario 39.)
 
 ## 9. Partners that compute together without seeing each other
 
+> **REAL CODE (v5.125): NOT BUILT** (gap G-06: there are no `expose`/`accept` communication
+> edges between fragments). The nearest shipped shape is host-brokered: both parties are
+> fragments of one host, which passes JSON between them and grants each a mediated
+> capability the other never holds; a reseller can also author a partner as a sub-fragment
+> under copies of its own wrappers, narrowed (`t/comcon_author_regrant.t`):
+> ```js
+> var risk  = comcon.include(paymentsSource, { imports: [] });
+> var shop  = comcon.include(retailerSource, { imports: [] });
+> var total = shop({ phase: "total", basket: basket }).order_total;   // the basket stays here
+> var ok    = risk({ order_total: total });                           // the provider sees a number
+> ```
+
 **Problem:** two tenants — a retailer and a payments provider — must cooperate per
 request, but each considers its logic and data proprietary.
 
@@ -98,6 +116,20 @@ form of a data-processing agreement. "Mutual protection" is the product, not a s
 
 ## 10. The noisy neighbor, silenced by arithmetic
 
+> **REAL CODE (v5.125): SHIPPED**, with the consequence fixed by the engine rather than the
+> policy: a deadline abort is *uncatchable inside the fragment* (a tenant cannot catch its own
+> deadline — finding F16), an allowance overrun is an ordinary exception, and a retained-memory
+> overrun refuses the next call:
+> ```js
+> comcon.include(src, { imports: [], meter: comcon.meter({ timeoutMs: 5, memoryBytes: 16777216,
+>                                                          retainedBytes: 8388608 }) });
+> comcon.memStatus(f)        // {retained, invocations, refused, cap}
+> ```
+> Tests: `t/comcon_fragment_deadline.t`, `t/comcon_fragment_memory.t`,
+> `t/comcon_retained_memory.t`, `t/comcon_compiled_resource_gates.t`. Demo:
+> `js_comcon_demos/P_Platform_Teams/P3`. Not built: `cpu` and `compile` units, the `gas`
+> instruction count (gap G-07).
+
 **Problem:** one tenant's accidental infinite loop or memory balloon takes down every
 tenant on the worker.
 
@@ -124,6 +156,12 @@ policy-defined consequence.
 
 ## 11. One parser to rule every format
 
+> **REAL CODE (v5.125): NOT BUILT** (gap G-02). One derived parser exists —
+> `comcon.reviewDeclarative(text)` accepts exactly the declarative sub-language of JS
+> (fluent call chains, literal arguments) and returns a diffable descriptor table — and it is
+> the checker under `comcon.std.config.review` (`t/comcon_declarative.t`,
+> `t/comcon_config_instance.t`). JSON is an intrinsic a fragment may name in `imports`.
+
 **Problem:** every config/format in the stack — JSON, YAML-ish files, header values,
 custom DSLs — has its own hand-written parser and its own CVE history.
 
@@ -148,6 +186,22 @@ concentrates on one engine instead of scattering across N validators.
 
 ## 12. Capabilities with a fuse: one-shot, leased, expiring
 
+> **REAL CODE (v5.125): SHIPPED, with one difference in shape.** The fuse words compose and
+> only narrow:
+> ```js
+> comcon.mediate(reset,   comcon.protocol("request"))                    // one-shot: after the
+>                                                                          //   last step the
+>                                                                          //   conversation is over
+> comcon.mediate(approve, comcon.ttl(600))                               // expires; MIN composes
+> comcon.mediate(comcon.mediate(console, comcon.allow(["address","port"])), comcon.ttl(14400))
+> comcon.mediate(cap, comcon.uses("approve:acme", 1, 600))               // a fleet-wide budget
+> ```
+> `uses(n)` is a *fleet-wide, keyed, fixed-window* budget rather than a per-wrapper counter;
+> the per-wrapper one-shot is `protocol` with a single bare step. `delegable("no")` is
+> structural: an author descriptor is not re-grantable and every re-grant is a copy.
+> Tests: `t/comcon_cap_ttl.t`, `t/comcon_budget_uses.t`, `t/comcon_cap_protocol.t`. Demos:
+> `js_comcon_demos/S_Security_Teams/S1`, `S2`.
+
 **Problem:** a password-reset action, a one-time payment approval, a contractor who
 needs access "just for the afternoon."
 
@@ -171,6 +225,13 @@ still has access?" to "nothing outlives its purpose — prove otherwise."
 ---
 
 ## 13. Open-heart surgery: debugging production without bleeding secrets
+
+> **REAL CODE (v5.125): NOT BUILT** (gap G-04: no `attach`, no REPL over a worker, no
+> forensics profile). What an operator can read today is data, per worker, through host
+> handlers: `nginx.tenantDenials()`, `nginx.tenantLearning()`, `comcon.memStatus(f)`,
+> `comcon.aotStatus(f)`, `ops.trustReport()`, and a fragment's program tree through
+> `comcon.pom(f)`, whose reads return quotations and whose `binding` is redacted by default
+> (`t/comcon_pom_nodeview.t`). Demo: `js_comcon_demos/O_Operators/O2`.
 
 **Problem:** an incident on a live worker. You need to look inside *now* — but a debug
 console on production is traditionally a master key.
@@ -198,6 +259,19 @@ the engine holding the scalpel.
 ---
 
 ## 14. Config changes that rehearse before they perform
+
+> **REAL CODE (v5.125): SHIPPED for the rollout, PARTIAL for the diff.** Shadow is a
+> per-binding word or a fleet switch that reaches every worker; the denial counters survive
+> the switch, which is what makes the evidence usable:
+> ```js
+> var ops = comcon.std.ops({ log: nginx.tenantDenials, mode: comcon.mode });
+> ops.shadow();   ops.denials();   ops.enforce();          // audit → read → enforce
+> var candidate = comcon.include(src, { …, onViolation: "audit" });   // one binding shadowed
+> ```
+> A *config* proposal has a real diff (`comcon.std.config.diff(plan, node)`); a *policy* diff
+> ("POST removed — narrowing, auto-safe") and a would-deny event list are not built (gap
+> G-05). Tests: `t/comcon_std_ops.t`, `t/comcon_mode_fanout.t`, `t/comcon_posture.t`. Demos:
+> `js_comcon_demos/P_Platform_Teams/P2`, `O_Operators/O2`.
 
 **Problem:** a policy or config tightening looks right, but production traffic is the
 only honest reviewer.
@@ -229,6 +303,10 @@ canary — because policies *are* code.
 
 ## 15. The iRule that moved in without renovating
 
+> **REAL CODE (v5.125): NOT BUILT** (gap G-08: a fragment's language is JavaScript; Tcl and
+> WASM are M9 / stage-2 design). The cage an iRule would get is the one every fragment gets
+> today: `comcon.include(src, { grants, meter })`.
+
 **Problem:** years of BIG-IP iRules (Tcl) embody real business logic; rewriting them
 all in JavaScript is the reason migrations stall.
 
@@ -255,6 +333,11 @@ new security model — it gets enrolled in it, file by file.
 ---
 
 ## 16. One shared table, a thousand private views
+
+> **REAL CODE (v5.125): NOT BUILT** (gap G-03: COW views need the opaque/COW engine substrate,
+> unscheduled). The shared truth a fragment can read is a route facet over a server node
+> (`comcon.mediate(srv, comcon.routes("/acme/*"))` → `paths()`, `allowed(p)`), and the
+> fleet-wide store is `nginx.shared` on the host side; neither has a private overlay.
 
 **Problem:** tenants and plugins all consult the shared routing table — and each wants
 a few private tweaks. Copying the table per tenant explodes memory; sharing it mutable
@@ -283,6 +366,17 @@ the memory bill is proportional to actual disagreement.
 ---
 
 ## 17. Code that travels with its cage
+
+> **REAL CODE (v5.125): PARTIAL.** The traveling artifact's *properties* exist: a quotation
+> is cap-free by construction (a function or a capability in its splices is refused at
+> `quote()` time), a fragment is pinned by `identity`, a dependency by SHA-256, and the only
+> thing that crosses between workers in a live rebind is source text
+> (`t/comcon_pom_splice.t`, `t/comcon_include_admit.t`, `t/comcon_pom_fanout.t`):
+> ```js
+> var q = comcon.quote(validatorSource, { LIMITS: { max: 50 } });   // inert, frozen, cap-free
+> var f = comcon.realize(q, { imports: [], identity: pin }, localEnv);   // authority enters HERE
+> ```
+> Not built: the signed manifest, `export`, and a ServiceWorker target (gap G-09).
 
 **Problem:** the same validation/personalization logic is needed at nginx *and* in the
 browser (or an edge node) — today that's two implementations drifting apart.

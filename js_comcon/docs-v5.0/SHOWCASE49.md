@@ -4,10 +4,19 @@
 > profile** (ROADMAP §M3): what a policy that reaches the compiled tier actually looks
 > like, and what happens when one line of it can't be typed. Syntax hypothetical;
 > the profile rules live in FOUNDATION Principle 11 and ROADMAP §M3/§10.
+> **Since v5.126 every scenario opens with a `REAL CODE` block:** what the shipped tree does today for that scenario, the tests that pin it, and the gap id (`SHOWCASE-gaps.md`) where the sample and the tree differ. The samples below it are the original hypothetical syntax, kept as written.
 
 ---
 
 ## 48. Typed enough to vanish: what the 96% tier looks like
+
+> **REAL CODE (v5.125): PARTIAL.** Types exist where the *language* fixes them and where
+> maxim infers them: int and double locals, bit ops with one numeric operand, integer
+> typed-array reads, `charCodeAt`/`Math.imul` by callee identity — and every such lowering
+> ships with an SR-2 row of the spec's values. There is no annotation, no admission type
+> report and no `E_TYPE_MISMATCH`; the report a fragment gets is `comcon.aotStatus(f)` →
+> `{jit, functions, compiled}` (gap G-24). The registry typing the API (`reviewCalls`) checks
+> members and arity of *proposals*, not fragment bodies. Demo: `js_comcon_demos/D2`.
 
 **Problem:** you've heard that a fully-typed policy compiles to C at ~96% of stock
 nginx. The fear is obvious: "so I have to learn a new language."
@@ -60,6 +69,12 @@ schema and inference do nearly all the writing; the compiler does all the vanish
 ---
 
 ## 49. One dynamic line, one slow fragment — the gradient is per-fragment
+
+> **REAL CODE (v5.125): PARTIAL.** The tier is per fragment today — each `include` compiles
+> or does not, and `comcon.aotStatus(f)` says which — but the gradient inside a fragment
+> (`any`, guards, HYBRID) does not exist: a fragment is either lowered by maxim or
+> interpreted, and confinement is identical on both (gap G-24). Tests:
+> `t/comcon_compiled_resource_gates.t`, `t/comcon_aot_epoch.t`.
 
 **Problem:** one handler genuinely needs dynamism — a computed field name out of a
 JSON body. Does that condemn the whole tenant to the interpreted tier?

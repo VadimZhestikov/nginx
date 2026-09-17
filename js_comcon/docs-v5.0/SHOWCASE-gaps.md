@@ -1,0 +1,85 @@
+# SHOWCASE gaps — where the scenarios and the tree differ (v5.126, 2026-09-16)
+
+> **What this is.** The eight `SHOWCASE*.md` files were written in August 2026 as
+> intent, in hypothetical syntax. On 2026-09-16 every one of their 53 scenario
+> headings was annotated with a `REAL CODE` block: what the shipped tree (v5.125,
+> pilgrim `ce9590c84`) does for that scenario, with the tests that pin it. This file
+> collects the differences — each a gap id the blocks cite — so the scenario set
+> can be read as an acceptance checklist (ROADMAP §5: "a milestone is showcase-true
+> when its scenarios run as written").
+>
+> **How to read a row.** *Kind* says what closing the gap needs: **decision** (a
+> mechanism could be built, nobody has decided what it should be), **substrate**
+> (an engine capability the M-tracks do not build), **library** (a `std.*` or
+> tooling program over shipped kernel operators), **design** (a named design
+> increment not started), **honest limit** (an architectural fact the sample
+> contradicts). *Home* is ROADMAP's earliest home for the cluster, where one is named.
+
+## The scorecard
+
+| status | scenarios |
+|---|---|
+| **SHIPPED** (runs as described, modulo names) | 1, 5, 8, 10, 12, 18, 26, 28, 30, 31, 39, 40, 41, 44, 47, 51, 51b |
+| **SHIPPED in a different shape** (the property holds, the sample's spelling does not) | 14, 25, 36, 46 |
+| **PARTIAL** (a real piece ships; a named piece does not) | 2, 4, 6, 17, 20, 22, 24, 29, 33, 37, 38, 42, 43, 45, 48, 49 |
+| **NOT BUILT** | 3, 7, 9, 11, 13, 15, 16, 19, 21, 23, 27, 32, 34, 35, 50, 51c |
+
+Seventeen of fifty-three run as written, twenty more hold their property in a
+different spelling or in part, sixteen do not exist. Of the sixteen, four are one
+substrate decision (`opaque.*`/COW: 7, 16, 19, 32), two are one design increment
+(multi-language: 15, 50), and one is a posture nobody has decided (21).
+
+## The gaps
+
+| id | scenarios | the sample says | the tree has | what is missing | kind | home |
+|---|---|---|---|---|---|---|
+| **G-01** | 2, 20 | `comconctl revoke --cascade` over a provenance chain; offboarding follows delegations | `ops.remove(name, {confirm})` tombstones a live binding (410) and `revive` restores it; a reseller's sub-fragments die with its callable; `revoke()` is a grant-time flavour | revocation of an already-granted capability at run time; a grant chain to cascade over | library + decision | M6 cluster (ROADMAP §5 table) |
+| **G-02** | 3, 4, 11 | grammar-valued interfaces: a parameterized-only `db` facet, `header_value` grammars, `pattern{}` instead of regex, "one parser, N policies" | stone splices (data can never become code), `reviewDeclarative` as one sound rejecter, CRLF dropped at the header boundary | facets whose *language* is a policy; a pattern language; a `db` capability kind | design | M2.5–M4 (+M-LIB facets) |
+| **G-03** | 7, 16, 19, 32, (18 overlay) | `opaque.str` values with named sinks; COW views and overlays; a shadow world | field-level `redact`/`allow` on socket and server capabilities; sessions never carry caps | the opaque/COW engine substrate | substrate, **unscheduled by decision** (ROADMAP §5 lesson 6; canonical NOT BUILT list) | none |
+| **G-04** | 6, 13, 23 | a REL/forensics console attached to a worker; an AI session with redacted handles and opaque traffic | per-worker data through host handlers (`tenantDenials`, `tenantLearning`, `memStatus`, `aotStatus`, `trustReport`); NodeView reads are quotations, `binding` redacted | an attach/REPL surface; a forensics profile; body redaction on program handles | library (REPL exists on the js_com side; a COMCON-shaped session does not) | tooling verbs |
+| **G-05** | 5, 6, 14 | allow-suite generation with coverage; a policy diff that reports "narrowing, auto-safe"; a would-deny event list | learn-mode harvest with hit counts; per-binding `onViolation: "audit"`; fleet `shadow`/`enforce` reaching every worker; `config.diff` for config proposals; denial counters per gate | a recorded-cases generator; a diff over *grants*; per-binding would-deny events (counters are per worker, per gate) | library | M2.5 denial/explain schema |
+| **G-06** | 9 | `expose`/`accept` communication edges, both signatures required | host-brokered exchange (JSON between two fragments of one host); reseller copies narrowed | fragment-to-fragment edges as capabilities | design | mixed (ROADMAP §5) |
+| **G-07** | 10, 33 | `cpu: "5ms/request"`, `compile: "50ms"`, budgets as billing counters | `timeoutMs` (wall clock), `memoryBytes` (burst), `retainedBytes` (leak), `memStatus` counts | a CPU-time unit, a `gas` instruction count (forward-declared), compile budgets, invoice-grade counters | design | S5-b (`meter({gas})`) |
+| **G-08** | 15, 50 | Tcl iRules and WASM modules as fragments | JavaScript only | multi-language includes; the `wasm` facet and wasm2c lane | design | M9 / stage 2; M-LIB v5.2 (wasm) |
+| **G-09** | 17, 23 | a signed manifest (quotation + policy + suites + maker chain + hash) that travels; `export` | quotations are cap-free by construction; `identity` and `deps.sha256` pins; only source text crosses between workers | signing, maker chains, an export tool, a ServiceWorker target; the `provenance` and `signing` ops resources (listed `host: null`) | library + decision | tooling verbs |
+| **G-10** | 21, 45 | `std.postures.lockdown` applied fleet-wide; two bindings on one node meet | fleet `enforce`; mediation stacks meet on a capability (masks AND, lifetimes MIN, identical budgets compose, different refused) | what `lockdown` narrows to (a decision); a meet of two *contracts* on one fragment | **decision** (canonical NOT BUILT list) | — |
+| **G-11** | 22 | an adaptive-profile transform at admission | `profile: "adaptive"` refused on purpose (`E_ADMIT_CONTRACT`); `harden`/`ops.rewrite` rewrite a quotation's matched sites, reviewable, installed as an epoch | a transforming profile — refused by decision so "runs standalone" stays falsifiable | decision | stage 2 |
+| **G-12** | 24 | a trust ladder of profiles; widening requires the admin handle and leaves an epoch mark | two profiles (`tenant`, `pure_library`); widening is an ordinary `rebind`/`replace` epoch (host is trusted) | probation/standard/trusted profiles; an admin-handle gate on widening | library + decision | M6 |
+| **G-13** | 25 | one static report of a module's whole appetite | `admit` names the first undeclared free name; `callsites`/`references` per name; learn mode harvests dynamically | a whole-appetite static report in one call | library (a loop over `references` plus a free-name scan) | tooling verbs |
+| **G-14** | 26 | `protocol` over a `ws` facet (`handshake`, `frames*`, `close`) | `protocol` over socket field reads and outbound `request` | more capability kinds with operations to order | design | M-LIB facets |
+| **G-15** | 27 | workers as fragments; a message is an export; edges between workers | data through `nginx.shared` (shared bindings, fleet posture), lazy per-worker reconcile | cross-process kernel semantics | design (open question) | FOUNDATION open questions |
+| **G-16** | 29, 37 | per-tenant generated docs; a trust report with provenance and signatures | `describe()` registries at every level; `ops.trustReport()` over bindings and the enforced-by table, withheld verbs named | the per-tenant renderer; provenance/signing resources | library | M2 registry + tooling verbs |
+| **G-17** | 34 | API version as a grant word (`platform.api("v1-compat")`) | per-fragment grants; per-fragment pinned deps | a version dimension on the COM facet | design | — |
+| **G-18** | 35 | an append-only `log` facet (append, never read/truncate) | denial log written by the host side only; masks on socket/server caps | a log capability kind | design | M-LIB facets |
+| **G-19** | 36 | a stage-0 builder profile that denies clock/RNG/I/O | the tenant's config proposals (declarative, typed, all-or-nothing); anchors; host `root.js` is trusted JS | determinism caps on the host's own stage-0 program | decision | — |
+| **G-20** | 38, 42 | `bind(env, pom.query(...))` across modules; a fragment holding a scoped `pom` handle | queries, call sites, anchors, `harden` + epochs on the host; only socket/server caps cross into a compartment | binding a policy to a query result; program handles as grantable capabilities | design | increment D follow-on |
+| **G-21** | 41 | re-AOT of a rewritten function while serving | the new epoch runs on the bytecode tier and `aotStatus` says so; no compiler thread survives `fork()` | native re-lowering of a live epoch in a worker | **honest limit** (`t/comcon_aot_epoch.t`) | — |
+| **G-22** | 43 | a static mediation lowered to one `strncmp` | every gate holds on the compiled tier (SR-2, the fuzz, the resource gates); typed lowering measured (§2f) | membrane partial evaluation | design (M5 scope note); the compiler track is closed at M5.1c | M5–M7 |
+| **G-23** | 46 | proposals in `nginx.conf` syntax | proposals as config-shaped JS sentences over a typed subtree | an `nginx.conf` grammar front-end for proposals | design | M-CFG follow-on |
+| **G-24** | 48, 49 | type annotations, an admission type report, `E_TYPE_MISMATCH`, a HYBRID/`any` gradient | maxim's inference and the language's own types; `aotStatus` per fragment | the M3 typed profile front-end | design | M3/M4 typed IR (not started) |
+| **G-25** | 51c | `includeAt` with `expose: {in, out}`: a hygienic text splice into the host's loop body | `harden` rewrites a quotation's sites and installs it as an epoch | structured POM splices; the anchor-fill link | design (folded into increment D) | D5 |
+| **G-26** | 5, 6, 13, 14, 20, 21, 25, 28, 29, 37, 40, 41, 46, 47, 50 | a `comconctl` command line | every verb is a library program (`comcon.std.ops`, `std.config`, `std.sessions`) called from host JS; there is no management plane by design (FOUNDATION §8a) | a shell that wraps the verbs (a convenience; not a mechanism) | library | tooling |
+
+## Where the tree is ahead of the scenarios
+
+Written down so the checklist reads in both directions:
+
+- **Budgets that bite on the compiled tier, uncatchable inside the fragment** (10): the
+  samples assume a catchable "budget exhausted"; the tree makes a deadline abort uncatchable
+  by the fragment (F16) because a tenant that could catch its own deadline could ignore it.
+- **The retained-memory half of F2** (10, 33): a leak is charged per call and refused past a
+  cap, corrected for cycles — none of the scenarios asked for it.
+- **Every negative control automated** (37): the audit's "re-run any of it" is
+  `bash t/tools/reviewer-pack.sh`, 34 controls verified.
+- **The compiled tier fuzzed against the interpreter** (43, 48): `t/tools/jit-diff-fuzz.py`,
+  a gate stage; it found F20 and F21.
+- **Learn mode installs at the first include** (5): the compartment is created then, so
+  `comcon.mode("learn")` must precede it — a rule the samples do not state.
+
+## Demos that came out of this pass
+
+Four scenarios had shipped code and no demo, and each addresses an audience the first
+twelve demos did not: **live operations / release engineering** (41, 28, 40: epochs and
+rollback, fleet fan-out, pin-by-hash) and **auditors** (37, 38, 25: the trust report, the
+query, the rewrite). They are `js_comcon_demos/L_Live_Ops/` and
+`js_comcon_demos/A_Auditors/`.

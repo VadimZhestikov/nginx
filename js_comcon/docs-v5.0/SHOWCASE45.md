@@ -5,10 +5,27 @@
 > pin-by-hash, live-rewrite epochs, the program-tree symmetry, compile-through, contract
 > admission, and meet-composition. Syntax remains **hypothetical**; design in
 > `FOUNDATION.md`, guarantees in `SEMANTICS.md`, numbers in `PERFORMANCE.md`.
+> **Since v5.126 every scenario opens with a `REAL CODE` block:** what the shipped tree does today for that scenario, the tests that pin it, and the gap id (`SHOWCASE-gaps.md`) where the sample and the tree differ. The samples below it are the original hypothetical syntax, kept as written.
 
 ---
 
 ## 38. Harden code you will never touch
+
+> **REAL CODE (v5.125): SHIPPED for the query and the rewrite, NOT BUILT for bind-by-query.**
+> The selector language is real and the read side reaches inside code you do not own:
+> ```js
+> comcon.pom(frag).query("function within name(outer)")     // NodeViews; reads are quotations
+> comcon.pom(frag).callsites("fetch")                       // from bytecode, with lines
+> comcon.cst(src).query("call(g)")                          // below function granularity
+> comcon.cst(src).query("function anchors('pay-v2')")       // by inert anchor, not by line
+> ```
+> Enforcement splits by what the callee is: a *free* name is governed by the kernel
+> (`grants: { fetch: comcon.mediate(cap, comcon.allowHosts("https://api.partner.com")) }` — no
+> parser, no spelling to evade); a *locally-bound* callee, which no grant can name, is reached
+> by `comcon.harden(cst, "call(g)", wrapper)` and installed as a new epoch. Binding a policy
+> onto a query result across modules is not built (gap G-20). Tests: `t/comcon_pom_query.t`,
+> `t/comcon_pom_callsites.t`, `t/comcon_pom_anchors.t`, `t/comcon_pom_harden.t`. Demo:
+> `js_comcon_demos/A_Auditors/A1`.
 
 **Problem:** three hundred vendor and legacy files are already in production. You may
 not edit them — not one line, not even to add a marker.
@@ -38,6 +55,19 @@ it.*
 ---
 
 ## 39. The generator that proposes more than it holds
+
+> **REAL CODE (v5.125): SHIPPED.**
+> ```js
+> var q = comcon.quote("function(){ return LIMIT * 2; }", { LIMIT: t.rps });   // a stone splice
+> comcon.quote("function(){}", { f: function(){} });          // refused: not cap-free
+> var f = comcon.realize(q, { imports: [], profile: "declarative" }, opsEnv);   // ops' authority
+> comcon.realize(comcon.quote("function(){ return secretHost.token; }"), { imports: [] }, opsEnv);
+>                                                              // refused: outside the manifest
+> ```
+> `realize` refuses a closure as its first argument, requires a contract and a realizer
+> environment, and restricts that environment to the quotation's declared manifest. Tests:
+> `t/comcon_realize.t`, `t/comcon_pom_splice.t`, `t/comcon_declarative.t`. Demo:
+> `js_comcon_demos/O_Operators/O1` (`op=realize`).
 
 **Problem:** your tenant-policy generator (a program!) should draft per-tenant policies
 including things the generator itself must never have — say, metrics-write access. But
@@ -80,6 +110,16 @@ ambitious; only realizers spend authority — and the split is one machine-check
 
 ## 40. The silent update that wasn't
 
+> **REAL CODE (v5.125): SHIPPED.** The pin is the contract's `identity` word — the SHA-256 of
+> (SHA-256 of the source ‖ the schema tag) — and a dependency's `sha256`; a mismatch refuses
+> the include at config load, and a live binding's previous epoch keeps serving:
+> ```js
+> comcon.include(checkoutSource, { imports: [], identity: reviewedPin });   // refused if the text moved
+> comcon.include(src, { imports: ["lib"], deps: [{ name: "lib", path: p, sha256: reviewedHash }] });
+> ```
+> Tests: `t/comcon_include_admit.t`, `t/comcon_include_deps.t`, `t/comcon_pom_mutate.t`.
+> Demo: `js_comcon_demos/L_Live_Ops/L3`.
+
 **Problem:** Friday: security reviews `vendor/checkout.js` and approves its policy.
 Saturday: the vendor's pipeline ships a "patch" to the same path.
 
@@ -111,6 +151,20 @@ a clean, loud admission failure.
 
 ## 41. Patching a hot function at noon
 
+> **REAL CODE (v5.125): SHIPPED, with one honest difference.** A live binding is replaced
+> as a new epoch; across workers the current `{epoch, source}` lives in `nginx.shared` and
+> each worker reconciles on its next request, so no worker serves a torn state:
+> ```js
+> var h = comcon.bindShared("pricing", comcon.quote(v1), { imports: [] }, onRequest);
+> loc.handler = h.handler;
+> h.replace(comcon.quote(fixed));      // from ANY worker; all four switch on their next request
+> h.rollback();
+> ```
+> The difference: a new epoch built in a worker runs on the bytecode tier and stays there —
+> there is no compiler thread after `fork()` — and `comcon.aotStatus(f)` reports it rather
+> than claiming native (gap G-21). Tests: `t/comcon_pom_fanout.t`, `t/comcon_aot_epoch.t`,
+> `t/comcon_pom_mutate.t`. Demos: `js_comcon_demos/L_Live_Ops/L1`, `L2`.
+
 **Problem:** a pricing bug in the busiest tenant's hottest function — the one that was
 AOT-compiled to native code. Fixing it "requires a reload" (say the old rules), and
 noon is not reload time.
@@ -141,6 +195,13 @@ doesn't take away the dynamic world's superpower.
 ---
 
 ## 42. The plugin that audits itself
+
+> **REAL CODE (v5.125): PARTIAL.** The program tree is a first-class value on the host —
+> `comcon.pom(frag)` is a frozen NodeView whose reads return quotations, whose `binding` is
+> redacted by default, and whose `describe()` lists its read ops with safety classes
+> (`t/comcon_pom_nodeview.t`). What is not built is handing such a handle *into* a fragment:
+> only socket and server capabilities cross into a compartment (`E_CAP_GRANT` for anything
+> else), so a dashboard that introspects its own subtree from inside is gap G-20.
 
 **Problem:** every tenant dashboard ("what can I do? what did I use? what's my
 coverage?") is host-written, drifts, and sees too much.
@@ -174,6 +235,15 @@ with tenant-shaped blinders, built from the same four operators as everything el
 
 ## 43. The policy that vanished at compile time
 
+> **REAL CODE (v5.125): PARTIAL, and measured.** The compiled tier holds every gate and
+> every value (SR-2: `t/comcon_include_faithfulness.t`, 77 shapes; `t/tools/jit-diff-fuzz.py`),
+> and the typed lowering is real (M5.1a/M5.1c: a byte scan 11.72 → 1.34 ns/byte, a token
+> check 55 → 34 ns/char, PERFORMANCE §2f). Membrane partial evaluation — `allowHosts`
+> lowered to one `strncmp` — is not built; the glob is checked in C at the call, on both
+> tiers (gap G-22). The 96%/28% figure is the E1-era measurement; the current numbers and
+> the rule that closed the compiler track are PERFORMANCE §2f.3. Demo:
+> `js_comcon_demos/D_Developers/D2`.
+
 **Problem:** everyone knows how this movie ends: add a security layer, watch the
 latency graph, remove the security layer.
 
@@ -204,6 +274,18 @@ policies and the answer to "what does the security layer cost?" is: *approximate
 ---
 
 ## 44. Hiring code, not trusting it
+
+> **REAL CODE (v5.125): SHIPPED.**
+> ```js
+> var rec = comcon.include(generatedSource, {
+>     imports: ["JSON"], grants: { catalog: comcon.mediate(srv, comcon.routes("/catalog/*")) },
+>     tests: "function(f){ if (f({q:'x'}).length > 50) throw new Error('too many'); }",
+>     identity: pin, checkRequest: true, meter: comcon.meter({ timeoutMs: 5 }) });
+> ```
+> Admission runs the tests *inside the compartment* — a test that reaches for `nginx` fails
+> and refuses the fragment (`E_ADMIT_TEST`); fixed clock/RNG doubles during the run are the
+> remaining refinement. `spec` is prose, not a contract word. Tests: `t/comcon_admit_tests.t`,
+> `t/comcon_include_admit.t`. Demo: `js_comcon_demos/D_Developers/D1`.
 
 **Problem:** you want an AI (or a contractor, same thing here) to write a whole
 fragment — and you want to plug it in the way you'd hire a person: job description,
@@ -239,6 +321,17 @@ volume) to "is this cage right?" (a dozen lines you wrote yourself).
 ---
 
 ## 45. Two departments, one file
+
+> **REAL CODE (v5.125): PARTIAL.** The meet is real *on a capability*: re-mediating composes
+> by intersection in every direction the lattice allows (masks AND, lifetimes MIN, an identical
+> budget/glob/protocol composes, a different one is refused rather than guessed):
+> ```js
+> comcon.mediate(comcon.mediate(cap, comcon.allowHosts("https://*.corp.com")),   // security team
+>                comcon.uses("pci:out", 100, 3600))                              // payments team
+> ```
+> Two *bindings* over one node do not meet — a fragment has one contract — so "loaded in
+> either order, same result" holds for mediation stacks, not for policies on a file (gap
+> G-10). Tests: `t/comcon_cap_ttl.t`, `t/comcon_budget_uses.t`, `t/comcon_outbound.t`.
 
 **Problem:** corporate security requires "no network except the allowlist" on
 everything; the payments team requires PCI rules on `payments/**`. Both policies claim

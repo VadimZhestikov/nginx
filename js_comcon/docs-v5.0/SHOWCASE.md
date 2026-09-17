@@ -6,6 +6,7 @@
 > Reworked for v3: environments and grants instead of `imports:` blobs, `include` =
 > parse∘admit∘bind, anchors/queries instead of inline policy literals, and the
 > guarantees quoted here are now theorems, not intentions.
+> **Since v5.126 every scenario opens with a `REAL CODE` block:** what the shipped tree does today for that scenario, the tests that pin it, and the gap id (`SHOWCASE-gaps.md`) where the sample and the tree differ. The samples below it are the original hypothetical syntax, kept as written.
 
 **COMCON in one paragraph:** nginx gains the ability to run JavaScript from *many
 parties that don't trust each other* — tenants, vendors, contractors, AI — inside one
@@ -20,6 +21,23 @@ same policy interpreted runs at ~28% (`PERFORMANCE.md`).
 ---
 
 ## 1. Two tenants, one nginx — and neither can name the other
+
+> **REAL CODE (v5.125): SHIPPED, spelled differently.** There is no `comcon_load` directive
+> — `nginx.conf` gains only `js_source root.js;` and the root program does the rest. The
+> route facet is a real mediation over a COM server node, and the tenant profile derives
+> `imports` from the environment so the manifest and the grants cannot drift:
+> ```js
+> var srv = nginx.http.servers[0];
+> var acme = comcon.grant(comcon.env(), "http", comcon.mediate(srv, comcon.routes("/acme/*")));
+> var acmeFrag = comcon.include(acmeSource, comcon.std.profiles.tenant(acme));   // parse∘admit∘bind
+> locs.find(function (l) { return l.path === "/acme"; }).handler = function (req) {
+>     var o = acmeFrag({ uri: req.uri }); req.respond(o.status, o.headers, o.body); };
+> ```
+> Inside, `http.paths()` / `http.allowed("/acme/x")` answer for the facet's glob and nothing
+> else; a free name is refused at config load (`E_ADMIT_FREENAME`). Two tenants share one
+> compartment context with frozen intrinsics, and `t/comcon_cross_identity.t` plants on every
+> shared object and reads next door to assert no channel. Tests: `t/comcon_com_facet.t`,
+> `t/comcon_std_lib.t`, `t/comcon_include_deny.t`. Demo: `js_comcon_demos/P_Platform_Teams/P1`.
 
 **Problem:** you want ACME's and Globex's request-processing scripts on the same nginx,
 without a whisper of data or interference between them.
@@ -65,6 +83,22 @@ Globex's objects: they are not merely forbidden, they are unresolvable.
 
 ## 2. Third-party libraries: caged on entry, revocable on CVE day
 
+> **REAL CODE (v5.125): PARTIAL.** The pin half is real, at two levels: a fragment is pinned
+> by `identity` (H(H(source)‖schema), refused on mismatch) and a pure-library dependency by
+> its SHA-256, loaded as a per-fragment closure parameter, never onto a shared global:
+> ```js
+> var f = comcon.include(src, comcon.std.profiles.pure_library());          // computation only
+> var g = comcon.include(src, { imports: ["lib"],
+>     deps: [{ name: "lib", path: "/etc/nginx/vendor/magic-utils.js", sha256: "9f2c…" }] });
+> var h = comcon.include(src, { imports: [], identity: "<sha256 pin of what was reviewed>" });
+> ```
+> Tests: `t/comcon_include_deps.t`, `t/comcon_include_admit.t`. **The CVE-day half is not
+> built as written** (gap G-01): `comcon.revoke()` is a grant-time flavour, not a switch on a
+> live grant, and there is no provenance chain to cascade over. What exists is
+> `ops.remove(name, {confirm: name})`, which tombstones a live binding (the site answers 410)
+> and `ops.revive` (`t/comcon_std_ops.t`); a reseller's sub-fragments die with the reseller's
+> callable (`t/comcon_author_basic.t`).
+
 **Problem:** a tenant uses a popular utility library. Next month it ships a compromised
 update (supply-chain attack), or a CVE lands.
 
@@ -97,6 +131,20 @@ the grant is a switch we hold at run time. (The pin story continues in scenario 
 
 ## 3. SQL injection: not detected — *unwritable*
 
+> **REAL CODE (v5.125): NOT BUILT** (gap G-02: there is no `db` facet and no grammar-valued
+> interface). Two shipped pieces carry the *principle* — "the dangerous sentence cannot be
+> written" — on other surfaces: a **stone splice** binds producer data into a quotation as a
+> JSON literal, so a spliced string can never become code (the parameterized-SQL defence,
+> `t/comcon_pom_splice.t`), and `comcon.reviewDeclarative(source)` is a sound rejecter that
+> admits only straight-line fluent call chains with literal arguments — no operators, no
+> string building (`t/comcon_declarative.t`):
+> ```js
+> var q = comcon.quote("function(){ return db_query('SELECT * FROM users WHERE id = ?', [ID]); }",
+>                      { ID: userInput });        // ID crosses as data, escaped, never text
+> comcon.reviewDeclarative("acme.proxy.pass('http://acme_backend')").declarative   // true
+> comcon.reviewDeclarative("route(1 + 2)")                                         // throws: not declarative
+> ```
+
 **Problem:** the single most common web vulnerability class for thirty years.
 
 **Today:** scanners, WAF signatures, code review, hope.
@@ -125,6 +173,19 @@ A whole vulnerability class removed by grammar, not by vigilance.
 ---
 
 ## 4. Header smuggling / response splitting: values become grammar, not string paste
+
+> **REAL CODE (v5.125): PARTIAL.** The hole is closed, but by a drop rather than a grammar: a
+> response header a fragment returns crosses the boundary as data, and a value carrying CRLF
+> is dropped — the second header never exists (`t/comcon_include_headers.t`; demo
+> `js_comcon_demos/P_Platform_Teams/P1`, which returns `"ok\r\nX-Evil: pwned"` and shows no
+> `X-Evil`). `header_value.number(...)`, `pattern { … }` and the regex-denying profile are not
+> built (gap G-02):
+> ```js
+> var h = comcon.include("function(req){ return { status: 200,"
+>   + " headers: { 'X-Tag': req.headers['x-tag'], 'X-Try': 'ok\\r\\nX-Evil: 1' }, body: 'ok' }; }",
+>   { imports: [], checkRequest: true });
+> // the host: req.respond(o.status, o.headers, o.body) — 'X-Try' is dropped, X-Evil never sent
+> ```
 
 **Problem:** user-controlled data flows into an HTTP header; a stray `\r\n` becomes a
 second, attacker-authored response header.
@@ -156,6 +217,23 @@ well-formed values." Injection needs a hole; the hole is no longer part of the l
 
 ## 5. Onboarding 5,000 lines of legacy script — without reading them
 
+> **REAL CODE (v5.125): SHIPPED, without the CLI.** Learn mode is a fleet posture that
+> harvests every withheld name a fragment reaches for, with hit counts; shadow is
+> `onViolation: "audit"` per binding or `ops.shadow()` for the fleet; enforce is the last
+> word. The generated stub is a plain library program:
+> ```js
+> comcon.mode("learn");                                    // before the FIRST include
+> var legacy = comcon.include(legacySource);               // written against too much host
+> …                                                        // traffic
+> nginx.tenantLearning()          // {mode, wants: [{path: "nginx.http.addServer", hits: 41}, …]}
+> var shadow  = comcon.include(legacySource, { imports: [...], grants: g, onViolation: "audit" });
+> var enforce = comcon.include(legacySource, { imports: [...], grants: g, onViolation: "deny" });
+> ```
+> `js_com_demos/COMCON_onboard/onboard.js` turns the harvest into a paste-ready grant stub.
+> Tests: `t/comcon_include_learn.t`, `t/comcon_posture.t`, `t/comcon_std_ops.t`. Demo:
+> `js_comcon_demos/P_Platform_Teams/P2`. Not built: allow-suite generation, coverage, the
+> would-deny event report (gap G-05).
+
 **Problem:** a years-old analytics script must move under policy. Nobody knows what it
 actually touches.
 
@@ -186,6 +264,21 @@ auto-deployed — learning describes, people prescribe.
 ---
 
 ## 6. AI as operator and author — safe by asymmetry
+
+> **REAL CODE (v5.125): PARTIAL.** The asymmetry is real for what the AI *writes*: a proposal
+> is a quotation, provably cap-free, realized only under the realizer's authority and only
+> within its declared manifest; a config proposal is reviewed as a diff and applied with
+> explicit confirmation of guarded classes:
+> ```js
+> var q = comcon.quote(aiProposalSource);                         // inert; carries nothing
+> var f = comcon.realize(q, { imports: ["JSON"], profile: "declarative" }, opsEnv);
+> var plan = comcon.std.config.review(aiConfigProposal, POLICY);   // typed against the registry
+> comcon.std.config.diff(plan, node);                              // the reviewable diff
+> ```
+> A leased operator session is `comcon.std.sessions({sessions: nginx.shared}).grant(principal,
+> {imports, ttl: 900})`. Tests: `t/comcon_realize.t`, `t/comcon_config_instance.t`,
+> `t/comcon_std_sessions.t`. Demo: `js_comcon_demos/O_Operators/O1`. Not built: the REL
+> console (gap G-04) and a monotonicity check over *policy* diffs (gap G-05).
 
 **Problem:** you want AI to help run the platform and write tenant code/policies,
 without betting the platform on the AI being right.
@@ -220,6 +313,16 @@ here: **capabilities bound the damage; tests only bound the correctness.**
 ---
 
 ## 7. Secrets the code can use but never see
+
+> **REAL CODE (v5.125): NOT BUILT, by decision.** `opaque.*` is an engine-substrate question,
+> never a mediation, and is on ROADMAP's canonical NOT BUILT list (gap G-03; scenarios 7, 16,
+> 19, 32 share it). What ships is *field-level* hiding on a capability: a fragment can
+> exercise a socket's `port` while `address` is unreadable — hidden, not printed as
+> `[opaque]`:
+> ```js
+> grants: { s: comcon.mediate(sock, comcon.redact(["address"])) }   // typeof s.address → "undefined"
+> ```
+> and a session descriptor can never carry a capability at all (`t/comcon_std_sessions.t`).
 
 **Problem:** a tenant script needs an API key to call a backend — and API keys leak:
 into logs, error messages, analytics, exceptions.

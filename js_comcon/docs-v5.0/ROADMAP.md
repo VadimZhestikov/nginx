@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **WHERE WE ARE (v5.125 — 2026-09-16), in five lines.** Every increment is done and every
+> **WHERE WE ARE (v5.126 — 2026-09-16), in five lines.** Every increment is done and every
 > track is closed: confinement (two signatures on the assurance case, ASSURANCE §15), the
 > compiler (M5.1a and M5.1c shipped, M5.1b parked; the rule says NO-GO at 2.3× on the last
 > class, PERFORMANCE §2f.3), the library (the vocabulary complete; `opaque.*` and the postures
@@ -14,6 +14,12 @@
 > narrowing words, `opaque.*` and the postures, M5.1b. The rest of this block is the log,
 > newest first, each entry also a FOUNDATION delta.
 >
+> - **THE SHOWCASES ANNOTATED WITH REAL CODE; THE GAPS REGISTERED; DEMOS FOR TWO NEW AUDIENCES
+>   (2026-09-16, v5.126).** Every scenario heading carries a `REAL CODE` block (the shipped
+>   spelling, the pinning tests, a gap id); `SHOWCASE-gaps.md` scores 53 scenarios (17 as
+>   written, 4 respelled, 16 partial, 16 not built) and names 26 gaps by kind and home. Four
+>   demos for live operations (epochs, fan-out, pins) and auditors (the trust report, the
+>   query, the rewrite): sixteen demos, 168 checks.
 > - **M5.1c BUILT AND MEASURED; THE M5 TRACK CLOSES; F20 AND F21 CLOSED (2026-09-16, v5.125).**
 >   `charCodeAt` and `Math.imul` inlined by identity of the callee, doubles through ToInt32 in
 >   place: class B 52.5 → 34.38 ns/char on the C bound 15.00, 2.3×, NO-GO by the rule. Building

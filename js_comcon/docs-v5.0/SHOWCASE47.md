@@ -4,10 +4,24 @@
 > correction: configuration is a governed language instance like code — with an
 > admission hinge (typed config surface) and quotation-based proposals. Design:
 > `FOUNDATION.md` §2a; work item: `ROADMAP.md` M-CFG.
+> **Since v5.126 every scenario opens with a `REAL CODE` block:** what the shipped tree does today for that scenario, the tests that pin it, and the gap id (`SHOWCASE-gaps.md`) where the sample and the tree differ. The samples below it are the original hypothetical syntax, kept as written.
 
 ---
 
 ## 46. Typed config: the tenant edits nginx configuration — safely
+
+> **REAL CODE (v5.125): SHIPPED, in the config language's JS form.** The slice is a policy —
+> a subtree, a path allow-list, the safety classes that may apply unasked — and the
+> proposal is config-shaped sentences typed against the same registry that types the JS API:
+> ```js
+> var POLICY = { type: "NginxLocation", root: "acme", allow: ["root", "alias", "proxy.*"], allowClass: ["safe"] };
+> var plan = comcon.std.config.review("acme.root('/srv/acme'); acme.proxy.pass('http://x');", POLICY);
+> plan.ok; plan.hash; plan.ops; plan.refused    // [{path, why}] — the E_CFG_PRODUCTION of the sample
+> comcon.reviewCalls("loc.addLocationTypo('/x')", { loc: loc })   // refused: unknown member, at admission
+> ```
+> `nginx.conf` syntax itself is not the proposal grammar (gap G-23). Tests:
+> `t/comcon_config_instance.t`, `t/comcon_review_calls.t`, `t/comcon_declarative.t`. Demo:
+> `js_comcon_demos/O_Operators/O1`.
 
 **Problem:** tenants always end up needing config changes — a port, a location block, a
 timeout. Today that's a ticket to your team, because handing a tenant *any* config
@@ -56,6 +70,16 @@ schema as everything else. Tickets become admissions.
 ---
 
 ## 47. Propose the config you can't apply
+
+> **REAL CODE (v5.125): SHIPPED.** A proposal never applies itself; the operator reviews a
+> diff, applies with explicit confirmation of guarded classes, and the record is the rollback:
+> ```js
+> var plan = comcon.std.config.review(proposalText, POLICY);        // typecheck, hash, ops, refused
+> comcon.std.config.diff(plan, acme);                               // what would change
+> var applied = comcon.std.config.apply(plan, acme, { confirm: ["acme.proxy.pass"] });   // all-or-nothing
+> comcon.std.config.rollback(applied, acme);
+> ```
+> Tests: `t/comcon_config_instance.t`. Demo: `js_comcon_demos/O_Operators/O1`.
 
 **Problem:** the tenant knows what change they need — more ports, a new upstream — but
 that change exceeds their slice. Today: a ticket in prose, re-typed by an operator,
