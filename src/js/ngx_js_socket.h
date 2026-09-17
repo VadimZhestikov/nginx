@@ -241,6 +241,14 @@ void  ngx_js_outbound_set_cosign(JSValueConst obj, const char *key,
 void  ngx_js_socket_set_owner(JSValueConst obj, uint32_t frag);
 void  ngx_js_outbound_set_owner(JSValueConst obj, uint32_t frag);
 
+/* G-01: the grant record a granted wrapper is a holder of (see
+ * ngx_js_grant_t in ngx_js_compartment.h).  set_ takes a reference; _of
+ * borrows. */
+void  ngx_js_socket_set_grant(JSValueConst obj, ngx_js_grant_t *g);
+void  ngx_js_outbound_set_grant(JSValueConst obj, ngx_js_grant_t *g);
+ngx_js_grant_t  *ngx_js_socket_grant_of(JSValueConst obj);
+ngx_js_grant_t  *ngx_js_outbound_grant_of(JSValueConst obj);
+
 ngx_int_t  ngx_js_socket_op_id(const char *name);
 ngx_int_t  ngx_js_outbound_op_id(const char *name);
 

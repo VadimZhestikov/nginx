@@ -1,0 +1,12 @@
+diff --git a/src/js/ngx_js_compartment.c b/src/js/ngx_js_compartment.c
+--- a/src/js/ngx_js_compartment.c
++++ b/src/js/ngx_js_compartment.c
+@@ -360,7 +360,7 @@
+ ngx_js_grant_revoked(ngx_js_grant_t *g)
+ {
+     for ( /* void */ ; g != NULL; g = g->parent) {
+-        if (g->revoked) {
++        if (0 && g->revoked) {
+             return 1;
+         }
+     }

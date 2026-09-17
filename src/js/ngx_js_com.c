@@ -5711,6 +5711,29 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var d=C.__denialStatus(frag.handle);"
     "    d.posture=(frag.onViolation===1)?'audit':((frag.onViolation===2)?'deny':"
     "              ((frag.onViolation===3)?'learn':'inherit'));return d;};"
+    /* G-01 (v5.129): LIVE REVOCATION.  withdraw(f, name?) flips the grant
+       record(s) of a running fragment: every gate on that capability -- and on
+       every copy a re-grant made of it -- answers cap.revoked from the next
+       read, in every posture.  Idempotent; irreversible (restoring authority
+       is a widening, and every widening here is a new admission).  withdrawn(f)
+       reads the names back from the kernel's table, not from a JS shadow.
+       Named `withdraw` and not `revoke` because `comcon.revoke()` is already
+       the grant-time FLAVOUR (narrow to zero at admission); one name for two
+       acts would let a mistaken call return a descriptor where a revocation
+       was meant.  Both leave a revoked capability: the code is cap.revoked. */
+    "  C.withdraw=function(frag,name){"
+    "    if(!frag||frag.confined!==true||typeof frag.handle!=='number')"
+    "      throw new TypeError('withdraw: arg0 must be a confined fragment "
+                 "(the value comcon.include returned)');"
+    "    if(name!==undefined&&typeof name!=='string')"
+    "      throw new TypeError('withdraw: arg1 must be a grant name');"
+    "    return C.__revoke(frag.handle,name);};"
+    "  C.withdrawn=function(frag){"
+    "    if(!frag||frag.confined!==true||typeof frag.handle!=='number')"
+    "      throw new TypeError('withdrawn: arg0 must be a confined fragment');"
+    "    var s=C.__grantStatus(frag.handle),out=[],k;"
+    "    for(k in s)if(Object.prototype.hasOwnProperty.call(s,k)&&s[k].revoked)out.push(k);"
+    "    return out.sort();};"
     /* ================= M-LIB: the standard policy library =================
        ROADMAP M-LIB: "the user-facing surface is not the kernel but the
        combinators."  Everything above is the kernel: 20 operators, correct and
@@ -5924,6 +5947,18 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        '\"} to say which binding you mean');"
     "      b.hist.push(b.q);return b.h.remove();});"
     "    verb('revive','bindings',function(name){return need(name).h.revive();});"
+    /* G-01: withdraw is class X like remove, and guarded the same way -- the
+       confirmation NAMES the binding.  (name, grant?, {confirm}) or
+       (name, {confirm}) for every grant.  The CVE-day verb: no reload, no
+       redeploy, and the tenant's calls into the dead grant are denials it can
+       handle. */
+    "    verb('withdraw','bindings',function(name,grant,opts){var b=need(name);"
+    "      if(grant&&typeof grant==='object'){opts=grant;grant=undefined;}"
+    "      if(!opts||opts.confirm!==name)throw new TypeError("
+    "        'ops.withdraw is class X (irreversible): pass {confirm:\"'+name+"
+    "        '\"} to say which binding you mean');"
+    "      return b.h.withdraw(grant);});"
+    "    verb('withdrawn','bindings',function(name){return need(name).h.withdrawn();});"
 
     /* trustReport: for each registered binding, what is actually holding -- the
        epoch, whether it is bounded, and which contract fields bite. Over the
@@ -5932,6 +5967,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    verb('trustReport','bindings',function(){"
     "      return {bindings:names.map(function(n){var b=reg[n];return {"
     "        name:n,epoch:b.h.epoch(),tombstoned:b.h.tombstoned(),"
+    "        revoked:b.h.withdrawn(),"
     "        ops:b.h.describe().ops.map(function(o){"
     "          return o.name+':'+o.cls;})};}),"
     "        enforcedBy:STD.describe().enforced};});"
@@ -5954,7 +5990,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      return STD.policy.diff(need(name).h.contract,candidate);});"
     "    verb('docs','bindings',function(name){var b=need(name);"
     "      return STD.docs.render(name,b.h,{epoch:b.h.epoch(),"
-    "        tombstoned:b.h.tombstoned()});});"
+    "        tombstoned:b.h.tombstoned(),revoked:b.h.withdrawn()});});"
     "    var sess={},withheld=[],avail=[];"
     "    for(var i=0;i<V.length;i++){"
     "      if(have[V[i].needs]){sess[V[i].name]=V[i].fn;avail.push(V[i].name);}"
@@ -6393,7 +6429,16 @@ static const char  ngx_js_comcon_bootstrap[] =
        `unchanged`, or `incomparable` (a change no order relates, e.g. two
        globs), and every change is listed with its direction. */
     "  STD.policy={};"
-    "  function asContract(x){if(x&&x.contract)return x.contract;return x||{};}"
+    "  function asContract(x){var c=(x&&x.contract)?x.contract:(x||{});"
+    /* G-01: a binding's contract names its grants through `env` + `imports`
+       (that is what realize() feeds include()); read it as realize would, so
+       the docs and the diff of a binding see the grants it actually holds. */
+    "    if(!c.grants&&c.env&&c.env[ENV]){var o={},k,g={},m=c.imports||[],i;"
+    "      for(k in c)if(Object.prototype.hasOwnProperty.call(c,k))o[k]=c[k];"
+    "      for(i=0;i<m.length;i++)if(Object.prototype.hasOwnProperty.call(c.env.grants,m[i]))"
+    "        g[m[i]]=c.env.grants[m[i]];"
+    "      o.grants=g;return o;}"
+    "    return c;}"
     "  function gview(v,k){var pv=polOf(v,k);if(pv===null)return {kind:-1};"
     "    var p=pv.pol,o={kind:p.kind};"
     "    if(p.kind===0)o.fields=maskFields(p.mask);"
@@ -6494,7 +6539,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "  STD.docs={};"
     "  STD.docs.model=function(name,x,opts){opts=opts||{};"
     "    var c=asContract(x),m={name:String(name),epoch:opts.epoch,"
-    "      tombstoned:!!opts.tombstoned,"
+    "      tombstoned:!!opts.tombstoned,revoked:(opts.revoked||[]).slice(),"
     "      posture:c.onViolation||'inherit',profile:c.profile||'restrictive',"
     "      admission:c.imports!==undefined||c.identity!==undefined||"
     "                !!c.checkRequest||c.tests!==undefined,"
@@ -6510,6 +6555,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var g=c.grants||{},k;"
     "    for(k in g)if(Object.prototype.hasOwnProperty.call(g,k)){"
     "      var v=gview(g[k],k),row={name:k,kind:kindName(v.kind)};"
+    "      if(m.revoked.indexOf(k)>=0)row.revoked=true;"
     "      if(v.kind===-1){row.kind='revoked';row.ops=[];}"
     "      else if(v.kind===0)row.ops=(v.fields||[]).map(function(f){return f+' (read)';});"
     "      else if(v.kind===1)row.ops=['paths()','route','allowed(path)'];"
@@ -6533,7 +6579,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    if(!m.grants.length)L.push('(none: data in, data out)');"
     "    for(i=0;i<m.grants.length;i++){var r=m.grants[i];"
     "      L.push('- `'+r.name+'` -- '+r.kind+(r.within?' within `'+r.within+'`':'')+"
-    "        ': '+(r.ops.length?r.ops.join(', '):'nothing'));"
+    "        ': '+(r.ops.length?r.ops.join(', '):'nothing')+"
+    "        (r.revoked?' -- REVOKED: every use denies as cap.revoked':''));"
     "      if(r.ttlSeconds)L.push('  - expires '+r.ttlSeconds+' s after it was granted');"
     "      if(r.budget)L.push('  - budget: '+r.budget);"
     "      if(r.window)L.push('  - open on day mask '+r.window.days+', '+"
@@ -6701,7 +6748,15 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    contract=contract||{imports:[]};"
     "    var renv=contract.env||C.env();"
     "    function make(q){return C.realize(q,contract,renv);}"
-    "    var cur=make(quotation),epoch=0,tomb=false,hist=[];"
+    "    var cur=make(quotation),epoch=0,tomb=false,hist=[],revoked={};"
+    /* G-01: a revocation STICKS TO THE BINDING -- every epoch it has, and
+       every epoch it will realize under this contract, until the binding is
+       rebuilt.  A replace() admits new text under the same contract, so the
+       same grants come back; without this a tenant could lift a revocation by
+       pushing any edit, and a rollback() would lift it by accident. */
+    "    function applyRevoked(f){var k;if(!f)return;"
+    "      for(k in revoked)if(Object.prototype.hasOwnProperty.call(revoked,k))"
+    "        C.__revoke(f.handle,k);}"
     "    site(cur,epoch);"
     "    var h={};"
     "    h.contract=contractView(contract);"
@@ -6717,17 +6772,24 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    h.replace=function(q2){"
     "      if(!q2||!q2[QUOTE])throw new TypeError("
     "        'replace: arg0 must be a comcon.quote() description');"
-    "      var next=make(q2);"
+    "      var next=make(q2);applyRevoked(next);"
     "      hist.push({epoch:epoch,callable:cur});"
     "      while(hist.length>BINDCAP)pomFreeFrag(hist.shift().callable);"
     "      cur=next;epoch++;tomb=false;site(cur,epoch);return epoch;};"
     "    h.rollback=function(){"
     "      if(!hist.length)throw new Error('bindAt: nothing to roll back');"
     "      var prev=hist.pop(),old=cur;"
-    "      cur=prev.callable;epoch=prev.epoch;tomb=false;site(cur,epoch);"
-    "      pomFreeFrag(old);return epoch;};"
+    "      cur=prev.callable;epoch=prev.epoch;tomb=false;applyRevoked(cur);"
+    "      site(cur,epoch);pomFreeFrag(old);return epoch;};"
     "    h.remove=function(){tomb=true;site(null,epoch);return epoch;};"
     "    h.revive=function(){if(tomb){tomb=false;site(cur,epoch);}return epoch;};"
+    /* G-01: withdraw(name?) on the live epoch AND every epoch a rollback could
+       restore; the set is remembered for the epochs still to come. */
+    "    h.withdraw=function(g){var r=C.withdraw(cur,g),i;"
+    "      for(i=0;i<r.revoked.length;i++)revoked[r.revoked[i]]=true;"
+    "      for(i=0;i<hist.length;i++)C.withdraw(hist[i].callable,g);"
+    "      return r;};"
+    "    h.withdrawn=function(){return C.withdrawn(cur);};"
     /* V9: the three READ ops on this handle were missing.  `describe` is
        itself a row on both NodeViews and was absent here -- the same op
        classified on one surface and not on its sibling, which is the shape a
@@ -6736,8 +6798,10 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      {name:'describe',op:'read',cls:'R'},"
     "      {name:'epoch',op:'read',cls:'R'},"
     "      {name:'tombstoned',op:'read',cls:'R'},"
+    "      {name:'withdrawn',op:'read',cls:'R'},"
     "      {name:'call',op:'invoke',cls:'R'},"
     "      {name:'replace',op:'rewrite',cls:'F'},"
+    "      {name:'withdraw',op:'withdraw',cls:'X'},"
     "      {name:'rollback',op:'rewrite',cls:'F'},"
     "      {name:'remove',op:'remove',cls:'X'},"
     "      {name:'revive',op:'revive',cls:'L'}]};};"
@@ -6764,7 +6828,14 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      'bindShared: arg3 must be onRequest(req,callable,epoch)');"
     "    contract=contract||{imports:[]};"
     "    var renv=contract.env||C.env(),SK='__comconBind__:'+key;"
-    "    var localEpoch=-1,cur=null,tomb=false;"
+    "    var localEpoch=-1,localRev=-1,cur=null,tomb=false;"
+    /* G-01: the shared record carries `revoked` (names) and `rev` (a counter
+       beside `epoch`): a revocation is fanned out on the same lazy pull as an
+       epoch, but it is not a new epoch -- the text did not change -- so a
+       worker that sees only `rev` move applies it to the callable it has. */
+    "    function applyRevoked(st){var i,d=0;if(!cur||!st.revoked)return 0;"
+    "      for(i=0;i<st.revoked.length;i++)d+=C.__revoke(cur.handle,st.revoked[i]).delegated;"
+    "      return d;}"
     /* nginx.shared is NOT available at config-eval time (only once workers run),
        so ALL shared access is deferred to request time: reconcile() seeds the
        shared state lazily on first touch (idempotent across workers) and runs
@@ -6775,16 +6846,20 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        nginx.shared.set(SK,"
     "          JSON.stringify({epoch:0,source:quotation.source}));"
     "        raw=nginx.shared.get(SK);if(raw===undefined)return;}"
-    "      var st=JSON.parse(raw);if(st.epoch===localEpoch)return;"
+    "      var st=JSON.parse(raw);"
+    "      if(st.epoch===localEpoch){"
+    "        if((st.rev|0)!==localRev){localRev=st.rev|0;applyRevoked(st);}"
+    "        return;}"
     "      var old=cur;"
     "      if(st.removed){tomb=true;cur=null;}"
     "      else{tomb=false;cur=C.realize(C.quote(st.source),contract,renv);}"
-    "      localEpoch=st.epoch;"
+    "      localEpoch=st.epoch;localRev=st.rev|0;applyRevoked(st);"
     "      if(old&&old.handle!==undefined&&old.handle>=0)"
     "        C.__freeConfined(old.handle);}"
     "    function bump(obj){"
     "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
-    "      obj.epoch=(st.epoch|0)+1;"
+    "      obj.epoch=(st.epoch|0)+1;obj.rev=st.rev|0;"
+    "      if(st.revoked)obj.revoked=st.revoked;"
     "      nginx.shared.set(SK,JSON.stringify(obj));reconcile();return obj.epoch;}"
     "    var h={};"
     "    h.epoch=function(){reconcile();return localEpoch;};"
@@ -6800,6 +6875,26 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    h.revive=function(){"
     "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
     "      return bump({source:st.source||''});};"
+    /* G-01: fleet-wide by the shared record; `delegated` is what THIS worker
+       reached, the others reach theirs on their next request. */
+    "    h.withdraw=function(g){reconcile();"
+    "      if(g!==undefined&&typeof g!=='string')"
+    "        throw new TypeError('withdraw: arg1 must be a grant name');"
+    "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
+    "      var all=(contract.imports||[]).filter(function(n){"
+    "        return Object.prototype.hasOwnProperty.call(renv.grants,n);}),"
+    "        list=st.revoked||[],i;"
+    "      if(g!==undefined){if(all.indexOf(g)<0)throw new TypeError("
+    "        'withdraw: `'+g+'` is not a grant of this binding');"
+    "        if(list.indexOf(g)<0)list.push(g);}"
+    "      else for(i=0;i<all.length;i++)if(list.indexOf(all[i])<0)list.push(all[i]);"
+    "      st.revoked=list;st.rev=(st.rev|0)+1;"
+    "      nginx.shared.set(SK,JSON.stringify(st));"
+    "      var d=0;if(cur){localRev=st.rev;d=applyRevoked(st);}"
+    "      return {revoked:list.slice().sort(),delegated:d};};"
+    "    h.withdrawn=function(){reconcile();"
+    "      var st=JSON.parse(nginx.shared.get(SK)||'{\"epoch\":0}');"
+    "      return (st.revoked||[]).slice().sort();};"
     /* V9: the same two READ ops were missing here as on bindAt.  A sibling
        surface with its own hand-written copy of an op list is exactly where the
        drift lands twice, which is why the checker audits all four rather than
@@ -6807,8 +6902,10 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    h.describe=function(){return {shared:true,ops:["
     "      {name:'describe',op:'read',cls:'R'},"
     "      {name:'epoch',op:'read',cls:'R'},"
+    "      {name:'withdrawn',op:'read',cls:'R'},"
     "      {name:'handler',op:'invoke',cls:'R'},"
     "      {name:'replace',op:'rewrite',cls:'F'},"
+    "      {name:'withdraw',op:'withdraw',cls:'X'},"
     "      {name:'remove',op:'remove',cls:'X'},"
     "      {name:'revive',op:'revive',cls:'L'}]};};"
     "    return Object.freeze(h);};"
@@ -7734,6 +7831,12 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__denialStatus",
                           JS_NewCFunction(ctx, ngx_js_comcon_denial_status,
                                           "__denialStatus", 1));
+        JS_SetPropertyStr(ctx, comcon_obj, "__revoke",
+                          JS_NewCFunction(ctx, ngx_js_comcon_revoke,
+                                          "__revoke", 2));
+        JS_SetPropertyStr(ctx, comcon_obj, "__grantStatus",
+                          JS_NewCFunction(ctx, ngx_js_comcon_grant_status,
+                                          "__grantStatus", 1));
         /* G-13: the whole free-name manifest of a function, classified. */
         JS_SetPropertyStr(ctx, comcon_obj, "__freeNames",
                           JS_NewCFunction(ctx, ngx_js_comcon_free_names,

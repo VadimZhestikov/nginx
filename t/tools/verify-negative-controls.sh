@@ -109,6 +109,7 @@ PATCHES=(
 "F20|f20-branch-reads-double.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|F20: the 8-bit branch on an INT condition reads the double register again"
 "F21|f21-bnot-aborts.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|F21: the compiled bitwise-not helper back on the arithmetic slow path -- a fragment's ~1.5 kills the worker"
 "G-05|denials-not-attributed.patch|t/comcon_would_deny.t|objs|fail|G-05: the per-fragment increment removed -- every binding reads zero while the fleet counter still grows"
+"G-01|revoke-not-checked.patch|t/comcon_revoke.t|objs|fail|G-01: the chain walk blinded -- the flips happen and read back, and every withdrawn capability keeps working"
 )
 
 if ! git diff --quiet -- src/js quickjs || ! git diff --cached --quiet -- src/js quickjs; then

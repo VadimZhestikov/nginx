@@ -185,6 +185,10 @@ typedef struct {
      * is not yours redacted, budgeted or scheduled -- it is not yours at all.
      */
     uint32_t  owner;
+    /* G-01: the grant record this wrapper is one holder of; NULL for the
+       host's own wrappers, which cannot be revoked because they were never
+       granted.  A copy's record points at the record it was copied from. */
+    ngx_js_grant_t  *grant;
 } ngx_js_socket_opaque_t;
 
 
@@ -236,6 +240,7 @@ ngx_js_socket_finalizer(JSRuntime *rt, JSValue val)
 
     op = JS_GetOpaque(val, ngx_js_socket_class_id);
     if (op) {
+        ngx_js_grant_release(op->grant);
         js_free_rt(rt, op);
     }
 }
@@ -424,6 +429,13 @@ ngx_js_socket_get(JSContext *ctx, JSValueConst this_val, int magic)
         return JS_UNDEFINED;
     }
 
+    /* G-01: and has the host taken it back?  Second, for the same reason
+       cap.owner is first: a revoked capability is not a masked one, it is
+       gone, and the answer does not depend on what the operator wrote. */
+    if (ngx_js_cap_dead(op->grant, st_addr_of(op))) {
+        return JS_UNDEFINED;
+    }
+
     /*
      * COMCON mediate: a redacted field (mask bit clear for this magic) reads as
      * undefined — the membrane hides it. Attenuation-only: a mask can only
@@ -609,6 +621,10 @@ ngx_js_socket_close(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "sock.close: denied (not this fragment's)");
     }
 
+    if (ngx_js_cap_dead(op->grant, st->addr)) {
+        return JS_ThrowTypeError(ctx, "sock.close: denied (revoked)");
+    }
+
     /* COMCON SR-1 MEDIUM-4: close() destroys host state — a mutating op, not a
      * scalar read. A tenant handed this socket via grantToTenant may not close
      * a socket it does not own. */
@@ -685,6 +701,10 @@ ngx_js_socket_broadcast(JSContext *ctx, JSValueConst this_val,
     {
         return JS_ThrowTypeError(ctx,
             "sock.broadcast: denied (not this fragment's)");
+    }
+
+    if (ngx_js_cap_dead(op->grant, st->addr)) {
+        return JS_ThrowTypeError(ctx, "sock.broadcast: denied (revoked)");
     }
 
     /* COMCON SR-1 MEDIUM-4: broadcast distributes the fd fleet-wide — mutating;
@@ -881,6 +901,17 @@ ngx_js_socket_narrow(JSContext *ctx, JSValueConst parent, uint32_t keep_mask,
     *child = *op;                              /* gen, budget, window, cosign */
     child->mask = op->mask & keep_mask;
     child->owner = child_owner;
+
+    /* G-01: the copy holds a record of its own UNDER the parent's, so a
+       revocation of the parent's grant reaches it and a revocation of the
+       copy's does not reach the parent */
+    child->grant = ngx_js_grant_new(op->grant);
+    if (child->grant == NULL) {
+        js_free(ctx, child);
+        *code = NGX_JS_REFUSAL_NONE;
+        ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");
+        return NGX_ERROR;
+    }
 
     if (ttl_seconds > 0) {
         exp = ngx_time() + (time_t) ttl_seconds;
@@ -1275,6 +1306,7 @@ typedef struct {
     uint8_t   proto_pos;
     /* see the socket opaque */
     uint32_t  owner;
+    ngx_js_grant_t  *grant;
 } ngx_js_outbound_opaque_t;
 
 JSClassID  ngx_js_outbound_class_id;   /* described by ngx_js_com_describe.c */
@@ -1372,6 +1404,7 @@ ngx_js_outbound_finalizer(JSRuntime *rt, JSValue val)
 
     op = JS_GetOpaque(val, ngx_js_outbound_class_id);
     if (op) {
+        ngx_js_grant_release(op->grant);
         js_free_rt(rt, op);
     }
 }
@@ -1516,6 +1549,11 @@ ngx_js_outbound_request(JSContext *ctx, JSValueConst this_val, int argc,
     if (ngx_js_cap_foreign(op->owner)
         && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER, url))
     {
+        JS_FreeCString(ctx, url);
+        return JS_UNDEFINED;
+    }
+
+    if (ngx_js_cap_dead(op->grant, url)) {
         JS_FreeCString(ctx, url);
         return JS_UNDEFINED;
     }
@@ -2058,6 +2096,59 @@ ngx_js_outbound_set_owner(JSValueConst obj, uint32_t frag)
 
 
 /*
+ * G-01: attach a grant record to a freshly granted wrapper (the wrapper
+ * takes a reference), and read one back.  The include's grant loop attaches
+ * a root record to each wrapper it builds; the fragment's table then holds
+ * the same record under the grant's name, which is what `comcon.revoke`
+ * looks the name up in.
+ */
+void
+ngx_js_socket_set_grant(JSValueConst obj, ngx_js_grant_t *g)
+{
+    ngx_js_socket_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_socket_class_id);
+    if (op != NULL && op->grant == NULL) {
+        ngx_js_grant_ref(g);
+        op->grant = g;
+    }
+}
+
+
+void
+ngx_js_outbound_set_grant(JSValueConst obj, ngx_js_grant_t *g)
+{
+    ngx_js_outbound_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_outbound_class_id);
+    if (op != NULL && op->grant == NULL) {
+        ngx_js_grant_ref(g);
+        op->grant = g;
+    }
+}
+
+
+ngx_js_grant_t *
+ngx_js_socket_grant_of(JSValueConst obj)
+{
+    ngx_js_socket_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_socket_class_id);
+    return op != NULL ? op->grant : NULL;
+}
+
+
+ngx_js_grant_t *
+ngx_js_outbound_grant_of(JSValueConst obj)
+{
+    ngx_js_outbound_opaque_t  *op;
+
+    op = JS_GetOpaque(obj, ngx_js_outbound_class_id);
+    return op != NULL ? op->grant : NULL;
+}
+
+
+/*
  * The authoring tier's copy-then-narrow for an outbound wrapper -- see
  * ngx_js_socket_narrow() for the argument.  The glob, budget, window and
  * cosignature are inherited verbatim; only the expiry can change, downward.
@@ -2101,6 +2192,14 @@ ngx_js_outbound_narrow(JSContext *ctx, JSValueConst parent,
 
     *child = *op;
     child->owner = child_owner;
+
+    child->grant = ngx_js_grant_new(op->grant);           /* G-01, as above */
+    if (child->grant == NULL) {
+        js_free(ctx, child);
+        *code = NGX_JS_REFUSAL_NONE;
+        ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");
+        return NGX_ERROR;
+    }
 
     if (ttl_seconds > 0) {
         exp = ngx_time() + (time_t) ttl_seconds;

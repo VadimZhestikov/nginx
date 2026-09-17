@@ -92,12 +92,17 @@ Globex's objects: they are not merely forbidden, they are unresolvable.
 >     deps: [{ name: "lib", path: "/etc/nginx/vendor/magic-utils.js", sha256: "9f2c…" }] });
 > var h = comcon.include(src, { imports: [], identity: "<sha256 pin of what was reviewed>" });
 > ```
-> Tests: `t/comcon_include_deps.t`, `t/comcon_include_admit.t`. **The CVE-day half is not
-> built as written** (gap G-01): `comcon.revoke()` is a grant-time flavour, not a switch on a
-> live grant, and there is no provenance chain to cascade over. What exists is
-> `ops.remove(name, {confirm: name})`, which tombstones a live binding (the site answers 410)
-> and `ops.revive` (`t/comcon_std_ops.t`); a reseller's sub-fragments die with the reseller's
-> callable (`t/comcon_author_basic.t`).
+> Tests: `t/comcon_include_deps.t`, `t/comcon_include_admit.t`. **The CVE-day half is built
+> since v5.129 (G-01 closed), in a different spelling:** the switch is on the *grant*, and it
+> is held by the operator session, not a CLI:
+> ```js
+> ops.withdraw("acme", "lib", { confirm: "acme" });   // {revoked: ["lib"], delegated: 3}
+> ```
+> Every wrapper the library was granted, and every copy it re-granted onward, answers
+> `cap.revoked` from the next call — in every posture, no reload, no redeploy — and the
+> tenant's calls into it are denials it can handle. A `replace()` does not lift it; nothing
+> does but a new admission. `t/comcon_revoke.t`, demo `S_Security_Teams/S5`. The
+> `comconctl` spelling stays not built (G-26).
 
 **Problem:** a tenant uses a popular utility library. Next month it ships a compromised
 update (supply-chain attack), or a CVE lands.

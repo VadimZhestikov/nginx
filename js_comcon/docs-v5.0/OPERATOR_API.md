@@ -527,6 +527,60 @@ G-16; one small mechanism under the second.
 
 ---
 
+## 8l. `comcon.withdraw(f, name?)` — live revocation of a grant, cascading over delegations *(v5.129)*
+
+```js
+comcon.withdraw(f, 'lib')       // {revoked: ['lib'], delegated: 1}: this grant, and every copy re-granted from it
+comcon.withdraw(f)              // every grant the fragment holds (offboarding)
+comcon.withdrawn(f)             // ['lib']: read back from the kernel's table, not a JS shadow
+
+h.withdraw('lib'); h.withdrawn()            // a bindAt / bindShared handle: sticks to the binding
+ops.withdraw('acme', 'lib', { confirm: 'acme' })   // class X, like remove: the confirmation names the binding
+ops.withdrawn('acme'); ops.docs('acme')     // the manual marks the grant REVOKED
+```
+
+The grant is a switch the host holds **at run time**, closing `SHOWCASE-gaps.md` G-01 (the
+CVE-day story, scenario 2; offboarding, scenario 20).
+
+- **The mechanism is one pointer per wrapper.** Every granted wrapper — socket, outbound,
+  COM facet, author — holds a refcounted **grant record**; the authoring tier's
+  copy-then-narrow gives the copy a record of its own whose *parent* is the original's. The
+  gate asks "is any record on the chain revoked?" right after `cap.owner`, so a revocation of
+  the original reaches every delegation without a search, and a delegation chain outlives
+  any one holder. The fragment's stats slot keeps its records under the contract's names,
+  which is how the host reaches a grant by `(fragment, name)` after the wrappers have
+  vanished into the closure. `delegated` counts the live copies made directly from the
+  revoked records — the delegations the cascade reached.
+- **`cap.revoked` is the second unconditional code.** Like `cap.owner`, it denies in audit
+  and learn as in enforce (`mode=audit … unconditional=1` in the log): the operator who
+  withdrew a grant is not observing a policy, they are exercising one, and a posture that
+  let the capability through would hand back what the one person entitled to withdraw it had
+  just withdrawn. Frozen in the golden corpus with a `revokeBefore` row shape — the only way
+  the code can be reached, since nothing a fragment does can withdraw its own grant.
+- **Why `withdraw` and not `revoke`.** `comcon.revoke()` is already the grant-time *flavour*
+  (narrow to zero at admission). One name for two acts would let a mistaken call — a handle
+  where a fragment was meant — return a descriptor where a revocation was intended. Both
+  leave a *revoked* capability, which is what the code names.
+- **A revocation sticks to a binding.** `bindAt.withdraw` applies it to the live epoch and to
+  every epoch a `rollback()` could restore, and re-applies it to every epoch a `replace()`
+  realizes: the same contract makes the same grants, and an edit must not lift a revocation.
+  `bindShared` carries `revoked` and a `rev` counter on the shared record beside the epoch,
+  so the other workers apply it on their next request without realizing a new epoch.
+- **Irreversible by design.** There is no verb that un-withdraws: restoring authority is a
+  widening, and every widening in this system is a new admission under a new contract — a
+  new `bindAt`, a new `include`. Idempotent; a name the fragment was not granted is a
+  `TypeError`, because revoking nothing must not read as revoking something.
+- **Per worker for a raw fragment, fleet-wide for a shared binding** — the same scope rule as
+  `comcon.mode` and `bindShared`. Withdrawing the `author` grant stops further authoring; the
+  sub-fragments already authored keep their own records, under the grants they were copied
+  from, and die with *those*.
+
+Negative control: `t/tools/controls/revoke-not-checked.patch` (the chain walk blinded — the
+flips still read back and every capability keeps working). `t/comcon_revoke.t` (31), the
+`cap.revoked` row in `t/comcon_v12_denial_codes.t`, demo `S_Security_Teams/S5`.
+
+---
+
 ## 8j. `author({subFragments, ttlSeconds?})` — a fragment that authors fragments *(v5.106–v5.107)*
 
 ```js

@@ -15,6 +15,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <quickjs.h>
+#include "ngx_js_compartment.h"
 
 
 /* ---- Class IDs ---- */
@@ -36,6 +37,8 @@ extern JSClassID  ngx_js_com_facet_class_id;
 void      *ngx_js_server_srv_op(JSValueConst val);
 /* Bind a granted facet to the fragment it was granted to (0 = the host's own). */
 void       ngx_js_com_facet_set_owner(JSValueConst obj, uint32_t frag);
+void       ngx_js_com_facet_set_grant(JSValueConst obj, ngx_js_grant_t *g);
+ngx_js_grant_t  *ngx_js_com_facet_grant_of(JSValueConst obj);
 /* the authoring tier: copy a parent's own facet for a sub-fragment (NGX_DECLINED
  * when `parent` is not a facet; NGX_ERROR + *code/reason on a refusal) */
 ngx_int_t  ngx_js_com_facet_copy(JSContext *ctx, JSValueConst parent,

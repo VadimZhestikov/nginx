@@ -93,6 +93,8 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
     "cap.protocol",
     /* A capability used by a fragment it was not granted to (see the header) */
     "cap.owner",
+    /* G-01: a capability the host revoked after granting it (see the header) */
+    "cap.revoked",
 };
 
 /* Per-process state (single-threaded main loop; see the note above). */
@@ -287,7 +289,100 @@ ngx_js_tenant_mode_name(void)
 static ngx_flag_t
 ngx_js_denial_unconditional(ngx_js_denial_code_t code)
 {
-    return code == NGX_JS_DENIAL_CAP_OWNER;
+    /* cap.revoked joins cap.owner (G-01): the operator who revoked a grant
+       is not observing their policy, they are exercising it.  A posture that
+       let a revoked capability through would hand back authority the one
+       person entitled to withdraw it had just withdrawn. */
+    return code == NGX_JS_DENIAL_CAP_OWNER
+           || code == NGX_JS_DENIAL_CAP_REVOKED;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* G-01: the grant records                                              */
+
+ngx_js_grant_t *
+ngx_js_grant_new(ngx_js_grant_t *parent)
+{
+    ngx_js_grant_t  *g;
+
+    g = ngx_alloc(sizeof(ngx_js_grant_t), ngx_cycle->log);
+    if (g == NULL) {
+        return NULL;
+    }
+
+    g->parent = parent;
+    g->refs = 1;
+    g->copies = 0;
+    g->revoked = 0;
+
+    if (parent != NULL) {
+        parent->refs++;
+        parent->copies++;
+    }
+
+    return g;
+}
+
+
+void
+ngx_js_grant_ref(ngx_js_grant_t *g)
+{
+    if (g != NULL) {
+        g->refs++;
+    }
+}
+
+
+void
+ngx_js_grant_release(ngx_js_grant_t *g)
+{
+    ngx_js_grant_t  *parent;
+
+    /* iterative: a chain's records go one at a time as their last holder
+       lets go, and a deep chain must not recurse */
+    while (g != NULL) {
+        if (--g->refs > 0) {
+            return;
+        }
+
+        parent = g->parent;
+        if (parent != NULL && parent->copies > 0) {
+            parent->copies--;
+        }
+        ngx_free(g);
+        g = parent;
+    }
+}
+
+
+ngx_flag_t
+ngx_js_grant_revoked(ngx_js_grant_t *g)
+{
+    for ( /* void */ ; g != NULL; g = g->parent) {
+        if (g->revoked) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+
+void
+ngx_js_grant_revoke(ngx_js_grant_t *g)
+{
+    if (g != NULL) {
+        g->revoked = 1;
+    }
+}
+
+
+ngx_flag_t
+ngx_js_cap_dead(ngx_js_grant_t *g, const char *obj)
+{
+    return g != NULL && ngx_js_grant_revoked(g)
+           && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_REVOKED, obj);
 }
 
 

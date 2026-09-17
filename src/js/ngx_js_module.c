@@ -1188,12 +1188,26 @@ ngx_js_comcon_stats(ngx_js_conf_t *jcf, uint32_t handle)
 static void
 ngx_js_comcon_stats_reset(ngx_js_conf_t *jcf, uint32_t handle)
 {
+    ngx_uint_t                   i;
     ngx_js_comcon_frag_stats_t  *st = ngx_js_comcon_stats(jcf, handle);
 
     if (st != NULL) {
+        for (i = 0; i < st->ngrants && i < NGX_JS_COMCON_GRANTS_MAX; i++) {
+            ngx_js_grant_release(st->grants[i]);     /* G-01: the table's */
+        }
         ngx_memzero(st, sizeof(ngx_js_comcon_frag_stats_t));
     }
 }
+
+
+/* G-01: defined with the author tier below, used by both entrances */
+static ngx_js_grant_t  *ngx_js_cap_grant_of(JSValueConst v);
+static ngx_int_t  ngx_js_comcon_grant_attach(JSValueConst wrapper,
+    ngx_js_grant_t **slot);
+static void  ngx_js_comcon_grants_record(ngx_js_conf_t *jcf, uint32_t handle,
+    ngx_uint_t n, char names[][NGX_JS_COMCON_GRANT_NAME_MAX],
+    ngx_js_grant_t **nodes);
+static void  ngx_js_comcon_grants_drop(ngx_js_grant_t **nodes);
 
 
 /*
@@ -1346,6 +1360,7 @@ ngx_js_comcon_teardown(ngx_js_conf_t *jcf)
 
             for (fi = 0; fi < jcf->comcon_frags->nelts; fi++) {
                 JS_FreeValue(jcf->comcon_ctx, fv[fi]);
+                ngx_js_comcon_stats_reset(jcf, (uint32_t) fi);   /* G-01 */
             }
             jcf->comcon_frags->nelts = 0;
         }
@@ -2126,9 +2141,10 @@ oom:
 }
 
 
-JSValue
-ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
-    int argc, JSValueConst *argv)
+static JSValue
+ngx_js_comcon_include_inner(JSContext *hctx, JSValueConst this_val,
+    int argc, JSValueConst *argv, ngx_js_grant_t **gnodes,
+    char gnames[][NGX_JS_COMCON_GRANT_NAME_MAX])
 {
     uint32_t  frag_pred;
     ngx_js_conf_t  *jcf;
@@ -2198,6 +2214,8 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             names[nn] = name;
             nlens[nn] = nlen;
             nn++;
+            ngx_cpystrn((u_char *) gnames[gi], (u_char *) name,
+                        NGX_JS_COMCON_GRANT_NAME_MAX);        /* G-01 */
         }
     }
     for (di = 0; di < dn; di++) {
@@ -2471,7 +2489,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             }
 
             av[gi] = ngx_js_author_wrap(sctx, a_subs, a_ttl, frag_pred + 1);
-            if (JS_IsException(av[gi])) {
+            if (ngx_js_comcon_grant_attach(av[gi], &gnodes[gi]) != NGX_OK) {
                 goto grant_bad;
             }
             continue;
@@ -2614,7 +2632,7 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
             ngx_js_outbound_set_owner(av[gi], frag_pred + 1);
             JS_FreeValue(hctx, pol_v);
             JS_FreeValue(hctx, cap_v);
-            if (JS_IsException(av[gi])) {
+            if (ngx_js_comcon_grant_attach(av[gi], &gnodes[gi]) != NGX_OK) {
                 goto grant_bad;
             }
             continue;
@@ -2706,6 +2724,14 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
 
         JS_FreeValue(hctx, pol_v);
         JS_FreeValue(hctx, cap_v);
+
+        /* G-01: a root record for the facet or socket just built */
+        if (ngx_js_comcon_grant_attach(av[gi], &gnodes[gi]) != NGX_OK) {
+            if (!JS_IsException(av[gi])) {
+                JS_FreeValue(sctx, av[gi]);
+            }
+            goto grant_bad;
+        }
         continue;
 
     grant_bad:
@@ -3018,7 +3044,36 @@ ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
         return ngx_js_comcon_fail_throw(hctx, &fail, "comcon.include");
     }
 
+    /* G-01: the fragment's grant table, under the contract's names; the
+       references the grant loop took move into it */
+    ngx_js_comcon_grants_record(jcf, (uint32_t) handle, gn, gnames, gnodes);
+
     return JS_NewInt64(hctx, (int64_t) handle);
+}
+
+
+/*
+ * The host entrance.  It owns the grant-record array for the call so that
+ * exactly one place releases what publish did not take -- the pipeline
+ * above has dozens of ways to refuse, and none of them should have to.
+ */
+JSValue
+ngx_js_comcon_include_confined(JSContext *hctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    JSValue          r;
+    ngx_js_grant_t  *gnodes[NGX_JS_COMCON_GRANTS_MAX];             /* G-01 */
+    char             gnames[NGX_JS_COMCON_GRANTS_MAX]
+                           [NGX_JS_COMCON_GRANT_NAME_MAX];
+
+    ngx_memzero(gnodes, sizeof(gnodes));
+    ngx_memzero(gnames, sizeof(gnames));
+
+    r = ngx_js_comcon_include_inner(hctx, this_val, argc, argv, gnodes,
+                                    gnames);
+
+    ngx_js_comcon_grants_drop(gnodes);
+    return r;
 }
 
 
@@ -3084,6 +3139,7 @@ typedef struct {
     uint32_t  max_subs;       /* sub-fragments it may HOLD at once */
     uint32_t  subs_used;      /* held now: refunded when a callable is dropped */
     time_t    expires;        /* `ttl`: 0 = never */
+    ngx_js_grant_t  *grant;   /* G-01: see the socket opaque */
 } ngx_js_author_opaque_t;
 
 
@@ -3094,6 +3150,7 @@ ngx_js_author_finalizer(JSRuntime *rt, JSValue val)
 
     op = JS_GetOpaque(val, ngx_js_author_class_id);
     if (op) {
+        ngx_js_grant_release(op->grant);
         js_free_rt(rt, op);
     }
 }
@@ -3148,6 +3205,15 @@ ngx_js_author_owner_ok(JSContext *ctx, ngx_js_author_opaque_t *op)
         (void) JS_ThrowTypeError(ctx,
             "NginxComconAuthor: this capability was granted to another "
             "fragment");
+        return 0;
+    }
+
+    /* G-01: revoked -- no more authoring; the sub-fragments already
+       authored keep running on their own records, which sit under the
+       grants they were copied from, not under this one */
+    if (ngx_js_cap_dead(op->grant, "author")) {
+        (void) JS_ThrowTypeError(ctx,
+            "NginxComconAuthor: this capability was revoked");
         return 0;
     }
 
@@ -3834,8 +3900,9 @@ fail:
  * 1-4 exactly as the host runs them.
  */
 static JSValue
-ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
-    JSValueConst *argv)
+ngx_js_author_include_inner(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv, ngx_js_grant_t **gnodes,
+    char gnames[][NGX_JS_COMCON_GRANT_NAME_MAX])
 {
     ngx_js_conf_t           *jcf;
     ngx_js_author_opaque_t  *op;
@@ -3978,6 +4045,16 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
         return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");
     }
 
+    /* G-01: the copies' records, with a reference of this call's own (a
+       copy the sub-fragment's closure never captures dies when the closure
+       is applied, exactly as at the host entrance), and their names */
+    for (ni = 0; ni < nn && ni < NGX_JS_COMCON_GRANTS_MAX; ni++) {
+        gnodes[ni] = ngx_js_cap_grant_of(av[ni]);
+        ngx_js_grant_ref(gnodes[ni]);
+        ngx_cpystrn((u_char *) gnames[ni], (u_char *) names[ni],
+                    NGX_JS_COMCON_GRANT_NAME_MAX);
+    }
+
     /* stage 1 + 2 */
     rc = ngx_js_comcon_compile_wrapper(jcf, ctx, source, slen, names, nlens,
                                        nn, &outer, &fail);
@@ -4088,6 +4165,8 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
         return ngx_js_comcon_fail_throw(ctx, &fail, "author.include");
     }
 
+    ngx_js_comcon_grants_record(jcf, (uint32_t) handle, nn, gnames, gnodes);
+
     sop = js_mallocz(ctx, sizeof(ngx_js_sub_opaque_t));
     if (sop == NULL) {
         return JS_EXCEPTION;                 /* the slot stays, unusable */
@@ -4114,6 +4193,27 @@ ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
                   op->max_subs);
 
     return callable;
+}
+
+
+/* The author entrance: the same one cleanup point as the host's. */
+static JSValue
+ngx_js_author_include(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    JSValue          r;
+    ngx_js_grant_t  *gnodes[NGX_JS_COMCON_GRANTS_MAX];             /* G-01 */
+    char             gnames[NGX_JS_COMCON_GRANTS_MAX]
+                           [NGX_JS_COMCON_GRANT_NAME_MAX];
+
+    ngx_memzero(gnodes, sizeof(gnodes));
+    ngx_memzero(gnames, sizeof(gnames));
+
+    r = ngx_js_author_include_inner(ctx, this_val, argc, argv, gnodes,
+                                    gnames);
+
+    ngx_js_comcon_grants_drop(gnodes);
+    return r;
 }
 
 
@@ -4150,6 +4250,134 @@ ngx_js_author_get_used(JSContext *ctx, JSValueConst this_val)
     }
 
     return JS_NewUint32(ctx, op->subs_used);
+}
+
+
+/*
+ * G-01: the grant record of ANY granted wrapper kind, borrowed (NULL for a
+ * value that is not one, or a host-own wrapper).  One reader for the four
+ * kinds, so the table the include records and the copy the author tier
+ * reads back cannot disagree about what a grant is.
+ */
+static ngx_js_grant_t *
+ngx_js_cap_grant_of(JSValueConst v)
+{
+    ngx_js_grant_t          *g;
+    ngx_js_author_opaque_t  *aop;
+
+    g = ngx_js_socket_grant_of(v);
+    if (g == NULL) {
+        g = ngx_js_outbound_grant_of(v);
+    }
+    if (g == NULL) {
+        g = ngx_js_com_facet_grant_of(v);
+    }
+    if (g == NULL) {
+        aop = JS_GetOpaque(v, ngx_js_author_class_id);
+        if (aop != NULL) {
+            g = aop->grant;
+        }
+    }
+
+    return g;
+}
+
+
+/*
+ * Give a freshly granted wrapper a ROOT record and hand the caller a
+ * reference of its own to it.  Its own, not borrowed: a wrapper the
+ * fragment's closure never captures is freed the moment the closure is
+ * applied -- the mutants corpus grants names its probes do not use -- and a
+ * borrowed pointer then dangles at publish (found by ASAN on the first gate
+ * run: heap-use-after-free in ngx_js_grant_ref).  Publish TRANSFERS the
+ * reference into the fragment's table; the entrance's outer function
+ * releases whatever was not transferred, so none of the failure paths
+ * between the grant loop and publish needs to know records exist.
+ */
+static ngx_int_t
+ngx_js_comcon_grant_attach(JSValueConst wrapper, ngx_js_grant_t **slot)
+{
+    ngx_js_grant_t          *g;
+    ngx_js_author_opaque_t  *aop;
+
+    *slot = NULL;
+
+    if (JS_IsException(wrapper)) {
+        return NGX_ERROR;
+    }
+
+    g = ngx_js_grant_new(NULL);
+    if (g == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_js_socket_set_grant(wrapper, g);
+    ngx_js_outbound_set_grant(wrapper, g);
+    ngx_js_com_facet_set_grant(wrapper, g);
+
+    aop = JS_GetOpaque(wrapper, ngx_js_author_class_id);
+    if (aop != NULL && aop->grant == NULL) {
+        ngx_js_grant_ref(g);
+        aop->grant = g;
+    }
+
+    if (g->refs < 2) {                 /* nothing took it: not a wrapper */
+        ngx_js_grant_release(g);
+        return NGX_ERROR;
+    }
+
+    *slot = g;                         /* the caller's reference; see above */
+    return NGX_OK;
+}
+
+
+/* The outer functions' one cleanup point: release what publish did not
+ * transfer (every entry, on a refused include; none, after a published one). */
+static void
+ngx_js_comcon_grants_drop(ngx_js_grant_t **nodes)
+{
+    ngx_uint_t  i;
+
+    for (i = 0; i < NGX_JS_COMCON_GRANTS_MAX; i++) {
+        if (nodes[i] != NULL) {
+            ngx_js_grant_release(nodes[i]);
+            nodes[i] = NULL;
+        }
+    }
+}
+
+
+/*
+ * After publish: the fragment's table takes each record under the grant's
+ * name.  The caller's own references MOVE into the table (the host entrance
+ * took them at attach, the author entrance by ngx_js_grant_ref on the copies
+ * it made); the entries are cleared so the outer function's drop releases
+ * nothing that was transferred.
+ */
+static void
+ngx_js_comcon_grants_record(ngx_js_conf_t *jcf, uint32_t handle,
+    ngx_uint_t n, char names[][NGX_JS_COMCON_GRANT_NAME_MAX],
+    ngx_js_grant_t **nodes)
+{
+    ngx_uint_t                   i;
+    ngx_js_comcon_frag_stats_t  *st;
+
+    st = ngx_js_comcon_stats(jcf, handle);
+    if (st == NULL) {
+        return;
+    }
+
+    st->ngrants = 0;
+    for (i = 0; i < n && i < NGX_JS_COMCON_GRANTS_MAX; i++) {
+        if (nodes[i] == NULL) {
+            continue;
+        }
+        st->grants[st->ngrants] = nodes[i];
+        nodes[i] = NULL;
+        ngx_cpystrn((u_char *) st->grant_names[st->ngrants],
+                    (u_char *) names[i], NGX_JS_COMCON_GRANT_NAME_MAX);
+        st->ngrants++;
+    }
 }
 
 
@@ -4377,6 +4605,140 @@ ngx_js_comcon_denial_status(JSContext *hctx, JSValueConst this_val,
 
     JS_SetPropertyStr(hctx, r, "total", JS_NewInt64(hctx, (int64_t) total));
     JS_SetPropertyStr(hctx, r, "byOp", by);
+
+    return r;
+}
+
+
+/*
+ * G-01 (v5.129): comcon.__revoke(handle, name?), i.e. comcon.withdraw --
+ * flip the grant record(s)
+ * of a live fragment.  With a name, that grant; without, every grant in the
+ * table.  Returns {revoked: [names now revoked], delegated: N} where N is
+ * the number of live copies made directly from the revoked records -- the
+ * delegations the cascade reaches, counted rather than searched for.
+ *
+ * Idempotent and irreversible: there is no verb that un-revokes, because
+ * restoring authority is a widening and every widening in this system is a
+ * new admission (a replace, a new include) -- the reviewed path.  A name the
+ * fragment was not granted is a TypeError: revoking nothing must not read
+ * as revoking something.
+ */
+JSValue
+ngx_js_comcon_revoke(JSContext *hctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_conf_t               *jcf;
+    JSValue                      r, list;
+    int64_t                      handle = 0;
+    const char                  *want = NULL;
+    ngx_uint_t                   i, k, matched, delegated;
+    ngx_js_comcon_frag_stats_t  *st;
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx == NULL || jcf->comcon_frags == NULL) {
+        return JS_ThrowInternalError(hctx, "comcon: no compartment");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(hctx, "comcon.__revoke: handle required");
+    }
+    JS_ToInt64(hctx, &handle, argv[0]);
+
+    if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
+        return JS_ThrowTypeError(hctx, "comcon: bad fragment handle");
+    }
+
+    if (argc > 1 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        want = JS_ToCString(hctx, argv[1]);
+        if (want == NULL) {
+            return JS_EXCEPTION;
+        }
+    }
+
+    st = ngx_js_comcon_stats(jcf, (uint32_t) handle);
+
+    list = JS_NewArray(hctx);
+    k = 0;
+    matched = 0;
+    delegated = 0;
+
+    for (i = 0; st != NULL && i < st->ngrants; i++) {
+        if (want != NULL && ngx_strcmp(st->grant_names[i], want) != 0) {
+            continue;
+        }
+        matched++;
+        ngx_js_grant_revoke(st->grants[i]);
+        delegated += st->grants[i]->copies;
+        JS_SetPropertyUint32(hctx, list, (uint32_t) k++,
+                             JS_NewString(hctx, st->grant_names[i]));
+    }
+
+    if (want != NULL && matched == 0) {
+        JS_FreeValue(hctx, list);
+        r = JS_ThrowTypeError(hctx, "comcon.withdraw: `%s` is not a grant of "
+                              "this fragment", want);
+        JS_FreeCString(hctx, want);
+        return r;
+    }
+
+    if (matched > 0) {
+        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                      "js comcon: fragment %L: %ui grant%s revoked%s%s "
+                      "(%ui delegated onward, reached)",
+                      handle, matched, matched == 1 ? "" : "s",
+                      want ? ": " : "", want ? want : "", delegated);
+    }
+
+    if (want != NULL) {
+        JS_FreeCString(hctx, want);
+    }
+
+    r = JS_NewObject(hctx);
+    JS_SetPropertyStr(hctx, r, "revoked", list);
+    JS_SetPropertyStr(hctx, r, "delegated",
+                      JS_NewInt64(hctx, (int64_t) delegated));
+    return r;
+}
+
+
+/* comcon.__grantStatus(handle) -> {name: {revoked, delegated}} */
+JSValue
+ngx_js_comcon_grant_status(JSContext *hctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_conf_t               *jcf;
+    JSValue                      r, row;
+    int64_t                      handle = 0;
+    ngx_uint_t                   i;
+    ngx_js_comcon_frag_stats_t  *st;
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx == NULL || jcf->comcon_frags == NULL) {
+        return JS_ThrowInternalError(hctx, "comcon: no compartment");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(hctx, "comcon.__grantStatus: handle required");
+    }
+    JS_ToInt64(hctx, &handle, argv[0]);
+
+    if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
+        return JS_ThrowTypeError(hctx, "comcon: bad fragment handle");
+    }
+
+    st = ngx_js_comcon_stats(jcf, (uint32_t) handle);
+
+    r = JS_NewObject(hctx);
+    for (i = 0; st != NULL && i < st->ngrants; i++) {
+        row = JS_NewObject(hctx);
+        JS_SetPropertyStr(hctx, row, "revoked",
+                          JS_NewBool(hctx,
+                                     ngx_js_grant_revoked(st->grants[i])));
+        JS_SetPropertyStr(hctx, row, "delegated",
+                          JS_NewInt64(hctx, (int64_t) st->grants[i]->copies));
+        JS_SetPropertyStr(hctx, r, st->grant_names[i], row);
+    }
 
     return r;
 }

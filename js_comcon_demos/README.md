@@ -1,6 +1,6 @@
 # js_comcon_demos — COMCON, shown to the people who need it
 
-Nineteen self-contained, runnable demos of **COMCON**, the capability-secure
+Twenty self-contained, runnable demos of **COMCON**, the capability-secure
 confinement layer that lets nginx run code it does not trust. Each demo has its
 own `nginx.conf`, `host.js` (the operator's program), usually a tenant file,
 a `test.sh` that starts nginx, asserts and stops, and a `README.md` that says
@@ -34,7 +34,7 @@ for t in $(find . -name test.sh | sort); do echo "=== $t ==="; bash "$t" || brea
 
 The binary is `objs/nginx` at the repo root (`auto/configure --add-module=src/js …`;
 `t/tools/gate.sh --configure` builds it and the compiled `objs_jit`). Override
-with `NGINX=/path/to/nginx`. Ports are 8200–8218 for the servers and 8250–8268
+with `NGINX=/path/to/nginx`. Ports are 8200–8219 for the servers and 8250–8269
 for the socket capabilities the demos mint; nothing else in the tree uses them.
 
 ## The audiences, and what each needs to see
@@ -42,7 +42,7 @@ for the socket capabilities the demos mint; nothing else in the tree uses them.
 | Group | Who | The question they arrive with | Demos |
 |---|---|---|---|
 | **P** | Platform / SaaS teams | *Can I run a customer's code in my nginx without it becoming my problem?* | P1–P4 |
-| **S** | Security / compliance teams | *What exactly can it do, who can make it do it, and how do I read back what it tried?* | S1–S4 |
+| **S** | Security / compliance teams | *What exactly can it do, who can make it do it, how do I read back what it tried, and can I take it back on CVE day?* | S1–S5 |
 | **O** | Operators / SREs | *How do I let tenants change config, and what do I look at when I am paged?* | O1–O3 |
 | **D** | Developers / architects | *What will refuse my fragment, and what changes when it is compiled?* | D1–D2 |
 | **L** | Live operations / release engineering | *Can I fix the hottest function at noon, on every worker, and undo it, without a reload?* | L1–L3 |
@@ -62,7 +62,7 @@ scenarios that had shipped code, no demo, and an audience the first twelve did n
 | [P3 Tenant budgets](P_Platform_Teams/P3_Tenant_budgets/) | 8202 | A spinner aborted at 100 ms, a burst refused at 1 MB, a leaker refused with `E_MEM_RETAINED`, the neighbour still served |
 | [P4 A reseller authors sub-fragments](P_Platform_Teams/P4_Reseller_authors_subfragments/) | 8203 | A tenant admits two sub-fragments with copies of its own wrapper, narrower; widening is `E_CAP_ESCALATE` |
 
-### S — Security teams (ports 8204–8207)
+### S — Security teams (ports 8204–8207, 8219)
 
 | Demo | Port | What you see |
 |---|---|---|
@@ -70,6 +70,7 @@ scenarios that had shipped code, no demo, and an audience the first twelve did n
 | [S2 Two-person rule and protocol](S_Security_Teams/S2_Two_person_rule_and_protocol/) | 8205 | alice is denied, bob completes the quorum; `protocol('address','port*','fd')` enforces order; a one-shot capability |
 | [S3 Outbound as a capability](S_Security_Teams/S3_Outbound_as_capability/) | 8206 | `allowHosts('https://*.example.com')` checked in the compartment; the host reads the surviving intent |
 | [S4 Sessions: principal to environment](S_Security_Teams/S4_Sessions_principal_to_environment/) | 8207 | `ci@acme` holds the socket, `dev@acme` does not, `greedy@acme` is refused, revoke is a row removal |
+| [S5 CVE day: withdraw a grant](S_Security_Teams/S5_CVE_day_withdraw_a_grant/) | 8219 | `ops.withdraw('acme','out',{confirm})` live: the tenant's call and the library's delegated copy both answer `cap.revoked`; audit does not lift it; a replace and a rollback keep it; offboarding is the same verb with no name |
 
 ### O — Operators (ports 8208–8209, 8216)
 
@@ -106,6 +107,7 @@ scenarios that had shipped code, no demo, and an audience the first twelve did n
 
 1. **P3** — a runaway loop, a burst, a leak: three refusals, one healthy neighbour, no dead worker.
 2. **S2** — alice presses the button and is denied; bob presses it and the operation runs.
+   (**S5** for a security room: the vendor grant withdrawn at noon, the library's copy dying with it.)
 3. **S1** — one probe, six membranes: the whole vocabulary on one screen.
 4. **O1** — a tenant proposes config; `apply` without `confirm` refuses; the ill-typed proposal leaves nothing.
 5. **D2** — two binaries, one answer.

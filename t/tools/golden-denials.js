@@ -178,6 +178,14 @@ var GOLDEN = [
     probe: "function(a){ var r = out.pending();"
          + " return (r === undefined) ? 'denied' : 'drained'; }",
     expect: 'denied' },
+  /* G-01 (v5.129): the host revoked the grant after admission, before the
+   * call -- `revokeBefore` is the row's shape, because the code has no other
+   * reachable path: nothing a fragment does can withdraw its own grant.  In
+   * enforce here; unconditional, so an audit probe would read the same. */
+  { code: 'cap.revoked', grant: 's', mode: 'enforce',
+    revokeBefore: true,
+    probe: "function(a){ return (s.port === undefined) ? 'denied' : 'allowed'; }",
+    expect: 'denied' },
 ];
 
 /*

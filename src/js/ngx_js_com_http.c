@@ -7909,6 +7909,7 @@ typedef struct {
      * check the socket and outbound wrappers make.
      */
     uint32_t                 owner;
+    ngx_js_grant_t          *grant;       /* G-01: see the socket opaque */
 } ngx_js_com_facet_opaque_t;
 
 
@@ -7923,19 +7924,23 @@ typedef struct {
 static ngx_flag_t
 ngx_js_facet_owner_ok(JSContext *ctx, ngx_js_com_facet_opaque_t *fop)
 {
-    if (!ngx_js_cap_foreign(fop->owner)) {
-        return 1;
-    }
-
-    if (!ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER,
-                                   (const char *) fop->glob))
+    if (ngx_js_cap_foreign(fop->owner)
+        && ngx_js_compartment_denial(NGX_JS_DENIAL_CAP_OWNER,
+                                     (const char *) fop->glob))
     {
-        return 1;                    /* audit mode: logged and allowed */
+        (void) JS_ThrowTypeError(ctx,
+            "NginxComFacet: this facet was granted to another fragment");
+        return 0;
     }
 
-    (void) JS_ThrowTypeError(ctx,
-        "NginxComFacet: this facet was granted to another fragment");
-    return 0;
+    /* G-01: the host took it back (unconditional, like cap.owner) */
+    if (ngx_js_cap_dead(fop->grant, (const char *) fop->glob)) {
+        (void) JS_ThrowTypeError(ctx,
+            "NginxComFacet: this facet was revoked");
+        return 0;
+    }
+
+    return 1;
 }
 
 
@@ -7946,6 +7951,7 @@ ngx_js_com_facet_finalizer(JSRuntime *rt, JSValue val)
 
     fop = JS_GetOpaque(val, ngx_js_com_facet_class_id);
     if (fop) {
+        ngx_js_grant_release(fop->grant);
         js_free_rt(rt, fop);          /* srv_op is borrowed — do not free it */
     }
 }
@@ -8306,6 +8312,29 @@ ngx_js_com_facet_set_owner(JSValueConst obj, uint32_t frag)
 }
 
 
+void
+ngx_js_com_facet_set_grant(JSValueConst obj, ngx_js_grant_t *g)
+{
+    ngx_js_com_facet_opaque_t  *fop;
+
+    fop = JS_GetOpaque(obj, ngx_js_com_facet_class_id);
+    if (fop != NULL && fop->grant == NULL) {
+        ngx_js_grant_ref(g);
+        fop->grant = g;
+    }
+}
+
+
+ngx_js_grant_t *
+ngx_js_com_facet_grant_of(JSValueConst obj)
+{
+    ngx_js_com_facet_opaque_t  *fop;
+
+    fop = JS_GetOpaque(obj, ngx_js_com_facet_class_id);
+    return fop != NULL ? fop->grant : NULL;
+}
+
+
 /*
  * The authoring tier: a sub-fragment's facet is a COPY of its parent's own
  * facet with the owner changed -- the same server, the same glob.  A facet has
@@ -8345,8 +8374,17 @@ ngx_js_com_facet_copy(JSContext *ctx, JSValueConst parent,
     *child = *fop;                     /* srv_op stays borrowed, as before */
     child->owner = child_owner;
 
+    child->grant = ngx_js_grant_new(fop->grant);          /* G-01 */
+    if (child->grant == NULL) {
+        js_free(ctx, child);
+        *code = NGX_JS_REFUSAL_NONE;
+        ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");
+        return NGX_ERROR;
+    }
+
     obj = JS_NewObjectClass(ctx, ngx_js_com_facet_class_id);
     if (JS_IsException(obj)) {
+        ngx_js_grant_release(child->grant);
         js_free(ctx, child);
         *code = NGX_JS_REFUSAL_NONE;
         ngx_snprintf((u_char *) reason, rlen, "out of memory%Z");

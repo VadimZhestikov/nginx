@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **WHERE WE ARE (v5.128 — 2026-09-16), in five lines.** Every increment is done and every
+> **WHERE WE ARE (v5.129 — 2026-09-17), in five lines.** Every increment is done and every
 > track is closed: confinement (two signatures on the assurance case, ASSURANCE §15), the
 > compiler (M5.1a and M5.1c shipped, M5.1b parked; the rule says NO-GO at 2.3× on the last
 > class, PERFORMANCE §2f.3), the library (the vocabulary complete; `opaque.*` and the postures
@@ -15,6 +15,13 @@
 > narrowing words, `opaque.*` and the postures, M5.1b. The rest of this block is the log,
 > newest first, each entry also a FOUNDATION delta.
 >
+> - **G-01 CLOSED — A GRANT WITHDRAWN WHILE THE FRAGMENT RUNS, FOLLOWING EVERY DELEGATION
+>   (2026-09-17, v5.129).** `comcon.withdraw(f, name?)`, `h.withdraw`, `ops.withdraw` with a
+>   naming confirmation: one refcounted grant record per wrapper, a copy's under its parent's,
+>   the gate walking the chain after `cap.owner`; `cap.revoked` unconditional and frozen; a
+>   binding's revocation survives replace and rollback and fans out through the shared record.
+>   The verb is `withdraw` because `revoke()` is the flavour. One test, one V12 row, one
+>   control, one demo (S5); the CVE-day and offboarding scenarios run in a different spelling.
 > - **THE SHUTDOWN FLAKE INSTRUMENTED; A LATENT MASTER SPIN REMOVED (2026-09-16, v5.128).**
 >   Three candidate mechanisms for the third face read and ruled out (a stolen `SIGCHLD`, a
 >   blocking channel read, a blocking exit hook); 80 cycles under load, no reproduction. The

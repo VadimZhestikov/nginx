@@ -83,7 +83,7 @@ var locs = nginx.http.servers[0].locations;
  * imported them from the implementation it would agree with the implementation
  * by construction and check nothing.  A typo'd class is worse than a missing
  * row, because it reads as a real classification. */
-var OPS = { read:1, invoke:1, rewrite:1, remove:1, revive:1 };
+var OPS = { read:1, invoke:1, rewrite:1, remove:1, revive:1, withdraw:1 };
 var CLS = { R:1, F:1, X:1, L:1 };
 
 /* Which members of an object are ops a caller can invoke?  Functions only --

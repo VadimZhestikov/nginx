@@ -151,8 +151,52 @@ typedef enum {
      * keeps it from mattering when the drain cannot.
      */
     NGX_JS_DENIAL_CAP_OWNER,           /* a capability used by another fragment  */
+    /*
+     * G-01 (v5.129): a capability the host REVOKED after granting it.
+     *
+     * The grant is a switch the host holds at run time: `comcon.revoke(f,
+     * name)` flips the grant record the wrapper points at, and every copy a
+     * re-grant made of that wrapper points at a record whose parent is this
+     * one, so the cascade over a delegation chain is a pointer walk, not a
+     * search.  The second STRUCTURAL code after cap.owner: no posture can
+     * observe-then-enable a revocation, because the operator is the one who
+     * revoked -- so it denies in every mode.
+     */
+    NGX_JS_DENIAL_CAP_REVOKED,         /* a capability the host has revoked      */
     NGX_JS_DENIAL_LAST
 } ngx_js_denial_code_t;
+
+
+/*
+ * G-01: THE GRANT RECORD -- one per granted wrapper, shared by nothing else.
+ *
+ * A wrapper is a JS object; the fragment may store it anywhere, but every
+ * reference is to the same opaque, so one record per opaque is one record per
+ * grant.  A re-grant (the authoring tier's copy-then-narrow) gives the copy a
+ * record of its own whose `parent` is the original's, and holds a reference
+ * to it, so a chain of delegations is a chain of records that outlives any
+ * one holder.  Revoking a record kills every record below it: the gate walks
+ * up and refuses if any ancestor is revoked.  Refcounted, because a wrapper
+ * and the fragment's own table both point at it and either may go first.
+ */
+typedef struct ngx_js_grant_s  ngx_js_grant_t;
+
+struct ngx_js_grant_s {
+    ngx_js_grant_t  *parent;     /* the record this one was copied from   */
+    uint32_t         refs;
+    uint32_t         copies;     /* live records whose parent is this one */
+    unsigned         revoked:1;
+};
+
+ngx_js_grant_t  *ngx_js_grant_new(ngx_js_grant_t *parent);
+void             ngx_js_grant_ref(ngx_js_grant_t *g);
+void             ngx_js_grant_release(ngx_js_grant_t *g);
+ngx_flag_t       ngx_js_grant_revoked(ngx_js_grant_t *g);
+void             ngx_js_grant_revoke(ngx_js_grant_t *g);
+
+/* The gate's one question about a record: is this capability dead?  Counts
+ * and logs cap.revoked when it is (unconditional: always 1 then). */
+ngx_flag_t       ngx_js_cap_dead(ngx_js_grant_t *g, const char *obj);
 
 #define NGX_JS_DENIAL_QUOTA    100     /* full records per process          */
 #define NGX_JS_DENIAL_SAMPLE   100     /* above quota: log every Nth event  */

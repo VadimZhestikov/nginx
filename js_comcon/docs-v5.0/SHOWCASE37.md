@@ -83,8 +83,14 @@ engine enforces. "Who can see PII?" has a queryable, provable answer.
 > ops.revive("acme");
 > ```
 > Tests: `t/comcon_std_ops.t`, `t/comcon_retained_memory.t`, `t/comcon_author_basic.t`.
-> Not built: a delegation chain to cascade over (gap G-01) — there is no re-grant except a
-> reseller's copies, so there is nothing forgotten to find.
+> **Since v5.129 (G-01 closed) the delegation chain exists and is followed:**
+> ```js
+> ops.withdraw("acme", { confirm: "acme" });   // every grant; {revoked: [...], delegated: N}
+> ```
+> `delegated` is the count of copies the tenant re-granted onward that the withdrawal
+> reached — each holds a record under the original's, so nothing lent survives. The
+> `comconctl` spelling and the COW overlays stay not built (G-26, G-03). `t/comcon_revoke.t`,
+> demo `S_Security_Teams/S5`.
 
 **Problem:** a tenant leaves (or is terminated for abuse). Are they *really* gone —
 including every capability they ever delegated onward?

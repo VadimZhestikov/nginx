@@ -33,7 +33,7 @@ substrate decision (`opaque.*`/COW: 7, 16, 19, 32), two are one design increment
 
 | id | scenarios | the sample says | the tree has | what is missing | kind | home |
 |---|---|---|---|---|---|---|
-| **G-01** | 2, 20 | `comconctl revoke --cascade` over a provenance chain; offboarding follows delegations | `ops.remove(name, {confirm})` tombstones a live binding (410) and `revive` restores it; a reseller's sub-fragments die with its callable; `revoke()` is a grant-time flavour | revocation of an already-granted capability at run time; a grant chain to cascade over | library + decision | M6 cluster (ROADMAP §5 table) |
+| **G-01** | 2, 20 | `comconctl revoke --cascade` over a provenance chain; offboarding follows delegations | **CLOSED v5.129:** `comcon.withdraw(f, name?)` / `ops.withdraw(name, grant, {confirm})` switch a grant off while the fragment runs; every granted wrapper holds a grant record and a re-grant's copy holds one under its parent's, so the cascade over a delegation chain is a pointer walk; `cap.revoked` is unconditional; a binding's revocation survives replace and rollback and fans out through the shared record. Demo `S_Security_Teams/S5`. | — (a copy is withdrawn through the grant it was copied from, not on its own; per worker for a raw fragment) | C mechanism + library | — |
 | **G-02** | 3, 4, 11 | grammar-valued interfaces: a parameterized-only `db` facet, `header_value` grammars, `pattern{}` instead of regex, "one parser, N policies" | stone splices (data can never become code), `reviewDeclarative` as one sound rejecter, CRLF dropped at the header boundary | facets whose *language* is a policy; a pattern language; a `db` capability kind | design | M2.5–M4 (+M-LIB facets) |
 | **G-03** | 7, 16, 19, 32, (18 overlay) | `opaque.str` values with named sinks; COW views and overlays; a shadow world | field-level `redact`/`allow` on socket and server capabilities; sessions never carry caps | the opaque/COW engine substrate | substrate, **unscheduled by decision** (ROADMAP §5 lesson 6; canonical NOT BUILT list) | none |
 | **G-04** | 6, 13, 23 | a REL/forensics console attached to a worker; an AI session with redacted handles and opaque traffic | per-worker data through host handlers (`tenantDenials`, `tenantLearning`, `memStatus`, `aotStatus`, `trustReport`); NodeView reads are quotations, `binding` redacted | an attach/REPL surface; a forensics profile; body redaction on program handles | library (REPL exists on the js_com side; a COMCON-shaped session does not) | tooling verbs |
@@ -83,6 +83,7 @@ Written down so the checklist reads in both directions:
 | G-13 | v5.127 | `comcon.std.evaluate` (`t/comcon_std_evaluate.t`, demo A2) |
 | G-05 (diff + would-deny) | v5.127 | `comcon.std.policy.diff`, `comcon.denials`, `ops.wouldDeny` (`t/comcon_std_policy_diff.t`, `t/comcon_would_deny.t`, demo O3) |
 | G-16 (docs) | v5.127 | `comcon.std.docs`, `ops.docs` (`t/comcon_std_docs.t`, demo A3) |
+| G-01 | v5.129 | `comcon.withdraw` / `comcon.withdrawn`, `h.withdraw`, `ops.withdraw` / `ops.withdrawn`, the `cap.revoked` code (`t/comcon_revoke.t`, the V12 row, control `revoke-not-checked.patch`, demo S5) |
 
 ## The plan for what is left (2026-09-16, after v5.127)
 
@@ -103,9 +104,10 @@ Twenty-three gaps remain. Grouped by what closing each needs, cheapest evidence 
   `Date`, no `Math.random`), which the allowance already supports.
 
 **Wave 2 — one C mechanism each, with a maintained control patch.**
-- G-01, live revocation: a generation number on the wrapper record checked at the gate;
-  `comcon.revoke(cap)` bumps it; a reseller's copies carry the parent's generation, so the
-  cascade is free. The socket-handle generation trick, applied to grants — the CVE-day story.
+- ~~G-01, live revocation~~ — **DONE v5.129** as `comcon.withdraw`: a refcounted grant record per
+  wrapper rather than a generation number (a copy's record points at its parent's, so the
+  cascade is a walk and a chain outlives its holders); the verb is `withdraw` because
+  `revoke()` is the flavour. OPERATOR_API §8l, ASSURANCE G7.25.
 - G-14, `protocol` on the server facet and the author capability (operations already named).
 - G-18, an append-only log capability kind: one operation, `append`, mediable by every word.
 - G-07, a CPU-time meter: `getrusage` delta around the invoke, charged like retained bytes.
@@ -118,7 +120,7 @@ manifests, after Wave 1's signing).
 
 **By decision, not scheduled:** G-03, G-10, G-11, G-15, G-22, G-08, G-02.
 
-**Recommended order:** G-01, then G-05, then G-21.
+**Recommended order:** ~~G-01~~ (done v5.129), then G-05, then G-21.
 
 ### G-21: why a live epoch is not compiled in the master today, and how it could be
 

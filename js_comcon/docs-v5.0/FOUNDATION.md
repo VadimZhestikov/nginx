@@ -635,6 +635,39 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.129 (in place — G-01 closed: a grant can be withdrawn while the fragment runs, and the
+withdrawal follows every delegation):** (1) `comcon.withdraw(f, name?)` and
+`comcon.withdrawn(f)`; `h.withdraw`/`h.withdrawn` on `bindAt` and `bindShared` handles;
+`ops.withdraw(name, grant?, {confirm})` (class X, the confirmation naming the binding) and
+`ops.withdrawn`; the manual (`ops.docs`) and the trust report mark a withdrawn grant. (2) The
+mechanism: every granted wrapper — socket, outbound, COM facet, author — holds a refcounted
+*grant record*; the authoring tier's copy-then-narrow gives the copy a record whose parent is
+the original's; the gate walks the chain right after `cap.owner`, at the same six sites; the
+fragment's stats slot keeps its records under the contract's names, which is the host's one
+handle on a grant after the wrappers have vanished into the closure. (3) `cap.revoked`, the
+second unconditional denial code after `cap.owner` (the operator who withdrew is not
+observing a policy), frozen in the golden corpus with a `revokeBefore` row shape and named in
+SPEC. (4) A binding's revocation sticks: `bindAt` re-applies it to every epoch a replace
+realizes or a rollback restores; `bindShared` carries it on the shared record with a `rev`
+counter beside the epoch, so a fan-out is not a new epoch. Irreversible: nothing un-withdraws,
+because restoring authority is a widening and every widening is a new admission. (5) The verb
+is `withdraw` because `comcon.revoke()` is already the grant-time flavour — one name for two
+acts would let a mistaken call return a descriptor where a revocation was meant; both leave
+a revoked capability, which is what the code names. (6) `asContract` reads a binding's
+contract as `realize()` does (grants derived from `env` + `imports`), so the docs and the diff
+of a binding see the grants it holds. (7) **Found by the first gate run, under ASAN:** the
+grant loop first held its records by a *borrowed* pointer on the theory that the wrapper stays
+alive until publish — false for a grant the fragment's closure never captures (the mutants
+corpus grants names its probes do not use): the wrapper dies when the closure is applied, and
+the pointer dangled at publish (heap-use-after-free in `ngx_js_grant_ref`, a worker dead with
+"corrupted double-linked list" on the compiled tier). Both entrances now take a reference of
+their own per record, publish *transfers* it into the table, and one outer function per
+entrance releases what was not transferred — dozens of refusal paths, none of which has to
+know. Clean under ASAN with leak detection on. `t/comcon_revoke.t` (31), the V12 row, control
+`revoke-not-checked.patch` (16 assertions fail with the walk blinded; the read-back ones
+pass), OPERATOR_API §8l, ASSURANCE G7.25, demo `S_Security_Teams/S5`; `std.ops` now twenty
+verbs. Gate green on both binaries.
+
 **v5.128 (in place — the shutdown flake instrumented so its next appearance explains itself;
 one latent master spin removed):** (1) Three reads of the master's shutdown path, each a
 mechanism the third face (v5.127 item 6) could have been, each ruled out on the code: a

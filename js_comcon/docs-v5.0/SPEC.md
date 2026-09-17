@@ -390,7 +390,8 @@ registry); the **intrinsics allowance**; and the **two code axes** below.
 **Two code axes, and they are not the same axis.** A **DENIAL code** names a gate that fired
 at RUN time on authority the fragment legitimately holds (`sock.listener`, `listener.read`,
 `listener.serverByName`, `enum.sockets`, `sock.mutate`, `budget.uses`, `cap.expired`,
-`out.host`, `out.drain`, `cap.window`, `cap.cosign`, `cap.protocol`, `cap.owner`); it is
+`out.host`, `out.drain`, `cap.window`, `cap.cosign`, `cap.protocol`, `cap.owner`,
+`cap.revoked`); it is
 counted in `nginx.tenantDenials().byOp` and, in audit mode, **logged and allowed**. A
 **REFUSAL code** names why a fragment was **never admitted** (`e.code`, enumerated by
 `comcon.refusalCodes()`; `E_CAP_PRINCIPAL` is the third of the capability layer's own, and
@@ -417,7 +418,10 @@ continuation. Nobody configures it and nothing legitimate trips it, and it is **
 denies in every mode** — audit exists so an operator can observe what their *policy* would deny,
 and every other code answers "may this fragment do this?", a question about the grant they can
 change; this one answers "is this even this fragment's capability?", which no grant can change.
-The log says so: `mode=audit … unconditional=1`. Both are frozen contracts: every code must have a row in the
+The log says so: `mode=audit … unconditional=1`. **`cap.revoked` is the second structural code** (v5.129):
+the host revoked this grant after making it (`comcon.revoke(f, name?)`, `ops.revoke`), and every copy a
+re-grant made of it died with it; it denies in every mode for the same reason, because the operator who
+revoked is not observing a policy but exercising one. Both are frozen contracts: every code must have a row in the
 golden corpus and every corpus row must name a code the runtime can still emit, or the
 enumeration check fails. `E_BUDGET_*` is empty **by placement, not by omission** —
 exhausting a budget is a denial, because the fragment was admitted and then hit a gate.

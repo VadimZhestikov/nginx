@@ -1545,6 +1545,50 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T6, T9, T11
 - **V:** V13
 
+#### G7.25 — a grant can be withdrawn while the fragment runs, and the withdrawal follows every delegation; no posture lifts it
+- **CLAIM:** After `comcon.withdraw(f, name)` every use of that grant by `f` is denied as
+  `cap.revoked` — from the next read, in every posture (audit and learn included), for the
+  socket, outbound, COM-facet and author wrapper kinds alike — and so is every use of every
+  copy a re-grant made of it, however many holders the copy has; a sibling holding its own
+  wrapper on the same underlying object is untouched; a binding's revocation survives
+  `replace()` and `rollback()`; `comcon.withdrawn(f)` reads back exactly the names withdrawn;
+  a name the fragment was not granted is refused rather than ignored.
+- **ARGUMENT:** Every granted wrapper holds a refcounted *grant record*; the authoring
+  tier's copy holds a record whose parent is the original's (a reference, so the chain
+  outlives any one holder). The gate walks the chain right after `cap.owner` — one pointer
+  read per delegation level — so the cascade is structural, not a search over a table that
+  could miss a holder. The fragment's stats slot keeps its records under the contract's names
+  (its own reference; released with the slot), which is the only handle the host has on a
+  grant once the wrappers live in the closure. `cap.revoked` is unconditional at the one
+  place that decides (`ngx_js_denial_unconditional`), beside `cap.owner`, for the same reason
+  stated there: nothing here is a policy an operator could observe and then enable. A
+  binding's revocation is a set the handle remembers and re-applies to every epoch it
+  realizes or restores; the shared record carries the same set with its own counter, so a
+  fan-out is not a new epoch. The verb is `withdraw` because `revoke()` is already the
+  grant-time flavour: one name for two acts would let a mistaken call return a descriptor
+  where a revocation was meant.
+- **EV:** `t/comcon_revoke.t` (31): a socket grant reads then is gone, attributed as
+  `cap.revoked`, idempotent, read back; a sibling untouched; an audit binding denied; a kept
+  sub-fragment's copy dies with the parent's grant (`delegated: 1`); whole-fragment
+  withdrawal over socket and outbound; the facet throws revoked, the author refuses; unknown
+  name and plain function refused; the fleet counter grows by exactly the denied uses; the
+  audit record carries `unconditional=1`; through `ops.withdraw` with its confirmation, the
+  site denies, a replace and a rollback do not lift it, the manual says REVOKED; through
+  `bindShared` the next request denies and the handle ops and trust report name it.
+- **EV:** `t/comcon_v12_denial_codes.t` — the `cap.revoked` row (`revokeBefore` shape),
+  firing its own code and nothing undeclared; the corpus and the runtime agree on the set.
+- **EV:** `t/tools/controls/revoke-not-checked.patch` — the chain walk blinded: the flips
+  still happen and read back (the "reads back" assertions pass) while every withdrawn
+  capability keeps working (16 assertions fail). Verified by the script.
+- **GAP:** Per worker for a raw `include` result, like `comcon.mode`; a shared binding
+  reaches the other workers on their next request, not at once. A copy cannot be withdrawn
+  on its own from the host (the sub-fragment's handle lives inside the compartment): it is
+  withdrawn through the grant it was copied from. `delegated` counts direct copies only;
+  copies of copies are reached by the walk but not counted.
+  **home:** SHOWCASE-gaps G-26 (`comconctl`, the fleet-wide spelling) · OPERATOR_API §8l.
+- **THREAT:** T3, T6, T9
+- **V:** V12
+
 #### G7.24 — the gates that fire are attributed to the binding they fire in; the library's reports are projections of the cage
 - **CLAIM:** `comcon.denials(f)` reports, per fragment, exactly the gate firings that happened
   while that fragment ran — its own reaches, not a sibling's, not a sub-fragment's — and the
@@ -2477,6 +2521,8 @@ signature is never quietly credited with work it did not see.
 | **THE RECORD MADE READABLE; CLASS B RE-MEASURED AGAINST A C BOUND (v5.124).** README's 80-line history (one line of 83 KB) is gone — every entry was already FOUNDATION's delta log — and a five-line state stands in its place; ROADMAP's POSITION opens with where the work is, in five lines, above its log. The benchmark's class B typed arm is a C kernel reading every character through the engine, which no codegen change can move: on it class B reads **3.5× — GO by the M5.0 rule**, where the v5.114 NO-GO stood on a denominator that was not a bound (PERFORMANCE §2f.2). The sweep covers `checkRequest` at admission. And the broadcast flake's first face finally carried text — `kill(worker, 9) failed (No such process)`: the master in its TERMINATE escalation at shutdown, under the pack only, never standalone (three runs, QUIT only) — so the harness now prints the error log's last 40 lines on any "no alerts" failure, which is what would have said who sent TERM. | **No bearing on a claim.** A measurement corrected (and its decision flipped, on the record's own rule), an instrument sharpened, and two documents made readable. The M5.1c the corrected number points at is a decision, recorded with the number. |
 | **M5.1c BUILT AND MEASURED — NO-GO AT 2.3×, THE M5 TRACK CLOSES; F20 AND F21 FOUND BY A DIFFERENTIAL FUZZ AND CLOSED (v5.125).** `charCodeAt` on a string with an int index and `Math.imul` on ints are inlined when the callee is the engine's own C function (identity by pointer, never by name); a half-typed bit op takes a double operand through ToInt32 in place. `JIT_CODEGEN_VERSION` 19. Class B 52.5 → 34.38 ns/char against the C bound 15.00: 2.3×, NO-GO by the rule; class A 2.2×. The SR-2 rows for it failed first on shapes it did not touch: F20 (five kinds of typed-lowering site reading the wrong slot, and a linear inference that missed a value arriving over a jump) and F21 (a compiled `~` on an untyped operand calling `abort()` — a fragment's `~1.5` killed the worker). Both fixed in the engine; `t/tools/jit-diff-fuzz.py` (interpreter as oracle, automatic reduction) found F20's rest and is a gate stage: 30 seeds, 1,800 functions clean. The flake hunt: three full runs, no recurrence. | **Touches the compiled tier the signature attests through G7.5/G7.18 and (F), and narrows one claim it relied on.** F21 was a worker crash reachable by any fragment on the compiled tier — an availability defect under T11, not an escape — and F20 was wrong values on the tier SR-2 attests equal to the interpreter, on shapes the differential did not hold until now. Neither was found by the sanitizer corpus (a miscompile is not a memory error) nor by the differential's shapes (string- and object-heavy); the instrument that finds this class is now standing evidence. Every value the compiled tier can now produce differently is enumerated and pinned; the codegen version bump retires every cached artifact. |
 | **THREE LIBRARY-KIND GAPS CLOSED — G7.24 (v5.127).** `std.evaluate` (a module's whole appetite in one static read: every free name from the admission collector, classified, with call sites and lines; a source accepted only as one function expression, nothing run), `std.policy.diff` (narrowing / widening / unchanged / incomparable with every change named, over the grant translation `include()` itself uses), `comcon.denials` / `ops.wouldDeny` (the gates attributed to the binding they fired in — the one new mechanism, a pointer the invoke sets and the compartment's single counting site honours, with a maintained control), `std.docs` / `ops.docs` (the manual as a projection of the contract a binding carries). `std.describe()`'s `absent` list, which had named six shipped words and `std.ops` as missing, corrected. | **Adds evidence; narrows nothing the signature attests.** The mechanism touches the denial path the case attests through G6 (the counters are exact and every gate is counted) by adding a second, per-fragment increment at the same site — the fleet counter is unchanged and its tests still pass; the control shows the new rows go to zero without it. The three library programs confer no authority: they read the descriptors the kernel enforces, which is what lets a report be trusted as a projection rather than a second table. A stale honesty surface (`std.describe().absent`) was found and corrected on the way, the drift check [8] guards one surface over. |
+
+| **LIVE REVOCATION — G7.25 (v5.129).** `comcon.withdraw(f, name?)`: a grant the host already made is switched off while the fragment runs, and the switch follows every copy a re-grant made of it (one refcounted grant record per wrapper, a copy's record under its parent's, the gate walking the chain after `cap.owner`). `cap.revoked` joins `cap.owner` as an unconditional code, frozen in the golden corpus with a `revokeBefore` row. A binding's revocation sticks across `replace()` and `rollback()`; `bindShared` fans it out on the shared record; `ops.withdraw` is class X with a naming confirmation; the manual marks the grant REVOKED. Control `revoke-not-checked.patch`. | **Adds evidence; narrows nothing the signature attests.** The gate order the case attests through G6.17 (`cap.owner` first, then the mask and the words) gains one question after the first, at the same six sites, answered from a record the wrapper already owned by reference — no new table the gates could disagree with. The unconditional rule gains a second member at its one site. The library verbs confer no authority: `withdraw` only ever narrows (to zero), and nothing un-withdraws. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

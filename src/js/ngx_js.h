@@ -260,6 +260,8 @@ typedef struct {
  * the memory returns) or its contract raises the cap.
  */
 #define NGX_JS_COMCON_FRAGMENT_RETAINED_BYTES (8 * 1024 * 1024)
+#define NGX_JS_COMCON_GRANTS_MAX              16   /* = the include's av[] */
+#define NGX_JS_COMCON_GRANT_NAME_MAX          48
 #define NGX_JS_COMCON_GC_STEP                 (4 * 1024 * 1024)
 #define NGX_JS_COMCON_GC_CALL_DELTA           (64 * 1024)
 
@@ -277,6 +279,18 @@ typedef struct {
      * through a pointer the invoke sets for the duration of the call.
      */
     ngx_uint_t           denials[NGX_JS_DENIAL_LAST];
+    /*
+     * G-01 (v5.129): the fragment's GRANT TABLE -- each granted wrapper's
+     * record under the name the contract gave it, so the host can revoke a
+     * grant by (fragment, name) after the wrappers have vanished into the
+     * closure.  The table holds its own reference; a slot reset releases it.
+     * A sub-fragment's table holds the copies its parent re-granted, whose
+     * records sit under the parent's -- the cascade needs no table walk.
+     */
+    uint32_t             ngrants;
+    ngx_js_grant_t      *grants[NGX_JS_COMCON_GRANTS_MAX];
+    char                 grant_names[NGX_JS_COMCON_GRANTS_MAX]
+                                    [NGX_JS_COMCON_GRANT_NAME_MAX];
 } ngx_js_comcon_frag_stats_t;
 
 
@@ -712,6 +726,10 @@ JSValue ngx_js_comcon_parse(JSContext *ctx, JSValueConst this_val,
 JSValue ngx_js_comcon_aot_status(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_mem_status(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
+JSValue ngx_js_comcon_revoke(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
+JSValue ngx_js_comcon_grant_status(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_denial_status(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);

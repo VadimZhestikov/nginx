@@ -224,6 +224,9 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
            mediation); everything else is granted straight. */
         var cap = capFor(row);
         var f = comcon.include(row.probe, { grants: grantsFor(row) });
+        /* G-01: a `revokeBefore` row is granted, then revoked by the host
+           before its one call -- the only way cap.revoked can be reached */
+        if (row.revokeBefore) { comcon.withdraw(f, row.grant || 's'); }
         var before = counts();
         try { rec.result = f({}); } catch (e) { rec.result = 'threw'; }
         var after = counts();
@@ -304,7 +307,7 @@ locs.find(function (l) { return l.path === "/v12"; }).handler = function (req) {
 };
 JS
 
-$t->try_run('no js module')->plan(13);
+$t->try_run('no js module')->plan(14);
 
 ###############################################################################
 
@@ -327,6 +330,8 @@ like($r, qr/"code":"listener.read"[^}]*"firedOwn":true/,
      'listener.read: the listener getter fires its own code');
 like($r, qr/"code":"listener.serverByName"[^}]*"firedOwn":true/,
      'listener.serverByName: the server escalation fires its own code');
+like($r, qr/\{"code":"cap.revoked","result":"denied","fired":\["cap.revoked"\],"firedOwn":true,"undeclared":\[\]/,
+     'cap.revoked: a grant the host revoked after admission denies, and nothing else fires');
 like($r, qr/\{"code":"sock.mutate","result":"denied"[^}]*"firedOwn":true/,
      'sock.mutate: close() on a socket the compartment does not own is denied');
 
