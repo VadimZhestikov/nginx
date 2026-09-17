@@ -57,7 +57,10 @@ EOF
 $t->write_file_expand('root.js', <<'JS');
 var locs = nginx.http.servers[0].locations;
 var sock = nginx.createSocket("127.0.0.1:%%PORT_8091%%");
-var D = comcon.std.policy.diff;
+/* resolved at REQUEST time, not config time: with the library absent (the
+   commit-revert control) a config-time lookup throws, nginx does not start,
+   and the harness SKIPS -- which a control must never read as a pass */
+function D(a, b) { return comcon.std.policy.diff(a, b); }
 
 function socket(flavors) { var m = sock, i;
     for (i = 0; i < flavors.length; i++) { m = comcon.mediate(m, flavors[i]); } return m; }
