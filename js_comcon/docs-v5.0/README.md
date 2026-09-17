@@ -2,7 +2,7 @@
 
 > **This set is the single normative spec** (user decision, 2026-08-23 — E6). It is
 > revised **in place**: each revision adds a vN.M entry to FOUNDATION's delta log
-> (current: **v5.126**, 2026-09-16.)
+> (current: **v5.127**, 2026-09-16.)
 >
 > **Where the work stands.** Every roadmap increment is done (A–E, live ops, the config
 > instance), the confinement track is closed and the assurance case carries two signatures

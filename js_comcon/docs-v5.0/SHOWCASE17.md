@@ -268,10 +268,12 @@ the engine holding the scalpel.
 > ops.shadow();   ops.denials();   ops.enforce();          // audit → read → enforce
 > var candidate = comcon.include(src, { …, onViolation: "audit" });   // one binding shadowed
 > ```
-> A *config* proposal has a real diff (`comcon.std.config.diff(plan, node)`); a *policy* diff
-> ("POST removed — narrowing, auto-safe") and a would-deny event list are not built (gap
-> G-05). Tests: `t/comcon_std_ops.t`, `t/comcon_mode_fanout.t`, `t/comcon_posture.t`. Demos:
-> `js_comcon_demos/P_Platform_Teams/P2`, `O_Operators/O2`.
+> A *config* proposal has a real diff (`comcon.std.config.diff(plan, node)`), and **since
+> v5.127 so does a policy:** `comcon.std.policy.diff(current, candidate)` answers `narrowing`
+> (auto-safe), `widening`, `unchanged` or `incomparable` with every change named, and
+> `ops.wouldDeny(binding)` is the would-deny list of one shadowed binding. Tests:
+> `t/comcon_std_policy_diff.t`, `t/comcon_would_deny.t`, `t/comcon_std_ops.t`,
+> `t/comcon_posture.t`. Demos: `js_comcon_demos/O_Operators/O3`, `P_Platform_Teams/P2`.
 
 **Problem:** a policy or config tightening looks right, but production traffic is the
 only honest reviewer.

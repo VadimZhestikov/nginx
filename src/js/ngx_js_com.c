@@ -4155,6 +4155,83 @@ ngx_js_comcon_admit(JSContext *ctx, JSValueConst this_val, int argc,
  * resolve only through the env's grants + intrinsics. bind is the env-first
  * spelling of include.
  */
+
+/*
+ * G-13 (v5.127): comcon.__freeNames(fn) -> {names: [{name, intrinsic,
+ * denied}], dynamicCode}.  The WHOLE free-name manifest of a bytecode
+ * function, from the same collector admission uses -- admission stops at the
+ * first undeclared name because one is enough to refuse; an evaluation wants
+ * all of them, classified.  Host-side, static, runs nothing.
+ */
+typedef struct {
+    JSContext  *ctx;
+    JSValue     arr;
+    JSValue     seen;
+    uint32_t    n;
+} ngx_js_free_names_t;
+
+
+static void
+ngx_js_free_names_cb(void *ud, const char *name)
+{
+    ngx_js_free_names_t  *c = ud;
+    JSValue               row;
+    JSAtom                a;
+
+    a = JS_NewAtom(c->ctx, name);
+    if (JS_HasProperty(c->ctx, c->seen, a) > 0) {
+        JS_FreeAtom(c->ctx, a);
+        return;
+    }
+    JS_SetProperty(c->ctx, c->seen, a, JS_TRUE);
+    JS_FreeAtom(c->ctx, a);
+
+    row = JS_NewObject(c->ctx);
+    JS_SetPropertyStr(c->ctx, row, "name", JS_NewString(c->ctx, name));
+    JS_SetPropertyStr(c->ctx, row, "intrinsic",
+                      JS_NewBool(c->ctx, ngx_js_admit_name_intrinsic(name) ? 1 : 0));
+    JS_SetPropertyStr(c->ctx, row, "denied",
+                      JS_NewBool(c->ctx, ngx_js_admit_name_denied(name) ? 1 : 0));
+    JS_SetPropertyUint32(c->ctx, c->arr, c->n++, row);
+}
+
+
+static JSValue
+ngx_js_comcon_free_names(JSContext *ctx, JSValueConst this_val, int argc,
+    JSValueConst *argv)
+{
+    ngx_js_free_names_t  c;
+    JSValue              r;
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "comcon.__freeNames: function required");
+    }
+
+    c.ctx = ctx;
+    c.arr = JS_NewArray(ctx);
+    c.seen = JS_NewObject(ctx);
+    c.n = 0;
+
+    if (js_comcon_collect_free_globals(ctx, argv[0], ngx_js_free_names_cb, &c)
+        != 0)
+    {
+        JS_FreeValue(ctx, c.arr);
+        JS_FreeValue(ctx, c.seen);
+        return JS_ThrowTypeError(ctx,
+                                 "comcon.__freeNames: arg0 not a bytecode function");
+    }
+
+    JS_FreeValue(ctx, c.seen);
+
+    r = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, r, "names", c.arr);
+    JS_SetPropertyStr(ctx, r, "dynamicCode",
+                      JS_NewBool(ctx, js_comcon_uses_dynamic_code(argv[0]) ? 1 : 0));
+
+    return r;
+}
+
+
 static const char  ngx_js_comcon_bootstrap[] =
     "(function(){"
     "  var C=comcon, ENV='__comconEnv__', METER='__comconMeter__',"
@@ -5100,70 +5177,52 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    try{modeEpoch=C.__modePublish(MODEK,eff);}catch(e){}"
     "    return eff;};"
     "  C.__modeReconcile=modeReconcile;"
+    /* ONE translation of a grant value into the descriptor the C side reads
+       (G-05/G-16, v5.127): include() used to do this inline, and the library's
+       policy diff and docs renderer need the same reading -- two copies of a
+       kind/mask mapping is how a "narrower" contract reads as wider in a
+       report.  null = withheld (revoke). */
+    "  function polOf(v,k){var cap=v,pol={kind:0,mask:FMASK_FULL};"
+    "    if(v&&v[AUTHOR]){pol={kind:4,subFragments:v[AUTHOR].subFragments,"
+    "      ttlSeconds:v[AUTHOR].ttlSeconds,mediated:true};cap=null;}"
+    "    else if(v&&v[FACET]){var it=v[FACET].interceptor||{};cap=v[FACET].cap;"
+    "      if(it.flavor==='revoke')return null;"
+    "      else if(it.flavor==='allow'||it.flavor==='redact'){"
+    "        pol={kind:0,mask:jsMask(it)};"
+    "        if(it.budget)pol.budget=it.budget;"
+    "        if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
+    "        if(it.days)pol.window={days:it.days,from:it.from,to:it.to};"
+    "        if(it.cosign)pol.cosign=it.cosign;"
+    "        if(it.proto)pol.protocol=it.proto;}"
+    "      else if(it.flavor==='routes'){pol={kind:1,glob:String(it.glob||'*')};}"
+    "      else if(it.flavor==='window'){pol={kind:0,mask:FMASK_FULL,"
+    "        window:{days:it.days,from:it.from,to:it.to}};}"
+    "      else if(it.flavor==='allowHosts'){pol={kind:3,glob:String(it.glob||'')};"
+    "        if(it.budget)pol.budget=it.budget;"
+    "        if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
+    "        if(it.days)pol.window={days:it.days,from:it.from,to:it.to};"
+    "        if(it.cosign)pol.cosign=it.cosign;"
+    "        if(it.proto)pol.protocol=it.proto;}"
+    /* No fall-through to the FULL default: this translation and mediate()'s
+       FLAVORS set are two lists of one closed vocabulary, and a word added to
+       one and not the other must mean REFUSE, never full authority. */
+    "      else throw new TypeError("
+    "        'include: unknown mediation flavor '+String(it.flavor)+"
+    "        ' for grant '+k+'; refusing rather than granting in full');"
+    "      pol.mediated=true;}"
+    "    return {cap:cap,pol:pol};}"
+    /* A frozen shallow copy of a contract, carried on the include result and
+       the bindAt handle so the library can read back what a binding holds
+       (docs, diff) without a second source of truth. */
+    "  function contractView(c){var o={},k;c=c||{};"
+    "    for(k in c)if(Object.prototype.hasOwnProperty.call(c,k))o[k]=c[k];"
+    "    return Object.freeze(o);}"
     "  C.include=function(source,contract){"
     "    contract=contract||{};"
     "    var g=contract.grants||{},names=[],caps=[],pols=[];"
     "    for(var k in g){if(Object.prototype.hasOwnProperty.call(g,k)){"
-    "      var v=g[k],cap=v,pol={kind:0,mask:FMASK_FULL};"
-    /* kind 4: the authoring tier. No host object stands behind it, so `cap`
-       is null and the descriptor carries the whole grant -- two numbers. It is
-       not mediatable: a mediate()d author descriptor reaches the FACET branch
-       below with a cap that is neither socket nor server, and is refused
-       there (E_CAP_GRANT), which is the fail-closed direction. */
-    "      if(v&&v[AUTHOR]){pol={kind:4,subFragments:v[AUTHOR].subFragments,"
-    "        ttlSeconds:v[AUTHOR].ttlSeconds,mediated:true};cap=null;}"
-    "      else if(v&&v[FACET]){var it=v[FACET].interceptor||{};cap=v[FACET].cap;"
-    "        if(it.flavor==='revoke')continue;"       /* narrow to zero: withhold */
-    /* ONE mask definition (jsMask), shared with mediate()'s attenuation meet:
-       two copies of a bitmask mapping is how a "narrower" membrane ends up
-       wider than the one it attenuates. */
-    "        else if(it.flavor==='allow'||it.flavor==='redact'){"
-    "          pol={kind:0,mask:jsMask(it)};"
-    "          if(it.budget)pol.budget=it.budget;"
-    "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
-    "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};"
-    "          if(it.cosign)pol.cosign=it.cosign;"
-    "          if(it.proto)pol.protocol=it.proto;}"
-    "        else if(it.flavor==='routes'){"
-    "          pol={kind:1,glob:String(it.glob||'*')};}"
-    /* kind 3: the outbound capability, attenuated by a host glob. The glob
-       crosses as DATA exactly like the route glob and the budget -- no JSValue
-       from the host reaches the compartment, so the far side is built from a
-       string and some numbers. */
-    /* A BARE window: `mediate(cap, window(spec))` with no mask beside it is a
-       legitimate thing to write, and without this branch it fell through to the
-       unknown-flavour refusal -- the feature refusing its own simplest use.
-       Found by probing each flavour alone rather than only in composition, which
-       is how it is normally reached. */
-    "        else if(it.flavor==='window'){"
-    "          pol={kind:0,mask:FMASK_FULL,"
-    "               window:{days:it.days,from:it.from,to:it.to}};}"
-    "        else if(it.flavor==='allowHosts'){"
-    "          pol={kind:3,glob:String(it.glob||'')};"
-    "          if(it.budget)pol.budget=it.budget;"
-    "          if(it.ttlSeconds)pol.ttlSeconds=it.ttlSeconds;"
-    "          if(it.days)pol.window={days:it.days,from:it.from,to:it.to};"
-    "          if(it.cosign)pol.cosign=it.cosign;"
-    "          if(it.proto)pol.protocol=it.proto;}"
-    /* No fall-through to the FULL default.  NOTE it is not reachable through the
-       public API any more -- mediate() refuses an unknown flavor and snapshots
-       the descriptor -- so no test drives this line, and it is kept anyway as a
-       deliberate exception to "delete what no control can break".  What it
-       guards is DRIFT: this translation and mediate()'s FLAVORS set are two
-       lists of the same closed vocabulary, and if a future word is added to one
-       and not the other, the fall-through decides whether that mistake means
-       REFUSE or FULL AUTHORITY.  The cost of being wrong here is silent full
-       authority, so the default direction is the whole point. */
-    "        else throw new TypeError("
-    "          'include: unknown mediation flavor '+String(it.flavor)+"
-    "          ' for grant '+k+'; refusing rather than granting in full');"
-    /* MARK IT MEDIATED.  `uses`, `ttl` and `cosign` normalize to a mask, which
-       is the socket shape, so the C side has to read the KIND back from the
-       capability -- and it must not do that for a grant that carried no
-       mediation at all, because an unmediated outbound grant is refused and
-       accepting one would be a widening.  The two descriptors are otherwise
-       identical, so the difference is marked here rather than guessed there. */
-    "        pol.mediated=true;}"
+    "      var pv=polOf(g[k],k);if(pv===null)continue;"
+    "      var cap=pv.cap,pol=pv.pol;"
     "      names.push(String(k));caps.push(cap);pols.push(pol);}}"
     /* P1 (CONVERGE): opt-in C3 admission + identity pin — present iff the
        contract asks (imports/identity/checkRequest). Absent => no admission
@@ -5251,7 +5310,8 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    bound.meterMemoryBytes=mem;bound.meterRetainedBytes=ret;"
     "    bound.onViolation=ov;"
     "    bound.profile=(contract.profile===undefined)?'restrictive':"
-    "                  String(contract.profile);return bound;};"
+    "                  String(contract.profile);"
+    "    bound.contract=contractView(contract);return bound;};"
     /* pom(fragment): the reflective Program Object Model surface (increment D1).
        A lazy NodeView tree over a compiled fragment (module/function granularity
        — the bytecode tree; POM.md). Reads ALWAYS return quotations: text()/
@@ -5641,6 +5701,16 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      throw new TypeError('memStatus: arg0 must be a confined fragment');"
     "    var s=C.__memStatus(frag.handle);"
     "    s.cap=frag.meterRetainedBytes||0;return s;};"
+    /* G-05 (v5.127): the gates that fired while THIS fragment ran, by code --
+       nginx.tenantDenials() attributed to a binding.  `posture` is the
+       binding's own word, so a reader can tell a would-deny list (audit) from
+       a denied one (deny) without a second lookup. */
+    "  C.denials=function(frag){"
+    "    if(!frag||frag.confined!==true||typeof frag.handle!=='number')"
+    "      throw new TypeError('denials: arg0 must be a confined fragment');"
+    "    var d=C.__denialStatus(frag.handle);"
+    "    d.posture=(frag.onViolation===1)?'audit':((frag.onViolation===2)?'deny':"
+    "              ((frag.onViolation===3)?'learn':'inherit'));return d;};"
     /* ================= M-LIB: the standard policy library =================
        ROADMAP M-LIB: "the user-facing surface is not the kernel but the
        combinators."  Everything above is the kernel: 20 operators, correct and
@@ -5720,14 +5790,21 @@ static const char  ngx_js_comcon_bootstrap[] =
     "      {field:'tests',by:'admit test phase, run in the compartment',"
     "       effect:'refuse'},"
     "      {field:'deps',by:'pinned dep eval, bound as closure params',"
-    "       effect:'authority'}],"
+    "       effect:'authority'},"
+    "      {field:'onViolation',by:'invoke posture override, per binding, "
+             "restored after the call (v5.91)',effect:'posture'},"
+    "      {field:'profile',by:'admit: restrictive or declarative; adaptive "
+             "refused (v5.91)',effect:'refuse'}],"
+    /* v5.127: this list said for months that six mediation words needed C-side
+       enforcement and that std.ops was not started -- after all of them had
+       shipped.  A describe() that names as absent what is present is the drift
+       check [8] exists for, one surface over; the rows below are the canonical
+       NOT BUILT list and nothing else. */
     "    absent:["
-    "      {name:'postures / onViolation',why:'nothing reads them yet -- a "
-             "posture of ignored keys would be believed'},"
-    "      {name:'allowHosts / uses / ttl / window / cosign / protocol',"
-    "       why:'needs C-side enforcement; the mediation vocabulary is closed "
-             "at revoke/redact/allow/routes'},"
-    "      {name:'std.ops',why:'the comconctl verbs; not started'}]};};"
+    "      {name:'std.postures.*',why:'what lockdown narrows to is a decision "
+             "nobody has made; a posture of ignored keys would be believed'},"
+    "      {name:'opaque.*',why:'an engine-substrate question, never a "
+             "mediation; unscheduled by decision'}]};};"
     /* ---------------- std.ops: administration as library code ----------------
        FOUNDATION §8a: THERE IS NO MANAGEMENT PLANE.  comconctl is a shell, not a
        tool; every verb is an ordinary library program over the four kernel
@@ -5859,6 +5936,25 @@ static const char  ngx_js_comcon_bootstrap[] =
     "          return o.name+':'+o.cls;})};}),"
     "        enforcedBy:STD.describe().enforced};});"
 
+    /* G-05 (v5.127): the would-deny list for ONE binding -- its own counters
+       (C.denials), read against its posture.  `observing` says whether the
+       rows are what enforce WOULD have refused (audit/learn, or inherit while
+       the fleet observes) or what it DID refuse. */
+    "    verb('wouldDeny','log',function(frag){var d=C.denials(frag);"
+    "      var fleet=res.log().mode,events=[],k;"
+    "      for(k in d.byOp)if(d.byOp[k]>0)events.push({op:k,n:d.byOp[k]});"
+    "      return {posture:d.posture,fleet:fleet,"
+    "        observing:(d.posture==='audit'||d.posture==='learn'||"
+    "                   (d.posture==='inherit'&&fleet!=='enforce')),"
+    "        total:d.total,events:events};});"
+    /* G-05: the policy diff of a registered binding against a candidate
+       contract; G-16: the docs of a registered binding, rendered from what it
+       holds.  Both are text over the binding store, no new authority. */
+    "    verb('diff','bindings',function(name,candidate){"
+    "      return STD.policy.diff(need(name).h.contract,candidate);});"
+    "    verb('docs','bindings',function(name){var b=need(name);"
+    "      return STD.docs.render(name,b.h,{epoch:b.h.epoch(),"
+    "        tombstoned:b.h.tombstoned()});});"
     "    var sess={},withheld=[],avail=[];"
     "    for(var i=0;i<V.length;i++){"
     "      if(have[V[i].needs]){sess[V[i].name]=V[i].fn;avail.push(V[i].name);}"
@@ -5877,9 +5973,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "           why:'no signing key capability'},"
     "          {verb:'propose',needs:'learn+heuristics',"
     "           why:'the harvest is here (learn); turning it into a quotation "
-                   "is not'},"
-    "          {verb:'diff / docs',needs:'describe cap',"
-    "           why:'nginx.describe() is not yet handed out as a capability'}]};};"
+                   "is not'}]};};"
     "    return Object.freeze(sess);};"
     /* ================= M-CFG: the config instance =========================
        ROADMAP M-CFG's deliverable -- "one tenant subtree onboarded through admit
@@ -6238,6 +6332,229 @@ static const char  ngx_js_comcon_bootstrap[] =
     "        granted:want.slice().sort(),reason:null});};"
     "    return Object.freeze(S);};"
 
+    /* ================= v5.127: the three library-kind gaps =================
+       SHOWCASE-gaps.md G-13 (evaluate), G-05 (policy.diff + wouldDeny above),
+       G-16 (docs).  Library programs over shipped operators: nothing here
+       confers authority, and each reads the same descriptors the kernel
+       enforces (polOf, maskFields), so a report cannot drift from the cage. */
+
+    /* evaluate(fn | source, {declares}): the whole appetite of a module in one
+       static read -- every free name, classified (intrinsic / authority /
+       denied), with its call sites and lines from the bytecode, the dynamic-code
+       flag, and the undocumented remainder against what the vendor declared.
+       A source is accepted only as ONE function expression (checked by the
+       parser before anything is compiled); nothing is run. */
+    "  STD.evaluate=function(fn,opts){opts=opts||{};"
+    "    if(typeof fn==='string'){var ast=C.__parse(fn,true);"
+    "      if(!ast||(ast.type!=='FunctionExpression'&&"
+    "               ast.type!=='ArrowFunctionExpression'))"
+    "        throw new TypeError('std.evaluate: a source must be exactly one "
+                 "function expression');"
+    "      if(ast.end!==fn.length&&fn.slice(ast.end).trim()!=='')"
+    "        throw new TypeError('std.evaluate: trailing text after the "
+                 "function expression');"
+    "      fn=(new Function('return ('+fn+'\\n)'))();}"
+    "    if(typeof fn!=='function')throw new TypeError("
+    "      'std.evaluate: arg0 must be a function or its source');"
+    "    var raw=C.__freeNames(fn),node=null;"
+    "    try{node=C.pom(fn);}catch(e){node=null;}"
+    "    var declared={},i,dl=opts.declares||[];"
+    "    for(i=0;i<dl.length;i++)declared[String(dl[i])]=true;"
+    "    var names=[],auth=[],intr=[],undoc=[],denied=[];"
+    "    for(i=0;i<raw.names.length;i++){var n=raw.names[i],"
+    "        row={name:n.name,kind:n.denied?'denied':"
+    "             (n.intrinsic?'intrinsic':'authority')};"
+    "      if(node){var cs=node.callsites(n.name);row.calls=cs.length;"
+    "        row.lines=cs.map(function(c){return c.line;});"
+    "        row.references=node.references(n.name).length;}"
+    "      names.push(row);"
+    "      if(row.kind==='intrinsic')intr.push(n.name);"
+    "      else{auth.push(n.name);if(row.kind==='denied')denied.push(n.name);"
+    "        if(!declared[n.name])undoc.push(n.name);}}"
+    "    names.sort(function(a,b){return a.name<b.name?-1:(a.name>b.name?1:0);});"
+    "    auth.sort();intr.sort();undoc.sort();denied.sort();"
+    "    var verdict='requests '+auth.length+' authorit'+"
+    "      (auth.length===1?'y':'ies')+' ('+auth.join(', ')+')'+"
+    "      (dl.length?'; declared '+(auth.length-undoc.length)+' of '+auth.length:'')+"
+    "      (denied.length?'; names the ambient host ('+denied.join(', ')+"
+    "        '), which no grant can supply':'')+"
+    "      (raw.dynamicCode?'; uses dynamic code, refused at admission':'');"
+    "    return Object.freeze({names:names,authorities:auth,intrinsics:intr,"
+    "      undocumented:undoc,denied:denied,dynamicCode:raw.dynamicCode,"
+    "      admissible:!raw.dynamicCode&&denied.length===0,"
+    "      contract:{imports:auth.slice()},verdict:verdict});};"
+
+    /* policy.diff(before, after): two contracts (or include results / bindAt
+       handles, which carry theirs), compared axis by axis in the lattice the
+       kernel uses -- masks by inclusion, lifetimes and deadlines by size,
+       budgets by limit under an identical key and window, quorums up and
+       windows down, globs and protocols only by identity.  The verdict is
+       `narrowing` (auto-safe: nothing gained authority), `widening`,
+       `unchanged`, or `incomparable` (a change no order relates, e.g. two
+       globs), and every change is listed with its direction. */
+    "  STD.policy={};"
+    "  function asContract(x){if(x&&x.contract)return x.contract;return x||{};}"
+    "  function gview(v,k){var pv=polOf(v,k);if(pv===null)return {kind:-1};"
+    "    var p=pv.pol,o={kind:p.kind};"
+    "    if(p.kind===0)o.fields=maskFields(p.mask);"
+    "    if(p.glob!==undefined)o.glob=p.glob;"
+    "    if(p.budget)o.budget=p.budget;if(p.ttlSeconds)o.ttlSeconds=p.ttlSeconds;"
+    "    if(p.window)o.window=p.window;if(p.cosign)o.cosign=p.cosign;"
+    "    if(p.protocol)o.protocol=p.protocol;"
+    "    if(p.kind===4)o.subFragments=p.subFragments;return o;}"
+    "  var NARROW='narrowing',WIDEN='widening',SAME='unchanged',INC='incomparable';"
+    "  function ord(a,b,lowerIsNarrower){if(a===b)return SAME;"
+    "    if(a===undefined)return lowerIsNarrower?NARROW:WIDEN;"
+    "    if(b===undefined)return lowerIsNarrower?WIDEN:NARROW;"
+    "    return (b<a)===lowerIsNarrower?NARROW:WIDEN;}"
+    "  function setRel(a,b){var i,sub=true,sup=true,A={},B={};"
+    "    for(i=0;i<a.length;i++)A[a[i]]=1;for(i=0;i<b.length;i++)B[b[i]]=1;"
+    "    for(i=0;i<b.length;i++)if(!A[b[i]])sub=false;"
+    "    for(i=0;i<a.length;i++)if(!B[a[i]])sup=false;"
+    "    if(sub&&sup)return SAME;if(sub)return NARROW;if(sup)return WIDEN;return INC;}"
+    "  function eq(a,b){return JSON.stringify(a)===JSON.stringify(b);}"
+    "  function cmpGrant(a,b,out,path){var dirs=[];"
+    "    function push(axis,d,from,to){dirs.push(d);"
+    "      if(d!==SAME)out.push({path:path+'.'+axis,from:from,to:to,direction:d});}"
+    "    if(a.kind===-1&&b.kind===-1)return SAME;"
+    "    if(a.kind===-1){push('grant',WIDEN,'revoked',kindName(b.kind));return WIDEN;}"
+    "    if(b.kind===-1){push('grant',NARROW,kindName(a.kind),'revoked');return NARROW;}"
+    "    if(a.kind!==b.kind){push('kind',INC,kindName(a.kind),kindName(b.kind));return INC;}"
+    "    if(a.fields)push('fields',setRel(a.fields,b.fields||[]),a.fields,b.fields);"
+    "    if(a.glob!==undefined||b.glob!==undefined)"
+    "      push('glob',a.glob===b.glob?SAME:INC,a.glob,b.glob);"
+    "    push('ttlSeconds',ord(a.ttlSeconds,b.ttlSeconds,true),a.ttlSeconds,b.ttlSeconds);"
+    "    if(a.budget||b.budget){var d;"
+    "      if(!a.budget)d=NARROW;else if(!b.budget)d=WIDEN;"
+    "      else if(a.budget.key!==b.budget.key||a.budget.window!==b.budget.window)d=INC;"
+    "      else d=ord(a.budget.limit,b.budget.limit,true);"
+    "      push('budget',d,a.budget,b.budget);}"
+    "    if(a.window||b.window)push('window',!a.window?NARROW:(!b.window?WIDEN:"
+    "      (eq(a.window,b.window)?SAME:INC)),a.window,b.window);"
+    "    if(a.cosign||b.cosign){var c;"
+    "      if(!a.cosign)c=NARROW;else if(!b.cosign)c=WIDEN;"
+    "      else if(a.cosign.key!==b.cosign.key||a.cosign.as!==b.cosign.as)c=INC;"
+    "      else{var q=ord(a.cosign.quorum,b.cosign.quorum,false),"
+    "               w=ord(a.cosign.within,b.cosign.within,true);"
+    "        c=(q===SAME)?w:((w===SAME||w===q)?q:INC);}"
+    "      push('cosign',c,a.cosign,b.cosign);}"
+    "    if(a.protocol||b.protocol)push('protocol',!a.protocol?NARROW:"
+    "      (!b.protocol?WIDEN:(eq(a.protocol,b.protocol)?SAME:INC)),a.protocol,b.protocol);"
+    "    if(a.subFragments!==undefined||b.subFragments!==undefined)"
+    "      push('subFragments',ord(a.subFragments,b.subFragments,true),"
+    "           a.subFragments,b.subFragments);"
+    "    return join(dirs);}"
+    "  function kindName(k){return k===0?'socket':(k===1?'server facet':"
+    "    (k===3?'outbound':(k===4?'author':'unknown')));}"
+    "  function join(dirs){var i,n=false,w=false;"
+    "    for(i=0;i<dirs.length;i++){if(dirs[i]===INC)return INC;"
+    "      if(dirs[i]===NARROW)n=true;if(dirs[i]===WIDEN)w=true;}"
+    "    return (n&&w)?INC:(n?NARROW:(w?WIDEN:SAME));}"
+    "  STD.policy.diff=function(before,after){"
+    "    var a=asContract(before),b=asContract(after),out=[],dirs=[],k;"
+    "    function note(path,d,from,to){dirs.push(d);"
+    "      if(d!==SAME)out.push({path:path,from:from,to:to,direction:d});}"
+    "    var ai=a.imports||[],bi=b.imports||[];"
+    "    if(a.imports!==undefined||b.imports!==undefined){"
+    "      if(a.imports===undefined)note('imports',NARROW,'(no admission)',bi);"
+    "      else if(b.imports===undefined)note('imports',WIDEN,ai,'(no admission)');"
+    "      else note('imports',setRel(ai,bi),ai,bi);}"
+    "    var ag=a.grants||{},bg=b.grants||{},seen={};"
+    "    for(k in ag)if(Object.prototype.hasOwnProperty.call(ag,k)){seen[k]=1;"
+    "      if(!Object.prototype.hasOwnProperty.call(bg,k))"
+    "        note('grants.'+k,NARROW,kindName(gview(ag[k],k).kind),'(removed)');"
+    "      else dirs.push(cmpGrant(gview(ag[k],k),gview(bg[k],k),out,'grants.'+k));}"
+    "    for(k in bg)if(Object.prototype.hasOwnProperty.call(bg,k)&&!seen[k])"
+    "      note('grants.'+k,WIDEN,'(absent)',kindName(gview(bg[k],k).kind));"
+    "    var am=(a.meter&&a.meter[METER])||{},bm=(b.meter&&b.meter[METER])||{};"
+    "    ['timeoutMs','memoryBytes','retainedBytes'].forEach(function(f){"
+    "      note('meter.'+f,ord(am[f],bm[f],true),am[f],bm[f]);});"
+    "    note('checkRequest',(!!a.checkRequest===!!b.checkRequest)?SAME:"
+    "      (b.checkRequest?NARROW:WIDEN),!!a.checkRequest,!!b.checkRequest);"
+    "    note('tests',(!!a.tests===!!b.tests)?SAME:(b.tests?NARROW:WIDEN),"
+    "      !!a.tests,!!b.tests);"
+    "    note('identity',(!!a.identity===!!b.identity)?"
+    "      (a.identity===b.identity?SAME:INC):(b.identity?NARROW:WIDEN),"
+    "      a.identity,b.identity);"
+    "    if(a.intrinsics!==undefined||b.intrinsics!==undefined){"
+    "      if(a.intrinsics===undefined)note('intrinsics',NARROW,'(full allowance)',b.intrinsics);"
+    "      else if(b.intrinsics===undefined)note('intrinsics',WIDEN,a.intrinsics,'(full allowance)');"
+    "      else note('intrinsics',setRel(a.intrinsics,b.intrinsics),a.intrinsics,b.intrinsics);}"
+    "    var PO={audit:0,learn:0,inherit:1,deny:2,enforce:2},"
+    "        ap=PO[String(a.onViolation||'inherit')],bp=PO[String(b.onViolation||'inherit')];"
+    "    note('onViolation',ap===bp?SAME:(bp>ap?NARROW:WIDEN),"
+    "      a.onViolation||'inherit',b.onViolation||'inherit');"
+    "    var v=join(dirs);"
+    "    return Object.freeze({verdict:v,autoSafe:(v===NARROW||v===SAME),changes:out});};"
+
+    /* docs.model(name, contract | fragment | handle, opts) is the query;
+       docs.render(...) is the same thing as Markdown.  Every line is derived
+       from the descriptors the kernel enforces, so if it is in the docs it
+       works and if it works it is in the docs. */
+    "  STD.docs={};"
+    "  STD.docs.model=function(name,x,opts){opts=opts||{};"
+    "    var c=asContract(x),m={name:String(name),epoch:opts.epoch,"
+    "      tombstoned:!!opts.tombstoned,"
+    "      posture:c.onViolation||'inherit',profile:c.profile||'restrictive',"
+    "      admission:c.imports!==undefined||c.identity!==undefined||"
+    "                !!c.checkRequest||c.tests!==undefined,"
+    "      imports:(c.imports||[]).slice(),intrinsics:c.intrinsics,"
+    "      checkRequest:!!c.checkRequest,tests:c.tests!==undefined,"
+    "      identity:c.identity?String(c.identity).slice(0,12)+'...':null,"
+    "      deps:(c.deps||[]).map(function(d){return {name:d.name,sha256:String(d.sha256||'').slice(0,12)+'...'};}),"
+    "      grants:[]};"
+    "    var mt=(c.meter&&c.meter[METER])||{};"
+    "    m.meter={timeoutMs:mt.timeoutMs||(x&&x.meterMs)||'default (5000)',"
+    "      memoryBytes:mt.memoryBytes||(x&&x.meterMemoryBytes)||'default (16 MB)',"
+    "      retainedBytes:mt.retainedBytes||(x&&x.meterRetainedBytes)||'default (8 MB)'};"
+    "    var g=c.grants||{},k;"
+    "    for(k in g)if(Object.prototype.hasOwnProperty.call(g,k)){"
+    "      var v=gview(g[k],k),row={name:k,kind:kindName(v.kind)};"
+    "      if(v.kind===-1){row.kind='revoked';row.ops=[];}"
+    "      else if(v.kind===0)row.ops=(v.fields||[]).map(function(f){return f+' (read)';});"
+    "      else if(v.kind===1)row.ops=['paths()','route','allowed(path)'];"
+    "      else if(v.kind===3)row.ops=['request(url)'];"
+    "      else if(v.kind===4)row.ops=['include(source, contract)'];"
+    "      if(v.glob!==undefined)row.within=v.glob;"
+    "      if(v.ttlSeconds)row.ttlSeconds=v.ttlSeconds;"
+    "      if(v.budget)row.budget=v.budget.limit+' per '+v.budget.window+' s (key '+v.budget.key+')';"
+    "      if(v.window)row.window=v.window;"
+    "      if(v.cosign)row.cosign='quorum '+v.cosign.quorum+' within '+v.cosign.within+' s, as '+v.cosign.as;"
+    "      if(v.protocol)row.protocol=v.protocol.join(' -> ');"
+    "      if(v.subFragments!==undefined)row.subFragments=v.subFragments;"
+    "      m.grants.push(row);}"
+    "    return m;};"
+    "  STD.docs.render=function(name,x,opts){var m=STD.docs.model(name,x,opts),L=[],i;"
+    "    L.push('# '+m.name+' -- your available API');"
+    "    L.push('derived from your contract'+(m.epoch!==undefined?', epoch '+m.epoch:'')+"
+    "      (m.tombstoned?' (REMOVED: the site answers 410)':'')+"
+    "      '; posture: '+m.posture+'; profile: '+m.profile);"
+    "    L.push('');L.push('## Capabilities');"
+    "    if(!m.grants.length)L.push('(none: data in, data out)');"
+    "    for(i=0;i<m.grants.length;i++){var r=m.grants[i];"
+    "      L.push('- `'+r.name+'` -- '+r.kind+(r.within?' within `'+r.within+'`':'')+"
+    "        ': '+(r.ops.length?r.ops.join(', '):'nothing'));"
+    "      if(r.ttlSeconds)L.push('  - expires '+r.ttlSeconds+' s after it was granted');"
+    "      if(r.budget)L.push('  - budget: '+r.budget);"
+    "      if(r.window)L.push('  - open on day mask '+r.window.days+', '+"
+    "        r.window.from+'-'+r.window.to+' (minutes, UTC)');"
+    "      if(r.cosign)L.push('  - needs a cosignature: '+r.cosign);"
+    "      if(r.protocol)L.push('  - operations in this order: '+r.protocol);"
+    "      if(r.subFragments!==undefined)L.push('  - may hold '+r.subFragments+' sub-fragments at once');}"
+    "    L.push('');L.push('## Names you may mention');"
+    "    L.push(m.admission?('- imports: '+(m.imports.length?m.imports.join(', '):'(none)')+"
+    "      (m.intrinsics!==undefined?'; intrinsics narrowed to: '+m.intrinsics.join(', '):"
+    "       '; language intrinsics: allowed')):'- admission is OFF for this binding: free names are not checked');"
+    "    L.push('');L.push('## Bounds');"
+    "    L.push('- deadline: '+m.meter.timeoutMs+' ms per invocation (an abort is not catchable)');"
+    "    L.push('- allocation: '+m.meter.memoryBytes+' bytes per invocation');"
+    "    L.push('- retained: '+m.meter.retainedBytes+' bytes across invocations');"
+    "    L.push('');L.push('## Admission');"
+    "    L.push('- request fields: '+(m.checkRequest?'checked against the sealed schema':'not checked'));"
+    "    L.push('- tests: '+(m.tests?'run in the compartment before admission':'none'));"
+    "    L.push('- identity: '+(m.identity?'pinned ('+m.identity+')':'not pinned'));"
+    "    for(i=0;i<m.deps.length;i++)L.push('- dependency `'+m.deps[i].name+'` pinned ('+m.deps[i].sha256+')');"
+    "    return L.join('\\n')+'\\n';};"
     "  C.std=Object.freeze(STD);"
     "  Object.freeze(STD.profiles);"
     "  C.pom=function(rootFn){"
@@ -6387,6 +6704,7 @@ static const char  ngx_js_comcon_bootstrap[] =
     "    var cur=make(quotation),epoch=0,tomb=false,hist=[];"
     "    site(cur,epoch);"
     "    var h={};"
+    "    h.contract=contractView(contract);"
     "    h.epoch=function(){return epoch;};"
     "    h.tombstoned=function(){return tomb;};"
     "    h.call=function(arg){if(tomb)throw new Error('bindAt: tombstoned');"
@@ -7412,6 +7730,14 @@ ngx_js_com_init(JSContext *ctx, ngx_cycle_t *cycle)
         JS_SetPropertyStr(ctx, comcon_obj, "__memStatus",
                           JS_NewCFunction(ctx, ngx_js_comcon_mem_status,
                                           "__memStatus", 1));
+        /* G-05: the gates that fired while a fragment ran, attributed. */
+        JS_SetPropertyStr(ctx, comcon_obj, "__denialStatus",
+                          JS_NewCFunction(ctx, ngx_js_comcon_denial_status,
+                                          "__denialStatus", 1));
+        /* G-13: the whole free-name manifest of a function, classified. */
+        JS_SetPropertyStr(ctx, comcon_obj, "__freeNames",
+                          JS_NewCFunction(ctx, ngx_js_comcon_free_names,
+                                          "__freeNames", 1));
         /* [TBD-2]: the closed refusal-code set, generated from the C table —
            what a tenant's deny-suite may be refused with. */
         JS_SetPropertyStr(ctx, comcon_obj, "refusalCodes",

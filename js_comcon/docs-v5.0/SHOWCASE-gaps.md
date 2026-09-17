@@ -1,4 +1,4 @@
-# SHOWCASE gaps — where the scenarios and the tree differ (v5.126, 2026-09-16)
+# SHOWCASE gaps — where the scenarios and the tree differ (v5.126, 2026-09-16; three closed at v5.127)
 
 > **What this is.** The eight `SHOWCASE*.md` files were written in August 2026 as
 > intent, in hypothetical syntax. On 2026-09-16 every one of their 53 scenario
@@ -37,7 +37,7 @@ substrate decision (`opaque.*`/COW: 7, 16, 19, 32), two are one design increment
 | **G-02** | 3, 4, 11 | grammar-valued interfaces: a parameterized-only `db` facet, `header_value` grammars, `pattern{}` instead of regex, "one parser, N policies" | stone splices (data can never become code), `reviewDeclarative` as one sound rejecter, CRLF dropped at the header boundary | facets whose *language* is a policy; a pattern language; a `db` capability kind | design | M2.5–M4 (+M-LIB facets) |
 | **G-03** | 7, 16, 19, 32, (18 overlay) | `opaque.str` values with named sinks; COW views and overlays; a shadow world | field-level `redact`/`allow` on socket and server capabilities; sessions never carry caps | the opaque/COW engine substrate | substrate, **unscheduled by decision** (ROADMAP §5 lesson 6; canonical NOT BUILT list) | none |
 | **G-04** | 6, 13, 23 | a REL/forensics console attached to a worker; an AI session with redacted handles and opaque traffic | per-worker data through host handlers (`tenantDenials`, `tenantLearning`, `memStatus`, `aotStatus`, `trustReport`); NodeView reads are quotations, `binding` redacted | an attach/REPL surface; a forensics profile; body redaction on program handles | library (REPL exists on the js_com side; a COMCON-shaped session does not) | tooling verbs |
-| **G-05** | 5, 6, 14 | allow-suite generation with coverage; a policy diff that reports "narrowing, auto-safe"; a would-deny event list | learn-mode harvest with hit counts; per-binding `onViolation: "audit"`; fleet `shadow`/`enforce` reaching every worker; `config.diff` for config proposals; denial counters per gate | a recorded-cases generator; a diff over *grants*; per-binding would-deny events (counters are per worker, per gate) | library | M2.5 denial/explain schema |
+| **G-05** | 5, 6, 14 | allow-suite generation with coverage; a policy diff that reports "narrowing, auto-safe"; a would-deny event list | **CLOSED v5.127 for the diff and the would-deny list:** `comcon.std.policy.diff` (verdict narrowing / widening / unchanged / incomparable, auto-safe flag, every change with its direction, over the kernel's own grant translation) and `comcon.denials(f)` / `ops.wouldDeny(f)` (the gates attributed to the binding they fired in, read against its posture). Demo `O_Operators/O3`. | still open: a recorded-cases generator with coverage | library | M2.5 denial/explain schema |
 | **G-06** | 9 | `expose`/`accept` communication edges, both signatures required | host-brokered exchange (JSON between two fragments of one host); reseller copies narrowed | fragment-to-fragment edges as capabilities | design | mixed (ROADMAP §5) |
 | **G-07** | 10, 33 | `cpu: "5ms/request"`, `compile: "50ms"`, budgets as billing counters | `timeoutMs` (wall clock), `memoryBytes` (burst), `retainedBytes` (leak), `memStatus` counts | a CPU-time unit, a `gas` instruction count (forward-declared), compile budgets, invoice-grade counters | design | S5-b (`meter({gas})`) |
 | **G-08** | 15, 50 | Tcl iRules and WASM modules as fragments | JavaScript only | multi-language includes; the `wasm` facet and wasm2c lane | design | M9 / stage 2; M-LIB v5.2 (wasm) |
@@ -45,10 +45,10 @@ substrate decision (`opaque.*`/COW: 7, 16, 19, 32), two are one design increment
 | **G-10** | 21, 45 | `std.postures.lockdown` applied fleet-wide; two bindings on one node meet | fleet `enforce`; mediation stacks meet on a capability (masks AND, lifetimes MIN, identical budgets compose, different refused) | what `lockdown` narrows to (a decision); a meet of two *contracts* on one fragment | **decision** (canonical NOT BUILT list) | — |
 | **G-11** | 22 | an adaptive-profile transform at admission | `profile: "adaptive"` refused on purpose (`E_ADMIT_CONTRACT`); `harden`/`ops.rewrite` rewrite a quotation's matched sites, reviewable, installed as an epoch | a transforming profile — refused by decision so "runs standalone" stays falsifiable | decision | stage 2 |
 | **G-12** | 24 | a trust ladder of profiles; widening requires the admin handle and leaves an epoch mark | two profiles (`tenant`, `pure_library`); widening is an ordinary `rebind`/`replace` epoch (host is trusted) | probation/standard/trusted profiles; an admin-handle gate on widening | library + decision | M6 |
-| **G-13** | 25 | one static report of a module's whole appetite | `admit` names the first undeclared free name; `callsites`/`references` per name; learn mode harvests dynamically | a whole-appetite static report in one call | library (a loop over `references` plus a free-name scan) | tooling verbs |
+| **G-13** | 25 | one static report of a module's whole appetite | **CLOSED v5.127:** `comcon.std.evaluate(fn | source, {declares})` — every free name from the admission collector, classified, with call sites and lines, the dynamic-code flag, the undocumented remainder, and the `imports` line a contract would need; a source is accepted only as one function expression and nothing runs. Demo `A_Auditors/A2`. | — | library | tooling verbs |
 | **G-14** | 26 | `protocol` over a `ws` facet (`handshake`, `frames*`, `close`) | `protocol` over socket field reads and outbound `request` | more capability kinds with operations to order | design | M-LIB facets |
 | **G-15** | 27 | workers as fragments; a message is an export; edges between workers | data through `nginx.shared` (shared bindings, fleet posture), lazy per-worker reconcile | cross-process kernel semantics | design (open question) | FOUNDATION open questions |
-| **G-16** | 29, 37 | per-tenant generated docs; a trust report with provenance and signatures | `describe()` registries at every level; `ops.trustReport()` over bindings and the enforced-by table, withheld verbs named | the per-tenant renderer; provenance/signing resources | library | M2 registry + tooling verbs |
+| **G-16** | 29, 37 | per-tenant generated docs; a trust report with provenance and signatures | **CLOSED v5.127 for the docs:** `comcon.std.docs.model/render` and `ops.docs(name)` — the manual as a projection of the contract a binding carries (`.contract`), through the grant translation the kernel enforces, with the live epoch. Demo `A_Auditors/A3`. | still open: provenance/signing resources for the trust report | library | M2 registry + tooling verbs |
 | **G-17** | 34 | API version as a grant word (`platform.api("v1-compat")`) | per-fragment grants; per-fragment pinned deps | a version dimension on the COM facet | design | — |
 | **G-18** | 35 | an append-only `log` facet (append, never read/truncate) | denial log written by the host side only; masks on socket/server caps | a log capability kind | design | M-LIB facets |
 | **G-19** | 36 | a stage-0 builder profile that denies clock/RNG/I/O | the tenant's config proposals (declarative, typed, all-or-nothing); anchors; host `root.js` is trusted JS | determinism caps on the host's own stage-0 program | decision | — |
@@ -75,6 +75,14 @@ Written down so the checklist reads in both directions:
   a gate stage; it found F20 and F21.
 - **Learn mode installs at the first include** (5): the compartment is created then, so
   `comcon.mode("learn")` must precede it — a rule the samples do not state.
+
+## Closed since the register was written
+
+| gap | closed | by |
+|---|---|---|
+| G-13 | v5.127 | `comcon.std.evaluate` (`t/comcon_std_evaluate.t`, demo A2) |
+| G-05 (diff + would-deny) | v5.127 | `comcon.std.policy.diff`, `comcon.denials`, `ops.wouldDeny` (`t/comcon_std_policy_diff.t`, `t/comcon_would_deny.t`, demo O3) |
+| G-16 (docs) | v5.127 | `comcon.std.docs`, `ops.docs` (`t/comcon_std_docs.t`, demo A3) |
 
 ## Demos that came out of this pass
 

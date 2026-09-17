@@ -76,15 +76,20 @@ JS
 
 $t->try_run('no js module')->plan(5);
 
+# the socket's port is whatever Test::Nginx handed out for %%PORT_8091%%: when
+# 8091 is busy on the box the harness remaps it, and a literal here failed for
+# that reason alone (2026-09-16, a foreign nginx on 8091)
+my $sp = port(8091);
+
 my $body = http_get('/med');
 
-like($body, qr/"onlyPort":\{[^}]*"port":8091/,
+like($body, qr/"onlyPort":\{[^}]*"port":$sp/,
      'allow: the allowed field (port) passes the membrane');
 like($body, qr/"onlyPort":\{[^}]*"addrType":"undefined"/,
      'allow: a non-allowed field (address) is hidden (undefined)');
 like($body, qr/"noAddr":\{[^}]*"addrType":"undefined"/,
      'redact: the redacted field (address) reads undefined');
-like($body, qr/"noAddr":\{[^}]*"port":8091/,
+like($body, qr/"noAddr":\{[^}]*"port":$sp/,
      'redact: a non-redacted field (port) still passes');
 like($body, qr/"revoked":\{"hasS":"undefined"\}/,
      'revoke: the grant is withheld entirely (name undefined in the fragment)');

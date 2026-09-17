@@ -468,6 +468,65 @@ across a whole environment rather than one capability. Assembling it here would 
 
 ---
 
+## 8k. `std.evaluate`, `std.policy.diff`, `std.docs`, `comcon.denials` — the library-kind gaps closed *(v5.127)*
+
+```js
+var report = comcon.std.evaluate(sdkFn /* or its source */, { declares: ['fetch'] });
+report.verdict          // "requests 5 authorities (Date, buildUrl, createSocket, fetch, nginx); declared 1 of 5"
+report.names            // [{name, kind: 'intrinsic'|'authority'|'denied', calls, lines, references}, …]
+report.contract         // {imports: [...]}: the manifest a contract would need, ready to paste
+
+var d = comcon.std.policy.diff(current, candidate);     // contracts, include results or bindAt handles
+d.verdict               // 'narrowing' | 'widening' | 'unchanged' | 'incomparable'
+d.autoSafe              // true iff nothing gained authority
+d.changes               // [{path: 'grants.s.fields', from, to, direction}, …]
+
+comcon.std.docs.render('acme', fragmentOrContract)      // the tenant's manual, Markdown
+comcon.std.docs.model('acme', fragmentOrContract)       // the same, as the query it is
+comcon.denials(fragment)                                // {total, byOp, posture}: this binding's own rows
+ops.wouldDeny(fragment); ops.diff(name, candidate); ops.docs(name)
+```
+
+Three library programs over shipped operators, closing `SHOWCASE-gaps.md` G-13, G-05 and
+G-16; one small mechanism under the second.
+
+- **`evaluate` is one static read of a module's whole appetite.** `admit()` stops at the
+  first undeclared free name because one is enough to refuse; an evaluation wants all of
+  them. The names come from the **same C collector admission uses** (`comcon.__freeNames`),
+  classified against the same intrinsics allowance, with call sites and lines from the
+  bytecode (D5a) and the dynamic-code flag. A **source string** is accepted only after the
+  vendored parser says it is exactly one function expression; text after it is refused, so
+  `function(){}; evil()` never runs. Nothing is executed. `t/comcon_std_evaluate.t`.
+- **`policy.diff` reads the kernel's own lattice.** The grant translation `include()` feeds
+  the C side (`polOf`) is the function the diff reads, so a narrower contract cannot read as
+  wider in a report. Masks compare by inclusion, lifetimes and deadlines by size, budgets by
+  limit under an identical key and window, quorums up and windows down; globs and protocols
+  compare by identity only, and anything else is **`incomparable`, never guessed** — the
+  `routes` rule, worn by a report. A mixed change (one axis narrows, another widens) is not
+  auto-safe. An include result and a `bindAt` handle carry their contract (`.contract`, a
+  frozen shallow copy) so a live binding can be diffed against a candidate.
+  `t/comcon_std_policy_diff.t`.
+- **`comcon.denials(f)` attributes the gates to the binding.** The invoke sets a pointer to
+  the running fragment's own counters for the duration of the call (restored after, nested
+  for a sub-fragment), and the compartment's one counting site increments both the fleet
+  counter and the fragment's. Under `onViolation: 'audit'` the nonzero rows are the
+  **would-deny list** the rehearsal scenario asked for; `ops.wouldDeny(f)` reads them against
+  the posture and says whether it is observing or denying. Per worker, like `memStatus`.
+  Negative control: `t/tools/controls/denials-not-attributed.patch`. `t/comcon_would_deny.t`.
+- **`docs` is a projection of the contract.** Every line — the fields a mask leaves, a
+  facet's ops within its glob, a budget, a lease, a window, a cosignature, a protocol, the
+  bounds with defaults named as defaults, the admission fields, the pins — is read from the
+  descriptors the kernel enforces. A redacted field is absent from the manual because it is
+  absent from the capability. `ops.docs(name)` renders a registered binding with its live
+  epoch. `t/comcon_std_docs.t`.
+- **`std.describe()` told the truth again.** Its `absent` list had said for months that six
+  mediation words needed C-side enforcement and that `std.ops` was not started, after all of
+  them had shipped — the drift check [8] guards, one surface over. It now lists the canonical
+  NOT BUILT set (`std.postures.*`, `opaque.*`) and nothing else, and `onViolation` /
+  `profile` appear in `enforced` with what enforces them.
+
+---
+
 ## 8j. `author({subFragments, ttlSeconds?})` — a fragment that authors fragments *(v5.106–v5.107)*
 
 ```js

@@ -234,7 +234,7 @@ like($inv, qr/"bare":\["describe"\]/,
      . '"no backdoor" property, visible by Object.keys');
 like($inv, qr/"modeOnly":\["describe","enforce","learnMode","shadow"\]/,
      'one resource yields exactly the verbs that decompose over it');
-like($inv, qr/"verbs":\["bindings","denials","describe","enforce","learn","learnMode","rebind","register","remove","revive","rewrite","rollback","shadow","snapshot","trustReport"\]/,
+like($inv, qr/"verbs":\["bindings","denials","describe","diff","docs","enforce","learn","learnMode","rebind","register","remove","revive","rewrite","rollback","shadow","snapshot","trustReport","wouldDeny"\]/,
      'a fully-provisioned session exposes all fifteen shipped verbs');
 
 # --- the third closed enumeration ---------------------------------------
@@ -252,7 +252,7 @@ like($inv, qr/"noHost":\["provenance","signing"\]/,
 like($inv, qr/"heldNone":true/, 'a bare session holds none of them');
 like($inv, qr/"withheldCount":1[0-9]/,
      'verbs it cannot perform are reported as withheld, with what they need');
-like($inv, qr/"absent":\["revoke","cosign \/ office-hours","propose","diff \/ docs"\]/,
+like($inv, qr/"absent":\["revoke","cosign \/ office-hours","propose"\]/,
      'and the comconctl verbs that cannot be built yet are named with reasons');
 
 # --- the audit-first rollout, which is real because comcon.mode() is ------

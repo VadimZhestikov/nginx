@@ -244,7 +244,11 @@ like($r, qr/"bounded":true/,
 like($r, qr/"checkReq":true/, 'request-field admission is on for a tenant');
 
 # --- and they work end to end -------------------------------------------
-like($r, qr/"tenant":\{"addrType":"undefined","port":8091\}/,
+# the socket's port is whatever Test::Nginx handed out for %%PORT_8091%%: when
+# 8091 is busy on the box the harness remaps it, and a literal 8091 here failed
+# for that reason alone (seen 2026-09-16, remapped to 8434)
+my $sp = port(8091);
+like($r, qr/"tenant":\{"addrType":"undefined","port":$sp\}/,
      'the tenant profile grants the mediated cap: port visible, address '
      . 'redacted by the membrane');
 like($r, qr/"pure":42/,
@@ -262,10 +266,12 @@ like($r, qr/"strictest":"refused"/,
 like($r, qr/"defaultStillOpen":true/,
      '...and it is NOT the default: tightening a shipped profile silently '
      . 'would break fragments already computing with JSON');
-like($r, qr/"enforced":\["imports","intrinsics","grants","checkRequest","meter","identity","tests","deps"\]/,
+like($r, qr/"enforced":\["imports","intrinsics","grants","checkRequest","meter","identity","tests","deps","onViolation","profile"\]/,
      'describe() names every contract field a profile may set, with what '
      . 'enforces it');
-like($r, qr/"absentCount":3/, '...and names what is deliberately absent');
+like($r, qr/"absentCount":2/, '...and names what is deliberately absent (v5.127: the '
+     . 'stale rows that named shipped words -- six mediation flavours, std.ops '
+     . '-- are gone; what is left is the canonical NOT BUILT list)');
 like($r, qr/"namesPostures":true/,
      "...including MANUAL's postures/onViolation, which nothing reads");
 
@@ -283,7 +289,7 @@ like($r, qr/"typoFlavor":"refused"/,
      . 'authority than the correct spelling');
 like($r, qr/"noInterceptor":"named"/,
      'mediate() needs an interceptor, and says which four words exist');
-like($r, qr/"toctou":\{"addrType":"undefined","port":8091\}/,
+like($r, qr/"toctou":\{"addrType":"undefined","port":$sp\}/,
      'TIME OF CHECK = TIME OF USE: mutating the descriptor after mediate() '
      . 'cannot reopen the fail-open -- the membrane still redacts');
 like($r, qr/"known":\["ok","ok","ok","ok"\]/,

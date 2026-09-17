@@ -3243,6 +3243,8 @@ ngx_js_sub_call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_val,
     int             nargs = 0;
     uint32_t        handle = 0, timeout = 0, memory = 0, owner = 0, oom0;
     uint32_t        saved_frag;
+    ngx_uint_t                  *saved_dc = NULL;
+    ngx_js_comcon_frag_stats_t  *dstats;
     uint64_t        old_deadline;
     size_t          old_mem;
     size_t          before_bytes;
@@ -3343,6 +3345,13 @@ ngx_js_sub_call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_val,
 
     saved_frag = ngx_js_compartment_frag_get();
     ngx_js_compartment_frag_set(handle + 1);
+
+    /* G-05: a sub-fragment's gates are the sub-fragment's (see the confined
+       invoke for the rule); the record is keyed by its own handle. */
+    ngx_js_comcon_stats_push(jcf);
+    dstats = ngx_js_comcon_stats(jcf, (uint32_t) handle);
+    saved_dc = ngx_js_compartment_frag_denials_set(dstats ? dstats->denials
+                                                          : NULL);
     jcf->comcon_depth++;
 
     oom0 = JS_GetOutOfMemoryCount(jcf->comcon_rt);
@@ -3406,6 +3415,7 @@ ngx_js_sub_call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_val,
 
     /* restore, in the reverse order of the push */
     ngx_js_comcon_retained_charge(jcf, handle, before_bytes, 0);
+    ngx_js_compartment_frag_denials_set(saved_dc);
     jcf->comcon_depth--;
     ngx_js_compartment_frag_set(saved_frag);
     ngx_js_comcon_mem_pop(jcf, old_mem);
@@ -4316,6 +4326,63 @@ ngx_js_comcon_mem_status(JSContext *hctx, JSValueConst this_val,
 
 
 /*
+ * G-05 (v5.127): comcon.__denialStatus(handle) -> {total, byOp: {code: n}}.
+ *
+ * The gates that fired while THIS fragment ran, by code -- the same names and
+ * the same counting as nginx.tenantDenials(), attributed.  Read on the host,
+ * per worker, like memStatus.  Under an audit posture (the binding's own
+ * onViolation word, or the fleet mode) the nonzero rows are the would-deny
+ * list: what an enforce posture would have refused.
+ */
+JSValue
+ngx_js_comcon_denial_status(JSContext *hctx, JSValueConst this_val,
+    int argc, JSValueConst *argv)
+{
+    ngx_js_conf_t               *jcf;
+    JSValue                      r, by;
+    int64_t                      handle = 0;
+    ngx_uint_t                   code, total;
+    ngx_js_comcon_frag_stats_t  *st;
+
+    jcf = ngx_js_comcon_jcf;
+    if (jcf == NULL || jcf->comcon_ctx == NULL || jcf->comcon_frags == NULL) {
+        return JS_ThrowInternalError(hctx, "comcon: no compartment");
+    }
+
+    if (argc < 1) {
+        return JS_ThrowTypeError(hctx, "comcon.__denialStatus: handle required");
+    }
+    JS_ToInt64(hctx, &handle, argv[0]);
+
+    if (handle < 0 || (ngx_uint_t) handle >= jcf->comcon_frags->nelts) {
+        return JS_ThrowTypeError(hctx, "comcon: bad fragment handle");
+    }
+
+    st = ngx_js_comcon_stats(jcf, (uint32_t) handle);
+
+    r = JS_NewObject(hctx);
+    if (JS_IsException(r)) {
+        return r;
+    }
+
+    by = JS_NewObject(hctx);
+    total = 0;
+
+    for (code = 0; code < NGX_JS_DENIAL_LAST; code++) {
+        JS_SetPropertyStr(hctx, by, ngx_js_denial_code_name(code),
+                          JS_NewInt64(hctx, st ? (int64_t) st->denials[code]
+                                               : 0));
+        total += st ? st->denials[code] : 0;
+    }
+
+    JS_SetPropertyStr(hctx, r, "total", JS_NewInt64(hctx, (int64_t) total));
+    JS_SetPropertyStr(hctx, r, "byOp", by);
+
+    return r;
+}
+
+
+/*
  * G6.16, THE ACCOUNTING HALF: A FRAGMENT'S LEFTOVERS ARE DRAINED FIRST, AND
  * CHARGED TO NOBODY.
  *
@@ -4489,6 +4556,8 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     ngx_uint_t        job_failed = 0;
     JSValue           irq = JS_UNDEFINED;
     uint32_t          saved_frag = 0;
+    ngx_uint_t       *saved_dc = NULL;
+    ngx_js_comcon_frag_stats_t  *dstats;
     uint32_t          oom0 = 0;
     const char       *s_free = NULL;
     ngx_js_tenant_mode_e  saved_mode = NGX_JS_TENANT_ENFORCE;
@@ -4685,6 +4754,15 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
     saved_frag = ngx_js_compartment_frag_get();
     ngx_js_compartment_frag_set((uint32_t) handle + 1);
     jcf->comcon_depth++;
+
+    /* G-05: the gates that fire from here to the restore below are this
+       fragment's.  The stats record is the retained-memory one (F2), which the
+       refusal check above has already pushed; a missing record attributes to
+       nobody, which is the fleet counter's old behaviour, never a crash. */
+    ngx_js_comcon_stats_push(jcf);
+    dstats = ngx_js_comcon_stats(jcf, (uint32_t) handle);
+    saved_dc = ngx_js_compartment_frag_denials_set(dstats ? dstats->denials
+                                                          : NULL);
 
     prev = ngx_js_compartment_enter(NGX_JS_COMPARTMENT_TENANT);
     oom0 = JS_GetOutOfMemoryCount(jcf->comcon_rt);
@@ -5153,6 +5231,7 @@ ngx_js_comcon_invoke_confined(JSContext *hctx, JSValueConst this_val,
         ngx_js_compartment_mode_set(saved_mode);
     }
 
+    ngx_js_compartment_frag_denials_set(saved_dc);
     ngx_js_compartment_frag_set(saved_frag);
     jcf->comcon_depth--;
 

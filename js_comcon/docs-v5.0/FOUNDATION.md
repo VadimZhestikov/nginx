@@ -635,6 +635,28 @@ normative spec (in-place revisions only); compatibility principle (§1: no flag-
 dependency workflow (E1), tier-transparent stack traces (E2), selector staging (E9),
 one-generator-two-outputs (E10), stage-1-needs-no-membranes (E11).
 
+**v5.127 (in place — three library-kind gaps closed: the whole appetite in one read, the
+policy diff and the would-deny list, the manual as a query):** (1) `comcon.std.evaluate(fn |
+source, {declares})` — G-13 — every free name from the admission collector, classified, with
+call sites and lines from the bytecode, the dynamic-code flag, the undocumented remainder and
+the `imports` line a contract would need; a source is accepted only as one function
+expression and nothing runs. (2) `comcon.std.policy.diff(before, after)` — G-05's diff half —
+verdicts `narrowing` (auto-safe), `widening`, `unchanged`, `incomparable`, every change with
+its direction, read through the grant translation `include()` itself feeds the C side
+(factored out as one function so a report cannot drift from the cage); include results and
+`bindAt` handles carry their contract. (3) `comcon.denials(f)` / `ops.wouldDeny(f)` — G-05's
+would-deny half — the one mechanism of the three: the invoke sets a pointer to the running
+fragment's own per-code counters (nested for a sub-fragment), the compartment's one counting
+site increments both, so the gates that fired are attributed to the binding they fired in;
+under an audit posture the rows are what enforce would have refused. Negative control
+`denials-not-attributed.patch`, verified. (4) `comcon.std.docs.model/render` and
+`ops.docs(name)` — G-16's docs half — the tenant's manual as a projection of what its binding
+holds, with the live epoch. (5) `std.describe()` told the truth again: its `absent` list had
+named six shipped mediation words and `std.ops` as missing; it now lists the canonical NOT
+BUILT set and `onViolation`/`profile` are in `enforced`. Four tests (48 assertions), three
+demos (`O_Operators/O3`, `A_Auditors/A2`, `A_Auditors/A3`), OPERATOR_API §8k, ASSURANCE
+G7.24, `t/comcon_std_lib.t` made robust to port remapping. Gate green.
+
 **v5.126 (in place — the showcases annotated with real code; the gaps collected; four demos
 for two new audiences):** (1) Every one of the 53 scenario headings in `SHOWCASE*.md` now
 opens with a `REAL CODE (v5.125)` block: what the shipped tree does for that scenario, in its

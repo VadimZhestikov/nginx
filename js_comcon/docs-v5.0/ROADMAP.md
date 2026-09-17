@@ -1,6 +1,6 @@
 # COMCON — Roadmap & Measured Results (v5.0)
 
-> **WHERE WE ARE (v5.126 — 2026-09-16), in five lines.** Every increment is done and every
+> **WHERE WE ARE (v5.127 — 2026-09-16), in five lines.** Every increment is done and every
 > track is closed: confinement (two signatures on the assurance case, ASSURANCE §15), the
 > compiler (M5.1a and M5.1c shipped, M5.1b parked; the rule says NO-GO at 2.3× on the last
 > class, PERFORMANCE §2f.3), the library (the vocabulary complete; `opaque.*` and the postures
@@ -14,6 +14,13 @@
 > narrowing words, `opaque.*` and the postures, M5.1b. The rest of this block is the log,
 > newest first, each entry also a FOUNDATION delta.
 >
+> - **THREE LIBRARY-KIND GAPS CLOSED (2026-09-16, v5.127).** `std.evaluate` (the whole appetite
+>   in one static read, G-13), `std.policy.diff` + `comcon.denials`/`ops.wouldDeny` (the
+>   policy diff with an auto-safe verdict, and the gates attributed to the binding they fired
+>   in — G-05), `std.docs`/`ops.docs` (the manual as a query over the contract, G-16). One
+>   small mechanism (per-fragment denial attribution, with its control), the rest library
+>   programs over shipped operators; `std.describe()`'s stale absent list corrected. Four
+>   tests, three demos (O3, A2, A3): nineteen demos, 201 checks.
 > - **THE SHOWCASES ANNOTATED WITH REAL CODE; THE GAPS REGISTERED; DEMOS FOR TWO NEW AUDIENCES
 >   (2026-09-16, v5.126).** Every scenario heading carries a `REAL CODE` block (the shipped
 >   spelling, the pinning tests, a gap id); `SHOWCASE-gaps.md` scores 53 scenarios (17 as

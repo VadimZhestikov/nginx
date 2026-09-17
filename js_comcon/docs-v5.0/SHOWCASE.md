@@ -231,8 +231,9 @@ well-formed values." Injection needs a hole; the hole is no longer part of the l
 > ```
 > `js_com_demos/COMCON_onboard/onboard.js` turns the harvest into a paste-ready grant stub.
 > Tests: `t/comcon_include_learn.t`, `t/comcon_posture.t`, `t/comcon_std_ops.t`. Demo:
-> `js_comcon_demos/P_Platform_Teams/P2`. Not built: allow-suite generation, coverage, the
-> would-deny event report (gap G-05).
+> `js_comcon_demos/P_Platform_Teams/P2`. **v5.127:** the per-binding would-deny report is
+> `ops.wouldDeny(f)` (demo `O_Operators/O3`); still not built: allow-suite generation and
+> coverage (gap G-05).
 
 **Problem:** a years-old analytics script must move under policy. Nobody knows what it
 actually touches.
@@ -277,8 +278,9 @@ auto-deployed — learning describes, people prescribe.
 > ```
 > A leased operator session is `comcon.std.sessions({sessions: nginx.shared}).grant(principal,
 > {imports, ttl: 900})`. Tests: `t/comcon_realize.t`, `t/comcon_config_instance.t`,
-> `t/comcon_std_sessions.t`. Demo: `js_comcon_demos/O_Operators/O1`. Not built: the REL
-> console (gap G-04) and a monotonicity check over *policy* diffs (gap G-05).
+> `t/comcon_std_sessions.t`. Demo: `js_comcon_demos/O_Operators/O1`. **v5.127:** the
+> monotonicity check over policy diffs is `comcon.std.policy.diff(before, after)` — `narrowing`
+> is auto-safe, anything else is not (demo `O_Operators/O3`). Not built: the REL console (gap G-04).
 
 **Problem:** you want AI to help run the platform and write tenant code/policies,
 without betting the platform on the AI being right.

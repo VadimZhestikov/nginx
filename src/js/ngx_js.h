@@ -268,6 +268,15 @@ typedef struct {
     uint32_t             invocations;
     uint32_t             refused;       /* invocations refused at the cap */
     unsigned             reported:1;    /* the crossing was logged once */
+    /*
+     * G-05 (v5.127): the gates that fired WHILE THIS FRAGMENT RAN, by code.
+     * The fleet counters (ngx_js_compartment_denial_count) answer "how often
+     * did sock.listener fire on this worker"; these answer "which binding".
+     * Under an audit posture they are the would-deny list: what enforce
+     * would have refused.  Counted in the same place as the fleet counter,
+     * through a pointer the invoke sets for the duration of the call.
+     */
+    ngx_uint_t           denials[NGX_JS_DENIAL_LAST];
 } ngx_js_comcon_frag_stats_t;
 
 
@@ -703,6 +712,8 @@ JSValue ngx_js_comcon_parse(JSContext *ctx, JSValueConst this_val,
 JSValue ngx_js_comcon_aot_status(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_mem_status(JSContext *ctx, JSValueConst this_val,
+    int argc, JSValueConst *argv);
+JSValue ngx_js_comcon_denial_status(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);
 JSValue ngx_js_comcon_pom_callsites(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv);

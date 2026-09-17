@@ -7,7 +7,7 @@ demo_start
 echo "== 1. the trust report, from the resources the session was handed =="
 R=$(body /report); show "GET /report" "$R"
 check "a session given nothing has only describe()"     '"bareVerbs":["describe"]'         "$R"
-check "the verbs decompose over the resources passed in" '"verbs":["bindings","denials","describe","enforce","learn","learnMode","rebind","register","remove","revive","rewrite","rollback","shadow","snapshot","trustReport"]' "$R"
+check "the verbs decompose over the resources passed in" '"verbs":["bindings","denials","describe","diff","docs","enforce","learn","learnMode","rebind","register","remove","revive","rewrite","rollback","shadow","snapshot","trustReport","wouldDeny"]' "$R"
 check "the registered binding is in the report"        '"name":"vendor"'                  "$R"
 check "the enforced-by table names each contract field" '"enforcedBy":[{"field":'         "$R"
 check "denials are counted by gate (sock.listener)"    '"sock.listener":1'                "$R"

@@ -157,16 +157,21 @@ JS
 
 $t->try_run('no js module')->plan(13);
 
+# the socket's port is whatever Test::Nginx handed out for %%PORT_8091%%: when
+# 8091 is busy on the box the harness remaps it, and a literal here failed for
+# that reason alone (2026-09-16, a foreign nginx on 8091)
+my $sp = port(8091);
+
 ###############################################################################
 
 my $r = http_get('/v4');
 
 # --- the inner membrane, for reference -----------------------------------
-like($r, qr/"inner":\{"addr":"undefined","port":8091,"fd":"undefined"\}/,
+like($r, qr/"inner":\{"addr":"undefined","port":$sp,"fd":"undefined"\}/,
      'the inner membrane allows only `port`');
 
 # --- THE CLAIM: an outer membrane cannot restore what the inner hid -------
-like($r, qr/"widened":\{"addr":"undefined","port":8091,"fd":"undefined"\}/,
+like($r, qr/"widened":\{"addr":"undefined","port":$sp,"fd":"undefined"\}/,
      'ASKING FOR MORE GETS NO MORE: re-mediating with allow(address,port,fd) '
      . 'yields the MEET -- address and fd stay hidden');
 like($r, qr/"narrowed":\{"addr":"undefined","port":0,"fd":"undefined"\}/,
@@ -193,7 +198,7 @@ like($r, qr/"diffGlob":"refused"/,
      . 'guessing it would be the widening this check exists to prevent');
 
 # --- V4 at realization ---------------------------------------------------
-like($r, qr/"realized":\{"addr":"undefined","port":8091/,
+like($r, qr/"realized":\{"addr":"undefined","port":$sp/,
      'realize() binds the restricted env and the membrane still holds');
 like($r, qr/"notInEnv":"undefined"/,
      'a name the realizer does not hold is simply not bound -- the restricted '

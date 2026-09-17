@@ -296,6 +296,11 @@ ngx_js_tenant_mode_e ngx_js_compartment_mode_get(void);
 void      ngx_js_compartment_frag_set(uint32_t frag);
 uint32_t  ngx_js_compartment_frag_get(void);
 
+/* G-05: where the running fragment's own per-code denial counters live (NULL
+ * = host code, nothing attributed).  Set by the invoke around the call and
+ * restored after it; returns the previous pointer so a nested invoke nests. */
+ngx_uint_t *ngx_js_compartment_frag_denials_set(ngx_uint_t *counts);
+
 /* Is `owner` a capability that does NOT belong to the fragment now running?
  * owner == 0 means the wrapper was never bound to a fragment (the host's own),
  * which is always usable. */

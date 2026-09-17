@@ -21,7 +21,7 @@ curl http://127.0.0.1:8215/v ; curl 'http://127.0.0.1:8215/rewrite?op=harden' ; 
 ## What you see
 
 ```json
-/report   {"verbs":[…15 verbs…],"bareVerbs":["describe"],
+/report   {"verbs":[…18 verbs…],"bareVerbs":["describe"],
            "bindings":[{"name":"vendor","epoch":0,"tombstoned":false,"snapshots":1}],
            "trust":{"bindings":[…],"enforcedBy":[{"field":"imports","by":"C3 free-name check",…},…]},
            "denials":{"mode":"enforce","total":1,"byOp":{"sock.listener":1,…}},

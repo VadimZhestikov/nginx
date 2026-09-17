@@ -98,6 +98,7 @@ static const char  *ngx_js_denial_names[NGX_JS_DENIAL_LAST] = {
 /* Per-process state (single-threaded main loop; see the note above). */
 static ngx_js_tenant_mode_e  ngx_js_tenant_mode;
 static ngx_uint_t  ngx_js_denial_counts[NGX_JS_DENIAL_LAST];
+static ngx_uint_t *ngx_js_frag_denials;   /* G-05: the running fragment's own */
 static ngx_uint_t  ngx_js_denials_total;
 static ngx_uint_t  ngx_js_denial_records;    /* full records written */
 
@@ -299,6 +300,10 @@ ngx_js_compartment_denial(ngx_js_denial_code_t code, const char *obj)
     ngx_js_denial_counts[code]++;      /* exact, always (TM-1) */
     ngx_js_denials_total++;
 
+    if (ngx_js_frag_denials != NULL) {
+        ngx_js_frag_denials[code]++;   /* G-05: and attributed to the binding */
+    }
+
     mode = ngx_js_tenant_mode_name();
     uncond = ngx_js_denial_unconditional(code);
     extra = uncond ? " unconditional=1" : "";
@@ -334,6 +339,18 @@ ngx_js_compartment_denial(ngx_js_denial_code_t code, const char *obj)
     /* enforce denies; audit and learn log-and-allow -- except the codes that
        have nothing for an operator to observe (see above) */
     return (uncond || ngx_js_tenant_mode == NGX_JS_TENANT_ENFORCE) ? 1 : 0;
+}
+
+
+ngx_uint_t *
+ngx_js_compartment_frag_denials_set(ngx_uint_t *counts)
+{
+    ngx_uint_t  *previous;
+
+    previous = ngx_js_frag_denials;
+    ngx_js_frag_denials = counts;
+
+    return previous;
 }
 
 

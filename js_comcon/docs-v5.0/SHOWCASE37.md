@@ -243,8 +243,9 @@ and every loosening is structurally forced through the reviewed, epoch-marked ga
 > comcon.mode("learn"); comcon.include(sdkSource)({}); nginx.tenantLearning().wants
 > ```
 > Tests: `t/comcon_admit.t`, `t/comcon_pom_callsites.t`, `t/comcon_include_learn.t`. Demos:
-> `js_comcon_demos/D_Developers/D1`, `P_Platform_Teams/P2`. Not built: one static report of
-> the whole appetite at once (gap G-13).
+> `js_comcon_demos/D_Developers/D1`, `P_Platform_Teams/P2`. **v5.127:** the one static report
+> is `comcon.std.evaluate(sdk, {declares: [...]})` — "requests 5 authorities; declared 1 of 5",
+> with call sites and lines, nothing run (`t/comcon_std_evaluate.t`; demo `A_Auditors/A2`).
 
 **Problem:** procurement asks: "what does this vendor SDK actually *do*?"
 
@@ -359,9 +360,11 @@ session.
 > is checked against the code: `nginx.describe()` / `nginx.describeType(cls)` for every COM
 > member with its safety class, `comcon.std.describe()` for which contract field is enforced
 > by what (and which words are absent), `node.describe()` for a program view's read ops,
-> `ops.trustReport().bindings[i].ops` per binding. The per-tenant rendering ("your available
-> API") is not built (gap G-16). Tests: `t/js_com_describe.t`, `t/comcon_std_lib.t`,
-> `t/comcon_v9_pom_describe.t`.
+> `ops.trustReport().bindings[i].ops` per binding. **v5.127:** the per-tenant rendering is
+> `comcon.std.docs.render(name, fragment)` / `ops.docs(name)` — a projection of the contract
+> the binding carries, through the kernel's own grant translation, with the live epoch
+> (`t/comcon_std_docs.t`; demo `A_Auditors/A3`). Tests: `t/js_com_describe.t`,
+> `t/comcon_std_lib.t`, `t/comcon_v9_pom_describe.t`.
 
 **Problem:** tenant docs say one thing; the deployed reality says another.
 

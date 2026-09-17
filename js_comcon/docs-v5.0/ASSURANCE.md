@@ -1545,6 +1545,57 @@ The primary control, and the one everything else is defence in depth for.
 - **THREAT:** T6, T9, T11
 - **V:** V13
 
+#### G7.24 — the gates that fire are attributed to the binding they fire in; the library's reports are projections of the cage
+- **CLAIM:** `comcon.denials(f)` reports, per fragment, exactly the gate firings that happened
+  while that fragment ran — its own reaches, not a sibling's, not a sub-fragment's — and the
+  fleet counter still counts every one; `comcon.std.policy.diff` never reports a widening as a
+  narrowing (a superset mask, a longer lease, a looser deadline, a switched-off check, an added
+  name or grant, a weakened posture all read `widening`; two globs or two budget keys read
+  `incomparable`, never a guess); `comcon.std.docs` documents a field only when the capability
+  has it; `comcon.std.evaluate` names every free name the admission collector sees and runs
+  nothing, refusing a source with text after its function expression.
+- **ARGUMENT:** (Attribution) The invoke already knows which fragment runs
+  (`ngx_js_compartment_frag_set`); it now also hands the compartment a pointer to that
+  fragment's own per-code counters for the duration of the call, restored after — including
+  on the exception path and nested through the author tier's sub-fragment call, which has its
+  own handle and its own row. The compartment's single counting site
+  (`ngx_js_compartment_denial`) increments the fleet counter and, if a pointer is set, the
+  fragment's; there is no second site to forget. (Diff and docs) Both read grants through
+  `polOf`, the one translation `include()` feeds the C side — factored out for this rather
+  than copied, because two copies of a kind/mask mapping is how a narrower contract reads as
+  wider in a report. The lattice the diff applies is the kernel's meet: masks by inclusion,
+  lifetimes MIN, budgets by limit under an identical key and window, quorums MAX and windows
+  MIN, globs and protocols by identity, and a change no order relates is `incomparable`.
+  (Evaluate) The names come from `js_comcon_collect_free_globals`, the walk admission uses;
+  a source is parsed by the vendored acorn in expression mode and refused unless it is one
+  function expression with nothing after it, so the `Function` step that compiles it can
+  compile only a function body, never run a statement.
+- **EV:** `t/comcon_would_deny.t` (10): an audited binding owns its three reaches and a deny
+  binding its two while the fleet counter grew by five; a sibling reads zero; a parent's row
+  stays at one while its sub-fragment's two reaches reach the fleet; the posture reads back;
+  a plain function is a `TypeError`.
+- **EV:** `t/comcon_std_policy_diff.t` (14): four narrowings named, five widenings named,
+  unchanged, two globs incomparable, a budget under another key incomparable and a lower
+  limit narrowing, mixed not auto-safe, deny→audit widening, the contract carried on include
+  results and handles, revoke narrowing, cosign up/down.
+- **EV:** `t/comcon_std_docs.t` (12): the rendered manual line by line over five grant kinds,
+  the redacted field absent, defaults named as defaults, a fragment's bound read from its
+  result, a registered binding's live epoch.
+- **EV:** `t/comcon_std_evaluate.t` (12): the appetite, the classification, the call sites
+  with lines, the undocumented remainder, dynamic code flagged, trailing text refused with
+  the marker proving nothing ran.
+- **GAP:** Attribution is per worker, like every counter here; a fleet view sums workers.
+  `evaluate` reads a *function*'s bytecode: a module with top-level statements is not a
+  function expression and is refused rather than evaluated. The diff compares contracts, not
+  the running code's behaviour — it says whether authority grew, not whether the change is
+  correct. The negative control is a maintained reverse patch
+  (`t/tools/controls/denials-not-attributed.patch`: the per-fragment increment removed; every
+  binding reads zero while the fleet counter still grows), verified by the script; the three
+  library programs' controls are their commit rows.
+  **home:** OPERATOR_API §8k · SHOWCASE-gaps G-05, G-13, G-16 · demos O3, A2, A3.
+- **THREAT:** T6, T11
+- **V:** V7, V12
+
 #### G6.8 — a fragment's reach OUTWARD is a capability, attenuated by destination
 - **CLAIM:** A confined fragment can ask for an outbound request only through a granted
   capability; `allowHosts(glob)` attenuates it by destination, the refusal is a counted denial
@@ -2425,6 +2476,7 @@ signature is never quietly credited with work it did not see.
 | **THE GATE IN THE TREE; THE BACKSTOP MEASURED; THE STREAM SURFACE SWEPT; ARTIFACTS UNTRACKED (v5.123).** `t/tools/gate.sh` is what "gate green" means, one command with the exit code as verdict, and `--configure` builds the four builddirs from the recipe the record used; `objs_jit/` is no longer tracked (212 objects and a binary a clone was handed instead of building). G7.22's named limit measured: the leaker keeps 100% of its exact count beside a small cycle-maker in three provoked configurations (`t/comcon_retained_backstop.t`), so the correction stays as it is. The residue sweep has twelve shapes: the stream server's handler receiving an uncaught out-of-memory, one alignment per connection, finalized every time. And the pack on `3d0e11d0e` did what v5.120 promised: three rows INCONCLUSIVE — two patches whose lines F2 moved (re-based) and one false SKIP (an assertion's prose said "skipped:", and the detector now reads only prove's own skip line); the kept evidence is what said which. The warm-speculation finding could not be filed upstream: the maxim repository has issues disabled; the text is delivered. | **Strengthens what every "gate green" claim since v5.105 rests on**, by making it reproducible; nothing the case attests changes. G7.22's GAP shrinks from a hazard to a measurement. |
 | **THE RECORD MADE READABLE; CLASS B RE-MEASURED AGAINST A C BOUND (v5.124).** README's 80-line history (one line of 83 KB) is gone — every entry was already FOUNDATION's delta log — and a five-line state stands in its place; ROADMAP's POSITION opens with where the work is, in five lines, above its log. The benchmark's class B typed arm is a C kernel reading every character through the engine, which no codegen change can move: on it class B reads **3.5× — GO by the M5.0 rule**, where the v5.114 NO-GO stood on a denominator that was not a bound (PERFORMANCE §2f.2). The sweep covers `checkRequest` at admission. And the broadcast flake's first face finally carried text — `kill(worker, 9) failed (No such process)`: the master in its TERMINATE escalation at shutdown, under the pack only, never standalone (three runs, QUIT only) — so the harness now prints the error log's last 40 lines on any "no alerts" failure, which is what would have said who sent TERM. | **No bearing on a claim.** A measurement corrected (and its decision flipped, on the record's own rule), an instrument sharpened, and two documents made readable. The M5.1c the corrected number points at is a decision, recorded with the number. |
 | **M5.1c BUILT AND MEASURED — NO-GO AT 2.3×, THE M5 TRACK CLOSES; F20 AND F21 FOUND BY A DIFFERENTIAL FUZZ AND CLOSED (v5.125).** `charCodeAt` on a string with an int index and `Math.imul` on ints are inlined when the callee is the engine's own C function (identity by pointer, never by name); a half-typed bit op takes a double operand through ToInt32 in place. `JIT_CODEGEN_VERSION` 19. Class B 52.5 → 34.38 ns/char against the C bound 15.00: 2.3×, NO-GO by the rule; class A 2.2×. The SR-2 rows for it failed first on shapes it did not touch: F20 (five kinds of typed-lowering site reading the wrong slot, and a linear inference that missed a value arriving over a jump) and F21 (a compiled `~` on an untyped operand calling `abort()` — a fragment's `~1.5` killed the worker). Both fixed in the engine; `t/tools/jit-diff-fuzz.py` (interpreter as oracle, automatic reduction) found F20's rest and is a gate stage: 30 seeds, 1,800 functions clean. The flake hunt: three full runs, no recurrence. | **Touches the compiled tier the signature attests through G7.5/G7.18 and (F), and narrows one claim it relied on.** F21 was a worker crash reachable by any fragment on the compiled tier — an availability defect under T11, not an escape — and F20 was wrong values on the tier SR-2 attests equal to the interpreter, on shapes the differential did not hold until now. Neither was found by the sanitizer corpus (a miscompile is not a memory error) nor by the differential's shapes (string- and object-heavy); the instrument that finds this class is now standing evidence. Every value the compiled tier can now produce differently is enumerated and pinned; the codegen version bump retires every cached artifact. |
+| **THREE LIBRARY-KIND GAPS CLOSED — G7.24 (v5.127).** `std.evaluate` (a module's whole appetite in one static read: every free name from the admission collector, classified, with call sites and lines; a source accepted only as one function expression, nothing run), `std.policy.diff` (narrowing / widening / unchanged / incomparable with every change named, over the grant translation `include()` itself uses), `comcon.denials` / `ops.wouldDeny` (the gates attributed to the binding they fired in — the one new mechanism, a pointer the invoke sets and the compartment's single counting site honours, with a maintained control), `std.docs` / `ops.docs` (the manual as a projection of the contract a binding carries). `std.describe()`'s `absent` list, which had named six shipped words and `std.ops` as missing, corrected. | **Adds evidence; narrows nothing the signature attests.** The mechanism touches the denial path the case attests through G6 (the counters are exact and every gate is counted) by adding a second, per-fragment increment at the same site — the fleet counter is unchanged and its tests still pass; the control shows the new rows go to zero without it. The three library programs confer no authority: they read the descriptors the kernel enforces, which is what lets a report be trusted as a projection rather than a second table. A stale honesty surface (`std.describe().absent`) was found and corrected on the way, the drift check [8] guards one surface over. |
 
 **A signature is not re-earned by a change that removes a gap**, and it is not invalidated
 by one either. What would invalidate it is listed at the end of §15; a finding *closed with

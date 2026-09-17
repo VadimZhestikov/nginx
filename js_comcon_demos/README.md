@@ -1,6 +1,6 @@
 # js_comcon_demos — COMCON, shown to the people who need it
 
-Sixteen self-contained, runnable demos of **COMCON**, the capability-secure
+Nineteen self-contained, runnable demos of **COMCON**, the capability-secure
 confinement layer that lets nginx run code it does not trust. Each demo has its
 own `nginx.conf`, `host.js` (the operator's program), usually a tenant file,
 a `test.sh` that starts nginx, asserts and stops, and a `README.md` that says
@@ -34,7 +34,7 @@ for t in $(find . -name test.sh | sort); do echo "=== $t ==="; bash "$t" || brea
 
 The binary is `objs/nginx` at the repo root (`auto/configure --add-module=src/js …`;
 `t/tools/gate.sh --configure` builds it and the compiled `objs_jit`). Override
-with `NGINX=/path/to/nginx`. Ports are 8200–8215 for the servers and 8250–8265
+with `NGINX=/path/to/nginx`. Ports are 8200–8218 for the servers and 8250–8268
 for the socket capabilities the demos mint; nothing else in the tree uses them.
 
 ## The audiences, and what each needs to see
@@ -43,10 +43,10 @@ for the socket capabilities the demos mint; nothing else in the tree uses them.
 |---|---|---|---|
 | **P** | Platform / SaaS teams | *Can I run a customer's code in my nginx without it becoming my problem?* | P1–P4 |
 | **S** | Security / compliance teams | *What exactly can it do, who can make it do it, and how do I read back what it tried?* | S1–S4 |
-| **O** | Operators / SREs | *How do I let tenants change config, and what do I look at when I am paged?* | O1–O2 |
+| **O** | Operators / SREs | *How do I let tenants change config, and what do I look at when I am paged?* | O1–O3 |
 | **D** | Developers / architects | *What will refuse my fragment, and what changes when it is compiled?* | D1–D2 |
 | **L** | Live operations / release engineering | *Can I fix the hottest function at noon, on every worker, and undo it, without a reload?* | L1–L3 |
-| **A** | Auditors / procurement | *Who can touch what, where is that library used, and can you stop this call, in a way I can re-run?* | A1 |
+| **A** | Auditors / procurement | *Who can touch what, where is that library used, and can you stop this call, in a way I can re-run?* | A1–A3 |
 
 The L and A groups came out of the SHOWCASE pass (`../js_comcon/docs-v5.0/SHOWCASE-gaps.md`):
 scenarios that had shipped code, no demo, and an audience the first twelve did not address.
@@ -71,12 +71,13 @@ scenarios that had shipped code, no demo, and an audience the first twelve did n
 | [S3 Outbound as a capability](S_Security_Teams/S3_Outbound_as_capability/) | 8206 | `allowHosts('https://*.example.com')` checked in the compartment; the host reads the surviving intent |
 | [S4 Sessions: principal to environment](S_Security_Teams/S4_Sessions_principal_to_environment/) | 8207 | `ci@acme` holds the socket, `dev@acme` does not, `greedy@acme` is refused, revoke is a row removal |
 
-### O — Operators (ports 8208–8209)
+### O — Operators (ports 8208–8209, 8216)
 
 | Demo | Port | What you see |
 |---|---|---|
 | [O1 Config proposal: review / apply / rollback](O_Operators/O1_Config_proposal_review_apply_rollback/) | 8208 | A tenant's inert proposal typechecked, diffed, applied with confirmation, rolled back by hash; an ill-typed one leaves nothing behind |
 | [O2 Denials dashboard](O_Operators/O2_Denials_dashboard/) | 8209 | The two closed sets of codes, the counters, and `comcon.mode()` turning a denial into a logged allow |
+| [O3 Rehearse before perform](O_Operators/O3_Rehearse_before_perform/) | 8216 | `policy.diff` predicts (narrowing, auto-safe / widening), the candidate shadowed beside the live binding on real traffic, its own would-deny rows, then the flip |
 
 ### D — Developers (ports 8210–8211)
 
@@ -93,11 +94,13 @@ scenarios that had shipped code, no demo, and an audience the first twelve did n
 | [L2 Fleet fan-out, four workers](L_Live_Ops/L2_Fleet_fanout_four_workers/) | 8213 | One replace on one worker; 24 of 24 requests on every worker serve the new epoch, none torn |
 | [L3 Pinned by hash](L_Live_Ops/L3_Pinned_by_hash/) | 8214 | The fragment pin and the dependency SHA-256 computed with `perl`/`sha256sum` from the reviewed bytes; one moved byte is refused at admission |
 
-### A — Auditors (port 8215)
+### A — Auditors (ports 8215, 8217–8218)
 
 | Demo | Port | What you see |
 |---|---|---|
 | [A1 The audit is a query](A_Auditors/A1_The_audit_is_a_query/) | 8215 | `trustReport()` over the session's own resources (a bare session has only `describe()`); "where is `fetch` used" from bytecode with lines; a locally-bound call rewritten by a reviewable transformation, installed as an epoch, rolled back |
+| [A2 Five-minute vendor evaluation](A_Auditors/A2_Five_minute_vendor_evaluation/) | 8217 | `std.evaluate(sdk)`: "requests 6 authorities; declared 1 of 6", call sites with lines, dynamic code flagged, nothing run; a pasted source with trailing text refused |
+| [A3 Documentation that cannot lie](A_Auditors/A3_Documentation_that_cannot_lie/) | 8218 | `ops.docs(name)`: the tenant's manual rendered from the contract it holds, the redacted field absent, the live epoch on the next query |
 
 ## Five for a talk
 

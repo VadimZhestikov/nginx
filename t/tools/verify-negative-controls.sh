@@ -105,6 +105,7 @@ PATCHES=(
 "M5.1c|intrinsics-wrong.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|M5.1c: charCodeAt out of bounds read as 0 instead of NaN, Math.imul emitted as a double product"
 "F20|f20-branch-reads-double.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|F20: the 8-bit branch on an INT condition reads the double register again"
 "F21|f21-bnot-aborts.patch|t/comcon_include_faithfulness.t|objs+objs_jit|fail|F21: the compiled bitwise-not helper back on the arithmetic slow path -- a fragment's ~1.5 kills the worker"
+"G-05|denials-not-attributed.patch|t/comcon_would_deny.t|objs|fail|G-05: the per-fragment increment removed -- every binding reads zero while the fleet counter still grows"
 )
 
 if ! git diff --quiet -- src/js quickjs || ! git diff --cached --quiet -- src/js quickjs; then

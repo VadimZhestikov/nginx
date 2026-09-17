@@ -1,0 +1,13 @@
+diff --git a/src/js/ngx_js_compartment.c b/src/js/ngx_js_compartment.c
+index 26e309408..634486e41 100644
+--- a/src/js/ngx_js_compartment.c
++++ b/src/js/ngx_js_compartment.c
+@@ -300,7 +300,7 @@ ngx_js_compartment_denial(ngx_js_denial_code_t code, const char *obj)
+     ngx_js_denial_counts[code]++;      /* exact, always (TM-1) */
+     ngx_js_denials_total++;
+ 
+-    if (ngx_js_frag_denials != NULL) {
++    if (0 && ngx_js_frag_denials != NULL) {
+         ngx_js_frag_denials[code]++;   /* G-05: and attributed to the binding */
+     }
+ 
