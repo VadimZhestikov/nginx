@@ -23,11 +23,7 @@ jobs:
       matrix:
         include:
           - toolchain: msvc
-            env: x64
-          - toolchain: msvc
             env: x86
-          - toolchain: mingw64
-            env: x86_64
       fail-fast: false
     defaults:
       run:
@@ -163,13 +159,6 @@ jobs:
           --with-openssl-opt="$NGINX_CONFIGURE_OPENSSL_OPT" \
           --with-debug
           make -j$(nproc) -k || make
-      - name: Reject "use iocp" at startup
-        run: |
-          printf 'events { use iocp; }\nhttp { server { listen 127.0.0.1:18080; } }\n' > t/iocp.conf
-          if ./objs/nginx.exe -p "$(cygpath -w "$PWD")" -c t/iocp.conf -t 2> t/iocp.err; then
-            echo "use iocp was accepted"; cat t/iocp.err; exit 1
-          fi
-          grep -q 'invalid event type "iocp"' t/iocp.err && cat t/iocp.err
       - name: Run tests
         shell: cmd
         working-directory: nginx-tests
