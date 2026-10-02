@@ -1,0 +1,161 @@
+# Throwaway workflow for the fork only: builds this branch for Windows with
+# MSVC (x64 and x86) and mingw64 the way the nginx buildbot does after a
+# merge, and runs nginx-tests under Windows. Replicates the "windows" job of
+# nginx/ci-self-hosted/.github/workflows/nginx-buildbot.yml on GitHub-hosted
+# windows-2022 runners (MSYS2 lives in C:\msys64 there). Not part of the PR.
+
+name: win32-check
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'ci/win32-*'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: windows-2022, ${{ matrix.toolchain }}, ${{ matrix.env }}
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        include:
+          - toolchain: msvc
+            env: x64
+          - toolchain: msvc
+            env: x86
+          - toolchain: mingw64
+            env: x86_64
+      fail-fast: false
+    defaults:
+      run:
+        shell: C:\msys64\msys2_shell.cmd -defterm -no-start -where . -full-path -shell bash.exe -Eeo pipefail -x '{0}'
+    env:
+      pcre2_ver: 10.39
+      zlib_ver: 1.3.1
+      openssl3_ver: 3.0.15
+      openssl_ver: 1.1.1w
+    steps:
+      - name: Check out nginx sources
+        uses: actions/checkout@v4
+      - name: Check out nginx tests
+        uses: actions/checkout@v4
+        with:
+          repository: nginx/nginx-tests
+          path: nginx-tests
+      - name: Set MSYSTEM
+        run: |
+          echo MSYSTEM=MINGW64 >> $GITHUB_ENV
+      - name: Install mingw64 toolchain
+        if: startsWith( matrix.toolchain, 'mingw')
+        run: |
+          pacman -S --noconfirm --needed mingw-w64-x86_64-gcc make
+      - name: Set the defaults and set up environment
+        run: |
+          NGINX_CONFIGURE_CMD_WIN="auto/configure \
+                    --builddir=objs \
+                    --prefix= \
+                    --conf-path=conf/nginx.conf \
+                    --pid-path=logs/nginx.pid \
+                    --http-log-path=logs/access.log \
+                    --error-log-path=logs/error.log \
+                    --sbin-path=nginx.exe \
+                    --http-client-body-temp-path=temp/client_body_temp \
+                    --http-proxy-temp-path=temp/proxy_temp \
+                    --http-fastcgi-temp-path=temp/fastcgi_temp \
+                    --with-cc-opt=-DFD_SETSIZE=1024 \
+                    --with-pcre=objs/lib/pcre \
+                    --with-zlib=objs/lib/zlib \
+                    --with-select_module \
+                    --with-http_realip_module \
+                    --with-http_addition_module \
+                    --with-http_sub_module \
+                    --with-http_dav_module \
+                    --with-http_stub_status_module \
+                    --with-http_flv_module \
+                    --with-http_mp4_module \
+                    --with-http_gunzip_module \
+                    --with-http_gzip_static_module \
+                    --with-http_random_index_module \
+                    --with-http_secure_link_module \
+                    --with-http_ssl_module \
+                    --with-mail_ssl_module \
+                    --with-http_auth_request_module \
+                    --with-http_v2_module \
+                    --with-http_slice_module \
+                    --with-stream_ssl_module \
+                    --with-stream_ssl_preread_module \
+                    --with-stream_realip_module \
+                    --with-openssl=objs/lib/openssl"
+          echo NGINX_CONFIGURE_CMD_WIN="$NGINX_CONFIGURE_CMD_WIN" >> $GITHUB_ENV
+          echo NGINX_CONFIGURE_CC_MSVC="--with-cc=cl" >> $GITHUB_ENV
+          echo NGINX_CONFIGURE_CC_MINGW="--with-cc=/${{ matrix.toolchain }}/bin/${{ matrix.env }}-w64-mingw32-gcc.exe" >> $GITHUB_ENV
+          echo NGINX_CONFIGURE_ADD_STATIC="--with-stream --with-mail" >> $GITHUB_ENV
+          echo NGINX_CONFIGURE_OPENSSL_OPT="no-asm no-tests -D_WIN32_WINNT=0x0601" >> $GITHUB_ENV
+          echo "VCVARSALL=$('C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' -products \* -latest -property installationPath)\\VC\\Auxiliary\\Build\\vcvarsall.bat" >> $GITHUB_ENV
+          echo "VCARCH=${{ matrix.env }}" >> $GITHUB_ENV
+          echo "CL=/MP" >> $GITHUB_ENV
+          echo 'TEMP=C:\TEMP' >> $GITHUB_ENV
+          echo 'TMP=C:\TEMP' >> $GITHUB_ENV
+          echo 'TMPDIR=C:\TEMP' >> $GITHUB_ENV
+          mkdir -p C:/TEMP/ C:/tmp/ t/
+      - name: Download and unpack dependencies
+        run: |
+          mkdir -p objs/lib
+          curl -sLO https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${{ env.pcre2_ver }}/pcre2-${{ env.pcre2_ver }}.tar.gz
+          tar -C objs/lib --transform 's/pcre2-${{ env.pcre2_ver }}/pcre/' -xzf ./pcre2-${{ env.pcre2_ver }}.tar.gz
+          echo '#include <stdint.h>' > objs/lib/pcre/src/inttypes.h
+          curl -sLO https://zlib.net/fossils/zlib-${{ env.zlib_ver }}.tar.gz
+          tar -C objs/lib --transform 's/zlib-${{ env.zlib_ver }}/zlib/' -xzf ./zlib-${{ env.zlib_ver }}.tar.gz
+          case "${{ matrix.toolchain }}" in
+            msvc)
+              curl -sLO https://github.com/openssl/openssl/releases/download/openssl-${{ env.openssl3_ver }}/openssl-${{ env.openssl3_ver }}.tar.gz
+              tar -C objs/lib --transform 's/openssl-${{ env.openssl3_ver }}/openssl/' -xzf ./openssl-${{ env.openssl3_ver }}.tar.gz
+            ;;
+            mingw*)
+              curl -sLO https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-${{ env.openssl_ver }}.tar.gz
+              tar -C objs/lib --transform 's/openssl-${{ env.openssl_ver }}/openssl/' -xzf ./openssl-${{ env.openssl_ver }}.tar.gz
+            ;;
+          esac
+      - name: Configure and build (msvc, with debug)
+        if: matrix.toolchain == 'msvc'
+        shell: cmd
+        run: |
+          @echo on
+          call "%VCVARSALL%" %VCARCH%
+          set PATH=C:\msys64\usr\bin;%PATH%
+          bash.exe ^
+            %NGINX_CONFIGURE_CMD_WIN% ^
+            %NGINX_CONFIGURE_CC_MSVC% ^
+            %NGINX_CONFIGURE_ADD_STATIC% ^
+            --with-openssl-opt="%NGINX_CONFIGURE_OPENSSL_OPT%" ^
+            --with-debug
+          nmake -f objs/Makefile
+      - name: Configure and build (mingw, with debug)
+        if: startsWith( matrix.toolchain, 'mingw')
+        run: |
+          $NGINX_CONFIGURE_CMD_WIN \
+          $NGINX_CONFIGURE_CC_MINGW \
+          $NGINX_CONFIGURE_ADD_STATIC \
+          --with-openssl-opt="$NGINX_CONFIGURE_OPENSSL_OPT" \
+          --with-debug
+          make -j$(nproc) -k || make
+      - name: Reject "use iocp" at startup
+        run: |
+          printf 'events { use iocp; }\nhttp { server { listen 127.0.0.1:18080; } }\n' > t/iocp.conf
+          if ./objs/nginx.exe -p "$(cygpath -w "$PWD")" -c t/iocp.conf -t 2> t/iocp.err; then
+            echo "use iocp was accepted"; cat t/iocp.err; exit 1
+          fi
+          grep -q 'invalid event type "iocp"' t/iocp.err && cat t/iocp.err
+      - name: Run tests
+        shell: cmd
+        working-directory: nginx-tests
+        run: |
+          set PATH=C:\msys64\usr\bin;%PATH%
+          prove --state=save ../t . || prove -v --state=failed
+        env:
+          TEST_NGINX_BINARY: "${{ github.workspace }}\\objs\\nginx.exe"
+          TEST_NGINX_VERBOSE: 1
+          PERL5LIB: "${{ github.workspace }}\\nginx-tests\\lib"
