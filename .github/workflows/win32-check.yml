@@ -51,7 +51,7 @@ jobs:
       - name: Install mingw64 toolchain
         if: startsWith( matrix.toolchain, 'mingw')
         run: |
-          pacman -S --noconfirm --needed mingw-w64-x86_64-gcc make
+          pacman -S --noconfirm --needed mingw-w64-x86_64-gcc make perl
       - name: Set the defaults and set up environment
         run: |
           NGINX_CONFIGURE_CMD_WIN="auto/configure \
@@ -125,8 +125,7 @@ jobs:
         run: |
           @echo on
           call "%VCVARSALL%" %VCARCH%
-          set PATH=C:\msys64\usr\bin;%PATH%
-          bash.exe ^
+          C:\msys64\usr\bin\bash.exe ^
             %NGINX_CONFIGURE_CMD_WIN% ^
             %NGINX_CONFIGURE_CC_MSVC% ^
             %NGINX_CONFIGURE_ADD_STATIC% ^
@@ -136,6 +135,7 @@ jobs:
       - name: Configure and build (mingw, with debug)
         if: startsWith( matrix.toolchain, 'mingw')
         run: |
+          export PATH=/usr/bin:/mingw64/bin:$PATH
           $NGINX_CONFIGURE_CMD_WIN \
           $NGINX_CONFIGURE_CC_MINGW \
           $NGINX_CONFIGURE_ADD_STATIC \
@@ -153,7 +153,7 @@ jobs:
         shell: cmd
         working-directory: nginx-tests
         run: |
-          set PATH=C:\msys64\usr\bin;%PATH%
+          set PATH=%PATH%;C:\msys64\usr\bin
           prove --state=save ../t . || prove -v --state=failed
         env:
           TEST_NGINX_BINARY: "${{ github.workspace }}\\objs\\nginx.exe"
