@@ -141,8 +141,12 @@ jobs:
       - name: Configure and build (msvc, with debug)
         if: matrix.toolchain == 'msvc'
         run: |
+          # keep CL=/MP from being path-converted, and keep coreutils' link(1)
+          # from shadowing the MSVC linker when nmake runs from this shell
+          export MSYS2_ENV_CONV_EXCL=CL
+          test -f /usr/bin/link.exe && mv /usr/bin/link.exe /usr/bin/link.coreutils.exe
           export PATH=/usr/bin:$PATH
-          which cl nmake
+          which cl nmake link
           $NGINX_CONFIGURE_CMD_WIN \
           $NGINX_CONFIGURE_CC_MSVC \
           $NGINX_CONFIGURE_ADD_STATIC \
