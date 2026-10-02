@@ -119,28 +119,35 @@ jobs:
               tar -C objs/lib --transform 's/openssl-${{ env.openssl_ver }}/openssl/' -xzf ./openssl-${{ env.openssl_ver }}.tar.gz
             ;;
           esac
-      - name: Debug cl banner parsing (msvc)
+      - name: Probe sed in the msys2 shell (msvc)
+        if: matrix.toolchain == 'msvc'
+        run: |
+          which -a sed; sed --version | head -1; echo "BASH=$BASH_VERSION"; locale | head -3
+          echo "19.44.35229 for x64" | sed -e 's/^\([0-9]*\).*/\1/'
+          echo "19.44.35229 for x64" | sed -E 's/^([0-9]*).*/\1/'
+          echo abc | sed -e 's/^\(a\).*/\1/'
+      - name: Probe sed in cmd-launched bash (msvc)
         if: matrix.toolchain == 'msvc'
         shell: cmd
         run: |
           @echo on
           call "%VCVARSALL%" %VCARCH%
-          cl 2>&1 | C:\msys64\usr\bin\od.exe -c | C:\msys64\usr\bin\head.exe -20
-          C:\msys64\usr\bin\bash.exe -c "locale; v=$(cl 2>&1 | grep 'C/C++.* [0-9][0-9]*\.[0-9]' | sed -e 's/^.* \([0-9][0-9]*\.[0-9].*\)/\1/'); echo \"ver=[$v]\"; echo \"$v\" | od -c | head -3; echo \"$v\" | sed -e 's/^\([0-9]*\).*/\1/'; LC_ALL=C; export LC_ALL; echo \"$v\" | sed -e 's/^\([0-9]*\).*/\1/'"
+          C:\msys64\usr\bin\bash.exe -c "which -a sed; sed --version | head -1; echo BASH=$BASH_VERSION; echo 19.44.35229 for x64 | sed -e 's/^\([0-9]*\).*/\1/'; echo abc | sed -e 's/^\(a\).*/\1/'"
+      - name: Import the Visual C environment (msvc)
+        if: matrix.toolchain == 'msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.env }}
       - name: Configure and build (msvc, with debug)
         if: matrix.toolchain == 'msvc'
-        shell: cmd
         run: |
-          @echo on
-          call "%VCVARSALL%" %VCARCH%
-          set LC_ALL=C
-          set LANG=C
-          C:\msys64\usr\bin\bash.exe ^
-            %NGINX_CONFIGURE_CMD_WIN% ^
-            %NGINX_CONFIGURE_CC_MSVC% ^
-            %NGINX_CONFIGURE_ADD_STATIC% ^
-            --with-openssl-opt="%NGINX_CONFIGURE_OPENSSL_OPT%" ^
-            --with-debug
+          export PATH=/usr/bin:$PATH
+          which cl nmake
+          $NGINX_CONFIGURE_CMD_WIN \
+          $NGINX_CONFIGURE_CC_MSVC \
+          $NGINX_CONFIGURE_ADD_STATIC \
+          --with-openssl-opt="$NGINX_CONFIGURE_OPENSSL_OPT" \
+          --with-debug
           nmake -f objs/Makefile
       - name: Configure and build (mingw, with debug)
         if: startsWith( matrix.toolchain, 'mingw')
